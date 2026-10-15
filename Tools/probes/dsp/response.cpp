@@ -1,71 +1,50 @@
-// PROBE name=dsp.response timeout=120
+// PROBE name=dsp.response timeout=180
 //
-// dsp.response: the effect against the formulas it implements, on both channels.
-//   MODEL   each channel equals a double-precision model of the effect, sample by sample: y = GAIN x (the one-pole
-//           low-pass of x), the one-pole in its topology-preserving form (g = tan(pi fc / fs), G = g / (1 + g); per
-//           sample v = (x - s) G, y = v + s, s = y + v). Left and right carry different noises, so a channel swapped,
-//           left out or turned upside down fails: the residual stays under -80 dB of the signal (float rounding and
-//           the core's fast tan and dB conversions sit far below that). At GAIN +6 dB, TONE 2 kHz and at GAIN
-//           -24 dB, TONE 200 Hz.
-//   GAIN    a 1 kHz sine at -12 dBFS (left) and at -18 dBFS (right) comes out GAIN dB louder (TONE wide open: its own
-//           -0.001 dB at 1 kHz is in the expected value), for GAIN -24, 0 and +6 dB; within 0.02 dB.
-//   TONE    |H(f)| = 1 / sqrt(1 + (tan(pi f / fs) / tan(pi fc / fs))^2), so -3.01 dB at fc; checked at fc = 1 kHz for
-//           1 kHz and 8 kHz, and at fc = 5 kHz for 1 kHz, on both channels; within 0.05 dB.
-//   SMOOTH  a GAIN change from 0 to +12 dB between two blocks is smoothed (20 ms), not stepped: 10 ms after it the
-//           gain is between the two.
-// Levels are single-bin DFT amplitudes over a whole number of cycles, measured after 0.5 s (the smoothers settled).
+// dsp.response: the reverb against what its structure implies, on both channels (48 kHz).
+//   DRY      MIX 0 %: each channel is GAIN times its input, sample by sample against a double-precision model, with
+//            different noises left and right (a channel swapped, dropped or inverted fails): residual under -120 dB, at
+//            GAIN -24, 0 and +6 dB.
+//   ROUTING  MIX 100 %, no modulation: an impulse on the left input reaches the left output first, after exactly line
+//            0's delay (787 samples at 12 m), as k u_0 w_0 sqrt(2/n) = +k / sqrt(8) (Fdn.h: the even lines carry the
+//            left, the input and output signs of line 0 are +1); the right output stays silent until the mix has
+//            carried it into an odd line, exactly d_0 + d_1 samples (787 + 829). An impulse on the right input is the
+//            mirror: first on the right after d_1, as -k / sqrt(8) (line 1's output sign is -1), then on the left
+//            after d_1 + d_0. Within 1e-6 of the value; nothing before.
+//   GAIN     the wet output is linear in GAIN: the impulse response at +6 dB is 10^(6/20) times the one at 0 dB
+//            (within 1e-5 relative).
+//   SMOOTH   a GAIN change from 0 to +12 dB between two blocks (MIX 0 %) is smoothed (20 ms), not stepped: 10 ms after
+//            it the gain is between the two.
+//   CLICKS   a 220 Hz sine through MIX 100 % (a reverb fed a sine rings at 220 Hz: nothing above 4 kHz), one change
+//            at 1 s; a click is broadband, so the largest |output above 4 kHz| (a 4th-order high-pass) in the 0.3 s
+//            after the change, relative to the largest |output| before it, tells one (a step of the signal's size
+//            measures about -6 dB):
+//              LINES  16 to 4 lines: the wet path fades out (20 ms), the network switches and clears, the input and
+//                     the wet path fade back in (20 ms); under -60 dB (measured -84 dB), and 4 lines afterwards
+//              SHAPE  a new LFO table (the triangle upside down, DEPTH 2 ms) crossfades over 20 ms; under -60 dB
+//                     (measured -79 dB)
+//              GLIDE  SIZE from 12 to 13 m (a knob nudge) and from 12 to 30 m: the delays glide, a pitch slide. While
+//                     they move fast the Thiran reads (DelayLine.h) leave grain above 4 kHz: at the start of the 12 to
+//                     30 m glide the reads move 0.6 samples per sample and the grain peaks at -39 dB; a nudge stays
+//                     near -66 dB. Bounded at -30 and -55 dB, far from a click. Every line then lands exactly on
+//                     its new prime (Fdn::delay(i) == the layout's) within 1 s
+//   STILL    with DEPTH 0 the LFO changes nothing: the output is the unmodulated one, bit for bit.
+//   MONO     a mono bus (one channel): at MIX 0 % the output is GAIN times the input (within 1e-6), at MIX 100 % the
+//            wet signal is (wet L + wet R) / sqrt(2) of the stereo run with the input on both sides (within 1e-6).
 #include "Probe.h"
 #include "Rig.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <numbers>
 #include <random>
 #include <string>
-#include <utility>
 
-namespace fpt = testingplayground;
+namespace tp = testingplayground;
 
 namespace
 {
     constexpr double kFs = 48000.0;
-    constexpr double kAmpL = 0.25118864315095801;             // -12 dBFS
-    constexpr double kAmpR = 0.12589254117941673;             // -18 dBFS
-
-    double onePoleDb(double f, double fc)
-    {
-        const double r = std::tan(std::numbers::pi * f / kFs) / std::tan(std::numbers::pi * fc / kFs);
-        return -10.0 * std::log10(1.0 + r * r);
-    }
-
-    // The effect in double, at fixed parameters.
-    std::vector<float> model(const std::vector<float>& x, double gainDb, double fc)
-    {
-        const double g = std::tan(std::numbers::pi * fc / kFs), G = g / (1.0 + g), gain = std::pow(10.0, gainDb / 20.0);
-        std::vector<float> y(x.size());
-        double s = 0.0;
-        for (std::size_t i = 0; i < x.size(); ++i)
-        {
-            const double v = (static_cast<double>(x[i]) - s) * G;
-            const double lp = v + s;
-            s = lp + v;
-            y[i] = static_cast<float>(gain * lp);
-        }
-        return y;
-    }
-
-    // 20 log10(rms(out - ref) / rms(ref)), in dB.
-    double residualDb(const std::vector<float>& out, const std::vector<float>& ref)
-    {
-        double e = 0.0, r = 0.0;
-        for (std::size_t i = 0; i < ref.size(); ++i)
-        {
-            const double d = static_cast<double>(out[i]) - static_cast<double>(ref[i]);
-            e += d * d;
-            r += static_cast<double>(ref[i]) * static_cast<double>(ref[i]);
-        }
-        return 10.0 * std::log10(std::max(e, 1e-300) / std::max(r, 1e-300));
-    }
 
     std::vector<float> noise(std::size_t n, unsigned seed, double amp)
     {
@@ -77,94 +56,250 @@ namespace
         return v;
     }
 
-    // The levels (dBFS) of the `hz` component, left and right, of 1.5 s sines at -12 dBFS (left) and -18 dBFS (right,
-    // a quarter cycle ahead) through the Engine, from 0.5 s to 1.5 s.
-    std::pair<double, double> levelsDb(double hz, float gainDb, float toneHz)
+    // 20 log10(rms(out - ref) / rms(ref)), in dB.
+    double residualDb(const std::vector<float>& out, const std::vector<double>& ref)
     {
-        const std::size_t n = static_cast<std::size_t>(1.5 * kFs), from = static_cast<std::size_t>(0.5 * kFs);
-        fpt::ParamValues v = fpt::defaultValues();
-        v[fpt::param::gain] = gainDb;
-        v[fpt::param::tone] = toneHz;
-        probe::Stereo in;
-        in.l = probe::sine(hz, kAmpL, kFs, n);
-        in.r.resize(n);
-        for (std::size_t i = 0; i < n; ++i)
-            in.r[i] = static_cast<float>(kAmpR * std::cos(2.0 * std::numbers::pi * hz * static_cast<double>(i) / kFs));
-        const probe::Stereo out = probe::runEffect(in, kFs, 256, v);
-        const auto len = static_cast<std::size_t>(kFs);
-        return { probe::dbFromLin(probe::toneAmplitude(out.l, hz, kFs, from, len)),
-                 probe::dbFromLin(probe::toneAmplitude(out.r, hz, kFs, from, len)) };
+        double e = 0.0, r = 0.0;
+        for (std::size_t i = 0; i < ref.size(); ++i)
+        {
+            const double d = static_cast<double>(out[i]) - ref[i];
+            e += d * d;
+            r += ref[i] * ref[i];
+        }
+        return 10.0 * std::log10(std::max(e, 1e-300) / std::max(r, 1e-300));
     }
 
-    struct ModelCase { const char* key; float gain, tone; };
-    struct ToneCase { const char* key; double hz; float fc; };
+    std::size_t firstNonZero(const std::vector<float>& x)
+    {
+        for (std::size_t i = 0; i < x.size(); ++i)
+            if (x[i] != 0.0f)
+                return i;
+        return x.size();
+    }
+
+    // The largest |x above 4 kHz| over [at, at + len) (two RBJ high-pass biquads, Q 1/sqrt(2), in double, run from the
+    // start), in dB relative to the largest |x| over [at - len, at).
+    double clickDb(const std::vector<float>& x, std::size_t at, std::size_t len)
+    {
+        const double w = 2.0 * std::numbers::pi * 4000.0 / kFs, alpha = std::sin(w) / (2.0 * 0.70710678), cw = std::cos(w);
+        const double a0 = 1.0 + alpha;
+        const double b0 = (1.0 + cw) / 2.0 / a0, b1 = -(1.0 + cw) / a0, b2 = b0;
+        const double a1 = -2.0 * cw / a0, a2 = (1.0 - alpha) / a0;
+        std::vector<double> y(x.begin(), x.end());
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            double x1 = 0.0, x2 = 0.0, y1 = 0.0, y2 = 0.0;
+            for (double& v : y)
+            {
+                const double in = v, out = b0 * in + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+                x2 = x1;
+                x1 = in;
+                y2 = y1;
+                y1 = out;
+                v = out;
+            }
+        }
+        double hf = 0.0, ref = 0.0;
+        for (std::size_t i = at; i < at + len && i < x.size(); ++i)
+            hf = std::max(hf, std::fabs(y[i]));
+        for (std::size_t i = at - len; i < at; ++i)
+            ref = std::max(ref, std::fabs(static_cast<double>(x[i])));
+        return probe::dbFromLin(hf / std::max(ref, 1e-30));
+    }
 }
 
 PROBE(dsp, response)
 {
-    // MODEL
+    // DRY
     {
-        const std::size_t n = static_cast<std::size_t>(kFs);
+        const std::size_t n = static_cast<std::size_t>(0.5 * kFs);
         probe::Stereo in;
         in.l = noise(n, 1u, 0.25);
         in.r = noise(n, 2u, 0.25);
-        for (const ModelCase c : { ModelCase{ "gain6.tone2k", 6.0f, 2000.0f },
-                                   ModelCase{ "gain-24.tone200", -24.0f, 200.0f } })
+        for (const float g : { -24.0f, 0.0f, 6.0f })
         {
-            fpt::ParamValues v = fpt::defaultValues();
-            v[fpt::param::gain] = c.gain;
-            v[fpt::param::tone] = c.tone;
+            tp::ParamValues v = tp::defaultValues();
+            v[tp::param::mix] = 0.0f;
+            v[tp::param::gain] = g;
             const probe::Stereo out = probe::runEffect(in, kFs, 256, v);
-            const std::string key = std::string("model.") + c.key;
-            const double gain = static_cast<double>(c.gain), fc = static_cast<double>(c.tone);
-            P.le(key + ".left.residual_db", residualDb(out.l, model(in.l, gain, fc)), -80.0);
-            P.le(key + ".right.residual_db", residualDb(out.r, model(in.r, gain, fc)), -80.0);
+            const double gain = std::pow(10.0, static_cast<double>(g) / 20.0);
+            std::vector<double> l(n), r(n);
+            for (std::size_t i = 0; i < n; ++i)
+            {
+                l[i] = gain * in.l[i];
+                r[i] = gain * in.r[i];
+            }
+            const std::string key = "dry.gain" + std::to_string(static_cast<int>(g)) + "db";
+            P.le(key + ".left.residual_db", residualDb(out.l, l), -120.0);
+            P.le(key + ".right.residual_db", residualDb(out.r, r), -120.0);
         }
     }
 
-    // GAIN
-    const double open = onePoleDb(1000.0, 20000.0);           // TONE at its maximum, at 1 kHz
-    const double inL = probe::dbFromLin(kAmpL), inR = probe::dbFromLin(kAmpR);
-    for (const float g : { -24.0f, 0.0f, 6.0f })
+    // ROUTING
     {
-        const std::string key = "gain." + std::to_string(static_cast<int>(g)) + "db";
-        const auto [l, r] = levelsDb(1000.0, g, 20000.0f);
-        P.near(key + ".left.level_dbfs", l, inL + static_cast<double>(g) + open, 0.02);
-        P.near(key + ".right.level_dbfs", r, inR + static_cast<double>(g) + open, 0.02);
+        const tp::ParamValues v = probe::wetOnly();
+        const std::size_t n = 4096;
+        tp::Engine e;                                           // one silent sample computes the coefficients
+        e.prepare(kFs, 256);
+        e.setParams(v);
+        float silence[2] = { 0.0f, 0.0f };
+        float* ch[2] = { &silence[0], &silence[1] };
+        e.process(ch, 2, 1, {});
+        const double k = e.fdn().inputGain();
+        const tp::FdnLayout l = tp::makeLayout(static_cast<float>(kFs), 12.0f, 16);
+        const std::size_t d0 = l.delay[0], d1 = l.delay[1];
+        const double first = k / std::sqrt(8.0);                // k u_i w_i sqrt(2/16)
+
+        const probe::Stereo fromL = probe::impulseResponse(kFs, n, v, true, false);
+        P.eq("routing.left_in.left_out.first_sample", static_cast<int64_t>(firstNonZero(fromL.l)),
+             static_cast<int64_t>(d0));
+        P.near("routing.left_in.left_out.first_value", fromL.l[d0], first, 1e-6);
+        P.eq("routing.left_in.right_out.first_sample", static_cast<int64_t>(firstNonZero(fromL.r)),
+             static_cast<int64_t>(d0 + d1));
+        const probe::Stereo fromR = probe::impulseResponse(kFs, n, v, false, true);
+        P.eq("routing.right_in.right_out.first_sample", static_cast<int64_t>(firstNonZero(fromR.r)),
+             static_cast<int64_t>(d1));
+        P.near("routing.right_in.right_out.first_value", fromR.r[d1], -first, 1e-6);
+        P.eq("routing.right_in.left_out.first_sample", static_cast<int64_t>(firstNonZero(fromR.l)),
+             static_cast<int64_t>(d0 + d1));
     }
 
-    // TONE
-    for (const ToneCase t : { ToneCase{ "tone.fc1k.at1k", 1000.0, 1000.0f },
-                              ToneCase{ "tone.fc1k.at8k", 8000.0, 1000.0f },
-                              ToneCase{ "tone.fc5k.at1k", 1000.0, 5000.0f } })
+    // GAIN
     {
-        const auto [l, r] = levelsDb(t.hz, 0.0f, t.fc);
-        const double want = onePoleDb(t.hz, static_cast<double>(t.fc));
-        P.near(std::string(t.key) + ".left.rel_db", l - inL, want, 0.05);
-        P.near(std::string(t.key) + ".right.rel_db", r - inR, want, 0.05);
+        tp::ParamValues v = probe::wetOnly();
+        const std::size_t n = static_cast<std::size_t>(0.5 * kFs);
+        const probe::Stereo a = probe::impulseResponse(kFs, n, v, true, true);
+        v[tp::param::gain] = 6.0f;
+        const probe::Stereo b = probe::impulseResponse(kFs, n, v, true, true);
+        const double g = std::pow(10.0, 6.0 / 20.0);
+        double worst = 0.0, peak = 0.0;
+        for (std::size_t i = 0; i < n; ++i)
+        {
+            worst = std::max({ worst, std::fabs(b.l[i] - g * a.l[i]), std::fabs(b.r[i] - g * a.r[i]) });
+            peak = std::max({ peak, std::fabs(g * a.l[i]), std::fabs(g * a.r[i]) });
+        }
+        P.le("gain.wet_linear_rel_err", worst / peak, 1e-5);
     }
 
     // SMOOTH: 0.5 s at 0 dB, then +12 dB from the next block on (blocks of 480 samples: the change lands at 0.5 s).
     {
         const std::size_t n = static_cast<std::size_t>(kFs), change = static_cast<std::size_t>(0.5 * kFs);
-        const probe::Stereo in = probe::dual(probe::sine(1000.0, kAmpL, kFs, n));
-        fpt::Engine engine;
-        engine.prepare(kFs, 480);
-        probe::Stereo out = in;
-        for (std::size_t pos = 0; pos < n; pos += 480)
-        {
-            fpt::ParamValues v = fpt::defaultValues();
-            v[fpt::param::gain] = pos < change ? 0.0f : 12.0f;
-            engine.setParams(v);
-            float* ch[2] = { out.l.data() + pos, out.r.data() + pos };
-            engine.process(ch, 2, 480, {});
-        }
-        // One 1 kHz cycle (48 samples) centred 10 ms after the change.
-        const std::size_t at = change + static_cast<std::size_t>(0.010 * kFs) - 24;
-        const double gainDb = probe::dbFromLin(probe::toneAmplitude(out.l, 1000.0, kFs, at, 48)) - inL;
+        const double amp = 0.25;
+        const probe::Stereo in = probe::dual(probe::sine(1000.0, amp, kFs, n));
+        tp::ParamValues v = tp::defaultValues();
+        v[tp::param::mix] = 0.0f;
+        const probe::Stereo out = probe::runEffect(in, kFs, 480, v, nullptr,
+                                                   [&](std::size_t pos, tp::ParamValues& p, tp::Engine&) {
+                                                       p[tp::param::gain] = pos < change ? 0.0f : 12.0f;
+                                                   });
+        const std::size_t at = change + static_cast<std::size_t>(0.010 * kFs) - 24;   // one cycle centred at 10 ms
+        const double gainDb = probe::dbFromLin(probe::toneAmplitude(out.l, 1000.0, kFs, at, 48) / amp);
         P.in("smooth.gain_10ms_after_step_db", gainDb, 1.0, 11.0);
-        P.near("smooth.gain_settled_db",
-               probe::dbFromLin(probe::toneAmplitude(out.l, 1000.0, kFs, n - 4800, 4800)) - inL, 12.0 + open, 0.02);
+        P.near("smooth.gain_settled_db", probe::dbFromLin(probe::toneAmplitude(out.l, 1000.0, kFs, n - 4800, 4800) / amp),
+               12.0, 0.02);
+    }
+
+    // GLIDE, LINES and SHAPE: a 220 Hz sine through the wet path, one change at 1 s.
+    const std::size_t n = static_cast<std::size_t>(2.5 * kFs), change = static_cast<std::size_t>(kFs);
+    const std::size_t window = static_cast<std::size_t>(0.3 * kFs);
+    const probe::Stereo sine = probe::dual(probe::sine(220.0, 0.25, kFs, n));
+    struct Glide { const char* key; float to; double bound; };
+    for (const Glide g : { Glide{ "size12to13", 13.0f, -55.0 }, Glide{ "size12to30", 30.0f, -30.0 } })
+    {
+        tp::ParamValues v = probe::wetOnly();
+        bool landed = false;
+        const probe::Stereo out = probe::runEffect(sine, kFs, 256, v, nullptr,
+                                                   [&](std::size_t pos, tp::ParamValues& p, tp::Engine& e) {
+                                                       p[tp::param::size] = pos < change ? 12.0f : g.to;
+                                                       if (pos < change + static_cast<std::size_t>(kFs) || landed)
+                                                           return;
+                                                       landed = true;
+                                                       const tp::FdnLayout& l = e.fdn().layout();
+                                                       for (int i = 0; i < l.lines; ++i)
+                                                           landed = landed && e.fdn().delay(i) == static_cast<float>(
+                                                                                  l.delay[static_cast<std::size_t>(i)]);
+                                                   });
+        const double cl = clickDb(out.l, change, window), cr = clickDb(out.r, change, window);
+        std::printf("glide %s: %.1f / %.1f dB\n", g.key, cl, cr);
+        const std::string key = std::string("clicks.glide.") + g.key;
+        P.le(key + ".left.hf_db", cl, g.bound);
+        P.le(key + ".right.hf_db", cr, g.bound);
+        P.eq(key + ".landed_on_primes_within_1s", landed ? 1 : 0, 1);
+    }
+    {
+        tp::ParamValues v = probe::wetOnly();
+        int linesAfter = 0;
+        const probe::Stereo out = probe::runEffect(sine, kFs, 256, v, nullptr,
+                                                   [&](std::size_t pos, tp::ParamValues& p, tp::Engine& e) {
+                                                       p[tp::param::lines] = pos < change ? 2.0f : 0.0f;
+                                                       linesAfter = e.fdn().lines();
+                                                   });
+        const double cl = clickDb(out.l, change, window), cr = clickDb(out.r, change, window);
+        std::printf("lines: click %.1f / %.1f dB\n", cl, cr);
+        P.le("clicks.lines.16to4.left.hf_db", cl, -60.0);
+        P.le("clicks.lines.16to4.right.hf_db", cr, -60.0);
+        P.eq("clicks.lines.16to4.lines_after", static_cast<int64_t>(linesAfter), 4);
+    }
+    {
+        tp::LfoShape flipped = tp::defaultShape();
+        for (int i = 0; i < flipped.count; ++i)
+            flipped.points[static_cast<std::size_t>(i)].y = 1.0f - flipped.points[static_cast<std::size_t>(i)].y;
+        tp::LfoTable table;
+        tp::renderTable(flipped, table);
+        tp::ParamValues v = probe::wetOnly();
+        v[tp::param::moddepth] = 2.0f;
+        const auto hook = [&](std::size_t pos, tp::ParamValues&, tp::Engine& e) {
+            if (pos == change)
+                e.setLfoTable(table);
+        };
+        const probe::Stereo out = probe::runEffect(sine, kFs, 256, v, nullptr, hook);
+        const double cl = clickDb(out.l, change, window), cr = clickDb(out.r, change, window);
+        std::printf("shape: click %.1f / %.1f dB\n", cl, cr);
+        P.le("clicks.shape.flip.left.hf_db", cl, -60.0);
+        P.le("clicks.shape.flip.right.hf_db", cr, -60.0);
+
+        v[tp::param::moddepth] = 0.0f;
+        const probe::Stereo still = probe::runEffect(sine, kFs, 256, v, nullptr, hook);
+        const probe::Stereo plain = probe::runEffect(sine, kFs, 256, v, &table);
+        P.eq("still.depth0.unmodulated_bits", probe::sameBits(still.l, plain.l) && probe::sameBits(still.r, plain.r)
+                                              ? 1 : 0, 1);
+    }
+    // MONO
+    {
+        const std::size_t m = static_cast<std::size_t>(0.5 * kFs);
+        const std::vector<float> x = noise(m, 3u, 0.25);
+        const auto mono = [&](const tp::ParamValues& v) {
+            tp::Engine e;
+            e.prepare(kFs, 256);
+            tp::LfoTable t;
+            tp::renderTable(tp::defaultShape(), t);
+            e.setLfoTable(t);
+            std::vector<float> y = x;
+            for (std::size_t pos = 0; pos < m; pos += 256)
+            {
+                e.setParams(v);
+                float* ch[1] = { y.data() + pos };
+                e.process(ch, 1, static_cast<int>(std::min<std::size_t>(256, m - pos)), {});
+            }
+            return y;
+        };
+        tp::ParamValues dry = tp::defaultValues();
+        dry[tp::param::mix] = 0.0f;
+        dry[tp::param::gain] = -6.0f;
+        const std::vector<float> yd = mono(dry);
+        const double g = std::pow(10.0, -6.0 / 20.0);
+        double errDry = 0.0;
+        for (std::size_t i = 0; i < m; ++i)
+            errDry = std::max(errDry, std::fabs(yd[i] - g * x[i]));
+        P.le("mono.dry.max_err", errDry, 1e-6);
+
+        const tp::ParamValues wet = probe::wetOnly();
+        const std::vector<float> yw = mono(wet);
+        const probe::Stereo st = probe::runEffect(probe::dual(x), kFs, 256, wet);
+        double errWet = 0.0;
+        for (std::size_t i = 0; i < m; ++i)
+            errWet = std::max(errWet, std::fabs(yw[i] - (st.l[i] + st.r[i]) * 0.707106781));
+        P.le("mono.wet.max_err", errWet, 1e-6);
     }
     return P.finish();
 }

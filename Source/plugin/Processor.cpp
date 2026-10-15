@@ -21,19 +21,28 @@ namespace testingplayground
                     std::snprintf(buf, sizeof buf, "%.1f dB", static_cast<double>(v));
                     break;
                 case Unit::hz:
-                    if (v < 1000.0f)
+                    if (v < 10.0f)
+                        std::snprintf(buf, sizeof buf, "%.2f Hz", static_cast<double>(v));
+                    else if (v < 100.0f)
+                        std::snprintf(buf, sizeof buf, "%.1f Hz", static_cast<double>(v));
+                    else if (v < 1000.0f)
                         std::snprintf(buf, sizeof buf, "%.0f Hz", static_cast<double>(v));
                     else
                         std::snprintf(buf, sizeof buf, "%.2f kHz", static_cast<double>(v) / 1000.0);
                     break;
                 case Unit::ms:
-                    if (v < 1000.0f)
+                    if (v < 10.0f)
+                        std::snprintf(buf, sizeof buf, "%.2f ms", static_cast<double>(v));
+                    else if (v < 1000.0f)
                         std::snprintf(buf, sizeof buf, "%.1f ms", static_cast<double>(v));
                     else
                         std::snprintf(buf, sizeof buf, "%.2f s", static_cast<double>(v) / 1000.0);
                     break;
                 case Unit::percent:
                     std::snprintf(buf, sizeof buf, "%.0f %%", static_cast<double>(v));
+                    break;
+                case Unit::m:
+                    std::snprintf(buf, sizeof buf, "%.1f m", static_cast<double>(v));
                     break;
                 case Unit::none:
                     std::snprintf(buf, sizeof buf, "%.2f", static_cast<double>(v));
@@ -52,6 +61,41 @@ namespace testingplayground
             if (s.unit == Unit::ms && t.endsWith("s") && !t.endsWith("ms"))
                 v *= 1000.0f;
             return std::clamp(v, s.min, s.max);
+        }
+
+        // The LFO shape in the plugin state: <LFO><POINT x=".." y=".." curve=".."/>...</LFO>, beside the parameters.
+        // Values are stored as doubles, which JUCE writes with enough digits to give back the same floats.
+        const juce::Identifier kLfoTag{ "LFO" }, kPointTag{ "POINT" }, kX{ "x" }, kY{ "y" }, kCurve{ "curve" };
+
+        juce::ValueTree shapeTree(const LfoShape& shape)
+        {
+            juce::ValueTree tree{ kLfoTag };
+            for (int i = 0; i < shape.count; ++i)
+            {
+                const ShapePoint& p = shape.points[static_cast<std::size_t>(i)];
+                juce::ValueTree point{ kPointTag };
+                point.setProperty(kX, static_cast<double>(p.x), nullptr);
+                point.setProperty(kY, static_cast<double>(p.y), nullptr);
+                point.setProperty(kCurve, static_cast<double>(p.curve), nullptr);
+                tree.appendChild(point, nullptr);
+            }
+            return tree;
+        }
+
+        // The shape of an <LFO> tree (unsanitised); an invalid tree gives no points (sanitize: the default shape).
+        LfoShape shapeOf(const juce::ValueTree& tree)
+        {
+            LfoShape shape;
+            for (const juce::ValueTree& point : tree)
+            {
+                if (!point.hasType(kPointTag) || shape.count == LfoShape::kMaxPoints)
+                    continue;
+                ShapePoint& p = shape.points[static_cast<std::size_t>(shape.count++)];
+                p.x = static_cast<float>(static_cast<double>(point.getProperty(kX, 0.0)));
+                p.y = static_cast<float>(static_cast<double>(point.getProperty(kY, 0.5)));
+                p.curve = static_cast<float>(static_cast<double>(point.getProperty(kCurve, 0.0)));
+            }
+            return shape;
         }
     }
 
@@ -101,6 +145,7 @@ namespace testingplayground
             portStore_.push_back(std::make_unique<funkgui::JuceParamPort>(*p));
             ports_.push_back(portStore_.back().get());
         }
+        storeShape(defaultShape());
     }
 
     Processor::~Processor() = default;
@@ -125,6 +170,8 @@ namespace testingplayground
     void Processor::prepareToPlay(double sampleRate, int maximumExpectedSamplesPerBlock)
     {
         engine_.prepare(sampleRate, maximumExpectedSamplesPerBlock);
+        sampleRate_.store(engine_.sampleRate(), std::memory_order_relaxed);
+        takeTable_ = true;                                       // the fresh Engine gets the shape on its first block
     }
 
     void Processor::releaseResources() {}
@@ -142,6 +189,15 @@ namespace testingplayground
         for (std::size_t i = 0; i < param::count; ++i)
             if (const float v = raw_[i]->load(std::memory_order_relaxed); std::isfinite(v))
                 values_[i] = std::clamp(v, kParams[i].min, kParams[i].max);
+
+        // A new LFO table, before setParams: the first block after prepareToPlay starts on it rather than fading to it.
+        if (const uint32_t published = published_.load(std::memory_order_acquire); takeTable_ || published != taken_)
+            if (table_.read(incoming_))
+            {
+                engine_.setLfoTable(incoming_);
+                taken_ = published;
+                takeTable_ = false;
+            }
         engine_.setParams(values_);
 
         std::size_t numEvents = 0;
@@ -194,15 +250,55 @@ namespace testingplayground
 
     void Processor::getStateInformation(juce::MemoryBlock& destData)
     {
-        if (const std::unique_ptr<juce::XmlElement> xml = apvts_.copyState().createXml())
+        juce::ValueTree state = apvts_.copyState();
+        state.appendChild(shapeTree(shape()), nullptr);
+        if (const std::unique_ptr<juce::XmlElement> xml = state.createXml())
             copyXmlToBinary(*xml, destData);
     }
 
     void Processor::setStateInformation(const void* data, int sizeInBytes)
     {
         const std::unique_ptr<juce::XmlElement> xml = getXmlFromBinary(data, sizeInBytes);
-        if (xml != nullptr && xml->hasTagName(apvts_.state.getType()))
-            apvts_.replaceState(juce::ValueTree::fromXml(*xml));
+        if (xml == nullptr || !xml->hasTagName(apvts_.state.getType()))
+            return;
+        juce::ValueTree state = juce::ValueTree::fromXml(*xml);
+        const juce::ValueTree lfo = state.getChildWithName(kLfoTag);
+        storeShape(lfo.isValid() ? shapeOf(lfo) : defaultShape());   // a state without one: the default
+        state.removeChild(lfo, nullptr);
+        apvts_.replaceState(state);
+    }
+
+    // ---- EditorPort ------------------------------------------------------------------------------------------------------
+    LfoShape Processor::shape() const
+    {
+        const std::lock_guard<std::mutex> lock(shapeMutex_);
+        return shape_;
+    }
+
+    uint64_t Processor::shapeRevision() const { return shapeRevision_.load(std::memory_order_acquire); }
+
+    void Processor::setShape(const LfoShape& shape) { storeShape(shape); }
+
+    void Processor::endShapeEdit()
+    {
+        updateHostDisplay(juce::AudioProcessor::ChangeDetails().withNonParameterStateChanged(true));
+    }
+
+    float Processor::sampleRate() const { return sampleRate_.load(std::memory_order_relaxed); }
+
+    void Processor::storeShape(const LfoShape& in)
+    {
+        LfoShape s = in;
+        sanitize(s);
+        LfoTable table;
+        renderTable(s, table);
+        const std::lock_guard<std::mutex> lock(shapeMutex_);  // one writer of table_ at a time (Seqlock's rule)
+        if (s == shape_ && published_.load(std::memory_order_relaxed) != 0)
+            return;
+        shape_ = s;
+        table_.publish(table);
+        published_.fetch_add(1, std::memory_order_release);
+        shapeRevision_.fetch_add(1, std::memory_order_release);
     }
 }
 

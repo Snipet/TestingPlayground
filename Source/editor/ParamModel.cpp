@@ -48,6 +48,14 @@ namespace testingplayground::ui
                 spokenUnit = "decibels";
                 break;
             case Unit::hz:
+                if (plain < 99.95f)                      // fmt::hz prints whole hertz: an LFO rate needs decimals
+                {
+                    std::snprintf(out.value, sizeof out.value, plain < 9.995f ? "%.2f" : "%.1f",
+                                  static_cast<double>(plain));
+                    unit = "HZ";
+                    spokenUnit = "hertz";
+                    break;
+                }
                 funkgui::fmt::hz(plain, out.value, sizeof out.value, &unit);
                 if (std::strcmp(unit, "K") == 0)
                 {
@@ -68,6 +76,11 @@ namespace testingplayground::ui
                 funkgui::fmt::percent(plain / 100.0f, out.value, sizeof out.value);
                 unit = "%";
                 spokenUnit = "percent";
+                break;
+            case Unit::m:
+                std::snprintf(out.value, sizeof out.value, plain < 9.95f ? "%.1f" : "%.0f", static_cast<double>(plain));
+                unit = "M";
+                spokenUnit = "metres";
                 break;
             case Unit::none:
                 std::snprintf(out.value, sizeof out.value, "%.2f", static_cast<double>(plain));

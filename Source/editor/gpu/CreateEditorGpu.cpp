@@ -20,6 +20,7 @@ namespace testingplayground
         config.zoomSteps = { 100, 125, 150, 200 };     // UI zoom: the Panel's ZOOM cells offer these steps
         config.defaultZoomPercent = 100;
         config.zoomPrefKey = "uiZoom";                 // machine-wide, beside the theme; never in the session
-        return new funkgui::EditorHost(processor, std::move(config), std::make_unique<ui::Panel>(processor.ports()));
+        auto panel = std::make_unique<ui::Panel>(processor.ports(), processor.editorPort());
+        return new funkgui::EditorHost(processor, std::move(config), std::move(panel));
     }
 }

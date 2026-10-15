@@ -13,7 +13,7 @@
 
 namespace testingplayground
 {
-    enum class Unit : uint8_t { none, db, hz, ms, percent };        // percent: the plain value is 0..100
+    enum class Unit : uint8_t { none, db, hz, ms, percent, m };     // percent: the plain value is 0..100; m: metres
 
     enum class Control : uint8_t
     {

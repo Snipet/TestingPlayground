@@ -1,6 +1,7 @@
 // Tools/probes/common/Audio.h: small, exact helpers for audio probes (header-only, JUCE-free): a stereo buffer, test
-// signals, levels, a single-bin DFT (plain or under a Hann window), the largest sample step, a frequency estimate, and
-// a 32-bit float WAV writer. Analysis runs in double.
+// signals, levels, a single-bin DFT (plain or under a Hann window), the largest sample step, a frequency estimate, a
+// 32-bit float WAV writer, and for reverbs the energy decay curve with its T60 fit and a band-pass. Analysis runs in
+// double.
 #pragma once
 
 #include <algorithm>
@@ -167,5 +168,93 @@ namespace probe
         }
         const bool ok = std::ferror(f) == 0;
         return std::fclose(f) == 0 && ok;
+    }
+
+    // ---- reverb analysis ------------------------------------------------------------------------------------------------
+
+    // A decay time from the energy decay curve (Schroeder's backward integration of the per-sample energy `e`): the
+    // least-squares line through the curve, in dB, from where it first falls to `hiDb` to where it first falls to
+    // `loDb`, gives the slope; T60 = -60 / slope. With hiDb -5 and loDb -35 this is the T30 extrapolated to 60 dB
+    // (ISO 3382). `t60` is 0 when the curve never reaches loDb; `r` is the fit's correlation (-1: a perfect decay).
+    struct DecayFit
+    {
+        double t60 = 0.0;
+        double r = 0.0;
+        double fromSec = 0.0, toSec = 0.0;
+    };
+
+    inline DecayFit decayFit(const std::vector<double>& e, double fs, double hiDb = -5.0, double loDb = -35.0)
+    {
+        DecayFit fit;
+        const std::size_t n = e.size();
+        if (n < 2)
+            return fit;
+        std::vector<double> edc(n);
+        double acc = 0.0;
+        for (std::size_t i = n; i-- > 0;)
+        {
+            acc += e[i];
+            edc[i] = acc;
+        }
+        if (!(acc > 0.0))
+            return fit;
+        std::size_t a = n, b = n;
+        for (std::size_t i = 0; i < n; ++i)
+        {
+            const double db = 10.0 * std::log10(std::max(edc[i] / acc, 1e-300));
+            if (a == n && db <= hiDb)
+                a = i;
+            if (db <= loDb)
+            {
+                b = i;
+                break;
+            }
+        }
+        if (a >= n || b >= n || b <= a + 1)
+            return fit;
+        double sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0, syy = 0.0;
+        const double m = static_cast<double>(b - a + 1);
+        for (std::size_t i = a; i <= b; ++i)
+        {
+            const double x = static_cast<double>(i) / fs;
+            const double y = 10.0 * std::log10(edc[i] / acc);
+            sx += x;
+            sy += y;
+            sxx += x * x;
+            sxy += x * y;
+            syy += y * y;
+        }
+        const double cov = sxy - sx * sy / m, vx = sxx - sx * sx / m, vy = syy - sy * sy / m;
+        const double slope = cov / vx;
+        fit.t60 = slope < 0.0 ? -60.0 / slope : 0.0;
+        fit.r = cov / std::sqrt(vx * vy);
+        fit.fromSec = static_cast<double>(a) / fs;
+        fit.toSec = static_cast<double>(b) / fs;
+        return fit;
+    }
+
+    // A band-pass of `x` around `hz`: two identical RBJ band-pass biquads (constant 0 dB peak gain) of quality q in
+    // series, in double, run forwards over the whole signal.
+    inline std::vector<double> bandPass(const std::vector<double>& x, double hz, double q, double fs)
+    {
+        const double w = 2.0 * std::numbers::pi * hz / fs, alpha = std::sin(w) / (2.0 * q), cw = std::cos(w);
+        const double a0 = 1.0 + alpha;
+        const double b0 = alpha / a0, b2 = -alpha / a0, a1 = -2.0 * cw / a0, a2 = (1.0 - alpha) / a0;
+        std::vector<double> y = x;
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            double x1 = 0.0, x2 = 0.0, y1 = 0.0, y2 = 0.0;
+            for (double& v : y)
+            {
+                const double in = v;
+                const double out = b0 * in + b2 * x2 - a1 * y1 - a2 * y2;
+                x2 = x1;
+                x1 = in;
+                y2 = y1;
+                y1 = out;
+                v = out;
+            }
+        }
+        return y;
     }
 }

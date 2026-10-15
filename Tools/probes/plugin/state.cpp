@@ -5,6 +5,9 @@
 //   - the table's normalised mapping (ParamSpec.h: toNormalised / fromNormalised, what the panel draws with) equals
 //     JUCE's NormalisableRange at eleven points per parameter;
 //   - the state round-trips: values written, saved, overwritten, restored;
+//   - so does the LFO shape (an <LFO> element beside the parameters): a shape set through EditorPort comes back bit for
+//     bit, a state without one (an older session) loads the default shape, and the element never stays in the APVTS
+//     tree (the processor keeps the shape itself);
 //   - the bus layout is the kind's (effect: stereo in and out; instrument: stereo out, MIDI in);
 //   - processBlock runs at 48 kHz in blocks of 256 and gives finite output (an instrument with a note held).
 #include "Probe.h"
@@ -12,6 +15,7 @@
 #include "plugin/Processor.h"
 
 #include "Product.h"
+#include "dsp/LfoShape.h"
 #include "dsp/Params.h"
 
 #include <funkgui/panel/HeadlessGuiScope.h>
@@ -92,6 +96,34 @@ PROBE(plugin, state)
                                                                          ->getValue() - written[i])));
     P.le("state.roundtrip_err", stateErr, 1e-6);
     P.ge("state.bytes", static_cast<double>(saved.getSize()), 16.0);
+
+    // The LFO shape: set, saved, overwritten, restored; then a state without it.
+    {
+        fpt::EditorPort& port = processor.editorPort();
+        fpt::LfoShape custom;
+        custom.points[0] = { 0.0f, 0.3f, 1.5f };
+        custom.points[1] = { 0.125f, 0.95f, -4.25f };
+        custom.points[2] = { 0.5f, 0.05f, 0.0f };
+        custom.points[3] = { 0.875f, 0.6f, 7.0f };
+        custom.points[4] = { 1.0f, 0.3f, 0.0f };
+        custom.count = 5;
+        port.setShape(custom);
+        P.eq("shape.set.kept", port.shape() == custom ? 1 : 0, 1);
+        juce::MemoryBlock withShape;
+        processor.getStateInformation(withShape);
+        port.setShape(fpt::defaultShape());
+        const uint64_t before = port.shapeRevision();
+        processor.setStateInformation(withShape.getData(), static_cast<int>(withShape.getSize()));
+        P.eq("shape.roundtrip_same_points", port.shape() == custom ? 1 : 0, 1);
+        P.eq("shape.restore_bumps_revision", port.shapeRevision() != before ? 1 : 0, 1);
+        P.eq("shape.not_left_in_apvts", apvts.state.getChildWithName("LFO").isValid() ? 0 : 1, 1);
+
+        const std::unique_ptr<juce::XmlElement> xml = apvts.copyState().createXml();   // parameters only
+        juce::MemoryBlock old;
+        juce::AudioProcessor::copyXmlToBinary(*xml, old);
+        processor.setStateInformation(old.getData(), static_cast<int>(old.getSize()));
+        P.eq("shape.state_without_lfo_loads_default", port.shape() == fpt::defaultShape() ? 1 : 0, 1);
+    }
 
     // Buses.
     juce::AudioProcessor::BusesLayout stereo;

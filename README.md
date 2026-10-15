@@ -1,16 +1,65 @@
 # TestingPlayground
 
-An audio plugin to start from: AU, VST3 and Standalone for macOS on Apple silicon, built on JUCE 8.0.4, with a GPU
-editor made with [FunkGui](https://github.com/Snipet/FunkGui) and the DSP core of FSynth (SIMD, fast math, phase
-accumulators, smoothers, random numbers), vendored. One command makes a new plugin from it, an effect or an
-instrument.
+A playground for researching feedback delay network (FDN) reverbs: an effect (AU, VST3 and Standalone) for macOS on
+Apple silicon, built on JUCE 8.0.4, with a GPU editor made with [FunkGui](https://github.com/Snipet/FunkGui) and the
+DSP core of FSynth (SIMD, fast math, smoothers), vendored. It was made from FunkPluginTemplate with
+`scripts/plugin.py clone`, and its reverb is the FDN of the Visage version (git tag `legacy-visage`), ported and
+completed.
 
-<!-- starter:intro -->
-As it ships it is an effect: a gain and a tone control (a one-pole low-pass), stereo in and out.
-<!-- /starter:intro -->
+After a build, `build-dev/probe-out/gui.dump.png` is a picture of the editor and `dsp.render.ir.wav` beside it is the
+reverb's impulse response.
 
-The editor is drawn from the parameter table: a dial or a slider per parameter, the theme and zoom cells. After a
-build, `build-dev/probe-out/gui.dump.png` is a picture of it (the `gui.dump` probe renders it headless).
+## The reverb
+
+`Source/dsp/Fdn.h` says it all in one comment; in short, per sample, for the n lines (LINES: 4, 8 or 16):
+
+- **Delay lengths from the room** (`FdnLayout.h`): SIZE is a room in metres. Its mean free path, 2 S / 3, sets the
+  centre of n lengths spread over one octave; each is snapped to the nearest prime (the legacy `findClosestPrime`
+  rule, `Primes.h`) and raised to the next one if it would repeat, so the lengths are distinct primes, pairwise
+  coprime. At 12 m and 48 kHz: 787, 829, ... 1583 samples. The editor's DELAYS line shows the current ones.
+- **Feedback matrix** (`Hadamard.h`): an orthonormal Hadamard matrix, applied by a fast Walsh-Hadamard transform. It
+  keeps the energy that circulates, so the decay is the gains' alone.
+- **Decay**: line i's gain is 10^(-3 D_i / (T fs)) with T = DECAY: every line loses 60 dB in DECAY seconds whatever
+  its length. **HF DECAY** turns that gain into a one-pole absorption filter with the same gain at 0 Hz and the gain
+  of a decay HF DECAY times shorter at Nyquist (100 % = no damping).
+- **Delay lines** (`DelayLine.h`): read through a first-order Thiran allpass (exactly unity magnitude, so the
+  interpolation never adds or removes level in the loop), as the legacy delay line was.
+- **Modulation**: an LFO moves each line's read by up to DEPTH (ms), at RATE (Hz), with the shape you draw in the
+  editor's graph (`LfoShape.h`); line i runs i/n of a cycle behind line 0.
+- **Input and output**: the left input feeds the even lines and the right the odd ones, with fixed signs, scaled by
+  sqrt(1 - mean g^2) so that steady noise comes out near its own level at any SIZE and DECAY; the even lines make
+  the left output, the odd lines the right. MIX blends dry and wet; GAIN is the output level.
+- **Nothing steps**: parameters are smoothed (20 ms); a SIZE change glides the delays to their new primes (a pitch
+  slide, 60 ms); a LINES change fades the wet path out, switches and clears the network, and fades back in (20 ms
+  each). The output does not depend on how the host splits its blocks.
+
+| Parameter | Range | Default | What |
+| --- | --- | --- | --- |
+| SIZE | 1 to 100 m | 12 m | the room: the delay lengths scale with it |
+| DECAY | 0.1 to 20 s | 2 s | the time to fall 60 dB (at low frequencies) |
+| HF DECAY | 10 to 100 % | 50 % | the decay time at the top of the spectrum, as a part of DECAY |
+| MIX | 0 to 100 % | 30 % | dry to wet |
+| GAIN | -24 to +24 dB | 0 dB | the output (the legacy plugin's one parameter) |
+| LINES | 4, 8, 16 | 16 | the number of delay lines, the Hadamard matrix's order |
+| RATE | 0.01 to 20 Hz | 0.5 Hz | the modulation LFO's rate |
+| DEPTH | 0 to 2 ms | 0.25 ms | the largest change of a line's delay (at most 45 % of the line) |
+
+## The editor
+
+The reverb's dials and the LINES cells across the top; below them the modulation: the LFO shape and the RATE and
+DEPTH dials; under the graph the DELAYS line; THEME (header) and ZOOM (footer) cells; the footer's left side reads out
+the control under the hand.
+
+The graph is one LFO cycle, +1 (the longest delay) at the top and -1 at the bottom:
+
+- drag a point to move it (Alt snaps to the grid of eighths, Cmd keeps it between its neighbours); the two end points
+  are one point of the cycle and move together;
+- drag the small handle in the middle of a segment up or down to bend it;
+- double-click an empty spot to add a point (hold the button to keep dragging it), double-click a point to remove it;
+- right-click for Delete point and Reset shape; with the graph focused (Tab), the arrow keys move the selected point
+  and Delete removes it.
+
+The shape is saved with the plugin's state (not as a host parameter: hosts neither automate nor undo it).
 
 ## Build and run
 
@@ -24,8 +73,8 @@ cmake --workflow --preset dev-verify     # configure, build everything, run ever
 open build-dev/TestingPlayground_artefacts/RelWithDebInfo/Standalone/TestingPlayground.app
 ```
 
-The Standalone of an effect starts with its input muted (JUCE's guard against feedback): unmute it in its Options
-(the cog in the title bar), with headphones on. For a host:
+The Standalone starts with its input muted (JUCE's guard against feedback): unmute it in its Options (the cog in the
+title bar), with headphones on. For a host:
 
 ```sh
 cmake --workflow --preset release-build  # Release with LTO (build-release/)
@@ -34,88 +83,88 @@ scripts/install.sh                       # copy the AU and VST3 into ~/Library/A
 
 Builds never install anything by themselves; `scripts/install.sh build-dev` installs a dev build instead.
 
-## What is where
-
-```
-cmake/Product.cmake      the identity: name, kind (effect or instrument), version, codes, bundle id, C++ namespace
-Source/dsp/              the algorithm, plain C++20 without JUCE: Params.h (the parameter table), Engine.h/.cpp
-Source/fsdsp/core/       FSynth's DSP core, vendored at the tag in SEED.tsv (scripts/sync-dsp-core.sh)
-Source/plugin/           the JUCE AudioProcessor: parameters from the table, the Engine called once per block
-Source/editor/           the FunkGui panel, built from the table; Theme.h (colours); gpu/ starts it in the plugin
-Tools/probes/            tests that measure: dsp/ (the algorithm alone), plugin/, gui/ (the panel, headless)
-scripts/                 plugin.py, test.sh, sync-dsp-core.sh, install.sh; starters/ (effect and instrument code)
-CMakeLists.txt, cmake/   the build; every source list is a folder glob, so new files need no CMake edit
-```
-
-## Change the algorithm
-
-`Source/dsp/Engine.cpp` is the whole algorithm: `prepare()` before playback, `setParams()` once per block with the
-plain parameter values, `process()` once per block (an effect processes the channels in place; an instrument writes
-them, playing the block's note events at their offsets). Rewrite its body, or add your own classes under
-`Source/dsp/` and call them from it. The rules of the audio thread: no allocation, locks or I/O in `setParams()` and
-`process()` (allocate in `prepare()`), and smooth every parameter so nothing steps. The core helps: `fsdsp::simd`
-(four float lanes, NEON), `fsdsp::exp2/log2/tanh/sinPi/tanPi` (no libm), `fsdsp::phase` (exact oscillators),
-`fsdsp::Smoother4`, `SmoothRamp`, `Pcg32`, `sanitize`. Each header says what it guarantees.
-
-## Add a control
-
-A parameter is one row of the table in `Source/dsp/Params.h`:
-
-```cpp
-namespace param { enum Index : std::size_t { gain, /* ... */ mix, count }; }    // 1. an index, before count
-
-{ .id = "mix", .name = "Mix", .label = "MIX", .unit = Unit::percent,             // 2. its row, at the same place
-  .min = 0.0f, .max = 100.0f, .def = 100.0f, .centre = 50.0f, .control = Control::dial },
-```
-
-then `values[param::mix]` in `Engine::setParams` (3). The host parameter, the saved state, the panel's control and
-its text follow from the row: `control` is `dial`, `slider`, `choice` (cells, with `.choices`/`.numChoices`) or
-`hidden`; `centre` is the value at the middle of the control's travel (the midpoint for linear, lower to give the low
-end more room, as for frequencies). Keep IDs forever: hosts store them in sessions.
-
-For a view of your own (a graph, a meter), add an `Item` in `Source/editor/Panel.cpp` and place it in the
-constructor: FunkGui widgets (`Dial`, `RuleSlider`, `SegmentedSelector`, `LatchToggle`, ...) or your own drawing on the
-`funkgui::Canvas`. The panel is GPU-free: the plugin runs it on Metal, the `gui.dump` probe on the CPU.
-
 ## Test
 
 ```sh
 scripts/test.sh                  # build the probes, run them; outputs in build-dev/probe-out/
-scripts/test.sh -R dsp.response -V
+scripts/test.sh -R dsp.decay -V  # one probe, every row printed
 build-dev/TestingPlayground_probes --list
 ```
 
-<!-- starter:probes -->
 | Probe | Checks |
 | --- | --- |
-| `dsp.render` | renders a sweep through the effect to `dsp.render.wav` (and the input); finite, no clipping, block-size invariant |
-| `dsp.response` | each channel against a double-precision model of the effect, sample by sample (a swapped, missing or inverted channel fails); gain and tone against their formulas, within 0.02 and 0.05 dB; the smoothing of a gain step |
-| `plugin.process` | the processor as a host drives it: parameters the host writes reach the DSP (GAIN +12 dB brings -12 dBFS to 0 dBFS), both channels are the Engine's output bit for bit, a NaN from the host is ignored |
-| `gui.dump` | the panel headless to `gui.dump.png` and `gui.dump.paper.png`; settles, every glyph, a11y, a drag writes the parameter |
-| `plugin.state` | the host's parameters equal the table; the state round-trips; processBlock gives finite output |
-<!-- /starter:probes -->
-
-`dsp.*` and `plugin.process` test the algorithm and come with its starter (`scripts/starters/<kind>/`): change
-them with it. `gui.dump` and `plugin.state` work from the parameter table, whatever the algorithm.
+| `dsp.render` | renders the impulse response (`dsp.render.ir.wav`, 4 s) and noise bursts and clicks through the reverb (`dsp.render.wav`, with its input); finite, no clipping, the first arrival at the shortest line, the tail's fall, the same bits at blocks of 64 and 333 |
+| `dsp.decay` | T60 from the energy decay curve against DECAY at 0.5, 2 and 8 s (within 3 %; measured 0.496, 2.000, 7.996 s), at 4 and 8 lines, 2 and 60 m, 44.1 and 96 kHz; with HF DECAY 50 %, the decay at 250 Hz and 12 kHz against the absorption filters' design (within 5 %) |
+| `dsp.stability` | all 256 corners of the parameter range, 10 s of noise each: finite, no growth, the wet level near the input's |
+| `dsp.response` | the dry path sample by sample on both channels; the routing (left in to left out after the first line's delay, with its value and sign; the mirror for the right); GAIN linear; no click when GAIN, SIZE, LINES or the LFO shape changes; a mono bus |
+| `dsp.primes` | the prime rule against the legacy table over its whole range (0 to 1,395,629), the legacy test's inputs; every layout's lengths prime, ascending, near their targets, inside the delay lines |
+| `plugin.process` | the processor as a host drives it: host writes reach the DSP, a host's NaN is ignored, both channels are the Engine's output bit for bit, an LFO shape set by the editor included |
+| `plugin.state` | the host's parameters equal the table; the state (parameters and LFO shape) round-trips; an older state without a shape loads the default |
+| `gui.dump` | the panel headless to `gui.dump.png`, `gui.dump.paper.png` and `gui.dump.edited.png`; settles, every glyph, a11y, the DELAYS line, a dial drag, and every graph gesture (add, move, snap, bend, the end points, remove, the menu) |
 
 A probe is one file in `Tools/probes/<layer>/` whose first line registers it (`// PROBE name=dsp.mytest timeout=60`)
 and whose body uses spec rows (`P.near`, `P.le`, `P.ge`, `P.in`, `P.eq`): each states what must hold, with its
-tolerance. `Tools/probes/common/Audio.h` has the helpers (sines, levels, a DFT bin, frequency, WAV output).
+tolerance. `Tools/probes/common/Audio.h` has the helpers (sines, levels, a DFT bin, the energy decay curve and its T60
+fit, a band-pass, WAV output); `Tools/probes/dsp/Rig.h` runs the Engine as the processor does.
+
+## Swap in your own algorithm
+
+- **Change a piece of this FDN**: the delay lengths in `FdnLayout.cpp` (another spread, another rule than primes),
+  the matrix in `Hadamard.h` (any orthogonal matrix keeps the decay exact), the loop in `Fdn.cpp` (`tick()`, one
+  sample: reads, absorption, matrix, writes, taps), the interpolation in `DelayLine.h`. Run `scripts/test.sh`:
+  `dsp.decay` tells whether the decay still follows DECAY, `dsp.stability` whether any corner grows.
+- **Replace it**: keep the `Engine` interface in `Source/dsp/Engine.h` (`prepare`, `reset`, `setParams`,
+  `setLfoTable`, `process`, `tailSeconds`) and write your own body, or your own classes under `Source/dsp/` (the
+  source lists are folder globs: no CMake edit). The rules of the audio thread: no allocation, locks or I/O in
+  `setParams()` and `process()` (allocate in `prepare()`), and smooth every parameter. The core helps:
+  `fsdsp::simd` (four float lanes, NEON), `fsdsp::exp2/log2/tanh/sinPi/tanPi` (no libm), `fsdsp::Smoother4`,
+  `SmoothRamp`, `ControlTicker`, `Pcg32`, `sanitize`. Then rewrite the probes that measure this reverb
+  (`dsp.decay`, `dsp.response`, `dsp.stability`, `dsp.render`'s first-arrival row, `plugin.process`); `gui.dump` and
+  `plugin.state` work from the parameter table and keep working. Without modulation, drop RATE and DEPTH, and the
+  graph with its `EditorPort` (or keep it to drive something else: it hands the Engine a 257-point table).
+- **Add a parameter**: one row in `Source/dsp/Params.h` (id, name, label, unit, range, default, centre, control), then
+  `values[param::<name>]` in `Engine::setParams`. The host parameter, the saved state and the panel's control follow;
+  the panel puts dials and sliders in the top row and choices at its right end (`isModulation()` in
+  `Source/editor/Panel.cpp` sends a row to the column beside the graph). Keep IDs forever: hosts store them.
+
+## What is where
+
+```
+Source/dsp/              the reverb, plain C++20 without JUCE: Engine (MIX, GAIN, LINES switch), Fdn (the network),
+                         FdnLayout and Primes (delay lengths), Hadamard, DelayLine, LfoShape; Params.h (the table)
+Source/fsdsp/core/       FSynth's DSP core, vendored at the tag in SEED.tsv (scripts/sync-dsp-core.sh)
+Source/plugin/           the JUCE AudioProcessor: parameters from the table, the LFO shape and its state, the Engine
+                         called once per block; EditorPort.h, what the editor reaches besides the parameters
+Source/editor/           the FunkGui panel (Panel.cpp), the graph (ShapeView.cpp), Theme.h; gpu/ starts it in the plugin
+Tools/probes/            tests that measure: dsp/ (the reverb alone), plugin/, gui/ (the panel, headless)
+scripts/                 plugin.py, test.sh, sync-dsp-core.sh, install.sh
+cmake/Product.cmake      the identity: name, kind (an effect), manufacturer and plugin codes, bundle id, namespace
+```
+
+## From the Visage version
+
+`git show legacy-visage:<path>` reads the old files. The legacy plugin ran only a gain (`Gain.h`, -24 to +24 dB);
+its FDN was begun and not finished: `FDNConfig::calculate(sample_rate, room_size, ms_decay)` stored its inputs, and
+the matrix order, the delay lengths and a "differential decay" were declared and never computed or used. This port
+keeps what was there and completes it in the same family (HardwareReverb's, where the legacy delay line came from):
+
+- kept: the delay line (Thiran allpass reads), the prime rule (`findClosestPrime`; the 966 KB table of 106,782
+  primes is replaced by trial division, with the same answers over the table's range, checked by `dsp.primes`), the
+  parameters it named (room size, the -60 dB time, the matrix order, a differential decay), GAIN with its range and ID;
+- added: the delay-length scheme, the Hadamard matrix, the decay gains, the absorption filters, the input and output
+  taps, the level normalisation, MIX, the smoothing and the LINES switch;
+- fixed: the delay line's integer delays (the legacy split put the allpass pole on the unit circle there);
+- the legacy graph editor (`gui/GraphEditor`, 1,486 lines of Visage: File and Edit menus, .lfo files, a strip of
+  several graphs, an LFO / ONESHOT switch and a side panel) became `Source/editor/ShapeView.cpp`, its point canvas
+  with the same gestures and curve maths, now driving the reverb's modulation; the menus, files, graph strip and
+  side panel were left out (the shape is saved with the plugin; RATE and DEPTH are host parameters).
 
 ## Make a new plugin
 
-```sh
-scripts/plugin.py clone --name MyDelay                         # an effect, beside this project (../MyDelay)
-scripts/plugin.py clone --name MySynth --type instrument       # an instrument: MIDI in, eight voices, attack/release
-scripts/plugin.py clone --name MyDelay --dest ~/dev/MyDelay --code Mydl --yes
-```
-
-The clone gets its own name, plugin code, bundle id and C++ namespace (asked for, or derived from the name), keeps
-the manufacturer code, and builds without edits. It refuses a plugin code another project beside it already uses: two
-plugins with one code hide each other in a host. `--type` switches the kind: the algorithm, its probes and this
-README's kind-specific blocks (the ones between `<!-- starter:... -->` markers) become that kind's starter from
-`scripts/starters/`. `--starter` restarts from the starter of the same kind; `plugin.py rename` renames this
-project in place; `plugin.py starter-diff` shows what you changed from the starter.
+Start new plugins from FunkPluginTemplate (`../FunkPluginTemplate/scripts/plugin.py clone --name MyPlugin`, effect or
+instrument). This project's own `scripts/plugin.py clone --name MyReverb --code Myrv` copies the playground, FDN and
+all, into a new project with its own identity, for a second experiment; `--type instrument` and `--starter` refuse
+here, because the starters live in the template. `scripts/plugin.py rename` renames this project in place.
 
 ## Update the DSP core
 
@@ -130,5 +179,6 @@ It refuses to overwrite a core file you edited (`--force` overwrites). Build and
 
 The THEME cells (header) and the ZOOM cells (footer) are machine-wide preferences, stored by FunkGui in
 `~/Library/Application Support/TestingPlayground/`. Colours are tokens: `Source/editor/Theme.h` shows how to give
-this plugin its own accent. `TSTN_UI_THEME=1` opens the Standalone on the light theme without saving it,
-`TSTN_GPU_LOG=1` logs the GPU surface (the prefix is the product's, `cmake/Product.cmake`).
+this plugin its own accent; the LFO curve uses the theme's `signal` colour. `TSTN_UI_THEME=1` opens the Standalone on
+the light theme without saving it, `TSTN_GPU_LOG=1` logs the GPU surface (the prefix is the product's,
+`cmake/Product.cmake`).
