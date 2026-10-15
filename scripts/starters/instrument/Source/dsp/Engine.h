@@ -11,9 +11,11 @@
 //
 // The processor calls, on the audio thread: prepare() before playback (the only place that may allocate), setParams()
 // once per block with the plain values of Params.h (finite, within the table's range), then process() with the
-// block's note events; the output channels are written (not added to). Hosts call tailSeconds() from any thread, so
-// it reads an atomic that setParams() stores. Replace the body with your algorithm and keep the contract: no
-// allocation, no locks, no I/O in setParams() and process().
+// block's note events, at most prepare()'s maxBlockSize samples per call (the processor cuts a larger host block, or
+// one with more than kMaxEventsPerBlock events, into parts); the output channels are written (not added to). A call
+// with 0 samples still applies its events: a note-off is never lost. Hosts call tailSeconds() from any thread, so it
+// reads an atomic that setParams() stores. Replace the body with your algorithm and keep the contract: no allocation,
+// no locks, no I/O in setParams() and process(), and an output that does not depend on how the blocks are split.
 #pragma once
 
 #include "dsp/Events.h"
@@ -44,6 +46,7 @@ namespace testingplaygroundsynth
         float  sampleRate() const noexcept { return fs_; }
         int    activeVoices() const noexcept;                         // held, releasing above -80 dB, or stolen and
                                                                       // fading out
+        int    heldVoices() const noexcept;                           // key down (a stolen voice: its new note's)
 
     private:
         static constexpr int kQuads = kVoices / 4;

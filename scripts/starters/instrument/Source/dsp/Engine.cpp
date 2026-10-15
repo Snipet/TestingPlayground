@@ -110,6 +110,14 @@ namespace testingplaygroundsynth
         return n;
     }
 
+    int Engine::heldVoices() const noexcept
+    {
+        int n = 0;
+        for (std::size_t i = 0; i < gate_.size(); ++i)
+            n += (pending_[i] ? pendingGate_[i] : gate_[i]) != 0 ? 1 : 0;
+        return n;
+    }
+
     void Engine::rampTo(int v, float amp) noexcept
     {
         const auto i = static_cast<std::size_t>(v);

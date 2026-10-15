@@ -1,6 +1,6 @@
 // Tools/probes/common/Audio.h: small, exact helpers for audio probes (header-only, JUCE-free): a stereo buffer, test
-// signals, levels, a single-bin DFT (plain or under a Hann window), the largest sample step, a frequency estimate, and
-// a 32-bit float WAV writer. Analysis runs in double.
+// signals, levels, a single-bin DFT (plain or under a Hann window), the largest sample step and the steps of a switch
+// (a click), where a transition settles, a frequency estimate, and a 32-bit float WAV writer. Analysis runs in double.
 #pragma once
 
 #include <algorithm>
@@ -90,6 +90,39 @@ namespace probe
         for (std::size_t i = std::max<std::size_t>(from, 1); i < end; ++i)
             m = std::max(m, std::fabs(static_cast<double>(x[i]) - static_cast<double>(x[i - 1])));
         return m;
+    }
+
+    // A switch at sample `at` (the first sample of the new state) from the steady signal `before` to the steady signal
+    // `after`, as `x` makes it: the largest step of `x` from `pad` samples before the switch to `pad` samples after its
+    // fade (`fade` samples long), over the larger of the two steady signals' own largest steps in that span. A switch
+    // that does not click reads about 1 (a crossfade adds only its own slow change); a hard switch reads the jump it
+    // makes over that slope. `abruptOverOwn` is that jump, |after[at] - before[at - 1]|, over the same slope: what a
+    // hard switch at this sample would read, which shows that a row on stepOverOwn can fail there.
+    struct EdgeSteps
+    {
+        double stepOverOwn = 0.0;
+        double abruptOverOwn = 0.0;
+    };
+
+    inline EdgeSteps edgeSteps(const std::vector<float>& x, const std::vector<float>& before,
+                               const std::vector<float>& after, std::size_t at, std::size_t fade, std::size_t pad)
+    {
+        const std::size_t from = at > pad ? at - pad : 0, count = at - from + fade + pad;
+        const double own = std::max({ maxStep(before, from, count), maxStep(after, from, count), 1e-30 });
+        const double abrupt = at > 0 && at < after.size() && at <= before.size()
+            ? std::fabs(static_cast<double>(after[at]) - static_cast<double>(before[at - 1])) : 0.0;
+        return { maxStep(x, from, count) / own, abrupt / own };
+    }
+
+    // Where a transition that began at `from` has settled: the first index in [from, to] from which `x` equals `want`,
+    // bit for bit, up to `to` (`to` itself when x[to - 1] differs).
+    inline std::size_t settledFrom(const std::vector<float>& x, const std::vector<float>& want, std::size_t from,
+                                   std::size_t to)
+    {
+        std::size_t s = std::min({ to, x.size(), want.size() });
+        while (s > from && std::memcmp(&x[s - 1], &want[s - 1], sizeof(float)) == 0)
+            --s;
+        return s;
     }
 
     // The frequency of a periodic signal from its rising zero crossings over [from, from + count), each crossing placed
