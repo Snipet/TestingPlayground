@@ -12,6 +12,21 @@
 //           from the first block, and a shape the editor sets mid-stream (EditorPort::setShape, the graph's call) from
 //           the next block on. MIX 50 %, RATE 5 Hz and DEPTH 2 ms from 1.33 s, so the reverb and its modulation are in
 //           the comparison, and the new shape (from 2.13 s) changes the output.
+// What a host may send, each on a fresh processor at the defaults, with the same input:
+//   EMPTY   a block of 0 samples between two blocks changes nothing: the output is the run's without it, bit for bit
+//   OVER    a block of 1,061 samples after prepareToPlay announced 256: the Engine gets it in parts of at most 256
+//           samples, and the output is the run's in blocks of 256, bit for bit
+//   BYPASS  while a host bypasses the processor (processBlockBypassed) from its first block on, the input passes
+//           through, bit for bit, and the Engine keeps running (on the input, unheard)
+//   EDGE    bypass and un-bypass mid-stream do not click (GAIN -24 dB at MIX 30 %, so the processed sound is the input
+//           at about 1/23 with a little reverb; a 400 Hz sine at -12 dBFS left and 600 Hz at -18 dBFS right;
+//           blocks of 256, bypassed from block 6 to block 24, edges where both sines are near their peaks): from 1 ms
+//           before each edge to 1 ms after its 20 ms fade, no step between neighbouring samples exceeds the steeper
+//           steady signal's own (the never-bypassed output's or the input's) by more than 5 %, on each channel, where
+//           a hard switch would step at least 3 times as far (the `abrupt` row, from the steady runs, shows the rows
+//           can fail); 20 ms after the bypass edge the output is the input, and 20 ms after the un-bypass edge the
+//           never-bypassed output, bit for bit (the Engine, its delay lines and its LFO ran through the bypass), each
+//           within 0.1 ms
 // Change it with the algorithm.
 #include "Probe.h"
 
@@ -29,6 +44,7 @@
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace tp = testingplayground;
@@ -39,6 +55,7 @@ namespace
     constexpr int kBlock = 256;
     constexpr double kAmpL = 0.25118864315095801;             // -12 dBFS
     constexpr double kAmpR = 0.12589254117941673;             // -18 dBFS
+    constexpr double kFadeMs = 20.0;                          // a bypass edge's crossfade
 
     void setPlain(tp::Processor& p, std::size_t i, float plain)
     {
@@ -72,6 +89,52 @@ namespace
         s.points[3] = { 1.0f, 0.2f, 0.0f };
         s.count = 4;
         return s;
+    }
+
+    // How a host drives a fresh processor: the blocks' lengths (0 is a block a host may send), the size prepareToPlay
+    // announces, the blocks it bypasses (indices in [bypassFrom, bypassTo): processBlockBypassed), and GAIN.
+    struct HostPlan
+    {
+        std::vector<int> blocks;
+        int prepared = kBlock;
+        std::size_t bypassFrom = 0, bypassTo = 0;
+        float gainDb = 0.0f;
+    };
+
+    // `in` through a fresh processor as `plan` says.
+    probe::Stereo hostRun(const probe::Stereo& in, const HostPlan& plan, int* largestEngineCall = nullptr)
+    {
+        tp::Processor p;
+        p.setRateAndBufferSizeDetails(kFs, plan.prepared);
+        p.prepareToPlay(kFs, plan.prepared);
+        setPlain(p, tp::param::gain, plan.gainDb);
+        probe::Stereo out(in.size());
+        juce::MidiBuffer midi;
+        std::size_t pos = 0;
+        for (std::size_t block = 0; block < plan.blocks.size(); ++block)
+        {
+            const int len = plan.blocks[block];
+            juce::AudioBuffer<float> buffer(2, std::max(len, 1));
+            for (int i = 0; i < len; ++i)
+            {
+                buffer.setSample(0, i, in.l[pos + static_cast<std::size_t>(i)]);
+                buffer.setSample(1, i, in.r[pos + static_cast<std::size_t>(i)]);
+            }
+            juce::AudioBuffer<float> view(buffer.getArrayOfWritePointers(), 2, len);
+            if (block >= plan.bypassFrom && block < plan.bypassTo)
+                p.processBlockBypassed(view, midi);
+            else
+                p.processBlock(view, midi);
+            for (int i = 0; i < len; ++i)
+            {
+                out.l[pos + static_cast<std::size_t>(i)] = view.getSample(0, i);
+                out.r[pos + static_cast<std::size_t>(i)] = view.getSample(1, i);
+            }
+            pos += static_cast<std::size_t>(len);
+        }
+        if (largestEngineCall != nullptr)
+            *largestEngineCall = p.largestEngineCall();
+        return out;
     }
 }
 
@@ -173,6 +236,77 @@ PROBE(plugin, process)
         P.eq("engine.right.same_bits", probe::sameBits(out.r, ref.r) ? 1 : 0, 1);
         const probe::Stereo unchanged = run(initial);           // the shape is heard: without it the output differs
         P.eq("engine.shape_changes_output", probe::sameBits(out.l, unchanged.l) ? 0 : 1, 1);
+    }
+
+    // EMPTY, OVER, BYPASS: 20 blocks' worth of the input, at the defaults.
+    {
+        constexpr std::size_t kLen = 20 * kBlock;
+        probe::Stereo part(kLen);
+        std::copy(in.l.begin(), in.l.begin() + kLen, part.l.begin());
+        std::copy(in.r.begin(), in.r.begin() + kLen, part.r.begin());
+        const HostPlan plain{ .blocks = std::vector<int>(20, kBlock) };
+        const probe::Stereo want = hostRun(part, plain);
+
+        HostPlan withEmpty = plain;
+        withEmpty.blocks.insert(withEmpty.blocks.begin() + 10, 0);
+        const probe::Stereo empty = hostRun(part, withEmpty);
+        const bool same = probe::sameBits(empty.l, want.l) && probe::sameBits(empty.r, want.r);
+        P.eq("empty_block.changes_nothing", same ? 1 : 0, 1);
+
+        constexpr int kOver = 4 * kBlock + 37;                    // 1,061 samples, then the rest
+        int largest = 0;
+        const probe::Stereo over = hostRun(
+            part, { .blocks = { kBlock, kOver, static_cast<int>(kLen) - kBlock - kOver } }, &largest);
+        P.le("over.largest_engine_call", largest, kBlock);
+        P.eq("over.same_bits", probe::sameBits(over.l, want.l) && probe::sameBits(over.r, want.r) ? 1 : 0, 1);
+
+        HostPlan bypassAll = plain;
+        bypassAll.bypassTo = plain.blocks.size();
+        int bypassedLargest = 0;
+        const probe::Stereo bypassed = hostRun(part, bypassAll, &bypassedLargest);
+        P.eq("bypass.passes_input", probe::sameBits(bypassed.l, part.l) && probe::sameBits(bypassed.r, part.r) ? 1 : 0,
+             1);
+        P.eq("bypass.engine_keeps_running.largest_call", bypassedLargest, kBlock);
+    }
+
+    // EDGE: bypassed from block 6 (32 ms) to block 24 (128 ms) of 33, against the two steady runs. (The bypass does not
+    // last a whole number of either sine's cycles: an Engine that stopped during it would resume a state that differs.)
+    {
+        constexpr std::size_t kBlocks = 33, kOff = 6, kOn = 24, kLen = kBlocks * kBlock;
+        constexpr std::size_t kFade = static_cast<std::size_t>(kFs * kFadeMs / 1000.0), kPad = 48;   // 960; 1 ms
+        constexpr std::size_t off = kOff * kBlock, on = kOn * kBlock;
+        probe::Stereo x;
+        x.l = probe::sine(400.0, kAmpL, kFs, kLen);
+        x.r = probe::sine(600.0, kAmpR, kFs, kLen);
+        HostPlan plan{ .blocks = std::vector<int>(kBlocks, kBlock), .gainDb = -24.0f };
+        const probe::Stereo processed = hostRun(x, plan);                  // never bypassed
+        plan.bypassTo = kBlocks;
+        const probe::Stereo bypassed = hostRun(x, plan);                   // always: the input
+        plan.bypassFrom = kOff;
+        plan.bypassTo = kOn;
+        const probe::Stereo got = hostRun(x, plan);
+
+        double abrupt = 1e30;
+        for (const bool left : { true, false })
+        {
+            const std::string ch = left ? "left" : "right";
+            const std::vector<float>& y = left ? got.l : got.r;
+            const std::vector<float>& wet = left ? processed.l : processed.r;
+            const std::vector<float>& dry = left ? bypassed.l : bypassed.r;
+            const probe::EdgeSteps bypassEdge = probe::edgeSteps(y, wet, dry, off, kFade, kPad);
+            const probe::EdgeSteps unbypassEdge = probe::edgeSteps(y, dry, wet, on, kFade, kPad);
+            P.le("edge.bypass." + ch + ".max_step_over_own", bypassEdge.stepOverOwn, 1.05);
+            P.le("edge.unbypass." + ch + ".max_step_over_own", unbypassEdge.stepOverOwn, 1.05);
+            abrupt = std::min({ abrupt, bypassEdge.abruptOverOwn, unbypassEdge.abruptOverOwn });
+        }
+        P.ge("edge.abrupt.step_over_own_min", abrupt, 3.0);
+
+        const std::size_t dryFrom = std::max(probe::settledFrom(got.l, bypassed.l, off, on),
+                                             probe::settledFrom(got.r, bypassed.r, off, on));
+        P.near("edge.bypass.fade_ms", static_cast<double>(dryFrom - off) * 1000.0 / kFs, kFadeMs, 0.1);
+        const std::size_t wetFrom = std::max(probe::settledFrom(got.l, processed.l, on, kLen),
+                                             probe::settledFrom(got.r, processed.r, on, kLen));
+        P.near("edge.unbypass.fade_ms", static_cast<double>(wetFrom - on) * 1000.0 / kFs, kFadeMs, 0.1);
     }
     return P.finish();
 }

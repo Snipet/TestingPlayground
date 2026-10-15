@@ -11,11 +11,12 @@ Plugin utility for a project made from the FunkGui plugin template. Subcommands:
 
 clone, by example:
 
-  scripts/plugin.py clone --name MyDelay                        an effect like this one, beside it (../MyDelay)
-  scripts/plugin.py clone --name MySynth --type instrument      an instrument: the algorithm, its probes and README
-                                                                parts become the instrument starter's
+  scripts/plugin.py clone --name MyPlugin                       a copy of this project (its kind), beside it
+  scripts/plugin.py clone --name MySynth --type instrument      an instrument: when this project is an effect, the
+                                                                algorithm, its probes, CLAUDE.md and README parts
+                                                                become the instrument starter's
                                                                 (scripts/starters/instrument)
-  scripts/plugin.py clone --name MyDelay --starter              this project's kind, but from its starter code
+  scripts/plugin.py clone --name MyPlugin --starter             this project's kind, but from its starter
   scripts/plugin.py clone --name MyDelay --dest ~/x/MyDelay --code Mydl --yes
 
 What a clone changes:
@@ -23,16 +24,21 @@ What a clone changes:
   - the old name (as written, in upper case and in lower case), namespace, bundle id and environment prefix are
     replaced in every text file (sources, docs, CMake, scripts) where they stand as whole words, except in the
     vendored DSP core (Source/fsdsp/**) and SEED.tsv, which stay byte for byte;
-  - with a kind change or --starter, the starter's files replace the project's: Source/dsp/, Tools/probes/dsp/ and
-    Tools/probes/plugin/process.cpp from scripts/starters/<kind>/, and README.md's kind-specific blocks
+  - the probes' alias of the namespace (`namespace md = mydelay;` in a plugin named MyDelay: the name's initials)
+    follows the new name;
+  - with a kind change or --starter, the starter's files replace the project's: Source/dsp/, Tools/probes/dsp/,
+    Tools/probes/plugin/process.cpp and CLAUDE.md from scripts/starters/<kind>/, and README.md's kind-specific blocks
     (<!-- starter:<name> --> ... <!-- /starter:<name> -->) from scripts/starters/<kind>/README-parts.md;
+  - README.md and CLAUDE.md lose their <!-- origin --> ... <!-- /origin --> blocks: text about the source project's
+    own history (its git tags, where it came from), which the new project does not have;
   - nothing else: the build directories are not copied (a git project copies what git tracks or would track).
-A project without scripts/starters/ (one that replaced its algorithm, as the playgrounds made from the template do)
-clones only itself: a kind change, --starter and starter-diff refuse there, before anything is asked or written; start
-the other kind from FunkPluginTemplate.
-The plugin code must differ from every other plugin's: the clone refuses a code used by a sibling project (the
-directories beside the source and the destination) unless --allow-code-clash is given. The manufacturer code stays the
-same for all of the user's plugins.
+A project without scripts/starters/<kind> (one that replaced its algorithm and dropped the starters) clones only
+itself: a kind change, --starter and starter-diff refuse there, before anything is asked or written; start the other
+kind from {template}.
+The plugin code must differ from every other plugin's: the clone refuses a code used by another project in the
+user's plugin folders (~/audio/plugins, or the folders in $FUNK_PLUGIN_DIRS, separated by ':'), beside the source or
+the destination, or beside the project the source was cloned from with git, unless --allow-code-clash is given. The
+manufacturer code stays the same for all of the user's plugins.
 
 Missing values are asked for when stdin is a terminal; otherwise they are derived from the name (or --yes takes the
 derived ones). Stdlib only.
@@ -52,6 +58,9 @@ from pathlib import Path
 
 SCRIPT_PATH = Path(__file__).resolve()
 PROJECT_ROOT = SCRIPT_PATH.parent.parent
+# The template every project starts from, spelt in two parts so that a clone's rename (which replaces this project's
+# name wherever it stands as a word) leaves it alone.
+TEMPLATE = "Funk" "PluginTemplate"
 
 KINDS = ("effect", "instrument")
 PRODUCT_FILE = Path("cmake") / "Product.cmake"
@@ -67,9 +76,15 @@ TEXT_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".inl", ".m",
 # The parts of a project its starter replaces (scripts/starters/<kind>/ holds the same paths: folders and files), and
 # the starter's README blocks, spliced into README.md between <!-- starter:<name> --> and <!-- /starter:<name> -->.
 STARTER_PATHS = (Path("Source") / "dsp", Path("Tools") / "probes" / "dsp",
-                 Path("Tools") / "probes" / "plugin" / "process.cpp")
+                 Path("Tools") / "probes" / "plugin" / "process.cpp", Path("CLAUDE.md"))
 STARTER_README = Path("README-parts.md")
 README_BLOCK = re.compile(r"<!-- starter:([a-z][a-z0-9-]*) -->\n.*?<!-- /starter:\1 -->\n", re.DOTALL)
+# The source project's own history, left out of a clone (with the blank line after the block).
+ORIGIN_BLOCK = re.compile(r"<!-- origin -->\n.*?<!-- /origin -->\n(?:\n)?", re.DOTALL)
+ORIGIN_DOCS = (Path("README.md"), Path("CLAUDE.md"))
+# Where the user's plugins live: a clone's plugin code must differ from every project's there, wherever the clone is
+# made (a scratch folder too). $FUNK_PLUGIN_DIRS (folders separated by ':') replaces the list.
+DEFAULT_PLUGIN_DIRS = (Path("~/audio/plugins"),)
 
 CPP_KEYWORDS = {"alignas", "alignof", "and", "asm", "auto", "bool", "break", "case", "catch", "char", "class",
                 "const", "constexpr", "continue", "default", "delete", "do", "double", "else", "enum", "explicit",
@@ -188,6 +203,43 @@ def codes_in(project: Path) -> set[str]:
         for pattern in CODE_PATTERNS:
             codes.update(pattern.findall(text))
     return codes
+
+
+def plugin_dirs() -> list[Path]:
+    env = os.environ.get("FUNK_PLUGIN_DIRS")
+    dirs = [Path(d) for d in env.split(os.pathsep) if d] if env is not None else list(DEFAULT_PLUGIN_DIRS)
+    return [d.expanduser() for d in dirs]
+
+
+def origin_parent(root: Path) -> Path | None:
+    """The folder holding the project `root` was cloned from with git, when that is a local path (a scratch clone of
+    a project in ~/audio/plugins: its siblings are the user's plugins)."""
+    try:
+        url = subprocess.run(["git", "-C", str(root), "config", "--get", "remote.origin.url"], capture_output=True,
+                             text=True).stdout.strip()
+    except FileNotFoundError:
+        return None
+    remote = ("://" in url and not url.startswith("file://")) or re.match(r"^[\w.-]+@[\w.-]+:", url)
+    if not url or remote:
+        return None
+    path = Path(url.removeprefix("file://")).expanduser()
+    path = path if path.is_absolute() else (root / path)
+    return path.resolve().parent if path.is_dir() else None
+
+
+def code_dirs(*beside: Path) -> list[Path]:
+    """Every folder whose projects a new plugin code must not clash with: the user's plugin folders, the folders
+    given (the source's and the destination's parents), and the folder beside this project's git origin."""
+    dirs = [*plugin_dirs(), *beside]
+    origin = origin_parent(PROJECT_ROOT)
+    if origin is not None:
+        dirs.append(origin)
+    unique: list[Path] = []
+    for d in dirs:
+        r = d.resolve()
+        if r not in unique:
+            unique.append(r)
+    return unique
 
 
 def sibling_codes(dirs: list[Path], skip: set[Path]) -> dict[str, list[str]]:
@@ -311,7 +363,56 @@ def require_starter(root: Path, kind: str) -> None:
     """Exit with one line when this project has no `kind` starter to take code from."""
     if not (root / "scripts" / "starters" / kind).is_dir():
         sys.exit(f"this project has no {kind} starter (scripts/starters/{kind} is missing): it clones only itself, "
-                 f"with its own algorithm. Start a new {kind} from FunkPluginTemplate (its scripts/plugin.py clone).")
+                 f"with its own algorithm. Start a new {kind} from {TEMPLATE} (its scripts/plugin.py clone).")
+
+
+def drop_origin_blocks(root: Path) -> None:
+    for rel in ORIGIN_DOCS:
+        path = root / rel
+        if path.is_file():
+            text = path.read_text(encoding="utf-8")
+            new_text = ORIGIN_BLOCK.sub("", text)
+            if new_text != text:
+                path.write_text(new_text, encoding="utf-8")
+
+
+def alias_for(name: str) -> str:
+    """The probes' alias of a plugin's namespace: the initials of its name's words in lower case (MyDelay: md;
+    TapeEcho2: te2), or its first three letters when that is a single letter (Synth: syn)."""
+    initials = "".join(w[0] for w in re.findall(r"[A-Z][a-z]*|[a-z]+|[0-9]+", name)).lower()
+    alias = initials if len(initials) >= 2 else lower_alnum(name)[:3]
+    if not re.fullmatch(r"[a-z_][a-z0-9_]*", alias) or alias in CPP_KEYWORDS:
+        alias = "p" + alias
+    return alias
+
+
+def rename_aliases(root: Path, namespace: str, alias: str) -> int:
+    """In each text file that declares `namespace <x> = <namespace>;`, rename <x> to `alias` (whole words, in that
+    file only). A file where `alias` already names something keeps its alias, with a warning."""
+    decl = re.compile(rf"^namespace ([A-Za-z_][A-Za-z0-9_]*) = {re.escape(namespace)};$", re.MULTILINE)
+
+    def word(w: str) -> re.Pattern[str]:
+        return re.compile(rf"(?<![A-Za-z0-9_]){re.escape(w)}(?![A-Za-z0-9_])")
+
+    changed = 0
+    for rel in project_files(root):
+        posix = rel.as_posix()
+        if not is_text(rel) or any(posix == e or posix.startswith(e) for e in REWRITE_EXCLUDES):
+            continue
+        path = root / rel
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        m = decl.search(text)
+        if not m or m.group(1) == alias:
+            continue
+        if word(alias).search(text):
+            print(f"warning: {posix}: kept the namespace alias {m.group(1)} ({alias} already names something there)")
+            continue
+        path.write_text(word(m.group(1)).sub(alias, text), encoding="utf-8")
+        changed += 1
+    return changed
 
 
 def rename_rules(old: dict[str, str], new: dict[str, str]) -> list[tuple[str, str]]:
@@ -436,7 +537,7 @@ def cmd_clone(args: argparse.Namespace) -> int:
         sys.exit(f"the destination {dest} is inside the source project")
     if new["CODE"] == cur["CODE"]:
         sys.exit(f"the clone needs its own plugin code (this project's is {cur['CODE']}): pass --code")
-    check_code_free(new["CODE"], [src.parent, dest.parent], {dest.resolve()}, args.allow_code_clash)
+    check_code_free(new["CODE"], code_dirs(src.parent, dest.parent), {dest.resolve()}, args.allow_code_clash)
 
     starter = args.starter or new["KIND"] != cur["KIND"]
     if starter:
@@ -466,8 +567,10 @@ def cmd_clone(args: argparse.Namespace) -> int:
             shutil.copy2(src / rel, target)
         if starter:
             apply_starter(src, stage, new["KIND"])
+        drop_origin_blocks(stage)
         write_product(stage, new)
         n = rewrite_tokens(stage, rename_rules(cur, new))
+        n += rename_aliases(stage, new["NAMESPACE"], alias_for(new["NAME"]))
 
         dest.mkdir(parents=True, exist_ok=True)
         for entry in dest.iterdir():
@@ -501,7 +604,7 @@ def cmd_rename(args: argparse.Namespace) -> int:
     args.type = cur["KIND"]
     new = new_identity(args, cur, keep_company=args.company is None)
     if new["CODE"] != cur["CODE"]:
-        check_code_free(new["CODE"], [root.parent], {root.resolve()}, args.allow_code_clash)
+        check_code_free(new["CODE"], code_dirs(root.parent), {root.resolve()}, args.allow_code_clash)
     print()
     print_identity(new, "Renamed to:")
     if not confirm("Apply the rename in place?", args.yes):
@@ -509,6 +612,7 @@ def cmd_rename(args: argparse.Namespace) -> int:
         return 1
     write_product(root, new)
     n = rewrite_tokens(root, rename_rules(cur, new))
+    n += rename_aliases(root, new["NAMESPACE"], alias_for(new["NAME"]))
     print(f"Renamed: {n} files rewritten. Delete the build directories (rm -rf build-*) before building again.")
     return 0
 
@@ -596,7 +700,7 @@ def add_identity_options(p: argparse.ArgumentParser) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(prog="plugin.py", description=__doc__.strip(),
+    parser = argparse.ArgumentParser(prog="plugin.py", description=__doc__.strip().replace("{template}", TEMPLATE),
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     subs = parser.add_subparsers(dest="command", required=True)
 
@@ -607,8 +711,8 @@ def main() -> int:
     add_identity_options(p)
     p.add_argument("--dest", help="the new project's directory (default: beside this one, named after it)")
     p.add_argument("--starter", action="store_true",
-                   help="replace the algorithm, its probes and README blocks with the kind's starter (automatic for a "
-                        "new kind)")
+                   help="replace the algorithm, its probes, CLAUDE.md and README blocks with the kind's starter "
+                        "(automatic for a new kind)")
     p.add_argument("--force", action="store_true", help="replace a non-empty destination's contents (not its .git)")
     p.set_defaults(func=cmd_clone)
 
@@ -616,7 +720,8 @@ def main() -> int:
     add_identity_options(p)
     p.set_defaults(func=cmd_rename)
 
-    p = subs.add_parser("starter-diff", help="diff the algorithm, its probes and README blocks against a starter")
+    p = subs.add_parser("starter-diff",
+                        help="diff the algorithm, its probes, CLAUDE.md and README blocks against a starter")
     p.add_argument("--kind", choices=KINDS, help="the starter to compare with (default: this project's kind)")
     p.set_defaults(func=cmd_starter_diff)
 

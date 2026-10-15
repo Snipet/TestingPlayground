@@ -18,7 +18,8 @@
 
 namespace testingplayground::ui
 {
-    // A port's value01 as the panel shows it: `v` when it is finite (and `last` becomes it), else `last`.
+    // A port's value01 as the panel shows it: `v` when it is finite (and `last` becomes it), else `last`. A custom view
+    // that reads a port uses it too (the DELAYS line does).
     inline float shownValue01(float v, float& last) noexcept
     {
         if (std::isfinite(v))

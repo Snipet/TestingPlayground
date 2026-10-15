@@ -9,10 +9,13 @@
 //
 // The processor calls, on the audio thread: prepare() before playback (the only place that allocates), setParams()
 // once per block with the plain values of Params.h (finite, within the table's range), setLfoTable() when the LFO shape
-// changed (the editor's graph; Processor.h), then process() in place. Before the first prepare() there are no delay
-// lines: process() then only sanitises its input and passes it through. Hosts call tailSeconds() from any thread: an
-// atomic, stored by setParams(). Everything runs per sample on the absolute sample clock, so the output does not depend
-// on the host's block size (dsp.render checks 64 against 333 samples).
+// changed (the editor's graph; Processor.h), then process() in place, with at most prepare()'s maxBlockSize samples per
+// call (the processor cuts a larger host block into parts; a part may have 0 samples). It keeps calling them while the
+// host bypasses the plugin (the processor crossfades to the input; Processor.h). Before the first prepare() there are
+// no delay lines: process() then only sanitises its input and passes it through (the processor does not call it then,
+// either). Hosts call tailSeconds() from any thread: an atomic, stored by setParams(). Everything runs per sample on
+// the absolute sample clock, so the output does not depend on the host's block size or on how the blocks are split
+// (dsp.render checks 64 against 333 samples).
 #pragma once
 
 #include "dsp/Events.h"
