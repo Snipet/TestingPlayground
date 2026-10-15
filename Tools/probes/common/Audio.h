@@ -1,0 +1,171 @@
+// Tools/probes/common/Audio.h: small, exact helpers for audio probes (header-only, JUCE-free): a stereo buffer, test
+// signals, levels, a single-bin DFT (plain or under a Hann window), the largest sample step, a frequency estimate, and
+// a 32-bit float WAV writer. Analysis runs in double.
+#pragma once
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <numbers>
+#include <string>
+#include <vector>
+
+namespace probe
+{
+    // Two channels of equal length.
+    struct Stereo
+    {
+        std::vector<float> l, r;
+
+        explicit Stereo(std::size_t n = 0) : l(n, 0.0f), r(n, 0.0f) {}
+        std::size_t size() const noexcept { return l.size(); }
+    };
+
+    inline double dbFromLin(double x) { return 20.0 * std::log10(std::max(x, 1e-30)); }
+
+    // A sine of `amp` at `hz`, `n` samples at `fs`, starting at phase 0.
+    inline std::vector<float> sine(double hz, double amp, double fs, std::size_t n)
+    {
+        std::vector<float> v(n);
+        for (std::size_t i = 0; i < n; ++i)
+            v[i] = static_cast<float>(amp * std::sin(2.0 * std::numbers::pi * hz * static_cast<double>(i) / fs));
+        return v;
+    }
+
+    // RMS over [from, from + count), in dBFS.
+    inline double rmsDb(const std::vector<float>& x, std::size_t from, std::size_t count)
+    {
+        double s = 0.0;
+        const std::size_t end = std::min(x.size(), from + count);
+        for (std::size_t i = from; i < end; ++i)
+            s += static_cast<double>(x[i]) * static_cast<double>(x[i]);
+        const std::size_t n = end > from ? end - from : 1;
+        return dbFromLin(std::sqrt(s / static_cast<double>(n)));
+    }
+
+    // The amplitude of the component at `hz` over [from, from + count), from a single DFT bin (Goertzel-free, exact in
+    // double). Use a whole number of cycles for an exact result; returns linear amplitude.
+    inline double toneAmplitude(const std::vector<float>& x, double hz, double fs, std::size_t from, std::size_t count)
+    {
+        double re = 0.0, im = 0.0;
+        const std::size_t end = std::min(x.size(), from + count);
+        for (std::size_t i = from; i < end; ++i)
+        {
+            const double ph = 2.0 * std::numbers::pi * hz * static_cast<double>(i) / fs;
+            re += static_cast<double>(x[i]) * std::cos(ph);
+            im += static_cast<double>(x[i]) * std::sin(ph);
+        }
+        const std::size_t n = end > from ? end - from : 1;
+        return 2.0 * std::sqrt(re * re + im * im) / static_cast<double>(n);
+    }
+
+    // As toneAmplitude, under a Hann window: other components leak far less (a tone 20 Hz away over one second
+    // contributes under -100 dB), so it separates the notes of a chord. Exact for a steady tone at `hz` whatever the
+    // number of cycles, but for its own image at -hz (negligible over many cycles); returns linear amplitude.
+    inline double toneAmplitudeHann(const std::vector<float>& x, double hz, double fs, std::size_t from,
+                                    std::size_t count)
+    {
+        double re = 0.0, im = 0.0, wsum = 0.0;
+        const std::size_t end = std::min(x.size(), from + count);
+        const double len = static_cast<double>(end > from ? end - from : 1);
+        for (std::size_t i = from; i < end; ++i)
+        {
+            const double w = 0.5 - 0.5 * std::cos(2.0 * std::numbers::pi * (static_cast<double>(i - from) + 0.5) / len);
+            const double ph = 2.0 * std::numbers::pi * hz * static_cast<double>(i) / fs;
+            re += w * static_cast<double>(x[i]) * std::cos(ph);
+            im += w * static_cast<double>(x[i]) * std::sin(ph);
+            wsum += w;
+        }
+        return wsum > 0.0 ? 2.0 * std::sqrt(re * re + im * im) / wsum : 0.0;
+    }
+
+    // The largest step between neighbouring samples over [from, from + count): a click shows as a step far above a
+    // steady signal's (a sine of amplitude A at f steps at most 2 pi f A / fs).
+    inline double maxStep(const std::vector<float>& x, std::size_t from, std::size_t count)
+    {
+        double m = 0.0;
+        const std::size_t end = std::min(x.size(), from + count);
+        for (std::size_t i = std::max<std::size_t>(from, 1); i < end; ++i)
+            m = std::max(m, std::fabs(static_cast<double>(x[i]) - static_cast<double>(x[i - 1])));
+        return m;
+    }
+
+    // The frequency of a periodic signal from its rising zero crossings over [from, from + count), each crossing placed
+    // by linear interpolation; 0 when fewer than two crossings.
+    inline double frequencyHz(const std::vector<float>& x, double fs, std::size_t from, std::size_t count)
+    {
+        double first = -1.0, last = -1.0;
+        int crossings = 0;
+        const std::size_t end = std::min(x.size(), from + count);
+        for (std::size_t i = from + 1; i < end; ++i)
+        {
+            const double a = x[i - 1], b = x[i];
+            if (a < 0.0 && b >= 0.0)
+            {
+                const double t = static_cast<double>(i - 1) + a / (a - b);
+                if (first < 0.0)
+                    first = t;
+                last = t;
+                ++crossings;
+            }
+        }
+        if (crossings < 2)
+            return 0.0;
+        return fs * static_cast<double>(crossings - 1) / (last - first);
+    }
+
+    inline float peak(const std::vector<float>& x)
+    {
+        float p = 0.0f;
+        for (const float v : x)
+            p = std::max(p, std::fabs(v));
+        return p;
+    }
+
+    inline bool allFinite(const std::vector<float>& x)
+    {
+        return std::all_of(x.begin(), x.end(), [](float v) { return std::isfinite(v); });
+    }
+
+    inline bool sameBits(const std::vector<float>& a, const std::vector<float>& b)
+    {
+        return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
+    }
+
+    // A 32-bit float WAV (WAVE_FORMAT_IEEE_FLOAT), stereo. Returns false on a write error.
+    inline bool writeWav(const std::string& path, const Stereo& s, int sampleRate)
+    {
+        std::FILE* f = std::fopen(path.c_str(), "wb");
+        if (f == nullptr)
+            return false;
+        const uint32_t frames = static_cast<uint32_t>(s.size());
+        const uint16_t channels = 2, bits = 32, format = 3;
+        const uint32_t rate = static_cast<uint32_t>(sampleRate);
+        const uint32_t dataBytes = frames * channels * (bits / 8u);
+        const uint32_t byteRate = rate * channels * (bits / 8u);
+        const uint16_t blockAlign = static_cast<uint16_t>(channels * (bits / 8u));
+        const auto u32 = [f](uint32_t v) { std::fwrite(&v, 4, 1, f); };
+        const auto u16 = [f](uint16_t v) { std::fwrite(&v, 2, 1, f); };
+        std::fwrite("RIFF", 1, 4, f);
+        u32(36u + dataBytes);
+        std::fwrite("WAVEfmt ", 1, 8, f);
+        u32(16u);
+        u16(format);
+        u16(channels);
+        u32(rate);
+        u32(byteRate);
+        u16(blockAlign);
+        u16(bits);
+        std::fwrite("data", 1, 4, f);
+        u32(dataBytes);
+        for (std::size_t i = 0; i < s.size(); ++i)
+        {
+            const float frame[2] = { s.l[i], s.r[i] };
+            std::fwrite(frame, sizeof(float), 2, f);
+        }
+        const bool ok = std::ferror(f) == 0;
+        return std::fclose(f) == 0 && ok;
+    }
+}

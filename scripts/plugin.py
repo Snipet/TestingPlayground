@@ -1,691 +1,634 @@
 #!/usr/bin/env python3
 """
-Plugin utility — lifecycle tasks for a JUCE / visage plugin built from this
-template. Subcommands:
+Plugin utility for a project made from the FunkGui plugin template. Subcommands:
 
-  clone      Clone this plugin into a new plugin (interactive).
-  rename     Rename the current plugin in place (interactive).
-  codesign   Codesign built AU / VST3 / Standalone artefacts with a
-             Developer ID Application identity.
-  notarize   Submit codesigned artefacts to Apple notary and staple
-             the resulting tickets.
+  info          Print this project's identity (cmake/Product.cmake).
+  clone         Copy this project into a new plugin: a new name, codes, bundle id and namespace; effect or instrument.
+  rename        Rename this project in place (same steps as clone, no copy).
+  starter-diff  Show how this project's algorithm (the starter's files, below) differs from its kind's starter.
+  codesign      Codesign the built AU / VST3 / Standalone with a Developer ID Application identity.
+  notarize      Submit codesigned bundles to Apple's notary service and staple the tickets.
 
+clone, by example:
 
-This file is copied into every cloned plugin so that the cloned plugin can
-itself be cloned, renamed, signed, and notarized from the same script.
+  scripts/plugin.py clone --name MyDelay                        an effect like this one, beside it (../MyDelay)
+  scripts/plugin.py clone --name MySynth --type instrument      an instrument: the algorithm, its probes and README
+                                                                parts become the instrument starter's
+                                                                (scripts/starters/instrument)
+  scripts/plugin.py clone --name MyDelay --starter              this project's kind, but from its starter code
+  scripts/plugin.py clone --name MyDelay --dest ~/x/MyDelay --code Mydl --yes
 
-Plugin name, codes, namespace, etc. are auto-discovered from the local
-CMakeLists.txt and Source/dsp headers — the script works from any plugin
-produced by this template, not just the original template directory.
+What a clone changes:
+  - cmake/Product.cmake is rewritten with the new identity (name, kind, codes, bundle id, namespace, FunkGui prefixes);
+  - the old name (as written, in upper case and in lower case), namespace, bundle id and environment prefix are
+    replaced in every text file (sources, docs, CMake, scripts) where they stand as whole words, except in the
+    vendored DSP core (Source/fsdsp/**) and SEED.tsv, which stay byte for byte;
+  - with a kind change or --starter, the starter's files replace the project's: Source/dsp/, Tools/probes/dsp/,
+    Tools/probes/plugin/process.cpp and CLAUDE.md from scripts/starters/<kind>/, and README.md's kind-specific blocks
+    (<!-- starter:<name> --> ... <!-- /starter:<name> -->) from scripts/starters/<kind>/README-parts.md;
+  - README.md and CLAUDE.md lose their <!-- origin --> ... <!-- /origin --> blocks: text about the source project's
+    own history (its git tags, where it came from), which the new project does not have;
+  - nothing else: the build directories are not copied (a git project copies what git tracks or would track).
+The plugin code must differ from every other plugin's: the clone refuses a code used by a sibling project (the
+directories beside the source and the destination) unless --allow-code-clash is given. The manufacturer code stays the
+same for all of the user's plugins.
 
-Stdlib only. No pip install needed.
+Missing values are asked for when stdin is a terminal; otherwise they are derived from the name (or --yes takes the
+derived ones). Stdlib only.
 """
 
 from __future__ import annotations
 
 import argparse
+import difflib
+import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Callable
-
-# ──────────────────────────────────────────────────────────────────────────
-# Project layout
-# ──────────────────────────────────────────────────────────────────────────
 
 SCRIPT_PATH = Path(__file__).resolve()
 PROJECT_ROOT = SCRIPT_PATH.parent.parent
 
-# Top-level entries skipped when copying for a clone.
-COPY_EXCLUDES = {
-    "build", ".git", ".DS_Store", "__pycache__",
-    ".idea", ".vscode", "node_modules",
-}
+KINDS = ("effect", "instrument")
+PRODUCT_FILE = Path("cmake") / "Product.cmake"
+PRODUCT_KEYS = ("NAME", "KIND", "VERSION", "COMPANY", "MFR_CODE", "CODE", "BUNDLE_ID", "NAMESPACE",
+                "ENV_PREFIX", "OBJC_PREFIX")
 
-# File suffixes treated as text for bulk string replacement.
-TEXT_SUFFIXES = {
-    ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp",
-    ".m", ".mm",
-    ".cmake", ".txt", ".md",
-    ".py", ".sh",
-    ".json", ".plist", ".xml",
-    ".sc", ".sh",  # bgfx shader sources + includes
-    ".gitignore",
-}
+# Never copied (a project that is not a git work tree is copied by walking it).
+COPY_EXCLUDES = {".git", ".DS_Store", "__pycache__", ".idea", ".vscode", "node_modules", "Testing"}
+# Never rewritten: the vendored core and its manifest stay byte for byte (SEED.tsv holds their sha256).
+REWRITE_EXCLUDES = ("Source/fsdsp/", "SEED.tsv")
+TEXT_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".inl", ".m", ".mm", ".cmake", ".in", ".txt",
+                 ".md", ".py", ".sh", ".json", ".plist", ".xml", ".tsv", ".def", ".gitignore"}
+# The parts of a project its starter replaces (scripts/starters/<kind>/ holds the same paths: folders and files), and
+# the starter's README blocks, spliced into README.md between <!-- starter:<name> --> and <!-- /starter:<name> -->.
+STARTER_PATHS = (Path("Source") / "dsp", Path("Tools") / "probes" / "dsp",
+                 Path("Tools") / "probes" / "plugin" / "process.cpp", Path("CLAUDE.md"))
+STARTER_README = Path("README-parts.md")
+README_BLOCK = re.compile(r"<!-- starter:([a-z][a-z0-9-]*) -->\n.*?<!-- /starter:\1 -->\n", re.DOTALL)
+# The source project's own history, left out of a clone (with the blank line after the block).
+ORIGIN_BLOCK = re.compile(r"<!-- origin -->\n.*?<!-- /origin -->\n(?:\n)?", re.DOTALL)
+ORIGIN_DOCS = (Path("README.md"), Path("CLAUDE.md"))
 
-PLUGIN_TYPES = ("effect", "instrument", "midi")
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# Prompts and validation
-# ──────────────────────────────────────────────────────────────────────────
-
-def ask(prompt: str, default: str | None = None,
-        validate: Callable[[str], str | None] | None = None) -> str:
-    suffix = f" [{default}]" if default is not None else ""
-    while True:
-        raw = input(f"{prompt}{suffix}: ").strip()
-        value = raw if raw else (default or "")
-        if not value:
-            print("  Required, please enter a value.")
-            continue
-        if validate is not None:
-            err = validate(value)
-            if err:
-                print(f"  Invalid: {err}")
-                continue
-        return value
+CPP_KEYWORDS = {"alignas", "alignof", "and", "asm", "auto", "bool", "break", "case", "catch", "char", "class",
+                "const", "constexpr", "continue", "default", "delete", "do", "double", "else", "enum", "explicit",
+                "export", "extern", "false", "float", "for", "friend", "goto", "if", "inline", "int", "long",
+                "mutable", "namespace", "new", "not", "operator", "or", "private", "protected", "public", "register",
+                "return", "short", "signed", "sizeof", "static", "struct", "switch", "template", "this", "throw",
+                "true", "try", "typedef", "typename", "union", "unsigned", "using", "virtual", "void", "volatile",
+                "while", "std", "juce", "funkgui", "fsdsp", "probe"}
 
 
-def ask_choice(prompt: str, options: tuple[str, ...], default: str | None = None) -> str:
-    opts = "/".join(options)
-    suffix = f" [{default}]" if default else ""
-    while True:
-        raw = input(f"{prompt} ({opts}){suffix}: ").strip().lower()
-        value = raw if raw else (default or "").lower()
-        if value in options:
-            return value
-        print(f"  Choose one of: {opts}")
+# ----------------------------------------------------------------------------------------------------------------------
+# Product.cmake
+# ----------------------------------------------------------------------------------------------------------------------
+
+def read_product(root: Path) -> dict[str, str]:
+    path = root / PRODUCT_FILE
+    if not path.exists():
+        sys.exit(f"{path} not found: is {root} a project made from the plugin template?")
+    text = path.read_text(encoding="utf-8")
+    cfg = {}
+    for key in PRODUCT_KEYS:
+        m = re.search(rf'^set\(PRODUCT_{key}\s+"([^"]*)"\)', text, re.MULTILINE)
+        if not m:
+            sys.exit(f"{path}: no line `set(PRODUCT_{key} \"...\")`")
+        cfg[key] = m.group(1)
+    return cfg
 
 
-def ask_yes_no(prompt: str, default: bool = True) -> bool:
-    flag = "Y/n" if default else "y/N"
-    while True:
-        raw = input(f"{prompt} [{flag}]: ").strip().lower()
-        if not raw:
-            return default
-        if raw in ("y", "yes"): return True
-        if raw in ("n", "no"):  return False
+def write_product(root: Path, cfg: dict[str, str]) -> None:
+    path = root / PRODUCT_FILE
+    text = path.read_text(encoding="utf-8")
+    for key in PRODUCT_KEYS:
+        text, n = re.subn(rf'^(set\(PRODUCT_{key}\s+)"[^"]*"\)', lambda m: f'{m.group(1)}"{cfg[key]}")', text,
+                          count=1, flags=re.MULTILINE)
+        if n != 1:
+            sys.exit(f"{path}: cannot rewrite PRODUCT_{key}")
+    path.write_text(text, encoding="utf-8")
 
 
-def is_pascal_ident(name: str) -> str | None:
-    if not name or not name[0].isalpha() or not name[0].isupper():
-        return "must start with an uppercase letter"
-    if not all(c.isalnum() or c == "_" for c in name):
-        return "only letters, digits and underscores allowed"
+# ----------------------------------------------------------------------------------------------------------------------
+# Validation and derivation
+# ----------------------------------------------------------------------------------------------------------------------
+
+def check_name(v: str) -> str | None:
+    return None if re.fullmatch(r"[A-Z][A-Za-z0-9]*", v) else "PascalCase letters and digits, e.g. MyDelay"
+
+
+def check_code(v: str) -> str | None:
+    if not re.fullmatch(r"[A-Za-z0-9]{4}", v):
+        return "exactly 4 letters or digits"
+    if not any(c.isupper() for c in v):
+        return "at least one upper-case letter (Apple reserves all-lower-case codes)"
     return None
 
 
-def is_lower_ident(name: str) -> str | None:
-    if not name or not name[0].isalpha():
-        return "must start with a letter"
-    if not name.islower():
-        return "must be all lowercase"
-    if not all(c.isalnum() or c == "_" for c in name):
-        return "only letters, digits and underscores allowed"
+def check_namespace(v: str) -> str | None:
+    if not re.fullmatch(r"[a-z_][a-z0-9_]*", v):
+        return "a lower-case C++ identifier"
+    if v in CPP_KEYWORDS:
+        return f"'{v}' is a keyword or a namespace already in use"
     return None
 
 
-def is_four_char(code: str) -> str | None:
-    if len(code) != 4:
-        return "must be exactly 4 characters"
-    if not code.isalnum():
-        return "must be alphanumeric"
-    if not any(c.isupper() for c in code):
-        return "must contain at least one uppercase letter (Apple convention)"
+def check_bundle_id(v: str) -> str | None:
+    parts = v.split(".")
+    if len(parts) < 2 or not all(re.fullmatch(r"[A-Za-z][A-Za-z0-9-]*", p) for p in parts):
+        return "reverse-DNS, e.g. com.funk.mydelay"
     return None
 
 
-def is_bundle_id(bid: str) -> str | None:
-    parts = bid.split(".")
-    if len(parts) < 2:
-        return "must be reverse-DNS (e.g. com.acme.plugin)"
-    for p in parts:
-        if not p:
-            return "empty segment"
-        if not p[0].isalpha():
-            return "each segment must start with a letter"
-        if not all(c.isalnum() or c in "-_" for c in p):
-            return "segments may only contain letters, digits, hyphens, underscores"
-    return None
+def check_env_prefix(v: str) -> str | None:
+    return None if re.fullmatch(r"[A-Z][A-Z0-9_]*_", v) else "upper case, ending in _, e.g. MYDL_"
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Derivations
-# ──────────────────────────────────────────────────────────────────────────
+def lower_alnum(s: str) -> str:
+    return "".join(c for c in s if c.isalnum()).lower()
 
-def derive_plugin_code(name: str) -> str:
-    """Apple 4-char code: 1 uppercase + 3 lowercase. Prefer consonants."""
+
+def derive_code(name: str) -> str:
+    """An Apple-style 4-character code: one upper-case letter, then three lower-case, consonants first."""
     letters = [c for c in name if c.isalpha()]
     if not letters:
         return "Plug"
-    first = letters[0].upper()
     rest = letters[1:]
     consonants = [c for c in rest if c.lower() not in "aeiou"]
     pool = consonants if len(consonants) >= 3 else rest
-    tail = "".join(pool[:3]).lower()
-    return (first + tail).ljust(4, "x")[:4]
+    return (letters[0].upper() + "".join(pool[:3]).lower()).ljust(4, "x")[:4]
 
 
-def lower_alnum(name: str) -> str:
-    return "".join(c for c in name if c.isalnum()).lower()
+def objc_prefix(code: str) -> str:
+    return code if code[0].isalpha() else "P" + code
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# File ops
-# ──────────────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------------------------------------------------------
+# Plugin codes in use beside a project
+# ----------------------------------------------------------------------------------------------------------------------
 
-def is_text_file(path: Path) -> bool:
-    if path.suffix.lower() in TEXT_SUFFIXES:
-        return True
-    if path.name in {"CMakeLists.txt", ".gitignore"}:
-        return True
-    return False
-
-
-def copy_template(src: Path, dst: Path) -> None:
-    def ignore(_directory: str, contents: list[str]) -> list[str]:
-        return [c for c in contents if c in COPY_EXCLUDES]
-    shutil.copytree(src, dst, ignore=ignore)
+CODE_PATTERNS = (
+    re.compile(r'^\s*set\(PRODUCT_CODE\s+"([A-Za-z0-9]{4})"\)', re.MULTILINE),       # this template's projects
+    re.compile(r'^\s*PLUGIN_CODE\s+"?([A-Za-z0-9]{4})"?\s*$', re.MULTILINE),          # juce_add_plugin(... PLUGIN_CODE)
+    re.compile(r'set\(\w*_PLUGIN_CODE\s+"([A-Za-z0-9]{4})"\)'),                        # FSynth, FCompressor
+)
 
 
-def apply_text_replacements(root: Path, rules: list[tuple[str, str]]) -> int:
-    """Apply ordered (old, new) replacements to every text file under root."""
-    modified = 0
-    for path in root.rglob("*"):
-        if not path.is_file() or not is_text_file(path):
+def codes_in(project: Path) -> set[str]:
+    codes: set[str] = set()
+    files = [project / "CMakeLists.txt", project / PRODUCT_FILE]
+    cmake_dir = project / "cmake"
+    if cmake_dir.is_dir():
+        files += sorted(cmake_dir.glob("*.cmake"))
+    for f in files:
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
             continue
+        for pattern in CODE_PATTERNS:
+            codes.update(pattern.findall(text))
+    return codes
+
+
+def sibling_codes(dirs: list[Path], skip: set[Path]) -> dict[str, list[str]]:
+    """Plugin code -> the projects using it, over the directories in `dirs` (one level down)."""
+    used: dict[str, list[str]] = {}
+    seen: set[Path] = set()
+    for parent in dirs:
+        if not parent.is_dir():
+            continue
+        for project in sorted(parent.iterdir()):
+            real = project.resolve()
+            if not project.is_dir() or real in seen or real in skip:
+                continue
+            seen.add(real)
+            for code in codes_in(project):
+                used.setdefault(code, []).append(project.name)
+    return used
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Files
+# ----------------------------------------------------------------------------------------------------------------------
+
+def project_files(root: Path) -> list[Path]:
+    """The project's files, relative: what git tracks or would track, else a walk without build trees."""
+    try:
+        out = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                             capture_output=True, check=True).stdout.decode("utf-8")
+        files = [Path(p) for p in out.split("\0") if p]
+        return [p for p in files if (root / p).is_file()]
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+    files = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in COPY_EXCLUDES and not d.startswith("build")]
+        for f in filenames:
+            if f not in COPY_EXCLUDES:
+                files.append((Path(dirpath) / f).relative_to(root))
+    return files
+
+
+def is_text(rel: Path) -> bool:
+    return rel.suffix.lower() in TEXT_SUFFIXES or rel.name in {"CMakeLists.txt", ".gitignore", "CLAUDE.md"}
+
+
+def rewrite_tokens(root: Path, rules: list[tuple[str, str]]) -> int:
+    """Replace each old token by its new one in every text file, where the token is not part of a longer word (a
+    token ending in "_", an environment prefix, may run on into the variable's name: TSYN_UI_THEME)."""
+    compiled = []
+    for old, new in rules:
+        if old and old != new:
+            tail = "" if old.endswith("_") else "(?![A-Za-z0-9])"
+            compiled.append((re.compile(rf"(?<![A-Za-z0-9]){re.escape(old)}{tail}"), new))
+    changed = 0
+    for rel in project_files(root):
+        posix = rel.as_posix()
+        if posix == PRODUCT_FILE.as_posix() or any(posix == e or posix.startswith(e) for e in REWRITE_EXCLUDES):
+            continue
+        if not is_text(rel):
+            continue
+        path = root / rel
         try:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-        new = text
-        for old, repl in rules:
-            if old and old != repl:
-                new = new.replace(old, repl)
-        if new != text:
-            path.write_text(new, encoding="utf-8")
-            modified += 1
-    return modified
+        new_text = text
+        for pattern, repl in compiled:
+            new_text = pattern.sub(repl, new_text)
+        if new_text != text:
+            path.write_text(new_text, encoding="utf-8")
+            changed += 1
+    return changed
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Discover current plugin config from CMakeLists.txt + Source/dsp headers
-# ──────────────────────────────────────────────────────────────────────────
-
-def discover_config(root: Path) -> dict[str, str | None]:
-    cml = root / "CMakeLists.txt"
-    if not cml.exists():
-        sys.exit(f"No CMakeLists.txt at {root}")
-    text = cml.read_text(encoding="utf-8")
-
-    def find(pattern: str) -> str | None:
-        m = re.search(pattern, text)
-        return m.group(1) if m else None
-
-    name        = find(r"juce_add_plugin\s*\(\s*(\w+)")
-    company     = find(r'COMPANY_NAME\s+"([^"]+)"')
-    mfr_code    = find(r"PLUGIN_MANUFACTURER_CODE\s+(\w+)")
-    plugin_code = find(r"PLUGIN_CODE\s+(\w+)")
-    bundle_id   = find(r"BUNDLE_ID\s+(\S+)")
-
-    # DSP namespace from first matching `namespace foo {` in Source/dsp/.
-    namespace: str | None = None
-    dsp_dir = root / "Source" / "dsp"
-    if dsp_dir.is_dir():
-        for header in sorted(dsp_dir.glob("*.h")):
-            m = re.search(r"^namespace\s+(\w+)", header.read_text(encoding="utf-8"),
-                          re.MULTILINE)
-            if m:
-                namespace = m.group(1)
-                break
-
-    return {
-        "name":        name,
-        "company":     company,
-        "mfr_code":    mfr_code,
-        "plugin_code": plugin_code,
-        "bundle_id":   bundle_id,
-        "namespace":   namespace,
-    }
+def readme_blocks(text: str) -> dict[str, str]:
+    """The kind-specific blocks of a README: name -> the block, its marker lines included."""
+    return {m.group(1): m.group(0) for m in README_BLOCK.finditer(text)}
 
 
-def require_config(cfg: dict[str, str | None]) -> None:
-    missing = [k for k, v in cfg.items() if not v]
-    if missing:
-        sys.exit(f"Could not parse plugin config (missing: {', '.join(missing)}). "
-                 f"Is this a plugin directory built from the template?")
+def splice_readme(parts: Path, readme: Path) -> None:
+    """Replace each starter block of `readme` with the block of the same name in `parts`."""
+    if not readme.is_file():
+        return
+    blocks = readme_blocks(parts.read_text(encoding="utf-8"))
+    kept: list[str] = []
+
+    def repl(m: re.Match[str]) -> str:
+        if m.group(1) in blocks:
+            return blocks[m.group(1)]
+        kept.append(m.group(1))
+        return m.group(0)
+
+    text = readme.read_text(encoding="utf-8")
+    readme.write_text(README_BLOCK.sub(repl, text), encoding="utf-8")
+    missing = sorted(set(blocks) - set(readme_blocks(text)))
+    if kept or missing:
+        print(f"warning: README.md: blocks kept as they were: {', '.join(kept) or '-'}; starter blocks with no place "
+              f"in it: {', '.join(missing) or '-'} (update it by hand from {parts})")
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Plugin-type transformation
-#
-# Buses + isBusesLayoutSupported bodies are full blocks so we can recognise
-# the current state regardless of how the plugin was previously configured.
-# ──────────────────────────────────────────────────────────────────────────
-
-BUSES_EFFECT = """    : AudioProcessor(BusesProperties()
-                         .withInput("Input",  juce::AudioChannelSet::stereo(), true)
-                         .withOutput("Output", juce::AudioChannelSet::stereo(), true)),"""
-
-BUSES_INSTRUMENT = """    : AudioProcessor(BusesProperties()
-                         .withOutput("Output", juce::AudioChannelSet::stereo(), true)),"""
-
-BUSES_MIDI = """    : AudioProcessor(BusesProperties()),"""
-
-BUSES_BLOCKS = {
-    "effect":     BUSES_EFFECT,
-    "instrument": BUSES_INSTRUMENT,
-    "midi":       BUSES_MIDI,
-}
+def apply_starter(src_root: Path, dst_root: Path, kind: str) -> None:
+    starter = src_root / "scripts" / "starters" / kind
+    for rel in (*STARTER_PATHS, STARTER_README):
+        if not (starter / rel).exists():
+            sys.exit(f"{starter / rel} is missing: this project has no complete {kind} starter")
+    for rel in STARTER_PATHS:
+        source, target = starter / rel, dst_root / rel
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target)
+        elif target.exists() or target.is_symlink():
+            target.unlink()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            shutil.copytree(source, target)
+        else:
+            shutil.copy2(source, target)
+    splice_readme(starter / STARTER_README, dst_root / "README.md")
 
 
-def _layout_block(name: str, ptype: str) -> str:
-    if ptype == "effect":
-        return (
-            f"bool {name}Processor::isBusesLayoutSupported(const BusesLayout& layouts) const\n"
-            f"{{\n"
-            f"    const auto& in  = layouts.getMainInputChannelSet();\n"
-            f"    const auto& out = layouts.getMainOutputChannelSet();\n"
-            f"    return in == out && (in == juce::AudioChannelSet::stereo() || in == juce::AudioChannelSet::mono());\n"
-            f"}}"
-        )
-    if ptype == "instrument":
-        return (
-            f"bool {name}Processor::isBusesLayoutSupported(const BusesLayout& layouts) const\n"
-            f"{{\n"
-            f"    const auto& out = layouts.getMainOutputChannelSet();\n"
-            f"    return out == juce::AudioChannelSet::stereo() || out == juce::AudioChannelSet::mono();\n"
-            f"}}"
-        )
-    # midi
-    return (
-        f"bool {name}Processor::isBusesLayoutSupported(const BusesLayout& /*layouts*/) const\n"
-        f"{{\n"
-        f"    return true;\n"
-        f"}}"
-    )
+def drop_origin_blocks(root: Path) -> None:
+    for rel in ORIGIN_DOCS:
+        path = root / rel
+        if path.is_file():
+            text = path.read_text(encoding="utf-8")
+            new_text = ORIGIN_BLOCK.sub("", text)
+            if new_text != text:
+                path.write_text(new_text, encoding="utf-8")
 
 
-def set_plugin_type(root: Path, ptype: str, pascal_name: str) -> None:
-    """Reconfigure CMakeLists + PluginProcessor.{h,cpp} for the target type."""
-    if ptype not in PLUGIN_TYPES:
-        raise ValueError(f"unknown plugin type: {ptype}")
-
-    cml_path = root / "CMakeLists.txt"
-    pph_path = root / "Source" / "PluginProcessor.h"
-    ppc_path = root / "Source" / "PluginProcessor.cpp"
-
-    cml = cml_path.read_text(encoding="utf-8")
-    pph = pph_path.read_text(encoding="utf-8")
-    ppc = ppc_path.read_text(encoding="utf-8")
-
-    # CMake flags.
-    is_synth        = "TRUE" if ptype == "instrument" else "FALSE"
-    is_midi_effect  = ptype == "midi"
-    needs_midi_in   = "TRUE" if ptype in ("instrument", "midi") else "FALSE"
-    needs_midi_out  = "TRUE" if ptype == "midi" else "FALSE"
-
-    cml = re.sub(r"IS_SYNTH\s+\w+",          f"IS_SYNTH                {is_synth}",       cml)
-    cml = re.sub(r"NEEDS_MIDI_INPUT\s+\w+",  f"NEEDS_MIDI_INPUT        {needs_midi_in}",  cml)
-    cml = re.sub(r"NEEDS_MIDI_OUTPUT\s+\w+", f"NEEDS_MIDI_OUTPUT       {needs_midi_out}", cml)
-
-    # Add or remove the IS_MIDI_EFFECT line as needed.
-    has_midi_effect_line = re.search(r"IS_MIDI_EFFECT\s+\w+", cml) is not None
-    if is_midi_effect and not has_midi_effect_line:
-        cml = re.sub(r"(IS_SYNTH\s+\w+\n)", r"\1    IS_MIDI_EFFECT          TRUE\n", cml)
-    elif not is_midi_effect and has_midi_effect_line:
-        cml = re.sub(r"\s*IS_MIDI_EFFECT\s+\w+\n", "\n", cml)
-
-    cml_path.write_text(cml, encoding="utf-8")
-
-    # PluginProcessor.h — acceptsMidi / producesMidi / isMidiEffect.
-    accepts  = "true" if ptype in ("instrument", "midi") else "false"
-    produces = "true" if ptype == "midi" else "false"
-    midi_fx  = "true" if ptype == "midi" else "false"
-
-    pph = re.sub(r"(bool acceptsMidi\(\)\s*const override \{ return )\w+;",
-                 r"\g<1>" + accepts + ";", pph)
-    pph = re.sub(r"(bool producesMidi\(\) const override \{ return )\w+;",
-                 r"\g<1>" + produces + ";", pph)
-    pph = re.sub(r"(bool isMidiEffect\(\) const override \{ return )\w+;",
-                 r"\g<1>" + midi_fx + ";", pph)
-    pph_path.write_text(pph, encoding="utf-8")
-
-    # PluginProcessor.cpp — buses + layout block. We don't know the current
-    # state so try each known variant.
-    target_buses = BUSES_BLOCKS[ptype]
-    for variant in BUSES_BLOCKS.values():
-        if variant in ppc:
-            ppc = ppc.replace(variant, target_buses)
-            break
-
-    target_layout = _layout_block(pascal_name, ptype)
-    for variant_type in PLUGIN_TYPES:
-        old = _layout_block(pascal_name, variant_type)
-        if old in ppc:
-            ppc = ppc.replace(old, target_layout)
-            break
-
-    ppc_path.write_text(ppc, encoding="utf-8")
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# clone
-# ──────────────────────────────────────────────────────────────────────────
-
-def cmd_clone(args: argparse.Namespace) -> int:
-    src_root = PROJECT_ROOT
-    cfg = discover_config(src_root)
-    require_config(cfg)
-
-    print(f"\nCloning {cfg['name']} (from {src_root})\n")
-
-    new_name = ask("Plugin name (PascalCase, e.g. MyDelay)",
-                   validate=is_pascal_ident)
-    new_name_lower = lower_alnum(new_name)
-
-    new_type = ask_choice("Plugin type", PLUGIN_TYPES, default="effect")
-
-    new_company = ask("Company name", default=cfg["company"] or "Funk")
-    new_company_lower = lower_alnum(new_company)
-
-    mfr_default = (cfg["mfr_code"] or
-                   ((new_company[:1].upper() + new_company[1:4]).ljust(4, "x"))[:4])
-    new_mfr = ask("Manufacturer code (4 chars, 1+ uppercase)",
-                  default=mfr_default, validate=is_four_char)
-
-    new_code = ask("Plugin code (4 chars, 1 uppercase + 3 lowercase)",
-                   default=derive_plugin_code(new_name), validate=is_four_char)
-
-    new_bundle = ask("Bundle ID",
-                     default=f"com.{new_company_lower}.{new_name_lower}",
-                     validate=is_bundle_id)
-
-    new_namespace = ask("DSP namespace",
-                        default=new_name_lower, validate=is_lower_ident)
-
-    default_dst = src_root.parent / new_name
-    raw = input(f"Destination directory [{default_dst}]: ").strip()
-    dst = Path(raw).expanduser().resolve() if raw else default_dst
-
-    print()
-    print("Summary:")
-    print(f"  Name:         {new_name}")
-    print(f"  Type:         {new_type}")
-    print(f"  Company:      {new_company}")
-    print(f"  Mfr code:     {new_mfr}")
-    print(f"  Plugin code:  {new_code}")
-    print(f"  Bundle ID:    {new_bundle}")
-    print(f"  DSP namespace: {new_namespace}")
-    print(f"  Destination:  {dst}")
-    print()
-
-    if dst.exists():
-        if not ask_yes_no(f"{dst} exists. Remove and overwrite?", default=False):
-            print("Aborted.")
-            return 1
-        shutil.rmtree(dst)
-
-    if not ask_yes_no("Proceed?", default=True):
-        print("Aborted.")
-        return 1
-
-    copy_template(src_root, dst)
-
-    # Create a fresh, empty build directory so the clone is ready for
-    # `cmake -B build` without any stale artefacts from the source tree.
-    (dst / "build").mkdir(exist_ok=True)
-
-    # Bulk string rules. Sort by descending pattern length so longer patterns
-    # match before any substring they contain (e.g. bundle id before lowercase
-    # plugin name; lowercase plugin name before namespace if they happen to
-    # overlap).
-    rules: list[tuple[str, str]] = [
-        (cfg["bundle_id"],        new_bundle),
-        (cfg["name"],             new_name),
-        (cfg["name"].lower(),     new_name_lower),
-        (cfg["namespace"],        new_namespace),
-        (cfg["plugin_code"],      new_code),
+def rename_rules(old: dict[str, str], new: dict[str, str]) -> list[tuple[str, str]]:
+    """The identity tokens a rename replaces in the text files. The four-character codes are not among them (a code
+    can be an ordinary word, "Gain"): they live in cmake/Product.cmake only, which is rewritten whole."""
+    rules = [
+        (old["NAME"], new["NAME"]),
+        (old["NAME"].upper(), new["NAME"].upper()),
+        (old["NAMESPACE"], new["NAMESPACE"]),
+        (lower_alnum(old["NAME"]), lower_alnum(new["NAME"])),
+        (old["BUNDLE_ID"], new["BUNDLE_ID"]),
+        (old["ENV_PREFIX"], new["ENV_PREFIX"]),
     ]
-    rules.sort(key=lambda r: -len(r[0]))
-
-    # Dedupe (e.g. name.lower() == namespace).
+    rules.sort(key=lambda r: -len(r[0]))          # longer tokens first (a bundle id before the names inside it)
     seen, ordered = set(), []
-    for old, new in rules:
-        if old in seen:
+    for o, n in rules:
+        if o and o not in seen:
+            seen.add(o)
+            ordered.append((o, n))
+    return ordered
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Prompts
+# ----------------------------------------------------------------------------------------------------------------------
+
+def interactive() -> bool:
+    return sys.stdin.isatty()
+
+
+def ask(prompt: str, given: str | None, default: str | None, check, assume_default: bool) -> str:
+    if given is not None:
+        err = check(given) if check else None
+        if err:
+            sys.exit(f"{prompt}: '{given}' is invalid: {err}")
+        return given
+    if assume_default or not interactive():
+        if default is None:
+            sys.exit(f"{prompt}: required (pass it as an option)")
+        err = check(default) if check else None
+        if err:
+            sys.exit(f"{prompt}: the derived value '{default}' is invalid ({err}); pass one")
+        return default
+    while True:
+        suffix = f" [{default}]" if default else ""
+        raw = input(f"{prompt}{suffix}: ").strip()
+        value = raw or (default or "")
+        if not value:
+            print("  required")
             continue
-        seen.add(old)
-        ordered.append((old, new))
+        err = check(value) if check else None
+        if err:
+            print(f"  invalid: {err}")
+            continue
+        return value
 
-    # Company name + manufacturer code: line-specific, not bulk — these
-    # strings are short and could appear elsewhere (e.g. "Funk" inside
-    # "testingplaygroundsynth" wouldn't actually match because of substring rules, but
-    # being explicit on CMakeLists is safer).
-    cml = dst / "CMakeLists.txt"
-    cml_text = cml.read_text(encoding="utf-8")
-    if cfg["company"] and cfg["company"] != new_company:
-        cml_text = re.sub(rf'COMPANY_NAME\s+"{re.escape(cfg["company"])}"',
-                          f'COMPANY_NAME            "{new_company}"', cml_text)
-    if cfg["mfr_code"] and cfg["mfr_code"] != new_mfr:
-        cml_text = re.sub(rf'PLUGIN_MANUFACTURER_CODE\s+{re.escape(cfg["mfr_code"])}',
-                          f"PLUGIN_MANUFACTURER_CODE {new_mfr}", cml_text)
-    cml.write_text(cml_text, encoding="utf-8")
 
-    n_modified = apply_text_replacements(dst, ordered)
+def confirm(prompt: str, assume_yes: bool) -> bool:
+    if assume_yes or not interactive():
+        return True
+    raw = input(f"{prompt} [Y/n]: ").strip().lower()
+    return raw in ("", "y", "yes")
 
-    set_plugin_type(dst, new_type, new_name)
 
-    cloned_script = dst / "scripts" / "plugin.py"
-    if cloned_script.exists():
-        cloned_script.chmod(0o755)
+def new_identity(args: argparse.Namespace, cur: dict[str, str], keep_company: bool) -> dict[str, str]:
+    y = args.yes
+    name = ask("Plugin name (PascalCase)", args.name, None, check_name, y)
+    kind = ask("Kind (effect | instrument)", args.type, cur["KIND"],
+               lambda v: None if v in KINDS else "effect or instrument", y)
+    if keep_company:
+        company = cur["COMPANY"]
+    else:
+        company = ask("Company", args.company, cur["COMPANY"], None, y)
+    mfr = ask("Manufacturer code (the same for all your plugins)", args.mfr, cur["MFR_CODE"], check_code, y)
+    code = ask("Plugin code (4 characters, unique)", args.code, derive_code(name), check_code, y)
+    bundle = ask("Bundle id", args.bundle_id, f"com.{lower_alnum(company) or 'funk'}.{lower_alnum(name)}",
+                 check_bundle_id, y)
+    namespace = ask("C++ namespace", args.namespace, lower_alnum(name), check_namespace, y)
+    env = ask("FunkGui environment prefix", args.env_prefix, re.sub(r"[^A-Z0-9]", "", code.upper()) + "_",
+              check_env_prefix, y)
+    return {"NAME": name, "KIND": kind, "VERSION": "0.1.0" if args.reset_version else cur["VERSION"],
+            "COMPANY": company, "MFR_CODE": mfr, "CODE": code, "BUNDLE_ID": bundle, "NAMESPACE": namespace,
+            "ENV_PREFIX": env, "OBJC_PREFIX": objc_prefix(code)}
 
-    print(f"\n✓ Cloned {n_modified} file(s) to {dst}")
-    print(f"  Build:  cd {dst} && cmake -B build && cmake --build build")
+
+def check_code_free(code: str, dirs: list[Path], skip: set[Path], allow: bool) -> None:
+    used = sibling_codes(dirs, skip)
+    if code in used:
+        msg = f"plugin code {code} is already used by {', '.join(sorted(set(used[code])))}"
+        if allow:
+            print(f"warning: {msg} (--allow-code-clash)")
+        else:
+            taken = ", ".join(sorted(used))
+            sys.exit(f"{msg}: hosts would confuse the two plugins. Choose another with --code (codes in use: {taken})")
+
+
+def print_identity(cfg: dict[str, str], title: str) -> None:
+    print(title)
+    for key in PRODUCT_KEYS:
+        print(f"  {key.lower():<12} {cfg[key]}")
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Subcommands
+# ----------------------------------------------------------------------------------------------------------------------
+
+def cmd_info(args: argparse.Namespace) -> int:
+    print_identity(read_product(PROJECT_ROOT), f"{PROJECT_ROOT}")
     return 0
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# rename
-# ──────────────────────────────────────────────────────────────────────────
+def cmd_clone(args: argparse.Namespace) -> int:
+    src = PROJECT_ROOT
+    cur = read_product(src)
+    print(f"Cloning {cur['NAME']} ({cur['KIND']}) from {src}\n")
+    new = new_identity(args, cur, keep_company=False)
+
+    dest = Path(args.dest).expanduser().resolve() if args.dest else (src.parent / new["NAME"])
+    if dest == src or src in dest.parents:
+        sys.exit(f"the destination {dest} is inside the source project")
+    if new["CODE"] == cur["CODE"]:
+        sys.exit(f"the clone needs its own plugin code (this project's is {cur['CODE']}): pass --code")
+    check_code_free(new["CODE"], [src.parent, dest.parent], {dest.resolve()}, args.allow_code_clash)
+
+    starter = args.starter or new["KIND"] != cur["KIND"]
+    print()
+    print_identity(new, f"New plugin at {dest}:")
+    print(f"  {'dsp code':<12} " + (f"the {new['KIND']} starter (scripts/starters/{new['KIND']})" if starter
+                                    else f"this project's ({cur['KIND']})"))
+    print()
+
+    if dest.exists() and any(dest.iterdir()):
+        if not args.force:
+            sys.exit(f"{dest} exists and is not empty: pass --force to replace its contents (its .git is kept)")
+        if not confirm(f"Replace everything in {dest} except .git?", args.yes):
+            print("Aborted.")
+            return 1
+    elif not confirm("Proceed?", args.yes):
+        print("Aborted.")
+        return 1
+
+    files = [rel for rel in project_files(src) if not (rel.parts and rel.parts[0] in COPY_EXCLUDES)]
+    with tempfile.TemporaryDirectory(prefix="plugin-clone-") as tmp:
+        stage = Path(tmp) / "stage"
+        for rel in files:
+            target = stage / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src / rel, target)
+        if starter:
+            apply_starter(src, stage, new["KIND"])
+        drop_origin_blocks(stage)
+        write_product(stage, new)
+        n = rewrite_tokens(stage, rename_rules(cur, new))
+
+        dest.mkdir(parents=True, exist_ok=True)
+        for entry in dest.iterdir():
+            if entry.name == ".git":
+                continue
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+        for entry in stage.iterdir():
+            shutil.move(str(entry), str(dest / entry.name))
+
+    for script in (dest / "scripts").glob("*"):
+        if script.suffix in (".py", ".sh"):
+            script.chmod(0o755)
+    print(f"Cloned {len(files)} files into {dest} ({n} rewritten).")
+    print("Next:")
+    print(f"  cd {dest}")
+    print("  cmake --workflow --preset dev-verify      # configure, build the plugin and the probes, run every test")
+    if not (dest / ".git").exists():
+        print("  git init && git add -A && git commit -m 'Start from the template'")
+    return 0
+
 
 def cmd_rename(args: argparse.Namespace) -> int:
     root = PROJECT_ROOT
-    cfg = discover_config(root)
-    require_config(cfg)
-
-    print(f"\nRenaming {cfg['name']} (in place at {root})\n")
-
-    new_name = ask("New plugin name (PascalCase)", validate=is_pascal_ident)
-    new_name_lower = lower_alnum(new_name)
-    new_namespace = ask("New DSP namespace",
-                        default=new_name_lower, validate=is_lower_ident)
-    new_code = ask("New plugin code (4 chars)",
-                   default=derive_plugin_code(new_name), validate=is_four_char)
-
-    # Keep company / mfr_code as-is unless user wants to change them.
-    if ask_yes_no("Also change company / manufacturer code?", default=False):
-        new_company = ask("Company name", default=cfg["company"] or "Funk")
-        new_mfr = ask("Manufacturer code (4 chars)",
-                      default=cfg["mfr_code"] or new_company[:4],
-                      validate=is_four_char)
-    else:
-        new_company = cfg["company"]
-        new_mfr = cfg["mfr_code"]
-
-    company_lower = lower_alnum(new_company or "")
-    new_bundle_default = (f"com.{company_lower}.{new_name_lower}"
-                          if company_lower else f"com.acme.{new_name_lower}")
-    new_bundle = ask("New bundle ID", default=new_bundle_default,
-                     validate=is_bundle_id)
-
+    cur = read_product(root)
+    print(f"Renaming {cur['NAME']} in place ({root})\n")
+    if args.type and args.type != cur["KIND"]:
+        sys.exit("rename keeps the kind; make an instrument from an effect (or back) with clone --type")
+    args.type = cur["KIND"]
+    new = new_identity(args, cur, keep_company=args.company is None)
+    if new["CODE"] != cur["CODE"]:
+        check_code_free(new["CODE"], [root.parent], {root.resolve()}, args.allow_code_clash)
     print()
-    print(f"  {cfg['name']:>22}  ->  {new_name}")
-    print(f"  {cfg['namespace']:>22}  ->  {new_namespace}")
-    print(f"  {cfg['plugin_code']:>22}  ->  {new_code}")
-    print(f"  {cfg['bundle_id']:>22}  ->  {new_bundle}")
-    if new_company != cfg["company"]:
-        print(f"  {cfg['company']:>22}  ->  {new_company}")
-    if new_mfr != cfg["mfr_code"]:
-        print(f"  {cfg['mfr_code']:>22}  ->  {new_mfr}")
-    print()
-
-    if not ask_yes_no("Apply rename in place?", default=False):
+    print_identity(new, "Renamed to:")
+    if not confirm("Apply the rename in place?", args.yes):
         print("Aborted.")
         return 1
-
-    rules: list[tuple[str, str]] = [
-        (cfg["bundle_id"],    new_bundle),
-        (cfg["name"],         new_name),
-        (cfg["name"].lower(), new_name_lower),
-        (cfg["namespace"],    new_namespace),
-        (cfg["plugin_code"],  new_code),
-    ]
-    rules.sort(key=lambda r: -len(r[0]))
-    seen, ordered = set(), []
-    for old, new in rules:
-        if old in seen:
-            continue
-        seen.add(old)
-        ordered.append((old, new))
-
-    cml = root / "CMakeLists.txt"
-    cml_text = cml.read_text(encoding="utf-8")
-    if new_company and cfg["company"] and cfg["company"] != new_company:
-        cml_text = re.sub(rf'COMPANY_NAME\s+"{re.escape(cfg["company"])}"',
-                          f'COMPANY_NAME            "{new_company}"', cml_text)
-    if new_mfr and cfg["mfr_code"] and cfg["mfr_code"] != new_mfr:
-        cml_text = re.sub(rf'PLUGIN_MANUFACTURER_CODE\s+{re.escape(cfg["mfr_code"])}',
-                          f"PLUGIN_MANUFACTURER_CODE {new_mfr}", cml_text)
-    cml.write_text(cml_text, encoding="utf-8")
-
-    n = apply_text_replacements(root, ordered)
-    print(f"\n✓ Renamed: {n} file(s) modified. Wipe build/ before rebuilding.")
+    write_product(root, new)
+    n = rewrite_tokens(root, rename_rules(cur, new))
+    print(f"Renamed: {n} files rewritten. Delete the build directories (rm -rf build-*) before building again.")
     return 0
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# codesign
-# ──────────────────────────────────────────────────────────────────────────
+def cmd_starter_diff(args: argparse.Namespace) -> int:
+    cur = read_product(PROJECT_ROOT)
+    kind = args.kind or cur["KIND"]
+    starter = PROJECT_ROOT / "scripts" / "starters" / kind
+    rc = 0
+    for rel in STARTER_PATHS:
+        r = subprocess.run(["diff", "-ru", str(starter / rel), str(PROJECT_ROOT / rel)])
+        rc = max(rc, r.returncode)
+    readme_parts, readme = starter / STARTER_README, PROJECT_ROOT / "README.md"
+    parts = readme_blocks(readme_parts.read_text(encoding="utf-8")) if readme_parts.is_file() else {}
+    ours = readme_blocks(readme.read_text(encoding="utf-8")) if readme.is_file() else {}
+    for name, block in parts.items():
+        if ours.get(name) != block:
+            rc = max(rc, 1)
+            sys.stdout.writelines(difflib.unified_diff(block.splitlines(keepends=True),
+                                                       ours.get(name, "").splitlines(keepends=True),
+                                                       f"{starter / STARTER_README} [{name}]",
+                                                       f"README.md [{name}]"))
+    if rc == 0:
+        paths = ", ".join(p.as_posix() for p in STARTER_PATHS)
+        print(f"{paths} and the README's starter blocks are the {kind} starter, unchanged.")
+    return 0 if rc in (0, 1) else rc
 
-def _find_artefacts(build_dir: Path, name: str) -> list[Path]:
-    """Locate built bundles under build_dir for the given plugin name."""
-    if not build_dir.is_dir():
-        sys.exit(f"Build directory not found: {build_dir}")
-    candidates: list[Path] = []
-    artefacts = list(build_dir.rglob(f"{name}_artefacts"))
-    if not artefacts:
-        sys.exit(f"No {name}_artefacts directory under {build_dir}. Have you built?")
-    for art in artefacts:
-        for pattern in (f"**/{name}.component", f"**/{name}.vst3", f"**/{name}.app"):
-            candidates.extend(art.glob(pattern))
-    return sorted(set(candidates))
+
+def find_bundles(build_dir: Path, name: str) -> list[Path]:
+    art = build_dir / f"{name}_artefacts"
+    if not art.is_dir():
+        sys.exit(f"no {art}: build first (cmake --workflow --preset release-build)")
+    found: list[Path] = []
+    for pattern in (f"*/AU/{name}.component", f"*/VST3/{name}.vst3", f"*/Standalone/{name}.app"):
+        found.extend(art.glob(pattern))
+    if not found:
+        sys.exit(f"no bundles under {art}")
+    return sorted(found)
 
 
 def cmd_codesign(args: argparse.Namespace) -> int:
-    cfg = discover_config(PROJECT_ROOT)
-    require_config(cfg)
-    build_dir = (PROJECT_ROOT / args.build_dir).resolve()
-    bundles = _find_artefacts(build_dir, cfg["name"])
-
-    if not bundles:
-        sys.exit(f"No bundles to sign under {build_dir}")
-
-    print(f"Signing {len(bundles)} bundle(s) with identity: {args.identity}\n")
-
-    for bundle in bundles:
+    name = read_product(PROJECT_ROOT)["NAME"]
+    for bundle in find_bundles((PROJECT_ROOT / args.build_dir).resolve(), name):
         subprocess.run(["xattr", "-cr", str(bundle)], check=True)
-        cmd = [
-            "codesign", "--force", "--deep",
-            "--options", "runtime",
-            "--timestamp",
-            "--sign", args.identity,
-            str(bundle),
-        ]
-        print(f"  $ {' '.join(cmd)}")
-        result = subprocess.run(cmd)
-        if result.returncode != 0:
+        cmd = ["codesign", "--force", "--deep", "--options", "runtime", "--timestamp", "--sign", args.identity,
+               str(bundle)]
+        print("$ " + " ".join(cmd))
+        if subprocess.run(cmd).returncode != 0:
             sys.exit(f"codesign failed for {bundle}")
-
-    print("\n✓ All bundles signed.")
+    print("All bundles signed.")
     return 0
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# notarize
-# ──────────────────────────────────────────────────────────────────────────
-
-def _ditto_zip(bundle: Path, out: Path) -> None:
-    cmd = ["ditto", "-c", "-k", "--keepParent", str(bundle), str(out)]
-    result = subprocess.run(cmd)
-    if result.returncode != 0:
-        sys.exit(f"ditto zip failed for {bundle}")
 
 
 def cmd_notarize(args: argparse.Namespace) -> int:
-    cfg = discover_config(PROJECT_ROOT)
-    require_config(cfg)
-    build_dir = (PROJECT_ROOT / args.build_dir).resolve()
-    bundles = _find_artefacts(build_dir, cfg["name"])
-
-    if not bundles:
-        sys.exit(f"No bundles to notarize under {build_dir}")
-
-    print(f"Notarizing {len(bundles)} bundle(s) "
-          f"(keychain profile: {args.keychain_profile})\n")
-
+    name = read_product(PROJECT_ROOT)["NAME"]
+    bundles = find_bundles((PROJECT_ROOT / args.build_dir).resolve(), name)
     with tempfile.TemporaryDirectory() as tmp:
-        tmp_dir = Path(tmp)
         for bundle in bundles:
-            zip_path = tmp_dir / f"{bundle.name}.zip"
-            print(f"  zip → {zip_path.name}")
-            _ditto_zip(bundle, zip_path)
-
-            submit = [
-                "xcrun", "notarytool", "submit", str(zip_path),
-                "--keychain-profile", args.keychain_profile,
-                "--wait",
-            ]
-            print(f"  $ {' '.join(submit)}")
-            result = subprocess.run(submit)
-            if result.returncode != 0:
+            archive = Path(tmp) / f"{bundle.name}.zip"
+            subprocess.run(["ditto", "-c", "-k", "--keepParent", str(bundle), str(archive)], check=True)
+            submit = ["xcrun", "notarytool", "submit", str(archive), "--keychain-profile", args.keychain_profile,
+                      "--wait"]
+            print("$ " + " ".join(submit))
+            if subprocess.run(submit).returncode != 0:
                 sys.exit(f"notarytool failed for {bundle.name}")
-
-            staple = ["xcrun", "stapler", "staple", str(bundle)]
-            print(f"  $ {' '.join(staple)}")
-            result = subprocess.run(staple)
-            if result.returncode != 0:
+            if subprocess.run(["xcrun", "stapler", "staple", str(bundle)]).returncode != 0:
                 sys.exit(f"stapler failed for {bundle.name}")
-
-    print("\n✓ All bundles notarized and stapled.")
+    print("All bundles notarized and stapled.")
     return 0
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# main
-# ──────────────────────────────────────────────────────────────────────────
+def add_identity_options(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--name", help="PascalCase name: the target, the bundles, the window title")
+    p.add_argument("--type", choices=KINDS, help="effect or instrument (default: this project's kind)")
+    p.add_argument("--code", help="4-character plugin code, unique among your plugins (default: from the name)")
+    p.add_argument("--mfr", help="4-character manufacturer code (default: this project's)")
+    p.add_argument("--company", help="company name (default: this project's)")
+    p.add_argument("--bundle-id", help="reverse-DNS bundle id (default: com.<company>.<name>)")
+    p.add_argument("--namespace", help="C++ namespace (default: the name in lower case)")
+    p.add_argument("--env-prefix", help="FunkGui's environment prefix (default: the code in upper case, then _)")
+    p.add_argument("--allow-code-clash", action="store_true", help="accept a plugin code another project uses")
+    p.add_argument("--reset-version", action="store_true", help="start at version 0.1.0")
+    p.add_argument("--yes", "-y", action="store_true", help="take the derived defaults and do not ask")
+
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        prog="plugin",
-        description=__doc__.strip(),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
+    parser = argparse.ArgumentParser(prog="plugin.py", description=__doc__.strip(),
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
     subs = parser.add_subparsers(dest="command", required=True)
 
-    p = subs.add_parser("clone", help="Clone the plugin into a new plugin")
+    p = subs.add_parser("info", help="print this project's identity")
+    p.set_defaults(func=cmd_info)
+
+    p = subs.add_parser("clone", help="copy this project into a new plugin")
+    add_identity_options(p)
+    p.add_argument("--dest", help="the new project's directory (default: beside this one, named after it)")
+    p.add_argument("--starter", action="store_true",
+                   help="replace the algorithm, its probes and README blocks with the kind's starter (automatic for a "
+                        "new kind)")
+    p.add_argument("--force", action="store_true", help="replace a non-empty destination's contents (not its .git)")
     p.set_defaults(func=cmd_clone)
 
-    p = subs.add_parser("rename", help="Rename the current plugin in place")
+    p = subs.add_parser("rename", help="rename this project in place")
+    add_identity_options(p)
     p.set_defaults(func=cmd_rename)
 
-    p = subs.add_parser("codesign", help="Codesign built bundles")
-    p.add_argument("--identity", required=True,
-                   help='Developer ID Application identity, e.g. '
-                        '"Developer ID Application: Name (TEAMID)"')
-    p.add_argument("--build-dir", default="build",
-                   help="Build directory under the project root (default: build)")
+    p = subs.add_parser("starter-diff", help="diff the algorithm, its probes and README blocks against a starter")
+    p.add_argument("--kind", choices=KINDS, help="the starter to compare with (default: this project's kind)")
+    p.set_defaults(func=cmd_starter_diff)
+
+    p = subs.add_parser("codesign", help="codesign the built bundles")
+    p.add_argument("--identity", required=True, help='"Developer ID Application: Name (TEAMID)"')
+    p.add_argument("--build-dir", default="build-release", help="build directory (default: build-release)")
     p.set_defaults(func=cmd_codesign)
 
-    p = subs.add_parser("notarize", help="Submit signed bundles to Apple notary")
-    p.add_argument("--keychain-profile", required=True,
-                   help="notarytool keychain profile name (set up via "
-                        "`xcrun notarytool store-credentials`)")
-    p.add_argument("--build-dir", default="build",
-                   help="Build directory under the project root (default: build)")
+    p = subs.add_parser("notarize", help="notarize and staple the signed bundles")
+    p.add_argument("--keychain-profile", required=True, help="notarytool keychain profile")
+    p.add_argument("--build-dir", default="build-release", help="build directory (default: build-release)")
     p.set_defaults(func=cmd_notarize)
 
     args = parser.parse_args()

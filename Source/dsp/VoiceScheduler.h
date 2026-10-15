@@ -1,134 +1,100 @@
+// Source/dsp/VoiceScheduler.h: which voice plays a note. The legacy synth's policy (its VoiceScheduler), unchanged:
+//
+//   note-on   the voice already sounding this note (held or releasing) plays it again; else the first silent voice
+//             (the lowest index); else the voice whose note-on came first is stolen (a note played again counts from
+//             its new note-on)
+//   note-off  releases every voice playing that note (the Engine asks plays())
+//
+// It only decides and keeps the bookkeeping (each voice's note and note-on order); the Engine carries the decision out:
+// a retrigger, a start, or a steal (a 2 ms fade, then the start). While a stolen voice fades out it belongs to its new
+// note already: a second note-on of that note finds it, a note-off of the old note does not. Audio thread only; no
+// allocation.
 #pragma once
 
-#include <atomic>
-#include "Voice.h"
+#include <array>
+#include <cstddef>
+#include <cstdint>
 
 namespace testingplaygroundsynth
 {
-    // Owns a fixed pool of voices and routes MIDI note events to them.
-    //
-    // Polyphonic with simple voice allocation:
-    //   - noteOn  : reuse the voice already playing this note, else a free
-    //               voice, else steal the oldest-started voice.
-    //   - noteOff : release every voice playing that note.
-    //
-    // The caller (the processor) iterates the MidiBuffer and drives noteOn/
-    // noteOff and renderBlock at the right sample offsets, keeping this class
-    // free of any JUCE dependency. Audio-thread only once prepared: no
-    // allocation, no locks.
-    template <int NumVoices = 16>
+    template <std::size_t N>
     class VoiceScheduler
     {
     public:
-        void prepare(double sampleRate) noexcept
+        enum class Action : uint8_t
         {
-            for (auto& v : voices_)
-                v.prepare(sampleRate);
-            for (auto& a : ages_)
-                a = 0;
-            ageCounter_ = 0;
+            retrigger,      // the voice sounds this note already: play it again
+            start,          // a silent voice: start the note now
+            steal,          // every voice sounds: this one, the oldest note, fades out and then starts the note
+        };
+
+        struct Assignment
+        {
+            std::size_t voice = 0;
+            Action action = Action::start;
+        };
+
+        void reset() noexcept
+        {
+            note_.fill(-1);
+            order_.fill(0);
+            counter_ = 0;
         }
 
-        // Envelope setters — called from the message thread (parameterChanged).
-        // Stored atomically; the audio thread applies them when a voice starts.
-        void setAttack(float seconds) noexcept
+        // `sounding[v]`: voice v is busy (held, releasing, or fading out after a steal).
+        Assignment noteOn(int note, const std::array<bool, N>& sounding) noexcept
         {
-            attackSeconds_.store(seconds, std::memory_order_relaxed);
-        }
-
-        void setRelease(float seconds) noexcept
-        {
-            releaseSeconds_.store(seconds, std::memory_order_relaxed);
-        }
-
-        void noteOn(int midiNote, float velocity) noexcept
-        {
-            Voice* target = findVoicePlaying(midiNote);
-            if (target == nullptr) target = findFreeVoice();
-            if (target == nullptr) target = stealOldestVoice();
-
-            target->setAttackTime(attackSeconds_.load(std::memory_order_relaxed));
-            target->setReleaseTime(releaseSeconds_.load(std::memory_order_relaxed));
-            target->noteOn(midiNote, velocity);
-            ages_[indexOf(target)] = ageCounter_++;
-        }
-
-        void noteOff(int midiNote) noexcept
-        {
-            for (auto& v : voices_)
-                if (v.isActive() && v.note() == midiNote)
-                    v.noteOff();
-        }
-
-        void allNotesOff() noexcept
-        {
-            for (auto& v : voices_)
-                v.noteOff();
-        }
-
-        // Renders a segment of the block, summing every active voice and
-        // adding the mono mix into each output channel.
-        void renderBlock(float* const* channels, int numChannels,
-                         int startSample, int numSamples) noexcept
-        {
-            for (int i = 0; i < numSamples; ++i)
+            Assignment a;
+            if (!find(note, sounding, a.voice))
             {
-                float mix = 0.0f;
-                for (auto& v : voices_)
-                    mix += v.renderNextSample();
-
-                mix *= kHeadroom;   // leave headroom for chords
-
-                const int idx = startSample + i;
-                for (int ch = 0; ch < numChannels; ++ch)
-                    channels[ch][idx] += mix;
-            }
-        }
-
-    private:
-        static constexpr float kHeadroom = 0.25f;
-
-        int indexOf(const Voice* v) const noexcept
-        {
-            return static_cast<int>(v - voices_);
-        }
-
-        Voice* findVoicePlaying(int note) noexcept
-        {
-            for (auto& v : voices_)
-                if (v.isActive() && v.note() == note)
-                    return &v;
-            return nullptr;
-        }
-
-        Voice* findFreeVoice() noexcept
-        {
-            for (auto& v : voices_)
-                if (! v.isActive())
-                    return &v;
-            return nullptr;
-        }
-
-        Voice* stealOldestVoice() noexcept
-        {
-            Voice*   oldest    = &voices_[0];
-            unsigned oldestAge = ages_[0];
-            for (int i = 1; i < NumVoices; ++i)
-            {
-                if (ages_[i] < oldestAge)
+                a.action = Action::steal;
+                a.voice = 0;
+                for (std::size_t v = 0; v < N; ++v)
                 {
-                    oldestAge = ages_[i];
-                    oldest    = &voices_[i];
+                    if (!sounding[v])
+                    {
+                        a.action = Action::start;
+                        a.voice = v;
+                        break;
+                    }
+                    if (order_[v] < order_[a.voice])
+                        a.voice = v;
                 }
             }
-            return oldest;
+            else
+            {
+                a.action = Action::retrigger;
+            }
+            note_[a.voice] = note;
+            order_[a.voice] = ++counter_;
+            return a;
         }
 
-        Voice    voices_[NumVoices];
-        unsigned ages_[NumVoices]   = {};
-        unsigned ageCounter_        = 0;
+        // The note voice v belongs to (after a steal: the new one); -1 when it has had none since reset().
+        int note(std::size_t v) const noexcept { return note_[v]; }
+        bool plays(std::size_t v, int note) const noexcept { return note_[v] == note; }
 
-        std::atomic<float> attackSeconds_{ 0.005f };
-        std::atomic<float> releaseSeconds_{ 0.050f };
+    private:
+        bool find(int note, const std::array<bool, N>& sounding, std::size_t& voice) const noexcept
+        {
+            for (std::size_t v = 0; v < N; ++v)
+                if (sounding[v] && note_[v] == note)
+                {
+                    voice = v;
+                    return true;
+                }
+            return false;
+        }
+
+        std::array<int, N> note_ = filled(-1);
+        std::array<uint64_t, N> order_{};       // note-on order: 1, 2, ...; 0 = never
+        uint64_t counter_ = 0;
+
+        static constexpr std::array<int, N> filled(int x) noexcept
+        {
+            std::array<int, N> a{};
+            a.fill(x);
+            return a;
+        }
     };
 }

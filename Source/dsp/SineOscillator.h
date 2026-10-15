@@ -1,51 +1,58 @@
+// Source/dsp/SineOscillator.h: the legacy synth's oscillator (its SineOscillator: a float phase in radians through
+// std::sin, one voice at a time), rebuilt on the DSP core for four voices at once, one per SIMD lane.
+//
+//   phase      a uint32 per voice: 2^32 is one cycle and the wrap is the integer overflow, so the phase never
+//              accumulates an error and a held note never drifts (fsdsp::phase)
+//   increment  a MIDI note's step per sample: fsdsp::phase::incFromPitch (within 0.002 cents of
+//              440 * 2^((n - 69) / 12) Hz) rounded once to the uint32 grid, 2^-32 cycles per sample (the rounding is
+//              largest for the lowest note at the highest rate: 0.0012 cents for MIDI 0 at 48 kHz, 0.0095 at 384 kHz)
+//   wave       sin(2 pi phase) as fsdsp::sinPi of the signed phase: no libm on the audio thread
+//
+// To try another waveform, change wave(): it gets four phases (a cycle is 2^32) and returns four samples in [-1, 1].
+// fsdsp::phase::toUnit gives the phase in [0, 1), toSigned in [-1, 1]; the voices, the envelope and the probes'
+// pitch rows do not change. Mind aliasing: a waveform with harmonics (a saw, a square) needs band-limiting.
 #pragma once
 
+#include "fsdsp/core/FastMath.h"
+#include "fsdsp/core/Phase.h"
+#include "fsdsp/core/Simd.h"
+
 #include <cmath>
+#include <cstdint>
 
 namespace testingplaygroundsynth
 {
-    // A bare-bones sine-wave oscillator.
-    //
-    // Self-contained (no JUCE) and audio-thread safe: no allocation, no locks.
-    // Usage: prepare() once with the sample rate, setFrequency() whenever the
-    // pitch changes, then pull one sample at a time with nextSample().
-    class SineOscillator
+    struct SineOscillator4
     {
-    public:
-        void prepare(double sampleRate) noexcept
+        fsdsp::simd::u32x4 phase = fsdsp::simd::set1u(0);   // per lane
+        fsdsp::simd::u32x4 inc = fsdsp::simd::set1u(0);     // per lane and sample
+
+        // The waveform, four lanes at once.
+        static fsdsp::simd::f32x4 wave(fsdsp::simd::u32x4 p) noexcept
         {
-            fs_ = sampleRate > 0.0 ? sampleRate : 48000.0;
-            updateIncrement();
+            return fsdsp::sinPi(fsdsp::phase::toSigned(p));
         }
 
-        void setFrequency(float hz) noexcept
+        // The next four samples; the phases advance by one sample.
+        fsdsp::simd::f32x4 next() noexcept
         {
-            freq_ = hz;
-            updateIncrement();
-        }
-
-        void reset() noexcept { phase_ = 0.0f; }
-
-        float nextSample() noexcept
-        {
-            const float s = std::sin(phase_);
-            phase_ += inc_;
-            if (phase_ >= kTwoPi)
-                phase_ -= kTwoPi;
+            const fsdsp::simd::f32x4 s = wave(phase);
+            phase = fsdsp::simd::addu(phase, inc);
             return s;
         }
 
-    private:
-        static constexpr float kTwoPi = 6.28318530717958647692f;
-
-        void updateIncrement() noexcept
+        // incFromPitch's offset for a sample rate: log2(440 / fs) - 69 / 12, in double, rounded once (prepare() only).
+        static float pitchOffset(double fs) noexcept
         {
-            inc_ = kTwoPi * freq_ / static_cast<float>(fs_);
+            return static_cast<float>(std::log2(440.0 / fs) - 69.0 / 12.0);
         }
 
-        double fs_    = 48000.0;
-        float  freq_  = 440.0f;
-        float  phase_ = 0.0f;
-        float  inc_   = 0.0f;
+        // A MIDI note's increment per sample (cycles x 2^32) at that offset. Allocation-free; called at note-on.
+        static uint32_t increment(int note, float pitchOffset) noexcept
+        {
+            namespace simd = fsdsp::simd;
+            const simd::f32x4 cycles = fsdsp::phase::incFromPitch(simd::set1(static_cast<float>(note)), pitchOffset);
+            return simd::laneu<0>(fsdsp::phase::fromCycles(cycles));
+        }
     };
 }
