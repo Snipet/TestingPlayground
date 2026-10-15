@@ -1,26 +1,31 @@
 # TestingPlaygroundSynth: rules for a Claude session
 
 A research playground for synthesiser voices: a polyphonic sine synth with an ADSR (AU, VST3, Standalone; macOS
-arm64) on JUCE 8.0.4, with a FunkGui editor and FSynth's DSP core (vendored). It is the legacy Visage synth (tag
-`legacy-visage`) ported onto that stack, made from FunkPluginTemplate with `scripts/plugin.py`. Change the algorithm,
-the parameters and the panel freely; keep the rules below. README.md is the user's guide (how the synth works, how to
-swap in an algorithm); this file is what a session must know.
+arm64) on JUCE 8.0.4, with a FunkGui editor and FSynth's DSP core (vendored). Change the algorithm, the parameters and
+the panel freely; keep the rules below. README.md is the user's guide (how the synth works, how to swap in an
+algorithm); this file is what a session must know.
+
+<!-- origin -->
+It is the legacy Visage synth (the tag `legacy-visage`; never move it) ported onto that stack, made from
+FunkPluginTemplate with `scripts/plugin.py`; README.md lists what changed from the legacy synth. Its plugin code is
+new: the legacy code `Tstn`, which it shared with TestingPlayground (the original project), stays TestingPlayground's.
+<!-- /origin -->
 
 ## What goes where
 
 | Path | What | Rule |
 | --- | --- | --- |
-| `cmake/Product.cmake` | identity: name, kind (instrument), codes (`Funk`/`Tsyn`), bundle id, namespace | `scripts/plugin.py` rewrites it; the plugin code stays unique among the user's plugins (TestingPlayground keeps the legacy `Tstn`) |
+| `cmake/Product.cmake` | identity: name, kind (instrument), codes, bundle id, namespace (`scripts/plugin.py info` prints them) | `scripts/plugin.py` rewrites it; the plugin code stays unique among the user's plugins |
 | `Source/fsdsp/core/**` | FSynth's DSP core, vendored (`SEED.tsv`) | do not edit casually: `scripts/sync-dsp-core.sh` refuses to overwrite edits |
 | `Source/dsp/Params.h` | the parameter table: GAIN, ATTACK, DECAY, SUSTAIN, RELEASE | IDs are forever (hosts store them) |
 | `Source/dsp/SineOscillator.h` | the waveform (`wave()`) and the pitch (uint32 phase accumulators), four voices per SIMD vector | JUCE-free C++20, namespace `testingplaygroundsynth` (all of `Source/dsp`) |
 | `Source/dsp/Adsr.h` | the linear ADSR, four voices per SIMD vector (`Quad::tick`), and the per-voice state (`Bank`) | |
 | `Source/dsp/VoiceScheduler.h` | the voice policy (the legacy one): retrigger the same note, else the first silent voice, else steal the oldest note-on | decides only; the Engine carries it out |
 | `Source/dsp/Engine.h/.cpp` | 16 voices, note events at their sample offsets, the 2 ms retrigger and steal ramps, GAIN and SUSTAIN smoothing | keep its interface: the processor and `plugin.process` use it |
-| `Source/plugin/**` | the JUCE `AudioProcessor`: APVTS from the table, one FunkGui port per parameter, MIDI to `Event`s | reads parameters once per block, calls the Engine |
+| `Source/plugin/**` | the JUCE `AudioProcessor`: APVTS from the table, one FunkGui port per parameter, MIDI to `Event`s, the bypass | reads parameters once per block, calls the Engine; never loses a note-off |
 | `Source/editor/**` | the FunkGui `Panel` (built from the table: ENVELOPE, then the dials in a row spread to the width), `EnvelopeView` (the ADSR picture, from the ports), `ParamModel`, `Theme.h`; `gpu/` the EditorHost factory | reaches the processor only through its ports |
 | `Tools/probes/**` | probes on FunkGui's Harness: `dsp/` (Source/dsp only: pitch, level, envelope, voices, render), `plugin/`, `gui/` | spec rows only, no golden files |
-| `scripts/starters/<kind>/` | the template's effect and instrument starters | what `plugin.py clone --type/--starter` installs; not this synth |
+| `scripts/starters/<kind>/` | the template's effect and instrument starters: `Source/dsp`, `Tools/probes/dsp`, `Tools/probes/plugin/process.cpp`, `CLAUDE.md`, `README-parts.md` (README.md's `<!-- starter:... -->` blocks) | what `plugin.py clone --type/--starter` installs; not this synth |
 
 ## Build and test
 
@@ -31,10 +36,11 @@ swap in an algorithm); this file is what a session must know.
   `gui.dump.envelope.png`, the editor rendered headless. Look at the PNGs after any editor change.
 - When the synth changes, change its probes with it: `dsp.pitch` (zero crossings, within 0.5 cent), `dsp.level`
   (levels by DFT, and a note sample by sample against a model in double), `dsp.envelope` (each ADSR segment to the
-  sample, parameter changes that must not step), `dsp.voices` (allocation, stealing, note-off, clicks), `dsp.render`
-  (a phrase to WAV; block-size invariance), `plugin.process` (the processor as a host drives it: MIDI at offsets inside
-  a block, host writes, NaN, bit-exact against the Engine). Check against a model or a formula; a level alone misses a
-  flipped polarity. `gui.dump` and `plugin.state` work from the table.
+  sample, parameter changes that must not step), `dsp.voices` (allocation, stealing, note-off, All Notes Off, clicks),
+  `dsp.render` (a phrase to WAV; block-size invariance), `plugin.process` (the processor as a host drives it: MIDI at
+  offsets inside a block, host writes, NaN, bit-exact against the Engine; and the MIDI that must never leave a note
+  held: CC 120 and 123, a velocity-0 note-on, a 0-sample block, an overfull block, a bypass). Check against a model or
+  a formula; a level alone misses a flipped polarity. `gui.dump` and `plugin.state` work from the table.
 - `cmake --workflow --preset release-build`: Release with LTO in `build-release`. `scripts/install.sh` copies the AU
   and VST3 into `~/Library/Audio/Plug-Ins`; only the user (or the lead) runs it, never an agent.
 - The presets build at `-j6` (the machine is shared). No network: JUCE, bgfx and shaderc come from `~/audio/.deps`
@@ -52,6 +58,9 @@ swap in an algorithm); this file is what a session must know.
 - Notes play on their sample: `Engine::process` renders up to each event's offset, then applies it; ramps end on fixed
   samples (`render()` cuts there), so the output does not depend on the host's block size (`dsp.render` checks 64
   against 333 samples).
+- No note-off is ever lost: `Engine::process` applies the events of a 0-sample block; the processor plays a block with
+  more than `kMaxEventsPerBlock` events in parts, and while bypassed (`processBlockBypassed`) runs the Engine on the
+  note-offs and all-notes-offs (no note-ons) and outputs silence. `plugin.process` checks each case.
 - `Engine::tailSeconds()` is called by hosts from any thread: return a constant, or an atomic that `setParams` stores.
 - Prefer the core's math on the audio path (`fsdsp::exp2/log2/tanh/sinPi/cosPi/tanPi`, `fsdsp::simd`, `fsdsp::phase`).
 - Flags: `-ffp-contract=off`, never `-ffast-math`. Product constants come from the generated `Product.h`, never from
@@ -80,4 +89,5 @@ swap in an algorithm); this file is what a session must know.
 ## Git
 
 Work on a branch; commit messages say what changed and why. Never commit build directories (`build-*/` is ignored).
-The legacy Visage sources are the tag `legacy-visage` (never move it).
+Text about this repository's own history goes in `<!-- origin -->` blocks (README.md, CLAUDE.md): a clone has no
+such history, and `plugin.py clone` leaves them out.

@@ -1,14 +1,18 @@
 // Source/dsp/Adsr.h: the envelope of the voices, four at a time (one per SIMD lane). The legacy Voice had a linear
-// attack up to a held level of 1 and a linear release; this is that envelope with a decay and a sustain level added.
-// Every segment is a straight line:
+// attack up to a held level of 1 and a linear release; this is that envelope with a decay and a sustain level added,
+// and a release that always lasts RELEASE (below). Every segment is a straight line:
 //
 //   attack   while the key is down: up to 1 at 1 / ATTACK per second, from wherever the level is (from silence it lasts
 //            ATTACK; a key played again while its voice still sounds rises from the level it finds: the legacy rule)
 //   decay    then down to SUSTAIN at (1 - SUSTAIN) / DECAY per second: from 1 it lasts DECAY
 //   sustain  SUSTAIN while the key is down. The level follows SUSTAIN's smoothed value: a higher value is followed at
 //            once, a lower one at the decay's slope or at the smoother's, whichever is slower, so it never steps
-//   release  from the level at note-off down to 0 in RELEASE (a new RELEASE takes effect at once: the slope is the
-//            note-off level / RELEASE)
+//   release  from the level at note-off down to 0 in RELEASE, whatever that level (a new RELEASE takes effect at once:
+//            the slope is the note-off level / RELEASE). A change from the legacy rule, which fell at 1 / RELEASE per
+//            second, so a note let go at level L faded in L x RELEASE: the two agree for a note let go at 1 (after its
+//            attack, at SUSTAIN 100 %), but a note let go during its attack now fades for longer, up to 1 / L times
+//            (ATTACK 200 ms, let go after 50 ms at 0.25: legacy 0.25 x RELEASE, now RELEASE). For the legacy rule, make
+//            `fall` level - release in Quad::tick (releaseFrom is then unused) and adapt dsp.envelope's release rows.
 //
 // The times arrive once per block (Rates, per sample); changing one changes a slope, never the level. A released voice
 // reaches exactly 0 and stays there, which is when the Engine counts it free.

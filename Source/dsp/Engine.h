@@ -15,14 +15,21 @@
 //   - a stolen voice fades out along the same 2 ms curve, then starts its new note from silence (phase 0, envelope 0),
 //     so a note that steals sounds 2 ms late;
 //   - GAIN and SUSTAIN are smoothed per sample (fsdsp::Smoother4, 20 ms); ATTACK, DECAY and RELEASE change slopes only.
-// The legacy synth stepped there: a stolen voice jumped to its new pitch and velocity mid-waveform, a retriggered one
-// to its new velocity, and ATTACK and RELEASE reached only the notes started after a change. Everything advances per
-// sample and every ramp ends on a fixed sample, so the output does not depend on how the host splits its blocks.
+// The legacy synth stepped in the first two places: a stolen voice jumped to its new pitch and velocity mid-waveform, a
+// retriggered one to its new velocity; and ATTACK and RELEASE reached only the notes started after a change. Its GAIN
+// did not step (a 10 ms one-pole); SUSTAIN is new. Everything advances per sample and every ramp ends on a fixed
+// sample, so the output does not depend on how the host splits its blocks.
+//
+// Other changes from the legacy synth: every note that starts from silence starts at phase 0 (the legacy Voice never
+// reset its oscillator, and an idle voice did not advance it, so a reused voice resumed at its previous note's last
+// phase: harmless under an envelope from 0, but not the same samples); and the release lasts RELEASE from any level
+// (Adsr.h).
 //
 // The processor calls, on the audio thread: prepare() before playback (the only place that may allocate), setParams()
 // once per block with the plain values of Params.h (finite, within the table's range), then process() with the
-// block's note events; the output channels are written (not added to). Hosts call tailSeconds() from any thread, so
-// it reads an atomic that setParams() stores. activeVoices() and voice() describe the voices, for the probes.
+// block's note events; the output channels are written (not added to). A call with 0 samples (or no channel) still
+// applies its events. Hosts call tailSeconds() from any thread, so it reads an atomic that setParams() stores.
+// activeVoices() and voice() describe the voices, for the probes.
 #pragma once
 
 #include "dsp/Adsr.h"

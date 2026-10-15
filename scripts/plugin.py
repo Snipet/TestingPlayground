@@ -23,9 +23,11 @@ What a clone changes:
   - the old name (as written, in upper case and in lower case), namespace, bundle id and environment prefix are
     replaced in every text file (sources, docs, CMake, scripts) where they stand as whole words, except in the
     vendored DSP core (Source/fsdsp/**) and SEED.tsv, which stay byte for byte;
-  - with a kind change or --starter, the starter's files replace the project's: Source/dsp/, Tools/probes/dsp/ and
-    Tools/probes/plugin/process.cpp from scripts/starters/<kind>/, and README.md's kind-specific blocks
+  - with a kind change or --starter, the starter's files replace the project's: Source/dsp/, Tools/probes/dsp/,
+    Tools/probes/plugin/process.cpp and CLAUDE.md from scripts/starters/<kind>/, and README.md's kind-specific blocks
     (<!-- starter:<name> --> ... <!-- /starter:<name> -->) from scripts/starters/<kind>/README-parts.md;
+  - README.md and CLAUDE.md lose their <!-- origin --> ... <!-- /origin --> blocks: text about the source project's
+    own history (its git tags, where it came from), which the new project does not have;
   - nothing else: the build directories are not copied (a git project copies what git tracks or would track).
 The plugin code must differ from every other plugin's: the clone refuses a code used by a sibling project (the
 directories beside the source and the destination) unless --allow-code-clash is given. The manufacturer code stays the
@@ -64,9 +66,12 @@ TEXT_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".inl", ".m",
 # The parts of a project its starter replaces (scripts/starters/<kind>/ holds the same paths: folders and files), and
 # the starter's README blocks, spliced into README.md between <!-- starter:<name> --> and <!-- /starter:<name> -->.
 STARTER_PATHS = (Path("Source") / "dsp", Path("Tools") / "probes" / "dsp",
-                 Path("Tools") / "probes" / "plugin" / "process.cpp")
+                 Path("Tools") / "probes" / "plugin" / "process.cpp", Path("CLAUDE.md"))
 STARTER_README = Path("README-parts.md")
 README_BLOCK = re.compile(r"<!-- starter:([a-z][a-z0-9-]*) -->\n.*?<!-- /starter:\1 -->\n", re.DOTALL)
+# The source project's own history, left out of a clone (with the blank line after the block).
+ORIGIN_BLOCK = re.compile(r"<!-- origin -->\n.*?<!-- /origin -->\n(?:\n)?", re.DOTALL)
+ORIGIN_DOCS = (Path("README.md"), Path("CLAUDE.md"))
 
 CPP_KEYWORDS = {"alignas", "alignof", "and", "asm", "auto", "bool", "break", "case", "catch", "char", "class",
                 "const", "constexpr", "continue", "default", "delete", "do", "double", "else", "enum", "explicit",
@@ -304,6 +309,16 @@ def apply_starter(src_root: Path, dst_root: Path, kind: str) -> None:
     splice_readme(starter / STARTER_README, dst_root / "README.md")
 
 
+def drop_origin_blocks(root: Path) -> None:
+    for rel in ORIGIN_DOCS:
+        path = root / rel
+        if path.is_file():
+            text = path.read_text(encoding="utf-8")
+            new_text = ORIGIN_BLOCK.sub("", text)
+            if new_text != text:
+                path.write_text(new_text, encoding="utf-8")
+
+
 def rename_rules(old: dict[str, str], new: dict[str, str]) -> list[tuple[str, str]]:
     """The identity tokens a rename replaces in the text files. The four-character codes are not among them (a code
     can be an ordinary word, "Gain"): they live in cmake/Product.cmake only, which is rewritten whole."""
@@ -452,6 +467,7 @@ def cmd_clone(args: argparse.Namespace) -> int:
             shutil.copy2(src / rel, target)
         if starter:
             apply_starter(src, stage, new["KIND"])
+        drop_origin_blocks(stage)
         write_product(stage, new)
         n = rewrite_tokens(stage, rename_rules(cur, new))
 
