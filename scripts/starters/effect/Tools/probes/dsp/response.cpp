@@ -24,7 +24,7 @@
 #include <string>
 #include <utility>
 
-namespace fpt = testingplaygroundsynth;
+namespace tps = testingplaygroundsynth;
 
 namespace
 {
@@ -82,9 +82,9 @@ namespace
     std::pair<double, double> levelsDb(double hz, float gainDb, float toneHz)
     {
         const std::size_t n = static_cast<std::size_t>(1.5 * kFs), from = static_cast<std::size_t>(0.5 * kFs);
-        fpt::ParamValues v = fpt::defaultValues();
-        v[fpt::param::gain] = gainDb;
-        v[fpt::param::tone] = toneHz;
+        tps::ParamValues v = tps::defaultValues();
+        v[tps::param::gain] = gainDb;
+        v[tps::param::tone] = toneHz;
         probe::Stereo in;
         in.l = probe::sine(hz, kAmpL, kFs, n);
         in.r.resize(n);
@@ -111,9 +111,9 @@ PROBE(dsp, response)
         for (const ModelCase c : { ModelCase{ "gain6.tone2k", 6.0f, 2000.0f },
                                    ModelCase{ "gain-24.tone200", -24.0f, 200.0f } })
         {
-            fpt::ParamValues v = fpt::defaultValues();
-            v[fpt::param::gain] = c.gain;
-            v[fpt::param::tone] = c.tone;
+            tps::ParamValues v = tps::defaultValues();
+            v[tps::param::gain] = c.gain;
+            v[tps::param::tone] = c.tone;
             const probe::Stereo out = probe::runEffect(in, kFs, 256, v);
             const std::string key = std::string("model.") + c.key;
             const double gain = static_cast<double>(c.gain), fc = static_cast<double>(c.tone);
@@ -148,13 +148,13 @@ PROBE(dsp, response)
     {
         const std::size_t n = static_cast<std::size_t>(kFs), change = static_cast<std::size_t>(0.5 * kFs);
         const probe::Stereo in = probe::dual(probe::sine(1000.0, kAmpL, kFs, n));
-        fpt::Engine engine;
+        tps::Engine engine;
         engine.prepare(kFs, 480);
         probe::Stereo out = in;
         for (std::size_t pos = 0; pos < n; pos += 480)
         {
-            fpt::ParamValues v = fpt::defaultValues();
-            v[fpt::param::gain] = pos < change ? 0.0f : 12.0f;
+            tps::ParamValues v = tps::defaultValues();
+            v[tps::param::gain] = pos < change ? 0.0f : 12.0f;
             engine.setParams(v);
             float* ch[2] = { out.l.data() + pos, out.r.data() + pos };
             engine.process(ch, 2, 480, {});

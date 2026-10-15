@@ -11,7 +11,7 @@
 #include <cstdio>
 #include <vector>
 
-namespace fpt = testingplaygroundsynth;
+namespace tps = testingplaygroundsynth;
 
 namespace
 {
@@ -35,8 +35,8 @@ namespace
     probe::Stereo render(double fs, int block)
     {
         const std::size_t n = static_cast<std::size_t>(3.0 * fs);
-        fpt::ParamValues sine = fpt::defaultValues(), triangle = fpt::defaultValues();
-        triangle[fpt::param::wave] = 1.0f;
+        tps::ParamValues sine = tps::defaultValues(), triangle = tps::defaultValues();
+        triangle[tps::param::wave] = 1.0f;
         probe::Stereo a = probe::runSynth(score(fs), n, fs, block, sine);
         const probe::Stereo b = probe::runSynth(score(fs), n, fs, block, triangle);
         for (std::size_t i = n / 2; i < n; ++i)                  // the second half from the triangle render
