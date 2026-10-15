@@ -1,0 +1,21 @@
+// Product.h: generated from cmake/Product.h.in by CMakeLists.txt. Do not edit; change cmake/Product.cmake.
+// The product constants for Source/plugin and Source/editor (instead of JUCE's JucePlugin_* macros), so the identity
+// has one source. JUCE-free and header-only; include it as "Product.h".
+#pragma once
+
+namespace @PRODUCT_NAMESPACE@::product
+{
+    inline constexpr char kName[]             = "@PRODUCT_NAME@";
+    inline constexpr char kKind[]             = "@PRODUCT_KIND@";         // "effect" | "instrument"
+    inline constexpr bool kIsInstrument       = @PRODUCT_IS_INSTRUMENT@;
+    inline constexpr char kVersion[]          = "@PROJECT_VERSION@";
+    inline constexpr char kCompany[]          = "@PRODUCT_COMPANY@";
+    inline constexpr char kManufacturerCode[] = "@PRODUCT_MFR_CODE@";
+    inline constexpr char kPluginCode[]       = "@PRODUCT_CODE@";
+    inline constexpr char kBundleId[]         = "@PRODUCT_BUNDLE_ID@";
+    inline constexpr char kEnvPrefix[]        = "@PRODUCT_ENV_PREFIX@";
+    inline constexpr char kFunkGuiVersion[]   = "@FUNKGUI_VERSION@";
+    inline constexpr char kJuceVersion[]      = "@FP_JUCE_TAG@";
+
+    static_assert(sizeof(kManufacturerCode) == 5 && sizeof(kPluginCode) == 5, "four-character codes");
+}
