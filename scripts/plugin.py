@@ -27,6 +27,9 @@ What a clone changes:
     Tools/probes/plugin/process.cpp from scripts/starters/<kind>/, and README.md's kind-specific blocks
     (<!-- starter:<name> --> ... <!-- /starter:<name> -->) from scripts/starters/<kind>/README-parts.md;
   - nothing else: the build directories are not copied (a git project copies what git tracks or would track).
+A project without scripts/starters/ (one that replaced its algorithm, as the playgrounds made from the template do)
+clones only itself: a kind change, --starter and starter-diff refuse there, before anything is asked or written; start
+the other kind from FunkPluginTemplate.
 The plugin code must differ from every other plugin's: the clone refuses a code used by a sibling project (the
 directories beside the source and the destination) unless --allow-code-clash is given. The manufacturer code stays the
 same for all of the user's plugins.
@@ -304,6 +307,13 @@ def apply_starter(src_root: Path, dst_root: Path, kind: str) -> None:
     splice_readme(starter / STARTER_README, dst_root / "README.md")
 
 
+def require_starter(root: Path, kind: str) -> None:
+    """Exit with one line when this project has no `kind` starter to take code from."""
+    if not (root / "scripts" / "starters" / kind).is_dir():
+        sys.exit(f"this project has no {kind} starter (scripts/starters/{kind} is missing): it clones only itself, "
+                 f"with its own algorithm. Start a new {kind} from FunkPluginTemplate (its scripts/plugin.py clone).")
+
+
 def rename_rules(old: dict[str, str], new: dict[str, str]) -> list[tuple[str, str]]:
     """The identity tokens a rename replaces in the text files. The four-character codes are not among them (a code
     can be an ordinary word, "Gain"): they live in cmake/Product.cmake only, which is rewritten whole."""
@@ -416,6 +426,8 @@ def cmd_info(args: argparse.Namespace) -> int:
 def cmd_clone(args: argparse.Namespace) -> int:
     src = PROJECT_ROOT
     cur = read_product(src)
+    if args.starter or (args.type and args.type != cur["KIND"]):
+        require_starter(src, args.type or cur["KIND"])
     print(f"Cloning {cur['NAME']} ({cur['KIND']}) from {src}\n")
     new = new_identity(args, cur, keep_company=False)
 
@@ -427,6 +439,8 @@ def cmd_clone(args: argparse.Namespace) -> int:
     check_code_free(new["CODE"], [src.parent, dest.parent], {dest.resolve()}, args.allow_code_clash)
 
     starter = args.starter or new["KIND"] != cur["KIND"]
+    if starter:
+        require_starter(src, new["KIND"])                   # a kind given at the prompt
     print()
     print_identity(new, f"New plugin at {dest}:")
     print(f"  {'dsp code':<12} " + (f"the {new['KIND']} starter (scripts/starters/{new['KIND']})" if starter
@@ -502,6 +516,7 @@ def cmd_rename(args: argparse.Namespace) -> int:
 def cmd_starter_diff(args: argparse.Namespace) -> int:
     cur = read_product(PROJECT_ROOT)
     kind = args.kind or cur["KIND"]
+    require_starter(PROJECT_ROOT, kind)
     starter = PROJECT_ROOT / "scripts" / "starters" / kind
     rc = 0
     for rel in STARTER_PATHS:
