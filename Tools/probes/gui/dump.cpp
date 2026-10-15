@@ -5,9 +5,14 @@
 //   <build>/probe-out/gui.dump.png          GRAPHITE (theme 0), the defaults
 //   <build>/probe-out/gui.dump.paper.png    PAPER (theme 1), the defaults
 //   <build>/probe-out/gui.dump.edited.png   GRAPHITE after the graph's edits below, a point selected
+//   <build>/probe-out/gui.dump.longname.png GRAPHITE with a 64-letter product name (HEADER)
 // with the ZOOM cells shown as the plugin's editor shows them, and checks:
 //   FRAME   the frame settles, every glyph is in the font, every parameter with a control and the graph have their
 //           accessibility items, the DELAYS line shows the Engine's lengths (787 ... 1583 at 12 m, 48 kHz)
+//   HEADER  the header's text (the name, its kind and version; tag kHeaderTextTag), as drawn, ends before the THEME
+//           cells, whatever the name: the product's, which shows its kind and version unless the panel is at its
+//           widest; and names of 24, 48 and 64 letters, for which the panel widens, then leaves out the kind and
+//           version, then cuts the name with an ellipsis
 //   CONTROL a drag up on the first dial raises its parameter by a quarter for 60 px, a double-click returns it to its
 //           default
 //   GRAPH   the LFO shape editor writes the processor's shape (EditorPort): a double-click on the plot adds a point
@@ -29,18 +34,20 @@
 #include "dsp/LfoShape.h"
 #include "dsp/Params.h"
 
+#include <funkgui/canvas/Prim.h>
 #include <funkgui/canvas/PrimList.h>
 #include <funkgui/panel/HeadlessGuiScope.h>
 #include <funkgui/panel/HeadlessHost.h>
 #include <funkgui/prefs/UiPreferences.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <limits>
 #include <string>
 #include <vector>
 
-namespace fpt = testingplayground;
+namespace tp = testingplayground;
 
 namespace
 {
@@ -64,6 +71,16 @@ namespace
                 return item.value;
         return {};
     }
+
+    // The right edge of the primitives tagged `tag` (0 when there are none), in logical px.
+    float rightOf(const funkgui::PrimList& frame, funkgui::Tag tag)
+    {
+        float right = 0.0f;
+        for (const funkgui::Prim& p : frame.prims)
+            if (p.tag == tag)
+                right = std::max(right, p.x1);
+        return right;
+    }
 }
 
 PROBE(gui, dump)
@@ -71,8 +88,8 @@ PROBE(gui, dump)
     const funkgui::HeadlessGuiScope gui;                        // JUCE's GUI side: the font atlas bakes through it
     funkgui::UiPreferences::get().setBackend(funkgui::UiPreferences::memoryBackend());   // never the user's file
     HostNotes notes;                                            // outlives the processor it listens to
-    fpt::Processor processor;
-    fpt::EditorPort& port = processor.editorPort();
+    tp::Processor processor;
+    tp::EditorPort& port = processor.editorPort();
     processor.addListener(&notes);
     int told = 0;                                               // notes.stateChanges at the last check
     const auto toldSince = [&]() {
@@ -82,15 +99,15 @@ PROBE(gui, dump)
     };
 
     std::size_t controls = 1;                                   // the graph
-    for (const fpt::ParamSpec& s : fpt::kParams)
-        if (s.control != fpt::Control::hidden)
+    for (const tp::ParamSpec& s : tp::kParams)
+        if (s.control != tp::Control::hidden)
             ++controls;
 
     for (const int theme : { 0, 1 })
     {
         const std::string tag = theme == 0 ? "graphite" : "paper";
         funkgui::UiPreferences::get().setTheme(theme);          // the THEME cells show the theme drawn
-        fpt::ui::Panel panel(processor.ports(), port);
+        tp::ui::Panel panel(processor.ports(), port);
         funkgui::HeadlessHost host(panel, theme, 2.0f);
         host.setZoom({ 100, 125, 150, 200 }, 100);               // as the plugin's editor (CreateEditorGpu.cpp)
         const int frames = host.settle();
@@ -105,13 +122,55 @@ PROBE(gui, dump)
                 ++visible;
         P.ge(tag + ".a11y_items", static_cast<double>(visible), static_cast<double>(controls));
 
+        const tp::ui::Panel::HeaderLayout& header = panel.header();
+        const float textRight = rightOf(frame, tp::ui::kHeaderTextTag);
+        std::printf("%s header: text ends at %.1f px, THEME cells start at %.1f px (panel %d px wide; kind and version "
+                    "%s; name %s)\n", tag.c_str(), static_cast<double>(textRight),
+                    static_cast<double>(header.themeLeft), panel.width(), header.subtitleShown ? "shown" : "left out",
+                    header.titleCut ? "cut" : "whole");
+        P.ge(tag + ".header.text_drawn_px", static_cast<double>(textRight), 1.0);
+        P.le(tag + ".header.text_clear_of_theme_px", static_cast<double>(textRight),
+             static_cast<double>(header.themeLeft));
+        P.eq(tag + ".header.kind_and_version_shown_unless_widest", header.subtitleShown || header.widest ? 1 : 0, 1);
+
         const std::string path = probe::outPath(theme == 0 ? "gui.dump.png" : "gui.dump.paper.png");
         P.eq(tag + ".png_written", host.writePng(path.c_str(), 2) ? 1 : 0, 1);
         std::printf("wrote %s (%d x %d logical px)\n", path.c_str(), panel.width(), panel.height());
     }
 
+    // HEADER with longer names than the product's.
     funkgui::UiPreferences::get().setTheme(0);
-    fpt::ui::Panel panel(processor.ports(), port);
+    for (const int letters : { 24, 48, 64 })
+    {
+        std::string name = "Long";
+        while (static_cast<int>(name.size()) < letters)
+            name += "Name";
+        name.resize(static_cast<std::size_t>(letters));
+        tp::ui::Panel panel(processor.ports(), port, name);
+        funkgui::HeadlessHost host(panel, 0, 2.0f);
+        host.setZoom({ 100, 125, 150, 200 }, 100);
+        host.settle();
+        const funkgui::PrimList& frame = host.draw();
+        const tp::ui::Panel::HeaderLayout& header = panel.header();
+        const float textRight = rightOf(frame, tp::ui::kHeaderTextTag);
+        const std::string key = "header.name" + std::to_string(letters);
+        std::printf("%d letters: text ends at %.1f px, THEME cells at %.1f px (panel %d px; kind and version %s; name "
+                    "%s)\n", letters, static_cast<double>(textRight), static_cast<double>(header.themeLeft),
+                    panel.width(), header.subtitleShown ? "shown" : "left out", header.titleCut ? "cut" : "whole");
+        P.ge(key + ".text_drawn_px", static_cast<double>(textRight), 1.0);
+        P.le(key + ".text_clear_of_theme_px", static_cast<double>(textRight), static_cast<double>(header.themeLeft));
+        P.eq(key + ".kind_and_version_shown_unless_widest", header.subtitleShown || header.widest ? 1 : 0, 1);
+        P.eq(key + ".missing_glyphs", static_cast<int64_t>(frame.missingGlyphs), 0);
+        if (letters == 64)
+        {
+            P.eq(key + ".name_cut", header.titleCut ? 1 : 0, 1);
+            const std::string path = probe::outPath("gui.dump.longname.png");
+            P.eq(key + ".png_written", host.writePng(path.c_str(), 2) ? 1 : 0, 1);
+            std::printf("wrote %s\n", path.c_str());
+        }
+    }
+
+    tp::ui::Panel panel(processor.ports(), port);
     funkgui::HeadlessHost host(panel, 0, 2.0f);
     host.setZoom({ 100, 125, 150, 200 }, 100);
     host.settle();
@@ -124,7 +183,7 @@ PROBE(gui, dump)
 
     // CONTROL: the first dial.
     {
-        const std::size_t i = fpt::param::size;
+        const std::size_t i = tp::param::size;
         funkgui::ParamPort& p = *processor.ports()[i];
         const auto at = panel.centreOf(i);
         P.eq("control.found", at.has_value() ? 1 : 0, 1);
@@ -144,7 +203,7 @@ PROBE(gui, dump)
     }
 
     // GRAPH
-    const fpt::ui::ShapeView& view = panel.shapeView();
+    const tp::ui::ShapeView& view = panel.shapeView();
     const funkgui::Rect plot = view.plot();
     std::vector<float> before;
     for (const auto* p : processor.ports())
@@ -157,14 +216,14 @@ PROBE(gui, dump)
     toldSince();
     host.doubleClick(ax, ay);
     host.settle();
-    fpt::LfoShape s = port.shape();
+    tp::LfoShape s = port.shape();
     P.eq("graph.doubleclick.adds_point", static_cast<int64_t>(s.count), 5);
     P.eq("graph.doubleclick.host_told_once", toldSince(), 1);
     const int added = view.selected();
     P.eq("graph.doubleclick.selects_it", added == 2 ? 1 : 0, 1);
     if (added >= 0 && added < s.count)
     {
-        const fpt::ShapePoint& p = s.points[static_cast<std::size_t>(added)];
+        const tp::ShapePoint& p = s.points[static_cast<std::size_t>(added)];
         P.near("graph.doubleclick.point_x", p.x, 0.4, 1.0 / plot.w);
         P.near("graph.doubleclick.point_y", p.y, 0.7, 1.0 / plot.h);
     }
@@ -188,7 +247,7 @@ PROBE(gui, dump)
         host.drag(at.x, at.y, at.x + 0.07f * plot.w, at.y + 0.05f * plot.h, 8, alt);
         host.settle();
         s = port.shape();
-        const fpt::ShapePoint& p = s.points[2];
+        const tp::ShapePoint& p = s.points[2];
         P.near("graph.alt_drag.x_on_grid", p.x * 8.0f - std::round(p.x * 8.0f), 0.0, 1e-6);
         P.near("graph.alt_drag.y_on_grid", p.y * 8.0f - std::round(p.y * 8.0f), 0.0, 1e-6);
         P.eq("graph.alt_drag.host_told_once", toldSince(), 1);
@@ -252,7 +311,7 @@ PROBE(gui, dump)
             P.eq("graph.menu.reset_chosen", host.chooseMenuItem("Reset shape") ? 1 : 0, 1);
         }
         host.settle();
-        P.eq("graph.menu.reset_restores_default", port.shape() == fpt::defaultShape() ? 1 : 0, 1);
+        P.eq("graph.menu.reset_restores_default", port.shape() == tp::defaultShape() ? 1 : 0, 1);
         P.eq("graph.menu.reset.host_told_once", toldSince(), 1);
     }
 
@@ -267,7 +326,7 @@ PROBE(gui, dump)
     {
         const std::string sizeBefore = a11yValue(host, "SIZE"), gainBefore = a11yValue(host, "GAIN");
         const std::string delaysBefore = panel.delaysText();
-        for (const std::size_t i : { fpt::param::size, fpt::param::gain })
+        for (const std::size_t i : { tp::param::size, tp::param::gain })
             processor.getParameters()[static_cast<int>(i)]->setValueNotifyingHost(
                 std::numeric_limits<float>::quiet_NaN());
         host.settle();

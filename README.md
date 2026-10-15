@@ -3,8 +3,12 @@
 A playground for researching feedback delay network (FDN) reverbs: an effect (AU, VST3 and Standalone) for macOS on
 Apple silicon, built on JUCE 8.0.4, with a GPU editor made with [FunkGui](https://github.com/Snipet/FunkGui) and the
 DSP core of FSynth (SIMD, fast math, smoothers), vendored. It was made from FunkPluginTemplate with
-`scripts/plugin.py clone`, and its reverb is the FDN of the Visage version (git tag `legacy-visage`), ported and
-completed.
+`scripts/plugin.py clone`.
+
+<!-- origin -->
+Its reverb is the FDN of the Visage version (git tag `legacy-visage`), ported and completed: "From the Visage
+version" below says what was kept, added and fixed.
+<!-- /origin -->
 
 After a build, `build-dev/probe-out/gui.dump.png` is a picture of the editor and `dsp.render.ir.wav` beside it is the
 reverb's impulse response.
@@ -34,7 +38,8 @@ reverb's impulse response.
   infinite input samples become 0, and the input is clamped to +-1e6, before any delay line.
 - **Nothing steps**: parameters are smoothed (20 ms); a SIZE change glides the delays to their new primes (a pitch
   slide, 60 ms); a LINES change fades the wet path out, switches and clears the network, and fades back in (20 ms
-  each). The output does not depend on how the host splits its blocks.
+  each); a host's bypass crossfades to the input over 20 ms and back. The output does not depend on how the host
+  splits its blocks.
 
 | Parameter | Range | Default | What |
 | --- | --- | --- | --- |
@@ -62,7 +67,9 @@ The graph is one LFO cycle, +1 (the longest delay) at the top and -1 at the bott
 - right-click for Delete point and Reset shape; with the graph focused (Tab), the arrow keys move the selected point
   and Delete removes it.
 
-The shape is saved with the plugin's state (not as a host parameter: hosts neither automate nor undo it).
+The shape is saved with the plugin's state (not as a host parameter: hosts neither automate nor undo it). The header
+fits any product name (a clone's too): the panel widens for a long one, up to a limit, then leaves out the kind and
+version, then cuts the name with an ellipsis.
 
 ## Build and run
 
@@ -76,15 +83,17 @@ cmake --workflow --preset dev-verify     # configure, build everything, run ever
 open build-dev/TestingPlayground_artefacts/RelWithDebInfo/Standalone/TestingPlayground.app
 ```
 
-The Standalone starts with its input muted (JUCE's guard against feedback): unmute it in its Options (the cog in the
-title bar), with headphones on. For a host:
+In the Standalone, the Options button in the title bar picks the audio input and output. It starts with its input
+muted (JUCE's guard against feedback): unmute it there, with headphones on. For a host:
 
 ```sh
 cmake --workflow --preset release-build  # Release with LTO (build-release/)
 scripts/install.sh                       # copy the AU and VST3 into ~/Library/Audio/Plug-Ins
 ```
 
-Builds never install anything by themselves; `scripts/install.sh build-dev` installs a dev build instead.
+Builds never install anything by themselves; `scripts/install.sh build-dev` installs a dev build instead. The plugin
+code in `cmake/Product.cmake` (`scripts/plugin.py info` prints the whole identity) is this plugin's own, so it loads
+in one host beside your other plugins.
 
 ## Test
 
@@ -102,9 +111,9 @@ build-dev/TestingPlayground_probes --list
 | `dsp.response` | the dry path sample by sample on both channels; the routing (every line's first arrival, sample by sample, at 4, 8 and 16 lines, against a model of the taps, their signs and the DC blocker; the input gain against its law); GAIN linear; no click when GAIN, SIZE, LINES or the LFO shape changes; a mono bus; NaN, inf and huge input samples; DC kept out of the network |
 | `dsp.modulation` | each line's read position against RATE, DEPTH, the drawn shape and the line's i/n phase offset, at 4 and 16 lines |
 | `dsp.primes` | the prime rule against the legacy table over its whole range (0 to 1,395,629), the legacy test's inputs; every layout's lengths prime, ascending, near their targets, inside the delay lines |
-| `plugin.process` | the processor as a host drives it: host writes reach the DSP, a host's NaN is ignored, both channels are the Engine's output bit for bit, an LFO shape set by the editor included |
-| `plugin.state` | the host's parameters equal the table; the state (parameters and LFO shape) round-trips; an older state without a shape loads the default; a session of the Visage version restores GAIN; a state value that is not a number loads the default; processBlock before prepareToPlay passes the input through; the tail length hosts are told |
-| `gui.dump` | the panel headless to `gui.dump.png`, `gui.dump.paper.png` and `gui.dump.edited.png`; settles, every glyph, a11y, the DELAYS line, a dial drag, every graph gesture (add, move, snap, bend, the end points, remove, the menu) and that each completed one tells the host once; a host's NaN never shows |
+| `plugin.process` | the processor as a host drives it: host writes reach the DSP, a host's NaN is ignored, both channels are the Engine's output bit for bit, an LFO shape set by the editor included; a block of 0 samples changes nothing; a block larger than announced reaches the Engine in parts, with the same output; the bypass passes the input through while the Engine keeps running; bypass and un-bypass mid-stream crossfade over 20 ms with no step beyond the signals' own (where a hard switch steps 11 times as far), then give the input and the never-bypassed output, bit for bit |
+| `plugin.state` | the host's parameters equal the table; the state (parameters and LFO shape) round-trips; an older state without a shape loads the default; a session of the Visage version restores GAIN; a NaN's host text is a dash; a state value that is not a number loads the default; processBlock and processBlockBypassed before prepareToPlay pass the input through, sanitised, without calling the Engine; the tail length hosts are told |
+| `gui.dump` | the panel headless to `gui.dump.png`, `gui.dump.paper.png` and `gui.dump.edited.png`; settles, every glyph, a11y, the header clear of the THEME cells with this name and with names of 24, 48 and 64 letters (`gui.dump.longname.png`), the DELAYS line, a dial drag, every graph gesture (add, move, snap, bend, the end points, remove, the menu) and that each completed one tells the host once; a host's NaN never shows |
 
 A probe is one file in `Tools/probes/<layer>/` whose first line registers it (`// PROBE name=dsp.mytest timeout=60`)
 and whose body uses spec rows (`P.near`, `P.le`, `P.ge`, `P.in`, `P.eq`): each states what must hold, with its
@@ -127,6 +136,14 @@ fit, a band-pass, WAV output); `Tools/probes/dsp/Rig.h` runs the Engine as the p
   `plugin.process`, `plugin.state`'s tail rows); `gui.dump` and
   `plugin.state` work from the parameter table and keep working. Without modulation, drop RATE and DEPTH, and the
   graph with its `EditorPort` (or keep it to drive something else: it hands the Engine a 257-point table).
+
+  The processor (`Source/plugin`) hands the Engine what a host sends, made safe: at most `prepare()`'s block size per
+  `process()` call (a larger host block comes in parts, so keep the output independent of how blocks are split), the
+  last good value of a parameter a host set to NaN, nothing at all before the host's first `prepareToPlay` (the input
+  then passes through, cleaned of NaN and inf). When a host bypasses the plugin the output crossfades to the input
+  over 20 ms, and back when the bypass ends, so neither edge clicks; the Engine keeps running on the input meanwhile
+  (its output unheard), so it resumes from a state that followed the input, not one frozen when the bypass began. An
+  algorithm with latency must delay the input by it for that crossfade (`Source/plugin/Processor.cpp`).
 - **Add a parameter**: one row in `Source/dsp/Params.h` (id, name, label, unit, range, default, centre, control), then
   `values[param::<name>]` in `Engine::setParams`. The host parameter, the saved state and the panel's control follow;
   the panel puts dials and sliders in the top row and choices at its right end (`isModulation()` in
@@ -146,6 +163,7 @@ scripts/                 plugin.py, test.sh, sync-dsp-core.sh, install.sh
 cmake/Product.cmake      the identity: name, kind (an effect), manufacturer and plugin codes, bundle id, namespace
 ```
 
+<!-- origin -->
 ## From the Visage version
 
 `git show legacy-visage:<path>` reads the old files. The legacy plugin ran only a gain (`Gain.h`, -24 to +24 dB);
@@ -171,13 +189,18 @@ keeps what was there and completes it in the same family (HardwareReverb's, wher
   what Reset shape restores, is a bipolar triangle (0, +1 at a quarter, -1 at three quarters, 0), so the delays move
   both ways around their primes.
 
+<!-- /origin -->
+
 ## Make a new plugin
 
 Start new plugins from FunkPluginTemplate (`../FunkPluginTemplate/scripts/plugin.py clone --name MyPlugin`, effect or
 instrument). This project's own `scripts/plugin.py clone --name MyReverb --code Myrv` copies the playground, FDN and
 all, into a new project with its own identity, for a second experiment; `--type instrument`, `--starter` and
 `starter-diff` refuse here with one line, before anything is asked or written, because the starters live in the
-template. `scripts/plugin.py rename` renames this project in place.
+template. The clone refuses a plugin code another of your plugins already uses (any project in `~/audio/plugins`, or
+beside the source or the destination): two plugins with one code hide each other in a host. The probes' alias of the
+namespace follows the new name, and the clone leaves out the `<!-- origin -->` blocks, which hold this project's own
+history. `scripts/plugin.py rename` renames this project in place.
 
 ## Update the DSP core
 

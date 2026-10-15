@@ -3,7 +3,9 @@
 // drawing the same frames.
 //
 // It builds itself from the parameter table (Source/dsp/Params.h) and adds the modulation graph:
-//   header      the product name, its kind and version, and the THEME cells (GRAPHITE, PAPER)
+//   header      the product name, its kind and version, and the THEME cells (GRAPHITE, PAPER). The panel widens for a
+//               long name (up to a limit) so the whole header fits; past it the kind and version are left out, and a
+//               name that still does not fit ends in an ellipsis: the header text never runs into the THEME cells
 //   reverb      each dial or slider row, left to right in table order, wrapping at the panel's width; the choice rows
 //               (LINES) right-aligned on the first row, one cell per choice (a funkgui::SegmentedSelector over
 //               funkgui::ParamCells); Control::hidden nothing
@@ -25,6 +27,7 @@
 #pragma once
 
 #include <funkgui/a11y/A11yItem.h>
+#include <funkgui/canvas/Tags.h>
 #include <funkgui/core/Geometry.h>
 #include <funkgui/panel/Input.h>
 #include <funkgui/panel/Panel.h>
@@ -37,6 +40,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace funkgui
@@ -57,10 +61,15 @@ namespace testingplayground::ui
     class Item;                                          // one control or view on the panel (Panel.cpp)
     class ShapeView;
 
+    // The panel's own primitive tags, for probes that find what they check by tag (FunkGui's tags end below
+    // funkgui::tags::firstProduct; a view of your own takes the next free one).
+    inline constexpr funkgui::Tag kHeaderTextTag = funkgui::tags::firstProduct;   // the name, its kind and version
+
     class Panel final : public funkgui::Panel
     {
     public:
-        Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& editorPort);
+        // `name` is the product's (Product.h) unless given: probes try the header with other names.
+        Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& editorPort, std::string_view name = {});
         ~Panel() override;
 
         Panel(const Panel&) = delete;
@@ -72,6 +81,18 @@ namespace testingplayground::ui
         std::size_t itemCount() const noexcept { return items_.size(); }
         const ShapeView& shapeView() const noexcept { return *shape_; }
         std::string delaysText() const;
+
+        // For probes: where the header's parts end, in logical px from the panel's left edge, as draw() places them.
+        struct HeaderLayout
+        {
+            float titleRight = 0.0f;                     // the name's right edge
+            float subtitleRight = 0.0f;                  // the kind and version's (0 when left out)
+            float themeLeft = 0.0f;                      // the THEME cells' left edge
+            bool  subtitleShown = false;
+            bool  titleCut = false;                      // the name ends in an ellipsis
+            bool  widest = false;                        // the panel is as wide as it grows for the header
+        };
+        const HeaderLayout& header() const noexcept { return header_; }
 
         // funkgui::Panel
         void  attach(funkgui::HostServices&) override;
@@ -103,8 +124,9 @@ namespace testingplayground::ui
         std::vector<int> itemOfParam_;                   // table index -> item index, -1 for a hidden parameter
         float width_ = 0.0f, height_ = 0.0f;
         float ruleY_ = 0.0f;                             // the hairline between the reverb row and the modulation
-        std::string title_;                              // the product name, upper case
+        std::string title_;                              // the product name, upper case (cut to fit: header_)
         std::string subtitle_;                           // "EFFECT  0.1.0"
+        HeaderLayout header_;
 
         ShapeView* shape_ = nullptr;                     // the graph (an item owns it)
         Item* readout_ = nullptr;                        // the DELAYS line
