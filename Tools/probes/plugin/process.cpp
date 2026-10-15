@@ -13,6 +13,17 @@
 //           is exactly 0 and no voice is left sounding
 //   ENGINE  processBlock's output, both channels, is the Engine's bit for bit, given the same notes at the same offsets
 //           and the plain values the parameters held at each block (what the processor must hand the Engine)
+// MIDI that must never leave a note held, each on a fresh processor, from raw MIDI messages: a voice is held while its
+// key is down; after its release (RELEASE 50 ms; the rows wait 160 ms) no voice sounds and the output is exactly 0.
+//   CC123   All Notes Off (controller 123) at offset 77 of a block releases a four-note chord at once
+//   CC120   All Sound Off (controller 120) the same
+//   VEL0    a note-on at velocity 0 (0x90 nn 00) is a note-off: it releases the note, starts nothing
+//   EMPTY   a note-off in a block of 0 samples (JUCE's VST3 wrapper passes such blocks on) still releases its note
+//   FULL    one block of 4,096 samples with 1,100 note-ons (16 notes) and then their 16 note-offs at offset 4,000: more
+//           events than one Engine call takes (kMaxEventsPerBlock); none is lost, and the block is the Engine's,
+//           given all of them in one call, bit for bit
+//   BYPASS  while a host bypasses the processor (processBlockBypassed) the output is exactly 0; a note-off then still
+//           releases its note, and a note-on starts nothing
 #include "Probe.h"
 
 #include "Audio.h"
@@ -29,6 +40,8 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace tps = testingplaygroundsynth;
@@ -101,6 +114,72 @@ namespace
             if (std::memcmp(&a[i], &b[i], sizeof(float)) != 0)
                 return i;
         return a.size();
+    }
+
+    using Messages = std::vector<std::pair<int, juce::MidiMessage>>;   // (offset, message)
+
+    // A fresh processor at kFs, played block by block as a host would.
+    struct Host
+    {
+        explicit Host(int blockSize = kBlock) : buffer(2, blockSize)
+        {
+            p.setRateAndBufferSizeDetails(kFs, blockSize);
+            p.prepareToPlay(kFs, blockSize);
+        }
+
+        // One block of `len` samples (up to the block size; 0 is a block a host may send) with `messages`, through
+        // processBlock or processBlockBypassed. Its output stays in `last`; returns its peak over both channels.
+        float play(const Messages& messages, int len, bool bypassed = false)
+        {
+            juce::MidiBuffer midi;
+            for (const auto& [offset, m] : messages)
+                midi.addEvent(m, offset);
+            buffer.clear();
+            juce::AudioBuffer<float> view(buffer.getArrayOfWritePointers(), 2, len);
+            if (bypassed)
+                p.processBlockBypassed(view, midi);
+            else
+                p.processBlock(view, midi);
+            last = probe::Stereo(static_cast<std::size_t>(len));
+            for (int i = 0; i < len; ++i)
+            {
+                last.l[static_cast<std::size_t>(i)] = view.getSample(0, i);
+                last.r[static_cast<std::size_t>(i)] = view.getSample(1, i);
+            }
+            return std::max(probe::peak(last.l), probe::peak(last.r));
+        }
+
+        // `count` blocks without MIDI; their peak.
+        float idle(int count, bool bypassed = false)
+        {
+            float pk = 0.0f;
+            for (int i = 0; i < count; ++i)
+                pk = std::max(pk, play({}, buffer.getNumSamples(), bypassed));
+            return pk;
+        }
+
+        int sounding() const { return p.engine().activeVoices(); }
+
+        int held() const
+        {
+            int h = 0;
+            for (int v = 0; v < tps::Engine::kVoices; ++v)
+                h += p.engine().voice(v).held ? 1 : 0;
+            return h;
+        }
+
+        tps::Processor p;
+        juce::AudioBuffer<float> buffer;
+        probe::Stereo last{ 0 };
+    };
+
+    // After a release that began in the last block: 30 blocks (160 ms; RELEASE is 50 ms), then 10 more that must be
+    // exactly 0, with no voice left.
+    void expectSilenceAfterRelease(funkgui::test::Probe& P, Host& h, const std::string& key)
+    {
+        h.idle(30);
+        P.le(key + ".peak_after_release", static_cast<double>(h.idle(10)), 0.0);
+        P.eq(key + ".voices_left", h.sounding(), 0);
     }
 }
 
@@ -189,6 +268,97 @@ PROBE(plugin, process)
         const probe::Stereo ref = engineRun(notes, blockValues, numBlocks);
         P.eq("engine.left.same_bits", probe::sameBits(out.l, ref.l) ? 1 : 0, 1);
         P.eq("engine.right.same_bits", probe::sameBits(out.r, ref.r) ? 1 : 0, 1);
+    }
+
+    // CC123, CC120: a chord, then the controller at offset 77 of block 20.
+    for (const int cc : { 123, 120 })
+    {
+        const std::string key = "cc" + std::to_string(cc);
+        Host h;
+        Messages chord;
+        for (const int note : { 60, 64, 67, 72 })
+            chord.emplace_back(10, juce::MidiMessage::noteOn(1, note, kVelocity));
+        h.play(chord, kBlock);
+        h.idle(19);
+        P.eq(key + ".chord.held_before", h.held(), 4);
+        h.play({ { 77, juce::MidiMessage::controllerEvent(1, cc, 0) } }, kBlock);
+        P.eq(key + ".held_after", h.held(), 0);
+        expectSilenceAfterRelease(P, h, key);
+    }
+
+    // VEL0: A4, then 0x90 69 00 at offset 40 of block 20.
+    {
+        Host h;
+        h.play({ { 5, juce::MidiMessage::noteOn(1, kA4, kVelocity) } }, kBlock);
+        h.idle(19);
+        P.eq("vel0.held_before", h.held(), 1);
+        h.play({ { 40, juce::MidiMessage(0x90, kA4, 0) } }, kBlock);
+        P.eq("vel0.note_on_is_note_off.held_after", h.held(), 0);
+        expectSilenceAfterRelease(P, h, "vel0");
+    }
+
+    // EMPTY: A4, then its note-off in a block of 0 samples.
+    {
+        Host h;
+        h.play({ { 5, juce::MidiMessage::noteOn(1, kA4, kVelocity) } }, kBlock);
+        h.idle(19);
+        h.play({ { 0, juce::MidiMessage::noteOff(1, kA4) } }, 0);
+        P.eq("empty_block.note_off.held_after", h.held(), 0);
+        expectSilenceAfterRelease(P, h, "empty_block");
+    }
+
+    // FULL: 1,100 note-ons, every 3 samples, cycling through notes 40..55, then their note-offs at offset 4,000.
+    {
+        constexpr int kBig = 4096, kOns = 1100, kOffAt = 4000;
+        static_assert(kOns + 16 > tps::kMaxEventsPerBlock && 3 * (kOns - 1) < kOffAt);
+        Messages messages;
+        std::vector<tps::Event> events;
+        const auto add = [&](int offset, const juce::MidiMessage& m, tps::EventKind kind, int note, float velocity) {
+            messages.emplace_back(offset, m);
+            tps::Event e;
+            e.offset = static_cast<uint32_t>(offset);
+            e.kind = kind;
+            e.note = static_cast<uint8_t>(note);
+            e.velocity = velocity;
+            events.push_back(e);
+        };
+        for (int i = 0; i < kOns; ++i)
+            add(3 * i, juce::MidiMessage::noteOn(1, 40 + i % 16, kVelocity), tps::EventKind::noteOn, 40 + i % 16,
+                static_cast<float>(kVelocity) / 127.0f);
+        for (int note = 40; note < 56; ++note)
+            add(kOffAt, juce::MidiMessage::noteOff(1, note), tps::EventKind::noteOff, note, 0.0f);
+
+        Host h(kBig);
+        tps::ParamValues values = tps::defaultValues();
+        readValues(h.p, values);
+        h.play(messages, kBig);
+        P.eq("full.held_after", h.held(), 0);
+
+        tps::Engine engine;                                      // every event in one call
+        engine.prepare(kFs, kBig);
+        engine.setParams(values);
+        probe::Stereo ref(static_cast<std::size_t>(kBig));
+        float* ch[2] = { ref.l.data(), ref.r.data() };
+        engine.process(ch, 2, kBig, events);
+        P.eq("full.engine.same_bits", probe::sameBits(h.last.l, ref.l) && probe::sameBits(h.last.r, ref.r) ? 1 : 0, 1);
+
+        h.idle(3);                                               // 256 ms
+        P.le("full.peak_after_release", static_cast<double>(h.idle(2)), 0.0);
+        P.eq("full.voices_left", h.sounding(), 0);
+    }
+
+    // BYPASS: A4 held; the host bypasses the processor for ten blocks, in which A4 is let go and D4 played.
+    {
+        Host h;
+        h.play({ { 5, juce::MidiMessage::noteOn(1, kA4, kVelocity) } }, kBlock);
+        h.idle(9);
+        float bypassedPeak = h.play({ { 50, juce::MidiMessage::noteOff(1, kA4) } }, kBlock, true);
+        bypassedPeak = std::max(bypassedPeak, h.play({ { 20, juce::MidiMessage::noteOn(1, 62, kVelocity) } }, kBlock,
+                                                     true));
+        P.eq("bypass.note_on_starts_nothing.held", h.held(), 0);
+        bypassedPeak = std::max(bypassedPeak, h.idle(8, true));
+        P.le("bypass.output_peak", static_cast<double>(bypassedPeak), 0.0);
+        expectSilenceAfterRelease(P, h, "bypass.note_off_during_bypass");
     }
     return P.finish();
 }

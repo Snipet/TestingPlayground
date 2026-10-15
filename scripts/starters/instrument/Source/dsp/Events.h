@@ -16,5 +16,6 @@ namespace testingplaygroundsynth
         float     velocity = 0.0f;        // 0..1 (note on)
     };
 
-    inline constexpr int kMaxEventsPerBlock = 1024;   // the processor drops the rest of a fuller block
+    inline constexpr int kMaxEventsPerBlock = 1024;   // per Engine::process call: the processor plays a fuller block
+                                                      // in parts, so no event is lost
 }

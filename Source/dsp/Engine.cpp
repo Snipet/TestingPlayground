@@ -288,12 +288,13 @@ namespace testingplaygroundsynth
     void Engine::process(float* const* channels, int numChannels, int numSamples,
                          std::span<const Event> events) noexcept
     {
-        if (numChannels <= 0 || numSamples <= 0)
-            return;
-        float* left = channels[0];
-        float* right = numChannels > 1 ? channels[1] : nullptr;
-        for (int ch = 2; ch < numChannels; ++ch)
-            std::fill(channels[ch], channels[ch] + numSamples, 0.0f);
+        // A block with nothing to write (0 samples, which JUCE's VST3 wrapper passes on, or no channel) still applies
+        // its events, all at once: a note-off is never lost. Only the rendering is skipped.
+        const int len = numChannels > 0 ? std::max(numSamples, 0) : 0;
+        float* left = len > 0 ? channels[0] : nullptr;
+        float* right = len > 0 && numChannels > 1 ? channels[1] : nullptr;
+        for (int ch = 2; ch < numChannels && len > 0; ++ch)
+            std::fill(channels[ch], channels[ch] + len, 0.0f);
 
         int pos = 0;
         const auto renderTo = [&](int end) {
@@ -303,7 +304,7 @@ namespace testingplaygroundsynth
         };
         for (const Event& e : events)
         {
-            renderTo(std::clamp(static_cast<int>(e.offset), pos, numSamples));
+            renderTo(std::clamp(static_cast<int>(e.offset), pos, len));
             switch (e.kind)
             {
                 case EventKind::noteOn:      noteOn(e.note, e.velocity); break;
@@ -311,6 +312,6 @@ namespace testingplaygroundsynth
                 case EventKind::allNotesOff: allNotesOff(); break;
             }
         }
-        renderTo(numSamples);
+        renderTo(len);
     }
 }

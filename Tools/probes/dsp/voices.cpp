@@ -17,6 +17,9 @@
 //   CLICKS    reusing a voice never steps: a note stealing (velocity 0.05) from sixteen held at full velocity, and a
 //             key retriggered 10 ms into its release at a tenth of its velocity, step from sample to sample no more
 //             than the steady sound before them did (the legacy synth jumped there to the new pitch and velocity)
+//   PANIC     All Notes Off (EventKind::allNotesOff) 10 samples into a steal's fade: every key is let go at once, the
+//             stolen voice still fades out and then starts its new note released (silent); 0.2 s later no voice is
+//             left and the output is exactly 0
 #include "Probe.h"
 #include "Rig.h"
 
@@ -172,6 +175,24 @@ PROBE(dsp, voices)
                                                   tps::defaultValues());
         const double steady = probe::maxStep(out.l, at(0.2), release - at(0.2));
         P.le("clicks.retrigger.max_step_rel_steady", probe::maxStep(out.l, again, at(0.010)) / steady, 1.0);
+    }
+
+    // PANIC: sixteen held, D7 steals voice 0 at 0.1 s, All Notes Off 10 samples later.
+    {
+        std::vector<probe::ScoreEvent> s;
+        for (int k = 0; k < kN; ++k)
+            s.push_back(probe::on(static_cast<std::size_t>(k), noteOf(k), 0.25f));
+        const std::size_t panicSteal = at(0.1);
+        s.push_back(probe::on(panicSteal, 98, 0.25f));
+        s.push_back({ panicSteal + 10, tps::EventKind::allNotesOff, 0, 0.0f });
+        tps::Engine e;
+        runTo(s, panicSteal + 11, e);
+        P.eq("panic.during_steal.held", held(e), 0);
+        P.eq("panic.during_steal.voice0_still_fading", e.voice(0).next, 98);
+        const probe::Stereo out = runTo(s, at(0.5), e);
+        P.eq("panic.voice0_starts_released.note", e.voice(0).note, 98);
+        P.eq("panic.voices_left", e.activeVoices(), 0);
+        P.le("panic.peak_after", static_cast<double>(probe::peak(probe::slice(out.l, at(0.3), at(0.2)))), 0.0);
     }
     return P.finish();
 }

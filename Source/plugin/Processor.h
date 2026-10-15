@@ -6,6 +6,12 @@
 // has a stereo input and output and processes in place; an instrument has an output only and gets the block's MIDI
 // notes as Events. Product constants come from Product.h, never from JUCE's JucePlugin_* macros.
 //
+// An instrument never loses a note-off: a block of 0 samples still hands its events to the Engine; a block with more
+// than kMaxEventsPerBlock events is played in parts, cut at the event that does not fit; and while a host bypasses it
+// (processBlockBypassed: there is no bypass parameter) the output is silent but the Engine keeps running on the
+// block's note-offs and all-notes-offs (its note-ons are dropped), so a note let go meanwhile is not held afterwards.
+// An effect's bypass is JUCE's default: the input passes through.
+//
 // Threads: the audio thread reads the parameters' atomics (APVTS raw values) once per block, keeping the last good
 // value of one a host set to NaN; it never allocates, locks, or touches the editor. The editor (message thread)
 // reaches the processor only through ports(). Hosts call getTailLengthSeconds() from any thread: the Engine's
@@ -44,7 +50,9 @@ namespace testingplaygroundsynth
         void prepareToPlay(double sampleRate, int maximumExpectedSamplesPerBlock) override;
         void releaseResources() override;
         void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi) override;
-        using juce::AudioProcessor::processBlock;               // the double-precision overload keeps JUCE's default
+        void processBlockBypassed(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi) override;
+        using juce::AudioProcessor::processBlock;               // the double-precision overloads keep JUCE's default
+        using juce::AudioProcessor::processBlockBypassed;
 
         bool hasEditor() const override;
         juce::AudioProcessorEditor* createEditor() override;
@@ -67,6 +75,11 @@ namespace testingplaygroundsynth
 
     private:
         static BusesProperties buses();                          // the kind's buses (product::kIsInstrument)
+
+        void readParameters() noexcept;                          // the plain values, to the Engine
+        // The Engine over the block, with the block's MIDI as events (an instrument; without its note-ons when
+        // `noteOns` is false), in parts when they do not fit in events_.
+        void run(juce::AudioBuffer<float>& buffer, const juce::MidiBuffer& midi, bool noteOns) noexcept;
 
         juce::AudioProcessorValueTreeState apvts_;
         std::array<std::atomic<float>*, param::count> raw_{};   // the plain values the audio thread reads
