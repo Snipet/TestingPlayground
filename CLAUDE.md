@@ -1,31 +1,40 @@
 # TestingPlaygroundSynth: rules for a Claude session
 
-An audio plugin (AU, VST3, Standalone; macOS arm64) on JUCE 8.0.4 with a FunkGui editor and FSynth's DSP core
-(vendored). It is a research playground: change the algorithm, the parameters and the panel freely, keep the rules
-below. README.md is the user's guide; this file is what a session must know.
+A research playground for synthesiser voices: a polyphonic sine synth with an ADSR (AU, VST3, Standalone; macOS
+arm64) on JUCE 8.0.4, with a FunkGui editor and FSynth's DSP core (vendored). It is the legacy Visage synth (tag
+`legacy-visage`) ported onto that stack, made from FunkPluginTemplate with `scripts/plugin.py`. Change the algorithm,
+the parameters and the panel freely; keep the rules below. README.md is the user's guide (how the synth works, how to
+swap in an algorithm); this file is what a session must know.
 
 ## What goes where
 
 | Path | What | Rule |
 | --- | --- | --- |
-| `cmake/Product.cmake` | identity: name, kind (effect, instrument), codes, bundle id, namespace | `scripts/plugin.py` rewrites it; the plugin code stays unique among the user's plugins |
+| `cmake/Product.cmake` | identity: name, kind (instrument), codes (`Funk`/`Tsyn`), bundle id, namespace | `scripts/plugin.py` rewrites it; the plugin code stays unique among the user's plugins (TestingPlayground keeps the legacy `Tstn`) |
 | `Source/fsdsp/core/**` | FSynth's DSP core, vendored (`SEED.tsv`) | do not edit casually: `scripts/sync-dsp-core.sh` refuses to overwrite edits |
-| `Source/dsp/**` | the algorithm: `Params.h` (the parameter table), `Engine.h/.cpp` | JUCE-free C++20, namespace `testingplaygroundsynth` |
-| `Source/plugin/**` | the JUCE `AudioProcessor`: APVTS from the table, one FunkGui port per parameter | reads parameters once per block, calls the Engine |
-| `Source/editor/**` | the FunkGui `Panel` (built from the table), `ParamModel`, `Theme.h`; `gpu/` the EditorHost factory | reaches the processor only through its ports |
-| `Tools/probes/**` | probes on FunkGui's Harness: `dsp/` (Source/dsp only), `plugin/`, `gui/` | spec rows only, no golden files |
-| `scripts/starters/<kind>/` | the effect and instrument starters: `Source/dsp`, `Tools/probes/dsp`, `Tools/probes/plugin/process.cpp`, `README-parts.md` (the README's `<!-- starter:... -->` blocks) | what `plugin.py clone --type` installs; the template's own copies are the effect's |
+| `Source/dsp/Params.h` | the parameter table: GAIN, ATTACK, DECAY, SUSTAIN, RELEASE | IDs are forever (hosts store them) |
+| `Source/dsp/SineOscillator.h` | the waveform (`wave()`) and the pitch (uint32 phase accumulators), four voices per SIMD vector | JUCE-free C++20, namespace `testingplaygroundsynth` (all of `Source/dsp`) |
+| `Source/dsp/Adsr.h` | the linear ADSR, four voices per SIMD vector (`Quad::tick`), and the per-voice state (`Bank`) | |
+| `Source/dsp/VoiceScheduler.h` | the voice policy (the legacy one): retrigger the same note, else the first silent voice, else steal the oldest note-on | decides only; the Engine carries it out |
+| `Source/dsp/Engine.h/.cpp` | 16 voices, note events at their sample offsets, the 2 ms retrigger and steal ramps, GAIN and SUSTAIN smoothing | keep its interface: the processor and `plugin.process` use it |
+| `Source/plugin/**` | the JUCE `AudioProcessor`: APVTS from the table, one FunkGui port per parameter, MIDI to `Event`s | reads parameters once per block, calls the Engine |
+| `Source/editor/**` | the FunkGui `Panel` (built from the table: ENVELOPE, then the dials in a row spread to the width), `EnvelopeView` (the ADSR picture, from the ports), `ParamModel`, `Theme.h`; `gpu/` the EditorHost factory | reaches the processor only through its ports |
+| `Tools/probes/**` | probes on FunkGui's Harness: `dsp/` (Source/dsp only: pitch, level, envelope, voices, render), `plugin/`, `gui/` | spec rows only, no golden files |
+| `scripts/starters/<kind>/` | the template's effect and instrument starters | what `plugin.py clone --type/--starter` installs; not this synth |
 
 ## Build and test
 
 - `cmake --workflow --preset dev-verify`: configure, build (Standalone, AU, VST3, probes) and run every test in
   `build-dev`. Done means it exits 0 with no warning from our sources (they build with `-Werror`).
-- When the algorithm changes, change its probes with it (`Tools/probes/dsp/`, `Tools/probes/plugin/process.cpp`):
-  check both channels against a model or a formula sample by sample (a level alone misses a flipped polarity), and
-  drive the processor as a host does (parameter writes, MIDI at offsets), not only the Engine.
 - `scripts/test.sh`: build and run the probes only (`-R <name>`, `-V` pass through to ctest). Outputs land in
-  `build-dev/probe-out/`: `dsp.render*.wav`, and `gui.dump.png` / `gui.dump.paper.png`, the editor rendered headless.
-  Look at the PNGs after any editor change.
+  `build-dev/probe-out/`: `dsp.render.wav` (a short phrase), and `gui.dump.png`, `gui.dump.paper.png`,
+  `gui.dump.envelope.png`, the editor rendered headless. Look at the PNGs after any editor change.
+- When the synth changes, change its probes with it: `dsp.pitch` (zero crossings, within 0.5 cent), `dsp.level`
+  (levels by DFT, and a note sample by sample against a model in double), `dsp.envelope` (each ADSR segment to the
+  sample, parameter changes that must not step), `dsp.voices` (allocation, stealing, note-off, clicks), `dsp.render`
+  (a phrase to WAV; block-size invariance), `plugin.process` (the processor as a host drives it: MIDI at offsets inside
+  a block, host writes, NaN, bit-exact against the Engine). Check against a model or a formula; a level alone misses a
+  flipped polarity. `gui.dump` and `plugin.state` work from the table.
 - `cmake --workflow --preset release-build`: Release with LTO in `build-release`. `scripts/install.sh` copies the AU
   and VST3 into `~/Library/Audio/Plug-Ins`; only the user (or the lead) runs it, never an agent.
 - The presets build at `-j6` (the machine is shared). No network: JUCE, bgfx and shaderc come from `~/audio/.deps`
@@ -36,31 +45,39 @@ below. README.md is the user's guide; this file is what a session must know.
 - `Source/dsp` and `Source/fsdsp` include nothing from JUCE, FunkGui, `plugin/` or `editor/` (the test
   `lint.layers` checks; the DSP library has no JUCE include path).
 - `Engine::setParams` and `Engine::process` run on the audio thread: no allocation, no locks, no I/O, no logging.
-  Allocate in `prepare()`. Smooth every parameter (the core's `Smoother4`, `SmoothRamp`, `LinearRamp`): nothing steps,
-  a reused voice included (ramp its level, or fade it out before it restarts). The processor hands `setParams` finite
-  values within the table's range (a host's NaN keeps the last good value).
+  Allocate in `prepare()`. Nothing steps: smooth every level parameter (the core's `Smoother4`, `SmoothRamp`,
+  `smootherstep`), ramp a reused voice (a retrigger's level, a steal's fade-out before the new note: 2 ms,
+  `fsdsp::kStealFadeMs`). Times may change slopes directly. The processor hands `setParams` finite values within the
+  table's range (a host's NaN keeps the last good value).
+- Notes play on their sample: `Engine::process` renders up to each event's offset, then applies it; ramps end on fixed
+  samples (`render()` cuts there), so the output does not depend on the host's block size (`dsp.render` checks 64
+  against 333 samples).
 - `Engine::tailSeconds()` is called by hosts from any thread: return a constant, or an atomic that `setParams` stores.
-- Prefer the core's math on the audio path (`fsdsp::exp2/log2/tanh/sinPi/cosPi/tanPi`, `fsdsp::simd`), and keep the
-  output independent of the host's block size (`dsp.render` checks 64 against 333 samples).
+- Prefer the core's math on the audio path (`fsdsp::exp2/log2/tanh/sinPi/cosPi/tanPi`, `fsdsp::simd`, `fsdsp::phase`).
 - Flags: `-ffp-contract=off`, never `-ffast-math`. Product constants come from the generated `Product.h`, never from
   `JucePlugin_*`. The editor never uses JUCE's parameter attachments: widgets write through FunkGui's
   `GestureController` to the ports (`funkgui::JuceParamPort`), which keeps host automation gestures right.
 
 ## Recipes
 
+- **A waveform**: `SineOscillator4::wave()`; then `dsp.level`'s MODEL and level rows (a sine's).
+- **An envelope**: `adsr::Quad::tick()` (and `Bank` for note-on/off); then `dsp.envelope`.
+- **A voice policy**: `VoiceScheduler::noteOn()`; then `dsp.voices`.
 - **A parameter**: add an index and a row in `Source/dsp/Params.h` (id, name, label, unit, range, default, centre,
   control: dial, slider, choice or hidden); read `values[param::<name>]` in `Engine::setParams`. The processor, the
   host, the saved state and the panel follow. Never change an ID once sessions use it.
-- **An algorithm**: replace the body of `Source/dsp/Engine.cpp` (keep the `Engine` interface), or add classes under
-  `Source/dsp/` (the globs pick up new files: no CMake edit) and call them from the Engine.
-- **A widget or a view**: the panel lays out every table row itself. For anything else (a graph, a meter), add an
-  `Item` in `Source/editor/Panel.cpp` (a FunkGui widget, or your own drawing on the `funkgui::Canvas`) and place it in
-  the constructor; then check `gui.dump`'s PNGs.
+- **Another algorithm**: replace the per-sample loop in `Engine::renderSpan()` or the Engine's body (keep its
+  interface), or add classes under `Source/dsp/` (the globs pick up new files: no CMake edit) and call them from it.
+- **A widget or a view**: the panel lays out every table row itself. `EnvelopeView` is the example of a drawn view;
+  for an interactive one add an `Item` in `Source/editor/Panel.cpp` (a FunkGui widget, or your own drawing on the
+  `funkgui::Canvas`) and place it in the constructor; then check `gui.dump`'s PNGs.
 - **A probe**: a file `Tools/probes/<layer>/<name>.cpp` whose first line is `// PROBE name=<layer>.<name> timeout=<s>`
   and whose body is `PROBE(<layer>, <name>) { ...; return P.finish(); }`. Use spec rows (`P.near`, `P.le`, `P.ge`,
-  `P.in`, `P.eq`) with tolerances that say what must hold; helpers are in `Tools/probes/common/Audio.h`.
-- **Another plugin**: `scripts/plugin.py clone --name <Name> [--type instrument] [--code <Xxxx>]` (README.md).
+  `P.in`, `P.eq`) with tolerances that say what must hold; helpers are in `Tools/probes/common/Audio.h` and
+  `Tools/probes/dsp/Rig.h` (a score of notes through the Engine).
+- **Another plugin**: `scripts/plugin.py clone --name <Name> --code <Xxxx> [--type effect] [--starter]` (README.md).
 
 ## Git
 
 Work on a branch; commit messages say what changed and why. Never commit build directories (`build-*/` is ignored).
+The legacy Visage sources are the tag `legacy-visage` (never move it).

@@ -1,5 +1,9 @@
 // Source/dsp/Params.h: this plugin's parameters, one table row each (ParamSpec.h says what a row holds).
 //
+// GAIN, ATTACK and RELEASE are the legacy synth's (tag legacy-visage): the same IDs, ranges, defaults and skew (JUCE's
+// 0.5, which `centre` states as the value at the middle of the travel). DECAY and SUSTAIN complete its envelope to an
+// ADSR; at their defaults (SUSTAIN 100 %) a note sounds as the legacy synth's did.
+//
 // Adding a parameter: add an index before `count`, add its row at the same position, then read
 // values[param::<name>] in Engine::setParams. The processor, the host, the state and the panel follow from the table
 // (a dial, a slider or a choice per its `control`). IDs are stored by hosts in sessions: never rename one.
@@ -18,24 +22,24 @@ namespace testingplaygroundsynth
         {
             gain,
             attack,
+            decay,
+            sustain,
             release,
-            wave,
             count
         };
     }
 
-    inline constexpr std::array<const char*, 2> kWaves { "SINE", "TRIANGLE" };
-
     inline constexpr std::array<ParamSpec, param::count> kParams { {
         { .id = "gain", .name = "Gain", .label = "GAIN", .unit = Unit::db,
-          .min = -36.0f, .max = 12.0f, .def = 0.0f, .centre = -12.0f, .control = Control::dial },
+          .min = -24.0f, .max = 24.0f, .def = 0.0f, .centre = 0.0f, .control = Control::dial },
         { .id = "attack", .name = "Attack", .label = "ATTACK", .unit = Unit::ms,
-          .min = 1.0f, .max = 2000.0f, .def = 5.0f, .centre = 100.0f, .control = Control::dial },
+          .min = 1.0f, .max = 200.0f, .def = 5.0f, .centre = 50.75f, .control = Control::dial },
+        { .id = "decay", .name = "Decay", .label = "DECAY", .unit = Unit::ms,
+          .min = 1.0f, .max = 2000.0f, .def = 200.0f, .centre = 500.75f, .control = Control::dial },
+        { .id = "sustain", .name = "Sustain", .label = "SUSTAIN", .unit = Unit::percent,
+          .min = 0.0f, .max = 100.0f, .def = 100.0f, .centre = 50.0f, .control = Control::dial },
         { .id = "release", .name = "Release", .label = "RELEASE", .unit = Unit::ms,
-          .min = 5.0f, .max = 5000.0f, .def = 300.0f, .centre = 300.0f, .control = Control::slider },
-        { .id = "wave", .name = "Wave", .label = "WAVE", .unit = Unit::none,
-          .min = 0.0f, .max = 1.0f, .def = 0.0f, .centre = 0.5f, .control = Control::choice,
-          .choices = kWaves.data(), .numChoices = static_cast<int>(kWaves.size()) },
+          .min = 1.0f, .max = 1000.0f, .def = 50.0f, .centre = 250.75f, .control = Control::dial },
     } };
 
     // Plain values in table order: what the processor hands Engine::setParams once per block. A choice's value is its

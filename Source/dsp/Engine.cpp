@@ -1,22 +1,17 @@
 // Source/dsp/Engine.cpp: see Engine.h.
 //
-// Per sample and quad: the envelope (attack: +attackStep up to 1 while the gate is on; release: x releaseCoef, and
-// exactly 0 once under -80 dB), the level (plus its ramp step, 0 when no ramp runs), the waveform at the phase (sinPi
-// of the signed phase, or the triangle 1 - 2|phase|), the sum of the lanes, the smoothed gain. Pitch:
-// phase::incFromPitch (within 0.002 cents of 440 * 2^((n - 69) / 12)) rounded once to a uint32 increment, so a held
-// note never drifts.
-//
-// Ramps: a level ramp runs kRampMs (rampSamples_ samples) and lands exactly on its target. render() cuts its span at
-// every ramp's end, where a stolen voice, now silent, starts its new note; the cuts fall on the same samples whatever
-// the host's block size, so the output does not depend on it.
+// Per sample: the smoother (GAIN, SUSTAIN), then per quad the sine, the envelope and the level ramp (a smootherstep
+// from `levelFrom` to `levelTo`, at rest when its position is 1), summed over the lanes and the quads, times GAIN.
+// render() cuts its run at every ramp's end, where the ramp lands exactly on its target and a stolen voice, faded out,
+// starts its new note; those cuts fall on the same samples whatever the host's block size.
 #include "dsp/Engine.h"
 
+#include "dsp/SineOscillator.h"
+
 #include "fsdsp/core/FastMath.h"
-#include "fsdsp/core/Phase.h"
-#include "fsdsp/core/Units.h"
+#include "fsdsp/core/Ramp.h"
 
 #include <algorithm>
-#include <cmath>
 #include <cstring>
 
 namespace testingplaygroundsynth
@@ -25,11 +20,6 @@ namespace testingplaygroundsynth
 
     namespace
     {
-        constexpr float kVoiceAmp = 0.25f;                 // a voice at full velocity: -12 dBFS peak
-        constexpr float kSilent = 1e-4f;                   // -80 dB: a released voice under it is off
-        constexpr float kLog2Of1e4 = 13.2877124f;          // a release falls 80 dB in its time
-        constexpr uint32_t kGateOn = 0xffffffffu;
-
         simd::u32x4 loadU(const uint32_t* p) noexcept
         {
             simd::u32x4 v;
@@ -41,13 +31,18 @@ namespace testingplaygroundsynth
         {
             std::memcpy(p, &v, sizeof v);
         }
+
+        float perSample(float ms, float fs) noexcept           // 1 / (ms in samples), at most 1
+        {
+            return 1.0f / std::max(1.0f, ms * fs / 1000.0f);
+        }
     }
 
     void Engine::prepare(double sampleRate, int /*maxBlockSize*/) noexcept
     {
         fs_ = sampleRate > 0.0 ? static_cast<float>(sampleRate) : 48000.0f;
-        log2Inc0_ = static_cast<float>(std::log2(440.0 / static_cast<double>(fs_)) - 69.0 / 12.0);
-        rampSamples_ = std::max(1, static_cast<int>(kRampMs * 0.001f * fs_ + 0.5f));
+        pitchOffset_ = SineOscillator4::pitchOffset(static_cast<double>(fs_));
+        rampSamples_ = std::max(1, static_cast<int>(fsdsp::kStealFadeMs * 0.001f * fs_ + 0.5f));
         smooth_.prepare(fs_, 20.0f);
         reset();
     }
@@ -56,33 +51,31 @@ namespace testingplaygroundsynth
     {
         phase_.fill(0);
         inc_.fill(0);
-        gate_.fill(0);
-        env_.fill(0.0f);
-        amp_.fill(0.0f);
-        ampStep_.fill(0.0f);
-        ampTarget_.fill(0.0f);
+        env_.clear();
+        levelFrom_.fill(0.0f);
+        levelTo_.fill(0.0f);
+        rampPos_.fill(1.0f);
+        rampStep_.fill(0.0f);
         rampLeft_.fill(0);
-        note_.fill(-1);
-        started_.fill(0);
-        pending_.fill(false);
-        pendingNote_.fill(-1);
-        pendingInc_.fill(0);
-        pendingGate_.fill(0);
-        pendingAmp_.fill(0.0f);
-        counter_ = 0;
+        playing_.fill(-1);
+        stolen_.fill(false);
+        nextNote_.fill(-1);
+        nextInc_.fill(0);
+        nextLevel_.fill(0.0f);
+        nextKeyDown_.fill(false);
+        scheduler_.reset();
         primed_ = false;
     }
 
     void Engine::setParams(const ParamValues& values) noexcept
     {
-        const float attackSamples = std::max(1.0f, values[param::attack] * fs_ / 1000.0f);
-        const float releaseSamples = std::max(1.0f, values[param::release] * fs_ / 1000.0f);
-        attackStep_ = 1.0f / attackSamples;
-        releaseCoef_ = fsdsp::exp2(-kLog2Of1e4 / releaseSamples);
+        rates_.attack = perSample(values[param::attack], fs_);
+        rates_.decay = perSample(values[param::decay], fs_);
+        rates_.release = perSample(values[param::release], fs_);
         releaseSeconds_.store(static_cast<double>(values[param::release]) / 1000.0, std::memory_order_relaxed);
-        triangle_ = values[param::wave] >= 0.5f;
 
-        smooth_.setTarget(fsdsp::linFromDb(simd::set1(values[param::gain])));
+        const simd::f32x4 gain = fsdsp::linFromDb(simd::set1(values[param::gain]));
+        smooth_.setTarget(simd::withLane<1>(gain, values[param::sustain] / 100.0f));
         if (!primed_)
         {
             smooth_.snap();
@@ -90,121 +83,129 @@ namespace testingplaygroundsynth
         }
     }
 
-    bool Engine::sounding(int v) const noexcept
+    // ---- voices ---------------------------------------------------------------------------------------------------
+    bool Engine::sounding(std::size_t v) const noexcept
     {
-        const auto i = static_cast<std::size_t>(v);
-        return pending_[i] || (note_[i] >= 0 && (gate_[i] != 0 || env_[i] > 0.0f));
-    }
-
-    int Engine::owner(int v) const noexcept
-    {
-        const auto i = static_cast<std::size_t>(v);
-        return pending_[i] ? pendingNote_[i] : note_[i];
+        return stolen_[v] || env_.sounding(v);
     }
 
     int Engine::activeVoices() const noexcept
     {
         int n = 0;
-        for (int v = 0; v < kVoices; ++v)
+        for (std::size_t v = 0; v < kN; ++v)
             n += sounding(v) ? 1 : 0;
         return n;
     }
 
-    void Engine::rampTo(int v, float amp) noexcept
+    Engine::VoiceState Engine::voice(int v) const noexcept
     {
+        VoiceState s;
+        if (v < 0 || v >= kVoices)
+            return s;
         const auto i = static_cast<std::size_t>(v);
-        ampTarget_[i] = amp;
-        rampLeft_[i] = rampSamples_;
-        ampStep_[i] = (amp - amp_[i]) / static_cast<float>(rampSamples_);
+        s.sounding = sounding(i);
+        s.note = playing_[i];
+        s.held = env_.held(i);
+        s.envelope = env_.level[i];
+        s.level = levelNow(i);
+        s.next = stolen_[i] ? nextNote_[i] : -1;
+        return s;
     }
 
-    void Engine::startPending(int v) noexcept
+    float Engine::levelNow(std::size_t v) const noexcept
     {
-        const auto i = static_cast<std::size_t>(v);
-        phase_[i] = 0;                                          // from silence: phase 0, the envelope from 0
-        env_[i] = 0.0f;
-        inc_[i] = pendingInc_[i];
-        amp_[i] = pendingAmp_[i];
-        ampTarget_[i] = pendingAmp_[i];
-        ampStep_[i] = 0.0f;
-        rampLeft_[i] = 0;
-        gate_[i] = pendingGate_[i];                             // released during the fade: it starts silent
-        note_[i] = pendingNote_[i];
-        pending_[i] = false;
+        // The per-sample formula of renderSpan(), on one lane.
+        const simd::f32x4 from = simd::set1(levelFrom_[v]);
+        const simd::f32x4 delta = simd::sub(simd::set1(levelTo_[v]), from);
+        return simd::lane<0>(simd::fma(from, delta, fsdsp::smootherstep(simd::set1(rampPos_[v]))));
+    }
+
+    void Engine::rampTo(std::size_t v, float level) noexcept
+    {
+        levelFrom_[v] = levelNow(v);
+        levelTo_[v] = level;
+        rampPos_[v] = 0.0f;
+        rampStep_[v] = 1.0f / static_cast<float>(rampSamples_);
+        rampLeft_[v] = rampSamples_;
+    }
+
+    void Engine::start(std::size_t v, int note, uint32_t inc, float level, bool keyDown) noexcept
+    {
+        phase_[v] = 0;                                          // from silence: phase 0, the envelope from 0
+        inc_[v] = inc;
+        env_.start(v, keyDown);
+        levelFrom_[v] = levelTo_[v] = level;
+        rampPos_[v] = 1.0f;
+        rampStep_[v] = 0.0f;
+        rampLeft_[v] = 0;
+        playing_[v] = note;
+        stolen_[v] = false;
     }
 
     void Engine::noteOn(int note, float velocity) noexcept
     {
-        const float amp = kVoiceAmp * std::clamp(velocity, 0.0f, 1.0f);
-        const simd::f32x4 cycles = fsdsp::phase::incFromPitch(simd::set1(static_cast<float>(note)), log2Inc0_);
-        const uint32_t inc = simd::laneu<0>(fsdsp::phase::fromCycles(cycles));
+        const float level = kVoiceLevel * std::clamp(velocity, 0.0f, 1.0f);
+        const uint32_t inc = SineOscillator4::increment(note, pitchOffset_);
 
-        for (int v = 0; v < kVoices; ++v)                       // the same key again: retrigger its voice
+        std::array<bool, kN> busy{};
+        for (std::size_t v = 0; v < kN; ++v)
+            busy[v] = sounding(v);
+        const Scheduler::Assignment a = scheduler_.noteOn(note, busy);
+        const std::size_t v = a.voice;
+
+        switch (a.action)
         {
-            const auto i = static_cast<std::size_t>(v);
-            if (owner(v) != note || !sounding(v))
-                continue;
-            if (pending_[i])                                    // still fading out: it starts at this velocity
-            {
-                pendingAmp_[i] = amp;
-                pendingGate_[i] = kGateOn;
-            }
-            else
-            {
-                gate_[i] = kGateOn;                             // phase and envelope carry on
-                if (amp != amp_[i] || rampLeft_[i] > 0)
-                    rampTo(v, amp);
-            }
-            started_[i] = ++counter_;
-            return;
+            case Scheduler::Action::retrigger:
+                if (stolen_[v])                                 // still fading out: it starts at this velocity
+                {
+                    nextLevel_[v] = level;
+                    nextKeyDown_[v] = true;
+                }
+                else
+                {
+                    env_.retrigger(v);                          // phase and envelope carry on
+                    if (level != levelTo_[v] || rampLeft_[v] > 0)
+                        rampTo(v, level);
+                }
+                break;
+            case Scheduler::Action::start:
+                start(v, note, inc, level, true);
+                break;
+            case Scheduler::Action::steal:
+                if (!stolen_[v])                                // fade it out; it starts the new note from silence
+                    rampTo(v, 0.0f);
+                stolen_[v] = true;
+                nextNote_[v] = note;
+                nextInc_[v] = inc;
+                nextLevel_[v] = level;
+                nextKeyDown_[v] = true;
+                break;
         }
-
-        for (int v = 0; v < kVoices; ++v)                       // a silent voice: it starts at once
-        {
-            const auto i = static_cast<std::size_t>(v);
-            if (sounding(v))
-                continue;
-            pendingGate_[i] = kGateOn;
-            pendingNote_[i] = note;
-            pendingInc_[i] = inc;
-            pendingAmp_[i] = amp;
-            startPending(v);
-            started_[i] = ++counter_;
-            return;
-        }
-
-        int voice = 0;                                          // all busy: steal the oldest note
-        for (int v = 1; v < kVoices; ++v)
-            if (started_[static_cast<std::size_t>(v)] < started_[static_cast<std::size_t>(voice)])
-                voice = v;
-        const auto i = static_cast<std::size_t>(voice);
-        if (!pending_[i])                                       // fade it out; it starts the new note at silence
-            rampTo(voice, 0.0f);
-        pending_[i] = true;
-        pendingNote_[i] = note;
-        pendingInc_[i] = inc;
-        pendingGate_[i] = kGateOn;
-        pendingAmp_[i] = amp;
-        started_[i] = ++counter_;
     }
 
     void Engine::noteOff(int note) noexcept
     {
-        for (std::size_t i = 0; i < note_.size(); ++i)
+        for (std::size_t v = 0; v < kN; ++v)
         {
-            if (note_[i] == note)
-                gate_[i] = 0;
-            if (pending_[i] && pendingNote_[i] == note)
-                pendingGate_[i] = 0;
+            if (!scheduler_.plays(v, note))
+                continue;
+            if (stolen_[v])
+                nextKeyDown_[v] = false;                        // released before it started: it starts silent
+            else
+                env_.release(v);
         }
     }
 
     void Engine::allNotesOff() noexcept
     {
-        gate_.fill(0);
-        pendingGate_.fill(0);
+        for (std::size_t v = 0; v < kN; ++v)
+        {
+            nextKeyDown_[v] = false;
+            env_.release(v);
+        }
     }
 
+    // ---- rendering ------------------------------------------------------------------------------------------------
     void Engine::render(float* left, float* right, int n) noexcept
     {
         while (n > 0)
@@ -214,19 +215,18 @@ namespace testingplaygroundsynth
                 if (remaining > 0)
                     span = std::min(span, remaining);
             renderSpan(left, right, span);
-            for (int v = 0; v < kVoices; ++v)
+            for (std::size_t v = 0; v < kN; ++v)
             {
-                const auto i = static_cast<std::size_t>(v);
-                if (rampLeft_[i] == 0)
+                if (rampLeft_[v] == 0)
                     continue;
-                rampLeft_[i] -= span;
-                if (rampLeft_[i] == 0)
-                {
-                    amp_[i] = ampTarget_[i];                    // exactly
-                    ampStep_[i] = 0.0f;
-                    if (pending_[i])
-                        startPending(v);
-                }
+                rampLeft_[v] -= span;
+                if (rampLeft_[v] > 0)
+                    continue;
+                levelFrom_[v] = levelTo_[v];                    // lands exactly
+                rampPos_[v] = 1.0f;
+                rampStep_[v] = 0.0f;
+                if (stolen_[v])
+                    start(v, nextNote_[v], nextInc_[v], nextLevel_[v], nextKeyDown_[v]);
             }
             left += span;
             if (right != nullptr)
@@ -237,37 +237,37 @@ namespace testingplaygroundsynth
 
     void Engine::renderSpan(float* left, float* right, int n) noexcept
     {
-        simd::u32x4 phase[kQuads], inc[kQuads];
-        simd::m32x4 gate[kQuads];
-        simd::f32x4 env[kQuads], amp[kQuads], ampStep[kQuads];
-        for (int q = 0; q < kQuads; ++q)
+        SineOscillator4 osc[kQuads];
+        adsr::Quad env[kQuads];
+        simd::f32x4 from[kQuads], delta[kQuads], pos[kQuads], step[kQuads];
+        for (std::size_t q = 0; q < kQuads; ++q)
         {
-            const auto o = static_cast<std::size_t>(4 * q);
-            phase[q] = loadU(phase_.data() + o);
-            inc[q] = loadU(inc_.data() + o);
-            gate[q] = loadU(gate_.data() + o);
-            env[q] = simd::load(env_.data() + o);
-            amp[q] = simd::load(amp_.data() + o);
-            ampStep[q] = simd::load(ampStep_.data() + o);
+            const std::size_t o = 4 * q;
+            osc[q].phase = loadU(phase_.data() + o);
+            osc[q].inc = loadU(inc_.data() + o);
+            env[q] = env_.load(q);
+            from[q] = simd::load(levelFrom_.data() + o);
+            delta[q] = simd::sub(simd::load(levelTo_.data() + o), from[q]);
+            pos[q] = simd::load(rampPos_.data() + o);
+            step[q] = simd::load(rampStep_.data() + o);
         }
-        const simd::f32x4 zero = simd::set1(0.0f), one = simd::set1(1.0f), two = simd::set1(2.0f);
-        const simd::f32x4 attackStep = simd::set1(attackStep_), releaseCoef = simd::set1(releaseCoef_);
-        const simd::f32x4 silent = simd::set1(kSilent);
+        const simd::f32x4 zero = simd::set1(0.0f), one = simd::set1(1.0f);
+        const simd::f32x4 attack = simd::set1(rates_.attack), decay = simd::set1(rates_.decay);
+        const simd::f32x4 release = simd::set1(rates_.release);
 
         for (int s = 0; s < n; ++s)
         {
-            const float gain = simd::lane<0>(smooth_.tick());
+            const simd::f32x4 smoothed = smooth_.tick();
+            const float gain = simd::lane<0>(smoothed);
+            const simd::f32x4 sustain = simd::set1(simd::lane<1>(smoothed));
             simd::f32x4 acc = zero;
-            for (int q = 0; q < kQuads; ++q)
+            for (std::size_t q = 0; q < kQuads; ++q)
             {
-                const simd::f32x4 up = simd::min(simd::add(env[q], attackStep), one);
-                const simd::f32x4 down = simd::mul(env[q], releaseCoef);
-                env[q] = simd::sel(gate[q], up, simd::sel(simd::gt(silent, down), zero, down));
-                amp[q] = simd::add(amp[q], ampStep[q]);
-                const simd::f32x4 x = fsdsp::phase::toSigned(phase[q]);
-                const simd::f32x4 wave = triangle_ ? simd::fms(one, two, simd::abs(x)) : fsdsp::sinPi(x);
-                acc = simd::fma(acc, wave, simd::mul(env[q], amp[q]));
-                phase[q] = simd::addu(phase[q], inc[q]);
+                const simd::f32x4 wave = osc[q].next();
+                const simd::f32x4 e = env[q].tick(attack, decay, release, sustain);
+                pos[q] = simd::min(simd::add(pos[q], step[q]), one);
+                const simd::f32x4 level = simd::fma(from[q], delta[q], fsdsp::smootherstep(pos[q]));
+                acc = simd::fma(acc, wave, simd::mul(e, level));
             }
             const float sum = ((simd::lane<0>(acc) + simd::lane<1>(acc)) + (simd::lane<2>(acc) + simd::lane<3>(acc)))
                               * gain;
@@ -276,12 +276,12 @@ namespace testingplaygroundsynth
                 right[s] = sum;
         }
 
-        for (int q = 0; q < kQuads; ++q)
+        for (std::size_t q = 0; q < kQuads; ++q)
         {
-            const auto o = static_cast<std::size_t>(4 * q);
-            storeU(phase_.data() + o, phase[q]);
-            simd::store(env_.data() + o, env[q]);
-            simd::store(amp_.data() + o, amp[q]);
+            const std::size_t o = 4 * q;
+            storeU(phase_.data() + o, osc[q].phase);
+            env_.store(q, env[q]);
+            simd::store(rampPos_.data() + o, pos[q]);
         }
     }
 

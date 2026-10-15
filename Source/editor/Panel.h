@@ -3,13 +3,15 @@
 // drawing the same frames.
 //
 // It builds itself from the parameter table (Source/dsp/Params.h), in table order:
-//   header    the product name, its kind and version, and the THEME cells (GRAPHITE, PAPER)
+//   header    the product name, its kind and version (when they fit), and the THEME cells (GRAPHITE, PAPER)
+//   envelope  ENVELOPE: a picture of the ADSR (EnvelopeView.h), when the table has the four envelope rows
 //   controls  each row's control, left to right, wrapping at the panel's width: Control::dial a funkgui::Dial
 //             (60 x 80), Control::slider a funkgui::RuleSlider (180 px rule), Control::choice a row of its own with
-//             one cell per choice (a funkgui::SegmentedSelector over funkgui::ParamCells); Control::hidden nothing
+//             one cell per choice (a funkgui::SegmentedSelector over funkgui::ParamCells); Control::hidden nothing. A
+//             row of two or more dials and sliders that fills more than half the width spreads out to the full width
 //   footer    the spec line of the control under the hand (or focused, or last touched), and the ZOOM cells
 // so a new table row appears with no editor change. For a custom view (a graph, a meter), add an Item in Panel.cpp
-// and place it in the constructor; README.md walks through it.
+// and place it in the constructor, or draw it as the envelope is drawn; README.md walks through it.
 //
 // Input: pointer, wheel, double-click (the default) and keys (Tab moves the focus ring over the controls; arrows,
 // Page and Home/End adjust; Esc hides the ring) reach the item under the pointer or in focus. Every parameter write
@@ -18,6 +20,8 @@
 //
 // Message thread only. The ports (one per table row, table order) belong to the processor and outlive the Panel.
 #pragma once
+
+#include "editor/EnvelopeView.h"
 
 #include <funkgui/a11y/A11yItem.h>
 #include <funkgui/core/Geometry.h>
@@ -59,6 +63,10 @@ namespace testingplaygroundsynth::ui
         // of controls (parameters with a control, plus the THEME and ZOOM cells).
         std::optional<funkgui::Point> centreOf(std::size_t param) const;
         std::size_t itemCount() const noexcept { return items_.size(); }
+        // For probes: the envelope view (nullptr when the table lacks an envelope row) and the parameter whose
+        // envelope segment is highlighted (-1 for none).
+        const EnvelopeView* envelope() const noexcept { return envelope_ ? &*envelope_ : nullptr; }
+        int highlightedParam() const;
 
         // funkgui::Panel
         void  attach(funkgui::HostServices&) override;
@@ -88,9 +96,10 @@ namespace testingplaygroundsynth::ui
 
         std::vector<std::unique_ptr<Item>> items_;       // controls in table order, then THEME, then ZOOM
         std::vector<int> itemOfParam_;                   // table index -> item index, -1 for a hidden parameter
+        std::optional<EnvelopeView> envelope_;
         float width_ = 0.0f, height_ = 0.0f;
         std::string title_;                              // the product name, upper case
-        std::string subtitle_;                           // "EFFECT  0.1.0"
+        std::string subtitle_;                           // "INSTRUMENT  0.1.0"
 
         funkgui::CellModel* zoom_ = nullptr;             // the ZOOM cells' model (the last item owns it)
         funkgui::HostServices* host_ = nullptr;

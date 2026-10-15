@@ -21,7 +21,7 @@
 #include <cmath>
 #include <string>
 
-namespace fpt = testingplaygroundsynth;
+namespace tps = testingplaygroundsynth;
 
 namespace
 {
@@ -41,15 +41,15 @@ namespace
 PROBE(plugin, state)
 {
     const funkgui::HeadlessGuiScope gui;                        // JUCE's message manager: the APVTS needs one
-    fpt::Processor processor;
+    tps::Processor processor;
     juce::AudioProcessorValueTreeState& apvts = processor.parameters();
 
     P.eq("params.count", static_cast<int64_t>(processor.getParameters().size()),
-         static_cast<int64_t>(fpt::kParams.size()));
-    P.eq("ports.count", static_cast<int64_t>(processor.ports().size()), static_cast<int64_t>(fpt::kParams.size()));
-    P.eq("name.is_product", processor.getName() == juce::String(fpt::product::kName) ? 1 : 0, 1);
+         static_cast<int64_t>(tps::kParams.size()));
+    P.eq("ports.count", static_cast<int64_t>(processor.ports().size()), static_cast<int64_t>(tps::kParams.size()));
+    P.eq("name.is_product", processor.getName() == juce::String(tps::product::kName) ? 1 : 0, 1);
 
-    for (const fpt::ParamSpec& s : fpt::kParams)
+    for (const tps::ParamSpec& s : tps::kParams)
     {
         const std::string key = keyOf(s.id);
         juce::RangedAudioParameter* p = apvts.getParameter(s.id);
@@ -63,11 +63,11 @@ PROBE(plugin, state)
         {
             const float t = static_cast<float>(k) / 10.0f;
             const float plain = p->convertFrom0to1(t);
-            plainErr = std::max(plainErr, std::fabs(static_cast<double>(fpt::fromNormalised(s, t) - plain)));
-            if (s.control != fpt::Control::choice)              // a choice's JUCE value snaps to whole indices
-                mapErr = std::max(mapErr, std::fabs(static_cast<double>(fpt::toNormalised(s, plain) - t)));
+            plainErr = std::max(plainErr, std::fabs(static_cast<double>(tps::fromNormalised(s, t) - plain)));
+            if (s.control != tps::Control::choice)              // a choice's JUCE value snaps to whole indices
+                mapErr = std::max(mapErr, std::fabs(static_cast<double>(tps::toNormalised(s, plain) - t)));
         }
-        if (s.control != fpt::Control::choice)
+        if (s.control != tps::Control::choice)
         {
             P.le(key + ".map_to_normalised_err", mapErr, 1e-5);
             P.le(key + ".map_to_plain_err", plainErr, 1e-5 * span);
@@ -96,10 +96,10 @@ PROBE(plugin, state)
     // Buses.
     juce::AudioProcessor::BusesLayout stereo;
     stereo.outputBuses.add(juce::AudioChannelSet::stereo());
-    if constexpr (!fpt::product::kIsInstrument)
+    if constexpr (!tps::product::kIsInstrument)
         stereo.inputBuses.add(juce::AudioChannelSet::stereo());
     P.eq("buses.stereo_supported", processor.checkBusesLayoutSupported(stereo) ? 1 : 0, 1);
-    P.eq("midi.accepts", processor.acceptsMidi() ? 1 : 0, fpt::product::kIsInstrument ? 1 : 0);
+    P.eq("midi.accepts", processor.acceptsMidi() ? 1 : 0, tps::product::kIsInstrument ? 1 : 0);
 
     // Process, at the defaults: 1 s of a 440 Hz sine in (an effect), a held A4 (an instrument).
     for (juce::AudioProcessorParameter* p : processor.getParameters())
@@ -118,7 +118,7 @@ PROBE(plugin, state)
         juce::MidiBuffer midi;
         if (block == 0)
             midi.addEvent(juce::MidiMessage::noteOn(1, 69, 0.8f), 0);
-        if constexpr (fpt::product::kIsInstrument)
+        if constexpr (tps::product::kIsInstrument)
             buffer.clear();
         processor.processBlock(buffer, midi);
         for (int ch = 0; ch < 2; ++ch)

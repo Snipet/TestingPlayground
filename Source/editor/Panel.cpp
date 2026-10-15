@@ -58,10 +58,14 @@ namespace testingplaygroundsynth::ui
     {
         // ---- layout (logical px) --------------------------------------------------------------------------------------
         constexpr float kMargin = 24.0f;
-        constexpr float kMinContentW = 408.0f;
+        constexpr float kMinContentW = 456.0f;           // the header's name, kind and version beside the THEME cells
         constexpr float kTitleTop = 17.0f;
         constexpr float kHeaderRuleY = 46.0f;
         constexpr float kSectionTop = 64.0f;
+        constexpr float kThemeW = 128.0f;                // the THEME cells, from the content's right edge
+        constexpr float kEnvelopeTop = 82.0f;            // the plot, under its caption at kSectionTop
+        constexpr float kEnvelopeH = 80.0f;
+        constexpr float kEnvelopeGap = 18.0f;            // between the plot and the controls
         constexpr float kDialCellW = 60.0f;              // funkgui::DialGeom, primary: 60 x 80
         constexpr float kSliderW = 180.0f;               // the rule; the hit rectangle is 12 px wider, 80 px tall
         constexpr float kGapX = 18.0f;                   // between two controls in a row
@@ -344,39 +348,54 @@ namespace testingplaygroundsynth::ui
                 contentW = std::max(contentW, kChoiceCellW * static_cast<float>(s.numChoices));
         width_ = 2.0f * kMargin + contentW;
 
+        // The envelope, above the controls, when the table has its four rows.
+        envelope_ = EnvelopeView::make(ports, { kMargin, kEnvelopeTop, contentW, kEnvelopeH });
+
         // Flow layout, in table order: dials and sliders left to right, wrapping at the content width; a choice takes a
         // row of its own. Dials and sliders share a row's top, so their labels line up (a slider's hit rectangle
-        // starts 6 px left of and above its geometry).
+        // starts 6 px left of and above its geometry). A row of two or more that fills more than half the width
+        // spreads its spare width evenly between its controls.
         itemOfParam_.assign(kParams.size(), -1);
         const auto idFor = [this] { return kA11yStride * static_cast<uint32_t>(items_.size() + 1); };
-        float rowTop = kSectionTop, x = 0.0f, rowH = 0.0f;
+        float rowTop = envelope_ ? kEnvelopeTop + kEnvelopeH + kEnvelopeGap : kSectionTop, rowW = 0.0f, rowH = 0.0f;
+        std::vector<std::size_t> row;                    // the table indices of the dials and sliders in this row
+        const auto cellW = [](const ParamSpec& s) {
+            return s.control == Control::dial ? kDialCellW : kSliderW + 12.0f;
+        };
         const auto newRow = [&] {
+            float gap = kGapX;
+            const float spare = contentW - rowW;
+            if (row.size() >= 2 && spare < 0.5f * contentW)
+                gap += spare / static_cast<float>(row.size() - 1);
+            float x = 0.0f;
+            for (const std::size_t i : row)
+            {
+                const ParamSpec& s = kParams[i];
+                itemOfParam_[i] = static_cast<int>(items_.size());
+                if (s.control == Control::dial)
+                    items_.push_back(std::make_unique<DialItem>(s, *ports[i], funkgui::DialGeom{ kMargin + x, rowTop },
+                                                                idFor()));
+                else
+                    items_.push_back(std::make_unique<SliderItem>(
+                        s, *ports[i], funkgui::SlotGeom{ kMargin + x + 6.0f, rowTop, kSliderW }, idFor()));
+                x += cellW(s) + gap;
+            }
+            row.clear();
             if (rowH > 0.0f)
                 rowTop += rowH;
-            x = 0.0f;
+            rowW = 0.0f;
             rowH = 0.0f;
         };
         for (std::size_t i = 0; i < kParams.size() && i < ports.size(); ++i)
         {
             const ParamSpec& s = kParams[i];
-            if (s.control == Control::dial)
+            if (s.control == Control::dial || s.control == Control::slider)
             {
-                if (x > 0.0f && x + kDialCellW > contentW)
+                const float w = cellW(s);
+                if (!row.empty() && rowW + kGapX + w > contentW)
                     newRow();
-                itemOfParam_[i] = static_cast<int>(items_.size());
-                items_.push_back(std::make_unique<DialItem>(s, *ports[i], funkgui::DialGeom{ kMargin + x, rowTop },
-                                                            idFor()));
-                x += kDialCellW + kGapX;
-                rowH = std::max(rowH, kControlRowH);
-            }
-            else if (s.control == Control::slider)
-            {
-                if (x > 0.0f && x + kSliderW + 12.0f > contentW)
-                    newRow();
-                itemOfParam_[i] = static_cast<int>(items_.size());
-                items_.push_back(std::make_unique<SliderItem>(
-                    s, *ports[i], funkgui::SlotGeom{ kMargin + x + 6.0f, rowTop, kSliderW }, idFor()));
-                x += kSliderW + 12.0f + kGapX;
+                rowW += (row.empty() ? 0.0f : kGapX) + w;
+                row.push_back(i);
                 rowH = std::max(rowH, kControlRowH);
             }
             else if (s.control == Control::choice && s.numChoices > 0)
@@ -408,7 +427,7 @@ namespace testingplaygroundsynth::ui
         // THEME, in the header's right corner.
         const float right = width_ - kMargin;
         auto theme = std::make_unique<funkgui::ThemeCells>(
-            std::vector<funkgui::Rect>{ { right - 128.0f, 15.0f, 72.0f, 18.0f }, { right - 54.0f, 15.0f, 54.0f, 18.0f } },
+            std::vector<funkgui::Rect>{ { right - kThemeW, 15.0f, 72.0f, 18.0f }, { right - 54.0f, 15.0f, 54.0f, 18.0f } },
             nullptr, funkgui::Point{}, idFor());
         items_.push_back(std::make_unique<CellsItem>(std::move(theme), [this](char* out, std::size_t n) {
             std::snprintf(out, n, "THEME   %s",
@@ -441,6 +460,17 @@ namespace testingplaygroundsynth::ui
         if (param >= itemOfParam_.size() || itemOfParam_[param] < 0)
             return std::nullopt;
         return items_[static_cast<std::size_t>(itemOfParam_[param])]->centre();
+    }
+
+    int Panel::highlightedParam() const
+    {
+        int src = pressed_ >= 0 ? pressed_ : (hasPointer_ ? itemAt(pointer_) : -1);
+        if (src < 0 && ring_)
+            src = focus_;
+        for (std::size_t i = 0; src >= 0 && i < itemOfParam_.size(); ++i)
+            if (itemOfParam_[i] == src)
+                return static_cast<int>(i);
+        return -1;
     }
 
     void Panel::attach(funkgui::HostServices& host)
@@ -485,16 +515,28 @@ namespace testingplaygroundsynth::ui
         const funkgui::Theme th = productTheme(hostTheme);
         const float contentW = width_ - 2.0f * kMargin;
 
-        // Header: the name, the kind and version, the rule.
+        // Header: the name, the kind and version (when they fit before the THEME cells), the rule.
         {
             const funkgui::Canvas::Scope s(c, funkgui::tags::none, false);
             c.text(title_.c_str(), kMargin, kTitleTop, funkgui::type::kWordmark, th.ink100);
             const float tw = c.textWidth(title_.c_str(), funkgui::type::kWordmark);
-            c.text(subtitle_.c_str(), kMargin + tw + 14.0f,
-                   c.sharedBaselineTop(kTitleTop, funkgui::type::kWordmark, funkgui::type::kMicro),
-                   funkgui::type::kMicro, th.ink32);
+            const float subX = kMargin + tw + 14.0f;
+            if (subX + c.textWidth(subtitle_.c_str(), funkgui::type::kMicro) <= width_ - kMargin - kThemeW - 12.0f)
+                c.text(subtitle_.c_str(), subX,
+                       c.sharedBaselineTop(kTitleTop, funkgui::type::kWordmark, funkgui::type::kMicro),
+                       funkgui::type::kMicro, th.ink32);
             c.hairlineH(kMargin, kHeaderRuleY, contentW, th.ink16);
             c.hairlineH(kMargin, height_ - kFooterH, contentW, th.ink16);
+        }
+
+        // The envelope: its caption and the plot, the segment of the control under the hand highlighted.
+        if (envelope_)
+        {
+            {
+                const funkgui::Canvas::Scope s(c, funkgui::tags::none, false);
+                c.text("ENVELOPE", kMargin, kSectionTop, funkgui::type::kCaption, th.ink52);
+            }
+            envelope_->draw(c, th, highlightedParam());
         }
 
         for (std::size_t i = 0; i < items_.size(); ++i)
@@ -645,6 +687,8 @@ namespace testingplaygroundsynth::ui
     // ---- accessibility ------------------------------------------------------------------------------------------------
     void Panel::accessibility(std::vector<funkgui::A11yItem>& out) const
     {
+        if (envelope_)
+            envelope_->accessibility(out, 1);            // the items' ids start at kA11yStride
         for (const auto& item : items_)
             if (item->shown())
                 item->accessibility(out);

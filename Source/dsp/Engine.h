@@ -1,29 +1,41 @@
-// Source/dsp/Engine.h: the instrument, JUCE-free. Eight voices in two quads of four SIMD lanes (fsdsp::simd), each a
-// phase accumulator (fsdsp::phase: a uint32 cycle, exact pitch, no drift) through a sine or a triangle, under an
-// attack/release envelope (linear attack, exponential release to -80 dB) and the note's velocity. Notes play at their
-// sample offsets. Nothing steps:
-//   - a key played again while its voice still sounds retriggers that voice: its phase and envelope carry on, and its
-//     level moves to the new velocity's over 2 ms (kRampMs);
-//   - when all eight voices are busy, the oldest note is stolen: its voice fades out over 2 ms, then starts the new
-//     note from silence (phase 0), so a note that steals sounds 2 ms late.
-// The output gain is smoothed per sample (fsdsp::Smoother4, 20 ms). Everything advances per sample, so the output
-// does not depend on the host's block size.
+// Source/dsp/Engine.h: the instrument, JUCE-free. The legacy sine synth (tag legacy-visage: SineOscillator, Voice,
+// VoiceScheduler, Gain and the processor's MIDI loop), ported onto FSynth's DSP core:
+//
+//   voices     16, as the legacy synth had, in four quads of four SIMD lanes (fsdsp::simd). A voice is a sine
+//              (SineOscillator.h) under an ADSR (Adsr.h) at its note's level: 0.25 x velocity, the legacy headroom, so
+//              one note at full velocity peaks at -12.04 dBFS and four at 0 dBFS
+//   notes      at their sample offsets within the block: process() renders up to each event, then applies it
+//   policy     VoiceScheduler.h, the legacy one: the same note retriggers its voice, else a silent voice starts it,
+//              else the oldest note's voice is stolen
+//   output     the voices' sum, times GAIN, the same on both channels
+//
+// Nothing steps:
+//   - a retriggered voice keeps its phase, its envelope rises from where it is, and its level moves to the new
+//     velocity's along a smootherstep over 2 ms (fsdsp::kStealFadeMs);
+//   - a stolen voice fades out along the same 2 ms curve, then starts its new note from silence (phase 0, envelope 0),
+//     so a note that steals sounds 2 ms late;
+//   - GAIN and SUSTAIN are smoothed per sample (fsdsp::Smoother4, 20 ms); ATTACK, DECAY and RELEASE change slopes only.
+// The legacy synth stepped there: a stolen voice jumped to its new pitch and velocity mid-waveform, a retriggered one
+// to its new velocity, and ATTACK and RELEASE reached only the notes started after a change. Everything advances per
+// sample and every ramp ends on a fixed sample, so the output does not depend on how the host splits its blocks.
 //
 // The processor calls, on the audio thread: prepare() before playback (the only place that may allocate), setParams()
 // once per block with the plain values of Params.h (finite, within the table's range), then process() with the
 // block's note events; the output channels are written (not added to). Hosts call tailSeconds() from any thread, so
-// it reads an atomic that setParams() stores. Replace the body with your algorithm and keep the contract: no
-// allocation, no locks, no I/O in setParams() and process().
+// it reads an atomic that setParams() stores. activeVoices() and voice() describe the voices, for the probes.
 #pragma once
 
+#include "dsp/Adsr.h"
 #include "dsp/Events.h"
 #include "dsp/Params.h"
+#include "dsp/VoiceScheduler.h"
 
 #include "fsdsp/core/Simd.h"
 #include "fsdsp/core/Smoother.h"
 
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 
@@ -32,8 +44,19 @@ namespace testingplaygroundsynth
     class Engine
     {
     public:
-        static constexpr int   kVoices = 8;
-        static constexpr float kRampMs = 2.0f;                        // a retrigger's level change; a steal's fade
+        static constexpr int   kVoices = 16;
+        static constexpr float kVoiceLevel = 0.25f;                   // a voice at full velocity, before GAIN
+
+        // One voice, as the probes see it.
+        struct VoiceState
+        {
+            bool  sounding = false;      // held, releasing, or fading out after a steal: not free
+            int   note = -1;             // the note it sounds now (-1: none since reset)
+            bool  held = false;          // its key is down (the envelope's gate)
+            float envelope = 0.0f;       // the ADSR's level, 0..1
+            float level = 0.0f;          // 0.25 x velocity, ramped
+            int   next = -1;             // stolen: the note it starts when its fade ends; else -1
+        };
 
         void prepare(double sampleRate, int maxBlockSize) noexcept;
         void reset() noexcept;                                        // every voice off; the next setParams snaps
@@ -42,50 +65,50 @@ namespace testingplaygroundsynth
 
         double tailSeconds() const noexcept { return releaseSeconds_.load(std::memory_order_relaxed); }
         float  sampleRate() const noexcept { return fs_; }
-        int    activeVoices() const noexcept;                         // held, releasing above -80 dB, or stolen and
-                                                                      // fading out
+        int    rampSamples() const noexcept { return rampSamples_; }   // a retrigger's or a steal's ramp
+        int    activeVoices() const noexcept;
+        VoiceState voice(int v) const noexcept;
 
     private:
-        static constexpr int kQuads = kVoices / 4;
+        static constexpr std::size_t kN = static_cast<std::size_t>(kVoices);
+        static constexpr std::size_t kQuads = kN / 4;
+        using Scheduler = VoiceScheduler<kN>;
 
         void noteOn(int note, float velocity) noexcept;
         void noteOff(int note) noexcept;
         void allNotesOff() noexcept;
-        bool sounding(int v) const noexcept;
-        int  owner(int v) const noexcept;                             // the note a voice plays, or starts after a steal
-        void rampTo(int v, float amp) noexcept;                       // the voice's level to `amp` over kRampMs
-        void startPending(int v) noexcept;                            // a stolen voice, faded out: its new note
+        bool sounding(std::size_t v) const noexcept;
+        float levelNow(std::size_t v) const noexcept;                 // the level ramp's value at this sample
+        void rampTo(std::size_t v, float level) noexcept;             // the level to `level` over rampSamples_
+        void start(std::size_t v, int note, uint32_t inc, float level, bool keyDown) noexcept;
         void render(float* left, float* right, int n) noexcept;      // n samples with no event inside
         void renderSpan(float* left, float* right, int n) noexcept;  // ... and no ramp ending inside
 
         float fs_ = 48000.0f;
-        float log2Inc0_ = 0.0f;              // fsdsp::phase::incFromPitch's offset: log2(440 / fs) - 69 / 12
-        float attackStep_ = 1.0f;            // envelope rise per sample
-        float releaseCoef_ = 0.0f;           // envelope factor per sample while released
-        int   rampSamples_ = 96;             // kRampMs at fs_
-        std::atomic<double> releaseSeconds_{ 0.3 };
-        bool  triangle_ = false;
-        fsdsp::Smoother4 smooth_{};          // lane 0: the linear output gain
+        float pitchOffset_ = 0.0f;                    // SineOscillator4::pitchOffset(fs_)
+        int   rampSamples_ = 96;                      // fsdsp::kStealFadeMs at fs_
+        adsr::Rates rates_{};
+        std::atomic<double> releaseSeconds_{ 0.05 };
+        fsdsp::Smoother4 smooth_{};                   // lane 0: the linear output gain; lane 1: SUSTAIN, 0..1
         bool  primed_ = false;
+        Scheduler scheduler_{};
 
-        // Per voice v: quad v / 4, lane v % 4.
-        alignas(16) std::array<uint32_t, kVoices> phase_{};
-        alignas(16) std::array<uint32_t, kVoices> inc_{};
-        alignas(16) std::array<uint32_t, kVoices> gate_{};   // all ones while the key is down (a lane mask)
-        alignas(16) std::array<float, kVoices> env_{};
-        alignas(16) std::array<float, kVoices> amp_{};       // the level, 0.25 x velocity, ramped
-        alignas(16) std::array<float, kVoices> ampStep_{};   // its change per sample while a ramp runs, else 0
-        std::array<float, kVoices> ampTarget_{};             // where the ramp lands, exactly
-        std::array<int, kVoices> rampLeft_{};                // samples left in the ramp; 0: none
-        std::array<int, kVoices> note_{};                    // the note sounding; -1: never used since reset()
-        std::array<uint64_t, kVoices> started_{};            // note-on order, to steal the oldest
+        // Per voice v (quad v / 4, lane v % 4).
+        alignas(16) std::array<uint32_t, kN> phase_{};
+        alignas(16) std::array<uint32_t, kN> inc_{};
+        adsr::Bank<kN> env_{};
+        alignas(16) std::array<float, kN> levelFrom_{};    // the level ramp: from, to, its position 0..1 (1: at rest)
+        alignas(16) std::array<float, kN> levelTo_{};
+        alignas(16) std::array<float, kN> rampPos_{};
+        alignas(16) std::array<float, kN> rampStep_{};     // 1 / rampSamples_ while a ramp runs, else 0
+        std::array<int, kN> rampLeft_{};                    // samples left in the ramp; 0: none
+        std::array<int, kN> playing_{};                     // the note sounding; -1: none since reset
 
         // A stolen voice, while it fades out: the note it starts when the fade ends.
-        std::array<bool, kVoices> pending_{};
-        std::array<int, kVoices> pendingNote_{};
-        std::array<uint32_t, kVoices> pendingInc_{};
-        std::array<uint32_t, kVoices> pendingGate_{};
-        std::array<float, kVoices> pendingAmp_{};
-        uint64_t counter_ = 0;
+        std::array<bool, kN> stolen_{};
+        std::array<int, kN> nextNote_{};
+        std::array<uint32_t, kN> nextInc_{};
+        std::array<float, kN> nextLevel_{};
+        std::array<bool, kN> nextKeyDown_{};
     };
 }
