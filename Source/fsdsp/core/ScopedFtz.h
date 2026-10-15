@@ -1,0 +1,74 @@
+#pragma once
+
+// Flush-to-zero for the lifetime of a scope (01 §7.1, §7.8, §11.8; seeded from FCompressor: FC 01 §5.1, §5.7;
+// FC K2 #24): HardwareReverb's ScopedFtz (Tools/Harness.h),
+// made JUCE-free. arm64: FPCR |= 1 << 24 (FZ). x86-64: MXCSR |= 0x8040 (FTZ + DAZ). The destructor restores the
+// saved register. EngineHost::process opens one, and so does every analysis:: entry point, so probes, the plugin and
+// the editor's previews run in the same FP mode whoever calls them.
+//
+// Frozen at FZ0. Seeded with its bodies (inline asm / _mm_getcsr, allocation- and syscall-free); F1 (S1) verifies
+// the arm64 branch on FSynth's flags (dsp.units). The MXCSR branch is kept from the seed, not verified in v1 (Q4).
+// The constructor and destructor are FSDSP_NONBLOCKING (core/Rt.h), because EngineHost::process opens one.
+
+#include "fsdsp/core/Rt.h"
+#include <cstdint>
+
+#if defined(__x86_64__) || defined(_M_X64)
+  #include <xmmintrin.h>
+#elif !defined(__aarch64__)
+  #error "ScopedFtz: no flush-to-zero control for this architecture (arm64 FPCR, x86-64 MXCSR)."
+#endif
+
+namespace fsdsp {
+
+struct ScopedFtz {
+    ScopedFtz() noexcept FSDSP_NONBLOCKING;     // saves the FP control register, then sets flush-to-zero
+    ~ScopedFtz() noexcept FSDSP_NONBLOCKING;    // restores the saved register
+    ScopedFtz(const ScopedFtz&) = delete;
+    ScopedFtz& operator=(const ScopedFtz&) = delete;
+
+private:
+    uint64_t saved_ = 0;                    // FPCR (arm64) or MXCSR (x86-64, low 32 bits)
+};
+
+// Bodies (seeded: FC's F1, S1): inline, two register accesses each. The asm statements are volatile with a "memory"
+// clobber, so the
+// compiler neither drops them nor moves a load or store of the protected scope across them. That is all it orders:
+// LLVM's default FP model treats the FP environment as constant, so arithmetic on values that stay in registers may
+// execute on either side of the register write (FC's dsp.units saw the fmul of a value loaded before the scope sink
+// past the msr). The mode therefore applies to arithmetic whose operands are loaded inside the scope and whose results are
+// stored inside it: open the scope first thing, as EngineHost::process and the analysis entry points do, and keep
+// every flushed quantity in memory across its boundary.
+#if defined(__aarch64__)
+
+inline ScopedFtz::ScopedFtz() noexcept FSDSP_NONBLOCKING
+{
+    uint64_t fpcr = 0;
+    __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr) : : "memory");
+    saved_ = fpcr;
+    fpcr |= uint64_t{1} << 24;                                  // FZ
+    __asm__ volatile("msr fpcr, %0" : : "r"(fpcr) : "memory");
+}
+
+inline ScopedFtz::~ScopedFtz() noexcept FSDSP_NONBLOCKING
+{
+    __asm__ volatile("msr fpcr, %0" : : "r"(saved_) : "memory");
+}
+
+#else
+
+inline ScopedFtz::ScopedFtz() noexcept FSDSP_NONBLOCKING
+{
+    const unsigned int csr = _mm_getcsr();
+    saved_ = csr;
+    _mm_setcsr(csr | 0x8040u);                                  // FTZ (0x8000) | DAZ (0x0040)
+}
+
+inline ScopedFtz::~ScopedFtz() noexcept FSDSP_NONBLOCKING
+{
+    _mm_setcsr(static_cast<unsigned int>(saved_));
+}
+
+#endif
+
+} // namespace fsdsp

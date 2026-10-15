@@ -1,6 +1,9 @@
+# Build trees (cmake --preset dev | release, scripts/test.sh): build-dev/, build-release/, ...
 build/
+build-*/
 .DS_Store
 *.xcodeproj/
 *.xcworkspace/
 *.user
+__pycache__/
 .claude/settings.local.json
