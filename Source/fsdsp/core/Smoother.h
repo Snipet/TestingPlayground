@@ -1,0 +1,82 @@
+#pragma once
+
+// Parameter smoothing (01 §7.1, §7.8, §10.6; seeded from FCompressor: FC 01 §5.1; FC E §4.6; FC K2 #20). State
+// advances per call to tick() only, so the result does not depend on the block size.
+//   - Smoother4: four independent one-pole smoothers (tau 20 ms by default) with an epsilon landing: once
+//     |cur - tgt| < eps in a lane, that lane lands exactly on its target (HardwareReverb's smoothSnap). FSynth ticks
+//     it once per control tick, on normalised host and UI values: prepare(fsBase / kTickSamples, 20) (01 §7.8;
+//     FCompressor ticks it per sample).
+//   - LinearRamp: a 0...1 amount moving linearly over a fixed length; it lands exactly on 0 and 1. Under SmoothRamp
+//     (core/Ramp.h) it is every gain change that must never step (01 §7.7).
+//
+// Frozen at FZ0. Seeded with its bodies; F1 (S1) verifies them on FSynth's flags (dsp.units). Every member is
+// FSDSP_NONBLOCKING (core/Rt.h). tick() is inline in this header; prepare() is out of line in Smoother.cpp and
+// repeats the macro.
+
+#include "fsdsp/core/Rt.h"
+#include "fsdsp/core/Simd.h"
+
+namespace fsdsp {
+
+struct Smoother4 {                          // four independent per-sample one-poles, tau 20 ms, epsilon landing
+    simd::f32x4 cur, tgt, a, eps;
+    void prepare(float fs, float tauMs = 20.f, simd::f32x4 epsilon = simd::set1(1e-5f)) noexcept FSDSP_NONBLOCKING;
+    void setTarget(simd::f32x4 t) noexcept FSDSP_NONBLOCKING { tgt = t; }
+    void snap() noexcept FSDSP_NONBLOCKING { cur = tgt; }
+    simd::f32x4 tick() noexcept FSDSP_NONBLOCKING;   // cur = tgt + a*(cur - tgt); lands exactly when |cur - tgt| < eps
+};
+
+struct LinearRamp {                         // 0...1 amount, linear, fixed length; lands exactly on 0 and 1
+    float cur = 0, tgt = 0, step = 0;
+    void prepare(float fs, float ms = 20.f) noexcept FSDSP_NONBLOCKING;
+    void setTarget(float t) noexcept FSDSP_NONBLOCKING;
+    float tick() noexcept FSDSP_NONBLOCKING;
+    bool moving() const noexcept FSDSP_NONBLOCKING;
+};
+
+// ---- Bodies (seeded: FC's F1, S1) ------------------------------------------------------------------------------------
+// prepare() is out of line (Smoother.cpp); the per-tick members are inline here.
+//
+// Smoother4::prepare(fs, tauMs, epsilon) sets a = alphaFromTau(tauMs, fs) in every lane and eps; it does not move cur
+// or tgt. tick() lands a lane exactly on its target when |cur - tgt| < eps OR when the one-pole has stalled: once
+// (1 - a) * |cur - tgt| is below half an ulp of the value, tgt + a*(cur - tgt) rounds back to cur and a float one-pole
+// never gets closer (HR's reason for smoothSnap's eps, there at block rate). Per sample, with a 20 ms tau, that stall
+// sits far above any practical eps (at 48 kHz 1 - a = 1.04e-3: a -40 dB target stalls 1.8e-3 dB short, a slope near 1
+// about 3e-5 short; 4x that at 192 kHz), so without the stall test the smoothers would never land and a settled
+// value would not be exact (01 §7.8: "epsilon landing, so settled values are exact"; in FCompressor: the settled
+// engine against analysis::staticGr, FC 01 §5.1). The landing step is below
+// max(eps, ulp(value) / (2 (1 - a))): 0.015 dB for a 60 dB value at 384 kHz (dsp.units).
+//
+// LinearRamp: step = 1000 / (ms * fs), or 1 (instant) when the ramp is shorter than a sample or ms/fs is <= 0 or NaN;
+// prepare() keeps cur and tgt. tick() moves cur toward tgt by step and clamps onto it, so it lands exactly (on 0 and 1,
+// or any target in between) after ms * fs / 1000 samples, give or take one for the float accumulation.
+
+inline simd::f32x4 Smoother4::tick() noexcept FSDSP_NONBLOCKING
+{
+    const simd::f32x4 d = simd::sub(cur, tgt);
+    const simd::f32x4 next = simd::fma(tgt, a, d);                     // tgt + a*(cur - tgt), one rounding
+    const simd::m32x4 stalled = simd::band(simd::ge(next, cur), simd::ge(cur, next));
+    cur = simd::sel(simd::bor(simd::gt(eps, simd::abs(d)), stalled), tgt, next);
+    return cur;
+}
+
+inline void LinearRamp::setTarget(float t) noexcept FSDSP_NONBLOCKING { tgt = t; }
+
+inline float LinearRamp::tick() noexcept FSDSP_NONBLOCKING
+{
+    if (cur < tgt)
+    {
+        const float up = cur + step;
+        cur = up < tgt ? up : tgt;
+    }
+    else if (cur > tgt)
+    {
+        const float down = cur - step;
+        cur = down > tgt ? down : tgt;
+    }
+    return cur;
+}
+
+inline bool LinearRamp::moving() const noexcept FSDSP_NONBLOCKING { return cur != tgt; }
+
+} // namespace fsdsp

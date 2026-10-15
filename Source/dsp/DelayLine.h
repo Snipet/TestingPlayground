@@ -1,84 +1,81 @@
+// Source/dsp/DelayLine.h: one FDN delay line, read through a first-order Thiran allpass (JUCE-free).
+//
+// Ported from the legacy hrvb::DelayLine (git show legacy-visage:Source/dsp/DelayLine.h, which came from
+// HardwareReverb): a power-of-two ring buffer, written once per sample by push() and read once per sample, before the
+// push, at a fractional delay D = N + d through the allpass
+//
+//     y[n] = a (x[n - N] - y[n - 1]) + x[n - N - 1],   a = (1 - d) / (1 + d)
+//
+// whose magnitude is exactly 1 at every frequency (an interpolator in a feedback loop must not gain or lose level), so
+// the delay can glide (SIZE) and be modulated (the LFO) without changing the decay.
+//
+// One fix, which the legacy comment asked for and its code did not do: the legacy split D as floor(D) + d with d in
+// [0, 1), so an integer delay gave d = 0, a = 1 and a pole ON the unit circle at z = -1 (a loop that never forgets an
+// error at Nyquist). Here the split is N = floor(D - 1/2), d = D - N in [1/2, 3/2): a lies in (-1/5, 1/3], the pole
+// is at least 2/3 inside the circle, and an integer delay has d = 1, a = 0: a plain delay of exactly D samples.
+//
+// prepare() allocates (call it from Engine::prepare only); clear(), push() and read() are real-time safe.
 #pragma once
 
-#include <cstddef>
-#include <vector>
-#include <cmath>
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
 
-namespace hrvb
+namespace testingplayground
 {
-    // First-order Thiran/allpass interpolated delay line.
-    //
-    // For a desired delay D = N + d, 0 <= d < 1, the allpass section
-    //     y[n] = a * x[n] + x[n-1] - a * y[n-1],  a = (1 - d) / (1 + d)
-    // is placed after an integer delay of N samples. This gives a unity
-    // magnitude response (no amplitude blow-up in a feedback loop, unlike
-    // higher-order polynomial interpolators which are not unity-magnitude
-    // and can amplify content inside an FDN at certain delay-modulation
-    // velocities).
-    //
-    // To avoid the "click" caused by d crossing 1 -> 0 (which would also
-    // reset the allpass state), the caller is expected to keep the
-    // *fractional* part smoothly varying by allowing N to drift with d.
-    // We accomplish that by tracking the desired delay as a float and
-    // splitting it into N + d on every read.
     class DelayLine
     {
     public:
-        void prepare(double sampleRate, float maxDelaySamples)
+        static constexpr float kMinDelay = 2.0f;         // read() clamps up to this; N >= 1 from 1.5 on
+
+        // Room for delays up to maxDelaySamples (rounded up to a power of two, plus slack); silent.
+        void prepare(float maxDelaySamples)
         {
-            // Round up to next power of two so we can mask instead of mod.
-            size_t need = static_cast<size_t>(std::ceil(maxDelaySamples)) + 4;
-            size_t pow2 = 1;
-            while (pow2 < need) pow2 <<= 1;
-            buffer_.assign(pow2, 0.0f);
-            mask_ = pow2 - 1;
-            write_ = 0;
-            prevOut_ = 0.0f;
-            (void) sampleRate;
+            const auto need = static_cast<std::size_t>(std::max(maxDelaySamples, kMinDelay)) + 4u;
+            std::size_t size = 1;
+            while (size < need)
+                size <<= 1;
+            buffer_.assign(size, 0.0f);
+            mask_ = size - 1;
+            clear();
         }
 
-        void reset() noexcept
+        void clear() noexcept
         {
             std::fill(buffer_.begin(), buffer_.end(), 0.0f);
-            prevOut_ = 0.0f;
             write_ = 0;
+            prev_ = 0.0f;
         }
 
-        inline void push(float x) noexcept
+        // The largest delay read() honours.
+        float capacity() const noexcept { return static_cast<float>(mask_) - 2.0f; }
+
+        void push(float x) noexcept
         {
             buffer_[write_ & mask_] = x;
             ++write_;
         }
 
-        // Read at a fractional delay. Must be called once per sample,
-        // before push(), to keep the allpass state coherent.
-        inline float readAllpass(float delaySamples) noexcept
+        // The sample `delay` samples back (fractional; read before the push of this sample). Clamped to
+        // [kMinDelay, capacity()].
+        float read(float delay) noexcept
         {
-            // Clamp to a safe minimum. The allpass approximation degrades
-            // near d == 0 / d == 1; biasing the fractional part toward
-            // 0.5 stabilises it at the cost of a half-sample offset.
-            if (delaySamples < 1.0f) delaySamples = 1.0f;
-
-            const float d   = delaySamples - std::floor(delaySamples);
-            const size_t N  = static_cast<size_t>(delaySamples);
-            const float a   = (1.0f - d) / (1.0f + d);
-
-            const size_t r0 = (write_ - N    ) & mask_;
-            const size_t r1 = (write_ - N - 1) & mask_;
-            const float  x0 = buffer_[r0];
-            const float  x1 = buffer_[r1];
-
-            // y[n] = a*(x0 - y[n-1]) + x1
-            const float y = a * (x0 - prevOut_) + x1;
-            prevOut_ = y;
+            delay = std::clamp(delay, kMinDelay, capacity());
+            const auto n = static_cast<std::size_t>(delay - 0.5f);    // floor: the argument is >= 1.5
+            const float d = delay - static_cast<float>(n);           // [0.5, 1.5)
+            const float a = (1.0f - d) / (1.0f + d);
+            const float x0 = buffer_[(write_ - n) & mask_];
+            const float x1 = buffer_[(write_ - n - 1u) & mask_];
+            const float y = a * (x0 - prev_) + x1;
+            prev_ = y;
             return y;
         }
 
     private:
         std::vector<float> buffer_;
-        size_t mask_ = 0;
-        size_t write_ = 0;
-        float prevOut_ = 0.0f;
+        std::size_t mask_ = 0;
+        std::size_t write_ = 0;
+        float prev_ = 0.0f;
     };
 }
