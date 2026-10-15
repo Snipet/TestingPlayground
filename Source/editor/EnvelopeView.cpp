@@ -35,6 +35,7 @@ namespace testingplaygroundsynth::ui
                 {
                     v.param_[k] = i;
                     v.port_[k] = ports[i];
+                    v.last01_[k] = ports[i]->default01();
                     found = true;
                 }
             if (!found)
@@ -47,7 +48,7 @@ namespace testingplaygroundsynth::ui
 
     float EnvelopeView::plain(Seg s) const
     {
-        return fromNormalised(kParams[param_[s]], port_[s]->value01());
+        return fromNormalised(kParams[param_[s]], shownValue01(port_[s]->value01(), last01_[s]));
     }
 
     bool EnvelopeView::shows(std::size_t param) const noexcept
