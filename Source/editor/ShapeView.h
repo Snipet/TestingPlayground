@@ -9,7 +9,9 @@
 //             hand; Delete or Backspace removes the selected point; the grid of eighths; the curve's fill
 //   changed   a right-click opens a menu (Delete point, Reset shape) instead of deleting at once: in FunkGui a popup
 //             click never writes; the two edge points move together, because the cycle wraps there and a step would
-//             jump the delay lines; arrow keys move the selected point (1/64 of the range, Shift 1/256)
+//             jump the delay lines; arrow keys move the selected point (1/64 of the range, Shift 1/256); the default
+//             shape, which Reset shape restores, is a bipolar triangle (0, +1 at a quarter, -1 at three quarters, 0)
+//             where the legacy reset to one bump (0.5, 1 at the middle, 0.5), so the delays move both ways
 //   dropped   the File and Edit menus (New, Save, Save As, Copy, Cut, Paste), the .lfo files, the strip of several
 //             graphs, the LFO / ONESHOT switch and the side panel (LATENCY, RATE, AMPLITUDE, PHASE): the shape lives in
 //             the plugin state now, there is one LFO, and its RATE and DEPTH are host parameters (dials beside it)

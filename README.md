@@ -28,7 +28,10 @@ reverb's impulse response.
   editor's graph (`LfoShape.h`); line i runs i/n of a cycle behind line 0.
 - **Input and output**: the left input feeds the even lines and the right the odd ones, with fixed signs, scaled by
   sqrt(1 - mean g^2) so that steady noise comes out near its own level at any SIZE and DECAY; the even lines make
-  the left output, the odd lines the right. MIX blends dry and wet; GAIN is the output level.
+  the left output, the odd lines the right. MIX blends dry and wet; GAIN is the output level. Each input reaches the
+  network through a DC blocker (a one-pole high-pass at 5 Hz): 0 Hz is always a mode of the network, and without it
+  a DC offset would come out amplified (+12 dB at the defaults, +34 dB at 1 m, 4 lines and DECAY 20 s). NaN and
+  infinite input samples become 0, and the input is clamped to +-1e6, before any delay line.
 - **Nothing steps**: parameters are smoothed (20 ms); a SIZE change glides the delays to their new primes (a pitch
   slide, 60 ms); a LINES change fades the wet path out, switches and clears the network, and fades back in (20 ms
   each). The output does not depend on how the host splits its blocks.
@@ -96,11 +99,12 @@ build-dev/TestingPlayground_probes --list
 | `dsp.render` | renders the impulse response (`dsp.render.ir.wav`, 4 s) and noise bursts and clicks through the reverb (`dsp.render.wav`, with its input); finite, no clipping, the first arrival at the shortest line, the tail's fall, the same bits at blocks of 64 and 333 |
 | `dsp.decay` | T60 from the energy decay curve against DECAY at 0.5, 2 and 8 s (within 3 %; measured 0.496, 2.000, 7.996 s), at 4 and 8 lines, 2 and 60 m, 44.1 and 96 kHz; with HF DECAY 50 %, the decay at 250 Hz and 12 kHz against the absorption filters' design (within 5 %) |
 | `dsp.stability` | all 256 corners of the parameter range, 10 s of noise each: finite, no growth, the wet level near the input's |
-| `dsp.response` | the dry path sample by sample on both channels; the routing (left in to left out after the first line's delay, with its value and sign; the mirror for the right); GAIN linear; no click when GAIN, SIZE, LINES or the LFO shape changes; a mono bus |
+| `dsp.response` | the dry path sample by sample on both channels; the routing (every line's first arrival, sample by sample, at 4, 8 and 16 lines, against a model of the taps, their signs and the DC blocker; the input gain against its law); GAIN linear; no click when GAIN, SIZE, LINES or the LFO shape changes; a mono bus; NaN, inf and huge input samples; DC kept out of the network |
+| `dsp.modulation` | each line's read position against RATE, DEPTH, the drawn shape and the line's i/n phase offset, at 4 and 16 lines |
 | `dsp.primes` | the prime rule against the legacy table over its whole range (0 to 1,395,629), the legacy test's inputs; every layout's lengths prime, ascending, near their targets, inside the delay lines |
 | `plugin.process` | the processor as a host drives it: host writes reach the DSP, a host's NaN is ignored, both channels are the Engine's output bit for bit, an LFO shape set by the editor included |
-| `plugin.state` | the host's parameters equal the table; the state (parameters and LFO shape) round-trips; an older state without a shape loads the default |
-| `gui.dump` | the panel headless to `gui.dump.png`, `gui.dump.paper.png` and `gui.dump.edited.png`; settles, every glyph, a11y, the DELAYS line, a dial drag, and every graph gesture (add, move, snap, bend, the end points, remove, the menu) |
+| `plugin.state` | the host's parameters equal the table; the state (parameters and LFO shape) round-trips; an older state without a shape loads the default; a session of the Visage version restores GAIN; a state value that is not a number loads the default; processBlock before prepareToPlay passes the input through; the tail length hosts are told |
+| `gui.dump` | the panel headless to `gui.dump.png`, `gui.dump.paper.png` and `gui.dump.edited.png`; settles, every glyph, a11y, the DELAYS line, a dial drag, every graph gesture (add, move, snap, bend, the end points, remove, the menu) and that each completed one tells the host once; a host's NaN never shows |
 
 A probe is one file in `Tools/probes/<layer>/` whose first line registers it (`// PROBE name=dsp.mytest timeout=60`)
 and whose body uses spec rows (`P.near`, `P.le`, `P.ge`, `P.in`, `P.eq`): each states what must hold, with its
@@ -119,7 +123,8 @@ fit, a band-pass, WAV output); `Tools/probes/dsp/Rig.h` runs the Engine as the p
   `setParams()` and `process()` (allocate in `prepare()`), and smooth every parameter. The core helps:
   `fsdsp::simd` (four float lanes, NEON), `fsdsp::exp2/log2/tanh/sinPi/tanPi` (no libm), `fsdsp::Smoother4`,
   `SmoothRamp`, `ControlTicker`, `Pcg32`, `sanitize`. Then rewrite the probes that measure this reverb
-  (`dsp.decay`, `dsp.response`, `dsp.stability`, `dsp.render`'s first-arrival row, `plugin.process`); `gui.dump` and
+  (`dsp.decay`, `dsp.response`, `dsp.modulation`, `dsp.stability`, `dsp.render`'s first-arrival row,
+  `plugin.process`, `plugin.state`'s tail rows); `gui.dump` and
   `plugin.state` work from the parameter table and keep working. Without modulation, drop RATE and DEPTH, and the
   graph with its `EditorPort` (or keep it to drive something else: it hands the Engine a 257-point table).
 - **Add a parameter**: one row in `Source/dsp/Params.h` (id, name, label, unit, range, default, centre, control), then
@@ -154,17 +159,25 @@ keeps what was there and completes it in the same family (HardwareReverb's, wher
 - added: the delay-length scheme, the Hadamard matrix, the decay gains, the absorption filters, the input and output
   taps, the level normalisation, MIX, the smoothing and the LINES switch;
 - fixed: the delay line's integer delays (the legacy split put the allpass pole on the unit circle there);
+- GAIN: the same ID, range, default and plain dB value, so a session saved by the Visage version (its state's root
+  tag was `PARAMS`; this version writes `PARAMETERS`) restores GAIN. What changed: it is smoothed over 20 ms (the
+  core's one-pole, as every parameter here) where the legacy `Gain.h` used 10 ms; it no longer snaps to 0.01 dB
+  steps; and the host shows its unit in the value's text ("-6.0 dB") instead of a separate "dB" label;
 - the legacy graph editor (`gui/GraphEditor`, 1,486 lines of Visage: File and Edit menus, .lfo files, a strip of
   several graphs, an LFO / ONESHOT switch and a side panel) became `Source/editor/ShapeView.cpp`, its point canvas
   with the same gestures and curve maths, now driving the reverb's modulation; the menus, files, graph strip and
-  side panel were left out (the shape is saved with the plugin; RATE and DEPTH are host parameters).
+  side panel were left out (the shape is saved with the plugin; RATE and DEPTH are host parameters). Its default
+  shape changed: the legacy reset to a single bump (0.5, up to 1 at the middle, back to 0.5); here the default, and
+  what Reset shape restores, is a bipolar triangle (0, +1 at a quarter, -1 at three quarters, 0), so the delays move
+  both ways around their primes.
 
 ## Make a new plugin
 
 Start new plugins from FunkPluginTemplate (`../FunkPluginTemplate/scripts/plugin.py clone --name MyPlugin`, effect or
 instrument). This project's own `scripts/plugin.py clone --name MyReverb --code Myrv` copies the playground, FDN and
-all, into a new project with its own identity, for a second experiment; `--type instrument` and `--starter` refuse
-here, because the starters live in the template. `scripts/plugin.py rename` renames this project in place.
+all, into a new project with its own identity, for a second experiment; `--type instrument`, `--starter` and
+`starter-diff` refuse here with one line, before anything is asked or written, because the starters live in the
+template. `scripts/plugin.py rename` renames this project in place.
 
 ## Update the DSP core
 

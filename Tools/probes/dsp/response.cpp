@@ -4,12 +4,19 @@
 //   DRY      MIX 0 %: each channel is GAIN times its input, sample by sample against a double-precision model, with
 //            different noises left and right (a channel swapped, dropped or inverted fails): residual under -120 dB, at
 //            GAIN -24, 0 and +6 dB.
-//   ROUTING  MIX 100 %, no modulation: an impulse on the left input reaches the left output first, after exactly line
-//            0's delay (787 samples at 12 m), as k u_0 w_0 sqrt(2/n) = +k / sqrt(8) (Fdn.h: the even lines carry the
-//            left, the input and output signs of line 0 are +1); the right output stays silent until the mix has
-//            carried it into an odd line, exactly d_0 + d_1 samples (787 + 829). An impulse on the right input is the
-//            mirror: first on the right after d_1, as -k / sqrt(8) (line 1's output sign is -1), then on the left
-//            after d_1 + d_0. Within 1e-6 of the value; nothing before.
+//   ROUTING  MIX 100 %, no modulation, 12 m, at 4, 8 and 16 lines: every line's first arrival, sample by sample. An
+//            impulse on the left input enters the even lines (Fdn.h), each through the input's DC blocker (impulse
+//            response h: 1, then (R - 1) R^(m - 1), R = e^(-2 pi 5 Hz / fs)), so until the matrix has carried it
+//            round once (2 d_0 samples: at 12 m every line is shorter than that) the left output is exactly
+//              sqrt(2/n) k sum_even u_i w_i h(t - d_i)
+//            and the right output is silent; the right input is the mirror (the odd lines; until d_1 + d_0). The
+//            signs u_i, w_i are the design's two tables (copied below from Fdn.cpp), so a line missing from a tap, a
+//            sign flipped or a channel crossed misses by k sqrt(2/n), about 0.09. Within 1e-6, on both outputs.
+//            k, the input gain, is checked against its law computed here in double from the layout's primes:
+//            k = sqrt(1 - mean g_i^2), g_i = 10^(-3 d_i / (T fs)), within 0.1 % (the Engine's g_i come from
+//            fsdsp::exp2, relative error up to 9e-5, which 1 - g^2 magnifies about tenfold at DECAY 2 s). The right
+//            output's first sound after a left impulse comes when the mix has carried it into an odd line, exactly
+//            d_0 + d_1 samples (787 + 829 at 16 lines); the mirror for the right input.
 //   GAIN     the wet output is linear in GAIN: the impulse response at +6 dB is 10^(6/20) times the one at 0 dB
 //            (within 1e-5 relative).
 //   SMOOTH   a GAIN change from 0 to +12 dB between two blocks (MIX 0 %) is smoothed (20 ms), not stepped: 10 ms after
@@ -30,12 +37,23 @@
 //   STILL    with DEPTH 0 the LFO changes nothing: the output is the unmodulated one, bit for bit.
 //   MONO     a mono bus (one channel): at MIX 0 % the output is GAIN times the input (within 1e-6), at MIX 100 % the
 //            wet signal is (wet L + wet R) / sqrt(2) of the stereo run with the input on both sides (within 1e-6).
+//   SANITIZE NaN, +inf, -inf, a signalling NaN and +-1e30 among noise on both inputs (MIX 30 %): the output is finite
+//            throughout (1.5 s, the tail included) and is bit for bit the output for the same input with those
+//            samples zeroed and +-1e30 clamped to +-1e6 (fsdsp::sanitize, Engine.h: before any delay line; one NaN in
+//            the loop would stay there for good).
+//   DC       0 Hz is a mode of the network (Fdn.h), so the inputs' DC blockers keep a DC offset out of it: -40 dBFS DC
+//            at the defaults (MIX 100 %, 6 s), the output's mean over the last second is under -60 dB of the input's
+//            (measured -167 dB; without the blocker +12 dB); full-scale DC at the worst corner (1 m, 4 lines, DECAY
+//            20 s, HF DECAY 100 %, 30 s) peaks under 0 dBFS (measured -4.7 dBFS: the step itself excites the
+//            network; without the blocker the output settles at +34 dBFS) and its mean over the last 5 s is under
+//            -40 dB (measured -86 dB).
 #include "Probe.h"
 #include "Rig.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <numbers>
 #include <random>
 #include <string>
@@ -45,6 +63,10 @@ namespace tp = testingplayground;
 namespace
 {
     constexpr double kFs = 48000.0;
+
+    // The design's input and output signs, u_i and w_i (Fdn.cpp's kTapIn and kTapOut; change both together).
+    constexpr double kTapIn[16] = { +1, +1, -1, +1, +1, -1, -1, -1, +1, +1, +1, -1, -1, +1, -1, +1 };
+    constexpr double kTapOut[16] = { +1, -1, +1, +1, -1, +1, +1, -1, -1, +1, -1, -1, +1, +1, +1, -1 };
 
     std::vector<float> noise(std::size_t n, unsigned seed, double amp)
     {
@@ -136,8 +158,11 @@ PROBE(dsp, response)
     }
 
     // ROUTING
+    for (const int lines : { 4, 8, 16 })
     {
-        const tp::ParamValues v = probe::wetOnly();
+        tp::ParamValues v = probe::wetOnly();
+        v[tp::param::lines] = lines == 4 ? 0.0f : (lines == 8 ? 1.0f : 2.0f);
+        const std::string key = "routing.n" + std::to_string(lines);
         const std::size_t n = 4096;
         tp::Engine e;                                           // one silent sample computes the coefficients
         e.prepare(kFs, 256);
@@ -145,23 +170,60 @@ PROBE(dsp, response)
         float silence[2] = { 0.0f, 0.0f };
         float* ch[2] = { &silence[0], &silence[1] };
         e.process(ch, 2, 1, {});
-        const double k = e.fdn().inputGain();
-        const tp::FdnLayout l = tp::makeLayout(static_cast<float>(kFs), 12.0f, 16);
-        const std::size_t d0 = l.delay[0], d1 = l.delay[1];
-        const double first = k / std::sqrt(8.0);                // k u_i w_i sqrt(2/16)
+        const tp::FdnLayout l = tp::makeLayout(static_cast<float>(kFs), 12.0f, lines);
 
-        const probe::Stereo fromL = probe::impulseResponse(kFs, n, v, true, false);
-        P.eq("routing.left_in.left_out.first_sample", static_cast<int64_t>(firstNonZero(fromL.l)),
-             static_cast<int64_t>(d0));
-        P.near("routing.left_in.left_out.first_value", fromL.l[d0], first, 1e-6);
-        P.eq("routing.left_in.right_out.first_sample", static_cast<int64_t>(firstNonZero(fromL.r)),
-             static_cast<int64_t>(d0 + d1));
-        const probe::Stereo fromR = probe::impulseResponse(kFs, n, v, false, true);
-        P.eq("routing.right_in.right_out.first_sample", static_cast<int64_t>(firstNonZero(fromR.r)),
-             static_cast<int64_t>(d1));
-        P.near("routing.right_in.right_out.first_value", fromR.r[d1], -first, 1e-6);
-        P.eq("routing.right_in.left_out.first_sample", static_cast<int64_t>(firstNonZero(fromR.l)),
-             static_cast<int64_t>(d0 + d1));
+        // The input gain's law, in double.
+        const double T = static_cast<double>(v[tp::param::decay]) * 0.001;
+        double meanG2 = 0.0;
+        for (int i = 0; i < lines; ++i)
+        {
+            const double d = static_cast<double>(l.delay[static_cast<std::size_t>(i)]);
+            const double g = std::pow(10.0, -3.0 * d / (T * kFs));
+            meanG2 += g * g / lines;
+        }
+        const double kRef = std::sqrt(1.0 - meanG2), k = e.fdn().inputGain();
+        P.le(key + ".input_gain_rel_err", std::fabs(k / kRef - 1.0), 1e-3);
+
+        // The first arrivals: the model above against both outputs, for an impulse on each input.
+        const double R = std::exp(-2.0 * std::numbers::pi * static_cast<double>(tp::Fdn::kDcHz) / kFs);
+        const auto h = [R](long m) {
+            return m < 0 ? 0.0 : (m == 0 ? 1.0 : (R - 1.0) * std::pow(R, static_cast<double>(m - 1)));
+        };
+        const double scale = std::sqrt(2.0 / lines) * k;
+        for (const int side : { 0, 1 })                         // 0: the left input, 1: the right
+        {
+            const probe::Stereo ir = probe::impulseResponse(kFs, n, v, side == 0, side == 1);
+            const std::vector<float>& fed = side == 0 ? ir.l : ir.r;
+            const std::vector<float>& other = side == 0 ? ir.r : ir.l;
+            const std::size_t window = l.delay[static_cast<std::size_t>(side)] + l.delay[0];
+            double err = 0.0;
+            int linesHeard = 0;
+            for (std::size_t t = 0; t < window; ++t)
+            {
+                double model = 0.0;
+                for (int i = side; i < lines; i += 2)
+                {
+                    const auto u = static_cast<std::size_t>(i);
+                    model += scale * kTapIn[u] * kTapOut[u] * h(static_cast<long>(t) - static_cast<long>(l.delay[u]));
+                }
+                err = std::max({ err, std::fabs(static_cast<double>(fed[t]) - model),
+                                 std::fabs(static_cast<double>(other[t])) });
+            }
+            for (int i = side; i < lines; i += 2)               // for the log: the lines whose first arrival is right
+            {
+                const auto u = static_cast<std::size_t>(i);
+                if (std::fabs(static_cast<double>(fed[l.delay[u]]) - scale * kTapIn[u] * kTapOut[u]) < 1e-3)
+                    ++linesHeard;
+                else
+                    std::printf("%s: line %d's first arrival at %u is %.6f, want %.6f\n", key.c_str(), i,
+                                l.delay[u], static_cast<double>(fed[l.delay[u]]), scale * kTapIn[u] * kTapOut[u]);
+            }
+            const std::string sk = key + (side == 0 ? ".left_in" : ".right_in");
+            P.le(sk + ".first_arrivals.max_err", err, 1e-6);
+            P.eq(sk + ".lines_heard", static_cast<int64_t>(linesHeard), static_cast<int64_t>(lines / 2));
+            P.eq(sk + ".cross_channel.first_sample", static_cast<int64_t>(firstNonZero(other)),
+                 static_cast<int64_t>(l.delay[0] + l.delay[1]));
+        }
     }
 
     // GAIN
@@ -300,6 +362,81 @@ PROBE(dsp, response)
         for (std::size_t i = 0; i < m; ++i)
             errWet = std::max(errWet, std::fabs(yw[i] - (st.l[i] + st.r[i]) * 0.707106781));
         P.le("mono.wet.max_err", errWet, 1e-6);
+    }
+
+    // SANITIZE: poison among noise, against the same noise with the poison cleaned as fsdsp::sanitize cleans it.
+    {
+        const std::size_t m = static_cast<std::size_t>(1.5 * kFs);
+        probe::Stereo dirty;
+        dirty.l = noise(m, 4u, 0.25);
+        dirty.r = noise(m, 5u, 0.25);
+        std::fill(dirty.l.begin() + static_cast<std::ptrdiff_t>(kFs / 4), dirty.l.end(), 0.0f);   // then the tail
+        std::fill(dirty.r.begin() + static_cast<std::ptrdiff_t>(kFs / 4), dirty.r.end(), 0.0f);
+        probe::Stereo clean = dirty;
+        const float nan = std::numeric_limits<float>::quiet_NaN(), snan = std::numeric_limits<float>::signaling_NaN();
+        const float inf = std::numeric_limits<float>::infinity();
+        struct Poison { std::size_t at; float value, cleaned; bool left; };
+        for (const Poison& x : { Poison{ 1000, nan, 0.0f, true }, Poison{ 1001, nan, 0.0f, false },
+                                 Poison{ 2400, inf, 0.0f, true }, Poison{ 3100, -inf, 0.0f, false },
+                                 Poison{ 4000, snan, 0.0f, true }, Poison{ 5200, 1e30f, 1e6f, false },
+                                 Poison{ 6100, -1e30f, -1e6f, true }, Poison{ 9000, inf, 0.0f, true },
+                                 Poison{ 9000, nan, 0.0f, false } })
+        {
+            (x.left ? dirty.l : dirty.r)[x.at] = x.value;
+            (x.left ? clean.l : clean.r)[x.at] = x.cleaned;
+        }
+        const tp::ParamValues v = tp::defaultValues();
+        const probe::Stereo outDirty = probe::runEffect(dirty, kFs, 256, v);
+        const probe::Stereo outClean = probe::runEffect(clean, kFs, 256, v);
+        P.eq("sanitize.output_finite", probe::allFinite(outDirty.l) && probe::allFinite(outDirty.r) ? 1 : 0, 1);
+        P.eq("sanitize.same_bits_as_cleaned_input",
+             probe::sameBits(outDirty.l, outClean.l) && probe::sameBits(outDirty.r, outClean.r) ? 1 : 0, 1);
+    }
+
+    // DC: the inputs' DC blockers.
+    {
+        const auto meanOf = [](const std::vector<float>& x, std::size_t from, std::size_t count) {
+            double sum = 0.0;
+            for (std::size_t i = from; i < from + count; ++i)
+                sum += static_cast<double>(x[i]);
+            return sum / static_cast<double>(count);
+        };
+        const auto peakOf = [](const std::vector<float>& x) {
+            double peak = 0.0;
+            for (const float s : x)
+                peak = std::max(peak, std::fabs(static_cast<double>(s)));
+            return peak;
+        };
+        const std::size_t sec = static_cast<std::size_t>(kFs);
+        {
+            tp::ParamValues v = tp::defaultValues();
+            v[tp::param::mix] = 100.0f;
+            probe::Stereo in(6 * sec);
+            std::fill(in.l.begin(), in.l.end(), 0.01f);           // -40 dBFS
+            std::fill(in.r.begin(), in.r.end(), 0.01f);
+            const probe::Stereo out = probe::runEffect(in, kFs, 256, v);
+            const double l = probe::dbFromLin(std::fabs(meanOf(out.l, 5 * sec, sec)) / 0.01);
+            const double r = probe::dbFromLin(std::fabs(meanOf(out.r, 5 * sec, sec)) / 0.01);
+            std::printf("dc at the defaults: mean out %.1f / %.1f dB of the DC in\n", l, r);
+            P.le("dc.defaults.left.mean_db", l, -60.0);
+            P.le("dc.defaults.right.mean_db", r, -60.0);
+        }
+        {
+            tp::ParamValues v = probe::wetOnly();
+            v[tp::param::size] = 1.0f;
+            v[tp::param::lines] = 0.0f;
+            v[tp::param::decay] = 20000.0f;
+            probe::Stereo in(30 * sec);
+            std::fill(in.l.begin(), in.l.end(), 1.0f);
+            std::fill(in.r.begin(), in.r.end(), 1.0f);
+            const probe::Stereo out = probe::runEffect(in, kFs, 256, v);
+            const double peak = probe::dbFromLin(std::max(peakOf(out.l), peakOf(out.r)));
+            const double mean = probe::dbFromLin(std::max(std::fabs(meanOf(out.l, 25 * sec, 5 * sec)),
+                                                          std::fabs(meanOf(out.r, 25 * sec, 5 * sec))));
+            std::printf("dc at 1 m, 4 lines, 20 s: peak %.1f dBFS, mean over 25-30 s %.1f dB\n", peak, mean);
+            P.le("dc.corner.peak_dbfs", peak, 0.0);
+            P.le("dc.corner.mean_25s_30s_db", mean, -40.0);
+        }
     }
     return P.finish();
 }

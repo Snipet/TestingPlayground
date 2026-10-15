@@ -31,8 +31,8 @@ namespace testingplayground
         std::array<uint32_t, kMaxLines> delay{};         // samples, ascending; [lines, kMaxLines) are 0
     };
 
-    // The lines for a room of `sizeMeters` (clamped to [kMinSize, kMaxSize]) with `lines` lines (4, 8 or 16; anything
-    // else is 16) at `sampleRate`.
+    // The lines for a room of `sizeMeters` (clamped to [kMinSize, kMaxSize]; a NaN or an infinity is SIZE's default)
+    // with `lines` lines (4, 8 or 16; anything else is 16) at `sampleRate`.
     FdnLayout makeLayout(float sampleRate, float sizeMeters, int lines) noexcept;
 
     // The target length of line i of n before the prime snap (T_i above), in samples.

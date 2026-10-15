@@ -8,8 +8,9 @@
 //                                                 Nyquist, so the line loses 60 dB per DECAY seconds at low
 //                                                 frequencies and per DECAY x HF DECAY seconds at the top
 //   v = H f                                       the orthonormal Hadamard mix (Hadamard.h)
-//   line_i.push(v_i + k u_i x_c(i))               the input: left into the even lines, right into the odd ones, with
+//   line_i.push(v_i + k u_i y_c(i))               the input: left into the even lines, right into the odd ones, with
 //                                                 fixed signs u_i, scaled by the input gain k
+//   y_c = x_c - x_c[-1] + R y_c[-1]               each input's DC blocker, before the network (R = e^(-2 pi 5 Hz / fs))
 //   wet_L = sqrt(2/n) sum_even w_i s_i            the outputs: the even lines to the left, the odd to the right, with
 //   wet_R = sqrt(2/n) sum_odd  w_i s_i            fixed signs w_i
 //
@@ -25,6 +26,12 @@
 //                      family this FDN belongs to)
 //   m_i                the LFO: the shape's table (LfoShape.h, bipolar) at the phase plus i / n of a cycle, so the
 //                      lines move out of step; RATE in Hz. depth_i = min(DEPTH, 0.45 D_i) in samples
+//   y_c                0 Hz is a mode of the network whatever its lengths (every line's comb peaks there and the
+//                      modulation cannot detune it), so without the blocker a DC offset would charge the loop to
+//                      about k / (1 - g) of itself: +12 dB at the defaults, +34 dB at 1 m, 4 lines and 20 s. The
+//                      blocker's impulse response starts at exactly 1 (then (R - 1) R^(m - 1)), so a first arrival is
+//                      still k u_i w_i sqrt(2/n); it takes 0.06 dB off the wet path at 40 Hz, 0.26 dB at 20 Hz, 1 dB
+//                      at 10 Hz
 //
 // The coefficients (g, h, p, b, k and the LFO increment) are recomputed every fsdsp::kTickSamples samples, on absolute
 // sample multiples (fsdsp::ControlTicker); the smoothed parameters (20 ms one-poles) and the delay glides run per
@@ -57,6 +64,7 @@ namespace testingplayground
         static constexpr float kMaxDepthMs = 2.0f;        // DEPTH's maximum (Params.h)
         static constexpr float kGlideMs = 60.0f;          // the delay glide's time constant
         static constexpr float kDepthLimit = 0.45f;       // depth_i <= 0.45 D_i: a read never comes near zero delay
+        static constexpr float kDcHz = 5.0f;              // the inputs' DC blocker: its pole is e^(-2 pi kDcHz / fs)
 
         struct Targets
         {
@@ -82,7 +90,9 @@ namespace testingplayground
         // ---- for the Engine, the probes and the tail length ------------------------------------------------------
         int lines() const noexcept { return lines_; }
         const FdnLayout& layout() const noexcept { return layout_; }          // the targets of the glides
-        float delay(int i) const noexcept { return base_[static_cast<std::size_t>(i)]; }   // where line i reads now
+        float delay(int i) const noexcept { return base_[static_cast<std::size_t>(i)]; }   // line i's D_i now
+        // Where line i read on the last tick(), the modulation included: D_i + depth_i m_i.
+        float readDelay(int i) const noexcept { return read_[static_cast<std::size_t>(i)]; }
         float loopGain(int i) const noexcept { return g_[static_cast<std::size_t>(i)]; }   // g_i
         float inputGain() const noexcept { return inGain_; }
 
@@ -108,7 +118,10 @@ namespace testingplayground
         alignas(16) std::array<float, kMaxLines> b_{};         // the absorption filter
         alignas(16) std::array<float, kMaxLines> pole_{};
         alignas(16) std::array<float, kMaxLines> state_{};     // its state, f_i
+        alignas(16) std::array<float, kMaxLines> read_{};      // the last tick's modulated read positions
         float inGain_ = 0.0f;
+        float dcPole_ = 0.0f;                                  // R, the DC blockers' pole
+        std::array<float, 2> dcIn_{}, dcOut_{};                // their last input and output, left and right
         float outScale_ = 0.25f;
 
         // The LFO: a 32-bit phase (one cycle = 2^32), line i offset by i / n of a cycle, the table crossfade.

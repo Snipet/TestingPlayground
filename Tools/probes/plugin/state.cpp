@@ -8,13 +8,21 @@
 //   - so does the LFO shape (an <LFO> element beside the parameters): a shape set through EditorPort comes back bit for
 //     bit, a state without one (an older session) loads the default shape, and the element never stays in the APVTS
 //     tree (the processor keeps the shape itself);
+//   - a session saved by the Visage version (tag legacy-visage: root <PARAMS>, the same plugin identity) restores
+//     GAIN, its one parameter;
+//   - a state whose value is not a number (size="nan", gain="inf") loads those parameters at their defaults;
 //   - the bus layout is the kind's (effect: stereo in and out; instrument: stereo out, MIDI in);
-//   - processBlock runs at 48 kHz in blocks of 256 and gives finite output (an instrument with a note held).
+//   - processBlock before any prepareToPlay (JUCE's contract forbids it; a host that breaks it must not crash the
+//     plugin) passes the input through, sanitised: the same bits, a NaN as 0;
+//   - processBlock runs at 48 kHz in blocks of 256 and gives finite output (an instrument with a note held);
+//   - the tail hosts are told (getTailLengthSeconds) is 1.5 DECAY after the longest line (Engine.cpp: -90 dB), at
+//     the defaults (3.033 s) and after DECAY 20 s, SIZE 100 m and 4 lines, within 1 us.
 #include "Probe.h"
 
 #include "plugin/Processor.h"
 
 #include "Product.h"
+#include "dsp/FdnLayout.h"
 #include "dsp/LfoShape.h"
 #include "dsp/Params.h"
 
@@ -23,6 +31,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstring>
+#include <limits>
 #include <string>
 
 namespace fpt = testingplayground;
@@ -125,6 +135,67 @@ PROBE(plugin, state)
         P.eq("shape.state_without_lfo_loads_default", port.shape() == fpt::defaultShape() ? 1 : 0, 1);
     }
 
+    // A session of the Visage version: <PARAMS><PARAM id="gain" value="-7.5"/></PARAMS>.
+    {
+        for (juce::AudioProcessorParameter* p : processor.getParameters())
+            p->setValueNotifyingHost(p->getDefaultValue());
+        juce::XmlElement legacy("PARAMS");
+        juce::XmlElement* gain = legacy.createNewChildElement("PARAM");
+        gain->setAttribute("id", "gain");
+        gain->setAttribute("value", -7.5);
+        juce::MemoryBlock old;
+        juce::AudioProcessor::copyXmlToBinary(legacy, old);
+        processor.setStateInformation(old.getData(), static_cast<int>(old.getSize()));
+        juce::RangedAudioParameter* g = apvts.getParameter("gain");
+        P.near("legacy.gain_restored_db", g->convertFrom0to1(g->getValue()), -7.5, 1e-4);
+        P.eq("legacy.root_kept_as_apvts", apvts.state.getType() == juce::Identifier("PARAMETERS") ? 1 : 0, 1);
+        P.eq("legacy.shape_default", processor.editorPort().shape() == fpt::defaultShape() ? 1 : 0, 1);
+    }
+
+    // A state with values that are not numbers.
+    {
+        juce::ValueTree state = apvts.copyState();
+        state.getChildWithProperty("id", "size").setProperty("value", "nan", nullptr);
+        state.getChildWithProperty("id", "gain").setProperty("value", "inf", nullptr);
+        state.getChildWithProperty("id", "decay").setProperty("value", 5000.0, nullptr);
+        juce::MemoryBlock bad;
+        juce::AudioProcessor::copyXmlToBinary(*state.createXml(), bad);
+        processor.getParameters()[static_cast<int>(fpt::param::size)]->setValueNotifyingHost(0.9f);
+        processor.setStateInformation(bad.getData(), static_cast<int>(bad.getSize()));
+        const auto plain = [&](const char* id) {
+            juce::RangedAudioParameter* p = apvts.getParameter(id);
+            return static_cast<double>(p->convertFrom0to1(p->getValue()));
+        };
+        P.near("nan_state.size_default", plain("size"), 12.0, 1e-3);
+        P.near("nan_state.gain_default", plain("gain"), 0.0, 1e-4);
+        P.near("nan_state.other_values_kept", plain("decay"), 5000.0, 0.01);
+        bool finite = true;
+        for (juce::AudioProcessorParameter* p : processor.getParameters())
+            finite = finite && std::isfinite(p->getValue());
+        P.eq("nan_state.all_finite", finite ? 1 : 0, 1);
+    }
+
+    // processBlock before any prepareToPlay: a fresh processor.
+    {
+        fpt::Processor fresh;
+        juce::AudioBuffer<float> buffer(2, 256);
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = 0; i < 256; ++i)
+                buffer.setSample(ch, i, 0.25f * std::sin(0.05f * static_cast<float>(i + 7 * ch)));
+        const juce::AudioBuffer<float> in(buffer);
+        buffer.setSample(1, 100, std::numeric_limits<float>::quiet_NaN());
+        juce::MidiBuffer midi;
+        fresh.processBlock(buffer, midi);
+        bool same = true;
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = 0; i < 256; ++i)
+            {
+                const float want = ch == 1 && i == 100 ? 0.0f : in.getSample(ch, i);
+                same = same && std::memcmp(buffer.getReadPointer(ch) + i, &want, sizeof want) == 0;
+            }
+        P.eq("unprepared.passes_input_sanitised", same ? 1 : 0, 1);
+    }
+
     // Buses.
     juce::AudioProcessor::BusesLayout stereo;
     stereo.outputBuses.add(juce::AudioChannelSet::stereo());
@@ -163,6 +234,31 @@ PROBE(plugin, state)
     }
     P.eq("process.finite", finite ? 1 : 0, 1);
     P.ge("process.peak", static_cast<double>(peak), 1e-3);
+
+    // The tail: at the defaults, then after DECAY 20 s, SIZE 100 m and 4 lines (a LINES change switches 20 ms later:
+    // ten more blocks).
+    const auto tailWant = [](double decayMs, float size, int lines) {
+        const fpt::FdnLayout l = fpt::makeLayout(48000.0f, size, lines);
+        return 1.5 * decayMs * 0.001 + static_cast<double>(l.delay[static_cast<std::size_t>(lines - 1)]) / 48000.0;
+    };
+    P.near("tail.defaults_s", processor.getTailLengthSeconds(), tailWant(2000.0, 12.0f, 16), 1e-6);
+    {
+        const auto setPlain = [&](std::size_t i, float plain) {
+            processor.getParameters()[static_cast<int>(i)]->setValueNotifyingHost(
+                fpt::toNormalised(fpt::kParams[i], plain));
+        };
+        setPlain(fpt::param::decay, 20000.0f);
+        setPlain(fpt::param::size, 100.0f);
+        setPlain(fpt::param::lines, 0.0f);
+        juce::MidiBuffer midi;
+        for (int block = 0; block < 10; ++block)
+        {
+            buffer.clear();
+            processor.processBlock(buffer, midi);
+        }
+        P.near("tail.decay20s_size100m_4lines_s", processor.getTailLengthSeconds(), tailWant(20000.0, 100.0f, 4),
+               1e-6);
+    }
     processor.releaseResources();
     return P.finish();
 }

@@ -16,6 +16,7 @@ namespace testingplayground
         fdn_.prepare(fs_);
         smooth_.prepare(fs_, fsdsp::kFadeMs);
         dip_.prepare(fs_, fsdsp::kFadeMs);
+        prepared_ = true;
         reset();
     }
 
@@ -87,6 +88,8 @@ namespace testingplayground
         fsdsp::sanitize(left, left, numSamples);                      // NaN and inf in -> 0, before any delay line
         if (right != nullptr)
             fsdsp::sanitize(right, right, numSamples);
+        if (!prepared_)
+            return;                                                   // no delay lines yet: the dry signal, as it is
 
         for (int i = 0; i < numSamples; ++i)
         {

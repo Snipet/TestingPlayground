@@ -14,7 +14,11 @@
 //           there; a drag moves it (60 px up: +60 / plot height in y); with Alt it snaps to the grid's eighths; a drag
 //           on a segment's midpoint handle bends that segment; a drag of an edge point moves both edges; a
 //           double-click on a point removes it; the right-click menu offers Delete point and Reset shape, and Reset
-//           restores the default; every edit tells the host the state changed (no parameter is written)
+//           restores the default; every completed edit tells the host once that the plugin's state changed
+//           (AudioProcessorListener::audioProcessorChanged with nonParameterStateChanged; a click that only selects
+//           tells it nothing), and no parameter is written
+//   NAN     a host writes NaN to SIZE and GAIN: the dials show the last finite values (their spoken values unchanged,
+//           no "nan"), and so does the DELAYS line
 #include "Probe.h"
 
 #include "editor/Panel.h"
@@ -32,17 +36,50 @@
 
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <vector>
 
 namespace fpt = testingplayground;
 
+namespace
+{
+    // Counts what the processor tells a host about its state besides the parameters (EditorPort::endShapeEdit).
+    struct HostNotes final : juce::AudioProcessorListener
+    {
+        int stateChanges = 0;
+        void audioProcessorParameterChanged(juce::AudioProcessor*, int, float) override {}
+        void audioProcessorChanged(juce::AudioProcessor*, const ChangeDetails& details) override
+        {
+            if (details.nonParameterStateChanged)
+                ++stateChanges;
+        }
+    };
+
+    // The spoken value of the a11y item titled `title` ("" when there is none).
+    std::string a11yValue(funkgui::HeadlessHost& host, const char* title)
+    {
+        for (const funkgui::A11yItem& item : host.accessibility())
+            if (item.title == title)
+                return item.value;
+        return {};
+    }
+}
+
 PROBE(gui, dump)
 {
     const funkgui::HeadlessGuiScope gui;                        // JUCE's GUI side: the font atlas bakes through it
     funkgui::UiPreferences::get().setBackend(funkgui::UiPreferences::memoryBackend());   // never the user's file
+    HostNotes notes;                                            // outlives the processor it listens to
     fpt::Processor processor;
     fpt::EditorPort& port = processor.editorPort();
+    processor.addListener(&notes);
+    int told = 0;                                               // notes.stateChanges at the last check
+    const auto toldSince = [&]() {
+        const int n = notes.stateChanges - told;
+        told = notes.stateChanges;
+        return static_cast<int64_t>(n);
+    };
 
     std::size_t controls = 1;                                   // the graph
     for (const fpt::ParamSpec& s : fpt::kParams)
@@ -117,10 +154,12 @@ PROBE(gui, dump)
 
     // A double-click at x 0.4, y 0.7 of the plot (on the curve, away from every point and handle) adds a point.
     const float ax = plot.x + 0.4f * plot.w, ay = plot.y + (1.0f - 0.7f) * plot.h;
+    toldSince();
     host.doubleClick(ax, ay);
     host.settle();
     fpt::LfoShape s = port.shape();
     P.eq("graph.doubleclick.adds_point", static_cast<int64_t>(s.count), 5);
+    P.eq("graph.doubleclick.host_told_once", toldSince(), 1);
     const int added = view.selected();
     P.eq("graph.doubleclick.selects_it", added == 2 ? 1 : 0, 1);
     if (added >= 0 && added < s.count)
@@ -138,6 +177,7 @@ PROBE(gui, dump)
         s = port.shape();
         P.near("graph.drag.point_y", s.points[2].y, 0.7 + 30.0 / plot.h, 1.0 / plot.h);
         P.near("graph.drag.point_x_kept", s.points[2].x, 0.4, 1.0 / plot.w);
+        P.eq("graph.drag.host_told_once", toldSince(), 1);
     }
 
     // With Alt it snaps to the grid's eighths.
@@ -151,6 +191,7 @@ PROBE(gui, dump)
         const fpt::ShapePoint& p = s.points[2];
         P.near("graph.alt_drag.x_on_grid", p.x * 8.0f - std::round(p.x * 8.0f), 0.0, 1e-6);
         P.near("graph.alt_drag.y_on_grid", p.y * 8.0f - std::round(p.y * 8.0f), 0.0, 1e-6);
+        P.eq("graph.alt_drag.host_told_once", toldSince(), 1);
     }
 
     // A drag on the midpoint handle of segment 0 bends it.
@@ -160,6 +201,7 @@ PROBE(gui, dump)
         host.drag(m.x, m.y, m.x, m.y + 0.15f * plot.h);
         host.settle();
         P.eq("graph.bend.curve_changed", port.shape().points[0].curve != curve0 ? 1 : 0, 1);
+        P.eq("graph.bend.host_told_once", toldSince(), 1);
     }
 
     // An edge point moves both edges.
@@ -171,6 +213,7 @@ PROBE(gui, dump)
         P.near("graph.edge_drag.first_x_pinned", s.points[0].x, 0.0, 0.0);
         P.near("graph.edge_drag.first_y", s.points[0].y, 0.6, 1.5 / plot.h);
         P.near("graph.edge_drag.last_y_follows", s.points[static_cast<std::size_t>(s.count - 1)].y, s.points[0].y, 0.0);
+        P.eq("graph.edge_drag.host_told_once", toldSince(), 1);
     }
 
     // The edited frame: a point selected (a click on point 2).
@@ -178,6 +221,7 @@ PROBE(gui, dump)
         const funkgui::Point at = view.pointAt(2);
         host.click(at.x, at.y);
         host.settle();
+        P.eq("graph.select_click.host_told_nothing", toldSince(), 0);
         host.draw();
         const std::string path = probe::outPath("gui.dump.edited.png");
         P.eq("graph.edited_png_written", host.writePng(path.c_str(), 2) ? 1 : 0, 1);
@@ -190,6 +234,7 @@ PROBE(gui, dump)
         host.doubleClick(at.x, at.y);
         host.settle();
         P.eq("graph.doubleclick_point.removes_it", static_cast<int64_t>(port.shape().count), 4);
+        P.eq("graph.doubleclick_point.host_told_once", toldSince(), 1);
     }
 
     // The menu: on a point, Delete point is offered; Reset shape restores the default.
@@ -208,6 +253,7 @@ PROBE(gui, dump)
         }
         host.settle();
         P.eq("graph.menu.reset_restores_default", port.shape() == fpt::defaultShape() ? 1 : 0, 1);
+        P.eq("graph.menu.reset.host_told_once", toldSince(), 1);
     }
 
     // No parameter moved, and the host was not asked for a parameter menu.
@@ -216,5 +262,23 @@ PROBE(gui, dump)
         same = same && processor.ports()[i]->value01() == before[i];
     P.eq("graph.no_parameter_written", same ? 1 : 0, 1);
     P.eq("graph.no_param_menu", static_cast<int64_t>(host.log.menus - menusBefore), 0);
+
+    // NAN: a host writes NaN to SIZE and GAIN.
+    {
+        const std::string sizeBefore = a11yValue(host, "SIZE"), gainBefore = a11yValue(host, "GAIN");
+        const std::string delaysBefore = panel.delaysText();
+        for (const std::size_t i : { fpt::param::size, fpt::param::gain })
+            processor.getParameters()[static_cast<int>(i)]->setValueNotifyingHost(
+                std::numeric_limits<float>::quiet_NaN());
+        host.settle();
+        host.draw();
+        const std::string sizeAfter = a11yValue(host, "SIZE"), gainAfter = a11yValue(host, "GAIN");
+        std::printf("after a host NaN: SIZE '%s' (was '%s'), GAIN '%s' (was '%s')\n", sizeAfter.c_str(),
+                    sizeBefore.c_str(), gainAfter.c_str(), gainBefore.c_str());
+        P.eq("nan.size.shows_last_value", !sizeBefore.empty() && sizeAfter == sizeBefore ? 1 : 0, 1);
+        P.eq("nan.gain.shows_last_value", !gainBefore.empty() && gainAfter == gainBefore ? 1 : 0, 1);
+        P.eq("nan.delays.unchanged", panel.delaysText() == delaysBefore ? 1 : 0, 1);
+    }
+    processor.removeListener(&notes);
     return P.finish();
 }

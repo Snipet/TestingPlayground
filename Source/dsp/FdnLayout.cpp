@@ -1,17 +1,21 @@
 // Source/dsp/FdnLayout.cpp: see FdnLayout.h.
 #include "dsp/FdnLayout.h"
 
+#include "dsp/Params.h"
 #include "dsp/Primes.h"
 
 #include "fsdsp/core/FastMath.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace testingplayground
 {
     float targetLength(float sampleRate, float sizeMeters, int i, int lines) noexcept
     {
-        const float size = std::clamp(sizeMeters, kMinSize, kMaxSize);
+        // A NaN would pass std::clamp and reach makeLayout's integer conversion (undefined): SIZE's default instead.
+        const float size = std::isfinite(sizeMeters) ? std::clamp(sizeMeters, kMinSize, kMaxSize)
+                                                     : kParams[param::size].def;
         const float meanFreePath = 2.0f * size / 3.0f;
         const float pos = lines > 1 ? static_cast<float>(i) / static_cast<float>(lines - 1) - 0.5f : 0.0f;
         return sampleRate * meanFreePath / kSpeedOfSound * fsdsp::exp2(kSpreadOctaves * pos);

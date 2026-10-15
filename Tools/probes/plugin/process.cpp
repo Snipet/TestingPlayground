@@ -5,7 +5,8 @@
 //   HOST    parameters written through the host (setValueNotifyingHost, normalised) reach the DSP: at MIX 0 % (the dry
 //           path) and GAIN +12 dB the left comes out at 0 dBFS and the right at -6 dBFS; after a write of GAIN -6 dB at
 //           -18 and -24 dBFS; within 0.05 dB
-//   NAN     a NaN written by a host is ignored: the output stays finite, and keeps the last good value's level
+//   NAN     a NaN written by a host is ignored: the output stays finite, and keeps the last good value's level; the
+//           host's text for the parameter is a dash, not "nan"
 //   ENGINE  processBlock's output, both channels, is the Engine's bit for bit, run on the same input with the plain
 //           values the parameters held at each block and the LFO tables the processor was given: the default shape
 //           from the first block, and a shape the editor sets mid-stream (EditorPort::setShape, the graph's call) from
@@ -100,8 +101,12 @@ PROBE(plugin, process)
         if (block == 96)                                        // 0.512 s
             setPlain(processor, tp::param::gain, -6.0f);
         if (block == 192)                                       // 1.024 s: a host writes a NaN
-            processor.getParameters()[static_cast<int>(tp::param::gain)]->setValueNotifyingHost(
-                std::numeric_limits<float>::quiet_NaN());
+        {
+            juce::AudioProcessorParameter* gain = processor.getParameters()[static_cast<int>(tp::param::gain)];
+            gain->setValueNotifyingHost(std::numeric_limits<float>::quiet_NaN());
+            const juce::String text = gain->getCurrentValueAsText();
+            P.eq("nan.host_text_is_dash", text == juce::String::fromUTF8("\xE2\x80\x93") ? 1 : 0, 1);
+        }
         if (block == 250)                                       // 1.333 s: the reverb in, modulated
         {
             setPlain(processor, tp::param::mix, 50.0f);

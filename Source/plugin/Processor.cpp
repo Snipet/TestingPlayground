@@ -14,6 +14,8 @@ namespace testingplayground
         // The host's text for a plain value (generic editors, automation lanes): the value and its unit.
         juce::String hostText(const ParamSpec& s, float v)
         {
+            if (!std::isfinite(v))                       // a host's NaN: the sound keeps the last good value
+                return juce::String::fromUTF8("\xE2\x80\x93");
             char buf[48];
             switch (s.unit)
             {
@@ -66,6 +68,11 @@ namespace testingplayground
         // The LFO shape in the plugin state: <LFO><POINT x=".." y=".." curve=".."/>...</LFO>, beside the parameters.
         // Values are stored as doubles, which JUCE writes with enough digits to give back the same floats.
         const juce::Identifier kLfoTag{ "LFO" }, kPointTag{ "POINT" }, kX{ "x" }, kY{ "y" }, kCurve{ "curve" };
+
+        // The Visage version (tag legacy-visage) saved <PARAMS><PARAM id="gain" value="..."/></PARAMS>: the same
+        // plugin identity (Funk/Tstn) and the same GAIN (ID, range, plain dB value), under another root tag.
+        const juce::Identifier kLegacyStateTag{ "PARAMS" };
+        const juce::Identifier kParamId{ "id" }, kParamValue{ "value" };   // the APVTS's <PARAM id value> children
 
         juce::ValueTree shapeTree(const LfoShape& shape)
         {
@@ -259,9 +266,27 @@ namespace testingplayground
     void Processor::setStateInformation(const void* data, int sizeInBytes)
     {
         const std::unique_ptr<juce::XmlElement> xml = getXmlFromBinary(data, sizeInBytes);
-        if (xml == nullptr || !xml->hasTagName(apvts_.state.getType()))
+        if (xml == nullptr)
             return;
-        juce::ValueTree state = juce::ValueTree::fromXml(*xml);
+        juce::ValueTree state;
+        if (xml->hasTagName(apvts_.state.getType()))
+            state = juce::ValueTree::fromXml(*xml);
+        else if (xml->hasTagName(kLegacyStateTag.toString()))      // a session saved by the Visage version
+        {
+            state = juce::ValueTree(apvts_.state.getType());
+            state.copyPropertiesAndChildrenFrom(juce::ValueTree::fromXml(*xml), nullptr);
+        }
+        else
+            return;
+        // A value that is not a finite number (a damaged or crafted state, or one saved after a host wrote a NaN)
+        // loads as the parameter's default: a parameter never holds a NaN from a state.
+        for (const ParamSpec& s : kParams)
+        {
+            juce::ValueTree p = state.getChildWithProperty(kParamId, juce::var(juce::String(s.id)));
+            if (p.isValid() && p.hasProperty(kParamValue)
+                && !std::isfinite(static_cast<double>(p.getProperty(kParamValue))))
+                p.setProperty(kParamValue, static_cast<double>(s.def), nullptr);
+        }
         const juce::ValueTree lfo = state.getChildWithName(kLfoTag);
         storeShape(lfo.isValid() ? shapeOf(lfo) : defaultShape());   // a state without one: the default
         state.removeChild(lfo, nullptr);

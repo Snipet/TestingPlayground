@@ -29,9 +29,11 @@ FDN; `--type instrument` and `--starter` refuse. New plugins start from FunkPlug
   rendered headless (`gui.dump.png`, `gui.dump.paper.png`, `gui.dump.edited.png`). Look at the PNGs after any editor
   change. `dsp.stability` runs 256 settings for 10 s each (about 20 s).
 - When the algorithm changes, change its probes with it: `dsp.decay` (T60 against DECAY, by band against HF DECAY),
-  `dsp.response` (the dry path and the routing against exact values, sample by sample; click checks above 4 kHz),
-  `dsp.stability` (every corner), `dsp.primes` (the delay-length rule), `dsp.render`, `plugin.process` (the processor
-  as a host drives it, bit for bit against the Engine). State tolerances that say what must hold, and why.
+  `dsp.response` (the dry path and every line's first arrival against exact values, sample by sample, with the input
+  gain's law and the tap signs it copies from `Fdn.cpp`; click checks above 4 kHz; NaN input; DC), `dsp.modulation`
+  (each line's read position against RATE, DEPTH and the shape), `dsp.stability` (every corner), `dsp.primes` (the
+  delay-length rule), `dsp.render`, `plugin.process` (the processor as a host drives it, bit for bit against the
+  Engine), `plugin.state`'s tail rows. State tolerances that say what must hold, and why.
 - `cmake --workflow --preset release-build`: Release with LTO in `build-release`. `scripts/install.sh` copies the AU
   and VST3 into `~/Library/Audio/Plug-Ins`; only the user (or the lead) runs it, never an agent.
 - The presets build at `-j6` (the machine is shared). No network: JUCE, bgfx and shaderc come from `~/audio/.deps`
@@ -46,7 +48,9 @@ FDN; `--type instrument` and `--starter` refuse. New plugins start from FunkPlug
   logging. Allocate in `prepare()` (the delay lines are sized there for every SIZE at that rate). Smooth every
   parameter (the core's `Smoother4`, `SmoothRamp`, `LinearRamp`): nothing steps. A change that cannot be smoothed
   (LINES) fades the wet path out, switches while it is silent and fades back in. The processor hands `setParams`
-  finite values within the table's range (a host's NaN keeps the last good value).
+  finite values within the table's range (a host's NaN keeps the last good value; the panel shows the last finite
+  value, `shownValue01` in `ParamModel.h`, and a state's NaN loads the default). Before `prepare()`, `process()` only
+  sanitises and passes the input through.
 - The loop's decay must stay exact: any matrix must be orthogonal and any interpolator unity-gain, or a corner grows
   (`dsp.stability` catches a 0.2 % energy gain in the matrix).
 - `Engine::tailSeconds()` is called by hosts from any thread: an atomic that `setParams` stores.

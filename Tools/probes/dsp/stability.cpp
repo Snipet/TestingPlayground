@@ -9,10 +9,11 @@
 //             steady state (DECAY 20 s: 1 - 10^(-6 t / 20), +0.3 dB between the two windows' centres) and fluctuates
 //             around it: a few sharp modes (1 m, 4 lines, 20 s) swing the RMS of a second by +-1.5 dB with no trend
 //             (checked over 30 s while writing this probe)
-//   level     with MIX 100 %, every one-second RMS of the wet output from 2 s on, less GAIN, lies within -12 dB and
-//             +4 dB of the input's (measured: -6.5 to +1.3 dB): the input gain (Fdn.h, k = sqrt(1 - mean g^2)) holds
+//   level     with MIX 100 %, every one-second RMS of the wet output from 2 s on, less GAIN, lies within -8 dB and
+//             +2.5 dB of the input's (measured: -6.5 to +1.3 dB): the input gain (Fdn.h, k = sqrt(1 - mean g^2)) holds
 //             the steady level near the input's however long the decay; HF DECAY 10 % takes the most off (the top of
-//             the noise decays ten times faster)
+//             the noise decays ten times faster). An input gain 2 dB off its law at every corner fails one bound
+//             (dsp.response checks the law itself)
 // The rows name the worst corner.
 #include "Probe.h"
 #include "Rig.h"
@@ -104,7 +105,7 @@ PROBE(dsp, stability)
     P.eq("corners.count", static_cast<int64_t>(settings), 256);
     P.eq("corners.finite", finite ? 1 : 0, 1);
     P.le("corners.growth_7s5_10s_vs_2s5_5s_db", worstGrowth, 2.0);
-    P.ge("corners.wet_level_min_db", lowLevel, -12.0);
-    P.le("corners.wet_level_max_db", highLevel, 4.0);
+    P.ge("corners.wet_level_min_db", lowLevel, -8.0);
+    P.le("corners.wet_level_max_db", highLevel, 2.5);
     return P.finish();
 }

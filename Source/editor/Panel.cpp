@@ -395,13 +395,16 @@ namespace testingplayground::ui
         public:
             DelaysItem(funkgui::ParamPort& size, funkgui::ParamPort& lines, EditorPort& port, funkgui::Rect bounds,
                        uint32_t id)
-                : size_(size), lines_(lines), port_(port), bounds_(bounds), id_(id) {}
+                : size_(size), lines_(lines), port_(port), bounds_(bounds), id_(id),
+                  lastSize01_(size.default01()), lastLines01_(lines.default01()) {}
 
-            // "DELAYS" and the lengths in samples, at the processor's rate; recomputed only when an input changed.
+            // "DELAYS" and the lengths in samples, at the processor's rate; recomputed only when an input changed. A
+            // non-finite value (a host's NaN) shows the last finite one, as the dials do (ParamModel.h).
             const std::string& text() const
             {
-                const float size = fromNormalised(kParams[param::size], size_.value01());
-                const int lines = linesFromChoice(fromNormalised(kParams[param::lines], lines_.value01()));
+                const float size = fromNormalised(kParams[param::size], shownValue01(size_.value01(), lastSize01_));
+                const int lines = linesFromChoice(fromNormalised(kParams[param::lines],
+                                                                 shownValue01(lines_.value01(), lastLines01_)));
                 const float fs = port_.sampleRate();
                 if (size != keySize_ || lines != keyLines_ || fs != keyRate_)
                 {
@@ -485,6 +488,7 @@ namespace testingplayground::ui
             EditorPort& port_;
             funkgui::Rect bounds_;
             uint32_t id_;
+            mutable float lastSize01_, lastLines01_;     // the last finite value01 of each (shownValue01)
             mutable float keySize_ = -1.0f, keyRate_ = -1.0f;
             mutable int keyLines_ = -1;
             mutable std::string text_, numbers_, rate_;

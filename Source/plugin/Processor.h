@@ -12,8 +12,9 @@
 // allocation; a read that meets a publish in progress is retried next block); it never allocates, locks, or touches the
 // editor. The editor (message thread) reaches the processor only through ports() and editorPort(). The LFO shape is
 // kept under a mutex shared by the message thread and the host's state calls (never the audio thread), and saved in
-// the state beside the parameters (an <LFO> element of <POINT x y curve> children). Hosts call getTailLengthSeconds()
-// from any thread: the Engine's tailSeconds() is an atomic.
+// the state beside the parameters (an <LFO> element of <POINT x y curve> children). setStateInformation also loads the
+// Visage version's sessions (root <PARAMS>: GAIN), and loads a non-finite value as the parameter's default. Hosts call
+// getTailLengthSeconds() from any thread: the Engine's tailSeconds() is an atomic.
 #pragma once
 
 #include "plugin/EditorPort.h"

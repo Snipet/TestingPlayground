@@ -9,7 +9,8 @@
 //
 // The processor calls, on the audio thread: prepare() before playback (the only place that allocates), setParams()
 // once per block with the plain values of Params.h (finite, within the table's range), setLfoTable() when the LFO shape
-// changed (the editor's graph; Processor.h), then process() in place. Hosts call tailSeconds() from any thread: an
+// changed (the editor's graph; Processor.h), then process() in place. Before the first prepare() there are no delay
+// lines: process() then only sanitises its input and passes it through. Hosts call tailSeconds() from any thread: an
 // atomic, stored by setParams(). Everything runs per sample on the absolute sample clock, so the output does not depend
 // on the host's block size (dsp.render checks 64 against 333 samples).
 #pragma once
@@ -49,6 +50,7 @@ namespace testingplayground
         int wantLines_ = 0;                  // a LINES change waiting for the dip to reach 0
         float size_ = 12.0f;
         bool primed_ = false;                // false until the first setParams after reset(): it snaps
+        bool prepared_ = false;              // prepare() has allocated the delay lines
         std::atomic<double> tail_{ 3.0 };
     };
 }

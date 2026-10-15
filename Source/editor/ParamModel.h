@@ -3,7 +3,9 @@
 // same skewed space the host automates; the text is the plain value (ParamSpec's mapping) formatted with
 // funkgui::fmt (U+2212 minus, no locale). Writes go through the widget's GestureController to the port, which is a
 // funkgui::JuceParamPort owned by the processor (begin/set/end gestures, so hosts record automation).
-// Message thread only. view() runs only when key() changes (the port's value bits).
+// Message thread only. view() runs only when key() changes (the port's value bits). A host can write a NaN (JUCE
+// passes it on): the processor keeps playing the last good value (Processor.h), and the panel shows the last finite
+// value it saw (shownValue01), never "nan".
 #pragma once
 
 #include "dsp/ParamSpec.h"
@@ -11,10 +13,19 @@
 #include <funkgui/params/ParamPort.h>
 #include <funkgui/widgets/ValueModel.h>
 
+#include <cmath>
 #include <cstdint>
 
 namespace testingplayground::ui
 {
+    // A port's value01 as the panel shows it: `v` when it is finite (and `last` becomes it), else `last`.
+    inline float shownValue01(float v, float& last) noexcept
+    {
+        if (std::isfinite(v))
+            last = v;
+        return last;
+    }
+
     class ParamModel final : public funkgui::ValueModel
     {
     public:
@@ -37,5 +48,6 @@ namespace testingplayground::ui
     private:
         const ParamSpec& spec_;
         funkgui::ParamPort& port_;
+        mutable float last01_;                           // the last finite value01 view() saw (shownValue01)
     };
 }

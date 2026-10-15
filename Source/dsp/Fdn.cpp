@@ -15,8 +15,9 @@ namespace testingplayground
 
     namespace
     {
-        // The input and output signs (u_i, w_i): fixed and arbitrary, balanced within the even and the odd lines, so
-        // a channel does not drive the network along one of the matrix's rows.
+        // The input and output signs (u_i, w_i): fixed and arbitrary, mixed within the even and within the odd lines
+        // (never all equal), so a channel does not drive the network along one of the matrix's rows. The probe
+        // dsp.response holds its own copy of both tables: change them together.
         constexpr std::array<float, kMaxLines> kTapIn{ +1.0f, +1.0f, -1.0f, +1.0f, +1.0f, -1.0f, -1.0f, -1.0f,
                                                        +1.0f, +1.0f, +1.0f, -1.0f, -1.0f, +1.0f, -1.0f, +1.0f };
         constexpr std::array<float, kMaxLines> kTapOut{ +1.0f, -1.0f, +1.0f, +1.0f, -1.0f, +1.0f, +1.0f, -1.0f,
@@ -46,6 +47,8 @@ namespace testingplayground
         glideA_ = fsdsp::alphaFromTau(kGlideMs, fs_);
         fade_.prepare(fs_, fsdsp::kFadeMs);
         inFade_.prepare(fs_, fsdsp::kFadeMs);
+        dcPole_ = static_cast<float>(std::exp(-2.0 * 3.14159265358979323846 * static_cast<double>(kDcHz)
+                                              / static_cast<double>(fs_)));
         size_ = -1.0f;
         reset();
     }
@@ -55,6 +58,8 @@ namespace testingplayground
         for (DelayLine& l : line_)
             l.clear();
         state_.fill(0.0f);
+        dcIn_.fill(0.0f);
+        dcOut_.fill(0.0f);
         phase_ = 0;
         clock_ = 0;
         ticker_ = fsdsp::ControlTicker{};
@@ -76,6 +81,7 @@ namespace testingplayground
         delaysOf(layout_, target_);
         offset_.fill(0.0f);
         base_ = target_;
+        read_ = target_;
         for (DelayLine& l : line_)
             l.clear();
         state_.fill(0.0f);
@@ -227,7 +233,8 @@ namespace testingplayground
                 const float mb = b0 + frac * (b1 - b0);
                 m = m + w * (mb - m);
             }
-            s[u] = line_[u].read(base_[u] + depth[u] * m);
+            read_[u] = base_[u] + depth[u] * m;
+            s[u] = line_[u].read(read_[u]);
         }
 
         // Absorption, the mix, the input, the writes.
@@ -240,8 +247,13 @@ namespace testingplayground
             simd::store(f.data() + k, st);
         }
         hadamard(f.data(), n);
+        // The inputs through their DC blockers, then the input gain.
+        const float yl = inL - dcIn_[0] + dcPole_ * dcOut_[0];
+        const float yr = inR - dcIn_[1] + dcPole_ * dcOut_[1];
+        dcIn_ = { inL, inR };
+        dcOut_ = { yl, yr };
         const float in = inFade_.moving() ? inGain_ * inFade_.tick() : inGain_;
-        const float kl = in * inL, kr = in * inR;
+        const float kl = in * yl, kr = in * yr;
         for (int i = 0; i < n; ++i)
         {
             const auto u = static_cast<std::size_t>(i);
