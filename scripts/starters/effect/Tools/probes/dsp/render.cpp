@@ -13,7 +13,7 @@
 #include <cstdio>
 #include <numbers>
 
-namespace fpt = testingplaygroundsynth;
+namespace tps = testingplaygroundsynth;
 
 PROBE(dsp, render)
 {
@@ -31,9 +31,9 @@ PROBE(dsp, render)
     }
     const probe::Stereo in = probe::dual(x);
 
-    fpt::ParamValues values = fpt::defaultValues();
-    values[fpt::param::gain] = 6.0f;
-    values[fpt::param::tone] = 2000.0f;
+    tps::ParamValues values = tps::defaultValues();
+    values[tps::param::gain] = 6.0f;
+    values[tps::param::tone] = 2000.0f;
 
     const probe::Stereo out = probe::runEffect(in, fs, 64, values);
     const probe::Stereo other = probe::runEffect(in, fs, 333, values);

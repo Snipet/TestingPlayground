@@ -3,6 +3,8 @@
 
 #include "Product.h"
 
+#include "fsdsp/core/Sanitize.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -14,6 +16,8 @@ namespace testingplaygroundsynth
         // The host's text for a plain value (generic editors, automation lanes): the value and its unit.
         juce::String hostText(const ParamSpec& s, float v)
         {
+            if (!std::isfinite(v))                               // a host's NaN: the sound keeps the last good value
+                return juce::String::fromUTF8("\xE2\x80\x93");
             char buf[48];
             switch (s.unit)
             {
@@ -21,13 +25,19 @@ namespace testingplaygroundsynth
                     std::snprintf(buf, sizeof buf, "%.1f dB", static_cast<double>(v));
                     break;
                 case Unit::hz:
-                    if (v < 1000.0f)
+                    if (v < 10.0f)                               // low rates (an LFO) need their decimals
+                        std::snprintf(buf, sizeof buf, "%.2f Hz", static_cast<double>(v));
+                    else if (v < 100.0f)
+                        std::snprintf(buf, sizeof buf, "%.1f Hz", static_cast<double>(v));
+                    else if (v < 1000.0f)
                         std::snprintf(buf, sizeof buf, "%.0f Hz", static_cast<double>(v));
                     else
                         std::snprintf(buf, sizeof buf, "%.2f kHz", static_cast<double>(v) / 1000.0);
                     break;
                 case Unit::ms:
-                    if (v < 1000.0f)
+                    if (v < 10.0f)
+                        std::snprintf(buf, sizeof buf, "%.2f ms", static_cast<double>(v));
+                    else if (v < 1000.0f)
                         std::snprintf(buf, sizeof buf, "%.1f ms", static_cast<double>(v));
                     else
                         std::snprintf(buf, sizeof buf, "%.2f s", static_cast<double>(v) / 1000.0);
@@ -55,8 +65,8 @@ namespace testingplaygroundsynth
         }
 
         // The Event of a MIDI message an instrument plays, else false: note-on (at velocity 0, a note-off), note-off,
-        // and the controllers All Sound Off (120) and All Notes Off (123). Its offset is left to the caller. (An effect
-        // never calls it: maybe_unused.)
+        // and the controllers All Sound Off (120) and All Notes Off (123), both allNotesOff. The caller sets the
+        // offset. (An effect never calls it: maybe_unused.)
         [[maybe_unused]] bool toEvent(const juce::MidiMessageMetadata& m, Event& e) noexcept
         {
             if (m.numBytes < 1)
@@ -151,7 +161,15 @@ namespace testingplaygroundsynth
 
     void Processor::prepareToPlay(double sampleRate, int maximumExpectedSamplesPerBlock)
     {
-        engine_.prepare(sampleRate, maximumExpectedSamplesPerBlock);
+        maxBlock_ = std::max(1, maximumExpectedSamplesPerBlock);
+        largestCall_ = 0;
+        engine_.prepare(sampleRate, maxBlock_);
+        wet_.prepare(static_cast<float>(sampleRate));           // fsdsp::kFadeMs, 20 ms
+        wetSet_ = false;
+        weight_.assign(static_cast<std::size_t>(maxBlock_), 0.0f);
+        if constexpr (!product::kIsInstrument)
+            dry_.assign(static_cast<std::size_t>(kMaxChannels) * static_cast<std::size_t>(maxBlock_), 0.0f);
+        prepared_ = true;
     }
 
     void Processor::releaseResources() {}
@@ -166,23 +184,32 @@ namespace testingplaygroundsynth
         engine_.setParams(values_);
     }
 
-    void Processor::run(juce::AudioBuffer<float>& buffer, const juce::MidiBuffer& midi, bool noteOns) noexcept
+    void Processor::run(juce::AudioBuffer<float>& buffer, const juce::MidiBuffer& midi, bool bypassed) noexcept
     {
         const int n = buffer.getNumSamples();
         const int numOut = std::min(getTotalNumOutputChannels(), buffer.getNumChannels());
         for (int ch = getTotalNumInputChannels(); ch < numOut; ++ch)
             buffer.clear(ch, 0, n);
-        const int numCh = std::min(numOut, kMaxChannels);         // any further channel stays cleared
+        const int numCh = std::min(numOut, kMaxChannels);         // any further channel stays as it is
 
-        // The Engine from `done` to `end` with the events collected so far (their offsets count from `done`). Cutting
-        // the block there changes no sample: the Engine plays every event on its own sample, however it is called.
+        // The Engine from `done` to `end` (at most maxBlock_ samples) with the events collected so far, their offsets
+        // counted from `done`. Cutting the block there changes no sample: the Engine plays every event on its own
+        // sample, and its output does not depend on how the host splits its blocks. While processing (w steady at 1)
+        // the output is the Engine's, untouched; otherwise the bypass fade, or the bypassed sound, follows.
         std::size_t numEvents = 0;
         int done = 0;
         const auto playTo = [&](int end) {
+            const int len = end - done;
             std::array<float*, kMaxChannels> channels{};
             for (int c = 0; c < numCh; ++c)
                 channels[static_cast<std::size_t>(c)] = buffer.getWritePointer(c) + done;
-            engine_.process(channels.data(), numCh, end - done, std::span<const Event>(events_.data(), numEvents));
+            const bool engineOnly = !wet_.moving() && wet_.lin.cur >= 1.0f;
+            if (!engineOnly)
+                keepDry(channels.data(), numCh, len);
+            largestCall_ = std::max(largestCall_, len);
+            engine_.process(channels.data(), numCh, len, std::span<const Event>(events_.data(), numEvents));
+            if (!engineOnly)
+                bypassMix(channels.data(), numCh, len);
             numEvents = 0;
             done = end;
         };
@@ -192,9 +219,11 @@ namespace testingplaygroundsynth
             for (const juce::MidiMessageMetadata m : midi)
             {
                 Event e;
-                if (!toEvent(m, e) || (!noteOns && e.kind == EventKind::noteOn))
+                if (!toEvent(m, e) || (bypassed && e.kind == EventKind::noteOn))
                     continue;
                 const int at = std::clamp(m.samplePosition, done, std::max(done, n - 1));
+                while (at - done >= maxBlock_)                    // whole parts before the event's
+                    playTo(done + maxBlock_);
                 if (numEvents == events_.size())                // full: play up to this event, then carry on
                     playTo(at);
                 e.offset = static_cast<uint32_t>(at - done);
@@ -203,34 +232,105 @@ namespace testingplaygroundsynth
         }
         else
         {
-            juce::ignoreUnused(midi, noteOns);
+            juce::ignoreUnused(midi, bypassed);
         }
-        playTo(n);
+        while (n - done > maxBlock_)
+            playTo(done + maxBlock_);
+        playTo(n);                                               // also a block of 0 samples: its events apply
+    }
+
+    void Processor::keepDry(float* const* channels, int numChannels, int numSamples) noexcept
+    {
+        if constexpr (!product::kIsInstrument)
+            for (int c = 0; c < numChannels; ++c)
+                fsdsp::sanitize(channels[c], dry_.data() + static_cast<std::size_t>(c * maxBlock_), numSamples);
+        else
+            juce::ignoreUnused(channels, numChannels, numSamples);
+    }
+
+    void Processor::bypassMix(float* const* channels, int numChannels, int numSamples) noexcept
+    {
+        if (!wet_.moving())                                      // bypassed (processing never gets here)
+        {
+            for (int c = 0; c < numChannels; ++c)
+            {
+                if constexpr (product::kIsInstrument)
+                    std::fill(channels[c], channels[c] + numSamples, 0.0f);
+                else
+                    std::copy_n(dry_.data() + static_cast<std::size_t>(c * maxBlock_), numSamples, channels[c]);
+            }
+            return;
+        }
+        // The fade: one tick per sample, whatever the channels. Where it has landed (w exactly 0 or 1, also for the
+        // rest of the call) the output is exactly the bypassed sound or the Engine's.
+        for (int i = 0; i < numSamples; ++i)
+            weight_[static_cast<std::size_t>(i)] = wet_.tick();
+        for (int c = 0; c < numChannels; ++c)
+        {
+            float* y = channels[c];
+            if constexpr (product::kIsInstrument)
+            {
+                for (int i = 0; i < numSamples; ++i)
+                {
+                    const float w = weight_[static_cast<std::size_t>(i)];
+                    y[i] = w > 0.0f ? y[i] * w : 0.0f;
+                }
+            }
+            else
+            {
+                const float* x = dry_.data() + static_cast<std::size_t>(c * maxBlock_);
+                for (int i = 0; i < numSamples; ++i)
+                {
+                    const float w = weight_[static_cast<std::size_t>(i)];
+                    if (w <= 0.0f)
+                        y[i] = x[i];
+                    else if (w < 1.0f)
+                        y[i] = x[i] * (1.0f - w) + y[i] * w;     // equal-gain: the weights sum to 1
+                }
+            }
+        }
+    }
+
+    void Processor::runUnprepared(juce::AudioBuffer<float>& buffer) noexcept
+    {
+        const int n = buffer.getNumSamples();
+        const int numIn = product::kIsInstrument ? 0 : std::min(getTotalNumInputChannels(), buffer.getNumChannels());
+        for (int ch = 0; ch < numIn; ++ch)
+            fsdsp::sanitize(buffer.getReadPointer(ch), buffer.getWritePointer(ch), n);
+        for (int ch = numIn; ch < buffer.getNumChannels(); ++ch)
+            buffer.clear(ch, 0, n);
+    }
+
+    void Processor::hostBlock(juce::AudioBuffer<float>& buffer, const juce::MidiBuffer& midi, bool bypassed) noexcept
+    {
+        const juce::ScopedNoDenormals noDenormals;
+        if (!prepared_)
+        {
+            runUnprepared(buffer);
+            return;
+        }
+        const float target = bypassed ? 0.0f : 1.0f;
+        wet_.setTarget(target);
+        if (!wetSet_)                                            // the first block after prepareToPlay: no fade
+        {
+            wet_.lin.cur = target;
+            wetSet_ = true;
+        }
+        readParameters();
+        run(buffer, midi, bypassed);
     }
 
     void Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
     {
-        const juce::ScopedNoDenormals noDenormals;
-        readParameters();
-        run(buffer, midi, true);
+        hostBlock(buffer, midi, false);
     }
 
+    // Not JUCE's default (the input passed through at once): the Engine keeps running and its output fades out (see
+    // Processor.h); for an instrument, on the note-offs only, so a note let go during the bypass releases and none
+    // starts.
     void Processor::processBlockBypassed(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
     {
-        if constexpr (product::kIsInstrument)
-        {
-            // Silent, but the voices carry on: a note let go during the bypass releases (and is gone when the bypass
-            // ends, as it would be without it); no note starts.
-            const juce::ScopedNoDenormals noDenormals;
-            readParameters();
-            run(buffer, midi, false);
-            for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
-                buffer.clear(ch, 0, buffer.getNumSamples());
-        }
-        else
-        {
-            juce::AudioProcessor::processBlockBypassed(buffer, midi);    // JUCE's default: the input passes through
-        }
+        hostBlock(buffer, midi, true);
     }
 
     bool Processor::hasEditor() const { return true; }
@@ -255,8 +355,20 @@ namespace testingplaygroundsynth
     void Processor::setStateInformation(const void* data, int sizeInBytes)
     {
         const std::unique_ptr<juce::XmlElement> xml = getXmlFromBinary(data, sizeInBytes);
-        if (xml != nullptr && xml->hasTagName(apvts_.state.getType()))
-            apvts_.replaceState(juce::ValueTree::fromXml(*xml));
+        if (xml == nullptr || !xml->hasTagName(apvts_.state.getType()))
+            return;
+        juce::ValueTree state = juce::ValueTree::fromXml(*xml);
+        const juce::Identifier kParamId{ "id" }, kParamValue{ "value" };   // the APVTS's <PARAM id value> children
+        // A value that is not a finite number (a damaged or crafted state, or one saved after a host wrote a NaN)
+        // loads as the parameter's default: a parameter never holds a NaN from a state.
+        for (const ParamSpec& s : kParams)
+        {
+            juce::ValueTree p = state.getChildWithProperty(kParamId, juce::var(juce::String(s.id)));
+            if (p.isValid() && p.hasProperty(kParamValue)
+                && !std::isfinite(static_cast<double>(p.getProperty(kParamValue))))
+                p.setProperty(kParamValue, static_cast<double>(s.def), nullptr);
+        }
+        apvts_.replaceState(state);
     }
 }
 

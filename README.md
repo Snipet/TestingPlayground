@@ -75,8 +75,13 @@ CMakeLists.txt, cmake/       the build; every source list is a folder glob, so n
   processor turns MIDI note-on and note-off (a note-on at velocity 0 is a note-off) and the controllers All Sound Off
   and All Notes Off (both release every note) into these events; like the legacy synth it ignores the rest (pitch
   bend, sustain pedal, mod wheel). It never loses a note-off: not in a block of 0 samples, not in a block with more
-  than 1,024 events (it plays such a block in parts), not while a host bypasses it (the output is silent, the voices
-  carry on, no note starts).
+  than 1,024 events (it plays such a block in parts), not while a host bypasses it (the voices carry on, no note
+  starts). A host block larger than `prepare()`'s block size also reaches the Engine in parts.
+- **Bypass**: when a host bypasses the plugin the output fades out over 20 ms (a smootherstep), and back in when the
+  bypass ends, so neither edge clicks. Meanwhile the Engine runs on the note-offs only: a note let go during the bypass
+  is not held afterwards, and a note held through it keeps sounding, unheard, and fades back in (its key is still
+  down). Before the host's first `prepareToPlay` the output is silent and the Engine is not called; a parameter a
+  host sets to NaN keeps its last good value (its host text is a dash, and the panel shows the last value).
 - **Voices**: sixteen, in four SIMD vectors of four. A voice is a phase accumulator through a sine
   (`SineOscillator.h`), times the ADSR (`Adsr.h`), times its level, 0.25 x velocity (the legacy headroom: one note at
   full velocity peaks at -12 dBFS, four at 0 dBFS). The sum, times GAIN, goes to both channels.
@@ -155,6 +160,8 @@ through their ports and draws on the `funkgui::Canvas` (an area and a line); `Pa
 the table has those four rows (ATTACK, DECAY, SUSTAIN, RELEASE). For an interactive view, add an `Item` in
 `Source/editor/Panel.cpp` (FunkGui widgets: `Dial`, `RuleSlider`, `SegmentedSelector`, `LatchToggle`, ...). The panel
 is GPU-free: the plugin runs it on Metal, the `gui.dump` probe on the CPU, so look at the PNGs after an editor change.
+The header fits any product name: the panel widens for a long one, up to a limit, then leaves out the kind and
+version, then cuts the name with an ellipsis.
 
 ## Test
 
@@ -173,9 +180,9 @@ build-dev/TestingPlaygroundSynth_probes dsp.render
 | `dsp.envelope` | each ADSR segment to the sample (the note starts on its offset, the release on its note-off); GAIN, SUSTAIN and RELEASE changed mid-note never step |
 | `dsp.voices` | sixteen notes on sixteen voices; the seventeenth steals the oldest after a 2 ms fade; a note played again keeps its voice; a note-off releases the right voice; the freed voice is reused; no click on a steal or a retrigger; All Notes Off during a steal's fade leaves nothing sounding |
 | `dsp.render` | a short phrase (a melody over chords, ending with more notes than voices) to `dsp.render.wav`; finite, no clipping, block-size invariant |
-| `plugin.process` | the processor as a host drives it: notes start on their sample offsets inside a block, at their velocity; GAIN written by the host reaches the DSP; a NaN from the host is ignored; the note-off leaves silence and no voice; the output is the Engine's bit for bit. No note is left held by All Notes Off or All Sound Off, a note-on at velocity 0, a note-off in a block of 0 samples, a block of more than 1,024 events, or a note-off while the host bypasses the plugin (whose output is then silent) |
-| `gui.dump` | the panel headless to `gui.dump.png`, `gui.dump.paper.png` and `gui.dump.envelope.png`; settles, every glyph, a11y, a drag writes the parameter; the envelope follows the parameters and highlights the segment under the pointer |
-| `plugin.state` | the host's parameters equal the table; the state round-trips; processBlock gives finite output |
+| `plugin.process` | the processor as a host drives it: notes start on their sample offsets inside a block, at their velocity; GAIN written by the host reaches the DSP; a NaN from the host is ignored; the note-off leaves silence and no voice; the output is the Engine's bit for bit. No note is left held by All Notes Off or All Sound Off, a note-on at velocity 0, a note-off in a block of 0 samples, a block of more than 1,024 events, or a note-off while the host bypasses the plugin (whose output is then silent); a block larger than announced reaches the Engine in parts, with the same output; bypass and un-bypass with a note held fade over 20 ms with no step beyond the note's own (where a hard switch steps 17 times as far), then give silence and the never-bypassed output, bit for bit |
+| `gui.dump` | the panel headless to `gui.dump.png`, `gui.dump.paper.png` and `gui.dump.envelope.png`; settles, every glyph, a11y; the header clear of the THEME cells with this name and with names of 24, 48 and 64 letters (`gui.dump.longname.png`); a drag writes the parameter; a host's NaN shows the last value; the envelope follows the parameters, keeps its shape through a host's NaN and highlights the segment under the pointer |
+| `plugin.state` | the host's parameters equal the table; the state round-trips; a NaN's host text is a dash; a state value that is not a number loads the default; processBlock and processBlockBypassed before prepareToPlay are silent; processBlock gives finite output |
 <!-- /starter:probes -->
 
 `dsp.*` and `plugin.process` test the algorithm: change them with it. `gui.dump` and `plugin.state` work from the
@@ -195,13 +202,14 @@ scripts/plugin.py clone --name MyPlugin --code Mypl --starter          # the tem
 scripts/plugin.py clone --name MyDelay --type effect --code Mydl       # an effect, from the template's starter
 ```
 
-The clone gets its own name, plugin code, bundle id and C++ namespace (asked for, or derived from the name), keeps
-the manufacturer code, and builds without edits. It refuses a plugin code another project beside it already uses: two
-plugins with one code hide each other in a host. `--type` switches the kind, and `--starter` restarts from the
-template's starter of the same kind (`scripts/starters/`): the algorithm, its probes, CLAUDE.md and this README's
-kind-specific blocks (the ones between `<!-- starter:... -->` markers). A clone has no git history, so it leaves out
-the `<!-- origin -->` blocks, which point into this project's. `plugin.py rename` renames this project in place;
-`plugin.py starter-diff` shows how this project differs from its kind's starter.
+The clone gets its own name, plugin code, bundle id and C++ namespace (asked for, or derived from the name), keeps the
+manufacturer code, and builds without edits. It refuses a plugin code another of your plugins already uses (any
+project in `~/audio/plugins`, or beside the source or the destination): two plugins with one code hide each other in a
+host. `--type` switches the kind, and `--starter` restarts from the template's starter of the same kind
+(`scripts/starters/`): the algorithm, its probes, CLAUDE.md and this README's kind-specific blocks (the ones between
+`<!-- starter:... -->` markers). A clone has no git history, so it leaves out the `<!-- origin -->` blocks, which
+point into this project's. `plugin.py rename` renames this project in place; `plugin.py starter-diff` shows how this
+project differs from its kind's starter.
 
 ## Update the DSP core
 

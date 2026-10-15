@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-namespace fpt = testingplaygroundsynth;
+namespace tps = testingplaygroundsynth;
 
 namespace
 {
@@ -32,7 +32,7 @@ namespace
     std::size_t at(double seconds) { return static_cast<std::size_t>(seconds * kFs); }
 
     // A note held from 0 for `seconds` (never released), at the given parameter values.
-    probe::Stereo held(int note, double seconds, const fpt::ParamValues& v, float velocity = 1.0f)
+    probe::Stereo held(int note, double seconds, const tps::ParamValues& v, float velocity = 1.0f)
     {
         return probe::runSynth({ probe::on(0, note, velocity) }, at(seconds), kFs, 256, v);
     }
@@ -45,7 +45,7 @@ namespace
 
 PROBE(dsp, response)
 {
-    const fpt::ParamValues defaults = fpt::defaultValues();
+    const tps::ParamValues defaults = tps::defaultValues();
     const double full = probe::dbFromLin(0.25);
 
     for (const int note : { 69, 60, 81 })
@@ -59,20 +59,20 @@ PROBE(dsp, response)
         const probe::Stereo out = held(69, 1.6, defaults);
         P.near("level.a4.gain0.peak_dbfs", levelDb(out, 440.0), full, 0.02);
         P.eq("level.left_equals_right", probe::sameBits(out.l, out.r), 1);
-        fpt::ParamValues v = defaults;
-        v[fpt::param::gain] = 6.0f;
+        tps::ParamValues v = defaults;
+        v[tps::param::gain] = 6.0f;
         P.near("level.a4.gain6.peak_dbfs", levelDb(held(69, 1.6, v), 440.0), full + 6.0, 0.02);
         P.near("level.a4.velocity0.5.rel_db", levelDb(held(69, 1.6, defaults, 0.5f), 440.0) - full,
                probe::dbFromLin(0.5), 0.02);
         v = defaults;
-        v[fpt::param::wave] = 1.0f;
+        v[tps::param::wave] = 1.0f;
         P.near("level.a4.triangle.fundamental_dbfs", levelDb(held(69, 1.6, v), 440.0),
                probe::dbFromLin(0.25 * 8.0 / (std::numbers::pi * std::numbers::pi)), 0.02);
     }
 
     {
-        fpt::ParamValues v = defaults;
-        v[fpt::param::attack] = 100.0f;
+        tps::ParamValues v = defaults;
+        v[tps::param::attack] = 100.0f;
         const probe::Stereo out = held(69, 0.5, v);
         // Two cycles of 440 Hz (218 samples) centred at 50 ms: the linear ramp averages to its middle.
         const double halfway = probe::toneAmplitude(out.l, 440.0, kFs, at(0.05) - 109, 218);
@@ -80,8 +80,8 @@ PROBE(dsp, response)
     }
 
     {
-        fpt::ParamValues v = defaults;
-        v[fpt::param::release] = 300.0f;
+        tps::ParamValues v = defaults;
+        v[tps::param::release] = 300.0f;
         const probe::Stereo out = probe::runSynth({ probe::on(0, 69, 1.0f), probe::off(at(0.5), 69) }, at(1.0), kFs,
                                                   256, v);
         const double mid = probe::toneAmplitude(out.l, 440.0, kFs, at(0.65) - 54, 109);
@@ -93,7 +93,7 @@ PROBE(dsp, response)
 
     // VOICES: eight notes, each in the output.
     {
-        const int chord[fpt::Engine::kVoices] = { 48, 52, 55, 60, 64, 67, 72, 76 };
+        const int chord[tps::Engine::kVoices] = { 48, 52, 55, 60, 64, 67, 72, 76 };
         std::vector<probe::ScoreEvent> score;
         for (const int note : chord)
             score.push_back(probe::on(0, note, 0.5f));
@@ -108,9 +108,9 @@ PROBE(dsp, response)
         std::vector<probe::ScoreEvent> score;
         for (int k = 0; k < 10; ++k)
             score.push_back(probe::on(static_cast<std::size_t>(k), 60 + k, 0.5f));
-        fpt::Engine engine;
+        tps::Engine engine;
         probe::runSynth(score, at(0.2), kFs, 256, defaults, &engine);
-        P.eq("voices.ten_notes.active", engine.activeVoices(), fpt::Engine::kVoices);
+        P.eq("voices.ten_notes.active", engine.activeVoices(), tps::Engine::kVoices);
         for (int k = 0; k < 10; ++k)
             score.push_back(probe::off(at(0.2), 60 + k));
         probe::runSynth(score, at(1.0), kFs, 256, defaults, &engine);
@@ -127,7 +127,7 @@ PROBE(dsp, response)
     }
     {
         std::vector<probe::ScoreEvent> score;
-        for (int k = 0; k < fpt::Engine::kVoices; ++k)
+        for (int k = 0; k < tps::Engine::kVoices; ++k)
             score.push_back(probe::on(static_cast<std::size_t>(k), 48 + k, 1.0f));
         const std::size_t steal = at(0.5) + 3;
         score.push_back(probe::on(steal, 90, 0.05f));

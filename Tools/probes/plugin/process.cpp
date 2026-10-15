@@ -22,8 +22,17 @@
 //   FULL    one block of 4,096 samples with 1,100 note-ons (16 notes) and then their 16 note-offs at offset 4,000: more
 //           events than one Engine call takes (kMaxEventsPerBlock); none is lost, and the block is the Engine's,
 //           given all of them in one call, bit for bit
-//   BYPASS  while a host bypasses the processor (processBlockBypassed) the output is exactly 0; a note-off then still
-//           releases its note, and a note-on starts nothing
+//   OVER    a block of 1,061 samples after prepareToPlay announced 256, with notes inside it: the Engine gets it in
+//           parts of at most 256 samples, and the block is the Engine's in one call, bit for bit
+//   BYPASS  while a host bypasses the processor (processBlockBypassed), after its 20 ms fade-out, the output is exactly
+//           0; a note-off then still releases its note, and a note-on starts nothing
+//   EDGE    bypass and un-bypass while a note is held do not click (A4 at velocity 127 from sample 0, held; blocks of
+//           256, bypassed from block 8 to block 18, edges where the note is near its peak): from 1 ms before each edge
+//           to 1 ms after its 20 ms fade, no step between neighbouring samples exceeds the held note's own steepest by
+//           more than 5 %, where a hard switch would step at least 3 times as far (the `abrupt` row, from the steady
+//           runs, shows the rows can fail); 20 ms after the bypass edge the output is exactly 0, and 20 ms after the
+//           un-bypass edge it is the never-bypassed run's, bit for bit (the held note kept running through the bypass
+//           and fades back in), each within 0.1 ms
 #include "Probe.h"
 
 #include "Audio.h"
@@ -38,6 +47,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <string>
@@ -50,6 +60,7 @@ namespace
 {
     constexpr double kFs = 48000.0;
     constexpr int kBlock = 256;
+    constexpr double kFadeMs = 20.0;                          // a bypass edge's fade
 
     void setPlain(tps::Processor& p, std::size_t i, float plain)
     {
@@ -118,16 +129,43 @@ namespace
 
     using Messages = std::vector<std::pair<int, juce::MidiMessage>>;   // (offset, message)
 
-    // A fresh processor at kFs, played block by block as a host would.
+    // MIDI messages and the same notes as Engine events.
+    struct Score
+    {
+        Messages messages;
+        std::vector<tps::Event> events;
+
+        void add(int offset, const juce::MidiMessage& m, tps::EventKind kind, int note, float velocity)
+        {
+            messages.emplace_back(offset, m);
+            tps::Event e;
+            e.offset = static_cast<uint32_t>(offset);
+            e.kind = kind;
+            e.note = static_cast<uint8_t>(note);
+            e.velocity = velocity;
+            events.push_back(e);
+        }
+        void on(int offset, int note)
+        {
+            add(offset, juce::MidiMessage::noteOn(1, note, kVelocity), tps::EventKind::noteOn, note,
+                static_cast<float>(kVelocity) / 127.0f);
+        }
+        void off(int offset, int note)
+        {
+            add(offset, juce::MidiMessage::noteOff(1, note), tps::EventKind::noteOff, note, 0.0f);
+        }
+    };
+
+    // A fresh processor at kFs, played block by block as a host would; prepareToPlay announces `prepared` samples.
     struct Host
     {
-        explicit Host(int blockSize = kBlock) : buffer(2, blockSize)
+        explicit Host(int blockSize = kBlock, int prepared = kBlock) : buffer(2, blockSize)
         {
-            p.setRateAndBufferSizeDetails(kFs, blockSize);
-            p.prepareToPlay(kFs, blockSize);
+            p.setRateAndBufferSizeDetails(kFs, prepared);
+            p.prepareToPlay(kFs, prepared);
         }
 
-        // One block of `len` samples (up to the block size; 0 is a block a host may send) with `messages`, through
+        // One block of `len` samples (up to the buffer's size; 0 is a block a host may send) with `messages`, through
         // processBlock or processBlockBypassed. Its output stays in `last`; returns its peak over both channels.
         float play(const Messages& messages, int len, bool bypassed = false)
         {
@@ -149,13 +187,27 @@ namespace
             return std::max(probe::peak(last.l), probe::peak(last.r));
         }
 
-        // `count` blocks without MIDI; their peak.
+        // `count` blocks without MIDI (each the buffer's size); their peak.
         float idle(int count, bool bypassed = false)
         {
             float pk = 0.0f;
             for (int i = 0; i < count; ++i)
                 pk = std::max(pk, play({}, buffer.getNumSamples(), bypassed));
             return pk;
+        }
+
+        // The Engine alone, prepared and set as the processor's, given `events` in one call of `len` samples.
+        probe::Stereo engineOnce(const std::vector<tps::Event>& events, int len)
+        {
+            tps::ParamValues values = tps::defaultValues();
+            readValues(p, values);
+            tps::Engine engine;
+            engine.prepare(kFs, len);
+            engine.setParams(values);
+            probe::Stereo ref(static_cast<std::size_t>(len));
+            float* ch[2] = { ref.l.data(), ref.r.data() };
+            engine.process(ch, 2, len, events);
+            return ref;
         }
 
         int sounding() const { return p.engine().activeVoices(); }
@@ -311,35 +363,15 @@ PROBE(plugin, process)
     {
         constexpr int kBig = 4096, kOns = 1100, kOffAt = 4000;
         static_assert(kOns + 16 > tps::kMaxEventsPerBlock && 3 * (kOns - 1) < kOffAt);
-        Messages messages;
-        std::vector<tps::Event> events;
-        const auto add = [&](int offset, const juce::MidiMessage& m, tps::EventKind kind, int note, float velocity) {
-            messages.emplace_back(offset, m);
-            tps::Event e;
-            e.offset = static_cast<uint32_t>(offset);
-            e.kind = kind;
-            e.note = static_cast<uint8_t>(note);
-            e.velocity = velocity;
-            events.push_back(e);
-        };
+        Score score;
         for (int i = 0; i < kOns; ++i)
-            add(3 * i, juce::MidiMessage::noteOn(1, 40 + i % 16, kVelocity), tps::EventKind::noteOn, 40 + i % 16,
-                static_cast<float>(kVelocity) / 127.0f);
+            score.on(3 * i, 40 + i % 16);
         for (int note = 40; note < 56; ++note)
-            add(kOffAt, juce::MidiMessage::noteOff(1, note), tps::EventKind::noteOff, note, 0.0f);
-
-        Host h(kBig);
-        tps::ParamValues values = tps::defaultValues();
-        readValues(h.p, values);
-        h.play(messages, kBig);
+            score.off(kOffAt, note);
+        Host h(kBig, kBig);
+        h.play(score.messages, kBig);
         P.eq("full.held_after", h.held(), 0);
-
-        tps::Engine engine;                                      // every event in one call
-        engine.prepare(kFs, kBig);
-        engine.setParams(values);
-        probe::Stereo ref(static_cast<std::size_t>(kBig));
-        float* ch[2] = { ref.l.data(), ref.r.data() };
-        engine.process(ch, 2, kBig, events);
+        const probe::Stereo ref = h.engineOnce(score.events, kBig);   // every event in one call
         P.eq("full.engine.same_bits", probe::sameBits(h.last.l, ref.l) && probe::sameBits(h.last.r, ref.r) ? 1 : 0, 1);
 
         h.idle(3);                                               // 256 ms
@@ -347,18 +379,74 @@ PROBE(plugin, process)
         P.eq("full.voices_left", h.sounding(), 0);
     }
 
-    // BYPASS: A4 held; the host bypasses the processor for ten blocks, in which A4 is let go and D4 played.
+    // OVER: prepared for 256, a block of 1,061 with notes on and off inside it.
+    {
+        constexpr int kOver = 4 * kBlock + 37;
+        Score score;
+        score.on(10, 60);
+        score.on(300, 64);
+        score.off(700, 60);
+        score.on(1000, 67);
+        Host h(kOver, kBlock);
+        h.play(score.messages, kOver);
+        P.le("over.largest_engine_call", h.p.largestEngineCall(), kBlock);
+        const probe::Stereo ref = h.engineOnce(score.events, kOver);
+        P.eq("over.engine.same_bits", probe::sameBits(h.last.l, ref.l) && probe::sameBits(h.last.r, ref.r) ? 1 : 0, 1);
+        P.eq("over.held_after", h.held(), 2);
+    }
+
+    // BYPASS: A4 held; the host bypasses the processor for ten blocks, in which A4 is let go and D4 played. The first
+    // four (1,024 samples) hold the 20 ms fade-out; the other six must be silent.
     {
         Host h;
         h.play({ { 5, juce::MidiMessage::noteOn(1, kA4, kVelocity) } }, kBlock);
         h.idle(9);
-        float bypassedPeak = h.play({ { 50, juce::MidiMessage::noteOff(1, kA4) } }, kBlock, true);
-        bypassedPeak = std::max(bypassedPeak, h.play({ { 20, juce::MidiMessage::noteOn(1, 62, kVelocity) } }, kBlock,
-                                                     true));
+        h.play({ { 50, juce::MidiMessage::noteOff(1, kA4) } }, kBlock, true);
+        h.play({ { 20, juce::MidiMessage::noteOn(1, 62, kVelocity) } }, kBlock, true);
         P.eq("bypass.note_on_starts_nothing.held", h.held(), 0);
-        bypassedPeak = std::max(bypassedPeak, h.idle(8, true));
-        P.le("bypass.output_peak", static_cast<double>(bypassedPeak), 0.0);
+        h.idle(2, true);
+        P.le("bypass.after_fade.output_peak", static_cast<double>(h.idle(6, true)), 0.0);
         expectSilenceAfterRelease(P, h, "bypass.note_off_during_bypass");
+    }
+
+    // EDGE: A4 held from sample 0; bypassed from block 8 (43 ms) to block 18 (96 ms) of 28, against the never-bypassed
+    // run and silence.
+    {
+        constexpr std::size_t kBlocks = 28, kOff = 8, kOn = 18, kLen = kBlocks * kBlock;
+        constexpr std::size_t kFade = static_cast<std::size_t>(kFs * kFadeMs / 1000.0), kPad = 48;   // 960; 1 ms
+        constexpr std::size_t off = kOff * kBlock, on = kOn * kBlock;
+        const auto run = [](std::size_t bypassFrom, std::size_t bypassTo) {
+            Host h;
+            probe::Stereo y(kLen);
+            for (std::size_t block = 0; block < kBlocks; ++block)
+            {
+                Messages m;
+                if (block == 0)
+                    m.emplace_back(0, juce::MidiMessage::noteOn(1, kA4, static_cast<juce::uint8>(127)));
+                h.play(m, kBlock, block >= bypassFrom && block < bypassTo);
+                const auto at = static_cast<std::ptrdiff_t>(block * kBlock);
+                std::copy(h.last.l.begin(), h.last.l.end(), y.l.begin() + at);
+                std::copy(h.last.r.begin(), h.last.r.end(), y.r.begin() + at);
+            }
+            return y;
+        };
+        const probe::Stereo sounding = run(0, 0), got = run(kOff, kOn);
+        const std::vector<float> silence(kLen, 0.0f);
+        const probe::EdgeSteps bypassEdge = probe::edgeSteps(got.l, sounding.l, silence, off, kFade, kPad);
+        const probe::EdgeSteps unbypassEdge = probe::edgeSteps(got.l, silence, sounding.l, on, kFade, kPad);
+        std::printf("edge: bypass steps %.3f x own (abrupt %.1f x), un-bypass %.3f x own (abrupt %.1f x)\n",
+                    bypassEdge.stepOverOwn, bypassEdge.abruptOverOwn, unbypassEdge.stepOverOwn,
+                    unbypassEdge.abruptOverOwn);
+        P.le("edge.bypass.max_step_over_own", bypassEdge.stepOverOwn, 1.05);
+        P.le("edge.unbypass.max_step_over_own", unbypassEdge.stepOverOwn, 1.05);
+        P.ge("edge.abrupt.step_over_own_min", std::min(bypassEdge.abruptOverOwn, unbypassEdge.abruptOverOwn), 3.0);
+        P.eq("edge.left_equals_right", probe::sameBits(got.l, got.r) ? 1 : 0, 1);
+
+        const std::size_t quietFrom = probe::settledFrom(got.l, silence, off, on);
+        P.near("edge.bypass.fade_ms", static_cast<double>(quietFrom - off) * 1000.0 / kFs, kFadeMs, 0.1);
+        const std::size_t soundingFrom = probe::settledFrom(got.l, sounding.l, on, kLen);
+        P.near("edge.unbypass.held_note.fade_ms", static_cast<double>(soundingFrom - on) * 1000.0 / kFs, kFadeMs,
+               0.1);
     }
     return P.finish();
 }

@@ -30,12 +30,24 @@ CMakeLists.txt, cmake/   the build; every source list is a folder glob, so new f
 ## Change the algorithm
 
 `Source/dsp/Engine.cpp` is the whole algorithm: `prepare()` before playback, `setParams()` once per block with the
-plain parameter values, `process()` once per block (an effect processes the channels in place; an instrument writes
-them, playing the block's note events at their offsets). Rewrite its body, or add your own classes under
+plain parameter values, `process()` with the block's note events (`Source/dsp/Events.h`: note-on, note-off,
+all-notes-off, each at its sample offset), writing the channels. Rewrite its body, or add your own classes under
 `Source/dsp/` and call them from it. The rules of the audio thread: no allocation, locks or I/O in `setParams()` and
-`process()` (allocate in `prepare()`), and smooth every parameter so nothing steps. The core helps: `fsdsp::simd`
-(four float lanes, NEON), `fsdsp::exp2/log2/tanh/sinPi/tanPi` (no libm), `fsdsp::phase` (exact oscillators),
-`fsdsp::Smoother4`, `SmoothRamp`, `Pcg32`, `sanitize`. Each header says what it guarantees.
+`process()` (allocate in `prepare()`), and nothing steps: smooth every parameter, ramp a reused voice (a retrigger's
+level, a steal's fade-out before its new note).
+The core helps: `fsdsp::simd` (four float lanes, NEON), `fsdsp::exp2/log2/tanh/sinPi/tanPi` (no libm),
+`fsdsp::phase` (exact oscillators), `fsdsp::Smoother4`, `SmoothRamp`, `Pcg32`, `sanitize`. Each header says what it
+guarantees.
+
+The processor (`Source/plugin`) hands the Engine what a host sends, made safe, and never leaves a note held: MIDI
+note-on and note-off (a note-on at velocity 0 is a note-off) and the controllers All Sound Off and All Notes Off
+(both release every note) become events; a block of 0 samples still brings its events (apply them: render nothing);
+a block larger than `prepare()`'s block size, or with more than 1,024 events, comes in parts (so keep the output
+independent of how blocks are split); a parameter a host set to NaN keeps its last good value. When a host bypasses
+the plugin the output fades out over 20 ms, and back in when the bypass ends, so neither edge clicks; meanwhile the
+Engine runs on the note-offs only: a note let go during the bypass is not held afterwards, and a note held through it
+keeps sounding, unheard, and fades back in (its key is still down). Before the host's first `prepareToPlay` the
+Engine is not called and the output is silent.
 <!-- /starter:algorithm -->
 
 <!-- starter:probes -->
@@ -43,7 +55,7 @@ them, playing the block's note events at their offsets). Rewrite its body, or ad
 | --- | --- |
 | `dsp.render` | plays an arpeggio and a chord (sine, then triangle) to `dsp.render.wav`; finite, no clipping, block-size invariant |
 | `dsp.response` | pitch within 0.005 Hz; level, GAIN and velocity within 0.02 dB; the attack and release shapes; each of eight held notes in the output; voice stealing; no click when a voice is retriggered or stolen |
-| `plugin.process` | the processor as a host drives it: a note-on sounds from its sample offset at its velocity, the note-off releases it to silence with no voice left, GAIN written by the host reaches the DSP, a NaN from the host is ignored, both channels are the Engine's output bit for bit |
-| `gui.dump` | the panel headless to `gui.dump.png` and `gui.dump.paper.png`; settles, every glyph, a11y, a drag writes the parameter |
-| `plugin.state` | the host's parameters equal the table; the state round-trips; processBlock gives finite output |
+| `plugin.process` | the processor as a host drives it: a note-on sounds from its sample offset at its velocity, the note-off releases it to silence with no voice left, GAIN written by the host reaches the DSP, a NaN from the host is ignored, both channels are the Engine's output bit for bit. No note is left held by All Notes Off or All Sound Off, a note-on at velocity 0, a note-off in a block of 0 samples, a block of more than 1,024 events, or a note-off while the host bypasses the plugin (whose output is then silent); a block larger than announced reaches the Engine in parts, with the same output; bypass and un-bypass with a note held fade over 20 ms with no step beyond the note's own (where a hard switch steps 17 times as far), then give silence and the never-bypassed output, bit for bit |
+| `gui.dump` | the panel headless to `gui.dump.png` and `gui.dump.paper.png`; settles, every glyph, a11y; the header clear of the THEME cells with this name and with names of 24, 48 and 64 letters (`gui.dump.longname.png`); a drag writes the parameter; a host's NaN shows the last value |
+| `plugin.state` | the host's parameters equal the table; the state round-trips; a NaN's host text is a dash; a state value that is not a number loads the default; processBlock and processBlockBypassed before prepareToPlay are silent; processBlock gives finite output |
 <!-- /starter:probes -->

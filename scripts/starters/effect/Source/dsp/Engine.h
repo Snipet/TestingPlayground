@@ -3,9 +3,11 @@
 // not depend on the host's block size.
 //
 // The processor calls, on the audio thread: prepare() before playback (the only place that may allocate), setParams()
-// once per block with the plain values of Params.h (finite, within the table's range), then process() in place.
-// Hosts call tailSeconds() from any thread: return a constant, or read an atomic that setParams() stores. Replace the
-// body with your algorithm and keep the contract: no allocation, no locks, no I/O in setParams() and process().
+// once per block with the plain values of Params.h (finite, within the table's range), then process() in place, with
+// at most prepare()'s maxBlockSize samples per call (the processor cuts a larger host block into parts; a part may
+// have 0 samples). Hosts call tailSeconds() from any thread: return a constant, or read an atomic that setParams()
+// stores. Replace the body with your algorithm and keep the contract: no allocation, no locks, no I/O in setParams()
+// and process(), and an output that does not depend on how the blocks are split.
 #pragma once
 
 #include "dsp/Events.h"

@@ -10,7 +10,8 @@
 
 namespace testingplaygroundsynth::ui
 {
-    ParamModel::ParamModel(const ParamSpec& spec, funkgui::ParamPort& port) : spec_(spec), port_(port) {}
+    ParamModel::ParamModel(const ParamSpec& spec, funkgui::ParamPort& port)
+        : spec_(spec), port_(port), last01_(port.default01()) {}
 
     uint64_t ParamModel::key() const
     {
@@ -24,7 +25,7 @@ namespace testingplaygroundsynth::ui
 
     void ParamModel::view(funkgui::ValueView& v) const
     {
-        const float h = port_.value01();
+        const float h = shownValue01(port_.value01(), last01_);
         v = funkgui::ValueView{};
         v.state = funkgui::ValueState::continuous;
         v.label = spec_.label;
@@ -48,6 +49,14 @@ namespace testingplaygroundsynth::ui
                 spokenUnit = "decibels";
                 break;
             case Unit::hz:
+                if (plain < 99.95f)                      // fmt::hz prints whole hertz: a low rate needs decimals
+                {
+                    std::snprintf(out.value, sizeof out.value, plain < 9.995f ? "%.2f" : "%.1f",
+                                  static_cast<double>(plain));
+                    unit = "HZ";
+                    spokenUnit = "hertz";
+                    break;
+                }
                 funkgui::fmt::hz(plain, out.value, sizeof out.value, &unit);
                 if (std::strcmp(unit, "K") == 0)
                 {

@@ -3,7 +3,9 @@
 // drawing the same frames.
 //
 // It builds itself from the parameter table (Source/dsp/Params.h), in table order:
-//   header    the product name, its kind and version (when they fit), and the THEME cells (GRAPHITE, PAPER)
+//   header    the product name, its kind and version, and the THEME cells (GRAPHITE, PAPER). The panel widens for a
+//             long name (up to a limit) so the whole header fits; past it the kind and version are left out, and a
+//             name that still does not fit ends in an ellipsis: the header text never runs into the THEME cells
 //   envelope  ENVELOPE: a picture of the ADSR (EnvelopeView.h), when the table has the four envelope rows
 //   controls  each row's control, left to right, wrapping at the panel's width: Control::dial a funkgui::Dial
 //             (60 x 80), Control::slider a funkgui::RuleSlider (180 px rule), Control::choice a row of its own with
@@ -24,6 +26,7 @@
 #include "editor/EnvelopeView.h"
 
 #include <funkgui/a11y/A11yItem.h>
+#include <funkgui/canvas/Tags.h>
 #include <funkgui/core/Geometry.h>
 #include <funkgui/panel/Input.h>
 #include <funkgui/panel/Panel.h>
@@ -36,6 +39,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace funkgui
@@ -50,10 +54,16 @@ namespace testingplaygroundsynth::ui
 {
     class Item;                                          // one control on the panel (Panel.cpp)
 
+    // The panel's own primitive tags, for probes that find what they check by tag (FunkGui's tags end below
+    // funkgui::tags::firstProduct; a view of your own takes the next free one: EnvelopeView.h's kEnvelopeTag is
+    // firstProduct + 1).
+    inline constexpr funkgui::Tag kHeaderTextTag = funkgui::tags::firstProduct;   // the name, its kind and version
+
     class Panel final : public funkgui::Panel
     {
     public:
-        explicit Panel(std::span<funkgui::ParamPort* const> ports);
+        // `name` is the product's (Product.h) unless given: probes try the header with other names.
+        explicit Panel(std::span<funkgui::ParamPort* const> ports, std::string_view name = {});
         ~Panel() override;
 
         Panel(const Panel&) = delete;
@@ -67,6 +77,18 @@ namespace testingplaygroundsynth::ui
         // envelope segment is highlighted (-1 for none).
         const EnvelopeView* envelope() const noexcept { return envelope_ ? &*envelope_ : nullptr; }
         int highlightedParam() const;
+
+        // For probes: where the header's parts end, in logical px from the panel's left edge, as draw() places them.
+        struct HeaderLayout
+        {
+            float titleRight = 0.0f;                     // the name's right edge
+            float subtitleRight = 0.0f;                  // the kind and version's (0 when left out)
+            float themeLeft = 0.0f;                      // the THEME cells' left edge
+            bool  subtitleShown = false;
+            bool  titleCut = false;                      // the name ends in an ellipsis
+            bool  widest = false;                        // the panel is as wide as it grows for the header
+        };
+        const HeaderLayout& header() const noexcept { return header_; }
 
         // funkgui::Panel
         void  attach(funkgui::HostServices&) override;
@@ -98,8 +120,9 @@ namespace testingplaygroundsynth::ui
         std::vector<int> itemOfParam_;                   // table index -> item index, -1 for a hidden parameter
         std::optional<EnvelopeView> envelope_;
         float width_ = 0.0f, height_ = 0.0f;
-        std::string title_;                              // the product name, upper case
+        std::string title_;                              // the product name, upper case (cut to fit: header_)
         std::string subtitle_;                           // "INSTRUMENT  0.1.0"
+        HeaderLayout header_;
 
         funkgui::CellModel* zoom_ = nullptr;             // the ZOOM cells' model (the last item owns it)
         funkgui::HostServices* host_ = nullptr;

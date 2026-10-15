@@ -22,7 +22,7 @@ new: the legacy code `Tstn`, which it shared with TestingPlayground (the origina
 | `Source/dsp/Adsr.h` | the linear ADSR, four voices per SIMD vector (`Quad::tick`), and the per-voice state (`Bank`) | |
 | `Source/dsp/VoiceScheduler.h` | the voice policy (the legacy one): retrigger the same note, else the first silent voice, else steal the oldest note-on | decides only; the Engine carries it out |
 | `Source/dsp/Engine.h/.cpp` | 16 voices, note events at their sample offsets, the 2 ms retrigger and steal ramps, GAIN and SUSTAIN smoothing | keep its interface: the processor and `plugin.process` use it |
-| `Source/plugin/**` | the JUCE `AudioProcessor`: APVTS from the table, one FunkGui port per parameter, MIDI to `Event`s, the bypass | reads parameters once per block, calls the Engine; never loses a note-off |
+| `Source/plugin/**` | the JUCE `AudioProcessor`: APVTS from the table, one FunkGui port per parameter, MIDI to `Event`s, the bypass | reads parameters once per block, calls the Engine; never loses a note-off; the same for both kinds |
 | `Source/editor/**` | the FunkGui `Panel` (built from the table: ENVELOPE, then the dials in a row spread to the width), `EnvelopeView` (the ADSR picture, from the ports), `ParamModel`, `Theme.h`; `gpu/` the EditorHost factory | reaches the processor only through its ports |
 | `Tools/probes/**` | probes on FunkGui's Harness: `dsp/` (Source/dsp only: pitch, level, envelope, voices, render), `plugin/`, `gui/` | spec rows only, no golden files |
 | `scripts/starters/<kind>/` | the template's effect and instrument starters: `Source/dsp`, `Tools/probes/dsp`, `Tools/probes/plugin/process.cpp`, `CLAUDE.md`, `README-parts.md` (README.md's `<!-- starter:... -->` blocks) | what `plugin.py clone --type/--starter` installs; not this synth |
@@ -33,14 +33,17 @@ new: the legacy code `Tstn`, which it shared with TestingPlayground (the origina
   `build-dev`. Done means it exits 0 with no warning from our sources (they build with `-Werror`).
 - `scripts/test.sh`: build and run the probes only (`-R <name>`, `-V` pass through to ctest). Outputs land in
   `build-dev/probe-out/`: `dsp.render.wav` (a short phrase), and `gui.dump.png`, `gui.dump.paper.png`,
-  `gui.dump.envelope.png`, the editor rendered headless. Look at the PNGs after any editor change.
+  `gui.dump.envelope.png`, `gui.dump.longname.png` (the header with a name of 64 letters), the editor rendered
+  headless. Look at the PNGs after any editor change.
 - When the synth changes, change its probes with it: `dsp.pitch` (zero crossings, within 0.5 cent), `dsp.level`
   (levels by DFT, and a note sample by sample against a model in double), `dsp.envelope` (each ADSR segment to the
   sample, parameter changes that must not step), `dsp.voices` (allocation, stealing, note-off, All Notes Off, clicks),
   `dsp.render` (a phrase to WAV; block-size invariance), `plugin.process` (the processor as a host drives it: MIDI at
-  offsets inside a block, host writes, NaN, bit-exact against the Engine; and the MIDI that must never leave a note
-  held: CC 120 and 123, a velocity-0 note-on, a 0-sample block, an overfull block, a bypass). Check against a model or
-  a formula; a level alone misses a flipped polarity. `gui.dump` and `plugin.state` work from the table.
+  offsets inside a block, host writes, NaN, bit-exact against the Engine; the MIDI that must never leave a note held:
+  CC 120 and 123, a velocity-0 note-on, a 0-sample block, an overfull block, a bypass; a block larger than announced;
+  the bypass edges, which must not click). Check against a model or a formula; a level alone misses a flipped
+  polarity. `gui.dump` (the header with long names, a host's NaN, the envelope view) and `plugin.state` (NaN host
+  text and state, calls before `prepareToPlay`) work from the table.
 - `cmake --workflow --preset release-build`: Release with LTO in `build-release`. `scripts/install.sh` copies the AU
   and VST3 into `~/Library/Audio/Plug-Ins`; only the user (or the lead) runs it, never an agent.
 - The presets build at `-j6` (the machine is shared). No network: JUCE, bgfx and shaderc come from `~/audio/.deps`
@@ -58,14 +61,23 @@ new: the legacy code `Tstn`, which it shared with TestingPlayground (the origina
 - Notes play on their sample: `Engine::process` renders up to each event's offset, then applies it; ramps end on fixed
   samples (`render()` cuts there), so the output does not depend on the host's block size (`dsp.render` checks 64
   against 333 samples).
+- `Engine::process` gets at most `prepare()`'s `maxBlockSize` samples per call (the processor cuts a larger host
+  block into parts) and at most `kMaxEventsPerBlock` events, sometimes 0 samples: it applies the events then and
+  renders nothing.
 - No note-off is ever lost: `Engine::process` applies the events of a 0-sample block; the processor plays a block with
   more than `kMaxEventsPerBlock` events in parts, and while bypassed (`processBlockBypassed`) runs the Engine on the
-  note-offs and all-notes-offs (no note-ons) and outputs silence. `plugin.process` checks each case.
+  note-offs and all-notes-offs (no note-ons) and outputs silence, faded out and back in over 20 ms (smootherstep), so
+  neither edge clicks: a note held through the bypass keeps sounding unheard and fades back in. `plugin.process`
+  checks each case.
+- The processor (`Source/plugin`, the same for both kinds) copes with the rest of what a host may do:
+  a block before any `prepareToPlay` is silent, without calling the Engine; a host's NaN keeps the last good value
+  (its host text is a dash); a state value that is not a number loads as the parameter's default (`plugin.state`).
 - `Engine::tailSeconds()` is called by hosts from any thread: return a constant, or an atomic that `setParams` stores.
 - Prefer the core's math on the audio path (`fsdsp::exp2/log2/tanh/sinPi/cosPi/tanPi`, `fsdsp::simd`, `fsdsp::phase`).
 - Flags: `-ffp-contract=off`, never `-ffast-math`. Product constants come from the generated `Product.h`, never from
   `JucePlugin_*`. The editor never uses JUCE's parameter attachments: widgets write through FunkGui's
-  `GestureController` to the ports (`funkgui::JuceParamPort`), which keeps host automation gestures right.
+  `GestureController` to the ports (`funkgui::JuceParamPort`), which keeps host automation gestures right. A view
+  that reads a port shows its last finite value (`ui::shownValue01`, as `EnvelopeView` does), never "nan".
 
 ## Recipes
 
@@ -79,7 +91,8 @@ new: the legacy code `Tstn`, which it shared with TestingPlayground (the origina
   interface), or add classes under `Source/dsp/` (the globs pick up new files: no CMake edit) and call them from it.
 - **A widget or a view**: the panel lays out every table row itself. `EnvelopeView` is the example of a drawn view;
   for an interactive one add an `Item` in `Source/editor/Panel.cpp` (a FunkGui widget, or your own drawing on the
-  `funkgui::Canvas`) and place it in the constructor; then check `gui.dump`'s PNGs.
+  `funkgui::Canvas` under a tag of its own: `kHeaderTextTag` and `kEnvelopeTag` are taken, the next free one is
+  `ui::kEnvelopeTag + 1`) and place it in the constructor; then check `gui.dump`'s PNGs.
 - **A probe**: a file `Tools/probes/<layer>/<name>.cpp` whose first line is `// PROBE name=<layer>.<name> timeout=<s>`
   and whose body is `PROBE(<layer>, <name>) { ...; return P.finish(); }`. Use spec rows (`P.near`, `P.le`, `P.ge`,
   `P.in`, `P.eq`) with tolerances that say what must hold; helpers are in `Tools/probes/common/Audio.h` and

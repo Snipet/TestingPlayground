@@ -13,6 +13,8 @@
 #include <funkgui/core/Theme.h>
 #include <funkgui/core/TypeScale.h>
 #include <funkgui/panel/HostServices.h>
+#include <funkgui/text/FontService.h>
+#include <funkgui/text/TextFit.h>
 #include <funkgui/widgets/Dial.h>
 #include <funkgui/widgets/RuleSlider.h>
 #include <funkgui/widgets/SegmentedSelector.h>
@@ -58,11 +60,14 @@ namespace testingplaygroundsynth::ui
     {
         // ---- layout (logical px) --------------------------------------------------------------------------------------
         constexpr float kMargin = 24.0f;
-        constexpr float kMinContentW = 456.0f;           // the header's name, kind and version beside the THEME cells
+        constexpr float kMinContentW = 408.0f;
+        constexpr float kMaxHeaderContentW = 600.0f;     // the widest the content grows for a long name
         constexpr float kTitleTop = 17.0f;
+        constexpr float kSubtitleGap = 14.0f;            // between the name and its kind and version
+        constexpr float kThemeW = 128.0f;                // the THEME cells, from the content's right edge
+        constexpr float kThemeGap = 20.0f;               // the least space between the header text and the THEME cells
         constexpr float kHeaderRuleY = 46.0f;
         constexpr float kSectionTop = 64.0f;
-        constexpr float kThemeW = 128.0f;                // the THEME cells, from the content's right edge
         constexpr float kEnvelopeTop = 82.0f;            // the plot, under its caption at kSectionTop
         constexpr float kEnvelopeH = 80.0f;
         constexpr float kEnvelopeGap = 18.0f;            // between the plot and the controls
@@ -336,17 +341,40 @@ namespace testingplaygroundsynth::ui
     }
 
     // ---- construction: the layout -------------------------------------------------------------------------------------
-    Panel::Panel(std::span<funkgui::ParamPort* const> ports)
+    Panel::Panel(std::span<funkgui::ParamPort* const> ports, std::string_view name)
     {
-        title_ = upper(product::kName);
+        title_ = upper(name.empty() ? std::string_view(product::kName) : name);
         subtitle_ = upper(product::kKind) + "  " + product::kVersion;
 
-        // The content is at least kMinContentW wide, wider only when one row of choice cells needs it.
+        // The content is at least kMinContentW wide, wider when one row of choice cells needs it, or when the header
+        // (the name, its kind and version, the THEME cells) needs it, up to kMaxHeaderContentW. Text is measured with
+        // the atlas every Canvas draws with (FontService; text::width is Canvas::textWidth).
         float contentW = kMinContentW;
         for (const ParamSpec& s : kParams)
             if (s.control == Control::choice)
                 contentW = std::max(contentW, kChoiceCellW * static_cast<float>(s.numChoices));
+        const funkgui::FontAtlasSdf& atlas = funkgui::FontService::get().atlas();
+        const float titleW = funkgui::text::width(atlas, title_.c_str(), funkgui::type::kWordmark);
+        const float subtitleW = funkgui::text::width(atlas, subtitle_.c_str(), funkgui::type::kMicro);
+        contentW = std::max(contentW, std::min(titleW + kSubtitleGap + subtitleW + kThemeGap + kThemeW,
+                                               kMaxHeaderContentW));
         width_ = 2.0f * kMargin + contentW;
+        header_.widest = contentW >= kMaxHeaderContentW;
+
+        // The header's text ends kThemeGap before the THEME cells: the kind and version only when they fit there, the
+        // name cut with an ellipsis when even it does not.
+        const float room = contentW - kThemeW - kThemeGap;
+        header_.themeLeft = kMargin + contentW - kThemeW;
+        if (titleW > room)
+        {
+            char cut[256];
+            funkgui::text::fitEllipsis(atlas, title_.c_str(), funkgui::type::kWordmark, room, cut, sizeof cut);
+            title_ = cut;
+            header_.titleCut = true;
+        }
+        header_.titleRight = kMargin + funkgui::text::width(atlas, title_.c_str(), funkgui::type::kWordmark);
+        header_.subtitleShown = header_.titleRight + kSubtitleGap + subtitleW <= kMargin + room;
+        header_.subtitleRight = header_.subtitleShown ? header_.titleRight + kSubtitleGap + subtitleW : 0.0f;
 
         // The envelope, above the controls, when the table has its four rows.
         envelope_ = EnvelopeView::make(ports, { kMargin, kEnvelopeTop, contentW, kEnvelopeH });
@@ -427,7 +455,8 @@ namespace testingplaygroundsynth::ui
         // THEME, in the header's right corner.
         const float right = width_ - kMargin;
         auto theme = std::make_unique<funkgui::ThemeCells>(
-            std::vector<funkgui::Rect>{ { right - kThemeW, 15.0f, 72.0f, 18.0f }, { right - 54.0f, 15.0f, 54.0f, 18.0f } },
+            std::vector<funkgui::Rect>{ { right - kThemeW, 15.0f, 72.0f, 18.0f },
+                                        { right - 54.0f, 15.0f, 54.0f, 18.0f } },
             nullptr, funkgui::Point{}, idFor());
         items_.push_back(std::make_unique<CellsItem>(std::move(theme), [this](char* out, std::size_t n) {
             std::snprintf(out, n, "THEME   %s",
@@ -515,16 +544,17 @@ namespace testingplaygroundsynth::ui
         const funkgui::Theme th = productTheme(hostTheme);
         const float contentW = width_ - 2.0f * kMargin;
 
-        // Header: the name, the kind and version (when they fit before the THEME cells), the rule.
+        // Header: the name, the kind and version (when they fit: header_), the rule.
         {
-            const funkgui::Canvas::Scope s(c, funkgui::tags::none, false);
+            const funkgui::Canvas::Scope s(c, kHeaderTextTag, false);
             c.text(title_.c_str(), kMargin, kTitleTop, funkgui::type::kWordmark, th.ink100);
-            const float tw = c.textWidth(title_.c_str(), funkgui::type::kWordmark);
-            const float subX = kMargin + tw + 14.0f;
-            if (subX + c.textWidth(subtitle_.c_str(), funkgui::type::kMicro) <= width_ - kMargin - kThemeW - 12.0f)
-                c.text(subtitle_.c_str(), subX,
+            if (header_.subtitleShown)
+                c.text(subtitle_.c_str(), header_.titleRight + kSubtitleGap,
                        c.sharedBaselineTop(kTitleTop, funkgui::type::kWordmark, funkgui::type::kMicro),
                        funkgui::type::kMicro, th.ink32);
+        }
+        {
+            const funkgui::Canvas::Scope s(c, funkgui::tags::none, false);
             c.hairlineH(kMargin, kHeaderRuleY, contentW, th.ink16);
             c.hairlineH(kMargin, height_ - kFooterH, contentW, th.ink16);
         }
