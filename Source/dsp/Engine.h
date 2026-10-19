@@ -7,7 +7,8 @@
 //   notes      at their sample offsets within the block: process() renders up to each event, then applies it
 //   policy     VoiceScheduler.h, the legacy one: the same note retriggers its voice, else a silent voice starts it,
 //              else the oldest note's voice is stolen
-//   output     the voices' sum, times GAIN, the same on both channels
+//   output     the voices' sum, times GAIN, the same on both channels; then the FMinus script
+//              (Source/fminus/script.fm, Script.h), as much of it as SCRIPT says: none, by default
 //
 // Nothing steps:
 //   - a retriggered voice keeps its phase, its envelope rises from where it is, and its level moves to the new
@@ -37,6 +38,7 @@
 #include "dsp/Adsr.h"
 #include "dsp/Events.h"
 #include "dsp/Params.h"
+#include "fminus/Script.h"
 #include "dsp/VoiceScheduler.h"
 
 #include "fsdsp/core/Simd.h"
@@ -67,7 +69,7 @@ namespace testingplaygroundsynth
             int   next = -1;             // stolen: the note it starts when its fade ends; else -1
         };
 
-        void prepare(double sampleRate, int maxBlockSize) noexcept;
+        void prepare(double sampleRate, int maxBlockSize);           // allocates the script's buffers
         void reset() noexcept;                                        // every voice off; the next setParams snaps
         void setParams(const ParamValues& values) noexcept;
         void process(float* const* channels, int numChannels, int numSamples, std::span<const Event> events) noexcept;
@@ -77,6 +79,7 @@ namespace testingplaygroundsynth
         int    rampSamples() const noexcept { return rampSamples_; }   // a retrigger's or a steal's ramp
         int    activeVoices() const noexcept;
         VoiceState voice(int v) const noexcept;
+        Script& script() noexcept { return script_; }                  // the FMinus script on the output (Script.h)
 
     private:
         static constexpr std::size_t kN = static_cast<std::size_t>(kVoices);
@@ -119,5 +122,7 @@ namespace testingplaygroundsynth
         std::array<uint32_t, kN> nextInc_{};
         std::array<float, kN> nextLevel_{};
         std::array<bool, kN> nextKeyDown_{};
+
+        Script script_;                               // after GAIN: its share is SCRIPT
     };
 }

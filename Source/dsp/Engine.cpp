@@ -38,9 +38,10 @@ namespace testingplaygroundsynth
         }
     }
 
-    void Engine::prepare(double sampleRate, int /*maxBlockSize*/) noexcept
+    void Engine::prepare(double sampleRate, int maxBlockSize)
     {
         fs_ = sampleRate > 0.0 ? static_cast<float>(sampleRate) : 48000.0f;
+        script_.prepare(fs_, maxBlockSize);
         pitchOffset_ = SineOscillator4::pitchOffset(static_cast<double>(fs_));
         rampSamples_ = std::max(1, static_cast<int>(fsdsp::kStealFadeMs * 0.001f * fs_ + 0.5f));
         smooth_.prepare(fs_, 20.0f);
@@ -76,6 +77,7 @@ namespace testingplaygroundsynth
 
         const simd::f32x4 gain = fsdsp::linFromDb(simd::set1(values[param::gain]));
         smooth_.setTarget(simd::withLane<1>(gain, values[param::sustain] / 100.0f));
+        script_.setAmount(values[param::script] * 0.01f, !primed_);
         if (!primed_)
         {
             smooth_.snap();
@@ -313,5 +315,7 @@ namespace testingplaygroundsynth
             }
         }
         renderTo(len);
+        if (len > 0)
+            script_.process(left, right, len);
     }
 }

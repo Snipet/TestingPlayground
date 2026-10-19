@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <optional>
 #include <utility>
+#include <vector>
 
 namespace testingplaygroundsynth
 {
@@ -25,6 +26,7 @@ namespace testingplaygroundsynth
     {
         std::unique_ptr<::fminus::jit::Jit> jit;
         unsigned polyLanes = 4;
+        std::vector<std::string> nonBlocking;   // the functions a declaration marks [[clang::nonblocking]]
     };
 
     namespace
@@ -87,6 +89,14 @@ namespace testingplaygroundsynth
         auto impl = std::make_unique<Impl>();
         impl->jit = std::move(*jit);
         impl->polyLanes = lowering.polyLanes;
+        for (const ::fminus::ast::Function& function : program->functions)
+        {
+            for (const ::fminus::ast::Attribute& attribute : function.attributes)
+            {
+                if (attribute.name == "clang::nonblocking")
+                    impl->nonBlocking.push_back(function.name);
+            }
+        }
         return std::unique_ptr<FMinusProgram>(new FMinusProgram(std::move(impl)));
     }
 
@@ -105,5 +115,10 @@ namespace testingplaygroundsynth
     unsigned FMinusProgram::polyLanes() const
     {
         return impl_->polyLanes;
+    }
+
+    bool FMinusProgram::nonBlocking(std::string_view name) const
+    {
+        return std::ranges::find(impl_->nonBlocking, name) != impl_->nonBlocking.end();
     }
 } // namespace testingplaygroundsynth
