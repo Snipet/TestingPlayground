@@ -77,6 +77,18 @@ endforeach()
 list(LENGTH _fp_names _fp_n)
 message(STATUS "${PRODUCT_NAME}: ${_fp_n} probes: ${_fp_names}")
 
+# ---- the export lint: each built bundle exports its entry points only (CMakeLists.txt says why) ----------------------
+set(_fp_bundles "")
+foreach(_fmt AU VST3)
+  if(TARGET ${PRODUCT_NAME}_${_fmt})
+    string(TOLOWER ${_fmt} _list)
+    list(APPEND _fp_bundles "$<TARGET_FILE:${PRODUCT_NAME}_${_fmt}>=${CMAKE_BINARY_DIR}/exports-${_list}.txt")
+  endif()
+endforeach()
+add_test(NAME lint.exports COMMAND ${CMAKE_COMMAND} "-DFP_BUNDLES=${_fp_bundles}"
+                                   -P ${PROJECT_SOURCE_DIR}/cmake/LintExports.cmake)
+set_tests_properties(lint.exports PROPERTIES LABELS "lint" TIMEOUT 120)
+
 # ---- the layer lint: Source/dsp and Source/fsdsp are JUCE-free and FunkGui-free ----------------------------------------
 add_test(NAME lint.layers COMMAND ${CMAKE_COMMAND} -DFP_SOURCE_DIR=${PROJECT_SOURCE_DIR}
                                   -P ${PROJECT_SOURCE_DIR}/cmake/LintLayers.cmake)

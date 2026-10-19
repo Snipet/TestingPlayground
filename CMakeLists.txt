@@ -155,6 +155,21 @@ funkgui_configure_product(${PRODUCT_NAME} PRODUCT ${PRODUCT_NAME} OBJC_PREFIX ${
 funkgui_compile_shaders(${PRODUCT_NAME})
 funkgui_add_font(${PRODUCT_NAME})                         # the font's and bgfx's licences into each bundle
 
+# Each bundle exports its entry points and nothing else: the AU its factories, the VST3 its three functions, what JUCE
+# exports. Everything else stays private, LLVM above all (linked statically, with FMinus): exported, its weak symbols
+# would be merged across every plugin in the host's process that exports them too (dyld coalesces weak definitions
+# process-wide), and two plugins would share LLVM's state. The test lint.exports checks the built bundles.
+file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/exports-au.txt CONTENT "_JuceAUFactory\n_${PRODUCT_NAME}AUFactory\n")
+file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/exports-vst3.txt CONTENT "_GetPluginFactory\n_bundleEntry\n_bundleExit\n")
+foreach(_fmt AU VST3)
+  if(TARGET ${PRODUCT_NAME}_${_fmt})
+    string(TOLOWER ${_fmt} _list)
+    set(_list ${CMAKE_BINARY_DIR}/exports-${_list}.txt)
+    target_link_options(${PRODUCT_NAME}_${_fmt} PRIVATE "LINKER:-exported_symbols_list,${_list}")
+    set_property(TARGET ${PRODUCT_NAME}_${_fmt} APPEND PROPERTY LINK_DEPENDS ${_list})
+  endif()
+endforeach()
+
 # codesign refuses a bundle with Finder detritus left by an earlier build; Ninja runs PRE_BUILD as PRE_LINK.
 foreach(_fmt AU VST3)
   if(TARGET ${PRODUCT_NAME}_${_fmt})
