@@ -2,6 +2,7 @@
 #include "plugin/Processor.h"
 
 #include "Product.h"
+#include "ScriptSource.h"
 
 #include "fsdsp/core/Sanitize.h"
 
@@ -182,6 +183,14 @@ namespace testingplayground
             ports_.push_back(portStore_.back().get());
         }
         storeShape(defaultShape());
+
+        // The FMinus script: the plugin's own copy first, which always compiles (fminus.script checks it); then the
+        // file it came from, watched for edits while the plugin runs, where there is one (ScriptWatcher.h).
+        std::string errors;
+        const bool loaded = engine_.script().load(kScriptSource, "script.fm", errors);
+        jassert(loaded);
+        juce::ignoreUnused(loaded);
+        watcher_ = std::make_unique<ScriptWatcher>(engine_.script(), kScriptPath, kScriptSource);
     }
 
     Processor::~Processor() = default;

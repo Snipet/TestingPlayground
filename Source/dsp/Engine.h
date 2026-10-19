@@ -1,6 +1,7 @@
 // Source/dsp/Engine.h: the effect, JUCE-free. An FDN reverb (Fdn.h) with a dry/wet MIX and an output GAIN.
 //
 //   out = GAIN ((1 - MIX) x + MIX dip wet)          per channel; wet is the Fdn's (left: its even lines, right: odd)
+//   then the FMinus script (Source/fminus/script.fm, Script.h), as much of it as SCRIPT says: none, by default
 //
 // MIX and GAIN are smoothed per sample (fsdsp::Smoother4, 20 ms); the Fdn smooths its own parameters and glides its
 // delays. LINES is the one parameter that cannot move smoothly (it changes the network): a change fades the wet path
@@ -20,6 +21,7 @@
 
 #include "dsp/Events.h"
 #include "dsp/Fdn.h"
+#include "fminus/Script.h"
 #include "dsp/LfoShape.h"
 #include "dsp/Params.h"
 
@@ -44,6 +46,7 @@ namespace testingplayground
         double tailSeconds() const noexcept { return tail_.load(std::memory_order_relaxed); }
         float  sampleRate() const noexcept { return fs_; }
         const Fdn& fdn() const noexcept { return fdn_; }               // for the probes
+        Script& script() noexcept { return script_; }                  // the FMinus script on the output (Script.h)
 
     private:
         float fs_ = 48000.0f;
@@ -55,5 +58,6 @@ namespace testingplayground
         bool primed_ = false;                // false until the first setParams after reset(): it snaps
         bool prepared_ = false;              // prepare() has allocated the delay lines
         std::atomic<double> tail_{ 3.0 };
+        Script script_;                      // after the output GAIN: its share is SCRIPT
     };
 }

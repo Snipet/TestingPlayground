@@ -57,10 +57,12 @@ PROBE(dsp, stability)
     double worstGrowth = -1e9, lowLevel = 1e9, highLevel = -1e9;
     std::string worstGrowthAt, lowAt, highAt, nanAt;
     int settings = 0;
-    for (unsigned corner = 0; corner < (1u << tp::param::count); ++corner)
+    // The reverb's 8 parameters; SCRIPT stays at its default (the Engine here runs no script: fminus.script tests it).
+    constexpr std::size_t reverbParams = tp::param::script;
+    for (unsigned corner = 0; corner < (1u << reverbParams); ++corner)
     {
-        tp::ParamValues v{};
-        for (std::size_t i = 0; i < tp::param::count; ++i)
+        tp::ParamValues v = tp::defaultValues();
+        for (std::size_t i = 0; i < reverbParams; ++i)
             v[i] = (corner >> i) & 1u ? tp::kParams[i].max : tp::kParams[i].min;
         const probe::Stereo out = probe::runEffect(noise, fs, 256, v);
         ++settings;
