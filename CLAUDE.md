@@ -22,9 +22,10 @@ new: the legacy code `Tstn`, which it shared with TestingPlayground (the origina
 | `Source/dsp/Adsr.h` | the linear ADSR, four voices per SIMD vector (`Quad::tick`), and the per-voice state (`Bank`) | |
 | `Source/dsp/VoiceScheduler.h` | the voice policy (the legacy one): retrigger the same note, else the first silent voice, else steal the oldest note-on | decides only; the Engine carries it out |
 | `Source/dsp/Engine.h/.cpp` | 16 voices, note events at their sample offsets, the 2 ms retrigger and steal ramps, GAIN and SUSTAIN smoothing | keep its interface: the processor and `plugin.process` use it |
+| `Source/fminus/**` | FMinus, the JIT compiler (`~/audio/libraries/FMinus`, `cmake/Deps.cmake`): `FMinusProgram` compiles FMinus source and gives its functions as C function pointers; library `<name>_fminus`, which `<name>_dsp` links | JUCE-free; FMinus's and LLVM's headers only in its `.cpp` (`lint.layers`), so the rest keeps C++20 |
 | `Source/plugin/**` | the JUCE `AudioProcessor`: APVTS from the table, one FunkGui port per parameter, MIDI to `Event`s, the bypass | reads parameters once per block, calls the Engine; never loses a note-off; the same for both kinds |
 | `Source/editor/**` | the FunkGui `Panel` (built from the table: ENVELOPE, then the dials in a row spread to the width), `EnvelopeView` (the ADSR picture, from the ports), `ParamModel`, `Theme.h`; `gpu/` the EditorHost factory | reaches the processor only through its ports |
-| `Tools/probes/**` | probes on FunkGui's Harness: `dsp/` (Source/dsp only: pitch, level, envelope, voices, render), `plugin/`, `gui/` | spec rows only, no golden files |
+| `Tools/probes/**` | probes on FunkGui's Harness: `dsp/` (Source/dsp only: pitch, level, envelope, voices, render), `plugin/`, `gui/`, `fminus/` (FMinusProgram) | spec rows only, no golden files |
 | `scripts/starters/<kind>/` | the template's effect and instrument starters: `Source/dsp`, `Tools/probes/dsp`, `Tools/probes/plugin/process.cpp`, `CLAUDE.md`, `README-parts.md` (README.md's `<!-- starter:... -->` blocks) | what `plugin.py clone --type/--starter` installs; not this synth |
 
 ## Build and test
@@ -47,12 +48,21 @@ new: the legacy code `Tstn`, which it shared with TestingPlayground (the origina
 - `cmake --workflow --preset release-build`: Release with LTO in `build-release`. `scripts/install.sh` copies the AU
   and VST3 into `~/Library/Audio/Plug-Ins`; only the user (or the lead) runs it, never an agent.
 - The presets build at `-j6` (the machine is shared). No network: JUCE, bgfx and shaderc come from `~/audio/.deps`
-  (read-only, never write there) and FunkGui is cloned from `~/audio/libraries/FunkGui` at the pinned tag.
+  (read-only, never write there) and FunkGui is cloned from `~/audio/libraries/FunkGui` at the pinned tag. FMinus is
+  cloned from `~/audio/libraries/FMinus` at the pinned commit (`FP_FMINUS_SHA`; `-DFETCHCONTENT_SOURCE_DIR_FMINUS=`
+  builds its working tree instead), and its LLVM, Bison and Flex are read from `~/audio/libraries/FMinus/.deps`, the
+  installs FMinus's own builds made: never build them from here (FMinus's "system" LLVM mode, which `Deps.cmake` sets,
+  never does).
 
 ## Layer and real-time rules
 
-- `Source/dsp` and `Source/fsdsp` include nothing from JUCE, FunkGui, `plugin/` or `editor/` (the test
-  `lint.layers` checks; the DSP library has no JUCE include path).
+- `Source/dsp`, `Source/fsdsp` and `Source/fminus` include nothing from JUCE, FunkGui, `plugin/` or `editor/` (the
+  test `lint.layers` checks; the DSP library has no JUCE include path). FMinus's internals and LLVM's headers appear
+  only in `Source/fminus/*.cpp`.
+- FMinus compiles (`FMinusProgram::compile`, `function`) off the audio thread only: they take milliseconds and
+  allocate. A JIT'd function is called on the audio thread like any other, and the `FMinusProgram` outlives every call
+  of it (README.md, "FMinus"). Mark every FMinus function the audio thread calls `[[clang::nonblocking]]`: FMinus then
+  refuses it if it could reach the heap; a program's `calloc` and `free` run from `prepare()` and the end only.
 - `Engine::setParams` and `Engine::process` run on the audio thread: no allocation, no locks, no I/O, no logging.
   Allocate in `prepare()`. Nothing steps: smooth every level parameter (the core's `Smoother4`, `SmoothRamp`,
   `smootherstep`), ramp a reused voice (a retrigger's level, a steal's fade-out before the new note: 2 ms,

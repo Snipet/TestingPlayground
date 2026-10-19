@@ -27,7 +27,8 @@ It is the sine voice synth of the Visage version (tag `legacy-visage`), ported o
 Requirements: macOS 14 or later on Apple silicon, Xcode or its command-line tools, CMake 3.30 or later, Ninja,
 Python 3. JUCE, bgfx and the shader compiler come from the machine cache `~/audio/.deps` (FCompressor's
 `Scripts/deps.sh` fills it), FunkGui from `~/audio/libraries/FunkGui` at the pinned tag (`cmake/Deps.cmake`); a
-machine without them fetches them from GitHub instead.
+machine without them fetches them from GitHub instead. FMinus comes from `~/audio/libraries/FMinus` at the pinned
+commit, with the LLVM, Bison and Flex its own build left in its deps cache: build FMinus once first ("FMinus" below).
 
 ```sh
 cmake --workflow --preset dev-verify     # configure, build everything, run every test (build-dev/)
@@ -59,9 +60,11 @@ Source/dsp/                  the synth, plain C++20 without JUCE (namespace test
   VoiceScheduler.h             which voice plays a note (the legacy policy)
   Engine.h/.cpp                the voices, the note events at their offsets, the ramps, the output gain
 Source/fsdsp/core/           FSynth's DSP core, vendored at the tag in SEED.tsv (scripts/sync-dsp-core.sh)
+Source/fminus/               FMinus, the JIT compiler: FMinusProgram.h compiles FMinus source and gives its functions
 Source/plugin/               the JUCE AudioProcessor: parameters from the table, MIDI to note events, the Engine
 Source/editor/               the FunkGui panel, built from the table; EnvelopeView (the ENVELOPE picture); Theme.h
-Tools/probes/                tests that measure: dsp/ (the synth alone), plugin/ (the processor), gui/ (the panel)
+Tools/probes/                tests that measure: dsp/ (the synth alone), plugin/ (the processor), gui/ (the panel),
+                             fminus/ (FMinusProgram)
 scripts/                     plugin.py, test.sh, sync-dsp-core.sh, install.sh; starters/ (the template's starters)
 CMakeLists.txt, cmake/       the build; every source list is a folder glob, so new files need no CMake edit
 ```
@@ -181,6 +184,7 @@ build-dev/TestingPlaygroundSynth_probes dsp.render
 | `dsp.voices` | sixteen notes on sixteen voices; the seventeenth steals the oldest after a 2 ms fade; a note played again keeps its voice; a note-off releases the right voice; the freed voice is reused; no click on a steal or a retrigger; All Notes Off during a steal's fade leaves nothing sounding |
 | `dsp.render` | a short phrase (a melody over chords, ending with more notes than voices) to `dsp.render.wav`; finite, no clipping, block-size invariant |
 | `plugin.process` | the processor as a host drives it: notes start on their sample offsets inside a block, at their velocity; GAIN written by the host reaches the DSP; a NaN from the host is ignored; the note-off leaves silence and no voice; the output is the Engine's bit for bit. No note is left held by All Notes Off or All Sound Off, a note-on at velocity 0, a note-off in a block of 0 samples, a block of more than 1,024 events, or a note-off while the host bypasses the plugin (whose output is then silent); a block larger than announced reaches the Engine in parts, with the same output; bypass and un-bypass with a note held fade over 20 ms with no step beyond the note's own (where a hard switch steps 17 times as far), then give silence and the never-bypassed output, bit for bit |
+| `fminus.program` | FMinus in this build (`Source/fminus/FMinusProgram.h`): a block kernel and a stateful one compiled and called, bit for bit against C++, the same across block splits; `poly_lanes()`; a delay whose line the program allocates (aligned, silent), run by a `[[clang::nonblocking]]` kernel over two blocks and freed, and a nonblocking kernel that calls `malloc` refused; a program that does not compile and a function that does not exist give FMinus's messages; compiling takes under a second (about 10 ms) |
 | `gui.dump` | the panel headless to `gui.dump.png`, `gui.dump.paper.png` and `gui.dump.envelope.png`; settles, every glyph, a11y; the header clear of the THEME cells with this name and with names of 24, 48 and 64 letters (`gui.dump.longname.png`); a drag writes the parameter; a host's NaN shows the last value; the envelope follows the parameters, keeps its shape through a host's NaN and highlights the segment under the pointer |
 | `plugin.state` | the host's parameters equal the table; the state round-trips; a NaN's host text is a dash; a state value that is not a number loads the default; processBlock and processBlockBypassed before prepareToPlay are silent; processBlock gives finite output |
 <!-- /starter:probes -->
@@ -193,6 +197,64 @@ A probe is one file in `Tools/probes/<layer>/` whose first line registers it (`/
 and whose body uses spec rows (`P.near`, `P.le`, `P.ge`, `P.in`, `P.eq`): each states what must hold, with its
 tolerance. `Tools/probes/common/Audio.h` has the helpers (sines, levels, a DFT bin, frequency, WAV output);
 `Tools/probes/dsp/Rig.h` runs the Engine as the processor does.
+
+## FMinus
+
+[FMinus](https://github.com/Snipet/FMinus) (`~/audio/libraries/FMinus`), the JIT compiler for DSP, is linked in.
+`Source/fminus/FMinusProgram.h` compiles FMinus source (C with vectors: its README has the language) while the plugin
+runs and hands back its functions as C function pointers, so a piece of an algorithm can be written in FMinus and
+compiled while the plugin runs, from a string or from a file it reads. Any file of `Source/dsp/` may use it:
+
+```cpp
+#include "fminus/FMinusProgram.h"
+
+// In the Engine: the program, and the function the audio thread calls.
+std::unique_ptr<FMinusProgram> program_;
+void (*gain_)(const float* in, float* out, int n, float g) = nullptr;
+
+// Engine::prepare(), off the audio thread: compiling takes milliseconds and allocates.
+std::string errors;
+program_ = FMinusProgram::compile(R"(
+    void gain(const float* restrict in, float* restrict out, int n, float g)
+    {
+        for (int i = 0; i < n; ++i)
+            out[i] = in[i] * g;
+    }
+)", errors);
+gain_ = program_ ? program_->function<void(const float*, float*, int, float)>("gain", errors) : nullptr;
+// When gain_ is null, errors says why: FMinus's messages, as clang words them, with line and column.
+
+// Engine::process(), over the voices' sum: one call a block, and the loop is FMinus's.
+if (gain_)
+    gain_(in, out, n, g);
+```
+
+- **Never compile on the audio thread.** Compile in `prepare()`, or on another thread and publish the new pointer
+  through an `std::atomic`; then keep the old `FMinusProgram` until the audio thread has finished the block that may
+  still run its code. The pointers die with their program.
+- **The pointer's type must be the function's C type**: `float` is `float`, `int` is `int`, a pointer a pointer, a
+  `float4` clang's `ext_vector_type(4)`. Nothing checks it.
+- **State lives on the heap, allocated in `prepare()`**: the Engine's own memory, passed by pointer, or the program's.
+  A program allocates with `calloc` (64-byte aligned, zeroed) in a function the Engine calls from `prepare()`, and
+  frees with `free` in one it calls at the end; the function the audio thread calls is marked
+  `[[clang::nonblocking]]`, and FMinus refuses to compile it if it could reach `malloc`, `calloc` or `free`, however
+  far down (FMinus's `examples/delay/`, and its docs/extending.md, recipe 11). Either way, the FMinus function reads its
+  state at the start of a call and writes it back at the end, so the output does not depend on how the blocks are
+  split.
+- **Which FMinus**: the commit `FP_FMINUS_SHA` in `cmake/Deps.cmake`, from `~/audio/libraries/FMinus`. To try a change
+  to FMinus before committing it, configure with `-DFETCHCONTENT_SOURCE_DIR_FMINUS=$HOME/audio/libraries/FMinus`:
+  the working tree is built as it is. LLVM, Bison and Flex are the ones FMinus's own build put in
+  `~/audio/libraries/FMinus/.deps`, read and never rebuilt here: build FMinus once
+  (`cmake --workflow --preset dev` there) before configuring this plugin. A Release build here takes LLVM without
+  assertions when FMinus's release preset has made it, and the dev flavor otherwise.
+- **The cost**: once the plugin calls FMinus, LLVM is linked into each binary, about 100 MB more (until then the
+  linker leaves it out). A DAW's hardened runtime must allow the JIT's executable memory
+  (`com.apple.security.cs.allow-jit`); the Standalone and the probes always do. FMinus's README, "Notes for running
+  inside a plugin", has the rest.
+
+The probe `fminus.program` checks it in this build: a block kernel and a stateful one, bit for bit against C++ and
+across block splits, `poly_lanes()`, a delay line on the heap and a nonblocking kernel refused for calling `malloc`,
+the errors, and the compile time (about 10 ms).
 
 ## Make a new plugin
 

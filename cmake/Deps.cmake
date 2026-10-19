@@ -7,6 +7,9 @@
 #                         bgfx.cmake commit, else built from bgfx.cmake (slow: about 2,000 CPU-seconds)
 #   FunkGui v0.16.0       FetchContent at the tag from FP_FUNKGUI_REPO: this machine's local repository
 #                         (~/audio/libraries/FunkGui) when it exists, else GitHub; the tag's commit is asserted
+#   FMinus                FetchContent at the pinned commit from FP_FMINUS_REPO (~/audio/libraries/FMinus, else
+#                         GitHub): the JIT compiler, its library and runtime only. Its LLVM, Bison and Flex are the
+#                         ones FMinus's own builds put in its deps cache (FP_FMINUS_DEPS_DIR), read, never built here
 #
 # ~/audio/.deps is a read-only cache written by FCompressor's Scripts/deps.sh: this build reads it and never writes it.
 # FETCHCONTENT_SOURCE_DIR_<NAME> bypasses GIT_TAG, which is why every dependency's version and commit are checked after
@@ -29,6 +32,8 @@ set(FP_BGFX_SUB_SHAS     bgfx=c7684e20da1e385edc439ef39cdb42b8c661016f
 set(FP_FUNKGUI_TAG       v0.16.0)
 set(FP_FUNKGUI_SHA       e1982bd5e393aa7191ef2a32478c078441c456f3)   # the tag's commit (rev-parse v0.16.0^{commit})
 set(FP_FUNKGUI_VERSION   0.16.0)
+set(FP_FMINUS_SHA        aeff65e6487edc4362edeb862e97d302cd85669c)   # FMinus has no tags: a commit of its main
+set(FP_FMINUS_LLVM       23.1.3)                                     # the LLVM that commit pins (cmake/FMinusPins.cmake)
 
 # ---- helpers ---------------------------------------------------------------------------------------------------------
 # fp_git(<out> <dir> <args>...): read-only git in <dir>; <out> = stripped stdout, <out>_RESULT = exit code.
@@ -175,6 +180,93 @@ foreach(_t FunkGui::harness FunkGui::core FunkGui::gpu)
 endforeach()
 string(APPEND _fp_deps_txt "FunkGui\t${FP_FUNKGUI_TAG}\t${FP_FUNKGUI_SHA}\t${FP_FUNKGUI_REPO}\n")
 
+# ---- FMinus ----------------------------------------------------------------------------------------------------------
+# A subproject (SYSTEM: its headers are system headers to our -Werror sources; EXCLUDE_FROM_ALL: only what
+# <name>_fminus links is built), without its tests, tools and examples, which it leaves out when it is not the top
+# level. -DFETCHCONTENT_SOURCE_DIR_FMINUS=$HOME/audio/libraries/FMinus builds the working tree as it is instead, to try
+# a change to FMinus before it is committed; the commit is not checked then.
+#
+# LLVM comes in FMinus's "system" mode, from the install FMinus's own build made in its deps cache: a Release build of
+# this plugin takes the flavor without assertions when there is one (FMinus's release preset makes it), any other the
+# one with them (its dev preset's), and FP_FMINUS_LLVM_DIR names one by hand. FMinus's default "cache" mode would build
+# LLVM here (half an hour) whenever this tree's settings differ from the ones it was built with, as
+# CMAKE_OSX_ARCHITECTURES does.
+set(FP_FMINUS_DEPS_DIR "$ENV{HOME}/audio/libraries/FMinus/.deps" CACHE PATH
+    "FMinus's deps cache, where its LLVM, Bison and Flex are installed (read only here)")
+set(FP_FMINUS_LLVM_DIR "" CACHE PATH "The LLVM install FMinus uses (empty: chosen from FP_FMINUS_DEPS_DIR)")
+set(_fp_llvm "${FP_FMINUS_LLVM_DIR}")
+if(NOT _fp_llvm)
+  file(GLOB _fp_llvm_plain LIST_DIRECTORIES true "${FP_FMINUS_DEPS_DIR}/install/llvm-${FP_FMINUS_LLVM}-Release-[0-9a-f]*")
+  file(GLOB _fp_llvm_assert LIST_DIRECTORIES true "${FP_FMINUS_DEPS_DIR}/install/llvm-${FP_FMINUS_LLVM}-Release-assert-*")
+  list(FILTER _fp_llvm_plain EXCLUDE REGEX "(-assert-|\\.lock$)")
+  list(FILTER _fp_llvm_assert EXCLUDE REGEX "\\.lock$")
+  if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    set(_fp_llvm_order ${_fp_llvm_plain} ${_fp_llvm_assert})
+  else()
+    set(_fp_llvm_order ${_fp_llvm_assert} ${_fp_llvm_plain})
+  endif()
+  foreach(_d IN LISTS _fp_llvm_order)
+    if(EXISTS "${_d}/fminus-flavor.cmake")                  # FMinus writes it once an install is whole
+      set(_fp_llvm "${_d}")
+      break()
+    endif()
+  endforeach()
+endif()
+if(NOT EXISTS "${_fp_llvm}/lib/cmake/llvm/LLVMConfig.cmake")
+  message(FATAL_ERROR "${PROJECT_NAME}: no LLVM ${FP_FMINUS_LLVM} for FMinus in ${FP_FMINUS_DEPS_DIR}/install. Build "
+                      "FMinus once (cd ~/audio/libraries/FMinus && cmake --workflow --preset dev), or set "
+                      "FP_FMINUS_LLVM_DIR to an LLVM ${FP_FMINUS_LLVM} install.")
+endif()
+foreach(_tool bison-3.8.2 flex-2.6.4)
+  if(NOT EXISTS "${FP_FMINUS_DEPS_DIR}/install/${_tool}/.fminus-installed")
+    message(FATAL_ERROR "${PROJECT_NAME}: FMinus's ${_tool} is not in ${FP_FMINUS_DEPS_DIR}/install: build FMinus once "
+                        "(cd ~/audio/libraries/FMinus && cmake --workflow --preset dev)")
+  endif()
+endforeach()
+
+if(EXISTS "$ENV{HOME}/audio/libraries/FMinus/.git")
+  set(_fp_fminus_repo "$ENV{HOME}/audio/libraries/FMinus")
+else()
+  set(_fp_fminus_repo "https://github.com/Snipet/FMinus.git")
+endif()
+set(FP_FMINUS_REPO "${_fp_fminus_repo}" CACHE STRING
+    "FMinus's repository: the local one when this machine has it, else GitHub (the commit is FP_FMINUS_SHA)")
+FetchContent_Declare(FMinus GIT_REPOSITORY ${FP_FMINUS_REPO} GIT_TAG ${FP_FMINUS_SHA} GIT_SHALLOW FALSE
+                            SYSTEM EXCLUDE_FROM_ALL)
+
+# Its options, as normal variables (CMP0077, and CMP0126 for the cache variables it declares).
+set(FMINUS_LLVM_MODE system)
+set(LLVM_DIR "${_fp_llvm}/lib/cmake/llvm")
+set(FMINUS_DEPS_DIR "${FP_FMINUS_DEPS_DIR}")
+set(FMINUS_PARSER_TOOLS_MODE fetch)                       # Bison and Flex from FMINUS_DEPS_DIR, installed
+set(FMINUS_BUILD_TESTS OFF)
+set(FMINUS_BUILD_TOOLS OFF)
+set(FMINUS_BUILD_EXAMPLES OFF)
+set(FMINUS_WERROR OFF)                                    # third-party code never gets our -Werror
+FetchContent_MakeAvailable(FMinus)
+FetchContent_GetProperties(FMinus SOURCE_DIR _fp_fminus_dir)
+if(FETCHCONTENT_SOURCE_DIR_FMINUS)
+  fp_git(_fp_fminus_head "${_fp_fminus_dir}" rev-parse -q --verify "HEAD^{commit}")
+  message(STATUS "${PROJECT_NAME}: FMinus from ${_fp_fminus_dir} as it is (HEAD ${_fp_fminus_head}), not the pin")
+  set(_fp_fminus_commit "${_fp_fminus_head}+worktree")
+else()
+  fp_assert_commit("${_fp_fminus_dir}" ${FP_FMINUS_SHA} FMinus)
+  set(_fp_fminus_commit "${FP_FMINUS_SHA}")
+endif()
+file(STRINGS "${_fp_fminus_dir}/cmake/FMinusPins.cmake" _fp_fminus_llvm_pin REGEX "^set\\(FMINUS_LLVM_VERSION ")
+string(REPLACE "." "\\." _fp_llvm_re "${FP_FMINUS_LLVM}")
+if(NOT _fp_fminus_llvm_pin MATCHES "[ \"]${_fp_llvm_re}\"?\\)")
+  message(FATAL_ERROR "${PROJECT_NAME}: FMinus at ${_fp_fminus_dir} pins '${_fp_fminus_llvm_pin}', but FP_FMINUS_LLVM "
+                      "is ${FP_FMINUS_LLVM}: move them together")
+endif()
+foreach(_t FMinus::Internal FMinus::Runtime)
+  if(NOT TARGET ${_t})
+    message(FATAL_ERROR "${PROJECT_NAME}: FMinus at ${_fp_fminus_dir} defines no ${_t}")
+  endif()
+endforeach()
+string(APPEND _fp_deps_txt "FMinus\t-\t${_fp_fminus_commit}\t${_fp_fminus_dir}\n")
+string(APPEND _fp_deps_txt "FMinus/LLVM\t${FP_FMINUS_LLVM}\t-\t${_fp_llvm}\n")
+
 file(WRITE "${CMAKE_BINARY_DIR}/deps.txt" "${_fp_deps_txt}")
 message(STATUS "${PROJECT_NAME}: JUCE ${FP_JUCE_TAG}, bgfx.cmake ${FP_BGFX_TAG} (shaderc: ${_fp_shaderc}), "
-               "FunkGui ${FP_FUNKGUI_TAG} from ${FP_FUNKGUI_REPO}")
+               "FunkGui ${FP_FUNKGUI_TAG} from ${FP_FUNKGUI_REPO}, FMinus ${_fp_fminus_commit} on ${_fp_llvm}")
