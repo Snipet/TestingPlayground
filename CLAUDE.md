@@ -22,10 +22,10 @@ new: the legacy code `Tstn`, which it shared with TestingPlayground (the origina
 | `Source/dsp/Adsr.h` | the linear ADSR, four voices per SIMD vector (`Quad::tick`), and the per-voice state (`Bank`) | |
 | `Source/dsp/VoiceScheduler.h` | the voice policy (the legacy one): retrigger the same note, else the first silent voice, else steal the oldest note-on | decides only; the Engine carries it out |
 | `Source/dsp/Engine.h/.cpp` | 16 voices, note events at their sample offsets, the 2 ms retrigger and steal ramps, GAIN and SUSTAIN smoothing | keep its interface: the processor and `plugin.process` use it |
-| `Source/fminus/**` | FMinus, the JIT compiler (`~/audio/libraries/FMinus`, `cmake/Deps.cmake`): `FMinusProgram` compiles FMinus source and gives its functions as C function pointers; library `<name>_fminus`, which `<name>_dsp` links | JUCE-free; FMinus's and LLVM's headers only in its `.cpp` (`lint.layers`), so the rest keeps C++20 |
+| `Source/fminus/**` | FMinus, the JIT compiler (`~/audio/libraries/FMinus`, `cmake/Deps.cmake`): `FMinusProgram` compiles FMinus source and gives its functions as C function pointers; `Script` runs `script.fm` on the Engine's output, as much as SCRIPT says, and `ScriptWatcher` reloads it when the file changes (live coding); library `<name>_fminus`, which `<name>_dsp` links | JUCE-free; FMinus's and LLVM's headers only in its `.cpp` (`lint.layers`), so the rest keeps C++20 |
 | `Source/plugin/**` | the JUCE `AudioProcessor`: APVTS from the table, one FunkGui port per parameter, MIDI to `Event`s, the bypass | reads parameters once per block, calls the Engine; never loses a note-off; the same for both kinds |
 | `Source/editor/**` | the FunkGui `Panel` (built from the table: ENVELOPE, then the dials in a row spread to the width), `EnvelopeView` (the ADSR picture, from the ports), `ParamModel`, `Theme.h`; `gpu/` the EditorHost factory | reaches the processor only through its ports |
-| `Tools/probes/**` | probes on FunkGui's Harness: `dsp/` (Source/dsp only: pitch, level, envelope, voices, render), `plugin/`, `gui/`, `fminus/` (FMinusProgram) | spec rows only, no golden files |
+| `Tools/probes/**` | probes on FunkGui's Harness: `dsp/` (Source/dsp only: pitch, level, envelope, voices, render), `plugin/`, `gui/`, `fminus/` (FMinusProgram, the script) | spec rows only, no golden files |
 | `scripts/starters/<kind>/` | the template's effect and instrument starters: `Source/dsp`, `Tools/probes/dsp`, `Tools/probes/plugin/process.cpp`, `CLAUDE.md`, `README-parts.md` (README.md's `<!-- starter:... -->` blocks) | what `plugin.py clone --type/--starter` installs; not this synth |
 
 ## Build and test
@@ -59,10 +59,17 @@ new: the legacy code `Tstn`, which it shared with TestingPlayground (the origina
 - `Source/dsp`, `Source/fsdsp` and `Source/fminus` include nothing from JUCE, FunkGui, `plugin/` or `editor/` (the
   test `lint.layers` checks; the DSP library has no JUCE include path). FMinus's internals and LLVM's headers appear
   only in `Source/fminus/*.cpp`.
+- Each AU and VST3 exports JUCE's entry points and nothing else (CMakeLists.txt's exported-symbols lists; the test
+  `lint.exports` checks the built bundles). A library linked in must not export its symbols into the host's process:
+  LLVM's weak ones, exported, would be merged with every other plugin's that exports them (macOS coalesces weak
+  definitions process-wide), and the plugins would share LLVM's state.
 - FMinus compiles (`FMinusProgram::compile`, `function`) off the audio thread only: they take milliseconds and
   allocate. A JIT'd function is called on the audio thread like any other, and the `FMinusProgram` outlives every call
   of it (README.md, "FMinus"). Mark every FMinus function the audio thread calls `[[clang::nonblocking]]`: FMinus then
   refuses it if it could reach the heap; a program's `calloc` and `free` run from `prepare()` and the end only.
+- The script (`Source/fminus/script.fm`) is the user's to edit: it runs only where SCRIPT is above 0, the default being
+  0, so every probe but `fminus.script` hears the Engine without it. A script's `process` is `[[clang::nonblocking]]`
+  (`Script::load` refuses it otherwise), and SCRIPT at 0 leaves the sound as it was.
 - `Engine::setParams` and `Engine::process` run on the audio thread: no allocation, no locks, no I/O, no logging.
   Allocate in `prepare()`. Nothing steps: smooth every level parameter (the core's `Smoother4`, `SmoothRamp`,
   `smootherstep`), ramp a reused voice (a retrigger's level, a steal's fade-out before the new note: 2 ms,
