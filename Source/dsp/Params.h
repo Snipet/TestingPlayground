@@ -2,7 +2,9 @@
 //
 // GAIN, ATTACK and RELEASE are the legacy synth's (tag legacy-visage): the same IDs, ranges, defaults and skew (JUCE's
 // 0.5, which `centre` states as the value at the middle of the travel). DECAY and SUSTAIN complete its envelope to an
-// ADSR; at their defaults (SUSTAIN 100 %) a note sounds as the legacy synth's did.
+// ADSR; at their defaults (SUSTAIN 100 %) a note sounds as the legacy synth's did. SCRIPT is new: how much of the FMinus
+// script's output is heard (Source/fminus/script.fm, README.md, "FMinus"), 0 to 100 %; at 0, the default, the script
+// does not run.
 //
 // Adding a parameter: add an index before `count`, add its row at the same position, then read
 // values[param::<name>] in Engine::setParams. The processor, the host, the state and the panel follow from the table
@@ -25,6 +27,7 @@ namespace testingplaygroundsynth
             decay,
             sustain,
             release,
+            script,
             count
         };
     }
@@ -40,6 +43,8 @@ namespace testingplaygroundsynth
           .min = 0.0f, .max = 100.0f, .def = 100.0f, .centre = 50.0f, .control = Control::dial },
         { .id = "release", .name = "Release", .label = "RELEASE", .unit = Unit::ms,
           .min = 1.0f, .max = 1000.0f, .def = 50.0f, .centre = 250.75f, .control = Control::dial },
+        { .id = "script", .name = "Script", .label = "SCRIPT", .unit = Unit::percent,
+          .min = 0.0f, .max = 100.0f, .def = 0.0f, .centre = 50.0f, .control = Control::dial },
     } };
 
     // Plain values in table order: what the processor hands Engine::setParams once per block. A choice's value is its

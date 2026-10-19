@@ -1,0 +1,41 @@
+// Source/fminus/script.fm: TestingPlaygroundSynth's FMinus script, a wavefolder on the synth's output, run on the audio
+// thread (README.md, "FMinus"). Edit it while the plugin runs: save, and half a second later the plugin plays it,
+// faded over from the old one; script.fm.log, beside this file, says whether it compiled. The plugin keeps a copy of it
+// as it was when it was built, for when this file is not there.
+//
+// SCRIPT (0 to 100 %) arrives as `amount`, per sample: at 0 the sound is as it was. Higher, the sine is driven into a
+// sine of its own, so it folds over itself, once at a low setting and four times at 100 %: the brighter and buzzier,
+// the further SCRIPT goes. A low-pass at 9 kHz after the fold softens the aliasing the folds make on high notes.
+
+// The state: the low-pass's coefficient, then its state on each channel.
+float* create(float rate)
+{
+    float* state = calloc(3, sizeof(float));
+    state[0] = 1.0f - expf(-6.28318531f * 9000.0f / rate);
+    return state;
+}
+
+// n samples of both channels, in place.
+void process(float* restrict state, float* restrict left, float* restrict right, const float* restrict amount,
+             int n) [[clang::nonblocking]]
+{
+    const float k = state[0];
+    float l = state[1];
+    float r = state[2];
+    for (int i = 0; i < n; ++i)
+    {
+        const float a = amount[i];
+        const float drive = 1.57079633f * (1.0f + 7.0f * a);   // pi / 2 at 0: one gentle fold; 4 pi at 100 %
+        l += k * (sinf(drive * left[i]) - l);
+        r += k * (sinf(drive * right[i]) - r);
+        left[i] += a * (l - left[i]);
+        right[i] += a * (r - right[i]);
+    }
+    state[1] = l;
+    state[2] = r;
+}
+
+void destroy(float* state)
+{
+    free(state);
+}

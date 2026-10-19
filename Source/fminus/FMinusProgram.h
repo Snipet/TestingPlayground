@@ -62,6 +62,10 @@ namespace testingplaygroundsynth
         // How many lanes a poly float has here: this machine's vector width in floats (4 with NEON).
         unsigned polyLanes() const;
 
+        // Whether a declaration of function `name` is marked [[clang::nonblocking]]: then FMinus has checked that it
+        // cannot reach malloc, calloc, free or an unmarked external function, so it may run on the audio thread.
+        bool nonBlocking(std::string_view name) const;
+
     private:
         struct Impl;
         explicit FMinusProgram(std::unique_ptr<Impl> impl);

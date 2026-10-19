@@ -60,7 +60,8 @@ Source/dsp/                  the synth, plain C++20 without JUCE (namespace test
   VoiceScheduler.h             which voice plays a note (the legacy policy)
   Engine.h/.cpp                the voices, the note events at their offsets, the ramps, the output gain
 Source/fsdsp/core/           FSynth's DSP core, vendored at the tag in SEED.tsv (scripts/sync-dsp-core.sh)
-Source/fminus/               FMinus, the JIT compiler: FMinusProgram.h compiles FMinus source and gives its functions
+Source/fminus/               FMinus, the JIT compiler: FMinusProgram.h compiles FMinus source and gives its functions;
+                             Script.h runs script.fm on the output, ScriptWatcher.h reloads it when the file changes
 Source/plugin/               the JUCE AudioProcessor: parameters from the table, MIDI to note events, the Engine
 Source/editor/               the FunkGui panel, built from the table; EnvelopeView (the ENVELOPE picture); Theme.h
 Tools/probes/                tests that measure: dsp/ (the synth alone), plugin/ (the processor), gui/ (the panel),
@@ -184,6 +185,7 @@ build-dev/TestingPlaygroundSynth_probes dsp.render
 | `dsp.voices` | sixteen notes on sixteen voices; the seventeenth steals the oldest after a 2 ms fade; a note played again keeps its voice; a note-off releases the right voice; the freed voice is reused; no click on a steal or a retrigger; All Notes Off during a steal's fade leaves nothing sounding |
 | `dsp.render` | a short phrase (a melody over chords, ending with more notes than voices) to `dsp.render.wav`; finite, no clipping, block-size invariant |
 | `plugin.process` | the processor as a host drives it: notes start on their sample offsets inside a block, at their velocity; GAIN written by the host reaches the DSP; a NaN from the host is ignored; the note-off leaves silence and no voice; the output is the Engine's bit for bit. No note is left held by All Notes Off or All Sound Off, a note-on at velocity 0, a note-off in a block of 0 samples, a block of more than 1,024 events, or a note-off while the host bypasses the plugin (whose output is then silent); a block larger than announced reaches the Engine in parts, with the same output; bypass and un-bypass with a note held fade over 20 ms with no step beyond the note's own (where a hard switch steps 17 times as far), then give silence and the never-bypassed output, bit for bit |
+| `fminus.script` | the script on the audio thread (`Source/fminus/script.fm`): it loads; SCRIPT 0 leaves the output as it was, bit for bit; at 100 % it is finite and the same in blocks of 64 and 333; a swap settles within 50 ms with no step; a broken, a blocking and an incomplete script are refused while the running one plays on; an edited file is reloaded and its outcome logged |
 | `fminus.program` | FMinus in this build (`Source/fminus/FMinusProgram.h`): a block kernel and a stateful one compiled and called, bit for bit against C++, the same across block splits; `poly_lanes()`; a delay whose line the program allocates (aligned, silent), run by a `[[clang::nonblocking]]` kernel over two blocks and freed, and a nonblocking kernel that calls `malloc` refused; a program that does not compile and a function that does not exist give FMinus's messages; compiling takes under a second (about 10 ms) |
 | `gui.dump` | the panel headless to `gui.dump.png`, `gui.dump.paper.png` and `gui.dump.envelope.png`; settles, every glyph, a11y; the header clear of the THEME cells with this name and with names of 24, 48 and 64 letters (`gui.dump.longname.png`); a drag writes the parameter; a host's NaN shows the last value; the envelope follows the parameters, keeps its shape through a host's NaN and highlights the segment under the pointer |
 | `plugin.state` | the host's parameters equal the table; the state round-trips; a NaN's host text is a dash; a state value that is not a number loads the default; processBlock and processBlockBypassed before prepareToPlay are silent; processBlock gives finite output |
@@ -247,10 +249,46 @@ if (gain_)
   `~/audio/libraries/FMinus/.deps`, read and never rebuilt here: build FMinus once
   (`cmake --workflow --preset dev` there) before configuring this plugin. A Release build here takes LLVM without
   assertions when FMinus's release preset has made it, and the dev flavor otherwise.
-- **The cost**: once the plugin calls FMinus, LLVM is linked into each binary, about 100 MB more (until then the
-  linker leaves it out). A DAW's hardened runtime must allow the JIT's executable memory
-  (`com.apple.security.cs.allow-jit`); the Standalone and the probes always do. FMinus's README, "Notes for running
-  inside a plugin", has the rest.
+- **The cost**: LLVM is linked into each binary, about 80 MB more in a Release build, and stays private to it: each
+  bundle exports only its entry points (`lint.exports` checks), so two plugins with LLVM in one host do not share it.
+  A DAW's hardened runtime must allow the JIT's executable memory (`com.apple.security.cs.allow-jit` or
+  `allow-unsigned-executable-memory`; Ableton Live 12 has the second); the Standalone and the probes always do.
+  FMinus's README, "Notes for running inside a plugin", has the rest.
+
+### The script, live
+
+The Engine runs an FMinus script on its output, after the voices' sum and GAIN: `Source/fminus/script.fm`, a wavefolder
+(the sines fold over themselves, brighter the further SCRIPT goes), followed by a 9 kHz low-pass that tames the folds'
+aliasing. The SCRIPT dial says how much of it you hear: at 0 %, the default, the script does not run and the synth
+sounds as it always did; at 100 % a sine is folded over four times.
+
+Edit `script.fm` while the plugin runs, in the Standalone or in a DAW, and save: half a second later every instance
+compiles the new script and fades over to it, 20 ms out and 20 ms in. `script.fm.log`, beside it, says how it went:
+`loaded, compiled in 9 ms`, or FMinus's errors with their lines and columns, while the old script plays on. The plugin
+also keeps the script as it was when it was built (`build-*/generated/ScriptSource.h`) and starts with that, so an
+installed plugin plays its script where the file is not.
+
+A script is three functions (`Source/fminus/Script.h` has the details):
+
+```c
+float* create(float rate);      // off the audio thread: the script's state (calloc), or null
+void process(float* restrict state, float* restrict left, float* restrict right, const float* restrict amount,
+             int n) [[clang::nonblocking]];    // the audio thread: a block of both channels, in place
+void destroy(float* state);     // off the audio thread: frees the state
+```
+
+`amount` is SCRIPT, per sample, 0 to 1, smoothed. Write the script so that 0 leaves the sound as it is: the Engine
+stops calling it there, and a script that changed the sound at 0 would step when it stopped. `process` must be marked
+`[[clang::nonblocking]]`: FMinus then refuses to compile it if it could reach `malloc`, `calloc` or `free`, and the
+plugin refuses a `process` without the mark. The state is the script's own, from `create`: read it at the start of a
+call and write it back at the end, and the output does not depend on the host's block size.
+
+The probe `fminus.script` checks the script in this build, whatever the file holds when you build: it loads; at SCRIPT 0
+the output is the synth's alone, bit for bit; at 100 % it is finite and the same in blocks of 64 and 333; a swap settles
+within 50 ms without a step; a broken script, one whose `process` is not nonblocking, and one without `destroy` are
+refused while the running one plays on; and an edited file is picked up and its outcome logged. It also writes what the
+script does to `build-dev/probe-out/fminus.script.wav` (a second at SCRIPT 100 %), beside `fminus.script.dry.wav` (the
+same second without it): `scripts/test.sh -R fminus.script` renders them, to listen to without a DAW.
 
 The probe `fminus.program` checks it in this build: a block kernel and a stateful one, bit for bit against C++ and
 across block splits, `poly_lanes()`, a delay line on the heap and a nonblocking kernel refused for calling `malloc`,
