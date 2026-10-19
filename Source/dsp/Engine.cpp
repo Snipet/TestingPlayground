@@ -10,10 +10,11 @@ namespace testingplayground
 {
     namespace simd = fsdsp::simd;
 
-    void Engine::prepare(double sampleRate, int /*maxBlockSize*/)
+    void Engine::prepare(double sampleRate, int maxBlockSize)
     {
         fs_ = sampleRate > 0.0 ? static_cast<float>(sampleRate) : 48000.0f;
         fdn_.prepare(fs_);
+        script_.prepare(fs_, maxBlockSize);
         smooth_.prepare(fs_, fsdsp::kFadeMs);
         dip_.prepare(fs_, fsdsp::kFadeMs);
         prepared_ = true;
@@ -42,6 +43,7 @@ namespace testingplayground
         target = simd::withLane<0>(target, std::clamp(values[param::mix] * 0.01f, 0.0f, 1.0f));
         target = simd::withLane<1>(target, simd::lane<0>(fsdsp::linFromDb(simd::set1(values[param::gain]))));
         smooth_.setTarget(target);
+        script_.setAmount(values[param::script] * 0.01f, !primed_);
 
         if (!primed_)
         {
@@ -116,5 +118,6 @@ namespace testingplayground
                 left[i] = gain * (dry * xl + wet * ((wl + wr) * 0.707106781f));
             }
         }
+        script_.process(left, right, numSamples);
     }
 }

@@ -52,6 +52,7 @@
 #include "dsp/LfoShape.h"
 #include "dsp/Params.h"
 
+#include "fminus/ScriptWatcher.h"
 #include "fsdsp/core/Ramp.h"
 #include "fsdsp/core/Seqlock.h"
 
@@ -153,6 +154,9 @@ namespace testingplayground
         std::atomic<float> sampleRate_{ 48000.0f };
 
         Engine engine_;
+        // The FMinus script: the plugin's copy loaded at construction, then the file, live, whenever it changes.
+        // Declared after engine_, so it stops before the Script it loads into goes.
+        std::unique_ptr<ScriptWatcher> watcher_;
         ParamValues values_ = defaultValues();
         std::array<Event, kMaxEventsPerBlock> events_{};
         // prepareToPlay and the audio callbacks never overlap (JUCE's contract), so these need no atomics.

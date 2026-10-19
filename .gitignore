@@ -7,3 +7,5 @@ build-*/
 *.user
 __pycache__/
 .claude/settings.local.json
+# What the plugin writes beside its FMinus script when it loads it (ScriptWatcher.h).
+*.fm.log

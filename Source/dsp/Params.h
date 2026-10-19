@@ -14,6 +14,8 @@
 //                     lines' modulation: DEPTH is the peak change of a line's delay, 0 to 2 ms
 //   mix               new: the reverb needs a dry/wet balance (the legacy processor ran only a gain)
 //   gain              the legacy processor's one parameter: -24 to +24 dB, default 0, ID "gain"
+//   script            new: how much of the FMinus script's output is heard (Source/fminus/script.fm, README.md,
+//                     "FMinus"), 0 to 100 %; at 0 (the default) the script does not run
 // The ranges of size, decay, hfdecay, mix and depth are this port's: the legacy gave none.
 #pragma once
 
@@ -36,6 +38,7 @@ namespace testingplayground
             lines,
             modrate,
             moddepth,
+            script,
             count
         };
     }
@@ -60,6 +63,8 @@ namespace testingplayground
           .min = 0.01f, .max = 20.0f, .def = 0.5f, .centre = 1.0f, .control = Control::dial },
         { .id = "moddepth", .name = "Mod Depth", .label = "DEPTH", .unit = Unit::ms,
           .min = 0.0f, .max = 2.0f, .def = 0.25f, .centre = 0.5f, .control = Control::dial },
+        { .id = "script", .name = "Script", .label = "SCRIPT", .unit = Unit::percent,
+          .min = 0.0f, .max = 100.0f, .def = 0.0f, .centre = 50.0f, .control = Control::dial },
     } };
 
     // Plain values in table order: what the processor hands Engine::setParams once per block.
