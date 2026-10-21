@@ -1,7 +1,7 @@
 // Source/fminus/Script.cpp: see Script.h.
 #include "fminus/Script.h"
 
-#include "fminus/FMinusProgram.h"
+#include "fminus/FMinus.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -18,7 +18,7 @@ namespace testingplayground
         using Process = void(float*, float*, float*, const float*, int);
         using Destroy = void(float*);
 
-        std::unique_ptr<FMinusProgram> program;
+        std::unique_ptr<fminus::Program> program;
         Create* create = nullptr;
         Process* process = nullptr;
         Destroy* destroy = nullptr;
@@ -41,10 +41,10 @@ namespace testingplayground
 
     bool Script::load(std::string_view source, std::string_view fileName, std::string& errors)
     {
-        FMinusProgram::Options options;
+        fminus::Program::Options options;
         options.fileName = std::string(fileName);
         auto kernel = std::make_unique<Kernel>();
-        kernel->program = FMinusProgram::compile(source, errors, options);
+        kernel->program = fminus::Program::compile(source, errors, options);
         if (!kernel->program)
             return false;
         // What each function must be, as the error says it.
