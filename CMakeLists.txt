@@ -8,7 +8,7 @@
 #   cmake/Product.cmake      the identity: name, kind (effect | instrument), codes, bundle id, namespace
 #   Source/fsdsp/core/**     the vendored DSP core (SEED.tsv; scripts/sync-dsp-core.sh), JUCE-free
 #   Source/dsp/**            this plugin's algorithms, JUCE-free                    -> <name>_dsp (static library)
-#   Source/fminus/*.cpp      FMinus, the JIT compiler (FMinusProgram.h), JUCE-free  -> <name>_fminus, which _dsp links
+#   Source/fminus/*.cpp      the script (Script.h), on FMinus::FMinus, JUCE-free    -> <name>_fminus, which _dsp links
 #   Source/fminus/script.fm  the FMinus script the Engine runs (Script.h)           -> generated/ScriptSource.h
 #   Source/plugin/*.cpp      the JUCE AudioProcessor                                -> the plugin and the probes
 #   Source/editor/**/*.cpp   the FunkGui Panel, minus gpu/                          -> the plugin and the probes
@@ -119,13 +119,13 @@ file(GLOB FP_EDITOR_GPU_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/editor/gpu/*
 
 file(GLOB FP_FMINUS_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/fminus/*.cpp)
 
-# ---- FMinus: the JIT compiler behind Source/fminus/FMinusProgram.h, JUCE-free -----------------------------------------
-# FMinus and LLVM stay inside this library (PRIVATE): FMinusProgram.h includes neither, so the rest of the plugin keeps
-# C++20 and its own flags, while FMinusProgram.cpp gets FMinus's C++23 and LLVM's definitions.
+# ---- FMinus: the JIT compiler, through its public API (fminus/FMinus.h), and the script, JUCE-free -------------------
+# FMinus::FMinus is FMinus's public API: fminus/FMinus.h needs C++17 and has no LLVM in it, so every file of the plugin
+# may include it with the plugin's own C++20 and flags. LLVM is linked into the plugin, but its headers never reach it.
 add_library(${PRODUCT_NAME}_fminus STATIC ${FP_FMINUS_SOURCES})
 set_target_properties(${PRODUCT_NAME}_fminus PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 target_include_directories(${PRODUCT_NAME}_fminus PUBLIC ${FP_SOURCE_ROOT})
-target_link_libraries(${PRODUCT_NAME}_fminus PUBLIC fp_flags PRIVATE fp_warnings fp_lto FMinus::Internal)
+target_link_libraries(${PRODUCT_NAME}_fminus PUBLIC fp_flags FMinus::FMinus PRIVATE fp_warnings fp_lto)
 
 # ---- the DSP library: Source/fsdsp + Source/dsp, JUCE-free (no JUCE include path reaches it) -------------------------
 add_library(${PRODUCT_NAME}_dsp STATIC ${FP_DSP_SOURCES})
