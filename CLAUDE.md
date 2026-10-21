@@ -18,10 +18,10 @@ and gui probes, `scripts/plugin.py`), keeping this project's own changes.
 | `cmake/Product.cmake` | identity: name, kind (an effect), codes, bundle id, namespace (`testingplayground`), environment prefix | `scripts/plugin.py` rewrites it; the plugin code stays unique among the user's plugins |
 | `Source/fsdsp/core/**` | FSynth's DSP core, vendored (`SEED.tsv`) | do not edit casually: `scripts/sync-dsp-core.sh` refuses to overwrite edits |
 | `Source/dsp/**` | the reverb: `Engine` (MIX, GAIN, the LINES switch), `Fdn` (the network, one `tick()` per sample), `FdnLayout` + `Primes` (delay lengths), `Hadamard`, `DelayLine` (Thiran reads), `LfoShape` (the graph's data and table), `Params.h` (the table) | JUCE-free C++20 |
-| `Source/fminus/**` | FMinus, the JIT compiler (`~/audio/libraries/FMinus`, `cmake/Deps.cmake`): `FMinusProgram` compiles FMinus source and gives its functions as C function pointers; `Script` runs `script.fm` on the Engine's output, as much as SCRIPT says, and `ScriptWatcher` reloads it when the file changes (live coding); library `<name>_fminus`, which `<name>_dsp` links | JUCE-free; FMinus's and LLVM's headers only in its `.cpp` (`lint.layers`), so the rest keeps C++20 |
+| `Source/fminus/**` | FMinus, the JIT compiler (`~/audio/libraries/FMinus`, `cmake/Deps.cmake`), through its public API, `fminus/FMinus.h` (`fminus::Program` compiles FMinus source and gives its functions as C function pointers); `Script` runs `script.fm` on the Engine's output, as much as SCRIPT says, and `ScriptWatcher` reloads it when the file changes (live coding); library `<name>_fminus` (with `FMinus::FMinus`), which `<name>_dsp` links | JUCE-free; FMinus only through `fminus/FMinus.h` (C++17, no LLVM), never its internals or LLVM's headers (`lint.layers`) |
 | `Source/plugin/**` | the JUCE `AudioProcessor`: APVTS from the table, one FunkGui port per parameter, the LFO shape (kept under a mutex, saved as `<LFO>` in the state, its table published to the audio thread through `fsdsp::Seqlock`), the bypass; `EditorPort.h` | reads parameters once per block, calls the Engine; copes with what a host may do (below) |
 | `Source/editor/**` | the FunkGui `Panel` (from the table, plus the modulation section), `ShapeView` (the LFO graph), `ParamModel`, `Theme.h`; `gpu/` the EditorHost factory | reaches the processor only through its ports and `EditorPort` |
-| `Tools/probes/**` | probes on FunkGui's Harness: `dsp/` (Source/dsp only), `plugin/`, `gui/`, `fminus/` (FMinusProgram, the script) | spec rows only, no golden files |
+| `Tools/probes/**` | probes on FunkGui's Harness: `dsp/` (Source/dsp only), `plugin/`, `gui/`, `fminus/` (`fminus::Program`, the script) | spec rows only, no golden files |
 
 There are no starters here (`scripts/starters/` is the template's): `plugin.py clone` copies this playground with its
 FDN (its plugin code must be free across `~/audio/plugins`; the probes' namespace alias follows the new name; the
@@ -54,14 +54,15 @@ from FunkPluginTemplate.
 ## Layer and real-time rules
 
 - `Source/dsp`, `Source/fsdsp` and `Source/fminus` include nothing from JUCE, FunkGui, `plugin/` or `editor/` (the test
-  `lint.layers` checks; the DSP library has no JUCE include path). `Source/plugin/EditorPort.h` stays JUCE-free too:
-  the editor includes it. FMinus's internals and LLVM's headers appear only in `Source/fminus/*.cpp`.
+  `lint.layers` checks; the DSP library has no JUCE include path). `Source/plugin/EditorPort.h` stays JUCE-free too: the
+  editor includes it. FMinus comes in through its public header, `fminus/FMinus.h`, only: its internals and LLVM's
+  headers appear nowhere in `Source/`.
 - Each AU and VST3 exports JUCE's entry points and nothing else (CMakeLists.txt's exported-symbols lists; the test
   `lint.exports` checks the built bundles). A library linked in must not export its symbols into the host's process:
   LLVM's weak ones, exported, would be merged with every other plugin's that exports them (macOS coalesces weak
   definitions process-wide), and the plugins would share LLVM's state.
-- FMinus compiles (`FMinusProgram::compile`, `function`) off the audio thread only: they take milliseconds and
-  allocate. A JIT'd function is called on the audio thread like any other, and the `FMinusProgram` outlives every call
+- FMinus compiles (`fminus::Program::compile`, `function`) off the audio thread only: they take milliseconds and
+  allocate. A JIT'd function is called on the audio thread like any other, and the `fminus::Program` outlives every call
   of it (README.md, "FMinus"). Mark every FMinus function the audio thread calls `[[clang::nonblocking]]`: FMinus then
   refuses it if it could reach the heap; a program's `calloc` and `free` run from `prepare()` and the end only.
 - The script (`Source/fminus/script.fm`) is the user's to edit: it runs only where SCRIPT is above 0, the default being
