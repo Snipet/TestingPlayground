@@ -60,12 +60,12 @@ Source/dsp/                  the synth, plain C++20 without JUCE (namespace test
   VoiceScheduler.h             which voice plays a note (the legacy policy)
   Engine.h/.cpp                the voices, the note events at their offsets, the ramps, the output gain
 Source/fsdsp/core/           FSynth's DSP core, vendored at the tag in SEED.tsv (scripts/sync-dsp-core.sh)
-Source/fminus/               FMinus, the JIT compiler: FMinusProgram.h compiles FMinus source and gives its functions;
-                             Script.h runs script.fm on the output, ScriptWatcher.h reloads it when the file changes
+Source/fminus/               the FMinus script: Script.h runs script.fm on the output (with FMinus's fminus/FMinus.h),
+                             ScriptWatcher.h reloads it when the file changes
 Source/plugin/               the JUCE AudioProcessor: parameters from the table, MIDI to note events, the Engine
 Source/editor/               the FunkGui panel, built from the table; EnvelopeView (the ENVELOPE picture); Theme.h
 Tools/probes/                tests that measure: dsp/ (the synth alone), plugin/ (the processor), gui/ (the panel),
-                             fminus/ (FMinusProgram)
+                             fminus/ (FMinus's fminus::Program, the script)
 scripts/                     plugin.py, test.sh, sync-dsp-core.sh, install.sh; starters/ (the template's starters)
 CMakeLists.txt, cmake/       the build; every source list is a folder glob, so new files need no CMake edit
 ```
@@ -186,7 +186,7 @@ build-dev/TestingPlaygroundSynth_probes dsp.render
 | `dsp.render` | a short phrase (a melody over chords, ending with more notes than voices) to `dsp.render.wav`; finite, no clipping, block-size invariant |
 | `plugin.process` | the processor as a host drives it: notes start on their sample offsets inside a block, at their velocity; GAIN written by the host reaches the DSP; a NaN from the host is ignored; the note-off leaves silence and no voice; the output is the Engine's bit for bit. No note is left held by All Notes Off or All Sound Off, a note-on at velocity 0, a note-off in a block of 0 samples, a block of more than 1,024 events, or a note-off while the host bypasses the plugin (whose output is then silent); a block larger than announced reaches the Engine in parts, with the same output; bypass and un-bypass with a note held fade over 20 ms with no step beyond the note's own (where a hard switch steps 17 times as far), then give silence and the never-bypassed output, bit for bit |
 | `fminus.script` | the script on the audio thread (`Source/fminus/script.fm`): it loads; SCRIPT 0 leaves the output as it was, bit for bit; at 100 % it is finite and the same in blocks of 64 and 333; a swap settles within 50 ms with no step; a broken, a blocking and an incomplete script are refused while the running one plays on; an edited file is reloaded and its outcome logged |
-| `fminus.program` | FMinus in this build (`Source/fminus/FMinusProgram.h`): a block kernel and a stateful one compiled and called, bit for bit against C++, the same across block splits; `poly_lanes()`; a delay whose line the program allocates (aligned, silent), run by a `[[clang::nonblocking]]` kernel over two blocks and freed, and a nonblocking kernel that calls `malloc` refused; a program that does not compile and a function that does not exist give FMinus's messages; compiling takes under a second (about 10 ms) |
+| `fminus.program` | FMinus in this build, through its public API (`fminus/FMinus.h`): a block kernel and a stateful one compiled and called, bit for bit against C++, the same across block splits; `poly_lanes()`; a delay whose line the program allocates (aligned, silent), run by a `[[clang::nonblocking]]` kernel over two blocks and freed, and a nonblocking kernel that calls `malloc` refused; a program that does not compile and a function that does not exist give FMinus's messages; compiling takes under a second (about 10 ms) |
 | `gui.dump` | the panel headless to `gui.dump.png`, `gui.dump.paper.png` and `gui.dump.envelope.png`; settles, every glyph, a11y; the header clear of the THEME cells with this name and with names of 24, 48 and 64 letters (`gui.dump.longname.png`); a drag writes the parameter; a host's NaN shows the last value; the envelope follows the parameters, keeps its shape through a host's NaN and highlights the segment under the pointer |
 | `plugin.state` | the host's parameters equal the table; the state round-trips; a NaN's host text is a dash; a state value that is not a number loads the default; processBlock and processBlockBypassed before prepareToPlay are silent; processBlock gives finite output |
 <!-- /starter:probes -->
@@ -202,21 +202,21 @@ tolerance. `Tools/probes/common/Audio.h` has the helpers (sines, levels, a DFT b
 
 ## FMinus
 
-[FMinus](https://github.com/Snipet/FMinus) (`~/audio/libraries/FMinus`), the JIT compiler for DSP, is linked in.
-`Source/fminus/FMinusProgram.h` compiles FMinus source (C with vectors: its README has the language) while the plugin
-runs and hands back its functions as C function pointers, so a piece of an algorithm can be written in FMinus and
-compiled while the plugin runs, from a string or from a file it reads. Any file of `Source/dsp/` may use it:
+[FMinus](https://github.com/Snipet/FMinus) (`~/audio/libraries/FMinus`), the JIT compiler for DSP, is linked in. Its
+public API, `fminus/FMinus.h` (`fminus::Program`), compiles FMinus source (C with vectors: its README has the language)
+while the plugin runs and hands back its functions as C function pointers, so a piece of an algorithm can be written in
+FMinus and compiled while the plugin runs, from a string or from a file it reads. Any file of `Source/dsp/` may use it:
 
 ```cpp
-#include "fminus/FMinusProgram.h"
+#include "fminus/FMinus.h"
 
 // In the Engine: the program, and the function the audio thread calls.
-std::unique_ptr<FMinusProgram> program_;
+std::unique_ptr<fminus::Program> program_;
 void (*gain_)(const float* in, float* out, int n, float g) = nullptr;
 
 // Engine::prepare(), off the audio thread: compiling takes milliseconds and allocates.
 std::string errors;
-program_ = FMinusProgram::compile(R"(
+program_ = fminus::Program::compile(R"(
     void gain(const float* restrict in, float* restrict out, int n, float g)
     {
         for (int i = 0; i < n; ++i)
@@ -232,10 +232,14 @@ if (gain_)
 ```
 
 - **Never compile on the audio thread.** Compile in `prepare()`, or on another thread and publish the new pointer
-  through an `std::atomic`; then keep the old `FMinusProgram` until the audio thread has finished the block that may
+  through an `std::atomic`; then keep the old `fminus::Program` until the audio thread has finished the block that may
   still run its code. The pointers die with their program.
 - **The pointer's type must be the function's C type**: `float` is `float`, `int` is `int`, a pointer a pointer, a
-  `float4` clang's `ext_vector_type(4)`. Nothing checks it.
+  `float4` clang's `ext_vector_type(4)` (`fminus/FMinus.h` has the table). Nothing checks it.
+- **The rest of the API**: `fminus::Program::Options` (the optimisation level, a `poly float`'s lanes, the name the
+  errors give), `polyLanes()`, and `nonBlocking(name)` and `nonAllocating(name)`, which say what FMinus has checked
+  (`Script::load` refuses a `process` that is not nonblocking). FMinus's README, "Using FMinus as a library", has the
+  rest.
 - **State lives on the heap, allocated in `prepare()`**: the Engine's own memory, passed by pointer, or the program's.
   A program allocates with `calloc` (64-byte aligned, zeroed) in a function the Engine calls from `prepare()`, and
   frees with `free` in one it calls at the end; the function the audio thread calls is marked

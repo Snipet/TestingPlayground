@@ -32,7 +32,7 @@ set(FP_BGFX_SUB_SHAS     bgfx=c7684e20da1e385edc439ef39cdb42b8c661016f
 set(FP_FUNKGUI_TAG       v0.16.0)
 set(FP_FUNKGUI_SHA       e1982bd5e393aa7191ef2a32478c078441c456f3)   # the tag's commit (rev-parse v0.16.0^{commit})
 set(FP_FUNKGUI_VERSION   0.16.0)
-set(FP_FMINUS_SHA        aeff65e6487edc4362edeb862e97d302cd85669c)   # FMinus has no tags: a commit of its main
+set(FP_FMINUS_SHA        7543a49482d2bb3b6e14fbcd156b579807161aa1)   # FMinus has no tags: a commit of its main
 set(FP_FMINUS_LLVM       23.1.3)                                     # the LLVM that commit pins (cmake/FMinusPins.cmake)
 
 # ---- helpers ---------------------------------------------------------------------------------------------------------
@@ -259,7 +259,7 @@ if(NOT _fp_fminus_llvm_pin MATCHES "[ \"]${_fp_llvm_re}\"?\\)")
   message(FATAL_ERROR "${PROJECT_NAME}: FMinus at ${_fp_fminus_dir} pins '${_fp_fminus_llvm_pin}', but FP_FMINUS_LLVM "
                       "is ${FP_FMINUS_LLVM}: move them together")
 endif()
-foreach(_t FMinus::Internal FMinus::Runtime)
+foreach(_t FMinus::FMinus FMinus::Runtime)
   if(NOT TARGET ${_t})
     message(FATAL_ERROR "${PROJECT_NAME}: FMinus at ${_fp_fminus_dir} defines no ${_t}")
   endif()

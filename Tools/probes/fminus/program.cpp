@@ -1,12 +1,12 @@
 // PROBE name=fminus.program timeout=120
 //
-// fminus.program: FMinus, the JIT compiler, in this plugin's build (Source/fminus/FMinusProgram.h): a program compiles,
-// its functions run through C function pointers, and they compute what the same C++ computes, bit for bit (FMinus,
-// like this plugin's flags, fuses no multiply and add).
+// fminus.program: FMinus, the JIT compiler, in this plugin's build (fminus/FMinus.h): a program compiles, its functions
+// run through C function pointers, and they compute what the same C++ computes, bit for bit (FMinus, like this plugin's
+// flags, fuses no multiply and add).
 //   GAIN    a block kernel, gain(in, out, n, g), one call for 512 samples: exactly x * g.
 //   SMOOTH  a one-pole smoother whose state is the caller's float: one call for 512 samples, two calls of 256, and the
 //           same recursion in C++ give the same bits.
-//   LANES   poly_lanes(), inside the program, is FMinusProgram::polyLanes() (4 with NEON).
+//   LANES   poly_lanes(), inside the program, is fminus::Program::polyLanes() (4 with NEON).
 //   ERRORS  a program that does not compile gives no program and FMinus's message, at its line and column; a function
 //           the program lacks gives a null pointer and a message.
 //   HEAP    a delay whose line the program allocates (calloc: 64-byte aligned, silent), runs in a kernel marked
@@ -14,15 +14,13 @@
 //   TIME    compiling the program and looking up its three functions at -O2 takes under a second (tens of ms here).
 #include "Probe.h"
 
-#include "fminus/FMinusProgram.h"
+#include "fminus/FMinus.h"
 
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
-
-namespace tp = testingplaygroundsynth;
 
 namespace
 {
@@ -86,7 +84,7 @@ PROBE(fminus, program)
 {
     std::string errors;
     const auto start = std::chrono::steady_clock::now();
-    auto program = tp::FMinusProgram::compile(kSource, errors);
+    auto program = fminus::Program::compile(kSource, errors);
     if (!program)
     {
         std::printf("fminus.program: the program did not compile:\n%s", errors.c_str());
@@ -138,9 +136,9 @@ PROBE(fminus, program)
 
     // ERRORS
     std::string message;
-    tp::FMinusProgram::Options options;
+    fminus::Program::Options options;
     options.fileName = "bad.fm";
-    const auto bad = tp::FMinusProgram::compile("float f(float x)\n{\n    return x + y;\n}\n", message, options);
+    const auto bad = fminus::Program::compile("float f(float x)\n{\n    return x + y;\n}\n", message, options);
     P.eq("errors.no_program", bad ? 0 : 1, 1);
     P.eq("errors.located", message.find("bad.fm:3:16: error: use of undeclared identifier 'y'") != std::string::npos
                                ? 1 : 0, 1);
@@ -168,12 +166,12 @@ PROBE(fminus, program)
         destroy(line);
     }
     std::string realtime;
-    const auto allocating = tp::FMinusProgram::compile("void process(float* out, int n) [[clang::nonblocking]]\n"
-                                                       "{\n"
-                                                       "    float* scratch = malloc(n);\n"
-                                                       "    free(scratch);\n"
-                                                       "}\n",
-                                                       realtime, options);
+    const auto allocating = fminus::Program::compile("void process(float* out, int n) [[clang::nonblocking]]\n"
+                                                     "{\n"
+                                                     "    float* scratch = malloc(n);\n"
+                                                     "    free(scratch);\n"
+                                                     "}\n",
+                                                     realtime, options);
     P.eq("heap.realtime_refused", allocating ? 0 : 1, 1);
     P.eq("heap.realtime_message",
          realtime.find("bad.fm:3:22: error: function with 'nonblocking' attribute must not call non-'nonblocking' "
