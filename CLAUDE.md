@@ -1,14 +1,16 @@
 # TestingPlayground: rules for a Claude session
 
-A research playground for feedback delay network reverbs: an effect plugin (AU, VST3, Standalone; macOS arm64) on
-JUCE 8.0.4 with a FunkGui editor and FSynth's DSP core (vendored), made from FunkPluginTemplate. Change the algorithm,
-the parameters and the panel freely; keep the rules below. README.md is the user's guide (the algorithm, the editor,
-the probes); this file is what a session must know (`scripts/plugin.py info` prints the identity).
+A playground for writing DSP while the plugin runs: an effect plugin (AU, VST3, Standalone; macOS arm64) on JUCE
+8.0.4 whose FunkGui editor is a text field holding an FMinus program, which the plugin compiles (RUN, Cmd-Return) and
+plays, its parameters becoming the dials. Made from FunkPluginTemplate. Change the panel, the examples and the
+plumbing freely; keep the rules below. README.md is the user's guide (writing a program, the editor, the probes); this
+file is what a session must know (`scripts/plugin.py info` prints the identity).
 
 <!-- origin -->
-The reverb is the legacy (tag `legacy-visage`) FDN, ported and completed; the processor also loads that version's
-sessions. Shared fixes from FunkPluginTemplate are carried over by hand (`Source/plugin`, `Source/editor`, the plugin
-and gui probes, `scripts/plugin.py`), keeping this project's own changes.
+It was an FDN reverb (the legacy `legacy-visage` FDN, ported) with an FMinus script on its output until the branch
+`fminus-editor` replaced the DSP and the panel. Shared fixes from FunkPluginTemplate are carried over by hand
+(`Source/plugin`, `Source/editor`, the plugin and gui probes, `scripts/plugin.py`), keeping this project's own changes.
+The synth playground (`../TestingPlaygroundSynth`) has the same code with the instrument's contract: change both.
 <!-- /origin -->
 
 ## What goes where
@@ -16,15 +18,16 @@ and gui probes, `scripts/plugin.py`), keeping this project's own changes.
 | Path | What | Rule |
 | --- | --- | --- |
 | `cmake/Product.cmake` | identity: name, kind (an effect), codes, bundle id, namespace (`testingplayground`), environment prefix | `scripts/plugin.py` rewrites it; the plugin code stays unique among the user's plugins |
+| `cmake/Deps.cmake` | the pins: JUCE, bgfx, FunkGui (a commit: v0.16.0 plus TextEditor, until a tag has it), FMinus (a commit) | move a pin's tag, commit and version together |
 | `Source/fsdsp/core/**` | FSynth's DSP core, vendored (`SEED.tsv`) | do not edit casually: `scripts/sync-dsp-core.sh` refuses to overwrite edits |
-| `Source/dsp/**` | the reverb: `Engine` (MIX, GAIN, the LINES switch), `Fdn` (the network, one `tick()` per sample), `FdnLayout` + `Primes` (delay lengths), `Hadamard`, `DelayLine` (Thiran reads), `LfoShape` (the graph's data and table), `Params.h` (the table) | JUCE-free C++20 |
-| `Source/fminus/**` | FMinus, the JIT compiler (`~/audio/libraries/FMinus`, `cmake/Deps.cmake`), through its public API, `fminus/FMinus.h` (`fminus::Program` compiles FMinus source and gives its functions as C function pointers); `Script` runs `script.fm` on the Engine's output, as much as SCRIPT says, and `ScriptWatcher` reloads it when the file changes (live coding); library `<name>_fminus` (with `FMinus::FMinus`), which `<name>_dsp` links | JUCE-free; FMinus only through `fminus/FMinus.h` (C++17, no LLVM), never its internals or LLVM's headers (`lint.layers`) |
-| `Source/plugin/**` | the JUCE `AudioProcessor`: APVTS from the table, one FunkGui port per parameter, the LFO shape (kept under a mutex, saved as `<LFO>` in the state, its table published to the audio thread through `fsdsp::Seqlock`), the bypass; `EditorPort.h` | reads parameters once per block, calls the Engine; copes with what a host may do (below) |
-| `Source/editor/**` | the FunkGui `Panel` (from the table, plus the modulation section), `ShapeView` (the LFO graph), `ParamModel`, `Theme.h`; `gpu/` the EditorHost factory | reaches the processor only through its ports and `EditorPort` |
-| `Tools/probes/**` | probes on FunkGui's Harness: `dsp/` (Source/dsp only), `plugin/`, `gui/`, `fminus/` (`fminus::Program`, the script) | spec rows only, no golden files |
+| `Source/fminus/**` | `Patch` (a program compiled for the plugin: the contract, the appended calls, the instances); `examples/*.fm`, the EXAMPLES (the first the default program; first line `// <Title>: ...`) | JUCE-free; FMinus only through `fminus/FMinus.h` (C++17, no LLVM), never its internals or LLVM's headers (`lint.layers`) |
+| `Source/dsp/**` | `Engine` (programs swapped by crossfade, the dials as glided streams, voices for an instrument, the output guard), `Compiler` (compiles off the audio thread, offers to the Engine, collects), `Controls.h` (slot mapping), `Events.h` | JUCE-free C++20 |
+| `Source/plugin/**` | the JUCE `AudioProcessor`: P1 to P8 (`ControlParameter`: the program's names and texts), one FunkGui port each, the program and the draft in the session, the bypass, the compiler's outcome polled on the message thread; `EditorPort.h` | reads parameters once per block, calls the Engine; copes with what a host may do (below) |
+| `Source/editor/**` | the FunkGui `Panel`: toolbar (RUN, EXAMPLES, status, load), `funkgui::TextEditor` with FMinus highlighting and error marks, the problems list, the dials; `Theme.h`; `gpu/` the EditorHost factory | reaches the processor only through its ports and `EditorPort` |
+| `Tools/probes/**` | probes on FunkGui's Harness: `fminus/` (the examples, the contract), `dsp/` (the Engine), `plugin/`, `gui/`; `common/Rig.h` runs a program in an Engine | spec rows only, no golden files |
 
-There are no starters here (`scripts/starters/` is the template's): `plugin.py clone` copies this playground with its
-FDN (its plugin code must be free across `~/audio/plugins`; the probes' namespace alias follows the new name; the
+There are no starters here (`scripts/starters/` is the template's): `plugin.py clone` copies this playground (its
+plugin code must be free across `~/audio/plugins`; the probes' namespace alias follows the new name; the
 `<!-- origin -->` blocks are left out); `--type instrument`, `--starter` and `starter-diff` refuse. New plugins start
 from FunkPluginTemplate.
 
@@ -32,20 +35,16 @@ from FunkPluginTemplate.
 
 - `cmake --workflow --preset dev-verify`: configure, build (Standalone, AU, VST3, probes) and run every test in
   `build-dev`. Done means it exits 0 with no warning from our sources (they build with `-Werror`).
-- `scripts/test.sh`: build and run the probes only (`-R <name>`, `-V` pass through to ctest). Outputs land in
-  `build-dev/probe-out/`: `dsp.render.ir.wav` (the impulse response), `dsp.render.wav` and its input, and the editor
-  rendered headless (`gui.dump.png`, `gui.dump.paper.png`, `gui.dump.edited.png`; `gui.dump.longname.png`, its header
-  with a name of 64 letters). Look at the PNGs after any editor change. `dsp.stability` runs 256 settings for 10 s each (about 20 s).
-- When the algorithm changes, change its probes with it: `dsp.decay` (T60 against DECAY, by band against HF DECAY),
-  `dsp.response` (the dry path and every line's first arrival against exact values, sample by sample, with the input
-  gain's law and the tap signs it copies from `Fdn.cpp`; click checks above 4 kHz; NaN input; DC), `dsp.modulation`
-  (each line's read position against RATE, DEPTH and the shape), `dsp.stability` (every corner), `dsp.primes` (the
-  delay-length rule), `dsp.render`, `plugin.process` (the processor as a host drives it, bit for bit against the
-  Engine; odd block sizes; the bypass edges), `plugin.state`'s tail rows. State tolerances that say what must hold, and why.
+- `scripts/test.sh`: build and run the probes only (`-R <name>`, `-V` pass through to ctest). The editor rendered
+  headless lands in `build-dev/probe-out/` (`gui.dump.png`, `gui.dump.paper.png`, `gui.dump.error.png`,
+  `gui.dump.edited.png`): look at the PNGs after any editor change.
+- An example added or changed is checked by `fminus.examples` (compiles with no message, plays, the same bits in
+  blocks of 64 and 333). A change to the contract (Patch.h) changes `fminus.contract`, the README's "Writing a
+  program", the examples' comments and the placeholder text with it.
 - `cmake --workflow --preset release-build`: Release with LTO in `build-release`. `scripts/install.sh` copies the AU
   and VST3 into `~/Library/Audio/Plug-Ins`; only the user (or the lead) runs it, never an agent.
 - The presets build at `-j6` (the machine is shared). No network: JUCE, bgfx and shaderc come from `~/audio/.deps`
-  (read-only, never write there) and FunkGui is cloned from `~/audio/libraries/FunkGui` at the pinned tag. FMinus is
+  (read-only, never write there) and FunkGui is cloned from `~/audio/libraries/FunkGui` at the pinned commit. FMinus is
   cloned from `~/audio/libraries/FMinus` at the pinned commit (`FP_FMINUS_SHA`; `-DFETCHCONTENT_SOURCE_DIR_FMINUS=`
   builds its working tree instead), and its LLVM, Bison and Flex are read from `~/audio/libraries/FMinus/.deps`, the
   installs FMinus's own builds made: never build them from here (FMinus's "system" LLVM mode, which `Deps.cmake` sets,
@@ -58,63 +57,42 @@ from FunkPluginTemplate.
   editor includes it. FMinus comes in through its public header, `fminus/FMinus.h`, only: its internals and LLVM's
   headers appear nowhere in `Source/`.
 - Each AU and VST3 exports JUCE's entry points and nothing else (CMakeLists.txt's exported-symbols lists; the test
-  `lint.exports` checks the built bundles). A library linked in must not export its symbols into the host's process:
-  LLVM's weak ones, exported, would be merged with every other plugin's that exports them (macOS coalesces weak
-  definitions process-wide), and the plugins would share LLVM's state.
-- FMinus compiles (`fminus::Program::compile`, `function`) off the audio thread only: they take milliseconds and
-  allocate. A JIT'd function is called on the audio thread like any other, and the `fminus::Program` outlives every call
-  of it (README.md, "FMinus"). Mark every FMinus function the audio thread calls `[[clang::nonblocking]]`: FMinus then
-  refuses it if it could reach the heap; a program's `calloc` and `free` run from `prepare()` and the end only.
-- The script (`Source/fminus/script.fm`) is the user's to edit: it runs only where SCRIPT is above 0, the default being
-  0, so every probe but `fminus.script` hears the Engine without it. A script's `process` is `[[clang::nonblocking]]`
-  (`Script::load` refuses it otherwise), and SCRIPT at 0 leaves the sound as it was.
-- `Engine::setParams`, `setLfoTable` and `process` run on the audio thread: no allocation, no locks, no I/O, no
-  logging. Allocate in `prepare()` (the delay lines are sized there for every SIZE at that rate). Smooth every
-  parameter (the core's `Smoother4`, `SmoothRamp`, `LinearRamp`): nothing steps. A change that cannot be smoothed
-  (LINES) fades the wet path out, switches while it is silent and fades back in. The processor hands `setParams`
-  finite values within the table's range (a host's NaN keeps the last good value; the panel shows the last finite
-  value, `shownValue01` in `ParamModel.h`, and a state's NaN loads the default). Before `prepare()`, `process()` only
-  sanitises and passes the input through.
-- `Engine::process` gets at most `prepare()`'s `maxBlockSize` samples per call (the processor cuts a larger host
-  block into parts), sometimes 0. Keep the output independent of how the blocks are split (`dsp.render` checks 64
-  against 333 samples; `plugin.process` checks the parts).
-- The processor (`Source/plugin`) copes with what a host may do: the bypass (`processBlockBypassed`) crossfades
-  between the Engine's output and the input over 20 ms each way (smootherstep, equal-gain), and the Engine keeps
-  running on the input while bypassed (its parameters and LFO table too), so un-bypassing resumes from a current state
-  (an Engine with latency must delay that dry path by it; the FDN has none); a block before any `prepareToPlay`
-  passes the input through, sanitised, without calling the Engine; a host's NaN keeps the last good value (and its
-  text is a dash); a state value that is not a number loads as the parameter's default. `plugin.process` and
-  `plugin.state` check each.
-- The loop's decay must stay exact: any matrix must be orthogonal and any interpolator unity-gain, or a corner grows
-  (`dsp.stability` catches a 0.2 % energy gain in the matrix).
-- `Engine::tailSeconds()` is called by hosts from any thread: an atomic that `setParams` stores.
-- Prefer the core's math on the audio path (`fsdsp::exp2/log2/tanh/sinPi/cosPi/tanPi`, `fsdsp::simd`), and keep the
-  output independent of the host's block size: per-sample state, coefficient updates on the absolute 16-sample grid
-  (`fsdsp::ControlTicker`); `dsp.render` checks 64 against 333 samples.
-- The LFO shape is message-thread data (`LfoShape`, rendered with the standard library's math) handed to the audio
-  thread as a table (`Processor::storeShape`, a Seqlock read in `readParameters` each block, bypassed or not, a
-  20 ms crossfade in the Fdn).
+  `lint.exports` checks the built bundles). LLVM's weak symbols, exported, would be merged with every other plugin's
+  that exports them, and the plugins would share LLVM's state.
+- FMinus compiles off the audio thread only (`Compiler`: its thread, or `compileNow` on the message thread or a host's
+  state call). A program's instances are created, reset (`init`) and destroyed (`end`) off the audio thread too; the
+  audio thread only calls the appended nonblocking functions (process, start, stop) and sets parameters. Never call
+  a program function through another type than its declaration's: the appended lines (Patch.cpp) are what make the
+  types right, so a new call needs its own line.
+- The Engine's handovers are two atomic pointers (`pending_`, `retired_`): offer, take at a block's start once the last
+  swap is over, hand back. The audio thread never deletes a Patch. `Engine::setControls` and `process` allocate, lock
+  and log nothing; `prepare()` (audio stopped) is the only place that sizes buffers.
+- Nothing steps: a program swap crossfades (effect) or fades voices (instrument) over 20 ms, a steal over 2 ms, a real
+  dial glides over 20 ms as a stream, the bypass crossfades over 20 ms. The output does not depend on how the host
+  splits its blocks (the examples are checked at 64 and 333), except where a dial moves (once a block).
+- The output guard (Engine::guard) stays: whatever a program computes, what leaves the plugin is finite and within
+  +-4. Hosts and speakers come first.
+- The processor copes with what a host may do: the bypass crossfades between the Engine's output and the input (or
+  silence) and the Engine keeps running; a block before any `prepareToPlay` passes the input through, sanitised; a
+  host's NaN keeps the last good value (and its text is a dash); a state value that is not a number loads as 0.5.
+  `plugin.process` and `plugin.state` check each.
 - Flags: `-ffp-contract=off`, never `-ffast-math`. Product constants come from the generated `Product.h`, never from
   `JucePlugin_*`. The editor never uses JUCE's parameter attachments: widgets write through FunkGui's
-  `GestureController` to the ports (`funkgui::JuceParamPort`); the graph writes through `EditorPort` and calls
-  `endShapeEdit()` once an edit is complete, so the host knows the state changed.
+  `GestureController` to the ports (`funkgui::JuceParamPort`).
 
 ## Recipes
 
-- **A parameter**: add an index and a row in `Source/dsp/Params.h` (id, name, label, unit, range, default, centre,
-  control: dial, slider, choice or hidden); read `values[param::<name>]` in `Engine::setParams`. The processor, the
-  host, the saved state and the panel follow (dials and sliders in the top row, choices at its right end;
-  `isModulation()` in `Panel.cpp` puts a row beside the graph). Never change an ID once sessions use it.
-- **An algorithm**: change the pieces under `Source/dsp/` or replace the Engine's body (keep its interface); new files
-  need no CMake edit (folder globs). README.md, "Swap in your own algorithm", lists which probes then change.
+- **An example**: a file `Source/fminus/examples/<n>-<name>.fm` whose first line is `// <Title>: what it is`; it
+  appears in the EXAMPLES menu in file-name order (the first is the default program). Run `fminus.examples`.
+- **A new call into programs** (an instrument's pitch bend, say): add a `Call` row in `Patch.cpp` (the method, whether
+  it is required, how the plugin declares it, the appended line), a pointer in `Patch::Shared` looked up in
+  `compile()`, a method on `Patch` the Engine calls; document it in Patch.h and the README.
 - **A view**: add an `Item` in `Source/editor/Panel.cpp` (a FunkGui widget, or your own drawing on the
-  `funkgui::Canvas`, as `ShapeView` does, under a tag of its own from `ui::kHeaderTextTag + 1` when a probe needs to
-  find it) and place it in the constructor; then check `gui.dump`'s PNGs. The header fits any product name (the
-  panel widens, then drops the kind and version, then cuts the name: `gui.dump`'s HEADER rows).
+  `funkgui::Canvas`, under a tag of its own after `ui::kMarkTag` when a probe needs to find it) and place it in the
+  constructor; then check `gui.dump`'s PNGs.
 - **A probe**: a file `Tools/probes/<layer>/<name>.cpp` whose first line is `// PROBE name=<layer>.<name> timeout=<s>`
   and whose body is `PROBE(<layer>, <name>) { ...; return P.finish(); }`. Use spec rows (`P.near`, `P.le`, `P.ge`,
-  `P.in`, `P.eq`); helpers are in `Tools/probes/common/Audio.h` (levels, DFT, T60 from the energy decay curve,
-  band-pass, WAV) and `Tools/probes/dsp/Rig.h` (the Engine run as the processor runs it).
+  `P.in`, `P.eq`); helpers are in `Tools/probes/common/Audio.h` and `Tools/probes/common/Rig.h`.
 
 ## Git
 
