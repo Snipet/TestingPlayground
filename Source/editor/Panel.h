@@ -1,6 +1,10 @@
-// Source/editor/Panel.h: the plugin's interface, a funkgui::Panel: an FMinus program's editor and its dials. It is
-// GPU-free: funkgui::EditorHost runs it live in the plugin (Source/editor/gpu/CreateEditorGpu.cpp) and
-// funkgui::HeadlessHost runs it in the probes (gui.dump), drawing the same frames.
+// Source/editor/Panel.h: the plugin's interface, a funkgui::Panel: an FMinus program's editor and its dials, and the
+// chat with Claude beside them. It is GPU-free: funkgui::EditorHost runs it live in the plugin
+// (Source/editor/gpu/CreateEditorGpu.cpp) and funkgui::HeadlessHost runs it in the probes (gui.dump, gui.chat), drawing
+// the same frames.
+//
+// It is resizable, in both directions, from kMinWidth x kMinHeight (logical px) up: the chat takes about a third of the
+// width at the right (kChatMinW to kChatMaxW), the editor and the chat's transcript take the height that is left.
 //
 //   header    the product name, its kind and version, and the THEME cells (GRAPHITE, PAPER)
 //   toolbar   RUN (Cmd-Return in the editor too), EXAMPLES (a menu: the example replaces the text, undoably, and
@@ -18,12 +22,18 @@
 //   dials     the running program's parameters, P1 to P8 (a funkgui::Dial each, labelled with the parameter's name;
 //             an unused slot shows nothing): a drag, the wheel or the keys write through the processor's ports, and a
 //             double-click returns to the parameter's fminus::default
+//   chat      at the right: the model (a menu of the models the key can use), NEW (forgets the conversation, asking
+//             first), KEY (the key dialog); the thinking levels the model takes; the conversation (ChatItems.h); what
+//             Claude is doing, and SEND or STOP; the message box (Return sends it, Shift-Return breaks the line)
+//   key       a dialog over the panel for the Anthropic API key: a masked field (Cmd-V pastes), SAVE, CANCEL and, when a
+//             key is stored, REMOVE. It opens from KEY, and when a message is sent before any key is stored (the
+//             message goes once a key is saved)
 //   footer    the spec line of the control under the hand (or focused, or last touched), and the ZOOM cells
 //
-// Keys go to the editor while it has the caret (Tab indents there; Escape leaves it), and to a tab's name while it is
-// edited; otherwise Tab moves the focus
-// ring over the controls, and the arrows, Page and Home/End adjust the focused dial. Every parameter write goes
-// through one funkgui::GestureController (begin/set/end gestures for the host).
+// Keys go to a text field while it has the caret (the editor: Tab indents there; the chat's message box and its
+// transcript; Escape leaves each), to a tab's name while it is edited, and to the key dialog while it is open;
+// otherwise Tab moves the focus ring over the controls, and the arrows, Page and Home/End adjust the focused dial.
+// Every parameter write goes through one funkgui::GestureController (begin/set/end gestures for the host).
 //
 // Message thread only. The ports and the EditorPort belong to the processor and outlive the Panel.
 #pragma once
@@ -37,6 +47,10 @@
 #include <funkgui/params/ParamPort.h>
 
 #include "dsp/Sources.h"
+
+#include "plugin/ChatPort.h"
+
+#include <funkgui/text/LineEdit.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -64,6 +78,12 @@ namespace testingplayground::ui
 {
     class Item;                                          // one control or view on the panel (Panel.cpp)
     class FilesItem;                                     // the files' tabs and editors (Panel.cpp)
+    class TranscriptItem;                                // the chat's conversation (ChatItems.h)
+    class InputItem;                                     // the chat's message box (ChatItems.h)
+
+    // The size (logical px): the default, the least.
+    inline constexpr int kDefaultWidth = 1360, kDefaultHeight = 760;
+    inline constexpr int kMinWidth = 1000, kMinHeight = 600;
 
     // The panel's own primitive tags, for probes that find what they check by tag.
     inline constexpr funkgui::Tag kHeaderTextTag = funkgui::tags::firstProduct;       // name, kind and version
@@ -71,6 +91,8 @@ namespace testingplayground::ui
     inline constexpr funkgui::Tag kProblemTag = funkgui::tags::firstProduct + 2;      // the problems' lines
     inline constexpr funkgui::Tag kMarkTag = funkgui::tags::firstProduct + 3;         // an error's mark in the gutter
     inline constexpr funkgui::Tag kTabTag = funkgui::tags::firstProduct + 4;          // the files' tabs
+    inline constexpr funkgui::Tag kChatTag = funkgui::tags::firstProduct + 5;         // the chat's own text
+    inline constexpr funkgui::Tag kKeyDialogTag = funkgui::tags::firstProduct + 6;    // the key dialog
 
     // One message of the last run, as the problems list shows it.
     struct Problem
@@ -110,11 +132,32 @@ namespace testingplayground::ui
         const std::vector<Problem>& problems() const noexcept { return problems_; }
         const std::string& statusText() const noexcept { return status_; }
         void runNow();                                   // RUN
+        // The chat.
+        funkgui::TextEditor& chatInput() noexcept;       // the message box
+        const std::string& transcript() const;           // the conversation as shown (or the hint)
+        const std::string& chatActivity() const noexcept { return activity_; }
+        funkgui::Point centreOfSend() const;             // SEND or STOP
+        funkgui::Point centreOfModel() const;
+        funkgui::Point centreOfNewChat() const;
+        funkgui::Point centreOfKey() const;
+        std::optional<funkgui::Point> centreOfEffort(int i) const;   // nullopt past the model's levels
+        int effortCount() const;
+        // The key dialog.
+        bool keyDialogOpen() const noexcept { return keyOpen_; }
+        const std::string& keyDialogWhy() const noexcept { return keyWhy_; }
+        funkgui::Point centreOfKeyField() const;
+        funkgui::Point centreOfKeySave() const;
+        funkgui::Point centreOfKeyCancel() const;
+        std::optional<funkgui::Point> centreOfKeyRemove() const;      // nullopt while no key is stored
 
         // funkgui::Panel
         void  attach(funkgui::HostServices&) override;
         int   width() const override;
         int   height() const override;
+        bool  resizable() const override { return true; }
+        int   minWidth() const override { return kMinWidth; }
+        int   minHeight() const override { return kMinHeight; }
+        void  resize(int w, int h) override;
         void  tick(float dt) override;
         void  idle(double nowSec) override;
         void  draw(funkgui::Canvas&, const funkgui::Theme&) override;
@@ -143,14 +186,66 @@ namespace testingplayground::ui
         void closeFile(int tab);                         // a tab's x: asks first when the file has text
         FilesItem& files();
         const FilesItem& files() const;
+        void layout();                                   // every item's place, for width_ x height_
+        int  textItem() const;                           // the focused item when it takes every key, else -1
+
+        // The chat.
+        void refreshChat(double nowSec);
+        void sendChat();                                 // the message box's text, to Claude
+        void openModels();
+        void newChat();
+        TranscriptItem& transcriptItem();
+        const TranscriptItem& transcriptItem() const;
+        InputItem& inputItem();
+        funkgui::Point centreOf(int item) const;
+
+        // The key dialog.
+        struct KeyDialog
+        {
+            funkgui::Rect box, field, save, cancel, remove;
+        };
+        KeyDialog keyDialog() const;                     // its places, for the panel's size
+        void openKeyDialog();
+        void closeKeyDialog();
+        void saveKeyFromDialog();
+        void removeKeyFromDialog();
+        bool keyDialogKey(const funkgui::KeyEvent&);
+        void keyDialogPointerDown(funkgui::Point);
+        void drawKeyDialog(funkgui::Canvas&, const funkgui::Theme&) const;
+        std::string maskedKey() const;
 
         EditorPort& port_;
         std::vector<std::unique_ptr<Item>> items_;
         std::vector<int> itemOfSlot_;                    // dial slot -> item index
         int editorItem_ = -1, problemsItem_ = -1, runItem_ = -1, examplesItem_ = -1;
+        int themeItem_ = -1, zoomItem_ = -1;
+        int modelItem_ = -1, newChatItem_ = -1, keyItem_ = -1, effortItem_ = -1;
+        int transcriptItem_ = -1, inputItem_ = -1, sendItem_ = -1;
         funkgui::CellModel* zoom_ = nullptr;             // the ZOOM cells' model (an item owns it)
+        funkgui::CellModel* effort_ = nullptr;           // the thinking levels' model (an item owns it)
         float width_ = 0.0f, height_ = 0.0f;
+        uint32_t layoutRevision_ = 0;                    // bumps with each layout()
         std::string title_, subtitle_, status_, meter_;
+
+        // The places layout() found, which draw() uses.
+        float leftW_ = 0.0f;                             // the left column's width (the editor's)
+        float chatX_ = 0.0f, chatW_ = 0.0f;
+        float activityY_ = 0.0f;                         // the chat's activity row
+        float thinkingY_ = 0.0f;                         // the chat's thinking levels' row
+
+        // The chat, as refresh() last saw it.
+        uint64_t seenChat_ = 0;
+        double chatAt_ = -1.0;                           // when it was last read (the host's clock)
+        double busySince_ = -1.0;                        // when the turn under way began
+        ChatState chat_;
+        std::string activity_;                           // the activity row's text
+        std::string pendingSend_;                        // a message waiting for a key
+
+        // The key dialog.
+        bool keyOpen_ = false;
+        funkgui::text::LineEdit keyEdit_;
+        std::string keyWhy_;                             // why the key typed was refused
+        int focusBeforeKey_ = -1;
 
         funkgui::HostServices* host_ = nullptr;
         std::optional<funkgui::GestureController> gestures_;

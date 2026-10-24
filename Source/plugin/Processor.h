@@ -11,7 +11,11 @@
 //     (compiled at once, on the host's thread) and its dials as it saved them. A session of the version before files
 //     (<PROGRAM source=".." draft=".."/>) loads as a program of one file;
 //   - effect or instrument (cmake/Product.cmake, product::kIsInstrument): an effect has a stereo input and output and
-//     processes in place; an instrument has an output only and gets the block's MIDI notes as Events.
+//     processes in place; an instrument has an output only and gets the block's MIDI notes as Events;
+//   - the chat with Claude (ChatAgent.h): its conversation is kept in the session (<CHAT json="..."/>), and its tools
+//     act on the draft, RUN and the dials through ChatHost, from the agent's thread (the draft under programMutex_,
+//     a dial queued for poll()).
+//   - the editor's size, as the user left it (the editor is resizable), kept in the session (<EDITOR w=".." h=".."/>).
 //
 // What a host may do, and what the Engine sees of it:
 //   - a block larger than prepareToPlay announced: the Engine gets it in parts of at most that size;
@@ -34,6 +38,7 @@
 // and the probes call themselves; it also clears the alerts after two seconds.
 #pragma once
 
+#include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
 
 #include "dsp/Compiler.h"
@@ -58,7 +63,7 @@
 
 namespace testingplayground
 {
-    class Processor final : public juce::AudioProcessor, private EditorPort, private juce::Timer
+    class Processor final : public juce::AudioProcessor, private EditorPort, private ChatHost, private juce::Timer
     {
     public:
         Processor();
@@ -94,6 +99,11 @@ namespace testingplayground
         juce::AudioProcessorValueTreeState& parameters() noexcept { return apvts_; }
         std::span<funkgui::ParamPort* const> ports() const noexcept { return ports_; }   // P1 to P8
         EditorPort& editorPort() noexcept { return *this; }
+        ChatAgent& chatAgent() noexcept { return chat_; }        // probes: its transport, its turns
+        // The editor's size (logical px) as the user left it, kept in the session; 0 x 0: the Panel's default.
+        int editorWidth() const noexcept { return editorW_.load(); }
+        int editorHeight() const noexcept { return editorH_.load(); }
+        void setEditorSize(int w, int h) noexcept;
         Engine& engine() noexcept { return engine_; }
         // The most samples one Engine::process call got since prepareToPlay (never more than it announced).
         int largestEngineCall() const noexcept { return largestCall_; }
@@ -131,6 +141,19 @@ namespace testingplayground
         Controls controls() const override;
         float load() const override;
         uint32_t alerts() const override;
+        ChatPort& chat() override { return chat_; }
+
+        // ChatHost: Claude's tools (ChatAgent.h), from the agent's worker thread.
+        Draft chatDraft() const override;
+        void chatSetDraft(const Draft& draft) override;
+        CompileStatus chatRun(const Sources& files) override;
+        CompileStatus chatLastStatus() const override;
+        Sources chatRunning() const override;
+        Controls chatDials() const override;
+        float chatDialValue(int slot) const override;
+        void chatSetDial(int slot, float plain) override;
+        float chatLoad() const override;
+        uint32_t chatAlerts() const override;
 
         // The program: what plays, the editor's draft, the dials. Message thread, and a host's state calls. Declared
         // before the parameters, whose names and texts read controls_ (control()).
@@ -149,10 +172,14 @@ namespace testingplayground
 
         Engine engine_;
         Compiler compiler_{ engine_ };                           // after engine_: stops before the Engine goes
+        // Dial values Claude set (slot, plain), applied by poll() on the message thread as host gestures.
+        std::mutex dialMutex_;
+        std::vector<std::pair<int, float>> pendingDials_;
 
         uint64_t seen_ = 0;                                      // the compiler's revision poll() last applied
-        uint64_t editorRun_ = 0;                                 // the request of the editor's last run
-        uint32_t alerts_ = 0;
+        std::atomic<uint64_t> editorRun_{ 0 };                   // the request of the last run (the editor's or Claude's)
+        std::atomic<uint32_t> alerts_{ 0 };
+        std::atomic<int> editorW_{ 0 }, editorH_{ 0 };
         double alertsAt_ = 0.0;                                  // when alerts_ last gained a bit (ms)
 
         std::array<float, kMaxControls> values_{};               // audio thread: the last good normalised values
@@ -167,6 +194,9 @@ namespace testingplayground
         bool wetSet_ = false;
         std::vector<float> weight_;
         std::vector<float> dry_;                                 // an effect's input per channel (stride maxBlock_)
+
+        // The chat with Claude. Declared last, destroyed first: its turn calls the members above (ChatHost).
+        ChatAgent chat_{ *this, claude::httpsTransport() };
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(Processor)
     };
