@@ -5,7 +5,8 @@
 // a stream), and append the plugin's calls (one function a method, one line each, after the program's last line), at
 // -O2, flushing subnormals as the audio thread does (Program::Options::denormals). FMinus reports a mistake in how a
 // method is declared as an error in one of those lines, which the program's author never wrote: such a message is
-// rewritten to say which method the plugin calls, and how.
+// rewritten to say which method the plugin calls, and how. Both passes read the program's other files through
+// Program::Options::include, by name: an #include of a name no file has is FMinus's "'name' file not found".
 #include "fminus/Patch.h"
 
 #include "Product.h"
@@ -19,7 +20,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <optional>
 #include <sstream>
+#include <string_view>
 
 namespace testingplayground
 {
@@ -202,15 +205,35 @@ namespace testingplayground
 
     Patch::Result Patch::compile(std::string_view source, float sampleRate, std::string_view fileName)
     {
+        return compile(singleFile(std::string(source), std::string(fileName)), sampleRate);
+    }
+
+    Patch::Result Patch::compile(const Sources& files, float sampleRate)
+    {
         const auto t0 = std::chrono::steady_clock::now();
         Result r;
-        const std::string file(fileName);
+        if (files.empty())
+        {
+            r.errors = std::string(kProgramName) + ": error: there is no program\n";
+            return r;
+        }
+        const std::string file = files.front().name;
+        const std::string_view source = files.front().text;
+        // An #include finds the file of that name; the program's own included again reads nothing, as FMinus reads
+        // each file once.
+        const fminus::Program::IncludeResolver include =
+            [&files](std::string_view name, std::string_view) -> std::optional<fminus::Program::IncludedFile> {
+            if (const SourceFile* f = findFile(files, name))
+                return fminus::Program::IncludedFile{ f->name, f->text };
+            return std::nullopt;
+        };
 
         // Pass 1: the program as written.
         fminus::Program::Options read;
         read.optimisation = 0;
         read.knobVersions = 0;
         read.fileName = file;
+        read.include = include;
         std::unique_ptr<fminus::Program> first = fminus::Program::compile(source, r.errors, read);
         if (!first)
         {
@@ -253,6 +276,7 @@ namespace testingplayground
         auto patch = std::unique_ptr<Patch>(new Patch());
         fminus::Program::Options build;
         build.fileName = file;
+        build.include = include;
         build.denormals = fminus::Program::Denormals::Flush;     // the audio thread's mode (ScopedNoDenormals)
         std::vector<std::string> names;
         for (std::size_t k = 0; k < main->parameters.size(); ++k)
@@ -335,7 +359,7 @@ namespace testingplayground
             patch->instances_.push_back(p);
             patch->initialised_.push_back(false);
         }
-        patch->source_ = std::string(source);
+        patch->sources_ = files;
         patch->reset(sampleRate);
         r.compileMs = msSince(t0);
         r.patch = std::move(patch);

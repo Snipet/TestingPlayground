@@ -14,14 +14,44 @@ namespace testingplayground
 {
     namespace
     {
-        // The program in the plugin state: <PROGRAM source=".." draft=".."/>, beside the parameters.
-        const juce::Identifier kProgramTag{ "PROGRAM" }, kSource{ "source" }, kDraft{ "draft" };
+        // The program in the plugin state, beside the parameters: <PROGRAM active=".."> with <RUN> (the files that
+        // play) and <DRAFT> (the editor's), each of <FILE name=".." text=".."/>s. The version before files saved
+        // <PROGRAM source=".." draft=".."/>, one file each.
+        const juce::Identifier kProgramTag{ "PROGRAM" }, kRunTag{ "RUN" }, kDraftTag{ "DRAFT" }, kFileTag{ "FILE" };
+        const juce::Identifier kActive{ "active" }, kName{ "name" }, kText{ "text" };
+        const juce::Identifier kSource{ "source" }, kDraft{ "draft" };   // the version before files
         const juce::Identifier kParamId{ "id" }, kParamValue{ "value" };   // the APVTS's <PARAM id value> children
 
         constexpr int kMaxChannels = 8;                          // handed to the Engine (the layouts allow two)
         constexpr double kAlertMs = 2000.0;                      // how long an alert stays shown
 
         juce::String idOf(int c) { return "p" + juce::String(c + 1); }
+
+        juce::ValueTree filesTree(const juce::Identifier& tag, const Sources& files)
+        {
+            juce::ValueTree tree{ tag };
+            for (const SourceFile& f : files)
+            {
+                juce::ValueTree file{ kFileTag };
+                file.setProperty(kName, juce::String::fromUTF8(f.name.c_str()), nullptr);
+                file.setProperty(kText, juce::String::fromUTF8(f.text.c_str()), nullptr);
+                tree.appendChild(file, nullptr);
+            }
+            return tree;
+        }
+
+        // A <RUN> or <DRAFT>'s files; or, from a session of the version before files, `oldText` as one file.
+        Sources filesOf(const juce::ValueTree& tree, const juce::String& oldText)
+        {
+            Sources files;
+            for (const juce::ValueTree& file : tree)
+                if (file.hasType(kFileTag))
+                    files.push_back({ file.getProperty(kName).toString().toStdString(),
+                                      file.getProperty(kText).toString().toStdString() });
+            if (files.empty() && oldText.isNotEmpty())
+                files = singleFile(oldText.toStdString());
+            return tidyFiles(std::move(files));
+        }
 
         // The host's text for slot c's normalised value: the program's plain value, with a dash for a host's NaN.
         juce::String plainText(const Control& c, float v)
@@ -140,8 +170,8 @@ namespace testingplayground
         }
 
         // The first example plays from the start (fminus.examples checks it compiles), its dials at their defaults.
-        draft_ = kExamples[0].source;
-        const CompileStatus s = compiler_.compileNow(draft_);
+        draft_.files = singleFile(kExamples[0].source);
+        const CompileStatus s = compiler_.compileNow(draft_.files);
         jassert(s.ok);
         seen_ = s.revision;
         apply(s, true);
@@ -373,7 +403,7 @@ namespace testingplayground
             const std::lock_guard<std::mutex> lock(programMutex_);
             before = controls_;
             controls_ = s.controls;
-            running_ = s.source;
+            running_ = s.sources;
         }
         if (reset)
             for (int c = 0; c < kMaxControls; ++c)
@@ -425,8 +455,9 @@ namespace testingplayground
         juce::ValueTree program{ kProgramTag };
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
-            program.setProperty(kSource, juce::String::fromUTF8(running_.c_str()), nullptr);
-            program.setProperty(kDraft, juce::String::fromUTF8(draft_.c_str()), nullptr);
+            program.setProperty(kActive, draft_.active, nullptr);
+            program.appendChild(filesTree(kRunTag, running_), nullptr);
+            program.appendChild(filesTree(kDraftTag, draft_.files), nullptr);
         }
         state.appendChild(program, nullptr);
         if (const std::unique_ptr<juce::XmlElement> xml = state.createXml())
@@ -449,12 +480,15 @@ namespace testingplayground
                 p.setProperty(kParamValue, 0.5, nullptr);
         }
         const juce::ValueTree program = state.getChildWithName(kProgramTag);
-        std::string source = program.getProperty(kSource).toString().toStdString();
-        std::string draft = program.getProperty(kDraft).toString().toStdString();
-        if (source.empty())
-            source = kExamples[0].source;
-        if (draft.empty())
-            draft = source;
+        Sources run = filesOf(program.getChildWithName(kRunTag), program.getProperty(kSource).toString());
+        Draft draft;
+        draft.files = filesOf(program.getChildWithName(kDraftTag), program.getProperty(kDraft).toString());
+        if (run.empty())
+            run = singleFile(kExamples[0].source);
+        if (draft.files.empty())
+            draft.files = run;
+        draft.active = std::clamp(static_cast<int>(program.getProperty(kActive, 0)), 0,
+                                  static_cast<int>(draft.files.size()) - 1);
         state.removeChild(program, nullptr);
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
@@ -462,14 +496,14 @@ namespace testingplayground
             ++draftRevision_;
         }
         // The session's program, compiled now, its dials as the session has them.
-        const CompileStatus s = compiler_.compileNow(source);
+        const CompileStatus s = compiler_.compileNow(std::move(run));
         seen_ = s.revision;
         apply(s, false);
         apvts_.replaceState(state);
     }
 
     // ---- EditorPort ------------------------------------------------------------------------------------------------------
-    std::string Processor::draft() const
+    Draft Processor::draft() const
     {
         const std::lock_guard<std::mutex> lock(programMutex_);
         return draft_;
@@ -481,22 +515,22 @@ namespace testingplayground
         return draftRevision_;
     }
 
-    void Processor::setDraft(const std::string& text)
+    void Processor::setDraft(const Draft& draft)
     {
         const std::lock_guard<std::mutex> lock(programMutex_);
-        draft_ = text;
+        draft_ = draft;
     }
 
-    void Processor::run(const std::string& source)
+    void Processor::run(const Sources& files)
     {
-        editorRun_ = compiler_.request(source);
+        editorRun_ = compiler_.request(files);
     }
 
     bool Processor::compiling() const { return compiler_.busy(); }
     CompileStatus Processor::status() const { return compiler_.status(); }
     uint64_t Processor::statusRevision() const { return compiler_.revision(); }
 
-    std::string Processor::runningSource() const
+    Sources Processor::running() const
     {
         const std::lock_guard<std::mutex> lock(programMutex_);
         return running_;

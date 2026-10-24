@@ -57,6 +57,10 @@ module Effect
   off the audio thread; or use a fixed array, `float line[48000];`, a field like any other.
 - **Modules inside modules.** The main module may hold others (`Svf l;`, `Osc osc[4];`): their methods are its
   helpers, and their parameters start at their defaults (they have no dials).
+- **Several files.** The editor has a tab for each file, the program's first (`program.fm`). The program includes
+  another by its name, `#include "filters.fm"`, as C does: the file is read where the line is (a module there is a
+  type after it), and once only, as if every file began with `#pragma once`, so two files may both include a third.
+  Its errors name it ("filters.fm:3:12: error: ..."). FMinus has no other directive: no macros, no `#if`.
 - **Its types are checked.** The plugin calls each method through a line of its own with the type it calls it by, so
   a `process` with other parameters is an error ("Effect::process: the plugin calls it as ..."), never a crash.
 - **What the plugin guards, and what it cannot.** Every sample that leaves the plugin is finite and within +-4
@@ -76,18 +80,24 @@ from calloc in init, freed in end) and Drive (tanh saturation). To add one, add 
 
 - **RUN** compiles the text and plays it once it compiles, crossfaded over 20 ms; **Cmd-Return** does the same from
   the keyboard. Compiling takes some tens of milliseconds, off the audio thread and off the editor's.
-- **EXAMPLES** replaces the text with an example (Cmd-Z gives yours back) and runs it.
+- **EXAMPLES** replaces the program's text with an example (Cmd-Z gives yours back) and runs it; the other files
+  stay.
+- **The files' tabs**, over the text: a click shows a file; a double-click edits its name in place (Return keeps it,
+  Escape cancels; letters, digits, `_`, `-` and `.`, and no two the same); **+** adds a file (up to eight), its name
+  ready to type; a tab's **x** closes its file, asking first when it has text. The program's tab cannot be closed. A
+  tab whose file the last run's errors name has a mark before its name. Each file keeps its own caret, scroll and undo.
 - **The status** says whether the program plays, whether the text has changed since it was run, and how many errors
   the last run had; a program that does not compile leaves the last one that did playing. At the right: the audio
   thread's load (the busiest recent block's share of its time) and the output guard's alerts.
-- **The text** is FunkGui's TextEditor: FMinus's words highlighted, line numbers, undo (Cmd-Z, Cmd-Shift-Z), the
-  clipboard, word and line moves (Alt and Cmd with the arrows), Tab to indent (four spaces), Escape to leave the text
-  (the panel's keys then move the focus over the dials). It has the caret when the editor opens.
-- **Problems.** The last run's messages are listed under the text, with their line and column; a click on one puts the
-  caret there, and each line with an error has a mark in the gutter.
+- **The text** of the file shown is FunkGui's TextEditor: FMinus's words highlighted, line numbers, undo (Cmd-Z,
+  Cmd-Shift-Z), the clipboard, word and line moves (Alt and Cmd with the arrows), Tab to indent (four spaces), Escape to
+  leave the text (the panel's keys then move the focus over the dials). It has the caret when the editor opens.
+- **Problems.** The last run's messages are listed under the text, with their file, line and column; a click on one
+  shows its file and puts the caret there, and each line with an error has a mark in the gutter.
 - **The dials** are the program's parameters (above); drag, scroll, or use the keys once Tab has focused one.
-- **The session** keeps the program that plays, the text as you left it (run or not) and the dials. A session whose
-  program no longer compiles (an older FMinus, say) leaves the first example playing, its text in the editor.
+- **The session** keeps the program that plays (all its files), the files as you left them (run or not), the tab
+  shown, and the dials. A session whose program no longer compiles (an older FMinus, say) leaves the first example
+  playing, its files in the editor. A session saved before files loads as a program of one file.
 - THEME (header) and ZOOM (footer) are machine-wide preferences.
 
 ## Build and run
@@ -127,11 +137,11 @@ build-dev/TestingPlayground_probes --list
 | Probe | Checks |
 | --- | --- |
 | `fminus.examples` | every example compiles with no message, its dials named, with ranges and defaults inside them; plays two seconds over noise, finite, audible and with no alert; the same bits in blocks of 64 and 333 |
-| `fminus.contract` | what a program needs, and what the plugin says when it does not fit: no module `Effect`, no `process`, a `process` of another type (refused, never called), one that could allocate, a syntax error with its line; eight dials and a note for the ninth parameter; a held module's parameters at their defaults; init gets the rate |
+| `fminus.contract` | what a program needs, and what the plugin says when it does not fit: no module `Effect`, no `process`, a `process` of another type (refused, never called), one that could allocate, a syntax error with its line; eight dials and a note for the ninth parameter; a held module's parameters at their defaults; init gets the rate; several files: an included function plays, the main module in an included file, a file two files include read once, an included file's error with its name and include stack, a file not found, the plugin's message for a wrong `process` after an `#include` |
 | `dsp.swap` | the Engine: no program passes the input; the first program fades in from it, a second crossfades from the first over 20 ms with no step beyond the signal's own, bit for bit outside the fades, and the old one is handed back; a real dial glides over 20 ms sample by sample, an integer one steps at the block; a NaN, an infinity and 10 leave as 0, 0 and 4, with their alerts |
 | `plugin.process` | the processor as a host drives it: P1 to P8 named and worded as the program's, host writes reach the program (within 0.05 dB), a host's NaN ignored (its text a dash), a block of 0 samples and a block larger than announced change nothing, the bypass passes the input bit for bit and its edges do not click, a block before prepareToPlay passes the input with NaN and inf as 0 |
-| `plugin.state` | the session round-trips (the program, the draft, the dials, the output bit for bit); a run moves a renamed parameter's dial to its default and keeps a kept one's; a session whose program does not compile leaves the last one playing; one without a program plays the first example; a NaN dial loads as 0.5 |
-| `gui.dump` | the panel headless to `gui.dump.png`, `.paper.png`, `.error.png` and `.edited.png`: settles, every glyph, the draft in the editor and a dial for each parameter; typing, Cmd-Return, a syntax error (status, problem line, gutter mark, the click that jumps to it), the EXAMPLES menu and its undo, a dial's drag and double-click, Escape and Tab |
+| `plugin.state` | the session round-trips (a program of two files, the draft's three files and its tab, the dials, the output bit for bit); a run moves a renamed parameter's dial to its default and keeps a kept one's; a session whose program does not compile leaves the last one playing; one without a program plays the first example; one saved before files loads as one file; one with too many files or bad names loads tidied; a NaN dial loads as 0.5 |
+| `gui.dump` | the panel headless to `gui.dump.png`, `.paper.png`, `.error.png`, `.edited.png` and `.files.png`: settles, every glyph, the draft in the editor and a dial for each parameter; typing, Cmd-Return, a syntax error (status, problem line, gutter mark, the click that jumps to it), the EXAMPLES menu and its undo; the files' tabs (+, renaming in place, a taken name refused, Escape, typing into a second file, an `#include` of it that runs, its error's problem and marks, the click that shows its file, closing with and without asking); a dial's drag and double-click, Escape and Tab |
 | `lint.layers`, `lint.exports` | Source/dsp, Source/fsdsp and Source/fminus without JUCE or FunkGui, FMinus through its public header only; each bundle exports its entry points and nothing else |
 
 A probe is one file in `Tools/probes/<layer>/` whose first line registers it (`// PROBE name=dsp.mytest timeout=60`)
@@ -164,11 +174,14 @@ subnormals.
 Source/fminus/           Patch: a program compiled for the plugin (the contract, the calls, the instances), JUCE-free;
                          examples/*.fm, the EXAMPLES (compiled in by CMakeLists.txt as generated/Examples.h)
 Source/dsp/              the audio side, plain C++20 without JUCE: Engine (programs swapped without a click, the dials
-                         glided into streams, the output guard), Compiler (compiles off the audio thread), Controls
+                         glided into streams, the output guard), Compiler (compiles off the audio thread), Controls,
+                         Sources (a program's files)
 Source/fsdsp/core/       FSynth's DSP core, vendored at the tag in SEED.tsv (scripts/sync-dsp-core.sh)
-Source/plugin/           the JUCE AudioProcessor: P1 to P8, the program and the draft in the session, the bypass;
+Source/plugin/           the JUCE AudioProcessor: P1 to P8, the program's files and the draft in the session, the
+                         bypass;
                          EditorPort.h, what the editor reaches besides the parameters
-Source/editor/           the FunkGui panel (Panel.cpp: the toolbar, the TextEditor, the problems, the dials), Theme.h;
+Source/editor/           the FunkGui panel (Panel.cpp: the toolbar, the files' tabs and TextEditors, the problems, the
+                         dials), Theme.h;
                          gpu/ starts it in the plugin
 Tools/probes/            tests that measure: fminus/, dsp/, plugin/, gui/ (the panel, headless)
 scripts/                 plugin.py, test.sh, sync-dsp-core.sh, install.sh

@@ -6,6 +6,7 @@
 //   gui.dump.paper.png   PAPER (theme 1)
 //   gui.dump.error.png   a run with a syntax error: the status, the problem's line, the mark in the gutter
 //   gui.dump.edited.png  after the EXAMPLES menu: another example, running, its dials
+//   gui.dump.files.png   two files, the second shown, after a run whose error is in it: its tab's mark, the problem
 // and checks:
 //   FRAME     the frame settles, every glyph is in the font, the editor shows the processor's draft (the first
 //             example), and the dials are the program's parameters: one for each, the rest not shown
@@ -20,6 +21,13 @@
 //             its dials, as soon as the compile finishes, before the processor's timer has taken it
 //   DIAL      a drag up on the first dial raises its parameter by a quarter for 60 px; a double-click returns it to
 //             the program's default
+//   FILES     the + adds a second tab, file2.fm, shown, its name edited in place: typed keys and Return rename it
+//             (filters.fm), a name taken already is refused (the edit goes on) and Escape cancels; text typed goes to
+//             that file; the program includes it and runs: both files play. An error in the included file: the
+//             problem names it and its line, its tab has a mark and the gutter a mark only while it is shown; a click
+//             on the problem shows that file with the caret on the line. A click on the first tab shows the program
+//             again. The processor's draft has both files and the tab shown. The x of a file with text asks first (a
+//             menu; dismissed, the file stays), and closing it shows the tab before; an empty file closes at once
 //   KEYS      Escape leaves the editor, after which Tab moves the focus ring (and no key reaches the text)
 #include "Probe.h"
 
@@ -93,7 +101,10 @@ PROBE(gui, dump)
         P.le(tag + ".settle_frames", host.settle(), 599.0);
         const funkgui::PrimList& frame = host.draw();
         P.eq(tag + ".missing_glyphs", static_cast<int64_t>(frame.missingGlyphs), 0);
-        P.eq(tag + ".editor_shows_draft", panel.editor().text() == port.draft() ? 1 : 0, 1);
+        const tp::Draft draft = port.draft();
+        P.eq(tag + ".editor_shows_draft",
+             panel.editor().text() == draft.files[static_cast<std::size_t>(draft.active)].text ? 1 : 0, 1);
+        P.eq(tag + ".tabs_are_files", panel.fileCount(), static_cast<int64_t>(draft.files.size()));
         int dials = 0;
         for (int c = 0; c < tp::kMaxControls; ++c)
             dials += panel.centreOfDial(c).has_value() ? 1 : 0;
@@ -115,14 +126,14 @@ PROBE(gui, dump)
     host.settle();
     const std::string typed = editor.text();
     P.eq("type.text_ends", typed.size() >= 6 && typed.substr(typed.size() - 6) == "\n// hi" ? 1 : 0, 1);
-    P.eq("type.draft_follows", port.draft() == typed ? 1 : 0, 1);
+    P.eq("type.draft_follows", port.draft().files[0].text == typed ? 1 : 0, 1);
     P.eq("type.status_edited", panel.statusText().rfind("EDITED", 0) == 0 ? 1 : 0, 1);
     std::printf("status: %s\n", panel.statusText().c_str());
 
     // RUN
     host.keys("cmd+return");
     settleRun(processor, host);
-    P.eq("run.plays_text", port.runningSource() == typed ? 1 : 0, 1);
+    P.eq("run.plays_text", port.running() == tp::singleFile(typed) ? 1 : 0, 1);
     P.eq("run.status_running", panel.statusText().rfind("RUNNING", 0) == 0 ? 1 : 0, 1);
     std::printf("status: %s\n", panel.statusText().c_str());
 
@@ -137,7 +148,8 @@ PROBE(gui, dump)
     P.eq("error.status", panel.statusText().rfind("1 ERROR", 0) == 0 ? 1 : 0, 1);
     P.eq("error.listed", panel.problems().empty() ? 0 : 1, 1);
     P.eq("error.line", panel.problems().empty() ? 0 : panel.problems()[0].line, 3);
-    P.eq("error.previous_plays", port.runningSource() == typed ? 1 : 0, 1);
+    P.eq("error.previous_plays", port.running() == tp::singleFile(typed) ? 1 : 0, 1);
+    P.eq("error.file", panel.problems().empty() ? 0 : (panel.problems()[0].file == "program.fm" ? 1 : 0), 1);
     {
         const funkgui::PrimList& frame = host.draw();
         P.ge("error.gutter_mark", countTag(frame, tp::ui::kMarkTag), 1.0);
@@ -175,7 +187,7 @@ PROBE(gui, dump)
         P.eq("examples.dials_before_poll", shown, wanted);
         settleRun(processor, host);
         P.eq("examples.replaces_text", editor.text() == tp::kExamples[1].source ? 1 : 0, 1);
-        P.eq("examples.runs_it", port.runningSource() == tp::kExamples[1].source ? 1 : 0, 1);
+        P.eq("examples.runs_it", port.running() == tp::singleFile(tp::kExamples[1].source) ? 1 : 0, 1);
         P.eq("examples.status_running", panel.statusText().rfind("RUNNING", 0) == 0 ? 1 : 0, 1);
         writePng(P, host, "gui.dump.edited.png", "examples");
         P.eq("examples.undo_one_step", editor.undo() && editor.text() == before ? 1 : 0, 1);
@@ -203,6 +215,103 @@ PROBE(gui, dump)
             P.near("dial.double_click_default", static_cast<double>(p.value01()), static_cast<double>(tp::normOf(c, c.def)),
                    1e-6);
         }
+    }
+
+    // FILES
+    {
+        const std::string program = editor.text();
+        const funkgui::Point plus = panel.centreOfNewTab();
+        host.click(plus.x, plus.y);
+        host.settle();
+        P.eq("files.plus_adds", panel.fileCount(), 2);
+        P.eq("files.new_shown", panel.activeFile(), 1);
+        P.eq("files.new_named", panel.fileName(1) == "file2.fm" ? 1 : 0, 1);
+        P.eq("files.new_renaming", panel.renamingFile() ? 1 : 0, 1);
+        host.keys("p,r,o,g,r,a,m,.,f,m,return");                  // taken: refused, the edit goes on
+        P.eq("files.taken_refused", panel.renamingFile() && panel.fileName(1) == "file2.fm" ? 1 : 0, 1);
+        host.keys("escape");
+        P.eq("files.escape_cancels", !panel.renamingFile() && panel.fileName(1) == "file2.fm" ? 1 : 0, 1);
+        const funkgui::Point tab1 = panel.centreOfTab(1);
+        host.doubleClick(tab1.x, tab1.y);
+        P.eq("files.double_click_renames", panel.renamingFile() ? 1 : 0, 1);
+        host.keys("f,i,l,t,e,r,s,.,f,m,return");
+        host.settle();
+        P.eq("files.renamed", panel.fileName(1) == "filters.fm" && !panel.renamingFile() ? 1 : 0, 1);
+
+        // Text into the second file; the program includes it.
+        panel.editor().insert("float quarter(float x)\n{\n    return x * 0.25f;\n}\n");
+        host.tick(1);                                             // no input event: a frame's refresh sends it
+        P.eq("files.typed_into_second", port.draft().files.size() == 2 && port.draft().files[0].text == program &&
+                                            port.draft().files[1].text.find("quarter") != std::string::npos
+                                            ? 1 : 0,
+             1);
+        const funkgui::Point tab0 = panel.centreOfTab(0);
+        host.click(tab0.x, tab0.y);
+        host.settle();
+        P.eq("files.first_tab_shows_program", panel.activeFile() == 0 && panel.editor().text() == program ? 1 : 0, 1);
+        panel.editor().setCaret({ 0, 0 });
+        panel.editor().insert("#include \"filters.fm\"\n");
+        host.keys("cmd+return");
+        settleRun(processor, host);
+        P.eq("files.run_plays_both", port.running().size() == 2 && port.status().ok ? 1 : 0, 1);
+        P.eq("files.status_running", panel.statusText().rfind("RUNNING", 0) == 0 ? 1 : 0, 1);
+
+        // An error in the included file.
+        host.click(tab1.x, tab1.y);
+        host.settle();
+        panel.editor().selectAll();
+        panel.editor().insert("float quarter(float x)\n{\n    return y;\n}\n");
+        host.click(tab0.x, tab0.y);                               // the program shown while it runs
+        host.keys("cmd+return");
+        settleRun(processor, host);
+        for (const tp::ui::Problem& p : panel.problems())
+            std::printf("problem %s:%d:%d %s\n", p.file.c_str(), p.line, p.column, p.text.c_str());
+        P.eq("files.error_listed", panel.problems().empty() ? 0 : 1, 1);
+        P.eq("files.error_names_file", !panel.problems().empty() && panel.problems()[0].file == "filters.fm" &&
+                                           panel.problems()[0].line == 3
+                                           ? 1 : 0,
+             1);
+        {
+            const funkgui::PrimList& frame = host.draw();
+            P.eq("files.no_gutter_mark_in_program", countTag(frame, tp::ui::kMarkTag), 0);
+            P.ge("files.tabs_drawn", countTag(frame, tp::ui::kTabTag), 2.0);
+        }
+        const funkgui::Point inFile = panel.centreOfProblem(0);
+        host.click(inFile.x, inFile.y);
+        host.settle();
+        P.eq("files.problem_shows_file", panel.activeFile(), 1);
+        P.eq("files.problem_caret_line", panel.editor().caret().line, 2);
+        {
+            const funkgui::PrimList& frame = host.draw();
+            P.ge("files.gutter_mark_in_file", countTag(frame, tp::ui::kMarkTag), 1.0);
+            P.eq("files.missing_glyphs", static_cast<int64_t>(frame.missingGlyphs), 0);
+            writePng(P, host, "gui.dump.files.png", "files");
+        }
+        P.eq("files.draft_has_tab", port.draft().active, 1);
+
+        // Closing: a file with text asks first.
+        const funkgui::Point x1 = panel.centreOfCloseTab(1);
+        host.click(x1.x, x1.y);
+        P.eq("files.close_asks", host.pendingMenu() != nullptr ? 1 : 0, 1);
+        P.eq("files.dismissed_stays", host.cancelMenu() && panel.fileCount() == 2 ? 1 : 0, 1);
+        host.click(x1.x, x1.y);
+        P.eq("files.close_chosen", host.chooseMenuItem(1) && panel.fileCount() == 1 ? 1 : 0, 1);
+        host.settle();
+        P.eq("files.closed_shows_before", panel.activeFile(), 0);
+        P.eq("files.draft_one_file", static_cast<int64_t>(port.draft().files.size()), 1);
+        // An empty file closes at once.
+        host.click(plus.x, plus.y);
+        host.keys("escape");
+        host.settle();
+        const funkgui::Point x2 = panel.centreOfCloseTab(1);
+        host.click(x2.x, x2.y);
+        host.settle();
+        P.eq("files.empty_closes_at_once", host.pendingMenu() == nullptr && panel.fileCount() == 1 ? 1 : 0, 1);
+        // The program as it was before this section, running.
+        panel.editor().selectAll();
+        panel.editor().insert(program);
+        host.keys("cmd+return");
+        settleRun(processor, host);
     }
 
     // KEYS
