@@ -1,5 +1,6 @@
 // Source/fminus/Patch.h: one program, compiled for the plugin and ready to play (JUCE-free). A program is FMinus source
-// whose main module the plugin runs; what it asks of that module depends on the plugin's kind (cmake/Product.cmake):
+// whose main module the plugin runs, in the first of its files (Sources.h); the others are what its #includes read,
+// by name. What the plugin asks of the main module depends on the plugin's kind (cmake/Product.cmake):
 //
 //   an effect: module Effect
 //       param ...;                                              the dials (Controls.h), at most kMaxControls
@@ -38,6 +39,7 @@
 #pragma once
 
 #include "dsp/Controls.h"
+#include "dsp/Sources.h"
 
 #include <cstddef>
 #include <memory>
@@ -69,9 +71,11 @@ namespace testingplaygroundsynth
             double compileMs = 0.0;
         };
 
-        // Compiles `source` (named `fileName` in the messages) for this plugin's kind and creates its instances at
-        // `sampleRate`: zeroed, their parameters at their defaults, init run.
-        static Result compile(std::string_view source, float sampleRate, std::string_view fileName = "program.fm");
+        // Compiles `files` (the first the program, each named in the messages as it is called) for this plugin's
+        // kind and creates its instances at `sampleRate`: zeroed, their parameters at their defaults, init run.
+        static Result compile(const Sources& files, float sampleRate);
+        // A program of one file.
+        static Result compile(std::string_view source, float sampleRate, std::string_view fileName = kProgramName);
 
         ~Patch();
         Patch(const Patch&) = delete;
@@ -83,7 +87,7 @@ namespace testingplaygroundsynth
 
         const Controls& controls() const noexcept { return controls_; }
         int instances() const noexcept { return static_cast<int>(instances_.size()); }
-        const std::string& source() const noexcept { return source_; }
+        const Sources& sources() const noexcept { return sources_; }
 
         // ---- the audio thread ------------------------------------------------------------------------------------
         // Control c's value (its plain value, Controls.h) in instance i, or in every instance (i < 0): what a stream
@@ -112,7 +116,7 @@ namespace testingplaygroundsynth
         std::size_t instanceSize_ = 0, instanceAlign_ = 16;
         Controls controls_{};
         std::vector<const void*> params_;              // per control: its fminus::Program::Parameter (null: unused)
-        std::string source_;
+        Sources sources_;
         float rate_ = 48000.0f;
     };
 }

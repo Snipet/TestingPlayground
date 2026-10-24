@@ -17,7 +17,10 @@
 #include <funkgui/core/Theme.h>
 #include <funkgui/core/TypeScale.h>
 #include <funkgui/panel/HostServices.h>
+#include <funkgui/text/FontService.h>
 #include <funkgui/text/Highlighter.h>
+#include <funkgui/text/LineEdit.h>
+#include <funkgui/text/TextFit.h>
 #include <funkgui/widgets/Dial.h>
 #include <funkgui/widgets/SegmentedSelector.h>
 #include <funkgui/widgets/TextEditor.h>
@@ -75,9 +78,14 @@ namespace testingplaygroundsynth::ui
         {
             if (line.empty())
                 continue;
+            // clang's include stack, before a message in an included file: the message names its file itself.
+            if (line.rfind("In file included from ", 0) == 0)
+                continue;
             Problem p;
             // "<file>:<line>:<col>: <kind>: <text>" or "<file>: <kind>: <text>"
             const std::size_t colon = line.find(':');
+            if (colon != std::string::npos)
+                p.file = line.substr(0, colon);
             std::string rest = colon == std::string::npos ? line : line.substr(colon + 1);
             int ln = 0, col = 0, used = 0;
             if (std::sscanf(rest.c_str(), "%d:%d: %n", &ln, &col, &used) >= 2 && used > 0)
@@ -117,9 +125,11 @@ namespace testingplaygroundsynth::ui
         constexpr float kHeaderRuleY = 46.0f;
         constexpr float kToolbarY = 56.0f;
         constexpr float kButtonH = 22.0f;
-        constexpr float kEditorY = 88.0f;
-        constexpr float kEditorH = 404.0f;
+        constexpr float kTabsY = 88.0f;                  // the files' tabs, over the editor
+        constexpr float kEditorY = kTabsY + 26.0f;
+        constexpr float kEditorH = 378.0f;
         constexpr float kProblemRowH = 15.0f;
+        constexpr float kPlaceW = 150.0f;                // a problem's file, line and column
         constexpr int   kProblemRows = 4;
         constexpr float kDialCellW = 60.0f;              // funkgui::DialGeom, primary: 60 x 80
         constexpr float kDialGap = 30.0f;
@@ -161,7 +171,8 @@ namespace testingplaygroundsynth::ui
         }
 
         // FMinus's words, for the editor's highlighter: C's that FMinus has, and its own (module, param, the vector
-        // types). It has no strings and no preprocessor.
+        // types). It has no strings, and of the preprocessor only #include and #pragma: a line that starts with # is
+        // one preprocessor span.
         funkgui::text::KeywordRules fminusRules()
         {
             funkgui::text::KeywordRules r;
@@ -172,7 +183,7 @@ namespace testingplaygroundsynth::ui
             r.blockOpen = "/*";
             r.blockClose = "*/";
             r.quotes = "";
-            r.preprocessor = 0;
+            r.preprocessor = '#';
             return r;
         }
 
@@ -420,105 +431,563 @@ namespace testingplaygroundsynth::ui
             ShownFn shown_;
         };
 
-        // ---- the program's text ---------------------------------------------------------------------------------------
-        class EditorItem final : public Item
+        // ---- the program's files: a tab each, over the editor of the one shown ----------------------------------------
+        // The tab bar: a tab per file (the program's first, which cannot be closed; the others with a close box after
+        // their names), then the new-file box. A click shows a file, a double-click edits its name in place (Return
+        // keeps it, Escape cancels), the close box closes it (asking first when it has text). The tab of a file the
+        // last run's errors name has a mark before its name. Each file has an editor of its own, so its caret, scroll
+        // and undo steps stay with it.
+        constexpr float kTabH = 22.0f;
+        constexpr float kTabPad = 12.0f;                 // before a tab's name, and after it
+        constexpr float kTabCloseW = 14.0f;              // a closable tab's close box, after its name
+        constexpr float kTabMinW = 64.0f;
+        constexpr float kTabMaxW = 150.0f;
+        constexpr float kTabGap = 2.0f;
+        constexpr float kNewTabW = 24.0f;
+        constexpr uint64_t kStructureStep = uint64_t{ 1 } << 40;   // FilesItem::revision: a change of the tabs
+    }
+
+    // Not in the unnamed namespace: Panel.h names it.
+    class FilesItem final : public Item
+    {
+    public:
+        using Close = std::function<void(int tab)>;  // a closable tab's close box: the Panel asks, then remove()
+
+        FilesItem(funkgui::Rect bar, funkgui::Rect editor, uint32_t id, const std::vector<Problem>& problems,
+                  Close close)
+            : bar_(bar), editorBounds_(editor), id_(id), problems_(problems), close_(std::move(close))
         {
-        public:
-            EditorItem(funkgui::Rect bounds, uint32_t id, const std::vector<int>& errorLines)
-                : editor_(id), errorLines_(errorLines)
-            {
-                funkgui::TextEditorOptions o;
-                o.style = funkgui::editorFont(funkgui::EditorFont::code);
-                o.softTabs = true;
-                o.tabWidth = 4;
-                o.a11yTitle = "Program";
-                o.placeholder = "An FMinus program: EXAMPLES has some to start from";
-                editor_.setOptions(o);
-                editor_.setBounds(bounds);
-                editor_.setHighlighter(std::make_unique<funkgui::text::KeywordHighlighter>(fminusRules()));
-                editor_.setPalette(funkgui::TextEditor::defaultPalette());
-            }
+            load(Draft{ singleFile(""), 0 });
+        }
 
-            funkgui::TextEditor& editor() noexcept { return editor_; }
+        funkgui::TextEditor& editor() noexcept { return *tabs_[static_cast<std::size_t>(active_)].editor; }
+        const funkgui::TextEditor& editor() const noexcept
+        {
+            return *tabs_[static_cast<std::size_t>(active_)].editor;
+        }
+        int active() const noexcept { return active_; }
+        int count() const noexcept { return static_cast<int>(tabs_.size()); }
+        const std::string& name(int i) const { return tabs_[static_cast<std::size_t>(i)].name; }
+        int find(std::string_view n) const
+        {
+            for (int i = 0; i < count(); ++i)
+                if (name(i) == n)
+                    return i;
+            return -1;
+        }
+        bool renaming() const noexcept { return renaming_ >= 0; }
+        // Bumps when a tab comes, goes, is renamed or shown (not when text changes).
+        uint32_t layoutRevision() const noexcept { return static_cast<uint32_t>(structure_ / kStructureStep); }
 
-            void tick(float dt, bool, bool, funkgui::Point) override { editor_.tick(dt); }
-            void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override
+        // Bumps whenever a file's text, a name, the files or the tab shown change.
+        uint64_t revision() const noexcept
+        {
+            uint64_t r = structure_;
+            for (const Tab& t : tabs_)
+                r += t.editor->revision();
+            return r;
+        }
+
+        Draft draft() const
+        {
+            Draft d;
+            d.active = active_;
+            for (const Tab& t : tabs_)
+                d.files.push_back({ t.name, t.editor->text() });
+            return d;
+        }
+
+        // Every tab anew: the processor's draft (a host loaded a session, or the editor opened).
+        void load(const Draft& d)
+        {
+            renaming_ = -1;
+            why_.clear();
+            tabs_.clear();
+            for (const SourceFile& f : d.files)
+                if (tabs_.size() < kMaxFiles)
+                    tabs_.push_back(makeTab(f.name, f.text));
+            if (tabs_.empty())
+                tabs_.push_back(makeTab(kProgramName, ""));
+            active_ = std::clamp(d.active, 0, count() - 1);
+            show();
+            structure_ += kStructureStep;
+        }
+
+        void attach(funkgui::HostServices* host)
+        {
+            host_ = host;
+            for (Tab& t : tabs_)
+                t.editor->attach(host);
+        }
+
+        void select(int i)
+        {
+            if (i < 0 || i >= count() || i == active_)
+                return;
+            editor().setFocused(false);
+            active_ = i;
+            show();
+            structure_ += kStructureStep;
+        }
+
+        // A new file after the others, shown, its name being edited. False when there is no room for its tab.
+        bool add()
+        {
+            if (tabs_.size() >= kMaxFiles)
+                return false;
+            endRename();
+            Sources files;
+            for (const Tab& t : tabs_)
+                files.push_back({ t.name, {} });
+            tabs_.push_back(makeTab(freshFileName(files), ""));
+            select(count() - 1);
+            beginRename(count() - 1);
+            structure_ += kStructureStep;
+            return true;
+        }
+
+        // Closes file i (not the program's); the tab before it is shown when it was.
+        void remove(int i)
+        {
+            if (i <= 0 || i >= count())
+                return;
+            if (renaming_ == i)
+                renaming_ = -1;
+            else if (renaming_ > i)
+                --renaming_;
+            const bool focused = editor().focused();
+            editor().setFocused(false);
+            tabs_.erase(tabs_.begin() + i);
+            if (active_ >= i)
+                active_ = std::max(0, active_ - 1);
+            show();
+            editor().setFocused(focused);
+            structure_ += kStructureStep;
+        }
+
+        void beginRename(int i)
+        {
+            if (i < 0 || i >= count())
+                return;
+            renaming_ = i;
+            why_.clear();
+            edit_.set(name(i), static_cast<int>(kMaxNameLength));
+        }
+
+        // Return: the name typed, when it can name the file; else the edit goes on and says why not.
+        bool commitRename()
+        {
+            if (renaming_ < 0)
+                return true;
+            const std::string& typed = edit_.buffer;
+            if (typed != name(renaming_))
             {
-                editor_.draw(c, th, ring);
-                // A mark in the gutter, beside the line number, on each line the last run's errors name.
-                if (errorLines_.empty())
-                    return;
-                const funkgui::Rect b = editor_.bounds();
-                const funkgui::Rect area = editor_.textArea();
-                const float rowH = editor_.rowHeight();
-                const float scrollY = editor_.scroll().y;
-                c.pushClip({ b.x + 1.0f, b.y + 1.0f, b.w - 2.0f, b.h - 2.0f });
+                if (!validFileName(typed))
                 {
-                    const funkgui::Canvas::Scope s(c, kMarkTag, false);
-                    for (const int line : errorLines_)
-                    {
-                        if (line < 1 || line > editor_.lineCount())
-                            continue;
-                        const int row = editor_.rowOf({ line - 1, 0 });
-                        const float y = area.y + static_cast<float>(row) * rowH - scrollY;
-                        if (y + rowH < b.y || y > b.bottom())
-                            continue;
-                        c.rrect(b.x + 3.0f, y + 2.0f, 3.0f, rowH - 4.0f, 1.0f, th.signal);
-                    }
+                    why_ = "A NAME IS LETTERS, DIGITS, _, - AND ., NOT STARTING WITH .";
+                    return false;
                 }
-                c.popClip();
+                if (find(typed) >= 0)
+                {
+                    why_ = "ANOTHER FILE HAS THAT NAME";
+                    return false;
+                }
+                tabs_[static_cast<std::size_t>(renaming_)].name = typed;
+                structure_ += kStructureStep;
             }
-            bool contains(funkgui::Point p) const override { return editor_.contains(p); }
-            funkgui::Cursor cursorAt(funkgui::Point p) const override { return editor_.cursorAt(p); }
-            void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController&, funkgui::HostServices&) override
-            {
-                editor_.pointerDown(e);
-            }
-            void pointerDrag(const funkgui::PointerEvent& e, funkgui::GestureController&) override
-            {
-                editor_.pointerDrag(e);
-            }
-            void pointerUp(const funkgui::PointerEvent& e, funkgui::GestureController&) override { editor_.pointerUp(e); }
-            void doubleClick(const funkgui::PointerEvent& e, funkgui::GestureController&) override
-            {
-                editor_.doubleClick(e);
-            }
-            bool wheel(const funkgui::WheelEvent& e, funkgui::GestureController&, double) override
-            {
-                return editor_.wheel(e);
-            }
-            bool key(const funkgui::KeyEvent& e, funkgui::GestureController&) override { return editor_.key(e); }
-            void accessibility(std::vector<funkgui::A11yItem>& out) const override
-            {
-                funkgui::A11yItem item;
-                editor_.accessibility(item);
-                out.push_back(std::move(item));
-            }
-            bool a11yAction(uint32_t id, funkgui::A11yAction, double, funkgui::GestureController&) override
-            {
-                return id == editor_.a11yId();
-            }
-            void specLine(char* out, std::size_t n) const override
-            {
-                const funkgui::TextPos p = editor_.caret();
-                const std::string sel = editor_.selectedText();
-                if (sel.empty())
-                    std::snprintf(out, n, "PROGRAM   LINE %d   COLUMN %d   CMD-RETURN RUNS IT", p.line + 1, p.col + 1);
-                else
-                    std::snprintf(out, n, "PROGRAM   LINE %d   COLUMN %d   %zu SELECTED   CMD-RETURN RUNS IT",
-                                  p.line + 1, p.col + 1, sel.size());
-            }
-            funkgui::Point centre() const override
-            {
-                const funkgui::Rect b = editor_.bounds();
-                return { b.centreX(), b.centreY() };
-            }
-            void focusChanged(bool focused) override { editor_.setFocused(focused); }
+            renaming_ = -1;
+            why_.clear();
+            return true;
+        }
 
-        private:
-            funkgui::TextEditor editor_;
-            const std::vector<int>& errorLines_;          // the Panel's
+        // A press elsewhere: the name typed when it can name the file, else the one before.
+        void endRename()
+        {
+            if (!commitRename())
+            {
+                renaming_ = -1;
+                why_.clear();
+            }
+        }
+
+        // ---- geometry (logical px): the tabs from the bar's left, each as wide as its name -------------------
+        funkgui::Rect tabRect(int i) const
+        {
+            float x = bar_.x;
+            for (int k = 0; k < i; ++k)
+                x += tabWidth(k) + kTabGap;
+            return { x, bar_.y, tabWidth(i), kTabH };
+        }
+        funkgui::Rect closeRect(int i) const
+        {
+            const funkgui::Rect t = tabRect(i);
+            return { t.right() - kTabPad - kTabCloseW + 4.0f, t.y + 4.0f, kTabCloseW, kTabH - 8.0f };
+        }
+        funkgui::Rect newTabRect() const
+        {
+            const funkgui::Rect last = tabRect(count() - 1);
+            return { last.right() + kTabGap, bar_.y, kNewTabW, kTabH };
+        }
+        bool canAdd() const noexcept { return tabs_.size() < kMaxFiles; }
+
+        // ---- Item --------------------------------------------------------------------------------------------
+        void tick(float dt, bool, bool, funkgui::Point pointer) override
+        {
+            pointer_ = pointer;
+            editor().tick(dt);
+        }
+
+        void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override
+        {
+            namespace type = funkgui::type;
+            const funkgui::TextEditor& ed = editor();
+            ed.draw(c, th, ring);
+            drawMarks(c, th);
+
+            const funkgui::Canvas::Scope s(c, kTabTag, false);
+            c.hairlineH(bar_.x, bar_.bottom() - 1.0f, bar_.w, th.ink16);
+            for (int i = 0; i < count(); ++i)
+            {
+                const funkgui::Rect r = tabRect(i);
+                const bool shown = i == active_;
+                const bool hover = r.contains(pointer_);
+                if (shown)
+                {
+                    c.rrect4(r.x, r.y, r.w, r.h, 2.0f, 2.0f, 0.0f, 0.0f, th.ground, 1.0f, th.ink16);
+                    c.rrect(r.x + 1.0f, r.bottom() - 2.0f, r.w - 2.0f, 2.0f, 0.0f, th.ink70);
+                }
+                const float textTop = c.capCentreTop(r.centreY(), type::kMicro);
+                if (hasErrors(name(i)))
+                    c.disc(r.x + 6.0f, r.centreY(), 2.0f, th.signal);
+                const float nameW = r.w - 2.0f * kTabPad - (i > 0 ? kTabCloseW : 0.0f);
+                if (i == renaming_)
+                {
+                    // The name being edited: its text, the selection (all of it, until a key), the caret.
+                    const std::string& b = edit_.buffer;
+                    const float w = c.textWidth(b.c_str(), type::kMicro);
+                    if (edit_.allSelected && !b.empty())
+                        c.rrect(r.x + kTabPad - 1.0f, r.y + 4.0f, std::min(w, nameW) + 2.0f, r.h - 8.0f, 1.0f,
+                                th.accentDim);
+                    c.text(fitText(c, b, type::kMicro, nameW).c_str(), r.x + kTabPad, textTop, type::kMicro,
+                           why_.empty() ? th.ink100 : th.signal);
+                    const std::string head = b.substr(0, static_cast<std::size_t>(std::clamp(
+                                                             edit_.caret, 0, static_cast<int>(b.size()))));
+                    const float cx = r.x + kTabPad + std::min(c.textWidth(head.c_str(), type::kMicro), nameW);
+                    c.rrect(cx, r.y + 4.0f, 1.5f, r.h - 8.0f, 0.0f, th.accent);
+                }
+                else
+                {
+                    const funkgui::Col ink = hover ? th.accent : (shown ? th.ink100 : th.ink52);
+                    c.text(fitText(c, name(i), type::kMicro, nameW).c_str(), r.x + kTabPad, textTop, type::kMicro,
+                           ink);
+                }
+                if (i > 0)
+                    drawCross(c, closeRect(i), 3.0f, closeRect(i).contains(pointer_) ? th.accent : th.ink32);
+            }
+            if (canAdd())
+            {
+                const funkgui::Rect n = newTabRect();
+                const funkgui::Col ink = n.contains(pointer_) ? th.accent : th.ink52;
+                const float cx = n.centreX(), cy = n.centreY();
+                c.rrect(cx - 4.0f, cy - 0.6f, 8.0f, 1.2f, 0.0f, ink);
+                c.rrect(cx - 0.6f, cy - 4.0f, 1.2f, 8.0f, 0.0f, ink);
+            }
+        }
+
+        bool contains(funkgui::Point p) const override { return bar_.contains(p) || editor().contains(p); }
+        funkgui::Cursor cursorAt(funkgui::Point p) const override
+        {
+            if (bar_.contains(p))
+                return tabAt(p) >= 0 || (canAdd() && newTabRect().contains(p)) ? funkgui::Cursor::pointingHand
+                                                                                : funkgui::Cursor::normal;
+            return editor().cursorAt(p);
+        }
+        void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController&, funkgui::HostServices&) override
+        {
+            const funkgui::Point p{ e.x, e.y };
+            if (!bar_.contains(p))
+            {
+                endRename();
+                pressedEditor_ = true;
+                editor().pointerDown(e);
+                return;
+            }
+            pressedEditor_ = false;
+            if (canAdd() && newTabRect().contains(p))
+            {
+                add();
+                return;
+            }
+            const int i = tabAt(p);
+            if (i < 0)
+                return;
+            if (i != renaming_)
+                endRename();
+            if (i > 0 && closeRect(i).contains(p))
+            {
+                if (close_)
+                    close_(i);
+                return;
+            }
+            select(i);
+        }
+        void pointerDrag(const funkgui::PointerEvent& e, funkgui::GestureController&) override
+        {
+            if (pressedEditor_)
+                editor().pointerDrag(e);
+        }
+        void pointerUp(const funkgui::PointerEvent& e, funkgui::GestureController&) override
+        {
+            if (pressedEditor_)
+                editor().pointerUp(e);
+            pressedEditor_ = false;
+        }
+        void doubleClick(const funkgui::PointerEvent& e, funkgui::GestureController&) override
+        {
+            const funkgui::Point p{ e.x, e.y };
+            if (!bar_.contains(p))
+            {
+                editor().doubleClick(e);
+                return;
+            }
+            const int i = tabAt(p);
+            if (i >= 0 && !(i > 0 && closeRect(i).contains(p)))
+                beginRename(i);
+        }
+        bool wheel(const funkgui::WheelEvent& e, funkgui::GestureController&, double) override
+        {
+            return !bar_.contains({ e.x, e.y }) && editor().wheel(e);
+        }
+        bool key(const funkgui::KeyEvent& e, funkgui::GestureController&) override
+        {
+            if (renaming_ < 0)
+                return editor().key(e);
+            // The name being edited takes every key: Return keeps it, Escape cancels, Cmd-V pastes.
+            if (e.key == funkgui::Key::enter)
+                commitRename();
+            else if (e.key == funkgui::Key::escape)
+            {
+                renaming_ = -1;
+                why_.clear();
+            }
+            else if (e.key == funkgui::Key::character && e.mods.cmd && (e.ch == 'v' || e.ch == 'V'))
+            {
+                if (host_ != nullptr)
+                    edit_.paste(host_->clipboardText(), static_cast<int>(kMaxNameLength));
+            }
+            else if (edit_.key(e, static_cast<int>(kMaxNameLength)))
+                why_.clear();
+            return true;
+        }
+        void accessibility(std::vector<funkgui::A11yItem>& out) const override
+        {
+            funkgui::A11yItem group;
+            group.id = id_ + 1;
+            group.role = funkgui::A11yRole::radioGroup;
+            group.bounds = bar_;
+            group.title = "Files";
+            out.push_back(group);
+            for (int i = 0; i < count(); ++i)
+            {
+                funkgui::A11yItem tab;
+                tab.id = id_ + 2 + static_cast<uint32_t>(i);
+                tab.parent = group.id;
+                tab.role = funkgui::A11yRole::radioButton;
+                tab.bounds = tabRect(i);
+                tab.title = name(i);
+                tab.checkable = true;
+                tab.checked = i == active_;
+                tab.help = i == 0 ? "the program" : "a file the program can include";
+                out.push_back(std::move(tab));
+                if (i > 0)
+                {
+                    funkgui::A11yItem close;
+                    close.id = id_ + 2 + static_cast<uint32_t>(kMaxFiles) + static_cast<uint32_t>(i);
+                    close.role = funkgui::A11yRole::button;
+                    close.bounds = closeRect(i);
+                    close.title = "Close " + name(i);
+                    out.push_back(std::move(close));
+                }
+            }
+            if (canAdd())
+            {
+                funkgui::A11yItem add;
+                add.id = id_ + 2 + 2 * static_cast<uint32_t>(kMaxFiles);
+                add.role = funkgui::A11yRole::button;
+                add.bounds = newTabRect();
+                add.title = "New file";
+                out.push_back(std::move(add));
+            }
+            funkgui::A11yItem text;
+            editor().accessibility(text);
+            out.push_back(std::move(text));
+        }
+        bool a11yAction(uint32_t id, funkgui::A11yAction, double, funkgui::GestureController&) override
+        {
+            const uint32_t files = static_cast<uint32_t>(kMaxFiles);
+            if (id == editor().a11yId() || id == id_ + 1)
+                return true;
+            if (id >= id_ + 2 && id < id_ + 2 + files)
+            {
+                select(static_cast<int>(id - id_ - 2));
+                return true;
+            }
+            if (id > id_ + 2 + files && id < id_ + 2 + 2 * files)
+            {
+                if (close_)
+                    close_(static_cast<int>(id - id_ - 2 - files));
+                return true;
+            }
+            if (id == id_ + 2 + 2 * files)
+            {
+                add();
+                return true;
+            }
+            return false;
+        }
+        void specLine(char* out, std::size_t n) const override
+        {
+            if (renaming_ >= 0)
+            {
+                std::snprintf(out, n, "RENAME   %s", why_.empty() ? "RETURN KEEPS THE NAME   ESCAPE CANCELS"
+                                                                  : why_.c_str());
+                return;
+            }
+            if (bar_.contains(pointer_))
+            {
+                if (canAdd() && newTabRect().contains(pointer_))
+                    std::snprintf(out, n, "NEW FILE   ONE THE PROGRAM CAN #INCLUDE BY ITS NAME");
+                else if (const int i = tabAt(pointer_); i == 0)
+                    std::snprintf(out, n, "%s   THE PROGRAM   DOUBLE-CLICK RENAMES IT", upper(name(0)).c_str());
+                else if (i > 0)
+                    std::snprintf(out, n, "%s   #INCLUDE \"%s\"   DOUBLE-CLICK RENAMES IT   X CLOSES IT",
+                                  upper(name(i)).c_str(), name(i).c_str());
+                else if (n > 0)
+                    out[0] = '\0';
+                return;
+            }
+            const funkgui::TextPos p = editor().caret();
+            const std::string sel = editor().selectedText();
+            const std::string file = upper(name(active_));
+            if (sel.empty())
+                std::snprintf(out, n, "%s   LINE %d   COLUMN %d   CMD-RETURN RUNS THE PROGRAM", file.c_str(),
+                              p.line + 1, p.col + 1);
+            else
+                std::snprintf(out, n, "%s   LINE %d   COLUMN %d   %zu SELECTED   CMD-RETURN RUNS THE PROGRAM",
+                              file.c_str(), p.line + 1, p.col + 1, sel.size());
+        }
+        funkgui::Point centre() const override { return { editorBounds_.centreX(), editorBounds_.centreY() }; }
+        void focusChanged(bool focused) override
+        {
+            focused_ = focused;
+            editor().setFocused(focused);
+            if (!focused)
+                endRename();
+        }
+
+    private:
+        struct Tab
+        {
+            std::string name;
+            std::unique_ptr<funkgui::TextEditor> editor;
         };
+
+        Tab makeTab(std::string_view n, std::string_view text)
+        {
+            Tab t{ std::string(n), std::make_unique<funkgui::TextEditor>(id_) };
+            funkgui::TextEditorOptions o;
+            o.style = funkgui::editorFont(funkgui::EditorFont::code);
+            o.softTabs = true;
+            o.tabWidth = 4;
+            o.a11yTitle = "File";
+            o.placeholder = tabs_.empty() ? "An FMinus program: EXAMPLES has some to start from"
+                                          : "A file the program can #include by its name";
+            t.editor->setOptions(o);
+            t.editor->setBounds(editorBounds_);
+            t.editor->setHighlighter(std::make_unique<funkgui::text::KeywordHighlighter>(fminusRules()));
+            t.editor->setPalette(funkgui::TextEditor::defaultPalette());
+            t.editor->setText(text);
+            t.editor->attach(host_);
+            return t;
+        }
+
+        // The shown editor takes the item's focus.
+        void show() { editor().setFocused(focused_); }
+
+        float tabWidth(int i) const
+        {
+            const float w = funkgui::text::width(funkgui::FontService::get().atlas(), name(i).c_str(),
+                                                 funkgui::type::kMicro);
+            return std::clamp(w + 2.0f * kTabPad + (i > 0 ? kTabCloseW : 0.0f), kTabMinW, kTabMaxW);
+        }
+
+        int tabAt(funkgui::Point p) const
+        {
+            for (int i = 0; i < count(); ++i)
+                if (tabRect(i).contains(p))
+                    return i;
+            return -1;
+        }
+
+        bool hasErrors(const std::string& file) const
+        {
+            return std::any_of(problems_.begin(), problems_.end(),
+                               [&](const Problem& p) { return p.error && p.file == file; });
+        }
+
+        static void drawCross(funkgui::Canvas& c, const funkgui::Rect& r, float half, funkgui::Col ink)
+        {
+            const float cx = r.centreX(), cy = r.centreY();
+            const float xs1[2] = { cx - half, cx + half }, ys1[2] = { cy - half, cy + half };
+            const float xs2[2] = { cx - half, cx + half }, ys2[2] = { cy + half, cy - half };
+            c.polyline(xs1, ys1, 2, 1.2f, ink);
+            c.polyline(xs2, ys2, 2, 1.2f, ink);
+        }
+
+        // A mark in the gutter, beside the line number, on each line of the shown file the last run's errors name.
+        void drawMarks(funkgui::Canvas& c, const funkgui::Theme& th) const
+        {
+            const funkgui::TextEditor& ed = editor();
+            const std::string& file = name(active_);
+            const funkgui::Rect b = ed.bounds();
+            const funkgui::Rect area = ed.textArea();
+            const float rowH = ed.rowHeight();
+            const float scrollY = ed.scroll().y;
+            c.pushClip({ b.x + 1.0f, b.y + 1.0f, b.w - 2.0f, b.h - 2.0f });
+            {
+                const funkgui::Canvas::Scope s(c, kMarkTag, false);
+                for (const Problem& p : problems_)
+                {
+                    if (!p.error || p.file != file || p.line < 1 || p.line > ed.lineCount())
+                        continue;
+                    const int row = ed.rowOf({ p.line - 1, 0 });
+                    const float y = area.y + static_cast<float>(row) * rowH - scrollY;
+                    if (y + rowH < b.y || y > b.bottom())
+                        continue;
+                    c.rrect(b.x + 3.0f, y + 2.0f, 3.0f, rowH - 4.0f, 1.0f, th.signal);
+                }
+            }
+            c.popClip();
+        }
+
+        funkgui::Rect bar_, editorBounds_;
+        uint32_t id_;
+        const std::vector<Problem>& problems_;       // the Panel's
+        Close close_;
+        std::vector<Tab> tabs_;
+        int active_ = 0;
+        uint64_t structure_ = 0;
+        bool focused_ = false;
+        bool pressedEditor_ = false;
+        funkgui::HostServices* host_ = nullptr;
+        funkgui::Point pointer_{ -1.0e4f, -1.0e4f };
+        int renaming_ = -1;                          // the tab whose name is being edited
+        funkgui::text::LineEdit edit_;
+        std::string why_;                            // why the name typed cannot be the file's
+    };
+
+    namespace
+    {
 
         // ---- the last run's messages ----------------------------------------------------------------------------------
         class ProblemsItem final : public Item
@@ -546,11 +1015,12 @@ namespace testingplaygroundsynth::ui
                     const funkgui::Rect r = rowRect(i);
                     const bool last = i == kProblemRows - 1 && static_cast<int>(problems_.size()) > kProblemRows;
                     const bool hover = p.line > 0 && r.contains(pointer_);
-                    char place[24] = {};
+                    std::string place = p.file;
                     if (p.line > 0)
-                        std::snprintf(place, sizeof place, "%d:%d", p.line, p.column);
-                    c.text(place, r.x, r.y + 2.0f, type::kMicro, hover ? th.accent : th.ink52);
-                    const float x0 = r.x + 56.0f;
+                        place += ":" + std::to_string(p.line) + ":" + std::to_string(p.column);
+                    c.text(fitText(c, place, type::kMicro, kPlaceW - 8.0f).c_str(), r.x, r.y + 2.0f, type::kMicro,
+                           hover ? th.accent : th.ink52);
+                    const float x0 = r.x + kPlaceW;
                     std::string text = p.text;
                     if (last)
                     {
@@ -599,7 +1069,10 @@ namespace testingplaygroundsynth::ui
             {
                 const int i = rowAt(pointer_);
                 if (i >= 0 && problems_[static_cast<std::size_t>(i)].line > 0)
-                    std::snprintf(out, n, "PROBLEM   CLICK TO GO TO LINE %d", problems_[static_cast<std::size_t>(i)].line);
+                {
+                    const Problem& p = problems_[static_cast<std::size_t>(i)];
+                    std::snprintf(out, n, "PROBLEM   CLICK TO GO TO %s LINE %d", upper(p.file).c_str(), p.line);
+                }
                 else if (n > 0)
                     std::snprintf(out, n, "PROBLEMS   %zu", problems_.size());
             }
@@ -648,11 +1121,11 @@ namespace testingplaygroundsynth::ui
             [](char* out, std::size_t n) { std::snprintf(out, n, "EXAMPLES   REPLACE THE TEXT WITH ONE, AND RUN IT"); }));
 
         // The editor.
-        auto editor = std::make_unique<EditorItem>(funkgui::Rect{ kMargin, kEditorY, contentW, kEditorH }, idFor(),
-                                                   errorLines_);
-        editor_ = &editor->editor();
+        auto filesItem = std::make_unique<FilesItem>(funkgui::Rect{ kMargin, kTabsY, contentW, kTabH },
+                                                     funkgui::Rect{ kMargin, kEditorY, contentW, kEditorH }, idFor(),
+                                                     problems_, [this](int tab) { closeFile(tab); });
         editorItem_ = static_cast<int>(items_.size());
-        items_.push_back(std::move(editor));
+        items_.push_back(std::move(filesItem));
 
         // The problems, under it.
         const float problemsY = kEditorY + kEditorH + 8.0f;
@@ -699,11 +1172,11 @@ namespace testingplaygroundsynth::ui
             [zoomModel] { return zoomModel->count() > 0; }));
         zoom_ = zoomModel;
 
-        // The processor's text and status.
-        editor_->setText(port_.draft());
+        // The processor's files and status.
+        files().load(port_.draft());
         seenDraft_ = port_.draftRevision();
-        syncedText_ = editor_->revision();
-        running_ = port_.runningSource();
+        syncedFiles_ = files().revision();
+        running_ = port_.running();
         refresh(0.0);
         focus_ = editorItem_;
         setFocus(editorItem_);
@@ -740,19 +1213,54 @@ namespace testingplaygroundsynth::ui
         gestures_.emplace(host);
         if (zoom_ != nullptr)
             static_cast<ZoomModel*>(zoom_)->attach(host);
-        editor_->attach(&host);
+        files().attach(&host);
     }
 
     int Panel::width() const { return static_cast<int>(width_); }
     int Panel::height() const { return static_cast<int>(height_); }
 
     // ---- the processor's state ------------------------------------------------------------------------------------------
+    namespace
+    {
+        FilesItem& filesIn(std::vector<std::unique_ptr<Item>>& items, int i)
+        {
+            return static_cast<FilesItem&>(*items[static_cast<std::size_t>(i)]);
+        }
+    }
+
+    FilesItem& Panel::files() { return filesIn(items_, editorItem_); }
+    const FilesItem& Panel::files() const
+    {
+        return static_cast<const FilesItem&>(*items_[static_cast<std::size_t>(editorItem_)]);
+    }
+    funkgui::TextEditor& Panel::editor() noexcept { return files().editor(); }
+    int Panel::fileCount() const { return files().count(); }
+    std::string Panel::fileName(int i) const { return i >= 0 && i < files().count() ? files().name(i) : std::string(); }
+    int Panel::activeFile() const { return files().active(); }
+    bool Panel::renamingFile() const { return files().renaming(); }
+    funkgui::Point Panel::centreOfTab(int i) const
+    {
+        const funkgui::Rect r = files().tabRect(i);
+        return { r.x + kTabPad + 4.0f, r.centreY() };
+    }
+    funkgui::Point Panel::centreOfNewTab() const
+    {
+        const funkgui::Rect r = files().newTabRect();
+        return { r.centreX(), r.centreY() };
+    }
+    funkgui::Point Panel::centreOfCloseTab(int i) const
+    {
+        const funkgui::Rect r = files().closeRect(i);
+        return { r.centreX(), r.centreY() };
+    }
+
     void Panel::runNow()
     {
-        const std::string source = editor_->text();
-        port_.setDraft(source);
-        syncedText_ = editor_->revision();
-        port_.run(source);
+        files().endRename();
+        const Draft draft = files().draft();
+        port_.setDraft(draft);
+        syncedFiles_ = files().revision();
+        port_.run(draft.files);
         compiling_ = true;
         dirty_ = true;
     }
@@ -760,18 +1268,19 @@ namespace testingplaygroundsynth::ui
     void Panel::refresh(double nowSec)
     {
         // The draft, when a host loaded a session while the editor was open.
+        bool textChanged = false;
         if (const uint64_t d = port_.draftRevision(); d != seenDraft_)
         {
             seenDraft_ = d;
-            editor_->setText(port_.draft());
-            syncedText_ = editor_->revision();
+            files().load(port_.draft());
+            syncedFiles_ = files().revision();
+            textChanged = true;
         }
-        // The text as typed, to the processor (it outlives this window).
-        bool textChanged = false;
-        if (editor_->revision() != syncedText_)
+        // The files as typed, and the tab shown, to the processor (it outlives this window).
+        if (files().revision() != syncedFiles_)
         {
-            port_.setDraft(editor_->text());
-            syncedText_ = editor_->revision();
+            port_.setDraft(files().draft());
+            syncedFiles_ = files().revision();
             textChanged = true;
         }
         // A finished compile: its messages, and the dials of the program that plays.
@@ -783,15 +1292,11 @@ namespace testingplaygroundsynth::ui
             lastOk_ = s.ok;
             lastMs_ = s.ms;
             problems_ = parseProblems(s.errors + s.notes);
-            errorLines_.clear();
-            for (const Problem& p : problems_)
-                if (p.error && p.line > 0 && std::find(errorLines_.begin(), errorLines_.end(), p.line) == errorLines_.end())
-                    errorLines_.push_back(p.line);
             // The dials and the source of the program that plays: this compile's when it compiled (the processor
             // takes them on its own timer, which may not have run yet), else the ones before.
             const Controls cs = s.ok ? s.controls : port_.controls();
             if (s.ok)
-                running_ = s.source;
+                running_ = s.sources;
             ++controlsRevision_;
             for (int c = 0; c < kMaxControls; ++c)
                 if (const int i = itemOfSlot_[static_cast<std::size_t>(c)]; i >= 0)
@@ -802,7 +1307,7 @@ namespace testingplaygroundsynth::ui
         }
         compiling_ = port_.compiling();
         if (textChanged || statusChanged)
-            edited_ = editor_->text() != running_;
+            edited_ = files().draft().files != running_;
         const std::string statusBefore = status_;
 
         // The status line and the meter.
@@ -858,11 +1363,15 @@ namespace testingplaygroundsynth::ui
         host_->showMenu(request, [this](int chosen) {
             if (chosen < 1 || chosen > static_cast<int>(std::size(kExamples)))
                 return;
-            // The example replaces the text as one edit (Cmd-Z brings the text back), and runs.
-            editor_->selectAll();
-            editor_->insert(kExamples[static_cast<std::size_t>(chosen - 1)].source);
-            editor_->setCaret({ 0, 0 });
-            editor_->setScroll(0.0f, 0.0f);
+            // The example replaces the program's text as one edit (Cmd-Z brings the text back), and runs; the other
+            // files stay.
+            files().endRename();
+            files().select(0);
+            funkgui::TextEditor& program = files().editor();
+            program.selectAll();
+            program.insert(kExamples[static_cast<std::size_t>(chosen - 1)].source);
+            program.setCaret({ 0, 0 });
+            program.setScroll(0.0f, 0.0f);
             setFocus(editorItem_);
             runNow();
         });
@@ -872,10 +1381,44 @@ namespace testingplaygroundsynth::ui
     {
         if (p.line <= 0)
             return;
-        editor_->setCaret({ p.line - 1, std::max(0, p.column - 1) });
-        editor_->scrollToCaret();
+        const int tab = files().find(p.file);
+        if (tab < 0)
+            return;                                      // a file no tab has (none should be)
+        files().select(tab);
+        funkgui::TextEditor& ed = files().editor();
+        ed.setCaret({ p.line - 1, std::max(0, p.column - 1) });
+        ed.scrollToCaret();
         setFocus(editorItem_);
         dirty_ = true;
+    }
+
+    void Panel::closeFile(int tab)
+    {
+        if (tab <= 0 || tab >= files().count())
+            return;
+        const std::string name = files().name(tab);
+        const auto close = [this, name] {
+            // The tab by its name: the menu's answer may come after other changes.
+            if (const int i = files().find(name); i > 0)
+            {
+                files().remove(i);
+                dirty_ = true;
+            }
+        };
+        const std::string text = files().draft().files[static_cast<std::size_t>(tab)].text;
+        if (text.find_first_not_of(" \t\n") == std::string::npos || host_ == nullptr)
+        {
+            close();                                     // nothing in it to lose
+            return;
+        }
+        funkgui::MenuRequest request;
+        request.items.push_back({ 1, "Close " + name + " (its text is lost)" });
+        request.anchor = files().closeRect(tab);
+        request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
+        host_->showMenu(request, [close](int chosen) {
+            if (chosen == 1)
+                close();
+        });
     }
 
     void Panel::setFocus(int item)
@@ -1085,7 +1628,7 @@ namespace testingplaygroundsynth::ui
             return true;
         }
         // The editor, while it has the caret: every key is its own (Tab indents), but Escape, which leaves it.
-        if (focus_ == editorItem_ && editor_->focused())
+        if (focus_ == editorItem_ && files().editor().focused())
         {
             if (gestures_ && items_[static_cast<std::size_t>(editorItem_)]->key(e, *gestures_))
                 return true;
@@ -1127,12 +1670,12 @@ namespace testingplaygroundsynth::ui
 
     uint32_t Panel::a11yRevision() const
     {
-        // Items come and go with the program's dials and the host's zoom.
+        // Items come and go with the program's dials, the host's zoom and the files' tabs.
         uint32_t r = items_.back()->shown() ? 1u : 0u;
         for (int c = 0; c < kMaxControls; ++c)
             if (const int i = itemOfSlot_[static_cast<std::size_t>(c)]; i >= 0 && items_[static_cast<std::size_t>(i)]->shown())
                 r |= 2u << c;
-        return r;
+        return r | (files().layoutRevision() << 12);
     }
 
     void Panel::a11yAction(uint32_t id, funkgui::A11yAction a, double value)
