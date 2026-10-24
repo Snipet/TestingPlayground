@@ -5,9 +5,9 @@
 #                         its commit and those of its submodules bgfx, bx and bimg are asserted
 #   shaderc               the prebuilt ${FP_DEPS_DIR}/tools/shaderc-<tag>/shaderc when its stamp names the pinned
 #                         bgfx.cmake commit, else built from bgfx.cmake (slow: about 2,000 CPU-seconds)
-#   FunkGui v0.17.0       FetchContent at the pinned tag from FP_FUNKGUI_REPO: this machine's local repository
-#                         (~/audio/libraries/FunkGui) when it exists, else GitHub; the commit is asserted. v0.17.0 is
-#                         the first tag with the TextEditor
+#   FunkGui v0.18.0       FetchContent at the pinned tag from FP_FUNKGUI_REPO: this machine's local repository
+#                         (~/audio/libraries/FunkGui) when it exists, else GitHub; the commit is asserted. v0.17.0
+#                         brought the TextEditor, v0.18.0 resizable Panels
 #   FMinus                FetchContent at the pinned commit from FP_FMINUS_REPO (~/audio/libraries/FMinus, else
 #                         GitHub): the JIT compiler, its library and runtime only. Its LLVM, Bison and Flex are the
 #                         ones FMinus's own builds put in its deps cache (FP_FMINUS_DEPS_DIR), read, never built here
@@ -30,9 +30,9 @@ set(FP_BGFX_API          153)
 set(FP_BGFX_SUB_SHAS     bgfx=c7684e20da1e385edc439ef39cdb42b8c661016f
                          bx=0b001f5f36579e8aea07efa5af139ca18dad9505
                          bimg=3b4baab0128ac499c5c3bc37202781bf54084049)
-set(FP_FUNKGUI_TAG       v0.17.0)
-set(FP_FUNKGUI_SHA       111221f9e630ed23a2d88def6ae6b911890aff27)
-set(FP_FUNKGUI_VERSION   0.17.0)
+set(FP_FUNKGUI_TAG       v0.18.0)
+set(FP_FUNKGUI_SHA       78d1b745b975d5f6882bc6cd0d9aea7d92e9e63b)
+set(FP_FUNKGUI_VERSION   0.18.0)
 set(FP_FMINUS_SHA        55fb2628473b547018e8d6203043a9b8e03d48e2)   # FMinus has no tags: a commit of its main
 set(FP_FMINUS_LLVM       23.1.3)                                     # the LLVM that commit pins (cmake/FMinusPins.cmake)
 
