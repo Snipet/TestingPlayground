@@ -20,6 +20,9 @@ namespace testingplaygroundsynth
         const juce::Identifier kProgramTag{ "PROGRAM" }, kRunTag{ "RUN" }, kDraftTag{ "DRAFT" }, kFileTag{ "FILE" };
         const juce::Identifier kActive{ "active" }, kName{ "name" }, kText{ "text" };
         const juce::Identifier kSource{ "source" }, kDraft{ "draft" };   // the version before files
+        const juce::Identifier kChatTag{ "CHAT" }, kJson{ "json" };      // the chat with Claude (ChatAgent::saveState)
+        const juce::Identifier kEditorTag{ "EDITOR" }, kWidth{ "w" }, kHeight{ "h" };   // the editor's size
+        constexpr int kMaxEditorSide = 16384;
         const juce::Identifier kParamId{ "id" }, kParamValue{ "value" };   // the APVTS's <PARAM id value> children
 
         constexpr int kMaxChannels = 8;                          // handed to the Engine (the layouts allow two)
@@ -426,16 +429,40 @@ namespace testingplaygroundsynth
         {
             const CompileStatus s = compiler_.status();
             seen_ = s.revision;
-            apply(s, editorRun_ != 0 && s.request == editorRun_);
+            const uint64_t run = editorRun_.load();
+            apply(s, run != 0 && s.request == run);
+        }
+        // Dials Claude set, after the compile that may have brought them: host gestures, on this thread.
+        std::vector<std::pair<int, float>> dials;
+        {
+            const std::lock_guard<std::mutex> lock(dialMutex_);
+            dials.swap(pendingDials_);
+        }
+        for (const auto& [slot, plain] : dials)
+        {
+            const Control c = control(slot);
+            if (!c.used)
+                continue;
+            juce::RangedAudioParameter& p = *params_[static_cast<std::size_t>(slot)];
+            p.beginChangeGesture();
+            p.setValueNotifyingHost(normOf(c, plain));
+            p.endChangeGesture();
         }
         const double now = juce::Time::getMillisecondCounterHiRes();
         if (const uint32_t a = engine_.takeAlerts(); a != 0)
         {
-            alerts_ |= a;
+            alerts_.fetch_or(a);
             alertsAt_ = now;
         }
-        else if (alerts_ != 0 && now - alertsAt_ > kAlertMs)
-            alerts_ = 0;
+        else if (alerts_.load() != 0 && now - alertsAt_ > kAlertMs)
+            alerts_.store(0);
+    }
+
+    void Processor::setEditorSize(int w, int h) noexcept
+    {
+        const bool ok = w > 0 && h > 0 && w <= kMaxEditorSide && h <= kMaxEditorSide;
+        editorW_.store(ok ? w : 0);
+        editorH_.store(ok ? h : 0);
     }
 
     void Processor::settle()
@@ -460,6 +487,16 @@ namespace testingplaygroundsynth
             program.appendChild(filesTree(kDraftTag, draft_.files), nullptr);
         }
         state.appendChild(program, nullptr);
+        juce::ValueTree chat{ kChatTag };
+        chat.setProperty(kJson, juce::String::fromUTF8(chat_.saveState().c_str()), nullptr);
+        state.appendChild(chat, nullptr);
+        if (editorW_.load() > 0 && editorH_.load() > 0)
+        {
+            juce::ValueTree editor{ kEditorTag };
+            editor.setProperty(kWidth, editorW_.load(), nullptr);
+            editor.setProperty(kHeight, editorH_.load(), nullptr);
+            state.appendChild(editor, nullptr);
+        }
         if (const std::unique_ptr<juce::XmlElement> xml = state.createXml())
             copyXmlToBinary(*xml, destData);
     }
@@ -490,6 +527,18 @@ namespace testingplaygroundsynth
         draft.active = std::clamp(static_cast<int>(program.getProperty(kActive, 0)), 0,
                                   static_cast<int>(draft.files.size()) - 1);
         state.removeChild(program, nullptr);
+        const juce::ValueTree chat = state.getChildWithName(kChatTag);
+        if (chat.isValid())
+        {
+            chat_.loadState(chat.getProperty(kJson).toString().toStdString());
+            state.removeChild(chat, nullptr);
+        }
+        const juce::ValueTree editor = state.getChildWithName(kEditorTag);
+        if (editor.isValid())
+        {
+            setEditorSize(static_cast<int>(editor.getProperty(kWidth, 0)), static_cast<int>(editor.getProperty(kHeight, 0)));
+            state.removeChild(editor, nullptr);
+        }
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
             draft_ = std::move(draft);
@@ -523,7 +572,7 @@ namespace testingplaygroundsynth
 
     void Processor::run(const Sources& files)
     {
-        editorRun_ = compiler_.request(files);
+        editorRun_.store(compiler_.request(files));
     }
 
     bool Processor::compiling() const { return compiler_.busy(); }
@@ -543,7 +592,75 @@ namespace testingplaygroundsynth
     }
 
     float Processor::load() const { return engine_.load(); }
-    uint32_t Processor::alerts() const { return alerts_; }
+    uint32_t Processor::alerts() const { return alerts_.load(); }
+
+    // ---- ChatHost (the agent's thread) -----------------------------------------------------------------------------------
+    Draft Processor::chatDraft() const
+    {
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        return draft_;
+    }
+
+    void Processor::chatSetDraft(const Draft& draft)
+    {
+        Draft d = draft;
+        d.files = tidyFiles(std::move(d.files));
+        if (d.files.empty())
+            return;
+        d.active = std::clamp(d.active, 0, static_cast<int>(d.files.size()) - 1);
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        draft_ = std::move(d);
+        ++draftRevision_;                                        // the editor merges it into its tabs
+    }
+
+    CompileStatus Processor::chatRun(const Sources& files)
+    {
+        const uint64_t id = compiler_.request(files);
+        editorRun_.store(id);
+        compiler_.wait();
+        const CompileStatus s = compiler_.status();
+        return s.request >= id ? s : CompileStatus{};
+    }
+
+    CompileStatus Processor::chatLastStatus() const { return compiler_.status(); }
+
+    Sources Processor::chatRunning() const
+    {
+        const CompileStatus s = compiler_.status();
+        if (s.ok)
+            return s.sources;                                    // poll() may not have taken it yet
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        return running_;
+    }
+
+    Controls Processor::chatDials() const
+    {
+        const CompileStatus s = compiler_.status();
+        if (s.ok)
+            return s.controls;
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        return controls_;
+    }
+
+    float Processor::chatDialValue(int slot) const
+    {
+        if (slot < 0 || slot >= kMaxControls)
+            return 0.0f;
+        const Control c = chatDials()[static_cast<std::size_t>(slot)];
+        const float norm = raw_[static_cast<std::size_t>(slot)]->load();
+        return std::isfinite(norm) ? plainOf(c, norm) : c.def;
+    }
+
+    void Processor::chatSetDial(int slot, float plain)
+    {
+        if (slot < 0 || slot >= kMaxControls)
+            return;
+        const std::lock_guard<std::mutex> lock(dialMutex_);
+        pendingDials_.emplace_back(slot, plain);
+    }
+
+    float Processor::chatLoad() const { return engine_.load(); }
+    uint32_t Processor::chatAlerts() const { return alerts_.load(); }
 }
 
 // JUCE's entry point for every format.

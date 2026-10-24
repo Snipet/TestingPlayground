@@ -16,7 +16,10 @@
 //   controls()        the dials of the program that plays
 //   load()            the audio thread's busiest recent block, as a share of its time (Engine::load)
 //   alerts()          the output guard's alerts of the last two seconds (Engine::Alert bits)
+//   chat()            the chat with Claude (ChatPort.h)
 #pragma once
+
+#include "plugin/ChatPort.h"
 
 #include "dsp/Compiler.h"
 #include "dsp/Controls.h"
@@ -54,5 +57,7 @@ namespace testingplaygroundsynth
 
         virtual float load() const = 0;
         virtual uint32_t alerts() const = 0;
+
+        virtual ChatPort& chat() = 0;
     };
 }

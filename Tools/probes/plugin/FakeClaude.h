@@ -1,0 +1,298 @@
+// Tools/probes/plugin/FakeClaude.h: a scripted Claude API for the chat's probes (plugin.chat, gui.chat). Nothing here
+// reaches the network: the agent's transport is replaced by one that plays back responses the probe wrote, streamed
+// in small chunks as the Messages API streams them, and records every request.
+//
+//   fake::Sse        a response's server-sent events: message_start, blocks (thinking with a signature, text,
+//                    tool_use with its input JSON streamed in pieces, a fallback marker), message_delta, message_stop
+//   fake::Response   one POST's answer: a stream (200), or a status with a JSON error body (and a retry-after), or a
+//                    stream that stalls until the agent cancels
+//   fake::Script     what the transport plays and what it saw (the bodies, the headers, the GETs), shared with the
+//                    probe while the agent owns the transport
+#pragma once
+
+#include "plugin/ClaudeApi.h"
+
+#include <atomic>
+#include <chrono>
+#include <deque>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <utility>
+#include <vector>
+
+namespace fake
+{
+    namespace claude = testingplaygroundsynth::claude;
+
+    class Sse
+    {
+    public:
+        Sse& start(const std::string& model = "claude-opus-5-5", int input = 1200, int cacheRead = 0,
+                   int cacheWrite = 0)
+        {
+            return event("message_start",
+                         claude::object({ { "type", "message_start" },
+                                          { "message",
+                                            claude::object({ { "id", "msg_fake" },
+                                                             { "type", "message" },
+                                                             { "role", "assistant" },
+                                                             { "model", juce::String(model) },
+                                                             { "content", juce::Array<juce::var>() },
+                                                             { "stop_reason", juce::var() },
+                                                             { "usage", claude::object({ { "input_tokens", input },
+                                                                                         { "cache_read_input_tokens", cacheRead },
+                                                                                         { "cache_creation_input_tokens", cacheWrite },
+                                                                                         { "output_tokens", 1 } }) } }) } }));
+        }
+
+        Sse& thinking(const std::string& summary, const std::string& signature)
+        {
+            const int i = blocks_++;
+            blockStart(i, claude::object({ { "type", "thinking" }, { "thinking", "" }, { "signature", "" } }));
+            for (const std::string& piece : pieces(summary, 9))
+                delta(i, claude::object({ { "type", "thinking_delta" }, { "thinking", juce::String::fromUTF8(piece.c_str()) } }));
+            delta(i, claude::object({ { "type", "signature_delta" }, { "signature", juce::String(signature) } }));
+            return blockStop(i);
+        }
+
+        Sse& text(const std::string& t)
+        {
+            const int i = blocks_++;
+            blockStart(i, claude::object({ { "type", "text" }, { "text", "" } }));
+            for (const std::string& piece : pieces(t, 7))
+                delta(i, claude::object({ { "type", "text_delta" }, { "text", juce::String::fromUTF8(piece.c_str()) } }));
+            return blockStop(i);
+        }
+
+        // `inputJson` is streamed as it is, valid or not.
+        Sse& toolUse(const std::string& id, const std::string& name, const std::string& inputJson)
+        {
+            const int i = blocks_++;
+            blockStart(i, claude::object({ { "type", "tool_use" },
+                                           { "id", juce::String(id) },
+                                           { "name", juce::String(name) },
+                                           { "input", juce::var(new juce::DynamicObject()) } }));
+            for (const std::string& piece : pieces(inputJson, 5))
+                delta(i, claude::object({ { "type", "input_json_delta" },
+                                          { "partial_json", juce::String::fromUTF8(piece.c_str()) } }));
+            return blockStop(i);
+        }
+
+        // A tool_use block whose input is `input` (a JSON object), as JSON.
+        Sse& tool(const std::string& id, const std::string& name, const juce::var& input)
+        {
+            return toolUse(id, name, claude::toJson(input));
+        }
+
+        Sse& fallback(const std::string& from, const std::string& to)
+        {
+            const int i = blocks_++;
+            blockStart(i, claude::object({ { "type", "fallback" },
+                                           { "from", claude::object({ { "model", juce::String(from) } }) },
+                                           { "to", claude::object({ { "model", juce::String(to) } }) } }));
+            return blockStop(i);
+        }
+
+        Sse& ping() { return event("ping", claude::object({ { "type", "ping" } })); }
+
+        Sse& end(const std::string& stopReason = "end_turn", int output = 321)
+        {
+            event("message_delta", claude::object({ { "type", "message_delta" },
+                                                    { "delta", claude::object({ { "stop_reason", juce::String(stopReason) },
+                                                                                { "stop_sequence", juce::var() } }) },
+                                                    { "usage", claude::object({ { "output_tokens", output } }) } }));
+            return event("message_stop", claude::object({ { "type", "message_stop" } }));
+        }
+
+        Sse& error(const std::string& type, const std::string& message)
+        {
+            return event("error", claude::object({ { "type", "error" },
+                                                   { "error", claude::object({ { "type", juce::String(type) },
+                                                                               { "message", juce::String(message) } }) } }));
+        }
+
+        const std::string& str() const noexcept { return text_; }
+
+    private:
+        Sse& event(const char* type, const juce::var& data)
+        {
+            text_ += std::string("event: ") + type + "\r\ndata: " + claude::toJson(data) + "\r\n\r\n";
+            return *this;
+        }
+        void blockStart(int i, const juce::var& block)
+        {
+            event("content_block_start",
+                  claude::object({ { "type", "content_block_start" }, { "index", i }, { "content_block", block } }));
+        }
+        void delta(int i, const juce::var& d)
+        {
+            event("content_block_delta", claude::object({ { "type", "content_block_delta" }, { "index", i }, { "delta", d } }));
+        }
+        Sse& blockStop(int i)
+        {
+            return event("content_block_stop", claude::object({ { "type", "content_block_stop" }, { "index", i } }));
+        }
+        static std::vector<std::string> pieces(const std::string& s, std::size_t n)
+        {
+            std::vector<std::string> out;
+            for (std::size_t p = 0; p < s.size(); p += n)
+                out.push_back(s.substr(p, n));
+            return out;
+        }
+
+        std::string text_;
+        int blocks_ = 0;
+    };
+
+    struct Response
+    {
+        int status = 200;
+        std::string stream;                  // a 200's events
+        std::string body;                    // another status's body
+        int retryAfter = -1;
+        bool stall = false;                  // after the stream, the connection hangs until the agent cancels
+        std::size_t chunk = 11;              // the stream arrives in pieces of this many bytes
+
+        static Response ok(const Sse& sse) { return { 200, sse.str(), {}, -1, false, 11 }; }
+        static Response failure(int status, const std::string& type, const std::string& message, int retryAfter = -1)
+        {
+            const std::string body = claude::toJson(claude::object(
+                { { "type", "error" },
+                  { "error", claude::object({ { "type", juce::String(type) }, { "message", juce::String(message) } }) } }));
+            return { status, {}, body, retryAfter, false, 11 };
+        }
+    };
+
+    struct Script
+    {
+        std::mutex mutex;
+        std::deque<Response> posts;          // played in order; past the end, a short text answer
+        int modelsStatus = 200;
+        std::string models;                  // GET /v1/models's body
+        std::vector<std::string> bodies;     // every POST's body
+        std::vector<claude::Headers> headers;
+        std::vector<std::string> paths;      // every request's path, in order ("POST /v1/messages")
+        std::atomic<int> streaming{ 0 };     // a stalled stream is waiting
+
+        void add(Response r)
+        {
+            const std::lock_guard<std::mutex> lock(mutex);
+            posts.push_back(std::move(r));
+        }
+        int postCount()
+        {
+            const std::lock_guard<std::mutex> lock(mutex);
+            return static_cast<int>(bodies.size());
+        }
+        std::string body(int i)
+        {
+            const std::lock_guard<std::mutex> lock(mutex);
+            return i >= 0 && i < static_cast<int>(bodies.size()) ? bodies[static_cast<std::size_t>(i)] : std::string();
+        }
+        std::string header(int i, const std::string& name)
+        {
+            const std::lock_guard<std::mutex> lock(mutex);
+            if (i < 0 || i >= static_cast<int>(headers.size()))
+                return {};
+            for (const auto& [k, v] : headers[static_cast<std::size_t>(i)])
+                if (k == name)
+                    return v;
+            return {};
+        }
+    };
+
+    class Transport final : public claude::Transport
+    {
+    public:
+        explicit Transport(std::shared_ptr<Script> script) : script_(std::move(script)) {}
+
+        claude::HttpResult post(const std::string& path, const std::string& body, const claude::Headers& headers,
+                                const std::function<bool(std::string_view)>& onChunk,
+                                const std::atomic<bool>& cancel) override
+        {
+            Response r;
+            {
+                const std::lock_guard<std::mutex> lock(script_->mutex);
+                script_->bodies.push_back(body);
+                script_->headers.push_back(headers);
+                script_->paths.push_back("POST " + path);
+                if (script_->posts.empty())
+                    r = Response::ok(Sse().start().text("(nothing scripted)").end());
+                else
+                {
+                    r = std::move(script_->posts.front());
+                    script_->posts.pop_front();
+                }
+            }
+            if (r.status != 200)
+                return { r.status, {}, r.body, r.retryAfter };
+            for (std::size_t p = 0; p < r.stream.size(); p += r.chunk)
+            {
+                if (cancel.load())
+                    return { 0, "cancelled", {}, -1 };
+                if (!onChunk(std::string_view(r.stream).substr(p, r.chunk)))
+                    return { 200, {}, {}, -1 };
+            }
+            if (r.stall)
+            {
+                ++script_->streaming;
+                while (!cancel.load())
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                --script_->streaming;
+                return { 0, "cancelled", {}, -1 };
+            }
+            return { 200, {}, {}, -1 };
+        }
+
+        claude::HttpResult get(const std::string& path, const claude::Headers& headers, const std::atomic<bool>&) override
+        {
+            const std::lock_guard<std::mutex> lock(script_->mutex);
+            script_->paths.push_back("GET " + path);
+            script_->headers.push_back(headers);
+            return { script_->modelsStatus, {}, script_->models, -1 };
+        }
+
+    private:
+        std::shared_ptr<Script> script_;
+    };
+
+    // GET /v1/models's body: the models with their capabilities (a model with adaptive thinking takes `efforts`).
+    struct ModelInfo
+    {
+        std::string id, name;
+        bool adaptive = true;
+        std::vector<std::string> efforts;
+    };
+
+    inline std::string modelsBody(const std::vector<ModelInfo>& models)
+    {
+        juce::Array<juce::var> data;
+        for (const ModelInfo& m : models)
+        {
+            juce::var effort(new juce::DynamicObject());
+            for (const char* e : { "low", "medium", "high", "xhigh", "max" })
+            {
+                bool has = false;
+                for (const std::string& x : m.efforts)
+                    has = has || x == e;
+                effort.getDynamicObject()->setProperty(e, claude::object({ { "supported", has } }));
+            }
+            effort.getDynamicObject()->setProperty("supported", !m.efforts.empty());
+            const juce::var caps = claude::object(
+                { { "thinking", claude::object({ { "supported", true },
+                                                 { "types", claude::object({ { "adaptive", claude::object({ { "supported", m.adaptive } }) },
+                                                                             { "enabled", claude::object({ { "supported", !m.adaptive } }) } }) } }) },
+                  { "effort", effort } });
+            data.add(claude::object({ { "type", "model" },
+                                      { "id", juce::String(m.id) },
+                                      { "display_name", juce::String(m.name) },
+                                      { "capabilities", caps } }));
+        }
+        return claude::toJson(claude::object({ { "data", data }, { "has_more", false } }));
+    }
+
+    // A key of the right shape for plausibleKey, which no server knows (and which no secret scanner takes for a key).
+    inline std::string fakeKey() { return "sk-ant-probe-NotARealKey_0123456789abcdefghijklmnop-QRSTUV"; }
+}
