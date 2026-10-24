@@ -1,20 +1,27 @@
 // Source/plugin/EditorPort.h: what the editor reaches besides the parameter ports (JUCE-free; message thread only).
-// The processor implements it (Processor.h); the Panel and its graph view (Source/editor/ShapeView.h) take it as they
-// take the ParamPorts, so the editor never includes the processor.
+// The processor implements it (Processor.h); the Panel takes it as it takes the ParamPorts, so the editor never
+// includes the processor.
 //
-//   shape()          the LFO shape the graph edits, a copy (LfoShape.h; at most 32 points)
-//   shapeRevision()  changes whenever the shape does, from the editor or from a state the host loaded, so a view
-//                    re-reads it only then
-//   setShape()       a new shape: sanitised (LfoShape.h's rules), kept in the plugin state and handed to the audio
-//                    thread, which crossfades to it over 20 ms. A drag sets it on every move.
-//   endShapeEdit()   an edit is complete (pointer up, a menu choice): the host is told the plugin's state changed, so
-//                    it offers to save the session. Shapes are not parameters: hosts neither automate nor undo them.
-//   sampleRate()     the rate the processor was prepared at (48 kHz before that), for the DELAYS readout
+//   draft()           the editor's text, kept by the processor (and in the session) so it outlives the editor's window
+//   draftRevision()   bumps when the draft changes other than by setDraft (a host loading a session), so an open editor
+//                     shows the new text
+//   setDraft()        the editor's text, as it is typed
+//   run()             RUN: compiles `source` off the message thread (Compiler.h) and plays it once it compiles; the
+//                     dials of parameters the program did not have before move to their defaults then
+//   compiling()       a run is waiting or compiling
+//   status()          the last compile's outcome: FMinus's messages, the dials, the time (CompileStatus)
+//   statusRevision()  bumps with each compile that finishes
+//   runningSource()   the source of the program that plays ("" before the first compiles)
+//   controls()        the dials of the program that plays
+//   load()            the audio thread's busiest recent block, as a share of its time (Engine::load)
+//   alerts()          the output guard's alerts of the last two seconds (Engine::Alert bits)
 #pragma once
 
-#include "dsp/LfoShape.h"
+#include "dsp/Compiler.h"
+#include "dsp/Controls.h"
 
 #include <cstdint>
+#include <string>
 
 namespace testingplayground
 {
@@ -23,10 +30,18 @@ namespace testingplayground
     public:
         virtual ~EditorPort() = default;
 
-        virtual LfoShape shape() const = 0;
-        virtual uint64_t shapeRevision() const = 0;
-        virtual void setShape(const LfoShape& shape) = 0;
-        virtual void endShapeEdit() = 0;
-        virtual float sampleRate() const = 0;
+        virtual std::string draft() const = 0;
+        virtual uint64_t draftRevision() const = 0;
+        virtual void setDraft(const std::string& text) = 0;
+
+        virtual void run(const std::string& source) = 0;
+        virtual bool compiling() const = 0;
+        virtual CompileStatus status() const = 0;
+        virtual uint64_t statusRevision() const = 0;
+        virtual std::string runningSource() const = 0;
+        virtual Controls controls() const = 0;
+
+        virtual float load() const = 0;
+        virtual uint32_t alerts() const = 0;
     };
 }

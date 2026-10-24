@@ -1,0 +1,29 @@
+// Tremolo: an LFO on the level. init runs before the first block, and again when the sample rate changes: here it
+// keeps the rate's period, which the LFO steps by.
+module Effect
+{
+    param float rate [[fminus::range(0.1, 20)]] [[fminus::default(5)]];     // Hz
+    param float depth [[fminus::range(0, 1)]] [[fminus::default(0.5)]];
+    param bool stereo [[fminus::default(1)]];                               // the right side half a cycle behind
+    float phase;                                                            // 0 to 1
+    float period;                                                           // 1 / the sample rate
+
+    void init(float sampleRate)
+    {
+        period = 1 / sampleRate;
+    }
+
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            const float l = 0.5f + 0.5f * cosf(6.28318531f * phase);   // 1 down to 0 and back
+            const float r = stereo[i] ? 1 - l : l;
+            left[i] *= 1 - depth[i] * l;
+            right[i] *= 1 - depth[i] * r;
+            phase += rate[i] * period;
+            if (phase >= 1)
+                phase -= 1;
+        }
+    }
+};

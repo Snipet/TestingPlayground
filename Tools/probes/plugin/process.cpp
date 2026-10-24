@@ -1,49 +1,37 @@
-// PROBE name=plugin.process timeout=120
+// PROBE name=plugin.process timeout=180
 //
-// plugin.process: the processor as a host drives it, at 48 kHz in blocks of 256, with a 1 kHz sine at -12 dBFS on the
-// left and a 3 kHz sine at -18 dBFS on the right, for 3 s.
-//   HOST    parameters written through the host (setValueNotifyingHost, normalised) reach the DSP: at MIX 0 % (the dry
-//           path) and GAIN +12 dB the left comes out at 0 dBFS and the right at -6 dBFS; after a write of GAIN -6 dB at
-//           -18 and -24 dBFS; within 0.05 dB
-//   NAN     a NaN written by a host is ignored: the output stays finite, and keeps the last good value's level; the
-//           host's text for the parameter is a dash, not "nan"
-//   ENGINE  processBlock's output, both channels, is the Engine's bit for bit, run on the same input with the plain
-//           values the parameters held at each block and the LFO tables the processor was given: the default shape
-//           from the first block, and a shape the editor sets mid-stream (EditorPort::setShape, the graph's call) from
-//           the next block on. MIX 50 %, RATE 5 Hz and DEPTH 2 ms from 1.33 s, so the reverb and its modulation are in
-//           the comparison, and the new shape (from 2.13 s) changes the output.
-// What a host may send, each on a fresh processor at the defaults, with the same input:
-//   EMPTY   a block of 0 samples between two blocks changes nothing: the output is the run's without it, bit for bit
-//   OVER    a block of 1,061 samples after prepareToPlay announced 256: the Engine gets it in parts of at most 256
-//           samples, and the output is the run's in blocks of 256, bit for bit
-//   BYPASS  while a host bypasses the processor (processBlockBypassed) from its first block on, the input passes
-//           through, bit for bit, and the Engine keeps running (on the input, unheard)
-//   EDGE    bypass and un-bypass mid-stream do not click (GAIN -24 dB at MIX 30 %, so the processed sound is the input
-//           at about 1/23 with a little reverb; a 400 Hz sine at -12 dBFS left and 600 Hz at -18 dBFS right;
-//           blocks of 256, bypassed from block 6 to block 24, edges where both sines are near their peaks): from 1 ms
-//           before each edge to 1 ms after its 20 ms fade, no step between neighbouring samples exceeds the steeper
-//           steady signal's own (the never-bypassed output's or the input's) by more than 5 %, on each channel, where
-//           a hard switch would step at least 3 times as far (the `abrupt` row, from the steady runs, shows the rows
-//           can fail); 20 ms after the bypass edge the output is the input, and 20 ms after the un-bypass edge the
-//           never-bypassed output, bit for bit (the Engine, its delay lines and its LFO ran through the bypass), each
-//           within 0.1 ms
-// Change it with the algorithm.
+// plugin.process: the processor as a host drives it, at 48 kHz in blocks of 256, playing its default program (the first
+// of the EXAMPLES: an effect's Gain and pan, an instrument's Sine). An effect gets a 1 kHz sine at -12 dBFS on the left
+// and a 3 kHz sine at -18 dBFS on the right; an instrument plays A4 (440 Hz) at full velocity.
+//   NAMES   P1 to P8 are the program's dials to a host: P1's name is "1 gain" (an instrument's "1 attack"), its text
+//           the plain value; an unused slot's name is its number alone
+//   HOST    a value written through the host (setValueNotifyingHost) reaches the program: an effect's gain at +6 dB
+//           puts the left out at -6 dBFS and the right at -12 dBFS; an instrument's level at -6 dB puts the note at
+//           -6 dBFS; within 0.05 dB, once the dial's 20 ms glide is over
+//   NAN     a NaN written by a host is ignored: the output stays finite at the last good value's level, and the
+//           host's text for it is a dash
+//   EMPTY   a block of 0 samples between two blocks changes nothing (an instrument's note-on in it still plays)
+//   OVER    a block of 1,061 samples after prepareToPlay announced 256 reaches the Engine in parts of at most 256,
+//           and the output is the run's in blocks of 256, bit for bit
+//   BYPASS  bypassed (processBlockBypassed) from the first block, an effect's input passes through bit for bit and
+//           an instrument is silent; bypass and un-bypass mid-stream do not click: around each edge no step between
+//           neighbouring samples exceeds the steady signal's own steepest by more than 5 %, and 20 ms after the
+//           un-bypass edge the output is the never-bypassed run's, bit for bit (the Engine ran through the bypass)
+//   EARLY   a block before any prepareToPlay: an effect passes its input, NaN and inf as 0; an instrument is silent
+//   MIDI    (an instrument) a note-on at velocity 0 is a note-off; All Notes Off (CC 123) releases every note
 #include "Probe.h"
 
 #include "Audio.h"
 
 #include "plugin/Processor.h"
 
-#include "dsp/Engine.h"
-#include "dsp/LfoShape.h"
-#include "dsp/Params.h"
+#include "Product.h"
 
 #include <funkgui/panel/HeadlessGuiScope.h>
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -53,64 +41,31 @@ namespace
 {
     constexpr double kFs = 48000.0;
     constexpr int kBlock = 256;
+    constexpr bool kInstrument = tp::product::kIsInstrument;
     constexpr double kAmpL = 0.25118864315095801;             // -12 dBFS
     constexpr double kAmpR = 0.12589254117941673;             // -18 dBFS
-    constexpr double kFadeMs = 20.0;                          // a bypass edge's crossfade
 
-    void setPlain(tp::Processor& p, std::size_t i, float plain)
+    void setPlain(tp::Processor& p, int slot, float plain)
     {
-        p.getParameters()[static_cast<int>(i)]->setValueNotifyingHost(tp::toNormalised(tp::kParams[i], plain));
+        p.getParameters()[slot]->setValueNotifyingHost(tp::normOf(p.control(slot), plain));
     }
 
-    // What the processor must hand Engine::setParams: the parameters' plain values, a non-finite one keeping the last
-    // good value, clamped to the table's range.
-    void readValues(tp::Processor& p, tp::ParamValues& v)
-    {
-        for (std::size_t i = 0; i < tp::kParams.size(); ++i)
-        {
-            const float x = p.parameters().getRawParameterValue(tp::kParams[i].id)->load();
-            if (std::isfinite(x))
-                v[i] = std::clamp(x, tp::kParams[i].min, tp::kParams[i].max);
-        }
-    }
-
-    double levelDb(const std::vector<float>& x, double hz, double fromSec, double toSec)
-    {
-        const auto from = static_cast<std::size_t>(fromSec * kFs), to = static_cast<std::size_t>(toSec * kFs);
-        return probe::dbFromLin(probe::toneAmplitude(x, hz, kFs, from, to - from));
-    }
-
-    tp::LfoShape customShape()
-    {
-        tp::LfoShape s;
-        s.points[0] = { 0.0f, 0.2f, 0.0f };
-        s.points[1] = { 0.3f, 0.9f, 3.0f };
-        s.points[2] = { 0.6f, 0.4f, -2.0f };
-        s.points[3] = { 1.0f, 0.2f, 0.0f };
-        s.count = 4;
-        return s;
-    }
-
-    // How a host drives a fresh processor: the blocks' lengths (0 is a block a host may send), the size prepareToPlay
-    // announces, the blocks it bypasses (indices in [bypassFrom, bypassTo): processBlockBypassed), and GAIN.
     struct HostPlan
     {
         std::vector<int> blocks;
         int prepared = kBlock;
         std::size_t bypassFrom = 0, bypassTo = 0;
-        float gainDb = 0.0f;
+        std::vector<std::pair<std::size_t, juce::MidiMessage>> midi;   // absolute samples
     };
 
     // `in` through a fresh processor as `plan` says.
-    probe::Stereo hostRun(const probe::Stereo& in, const HostPlan& plan, int* largestEngineCall = nullptr)
+    probe::Stereo hostRun(const probe::Stereo& in, const HostPlan& plan, int* largest = nullptr)
     {
         tp::Processor p;
         p.setRateAndBufferSizeDetails(kFs, plan.prepared);
         p.prepareToPlay(kFs, plan.prepared);
-        setPlain(p, tp::param::gain, plan.gainDb);
         probe::Stereo out(in.size());
-        juce::MidiBuffer midi;
-        std::size_t pos = 0;
+        std::size_t pos = 0, next = 0;                          // next: the first event not delivered yet
         for (std::size_t block = 0; block < plan.blocks.size(); ++block)
         {
             const int len = plan.blocks[block];
@@ -119,6 +74,13 @@ namespace
             {
                 buffer.setSample(0, i, in.l[pos + static_cast<std::size_t>(i)]);
                 buffer.setSample(1, i, in.r[pos + static_cast<std::size_t>(i)]);
+            }
+            juce::MidiBuffer midi;                              // each event once: an empty block takes those at its start
+            while (next < plan.midi.size()
+                   && (plan.midi[next].first < pos + static_cast<std::size_t>(len) || (len == 0 && plan.midi[next].first == pos)))
+            {
+                midi.addEvent(plan.midi[next].second, static_cast<int>(plan.midi[next].first - std::min(pos, plan.midi[next].first)));
+                ++next;
             }
             juce::AudioBuffer<float> view(buffer.getArrayOfWritePointers(), 2, len);
             if (block >= plan.bypassFrom && block < plan.bypassTo)
@@ -132,181 +94,191 @@ namespace
             }
             pos += static_cast<std::size_t>(len);
         }
-        if (largestEngineCall != nullptr)
-            *largestEngineCall = p.largestEngineCall();
+        if (largest != nullptr)
+            *largest = p.largestEngineCall();
         return out;
+    }
+
+    std::vector<int> blocksOf(std::size_t n, int size)
+    {
+        std::vector<int> b(n / static_cast<std::size_t>(size), size);
+        if (const int rest = static_cast<int>(n % static_cast<std::size_t>(size)); rest > 0)
+            b.push_back(rest);
+        return b;
+    }
+
+    double levelDb(const std::vector<float>& x, double hz, double fromSec, double toSec)
+    {
+        const auto from = static_cast<std::size_t>(fromSec * kFs), to = static_cast<std::size_t>(toSec * kFs);
+        return probe::dbFromLin(probe::toneAmplitude(x, hz, kFs, from, to - from));
     }
 }
 
 PROBE(plugin, process)
 {
-    const funkgui::HeadlessGuiScope gui;                        // JUCE's message manager: the APVTS needs one
-    tp::Processor processor;
-    processor.setRateAndBufferSizeDetails(kFs, kBlock);
-    processor.prepareToPlay(kFs, kBlock);
-
-    const std::size_t n = static_cast<std::size_t>(3.0 * kFs);
-    probe::Stereo in;
-    in.l = probe::sine(1000.0, kAmpL, kFs, n);
-    in.r = probe::sine(3000.0, kAmpR, kFs, n);
-    probe::Stereo out(n);
-    std::vector<tp::ParamValues> blockValues;
-    tp::ParamValues held = tp::defaultValues();
-    constexpr std::size_t kShapeBlock = 416;                    // 2.13 s
-
-    setPlain(processor, tp::param::mix, 0.0f);
-    setPlain(processor, tp::param::gain, 12.0f);
-    juce::AudioBuffer<float> buffer(2, kBlock);
-    juce::MidiBuffer midi;
-    std::size_t block = 0;
-    for (std::size_t pos = 0; pos < n; pos += kBlock, ++block)
+    const funkgui::HeadlessGuiScope gui;
+    const std::size_t n = static_cast<std::size_t>(1.0 * kFs);
+    probe::Stereo in(n);
+    if constexpr (!kInstrument)
     {
-        if (block == 96)                                        // 0.512 s
-            setPlain(processor, tp::param::gain, -6.0f);
-        if (block == 192)                                       // 1.024 s: a host writes a NaN
-        {
-            juce::AudioProcessorParameter* gain = processor.getParameters()[static_cast<int>(tp::param::gain)];
-            gain->setValueNotifyingHost(std::numeric_limits<float>::quiet_NaN());
-            const juce::String text = gain->getCurrentValueAsText();
-            P.eq("nan.host_text_is_dash", text == juce::String::fromUTF8("\xE2\x80\x93") ? 1 : 0, 1);
-        }
-        if (block == 250)                                       // 1.333 s: the reverb in, modulated
-        {
-            setPlain(processor, tp::param::mix, 50.0f);
-            setPlain(processor, tp::param::modrate, 5.0f);
-            setPlain(processor, tp::param::moddepth, 2.0f);
-        }
-        if (block == kShapeBlock)
-            processor.editorPort().setShape(customShape());
-        const int len = static_cast<int>(std::min<std::size_t>(kBlock, n - pos));
-        buffer.setSize(2, len, false, false, true);
-        for (int i = 0; i < len; ++i)
-        {
-            buffer.setSample(0, i, in.l[pos + static_cast<std::size_t>(i)]);
-            buffer.setSample(1, i, in.r[pos + static_cast<std::size_t>(i)]);
-        }
-        readValues(processor, held);
-        blockValues.push_back(held);
-        processor.processBlock(buffer, midi);
-        for (int i = 0; i < len; ++i)
-        {
-            out.l[pos + static_cast<std::size_t>(i)] = buffer.getSample(0, i);
-            out.r[pos + static_cast<std::size_t>(i)] = buffer.getSample(1, i);
-        }
+        in.l = probe::sine(1000.0, kAmpL, kFs, n);
+        in.r = probe::sine(3000.0, kAmpR, kFs, n);
     }
-    processor.releaseResources();
+    const auto noteOn = [](int note, uint8_t velocity) { return juce::MidiMessage::noteOn(1, note, velocity); };
+    std::vector<std::pair<std::size_t, juce::MidiMessage>> a4;
+    if constexpr (kInstrument)
+        a4.push_back({ 0, noteOn(69, 127) });
 
-    // HOST: the dry path's levels at the first values (0.25 s to 0.5 s) and after the write (0.75 s to 1.0 s).
-    const double inL = probe::dbFromLin(kAmpL), inR = probe::dbFromLin(kAmpR);
-    P.near("host.mix0.gain12.left.level_dbfs", levelDb(out.l, 1000.0, 0.25, 0.5), inL + 12.0, 0.05);
-    P.near("host.mix0.gain12.right.level_dbfs", levelDb(out.r, 3000.0, 0.25, 0.5), inR + 12.0, 0.05);
-    P.near("host.mix0.gain-6.left.level_dbfs", levelDb(out.l, 1000.0, 0.75, 1.0), inL - 6.0, 0.05);
-    P.near("host.mix0.gain-6.right.level_dbfs", levelDb(out.r, 3000.0, 0.75, 1.0), inR - 6.0, 0.05);
-
-    // NAN: finite throughout, and the level after the NaN is the last good value's.
-    P.eq("nan.output_finite", probe::allFinite(out.l) && probe::allFinite(out.r) ? 1 : 0, 1);
-    P.near("nan.left.level_keeps_last_good_dbfs", levelDb(out.l, 1000.0, 1.05, 1.3), inL - 6.0, 0.05);
-
-    // ENGINE: the same input through an Engine with the values and tables each block held.
+    // NAMES
     {
-        tp::LfoTable initial, custom;
-        tp::renderTable(tp::defaultShape(), initial);
-        tp::LfoShape shape = customShape();
-        tp::sanitize(shape);
-        tp::renderTable(shape, custom);
-        const auto run = [&](const tp::LfoTable& later) {
-            tp::Engine engine;
-            engine.prepare(kFs, kBlock);
-            engine.setLfoTable(initial);
-            probe::Stereo ref = in;
-            std::size_t b = 0;
-            for (std::size_t pos = 0; pos < n; pos += kBlock, ++b)
-            {
-                const int len = static_cast<int>(std::min<std::size_t>(kBlock, n - pos));
-                if (b == kShapeBlock)
-                    engine.setLfoTable(later);
-                engine.setParams(blockValues[b]);
-                float* ch[2] = { ref.l.data() + pos, ref.r.data() + pos };
-                engine.process(ch, 2, len, {});
-            }
-            return ref;
-        };
-        const probe::Stereo ref = run(custom);
-        P.eq("engine.left.same_bits", probe::sameBits(out.l, ref.l) ? 1 : 0, 1);
-        P.eq("engine.right.same_bits", probe::sameBits(out.r, ref.r) ? 1 : 0, 1);
-        const probe::Stereo unchanged = run(initial);           // the shape is heard: without it the output differs
-        P.eq("engine.shape_changes_output", probe::sameBits(out.l, unchanged.l) ? 0 : 1, 1);
-    }
-
-    // EMPTY, OVER, BYPASS: 20 blocks' worth of the input, at the defaults.
-    {
-        constexpr std::size_t kLen = 20 * kBlock;
-        probe::Stereo part(kLen);
-        std::copy(in.l.begin(), in.l.begin() + kLen, part.l.begin());
-        std::copy(in.r.begin(), in.r.begin() + kLen, part.r.begin());
-        const HostPlan plain{ .blocks = std::vector<int>(20, kBlock) };
-        const probe::Stereo want = hostRun(part, plain);
-
-        HostPlan withEmpty = plain;
-        withEmpty.blocks.insert(withEmpty.blocks.begin() + 10, 0);
-        const probe::Stereo empty = hostRun(part, withEmpty);
-        const bool same = probe::sameBits(empty.l, want.l) && probe::sameBits(empty.r, want.r);
-        P.eq("empty_block.changes_nothing", same ? 1 : 0, 1);
-
-        constexpr int kOver = 4 * kBlock + 37;                    // 1,061 samples, then the rest
-        int largest = 0;
-        const probe::Stereo over = hostRun(
-            part, { .blocks = { kBlock, kOver, static_cast<int>(kLen) - kBlock - kOver } }, &largest);
-        P.le("over.largest_engine_call", largest, kBlock);
-        P.eq("over.same_bits", probe::sameBits(over.l, want.l) && probe::sameBits(over.r, want.r) ? 1 : 0, 1);
-
-        HostPlan bypassAll = plain;
-        bypassAll.bypassTo = plain.blocks.size();
-        int bypassedLargest = 0;
-        const probe::Stereo bypassed = hostRun(part, bypassAll, &bypassedLargest);
-        P.eq("bypass.passes_input", probe::sameBits(bypassed.l, part.l) && probe::sameBits(bypassed.r, part.r) ? 1 : 0,
+        tp::Processor p;
+        const juce::String name = p.getParameters()[0]->getName(100);
+        std::printf("P1 is \"%s\", its default's text \"%s\"; P8 is \"%s\"\n", name.toRawUTF8(),
+                    p.getParameters()[0]->getCurrentValueAsText().toRawUTF8(), p.getParameters()[7]->getName(100).toRawUTF8());
+        P.eq("names.p1", name == (kInstrument ? "1 attack" : "1 gain") ? 1 : 0, 1);
+        P.eq("names.p8_unused", p.getParameters()[7]->getName(100) == "8" ? 1 : 0, 1);
+        P.eq("names.p1_text", p.getParameters()[0]->getCurrentValueAsText() == (kInstrument ? "5.00" : "0.00") ? 1 : 0,
              1);
-        P.eq("bypass.engine_keeps_running.largest_call", bypassedLargest, kBlock);
     }
 
-    // EDGE: bypassed from block 6 (32 ms) to block 24 (128 ms) of 33, against the two steady runs. (The bypass does not
-    // last a whole number of either sine's cycles: an Engine that stopped during it would resume a state that differs.)
+    // HOST and NAN
     {
-        constexpr std::size_t kBlocks = 33, kOff = 6, kOn = 24, kLen = kBlocks * kBlock;
-        constexpr std::size_t kFade = static_cast<std::size_t>(kFs * kFadeMs / 1000.0), kPad = 48;   // 960; 1 ms
-        constexpr std::size_t off = kOff * kBlock, on = kOn * kBlock;
-        probe::Stereo x;
-        x.l = probe::sine(400.0, kAmpL, kFs, kLen);
-        x.r = probe::sine(600.0, kAmpR, kFs, kLen);
-        HostPlan plan{ .blocks = std::vector<int>(kBlocks, kBlock), .gainDb = -24.0f };
-        const probe::Stereo processed = hostRun(x, plan);                  // never bypassed
-        plan.bypassTo = kBlocks;
-        const probe::Stereo bypassed = hostRun(x, plan);                   // always: the input
-        plan.bypassFrom = kOff;
-        plan.bypassTo = kOn;
-        const probe::Stereo got = hostRun(x, plan);
-
-        double abrupt = 1e30;
-        for (const bool left : { true, false })
+        tp::Processor p;
+        p.setRateAndBufferSizeDetails(kFs, kBlock);
+        p.prepareToPlay(kFs, kBlock);
+        const int slot = kInstrument ? 2 : 0;                   // level, gain
+        setPlain(p, slot, kInstrument ? -6.0f : 6.0f);
+        probe::Stereo out(n);
+        juce::MidiBuffer midi;
+        for (std::size_t pos = 0; pos < n; pos += kBlock)
         {
-            const std::string ch = left ? "left" : "right";
-            const std::vector<float>& y = left ? got.l : got.r;
-            const std::vector<float>& wet = left ? processed.l : processed.r;
-            const std::vector<float>& dry = left ? bypassed.l : bypassed.r;
-            const probe::EdgeSteps bypassEdge = probe::edgeSteps(y, wet, dry, off, kFade, kPad);
-            const probe::EdgeSteps unbypassEdge = probe::edgeSteps(y, dry, wet, on, kFade, kPad);
-            P.le("edge.bypass." + ch + ".max_step_over_own", bypassEdge.stepOverOwn, 1.05);
-            P.le("edge.unbypass." + ch + ".max_step_over_own", unbypassEdge.stepOverOwn, 1.05);
-            abrupt = std::min({ abrupt, bypassEdge.abruptOverOwn, unbypassEdge.abruptOverOwn });
+            if (pos <= n / 2 && n / 2 < pos + kBlock)           // NAN, half way
+                p.getParameters()[slot]->setValueNotifyingHost(std::numeric_limits<float>::quiet_NaN());
+            juce::AudioBuffer<float> buffer(2, kBlock);
+            for (int i = 0; i < kBlock; ++i)
+            {
+                buffer.setSample(0, i, in.l[pos + static_cast<std::size_t>(i)]);
+                buffer.setSample(1, i, in.r[pos + static_cast<std::size_t>(i)]);
+            }
+            midi.clear();
+            if (kInstrument && pos == 0)
+                midi.addEvent(noteOn(69, 127), 0);
+            p.processBlock(buffer, midi);
+            for (int i = 0; i < kBlock; ++i)
+            {
+                out.l[pos + static_cast<std::size_t>(i)] = buffer.getSample(0, i);
+                out.r[pos + static_cast<std::size_t>(i)] = buffer.getSample(1, i);
+            }
         }
-        P.ge("edge.abrupt.step_over_own_min", abrupt, 3.0);
+        if constexpr (kInstrument)
+        {
+            P.near("host.level_db", levelDb(out.l, 440.0, 0.1, 0.4), -6.0, 0.05);
+            P.near("nan.level_db", levelDb(out.l, 440.0, 0.6, 0.9), -6.0, 0.05);
+        }
+        else
+        {
+            P.near("host.left_db", levelDb(out.l, 1000.0, 0.1, 0.4), -6.0, 0.05);
+            P.near("host.right_db", levelDb(out.r, 3000.0, 0.1, 0.4), -12.0, 0.05);
+            P.near("nan.left_db", levelDb(out.l, 1000.0, 0.6, 0.9), -6.0, 0.05);
+        }
+        P.eq("nan.finite", probe::allFinite(out.l) && probe::allFinite(out.r) ? 1 : 0, 1);
+        P.eq("nan.text_dash", p.getParameters()[slot]->getCurrentValueAsText() == juce::String::fromUTF8("\xE2\x80\x93")
+                                  ? 1 : 0, 1);
+    }
 
-        const std::size_t dryFrom = std::max(probe::settledFrom(got.l, bypassed.l, off, on),
-                                             probe::settledFrom(got.r, bypassed.r, off, on));
-        P.near("edge.bypass.fade_ms", static_cast<double>(dryFrom - off) * 1000.0 / kFs, kFadeMs, 0.1);
-        const std::size_t wetFrom = std::max(probe::settledFrom(got.l, processed.l, on, kLen),
-                                             probe::settledFrom(got.r, processed.r, on, kLen));
-        P.near("edge.unbypass.fade_ms", static_cast<double>(wetFrom - on) * 1000.0 / kFs, kFadeMs, 0.1);
+    // EMPTY
+    {
+        HostPlan with, without;
+        without.blocks = blocksOf(n, kBlock);
+        with.blocks = without.blocks;
+        with.blocks.insert(with.blocks.begin() + 3, 0);
+        with.midi = a4;
+        without.midi = a4;
+        if constexpr (kInstrument)                             // a note-on in the empty block, at sample 768
+        {
+            with.midi.push_back({ 3 * kBlock, noteOn(76, 100) });
+            without.midi.push_back({ 3 * kBlock, noteOn(76, 100) });
+        }
+        const probe::Stereo a = hostRun(in, with), b = hostRun(in, without);
+        P.eq("empty.same_bits", probe::sameBits(a.l, b.l) && probe::sameBits(a.r, b.r) ? 1 : 0, 1);
+    }
+
+    // OVER
+    {
+        HostPlan big, normal;
+        big.blocks = blocksOf(n, 1061);
+        normal.blocks = blocksOf(n, kBlock);
+        big.midi = normal.midi = a4;
+        int largest = 0;
+        const probe::Stereo a = hostRun(in, big, &largest), b = hostRun(in, normal);
+        P.le("over.largest_engine_call", largest, kBlock);
+        P.eq("over.same_bits", probe::sameBits(a.l, b.l) && probe::sameBits(a.r, b.r) ? 1 : 0, 1);
+    }
+
+    // BYPASS
+    {
+        HostPlan all;
+        all.blocks = blocksOf(n, kBlock);
+        all.bypassTo = all.blocks.size();
+        all.midi = a4;
+        const probe::Stereo a = hostRun(in, all);
+        if constexpr (kInstrument)
+            P.le("bypass.silent_peak", probe::peak(a.l), 0.0);
+        else
+            P.eq("bypass.passes_input", probe::sameBits(a.l, in.l) && probe::sameBits(a.r, in.r) ? 1 : 0, 1);
+
+        HostPlan edge, steady;
+        edge.blocks = steady.blocks = blocksOf(n, kBlock);
+        edge.bypassFrom = 40;
+        edge.bypassTo = 120;
+        edge.midi = steady.midi = a4;
+        const probe::Stereo e = hostRun(in, edge), s = hostRun(in, steady);
+        const std::size_t fade = static_cast<std::size_t>(0.020 * kFs);
+        const double steep = std::max(probe::maxStep(s.l, 2048, n - 4096), kInstrument ? 0.0 : probe::maxStep(in.l, 0, n));
+        for (const std::size_t at : { edge.bypassFrom * kBlock, edge.bypassTo * kBlock })
+        {
+            const std::string k = "bypass.edge" + std::to_string(at);
+            P.le(k + ".max_step", probe::maxStep(e.l, at - 48, fade + 96), steep * 1.05);
+        }
+        bool back = true;
+        for (std::size_t i = edge.bypassTo * kBlock + fade + 1; i < n; ++i)
+            back = back && e.l[i] == s.l[i] && e.r[i] == s.r[i];
+        P.eq("bypass.unbypassed_is_steady_bits", back ? 1 : 0, 1);
+    }
+
+    // EARLY
+    {
+        tp::Processor p;
+        juce::AudioBuffer<float> buffer(2, 64);
+        for (int i = 0; i < 64; ++i)
+        {
+            buffer.setSample(0, i, i == 5 ? std::numeric_limits<float>::quiet_NaN() : 0.25f);
+            buffer.setSample(1, i, i == 9 ? std::numeric_limits<float>::infinity() : -0.25f);
+        }
+        juce::MidiBuffer midi;
+        p.processBlock(buffer, midi);
+        if constexpr (kInstrument)
+            P.le("early.silent", static_cast<double>(std::max(buffer.getMagnitude(0, 0, 64), buffer.getMagnitude(1, 0, 64))),
+                 0.0);
+        else
+        {
+            P.near("early.passes", static_cast<double>(buffer.getSample(0, 0)), 0.25, 0.0);
+            P.near("early.nan_zero", static_cast<double>(buffer.getSample(0, 5)), 0.0, 0.0);
+            P.near("early.inf_zero", static_cast<double>(buffer.getSample(1, 9)), 0.0, 0.0);
+        }
+    }
+
+    // MIDI (an instrument)
+    if constexpr (kInstrument)
+    {
+        HostPlan off, cc;
+        off.blocks = cc.blocks = blocksOf(n, kBlock);
+        off.midi = { { 0, noteOn(69, 127) }, { 4800, noteOn(69, 0) } };
+        cc.midi = { { 0, noteOn(60, 127) }, { 0, noteOn(64, 127) }, { 4800, juce::MidiMessage::controllerEvent(1, 123, 0) } };
+        const probe::Stereo a = hostRun(in, off), b = hostRun(in, cc);
+        const auto tailDb = [&](const probe::Stereo& x) { return probe::rmsDb(x.l, n - 4800, 4800); };
+        P.le("midi.velocity0_releases_db", tailDb(a), -100.0);
+        P.le("midi.cc123_releases_db", tailDb(b), -100.0);
     }
     return P.finish();
 }
