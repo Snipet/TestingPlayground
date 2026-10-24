@@ -1,29 +1,26 @@
-// Source/editor/Panel.h: the plugin's interface, a funkgui::Panel. It is GPU-free: funkgui::EditorHost runs it live
-// in the plugin (Source/editor/gpu/CreateEditorGpu.cpp) and funkgui::HeadlessHost runs it in the probes (gui.dump),
-// drawing the same frames.
+// Source/editor/Panel.h: the plugin's interface, a funkgui::Panel: an FMinus program's editor and its dials. It is
+// GPU-free: funkgui::EditorHost runs it live in the plugin (Source/editor/gpu/CreateEditorGpu.cpp) and
+// funkgui::HeadlessHost runs it in the probes (gui.dump), drawing the same frames.
 //
-// It builds itself from the parameter table (Source/dsp/Params.h), in table order:
-//   header    the product name, its kind and version, and the THEME cells (GRAPHITE, PAPER). The panel widens for a
-//             long name (up to a limit) so the whole header fits; past it the kind and version are left out, and a
-//             name that still does not fit ends in an ellipsis: the header text never runs into the THEME cells
-//   envelope  ENVELOPE: a picture of the ADSR (EnvelopeView.h), when the table has the four envelope rows
-//   controls  each row's control, left to right, wrapping at the panel's width: Control::dial a funkgui::Dial
-//             (60 x 80), Control::slider a funkgui::RuleSlider (180 px rule), Control::choice a row of its own with
-//             one cell per choice (a funkgui::SegmentedSelector over funkgui::ParamCells); Control::hidden nothing. A
-//             row of two or more dials and sliders that fills more than half the width spreads out to the full width
+//   header    the product name, its kind and version, and the THEME cells (GRAPHITE, PAPER)
+//   toolbar   RUN (Cmd-Return in the editor too), EXAMPLES (a menu: the example replaces the text, undoably, and
+//             runs), the status (running, edited, compiling, the errors' count, the compile time) and, at the right,
+//             the audio thread's load and the output guard's alerts (NaN replaced, clipped)
+//   editor    a funkgui::TextEditor over the program's text (the processor keeps it: EditorPort::draft), FMinus's
+//             words highlighted; a mark in the gutter on each line the last run's errors name
+//   problems  the last run's messages, a line each (the first four, and how many more); a click on one with a line
+//             number puts the caret there
+//   dials     the running program's parameters, P1 to P8 (a funkgui::Dial each, labelled with the parameter's name;
+//             an unused slot shows nothing): a drag, the wheel or the keys write through the processor's ports, and a
+//             double-click returns to the parameter's fminus::default
 //   footer    the spec line of the control under the hand (or focused, or last touched), and the ZOOM cells
-// so a new table row appears with no editor change. For a custom view (a graph, a meter), add an Item in Panel.cpp
-// and place it in the constructor, or draw it as the envelope is drawn; README.md walks through it.
 //
-// Input: pointer, wheel, double-click (the default) and keys (Tab moves the focus ring over the controls; arrows,
-// Page and Home/End adjust; Esc hides the ring) reach the item under the pointer or in focus. Every parameter write
-// goes through one funkgui::GestureController (begin/set/end gestures for the host). A right-click (or ctrl-click)
-// on a control opens the host's parameter menu.
+// Keys go to the editor while it has the caret (Tab indents there; Escape leaves it); otherwise Tab moves the focus
+// ring over the controls, and the arrows, Page and Home/End adjust the focused dial. Every parameter write goes
+// through one funkgui::GestureController (begin/set/end gestures for the host).
 //
-// Message thread only. The ports (one per table row, table order) belong to the processor and outlive the Panel.
+// Message thread only. The ports and the EditorPort belong to the processor and outlive the Panel.
 #pragma once
-
-#include "editor/EnvelopeView.h"
 
 #include <funkgui/a11y/A11yItem.h>
 #include <funkgui/canvas/Tags.h>
@@ -39,7 +36,6 @@
 #include <optional>
 #include <span>
 #include <string>
-#include <string_view>
 #include <vector>
 
 namespace funkgui
@@ -47,48 +43,54 @@ namespace funkgui
     class Canvas;
     class CellModel;
     class HostServices;
+    class TextEditor;
     struct Theme;
+}
+
+namespace testingplaygroundsynth
+{
+    class EditorPort;
 }
 
 namespace testingplaygroundsynth::ui
 {
-    class Item;                                          // one control on the panel (Panel.cpp)
+    class Item;                                          // one control or view on the panel (Panel.cpp)
 
-    // The panel's own primitive tags, for probes that find what they check by tag (FunkGui's tags end below
-    // funkgui::tags::firstProduct; a view of your own takes the next free one: EnvelopeView.h's kEnvelopeTag is
-    // firstProduct + 1).
-    inline constexpr funkgui::Tag kHeaderTextTag = funkgui::tags::firstProduct;   // the name, its kind and version
+    // The panel's own primitive tags, for probes that find what they check by tag.
+    inline constexpr funkgui::Tag kHeaderTextTag = funkgui::tags::firstProduct;       // name, kind and version
+    inline constexpr funkgui::Tag kStatusTag = funkgui::tags::firstProduct + 1;       // the toolbar's status
+    inline constexpr funkgui::Tag kProblemTag = funkgui::tags::firstProduct + 2;      // the problems' lines
+    inline constexpr funkgui::Tag kMarkTag = funkgui::tags::firstProduct + 3;         // an error's mark in the gutter
+
+    // One message of the last run, as the problems list shows it.
+    struct Problem
+    {
+        int line = 0, column = 0;                        // 1-based; 0: no place (the plugin's own message)
+        bool error = true;                               // else a note
+        std::string text;                                // the message, without its file and place
+    };
+
+    // FMinus's messages ("program.fm:3:12: error: ...", one a line) as Problems, in order.
+    std::vector<Problem> parseProblems(const std::string& messages);
 
     class Panel final : public funkgui::Panel
     {
     public:
-        // `name` is the product's (Product.h) unless given: probes try the header with other names.
-        explicit Panel(std::span<funkgui::ParamPort* const> ports, std::string_view name = {});
+        Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& port);
         ~Panel() override;
 
         Panel(const Panel&) = delete;
         Panel& operator=(const Panel&) = delete;
 
-        // For probes: the centre of the control bound to parameter `param` (nullopt for a hidden one), and the number
-        // of controls (parameters with a control, plus the THEME and ZOOM cells).
-        std::optional<funkgui::Point> centreOf(std::size_t param) const;
-        std::size_t itemCount() const noexcept { return items_.size(); }
-        // For probes: the envelope view (nullptr when the table lacks an envelope row) and the parameter whose
-        // envelope segment is highlighted (-1 for none).
-        const EnvelopeView* envelope() const noexcept { return envelope_ ? &*envelope_ : nullptr; }
-        int highlightedParam() const;
-
-        // For probes: where the header's parts end, in logical px from the panel's left edge, as draw() places them.
-        struct HeaderLayout
-        {
-            float titleRight = 0.0f;                     // the name's right edge
-            float subtitleRight = 0.0f;                  // the kind and version's (0 when left out)
-            float themeLeft = 0.0f;                      // the THEME cells' left edge
-            bool  subtitleShown = false;
-            bool  titleCut = false;                      // the name ends in an ellipsis
-            bool  widest = false;                        // the panel is as wide as it grows for the header
-        };
-        const HeaderLayout& header() const noexcept { return header_; }
+        // For probes.
+        funkgui::TextEditor& editor() noexcept { return *editor_; }
+        std::optional<funkgui::Point> centreOfDial(int slot) const;    // nullopt for an unused slot
+        funkgui::Point centreOfRun() const;
+        funkgui::Point centreOfExamples() const;
+        funkgui::Point centreOfProblem(int i) const;
+        const std::vector<Problem>& problems() const noexcept { return problems_; }
+        const std::string& statusText() const noexcept { return status_; }
+        void runNow();                                   // RUN
 
         // funkgui::Panel
         void  attach(funkgui::HostServices&) override;
@@ -115,16 +117,20 @@ namespace testingplaygroundsynth::ui
     private:
         int  itemAt(funkgui::Point) const;               // the item under p, -1 for none
         bool moveFocus(int dir);
+        void setFocus(int item);
+        void refresh(double nowSec);                     // the port's status, draft and dials, when they changed
+        void openExamples();
+        void jumpTo(const Problem&);
 
-        std::vector<std::unique_ptr<Item>> items_;       // controls in table order, then THEME, then ZOOM
-        std::vector<int> itemOfParam_;                   // table index -> item index, -1 for a hidden parameter
-        std::optional<EnvelopeView> envelope_;
+        EditorPort& port_;
+        std::vector<std::unique_ptr<Item>> items_;
+        std::vector<int> itemOfSlot_;                    // dial slot -> item index
+        funkgui::TextEditor* editor_ = nullptr;          // an item owns it
+        int editorItem_ = -1, problemsItem_ = -1, runItem_ = -1, examplesItem_ = -1;
+        funkgui::CellModel* zoom_ = nullptr;             // the ZOOM cells' model (an item owns it)
         float width_ = 0.0f, height_ = 0.0f;
-        std::string title_;                              // the product name, upper case (cut to fit: header_)
-        std::string subtitle_;                           // "INSTRUMENT  0.1.0"
-        HeaderLayout header_;
+        std::string title_, subtitle_, status_, meter_;
 
-        funkgui::CellModel* zoom_ = nullptr;             // the ZOOM cells' model (the last item owns it)
         funkgui::HostServices* host_ = nullptr;
         std::optional<funkgui::GestureController> gestures_;
         funkgui::Point pointer_{};
@@ -134,5 +140,18 @@ namespace testingplaygroundsynth::ui
         int  pressed_ = -1;                              // the item holding the pointer between down and up
         int  focus_ = -1;
         int  touched_ = -1;                              // the last item used, for the spec line
+
+        // What refresh() last saw.
+        uint64_t seenStatus_ = 0, seenDraft_ = 0;
+        uint32_t syncedText_ = 0;                        // the editor's revision last given to the port
+        bool edited_ = false;                            // the text differs from the program that plays
+        std::string running_;                            // the source of the program that plays, as statuses say it
+        double meterAt_ = -1.0;                          // when meter_ was last made (the host's clock)
+        bool compiling_ = false;
+        bool lastOk_ = true;
+        double lastMs_ = 0.0;
+        uint32_t controlsRevision_ = 0;                  // bumps when the dials' program changes
+        std::vector<Problem> problems_;
+        std::vector<int> errorLines_;                    // 1-based, for the gutter's marks
     };
 }

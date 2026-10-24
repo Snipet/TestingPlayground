@@ -1,321 +1,557 @@
 // Source/dsp/Engine.cpp: see Engine.h.
-//
-// Per sample: the smoother (GAIN, SUSTAIN), then per quad the sine, the envelope and the level ramp (a smootherstep
-// from `levelFrom` to `levelTo`, at rest when its position is 1), summed over the lanes and the quads, times GAIN.
-// render() cuts its run at every ramp's end, where the ramp lands exactly on its target and a stolen voice, faded out,
-// starts its new note; those cuts fall on the same samples whatever the host's block size.
 #include "dsp/Engine.h"
 
-#include "dsp/SineOscillator.h"
+#include "Product.h"
 
-#include "fsdsp/core/FastMath.h"
-#include "fsdsp/core/Ramp.h"
+#include "fsdsp/core/Sanitize.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <cstring>
 
 namespace testingplaygroundsynth
 {
-    namespace simd = fsdsp::simd;
-
     namespace
     {
-        simd::u32x4 loadU(const uint32_t* p) noexcept
-        {
-            simd::u32x4 v;
-            std::memcpy(&v, p, sizeof v);
-            return v;
-        }
+        constexpr bool kInstrument = product::kIsInstrument;
+        constexpr float kLimit = 4.0f;                    // +12 dBFS: the output guard's clip
 
-        void storeU(uint32_t* p, simd::u32x4 v) noexcept
+        int samplesOf(float ms, float fs) noexcept
         {
-            std::memcpy(p, &v, sizeof v);
+            return std::max(1, static_cast<int>(std::lround(static_cast<double>(ms) * static_cast<double>(fs) / 1000.0)));
         }
+    }
 
-        float perSample(float ms, float fs) noexcept           // 1 / (ms in samples), at most 1
+    // ---- Glide ----------------------------------------------------------------------------------------------------------
+    void Engine::Glide::set(float target, int length) noexcept
+    {
+        if (target == tgt)
+            return;                                  // on its way there already, or there
+        tgt = target;
+        left = std::max(1, length);
+        inc = (tgt - cur) / static_cast<float>(left);
+    }
+
+    float Engine::Glide::tick() noexcept
+    {
+        if (left > 0)
         {
-            return 1.0f / std::max(1.0f, ms * fs / 1000.0f);
+            cur = --left == 0 ? tgt : cur + inc;
         }
+        return cur;
+    }
+
+    // ---- life ---------------------------------------------------------------------------------------------------------
+    Engine::~Engine()
+    {
+        delete current_;
+        if (old_ != current_)
+            delete old_;
+        delete hold_;
+        delete pending_.exchange(nullptr);
+        delete retired_.exchange(nullptr);
     }
 
     void Engine::prepare(double sampleRate, int maxBlockSize)
     {
+        const std::lock_guard<std::mutex> lock(mutex_);
         fs_ = sampleRate > 0.0 ? static_cast<float>(sampleRate) : 48000.0f;
-        script_.prepare(fs_, maxBlockSize);
-        pitchOffset_ = SineOscillator4::pitchOffset(static_cast<double>(fs_));
-        rampSamples_ = std::max(1, static_cast<int>(fsdsp::kStealFadeMs * 0.001f * fs_ + 0.5f));
-        smooth_.prepare(fs_, 20.0f);
-        reset();
-    }
+        rate_.store(fs_, std::memory_order_relaxed);
+        maxBlock_ = std::max(1, maxBlockSize);
+        const auto block = static_cast<std::size_t>(maxBlock_);
+        streamBuf_.assign(static_cast<std::size_t>(kMaxControls) * block, 0.0f);
+        for (std::vector<float>* v : { &accL_, &accR_, &voiceL_, &voiceR_, &dryL_, &dryR_, &mono_ })
+            v->assign(block, 0.0f);
+        stealFade_ = samplesOf(fsdsp::kStealFadeMs, fs_);
+        swapFade_ = samplesOf(fsdsp::kFadeMs, fs_);
+        xfade_.prepare(fs_);
 
-    void Engine::reset() noexcept
-    {
-        phase_.fill(0);
-        inc_.fill(0);
-        env_.clear();
-        levelFrom_.fill(0.0f);
-        levelTo_.fill(0.0f);
-        rampPos_.fill(1.0f);
-        rampStep_.fill(0.0f);
-        rampLeft_.fill(0);
-        playing_.fill(-1);
-        stolen_.fill(false);
-        nextNote_.fill(-1);
-        nextInc_.fill(0);
-        nextLevel_.fill(0.0f);
-        nextKeyDown_.fill(false);
-        scheduler_.reset();
-        primed_ = false;
-    }
-
-    void Engine::setParams(const ParamValues& values) noexcept
-    {
-        rates_.attack = perSample(values[param::attack], fs_);
-        rates_.decay = perSample(values[param::decay], fs_);
-        rates_.release = perSample(values[param::release], fs_);
-        releaseSeconds_.store(static_cast<double>(values[param::release]) / 1000.0, std::memory_order_relaxed);
-
-        const simd::f32x4 gain = fsdsp::linFromDb(simd::set1(values[param::gain]));
-        smooth_.setTarget(simd::withLane<1>(gain, values[param::sustain] / 100.0f));
-        script_.setAmount(values[param::script] * 0.01f, !primed_);
-        if (!primed_)
+        // The audio thread is stopped: a waiting program plays from the first block, without a fade, and the ones it
+        // replaces (and what it handed back) go now.
+        if (Patch* next = pending_.exchange(nullptr, std::memory_order_acq_rel); next != nullptr)
         {
-            smooth_.snap();
-            primed_ = true;
+            if (old_ != current_)
+                delete old_;
+            delete current_;
+            current_ = next;
+            old_ = nullptr;
         }
+        else if (old_ != nullptr)
+        {
+            delete old_;
+            old_ = nullptr;
+        }
+        delete hold_;
+        hold_ = nullptr;
+        delete retired_.exchange(nullptr, std::memory_order_acquire);
+        xfading_ = false;
+        xfade_.lin.cur = 1.0f;
+        xfade_.setTarget(1.0f);
+        voices_ = {};
+        clock_ = 0;
+        if (current_ != nullptr && current_->rate() != fs_)
+            current_->reset(fs_);
+        fedPatch_ = nullptr;                         // the next block snaps the dials
+        load_.store(0.0f, std::memory_order_relaxed);
     }
 
-    // ---- voices ---------------------------------------------------------------------------------------------------
-    bool Engine::sounding(std::size_t v) const noexcept
+    void Engine::offer(std::unique_ptr<Patch> patch)
     {
-        return stolen_[v] || env_.sounding(v);
+        if (!patch)
+            return;
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (patch->rate() != fs_)                    // compiled for another rate than prepare() last set
+            patch->reset(fs_);
+        delete pending_.exchange(patch.release(), std::memory_order_acq_rel);   // one the audio thread never took
+        delete retired_.exchange(nullptr, std::memory_order_acquire);
+    }
+
+    void Engine::collect()
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        delete retired_.exchange(nullptr, std::memory_order_acquire);
     }
 
     int Engine::activeVoices() const noexcept
     {
         int n = 0;
-        for (std::size_t v = 0; v < kN; ++v)
-            n += sounding(v) ? 1 : 0;
+        for (const Voice& v : voices_)
+            n += v.patch != nullptr ? 1 : 0;
         return n;
     }
 
-    Engine::VoiceState Engine::voice(int v) const noexcept
+    // ---- the audio thread: programs ------------------------------------------------------------------------------------
+    void Engine::retire(Patch*& p) noexcept
     {
-        VoiceState s;
-        if (v < 0 || v >= kVoices)
-            return s;
-        const auto i = static_cast<std::size_t>(v);
-        s.sounding = sounding(i);
-        s.note = playing_[i];
-        s.held = env_.held(i);
-        s.envelope = env_.level[i];
-        s.level = levelNow(i);
-        s.next = stolen_[i] ? nextNote_[i] : -1;
-        return s;
+        if (p == nullptr)
+            return;
+        Patch* expected = nullptr;
+        if (retired_.compare_exchange_strong(expected, p, std::memory_order_release, std::memory_order_relaxed))
+            p = nullptr;                             // collect() destroys it
     }
 
-    float Engine::levelNow(std::size_t v) const noexcept
+    void Engine::takePending() noexcept
     {
-        // The per-sample formula of renderSpan(), on one lane.
-        const simd::f32x4 from = simd::set1(levelFrom_[v]);
-        const simd::f32x4 delta = simd::sub(simd::set1(levelTo_[v]), from);
-        return simd::lane<0>(simd::fma(from, delta, fsdsp::smootherstep(simd::set1(rampPos_[v]))));
-    }
-
-    void Engine::rampTo(std::size_t v, float level) noexcept
-    {
-        levelFrom_[v] = levelNow(v);
-        levelTo_[v] = level;
-        rampPos_[v] = 0.0f;
-        rampStep_[v] = 1.0f / static_cast<float>(rampSamples_);
-        rampLeft_[v] = rampSamples_;
-    }
-
-    void Engine::start(std::size_t v, int note, uint32_t inc, float level, bool keyDown) noexcept
-    {
-        phase_[v] = 0;                                          // from silence: phase 0, the envelope from 0
-        inc_[v] = inc;
-        env_.start(v, keyDown);
-        levelFrom_[v] = levelTo_[v] = level;
-        rampPos_[v] = 1.0f;
-        rampStep_[v] = 0.0f;
-        rampLeft_[v] = 0;
-        playing_[v] = note;
-        stolen_[v] = false;
-    }
-
-    void Engine::noteOn(int note, float velocity) noexcept
-    {
-        const float level = kVoiceLevel * std::clamp(velocity, 0.0f, 1.0f);
-        const uint32_t inc = SineOscillator4::increment(note, pitchOffset_);
-
-        std::array<bool, kN> busy{};
-        for (std::size_t v = 0; v < kN; ++v)
-            busy[v] = sounding(v);
-        const Scheduler::Assignment a = scheduler_.noteOn(note, busy);
-        const std::size_t v = a.voice;
-
-        switch (a.action)
+        retire(hold_);
+        if (hold_ != nullptr || old_ != nullptr || pending_.load(std::memory_order_acquire) == nullptr)
+            return;                                  // a swap is still under way, or nothing waits
+        Patch* next = pending_.exchange(nullptr, std::memory_order_acq_rel);
+        if (next == nullptr)
+            return;
+        old_ = current_;
+        current_ = next;
+        if (old_ != nullptr)
+            for (int c = 0; c < kMaxControls; ++c)   // the old program holds its dials still while it goes
+                old_->setStream(c, nullptr);
+        if constexpr (kInstrument)
         {
-            case Scheduler::Action::retrigger:
-                if (stolen_[v])                                 // still fading out: it starts at this velocity
+            // The old program's voices fade out; the keys still held start again on the new one.
+            for (Voice& v : voices_)
+                if (v.patch != nullptr && v.patch == old_)
                 {
-                    nextLevel_[v] = level;
-                    nextKeyDown_[v] = true;
+                    v.fading = true;
+                    v.fall = v.gain / static_cast<float>(swapFade_);
                 }
-                else
-                {
-                    env_.retrigger(v);                          // phase and envelope carry on
-                    if (level != levelTo_[v] || rampLeft_[v] > 0)
-                        rampTo(v, level);
-                }
-                break;
-            case Scheduler::Action::start:
-                start(v, note, inc, level, true);
-                break;
-            case Scheduler::Action::steal:
-                if (!stolen_[v])                                // fade it out; it starts the new note from silence
-                    rampTo(v, 0.0f);
-                stolen_[v] = true;
-                nextNote_[v] = note;
-                nextInc_[v] = inc;
-                nextLevel_[v] = level;
-                nextKeyDown_[v] = true;
-                break;
+            for (int k = 0; k < 128; ++k)
+                if (held_[static_cast<std::size_t>(k)])
+                    noteOn(k, heldVelocity_[static_cast<std::size_t>(k)]);
+        }
+        else
+        {
+            xfade_.lin.cur = 0.0f;
+            xfade_.setTarget(1.0f);
+            xfading_ = true;
         }
     }
 
-    void Engine::noteOff(int note) noexcept
+    // ---- the audio thread: the dials -------------------------------------------------------------------------------------
+    void Engine::setControls(const std::array<float, kMaxControls>& normalised) noexcept
     {
-        for (std::size_t v = 0; v < kN; ++v)
+        norm_ = normalised;
+        normSet_ = true;
+    }
+
+    void Engine::glideControls(int n) noexcept
+    {
+        if (current_ == nullptr)
+            return;
+        const Controls& cs = current_->controls();
+        const bool snap = fedPatch_ != current_;
+        fedPatch_ = current_;
+        for (int c = 0; c < kMaxControls; ++c)
         {
-            if (!scheduler_.plays(v, note))
+            const Control& info = cs[static_cast<std::size_t>(c)];
+            Glide& g = glide_[static_cast<std::size_t>(c)];
+            streaming_[static_cast<std::size_t>(c)] = false;
+            if (!info.used)
                 continue;
-            if (stolen_[v])
-                nextKeyDown_[v] = false;                        // released before it started: it starts silent
-            else
-                env_.release(v);
+            const float target = normSet_ ? plainOf(info, norm_[static_cast<std::size_t>(c)]) : info.def;
+            if (snap || info.type != ControlType::real)
+            {
+                g.cur = g.tgt = target;
+                g.left = 0;
+                continue;
+            }
+            g.set(target, swapFade_);
+            if (!g.moving())
+                continue;
+            float* buf = streamBuf_.data() + static_cast<std::size_t>(c) * static_cast<std::size_t>(maxBlock_);
+            for (int i = 0; i < n; ++i)
+                buf[i] = g.tick();
+            streaming_[static_cast<std::size_t>(c)] = true;
         }
+    }
+
+    void Engine::feed(Patch& p, int offset, int instance) noexcept
+    {
+        const Controls& cs = p.controls();
+        for (int c = 0; c < kMaxControls; ++c)
+        {
+            const Control& info = cs[static_cast<std::size_t>(c)];
+            if (!info.used)
+                continue;
+            const Glide& g = glide_[static_cast<std::size_t>(c)];
+            if (streaming_[static_cast<std::size_t>(c)])
+            {
+                const float* buf = streamBuf_.data() + static_cast<std::size_t>(c) * static_cast<std::size_t>(maxBlock_);
+                p.setStream(c, buf + offset, instance);
+                p.setValue(c, g.tgt, instance);
+            }
+            else
+            {
+                p.setStream(c, nullptr, instance);
+                p.setValue(c, g.cur, instance);
+            }
+        }
+    }
+
+    // ---- the audio thread: a block ---------------------------------------------------------------------------------------
+    void Engine::process(float* const* channels, int numChannels, int numSamples, std::span<const Event> events) noexcept
+    {
+        if (numChannels <= 0 || channels == nullptr)
+            return;
+        const int n = std::min(numSamples, maxBlock_);
+        if (maxBlock_ == 0 || n <= 0)
+        {
+            if (maxBlock_ == 0)                      // not prepared: an effect's input passes, sanitised
+                for (int c = 0; c < numChannels; ++c)
+                {
+                    if constexpr (kInstrument)
+                        std::fill(channels[c], channels[c] + std::max(0, numSamples), 0.0f);
+                    else
+                        fsdsp::sanitize(channels[c], channels[c], std::max(0, numSamples));
+                }
+            if constexpr (kInstrument)
+                for (const Event& e : events)        // a block of 0 samples still plays its events
+                {
+                    if (e.kind == EventKind::noteOn)
+                        noteOn(e.note, e.velocity);
+                    else if (e.kind == EventKind::noteOff)
+                        noteOff(e.note);
+                    else
+                        allNotesOff();
+                }
+            return;
+        }
+        const auto t0 = std::chrono::steady_clock::now();
+        takePending();
+        glideControls(n);
+        if constexpr (kInstrument)
+            processInstrument(channels, numChannels, n, events);
+        else
+            processEffect(channels, numChannels, n);
+
+        const double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        const float share = static_cast<float>(took * static_cast<double>(fs_) / static_cast<double>(n));
+        const float decayed = load_.load(std::memory_order_relaxed) * std::pow(0.5f, static_cast<float>(n) / (0.3f * fs_));
+        load_.store(std::max(share, decayed), std::memory_order_relaxed);
+    }
+
+    void Engine::processEffect(float* const* channels, int numChannels, int n) noexcept
+    {
+        float* left = channels[0];
+        float* right = numChannels > 1 ? channels[1] : mono_.data();
+        fsdsp::sanitize(left, left, n);
+        if (numChannels > 1)
+            fsdsp::sanitize(right, right, n);
+        else
+            std::copy(left, left + n, mono_.data());
+
+        if (current_ == nullptr)
+            return;                                  // no program yet: the input, as it came
+        if (!xfading_)
+        {
+            feed(*current_, 0, -1);
+            current_->process(left, right, n);
+        }
+        else
+        {
+            // The old program (or the dry input, before the first) on copies of the input, the new one in place.
+            std::copy(left, left + n, dryL_.data());
+            std::copy(right, right + n, dryR_.data());
+            if (old_ != nullptr)
+                old_->process(dryL_.data(), dryR_.data(), n);
+            feed(*current_, 0, -1);
+            current_->process(left, right, n);
+            guard(dryL_.data(), n);
+            guard(dryR_.data(), n);
+            guard(left, n);
+            guard(right, n);
+            for (int i = 0; i < n; ++i)
+            {
+                const auto s = static_cast<std::size_t>(i);
+                const float w = xfade_.tick();
+                if (w >= 1.0f)
+                    continue;                        // landed: the new program's sample, as it is
+                left[i] = dryL_[s] + w * (left[i] - dryL_[s]);
+                right[i] = dryR_[s] + w * (right[i] - dryR_[s]);
+            }
+            if (!xfade_.moving())
+            {
+                xfading_ = false;
+                hold_ = old_;
+                old_ = nullptr;
+                retire(hold_);
+            }
+        }
+        guard(left, n);
+        if (numChannels > 1)
+            guard(right, n);
+    }
+
+    void Engine::processInstrument(float* const* channels, int numChannels, int n, std::span<const Event> events) noexcept
+    {
+        std::fill(accL_.begin(), accL_.begin() + n, 0.0f);
+        std::fill(accR_.begin(), accR_.begin() + n, 0.0f);
+        int done = 0;
+        for (const Event& e : events)
+        {
+            const int at = std::clamp(static_cast<int>(e.offset), done, n);
+            if (at > done)
+            {
+                render(done, at);
+                done = at;
+            }
+            if (e.kind == EventKind::noteOn)
+                noteOn(e.note, e.velocity);
+            else if (e.kind == EventKind::noteOff)
+                noteOff(e.note);
+            else
+                allNotesOff();
+        }
+        if (done < n)
+            render(done, n);
+        clock_ += static_cast<uint64_t>(n);
+
+        // The old program goes once its last voice has.
+        if (old_ != nullptr)
+        {
+            bool sounding = false;
+            for (const Voice& v : voices_)
+                sounding = sounding || v.patch == old_;
+            if (!sounding)
+            {
+                hold_ = old_;
+                old_ = nullptr;
+                retire(hold_);
+            }
+        }
+
+        guard(accL_.data(), n);
+        guard(accR_.data(), n);
+        if (numChannels > 1)
+        {
+            std::copy(accL_.begin(), accL_.begin() + n, channels[0]);
+            std::copy(accR_.begin(), accR_.begin() + n, channels[1]);
+            for (int c = 2; c < numChannels; ++c)
+                std::fill(channels[c], channels[c] + n, 0.0f);
+        }
+        else
+        {
+            for (int i = 0; i < n; ++i)
+                channels[0][i] = 0.5f * (accL_[static_cast<std::size_t>(i)] + accR_[static_cast<std::size_t>(i)]);
+        }
+    }
+
+    // ---- the audio thread: voices ---------------------------------------------------------------------------------------
+    int Engine::freeInstance(const Patch& p) const noexcept
+    {
+        for (int i = 0; i < p.instances(); ++i)
+        {
+            bool used = false;
+            for (const Voice& v : voices_)
+                used = used || (v.patch == &p && v.instance == i);
+            if (!used)
+                return i;
+        }
+        return -1;
+    }
+
+    void Engine::noteOn(int key, float velocity) noexcept
+    {
+        if (key < 0 || key > 127)
+            return;
+        held_[static_cast<std::size_t>(key)] = true;
+        heldVelocity_[static_cast<std::size_t>(key)] = velocity;
+        if (current_ == nullptr || maxBlock_ == 0)
+            return;
+        // The key's own voice stops first; then, with every voice taken, the oldest released one (else the oldest)
+        // fades out to make room.
+        int sounding = 0;
+        Voice* oldest = nullptr;
+        Voice* oldestReleased = nullptr;
+        for (Voice& v : voices_)
+        {
+            if (v.patch != current_ || v.fading)
+                continue;
+            if (v.key == key && !v.released)
+            {
+                current_->stop(v.instance);
+                v.released = true;
+            }
+            ++sounding;
+            if (oldest == nullptr || v.age < oldest->age)
+                oldest = &v;
+            if (v.released && (oldestReleased == nullptr || v.age < oldestReleased->age))
+                oldestReleased = &v;
+        }
+        if (sounding >= Patch::kVoices)
+            if (Voice* victim = oldestReleased != nullptr ? oldestReleased : oldest; victim != nullptr)
+            {
+                victim->fading = true;
+                victim->fall = victim->gain / static_cast<float>(stealFade_);
+            }
+        int instance = freeInstance(*current_);
+        if (instance < 0)                            // every instance still fading: take the quietest of them now
+        {
+            Voice* quietest = nullptr;
+            for (Voice& v : voices_)
+                if (v.patch == current_ && (quietest == nullptr || v.gain < quietest->gain))
+                    quietest = &v;
+            if (quietest == nullptr)
+                return;
+            instance = quietest->instance;
+            *quietest = Voice{};
+        }
+        for (Voice& v : voices_)
+            if (v.patch == nullptr)
+            {
+                v = Voice{};
+                v.patch = current_;
+                v.instance = instance;
+                v.key = key;
+                v.age = ++noteCount_;
+                feed(*current_, 0, instance);
+                current_->start(instance, static_cast<float>(key), std::clamp(velocity, 0.0f, 1.0f));
+                return;
+            }
+    }
+
+    void Engine::noteOff(int key) noexcept
+    {
+        if (key < 0 || key > 127)
+            return;
+        held_[static_cast<std::size_t>(key)] = false;
+        for (Voice& v : voices_)
+            if (v.patch != nullptr && v.patch == current_ && v.key == key && !v.released)
+            {
+                current_->stop(v.instance);
+                v.released = true;
+            }
     }
 
     void Engine::allNotesOff() noexcept
     {
-        for (std::size_t v = 0; v < kN; ++v)
+        held_.fill(false);
+        for (Voice& v : voices_)
+            if (v.patch != nullptr && v.patch == current_ && !v.released)
+            {
+                current_->stop(v.instance);
+                v.released = true;
+            }
+    }
+
+    void Engine::render(int from, int to) noexcept
+    {
+        // In parts that end on the absolute grid (or at `to`), so that a voice ends at a multiple of kGrid.
+        constexpr auto grid = static_cast<uint64_t>(kGrid);
+        for (int a = from; a < to;)
         {
-            nextKeyDown_[v] = false;
-            env_.release(v);
+            const auto phase = static_cast<int>((clock_ + static_cast<uint64_t>(a)) % grid);
+            const int b = std::min(to, a + (kGrid - phase));
+            renderPart(a, b, (clock_ + static_cast<uint64_t>(b)) % grid == 0);
+            a = b;
         }
     }
 
-    // ---- rendering ------------------------------------------------------------------------------------------------
-    void Engine::render(float* left, float* right, int n) noexcept
+    void Engine::renderPart(int from, int to, bool onGrid) noexcept
     {
-        while (n > 0)
+        const int len = to - from;
+        if (len <= 0)
+            return;
+        for (Voice& v : voices_)
         {
-            int span = n;
-            for (const int remaining : rampLeft_)
-                if (remaining > 0)
-                    span = std::min(span, remaining);
-            renderSpan(left, right, span);
-            for (std::size_t v = 0; v < kN; ++v)
+            if (v.patch == nullptr)
+                continue;
+            std::fill(voiceL_.begin(), voiceL_.begin() + len, 0.0f);
+            std::fill(voiceR_.begin(), voiceR_.begin() + len, 0.0f);
+            if (v.patch == current_)
+                feed(*current_, from, v.instance);
+            const bool sounding = v.patch->render(v.instance, voiceL_.data(), voiceR_.data(), len);
+            bool finite = true;
+            for (int i = 0; i < len && finite; ++i)
+                finite = std::isfinite(voiceL_[static_cast<std::size_t>(i)]) &&
+                         std::isfinite(voiceR_[static_cast<std::size_t>(i)]);
+            if (!finite)                             // a voice gone bad is dropped: its program starts it afresh
             {
-                if (rampLeft_[v] == 0)
-                    continue;
-                rampLeft_[v] -= span;
-                if (rampLeft_[v] > 0)
-                    continue;
-                levelFrom_[v] = levelTo_[v];                    // lands exactly
-                rampPos_[v] = 1.0f;
-                rampStep_[v] = 0.0f;
-                if (stolen_[v])
-                    start(v, nextNote_[v], nextInc_[v], nextLevel_[v], nextKeyDown_[v]);
+                alerts_.fetch_or(nonFinite, std::memory_order_relaxed);
+                v = Voice{};
+                continue;
             }
-            left += span;
-            if (right != nullptr)
-                right += span;
-            n -= span;
+            float* outL = accL_.data() + from;
+            float* outR = accR_.data() + from;
+            if (!v.fading)
+            {
+                for (int i = 0; i < len; ++i)
+                {
+                    outL[i] += voiceL_[static_cast<std::size_t>(i)];
+                    outR[i] += voiceR_[static_cast<std::size_t>(i)];
+                }
+            }
+            else
+            {
+                for (int i = 0; i < len; ++i)
+                {
+                    v.gain = std::max(0.0f, v.gain - v.fall);
+                    outL[i] += v.gain * voiceL_[static_cast<std::size_t>(i)];
+                    outR[i] += v.gain * voiceR_[static_cast<std::size_t>(i)];
+                }
+            }
+            v.ending = v.ending || !sounding || (v.fading && v.gain <= 0.0f);
+            if (v.ending && onGrid)
+                v = Voice{};
         }
     }
 
-    void Engine::renderSpan(float* left, float* right, int n) noexcept
+    void Engine::guard(float* x, int n) noexcept
     {
-        SineOscillator4 osc[kQuads];
-        adsr::Quad env[kQuads];
-        simd::f32x4 from[kQuads], delta[kQuads], pos[kQuads], step[kQuads];
-        for (std::size_t q = 0; q < kQuads; ++q)
+        uint32_t raised = 0;
+        for (int i = 0; i < n; ++i)
         {
-            const std::size_t o = 4 * q;
-            osc[q].phase = loadU(phase_.data() + o);
-            osc[q].inc = loadU(inc_.data() + o);
-            env[q] = env_.load(q);
-            from[q] = simd::load(levelFrom_.data() + o);
-            delta[q] = simd::sub(simd::load(levelTo_.data() + o), from[q]);
-            pos[q] = simd::load(rampPos_.data() + o);
-            step[q] = simd::load(rampStep_.data() + o);
-        }
-        const simd::f32x4 zero = simd::set1(0.0f), one = simd::set1(1.0f);
-        const simd::f32x4 attack = simd::set1(rates_.attack), decay = simd::set1(rates_.decay);
-        const simd::f32x4 release = simd::set1(rates_.release);
-
-        for (int s = 0; s < n; ++s)
-        {
-            const simd::f32x4 smoothed = smooth_.tick();
-            const float gain = simd::lane<0>(smoothed);
-            const simd::f32x4 sustain = simd::set1(simd::lane<1>(smoothed));
-            simd::f32x4 acc = zero;
-            for (std::size_t q = 0; q < kQuads; ++q)
+            const float s = x[i];
+            if (!std::isfinite(s))
             {
-                const simd::f32x4 wave = osc[q].next();
-                const simd::f32x4 e = env[q].tick(attack, decay, release, sustain);
-                pos[q] = simd::min(simd::add(pos[q], step[q]), one);
-                const simd::f32x4 level = simd::fma(from[q], delta[q], fsdsp::smootherstep(pos[q]));
-                acc = simd::fma(acc, wave, simd::mul(e, level));
+                x[i] = 0.0f;
+                raised |= nonFinite;
             }
-            const float sum = ((simd::lane<0>(acc) + simd::lane<1>(acc)) + (simd::lane<2>(acc) + simd::lane<3>(acc)))
-                              * gain;
-            left[s] = sum;
-            if (right != nullptr)
-                right[s] = sum;
-        }
-
-        for (std::size_t q = 0; q < kQuads; ++q)
-        {
-            const std::size_t o = 4 * q;
-            storeU(phase_.data() + o, osc[q].phase);
-            env_.store(q, env[q]);
-            simd::store(rampPos_.data() + o, pos[q]);
-        }
-    }
-
-    void Engine::process(float* const* channels, int numChannels, int numSamples,
-                         std::span<const Event> events) noexcept
-    {
-        // A block with nothing to write (0 samples, which JUCE's VST3 wrapper passes on, or no channel) still applies
-        // its events, all at once: a note-off is never lost. Only the rendering is skipped.
-        const int len = numChannels > 0 ? std::max(numSamples, 0) : 0;
-        float* left = len > 0 ? channels[0] : nullptr;
-        float* right = len > 0 && numChannels > 1 ? channels[1] : nullptr;
-        for (int ch = 2; ch < numChannels && len > 0; ++ch)
-            std::fill(channels[ch], channels[ch] + len, 0.0f);
-
-        int pos = 0;
-        const auto renderTo = [&](int end) {
-            if (end > pos)
-                render(left + pos, right != nullptr ? right + pos : nullptr, end - pos);
-            pos = std::max(pos, end);
-        };
-        for (const Event& e : events)
-        {
-            renderTo(std::clamp(static_cast<int>(e.offset), pos, len));
-            switch (e.kind)
+            else if (std::fabs(s) > kLimit)
             {
-                case EventKind::noteOn:      noteOn(e.note, e.velocity); break;
-                case EventKind::noteOff:     noteOff(e.note); break;
-                case EventKind::allNotesOff: allNotesOff(); break;
+                x[i] = std::copysign(kLimit, s);
+                raised |= clipped;
             }
         }
-        renderTo(len);
-        if (len > 0)
-            script_.process(left, right, len);
+        if (raised != 0)
+            alerts_.fetch_or(raised, std::memory_order_relaxed);
     }
 }

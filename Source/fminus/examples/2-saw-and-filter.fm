@@ -1,0 +1,106 @@
+// Saw and filter: a band-limited sawtooth (polyBLEP) through a resonant low-pass whose cutoff an ADSR envelope opens.
+// The envelope's stages are the voice's: attack up to 1, decay down to the sustain level while the key is held, and
+// release to silence after stop.
+
+// The polyBLEP correction for a sawtooth at phase t (0 to 1) stepping dt a sample: it rounds off the jump at the wrap.
+float blep(float t, float dt)
+{
+    if (t < dt)
+    {
+        const float x = t / dt;
+        return x + x - x * x - 1;
+    }
+    if (t > 1 - dt)
+    {
+        const float x = (t - 1) / dt;
+        return x * x + x + x + 1;
+    }
+    return 0;
+}
+
+module Voice
+{
+    param float cutoff [[fminus::range(40, 12000)]] [[fminus::default(600)]];     // Hz, with the envelope at 0
+    param float resonance [[fminus::range(0, 1)]] [[fminus::default(0.4)]];
+    param float sweep [[fminus::range(0, 6)]] [[fminus::default(3)]];             // octaves the envelope opens it
+    param float attack [[fminus::range(1, 2000)]] [[fminus::default(3)]];         // ms
+    param float decay [[fminus::range(10, 4000)]] [[fminus::default(400)]];       // ms
+    param float sustain [[fminus::range(0, 1)]] [[fminus::default(0.5)]];
+    param float release [[fminus::range(10, 4000)]] [[fminus::default(250)]];     // ms
+    param float level [[fminus::range(-36, 0)]] [[fminus::default(-15)]];         // dB
+    float rate;
+    float phase;
+    float step;
+    float velocity;
+    float env;
+    bool rising;     // in the attack
+    bool held;
+    float ic1;       // the filter's states
+    float ic2;
+
+    void init(float sampleRate)
+    {
+        rate = sampleRate;
+    }
+
+    void start(float note, float vel)
+    {
+        step = 440 * expf(0.0577622650f * (note - 69)) / rate;
+        velocity = vel;
+        rising = true;
+        held = true;
+    }
+
+    void stop()
+    {
+        held = false;
+    }
+
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        const float up = 1000 / (attack[0] * rate);
+        const float fall = expf(-6907.7553f / (decay[0] * rate));      // -60 dB in `decay` ms
+        const float down = expf(-6907.7553f / (release[0] * rate));
+        const float gain = velocity * expf(0.115129255f * level[0]);
+        const float k = 2 - 1.9f * resonance[0];                        // 1 / Q
+        for (int i = 0; i < n; ++i)
+        {
+            if (!held)
+                env *= down;
+            else if (rising)
+            {
+                env += up;
+                if (env >= 1)
+                {
+                    env = 1;
+                    rising = false;
+                }
+            }
+            else
+                env = sustain[i] + (env - sustain[i]) * fall;
+
+            const float saw = 2 * phase - 1 - blep(phase, step);
+            phase += step;
+            if (phase >= 1)
+                phase -= 1;
+
+            // The cutoff, opened by the envelope; g = tan(pi fc / fs) below the Nyquist frequency.
+            const float fc = cutoff[i] * expf(0.693147181f * sweep[i] * env);
+            const float w = fminf(3.14159265f * fc / rate, 1.5f);
+            const float g = sinf(w) / cosf(w);
+            const float a1 = 1 / (1 + g * (g + k));
+            const float a2 = g * a1;
+            const float a3 = g * a2;
+            const float v3 = saw - ic2;
+            const float v1 = a1 * ic1 + a2 * v3;
+            const float v2 = ic2 + a2 * ic1 + a3 * v3;
+            ic1 = 2 * v1 - ic1;
+            ic2 = 2 * v2 - ic2;
+
+            const float out = gain * env * v2;
+            left[i] += out;
+            right[i] += out;
+        }
+        return held || env > 0.0001f;
+    }
+};
