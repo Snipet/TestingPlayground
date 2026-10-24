@@ -20,12 +20,12 @@ picks): change both, and keep them the same but for the namespace, the examples 
 | Path | What | Rule |
 | --- | --- | --- |
 | `cmake/Product.cmake` | identity: name, kind (an instrument), codes, bundle id, namespace (`testingplaygroundsynth`), environment prefix | `scripts/plugin.py` rewrites it; the plugin code stays unique among the user's plugins |
-| `cmake/Deps.cmake` | the pins: JUCE, bgfx, FunkGui (a commit: v0.16.0 plus TextEditor, until a tag has it), FMinus (a commit) | move a pin's tag, commit and version together |
+| `cmake/Deps.cmake` | the pins: JUCE, bgfx, FunkGui (v0.17.0, the first tag with the TextEditor), FMinus (a commit) | move a pin's tag, commit and version together |
 | `Source/fsdsp/core/**` | FSynth's DSP core, vendored (`SEED.tsv`) | do not edit casually: `scripts/sync-dsp-core.sh` refuses to overwrite edits |
 | `Source/fminus/**` | `Patch` (a program compiled for the plugin: the contract, the appended calls, the instances); `examples/*.fm`, the EXAMPLES (the first the default program; first line `// <Title>: ...`) | JUCE-free; FMinus only through `fminus/FMinus.h` (C++17, no LLVM), never its internals or LLVM's headers (`lint.layers`) |
 | `Source/dsp/**` | `Engine` (programs swapped by crossfade, the dials as glided streams, voices for an instrument, the output guard), `Compiler` (compiles off the audio thread, offers to the Engine, collects), `Controls.h` (slot mapping), `Events.h` | JUCE-free C++20 |
-| `Source/plugin/**` | the JUCE `AudioProcessor`: P1 to P8 (`ControlParameter`: the program's names and texts), one FunkGui port each, the program and the draft in the session, the bypass, the compiler's outcome polled on the message thread; `EditorPort.h` | reads parameters once per block, calls the Engine; copes with what a host may do (below) |
-| `Source/editor/**` | the FunkGui `Panel`: toolbar (RUN, EXAMPLES, status, load), `funkgui::TextEditor` with FMinus highlighting and error marks, the problems list, the dials; `Theme.h`; `gpu/` the EditorHost factory | reaches the processor only through its ports and `EditorPort` |
+| `Source/plugin/**` | the JUCE `AudioProcessor`: P1 to P8 (`ControlParameter`: the program's names and texts), one FunkGui port each, the program's files and the draft in the session, the bypass, the compiler's outcome polled on the message thread; `EditorPort.h` | reads parameters once per block, calls the Engine; copes with what a host may do (below) |
+| `Source/editor/**` | the FunkGui `Panel`: toolbar (RUN, EXAMPLES, status, load), the files' tabs, a `funkgui::TextEditor` each with FMinus highlighting and error marks, the problems list, the dials; `Theme.h`; `gpu/` the EditorHost factory | reaches the processor only through its ports and `EditorPort` |
 | `Tools/probes/**` | probes on FunkGui's Harness: `fminus/` (the examples, the contract), `dsp/` (the Engine), `plugin/`, `gui/`; `common/Rig.h` runs a program in an Engine | spec rows only, no golden files |
 
 There are no starters here (`scripts/starters/` is the template's; the ones this project had predated the FMinus
