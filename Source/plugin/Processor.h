@@ -5,9 +5,11 @@
 //     (Controls.h). Each is a ControlParameter: its name and its text are the program's ("2 cutoff", "1200.0"), and a
 //     host is told when they change (parameterInfoChanged). One FunkGui ParamPort each, what the editor's dials write
 //     through. A run that brings a parameter the program did not have in that slot moves it to its default;
-//   - the program: the source of the one that plays, and the editor's draft, both kept in the session (a <PROGRAM
-//     source=".." draft=".."/> beside the parameters). A new instance plays the first of the EXAMPLES; a session
-//     loads its program (compiled at once, on the host's thread) and its dials as it saved them;
+//   - the program: the files of the one that plays, and the editor's draft (its files, a tab each, and the tab it
+//     shows), both kept in the session (a <PROGRAM active=".."> beside the parameters, with a <RUN> and a <DRAFT> of
+//     <FILE name=".." text=".."/>s). A new instance plays the first of the EXAMPLES; a session loads its program
+//     (compiled at once, on the host's thread) and its dials as it saved them. A session of the version before files
+//     (<PROGRAM source=".." draft=".."/>) loads as a program of one file;
 //   - effect or instrument (cmake/Product.cmake, product::kIsInstrument): an effect has a stereo input and output and
 //     processes in place; an instrument has an output only and gets the block's MIDI notes as Events.
 //
@@ -118,14 +120,14 @@ namespace testingplaygroundsynth
         void timerCallback() override;
 
         // EditorPort
-        std::string draft() const override;
+        Draft draft() const override;
         uint64_t draftRevision() const override;
-        void setDraft(const std::string& text) override;
-        void run(const std::string& source) override;
+        void setDraft(const Draft& draft) override;
+        void run(const Sources& files) override;
         bool compiling() const override;
         CompileStatus status() const override;
         uint64_t statusRevision() const override;
-        std::string runningSource() const override;
+        Sources running() const override;
         Controls controls() const override;
         float load() const override;
         uint32_t alerts() const override;
@@ -133,8 +135,8 @@ namespace testingplaygroundsynth
         // The program: what plays, the editor's draft, the dials. Message thread, and a host's state calls. Declared
         // before the parameters, whose names and texts read controls_ (control()).
         mutable std::mutex programMutex_;
-        std::string running_;
-        std::string draft_;
+        Sources running_;
+        Draft draft_;
         uint64_t draftRevision_ = 1;
         Controls controls_{};
 

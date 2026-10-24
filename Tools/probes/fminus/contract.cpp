@@ -13,6 +13,11 @@
 //   DIALS      nine parameters: the first eight are the dials, in order; the ninth gets a note (it keeps its default)
 //   DEFAULTS   a module the main one holds has its parameters at their fminus::default when the program starts
 //   INIT       init runs with the sample rate before the first block
+//   INCLUDE    a program of several files (Sources.h): one that includes another compiles and plays what it includes;
+//              the main module may be in an included file; two files that include a third read it once; an error in
+//              an included file names that file and its line, after clang's include stack; an #include of a name no
+//              file has is "file not found"; and a method of the wrong type is still the plugin's message, with the
+//              shims after an #include
 #include "Probe.h"
 
 #include "Rig.h"
@@ -54,6 +59,13 @@ namespace
     tp::Patch::Result compile(const std::string& source)
     {
         tp::Patch::Result r = tp::Patch::compile(source, 48000.0f);
+        std::printf("----\n%s%s", r.errors.c_str(), r.notes.c_str());
+        return r;
+    }
+
+    tp::Patch::Result compile(const tp::Sources& files)
+    {
+        tp::Patch::Result r = tp::Patch::compile(files, 48000.0f);
         std::printf("----\n%s%s", r.errors.c_str(), r.notes.c_str());
         return r;
     }
@@ -159,6 +171,56 @@ PROBE(fminus, contract)
                                  process("            left[i] = rate / 100000;\n");
         const float y = firstSample(program("", body));
         P.near("init.rate", static_cast<double>(y), 0.48, 1e-6);
+    }
+    // INCLUDE
+    {
+        // The output's first sample, scaled by a function from another file.
+        const tp::Sources two{ { "program.fm", "#include \"gain.fm\"\n" + program("", process("            left[i] = half(1.0f);\n")) },
+                               { "gain.fm", "float half(float x) { return 0.5f * x; }\n" } };
+        const auto r = compile(two);
+        P.eq("include.compiles", r.patch ? 1 : 0, 1);
+        P.eq("include.patch_keeps_files", r.patch && r.patch->sources() == two ? 1 : 0, 1);
+        if (r.patch)
+        {
+            probe::Rig rig(48000.0, 256);
+            P.eq("include.rig_loads", rig.load(two) ? 1 : 0, 1);
+            const probe::Stereo out = rig.run(probe::Stereo(256), 256, { { 0, tp::EventKind::noteOn, 60, 1.0f } });
+            P.near("include.plays_it", static_cast<double>(out.l[16]), 0.5, 1e-6);
+        }
+
+        // The main module in an included file: the program's own file only includes it.
+        const auto inside = compile(tp::Sources{ { "program.fm", "#include \"main.fm\"\n" },
+                                                 { "main.fm", program("", process("            left[i] = 0.25f;\n")) } });
+        P.eq("include.main_module_included", inside.patch ? 1 : 0, 1);
+
+        // Two files include a third: read once (a second reading would define its function twice).
+        const auto diamond = compile(tp::Sources{
+            { "program.fm", "#include \"a.fm\"\n#include \"b.fm\"\n" + program("", process("            left[i] = a() + b();\n")) },
+            { "a.fm", "#include \"common.fm\"\nfloat a() { return one(); }\n" },
+            { "b.fm", "#include \"common.fm\"\n#include \"program.fm\"\nfloat b() { return one(); }\n" },
+            { "common.fm", "float one() { return 1.0f; }\n" } });
+        P.eq("include.diamond_once", diamond.patch ? 1 : 0, 1);
+
+        // An error in an included file: its name and line, after the include stack.
+        const auto wrong = compile(tp::Sources{ { "program.fm", "#include \"lib.fm\"\n" + program("", process("            left[i] = 0.0f;\n")) },
+                                                { "lib.fm", "float f(float x)\n{\n    return y;\n}\n" } });
+        P.eq("include.error_refused", wrong.patch ? 0 : 1, 1);
+        P.eq("include.error_names_file", has(wrong.errors, "lib.fm:3:12: error: use of undeclared identifier 'y'") ? 1 : 0, 1);
+        P.eq("include.error_stack", has(wrong.errors, "In file included from program.fm:1:") ? 1 : 0, 1);
+
+        // A name no file has.
+        const auto missing = compile(tp::Sources{ { "program.fm", "#include \"nope.fm\"\n" + program("", process("")) } });
+        P.eq("include.missing_refused", missing.patch ? 0 : 1, 1);
+        P.eq("include.missing_says", has(missing.errors, "program.fm:1:10: error: 'nope.fm' file not found") ? 1 : 0, 1);
+
+        // The plugin's message for a method of the wrong type, with an #include before the main module.
+        const std::string bad = kInstrument ? "    bool process(float* restrict left, int n) { return false; }\n"
+                                            : "    void process(float* restrict left, int n) { left[0] = 0; }\n";
+        const auto shim = compile(tp::Sources{ { "program.fm", "#include \"gain.fm\"\n" + program("", bad) },
+                                               { "gain.fm", "float half(float x) { return 0.5f * x; }\n" } });
+        P.eq("include.signature_refused", shim.patch ? 0 : 1, 1);
+        P.eq("include.signature_says_how",
+             has(shim.errors, (std::string(mod) + "::process: the plugin calls it as `").c_str()) ? 1 : 0, 1);
     }
     return P.finish();
 }
