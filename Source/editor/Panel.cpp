@@ -1,6 +1,9 @@
 // Source/editor/Panel.cpp: see Panel.h.
 #include "editor/Panel.h"
 
+#include "editor/ChatItems.h"
+#include "editor/Items.h"
+
 #include "editor/Theme.h"
 
 #include "plugin/EditorPort.h"
@@ -41,33 +44,6 @@
 
 namespace testingplaygroundsynth::ui
 {
-    // ---- one control or view on the panel ---------------------------------------------------------------------------
-    class Item
-    {
-    public:
-        virtual ~Item() = default;
-
-        virtual void tick(float dt, bool hovered, bool focused, funkgui::Point pointer) = 0;
-        virtual void draw(funkgui::Canvas&, const funkgui::Theme&, bool focusRing) const = 0;
-        virtual bool contains(funkgui::Point) const = 0;
-        virtual funkgui::Cursor cursorAt(funkgui::Point) const { return funkgui::Cursor::normal; }
-        virtual void pointerMove(const funkgui::PointerEvent&) {}
-        virtual void pointerExit() {}
-        virtual void pointerDown(const funkgui::PointerEvent&, funkgui::GestureController&, funkgui::HostServices&) = 0;
-        virtual void pointerDrag(const funkgui::PointerEvent&, funkgui::GestureController&) {}
-        virtual void pointerUp(const funkgui::PointerEvent&, funkgui::GestureController&) {}
-        virtual void doubleClick(const funkgui::PointerEvent&, funkgui::GestureController&) {}
-        virtual bool wheel(const funkgui::WheelEvent&, funkgui::GestureController&, double /*nowSec*/) { return false; }
-        virtual bool key(const funkgui::KeyEvent&, funkgui::GestureController&) { return false; }
-        virtual void accessibility(std::vector<funkgui::A11yItem>&) const = 0;
-        virtual bool a11yAction(uint32_t id, funkgui::A11yAction, double value, funkgui::GestureController&) = 0;
-        virtual void specLine(char* out, std::size_t n) const = 0;
-        virtual bool settled() const { return true; }
-        virtual funkgui::Point centre() const = 0;
-        virtual bool shown() const { return true; }      // false: not drawn, no input, no Tab stop
-        virtual bool focusable() const { return true; }  // false: no Tab stop (a readout)
-        virtual void focusChanged(bool /*focused*/) {}
-    };
 
     std::vector<Problem> parseProblems(const std::string& messages)
     {
@@ -118,7 +94,6 @@ namespace testingplaygroundsynth::ui
     {
         // ---- layout (logical px) ----------------------------------------------------------------------------------
         constexpr float kMargin = 20.0f;
-        constexpr float kWidth = 980.0f;
         constexpr float kTitleTop = 17.0f;
         constexpr float kSubtitleGap = 14.0f;
         constexpr float kThemeW = 128.0f;
@@ -127,48 +102,31 @@ namespace testingplaygroundsynth::ui
         constexpr float kButtonH = 22.0f;
         constexpr float kTabsY = 88.0f;                  // the files' tabs, over the editor
         constexpr float kEditorY = kTabsY + 26.0f;
-        constexpr float kEditorH = 378.0f;
         constexpr float kProblemRowH = 15.0f;
         constexpr float kPlaceW = 150.0f;                // a problem's file, line and column
         constexpr int   kProblemRows = 4;
         constexpr float kDialCellW = 60.0f;              // funkgui::DialGeom, primary: 60 x 80
-        constexpr float kDialGap = 30.0f;
+        constexpr float kDialCellH = 80.0f;
+        constexpr float kDialGap = 30.0f;                // between dials, while the column has room
+        constexpr float kDialMinGap = 8.0f;
         constexpr float kFooterH = 36.0f;
+        constexpr float kBottomGap = 12.0f;              // over the footer's rule
+        // The chat's column, at the right.
+        constexpr float kChatShare = 0.32f;              // of the width
+        constexpr float kChatMinW = 340.0f;
+        constexpr float kChatMaxW = 560.0f;
+        constexpr float kChatGap = 24.0f;                // between the columns (the rule in its middle)
+        constexpr float kChatButtonW = 56.0f;            // NEW, KEY
+        constexpr float kSendW = 64.0f;
+        constexpr float kThinkingLabelW = 72.0f;         // "THINKING", before the levels
+        constexpr float kEffortCellW = 48.0f;
+        constexpr float kInputH = 96.0f;                 // the message box
+        constexpr float kActivityH = 22.0f;
+        // The key dialog.
+        constexpr float kKeyDialogW = 540.0f;
+        constexpr float kKeyDialogH = 224.0f;
+        constexpr int   kMaxKeyLength = 320;
         constexpr uint32_t kA11yStride = 64;             // item i's ids: kA11yStride * (i + 1) + 0..63
-
-        constexpr funkgui::TextStyle kStatusStyle{ 10.0f, 1.4f, 0.03f, false };
-
-        std::string upper(std::string_view s)
-        {
-            std::string out(s);
-            for (char& c : out)
-                c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-            return out;
-        }
-
-        // The longest prefix of whole "   "-separated fields of `line` that fits in `maxW` px of kMicro.
-        std::string fitFields(const funkgui::Canvas& c, const char* line, float maxW)
-        {
-            std::string s = line;
-            while (!s.empty() && c.textWidth(s.c_str(), funkgui::type::kMicro) > maxW)
-            {
-                const std::size_t cut = s.rfind("   ");
-                if (cut == std::string::npos)
-                    return {};
-                s.resize(cut);
-            }
-            return s;
-        }
-
-        // `s` cut to `maxW` px of `style`, with an ellipsis when it is cut.
-        std::string fitText(const funkgui::Canvas& c, std::string s, const funkgui::TextStyle& style, float maxW)
-        {
-            if (c.textWidth(s.c_str(), style) <= maxW)
-                return s;
-            while (!s.empty() && c.textWidth((s + "...").c_str(), style) > maxW)
-                s.pop_back();
-            return s + "...";
-        }
 
         // FMinus's words, for the editor's highlighter: C's that FMinus has, and its own (module, param, the vector
         // types). It has no strings, and of the preprocessor only #include and #pragma: a line that starts with # is
@@ -254,6 +212,7 @@ namespace testingplaygroundsynth::ui
             DialItem(funkgui::ParamPort& port, funkgui::DialGeom g, uint32_t id) : model_(port), dial_(model_, g, id) {}
 
             ControlModel& model() noexcept { return model_; }
+            void setGeom(funkgui::DialGeom g) { dial_.setGeom(g); }
 
             void tick(float dt, bool hovered, bool focused, funkgui::Point) override
             {
@@ -375,6 +334,85 @@ namespace testingplaygroundsynth::ui
             std::function<void()> act_;
         };
 
+        // One cell whose label changes (the chosen model's name, SEND or STOP).
+        class LiveButtonModel final : public funkgui::CellModel
+        {
+        public:
+            LiveButtonModel(std::function<std::string()> label, const char* spoken, std::function<void()> act)
+                : labelOf_(std::move(label)), spoken_(spoken), act_(std::move(act)) {}
+
+            int count() const override { return 1; }
+            int active() const override { return -1; }
+            const char* label(int) const override
+            {
+                label_ = labelOf_ ? labelOf_() : std::string();
+                return label_.c_str();
+            }
+            const char* spoken(int) const override { return spoken_; }
+            void select(int, funkgui::GestureController&) override
+            {
+                if (act_)
+                    act_();
+            }
+
+        private:
+            std::function<std::string()> labelOf_;
+            const char* spoken_;
+            std::function<void()> act_;
+            mutable std::string label_;
+        };
+
+        // The thinking levels the chosen model takes, a cell each.
+        class EffortModel final : public funkgui::CellModel
+        {
+        public:
+            static constexpr int kMaxLevels = 5;
+
+            explicit EffortModel(std::function<void(const std::string&)> choose) : choose_(std::move(choose)) {}
+
+            void set(const std::vector<std::string>& efforts, const std::string& current)
+            {
+                if (efforts == efforts_ && current == current_)
+                    return;
+                efforts_ = efforts;
+                if (efforts_.size() > static_cast<std::size_t>(kMaxLevels))
+                    efforts_.resize(static_cast<std::size_t>(kMaxLevels));
+                current_ = current;
+                labels_.clear();
+                spoken_.clear();
+                for (const std::string& e : efforts_)
+                {
+                    labels_.push_back(e == "medium" ? "MED" : upper(e));
+                    spoken_.push_back("Thinking " + e);
+                }
+            }
+            const std::string& current() const noexcept { return current_; }
+
+            int count() const override { return static_cast<int>(efforts_.size()); }
+            int active() const override
+            {
+                for (std::size_t i = 0; i < efforts_.size(); ++i)
+                    if (efforts_[i] == current_)
+                        return static_cast<int>(i);
+                return -1;
+            }
+            const char* label(int i) const override { return labels_[static_cast<std::size_t>(i)].c_str(); }
+            const char* spoken(int i) const override { return spoken_[static_cast<std::size_t>(i)].c_str(); }
+            void select(int i, funkgui::GestureController&) override
+            {
+                if (i < 0 || i >= count())
+                    return;
+                current_ = efforts_[static_cast<std::size_t>(i)];
+                if (choose_)
+                    choose_(current_);
+            }
+
+        private:
+            std::function<void(const std::string&)> choose_;
+            std::vector<std::string> efforts_, labels_, spoken_;
+            std::string current_;
+        };
+
         class CellsItem final : public Item
         {
         public:
@@ -420,6 +458,7 @@ namespace testingplaygroundsynth::ui
                 return { b.x + b.w * 0.5f, b.y + b.h * 0.5f };
             }
             funkgui::Rect bounds() const { return sel_->bounds(); }
+            void setCells(std::vector<funkgui::Rect> cells) { sel_->setCells(std::move(cells)); }
             bool shown() const override { return !shown_ || shown_(); }
 
         private:
@@ -511,6 +550,65 @@ namespace testingplaygroundsynth::ui
             active_ = std::clamp(d.active, 0, count() - 1);
             show();
             structure_ += kStructureStep;
+        }
+
+        // The processor's draft into the tabs (a host loaded a session, or Claude changed the files): a file whose tab
+        // is open keeps its editor (its caret, scroll and undo steps), its text replaced as one undoable edit when it
+        // changed; a file at the place of a tab whose name is gone is that file renamed; a new file gets a tab, and a
+        // tab whose file is gone closes. The tabs follow the draft's order and the tab it shows.
+        void merge(const Draft& d)
+        {
+            renaming_ = -1;
+            why_.clear();
+            editor().setFocused(false);
+            std::vector<Tab> old = std::move(tabs_);
+            tabs_.clear();
+            const std::size_t n = std::min(d.files.size(), kMaxFiles);
+            std::vector<int> match(n, -1);
+            std::vector<bool> used(old.size(), false);
+            for (std::size_t i = 0; i < n; ++i)
+                for (std::size_t k = 0; k < old.size(); ++k)
+                    if (!used[k] && old[k].name == d.files[i].name)
+                    {
+                        match[i] = static_cast<int>(k);
+                        used[k] = true;
+                        break;
+                    }
+            for (std::size_t i = 0; i < n; ++i)
+                if (match[i] < 0 && i < old.size() && !used[i]
+                    && std::none_of(d.files.begin(), d.files.end(),
+                                    [&](const SourceFile& f) { return f.name == old[i].name; }))
+                {
+                    match[i] = static_cast<int>(i);
+                    used[i] = true;
+                }
+            for (std::size_t i = 0; i < n; ++i)
+            {
+                const SourceFile& f = d.files[i];
+                if (match[i] < 0)
+                {
+                    tabs_.push_back(makeTab(f.name, f.text));
+                    continue;
+                }
+                Tab t = std::move(old[static_cast<std::size_t>(match[i])]);
+                t.name = f.name;
+                replaceText(*t.editor, f.text);
+                tabs_.push_back(std::move(t));
+            }
+            if (tabs_.empty())
+                tabs_.push_back(makeTab(kProgramName, ""));
+            active_ = std::clamp(d.active, 0, count() - 1);
+            show();
+            structure_ += kStructureStep;
+        }
+
+        // Where the tabs and the editors are (the Panel's layout).
+        void setGeometry(funkgui::Rect bar, funkgui::Rect editorBounds)
+        {
+            bar_ = bar;
+            editorBounds_ = editorBounds;
+            for (Tab& t : tabs_)
+                t.editor->setBounds(editorBounds_);
         }
 
         void attach(funkgui::HostServices* host)
@@ -884,6 +982,7 @@ namespace testingplaygroundsynth::ui
             if (!focused)
                 endRename();
         }
+        bool takesAllKeys() const override { return editor().focused() || renaming_ >= 0; }
 
     private:
         struct Tab
@@ -914,11 +1013,26 @@ namespace testingplaygroundsynth::ui
         // The shown editor takes the item's focus.
         void show() { editor().setFocused(focused_); }
 
+        // `text` in place of the editor's, as one undoable edit; the caret and the scroll stay where they can.
+        static void replaceText(funkgui::TextEditor& ed, const std::string& text)
+        {
+            if (ed.text() == funkgui::TextEditor::sanitise(text))
+                return;
+            const funkgui::TextPos caret = ed.caret();
+            const funkgui::Point scroll = ed.scroll();
+            ed.selectAll();
+            if (!ed.insert(text))
+                ed.deleteSelection();                    // the new text is empty
+            ed.setCaret(caret);
+            ed.setScroll(scroll.x, scroll.y);
+        }
+
         float tabWidth(int i) const
         {
             const float w = funkgui::text::width(funkgui::FontService::get().atlas(), name(i).c_str(),
                                                  funkgui::type::kMicro);
-            return std::clamp(w + 2.0f * kTabPad + (i > 0 ? kTabCloseW : 0.0f), kTabMinW, kTabMaxW);
+            // 2 px over the name's width: the canvas measures it a hair wider than the atlas at some sizes.
+            return std::clamp(w + 2.0f * kTabPad + (i > 0 ? kTabCloseW : 0.0f) + 2.0f, kTabMinW, kTabMaxW);
         }
 
         int tabAt(funkgui::Point p) const
@@ -1002,6 +1116,7 @@ namespace testingplaygroundsynth::ui
             {
                 return { bounds_.x, bounds_.y + kProblemRowH * static_cast<float>(i), bounds_.w, kProblemRowH };
             }
+            void setBounds(funkgui::Rect b) { bounds_ = b; }
 
             void tick(float, bool, bool, funkgui::Point pointer) override { pointer_ = pointer; }
             void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool) const override
@@ -1097,74 +1212,102 @@ namespace testingplaygroundsynth::ui
         };
     }
 
-    // ---- construction: the layout -----------------------------------------------------------------------------------
+    // ---- construction ---------------------------------------------------------------------------------------------------
+    // The items are made with no place: layout() gives them their places for the panel's size. Their order is the Tab
+    // order.
     Panel::Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& port) : port_(port)
     {
         title_ = upper(product::kName);
         subtitle_ = upper(product::kKind) + "  " + product::kVersion + "  FMINUS";
-        width_ = kWidth;
-        const float contentW = width_ - 2.0f * kMargin;
+        width_ = static_cast<float>(kDefaultWidth);
+        height_ = static_cast<float>(kDefaultHeight);
         const auto idFor = [this] { return kA11yStride * static_cast<uint32_t>(items_.size() + 1); };
+        const auto cells = [](int n) { return std::vector<funkgui::Rect>(static_cast<std::size_t>(n)); };
+        const auto add = [this](std::unique_ptr<Item> item) {
+            items_.push_back(std::move(item));
+            return static_cast<int>(items_.size()) - 1;
+        };
 
         // The toolbar's buttons.
-        auto run = std::make_unique<ButtonModel>("RUN", "Run the program", [this] { runNow(); });
-        runItem_ = static_cast<int>(items_.size());
-        items_.push_back(std::make_unique<CellsItem>(
-            std::move(run), std::vector<funkgui::Rect>{ { kMargin, kToolbarY, 64.0f, kButtonH } },
+        runItem_ = add(std::make_unique<CellsItem>(
+            std::make_unique<ButtonModel>("RUN", "Run the program", [this] { runNow(); }), cells(1),
             funkgui::CellStyle::boxed, idFor(),
             [](char* out, std::size_t n) { std::snprintf(out, n, "RUN   COMPILE THE PROGRAM AND PLAY IT (CMD-RETURN)"); }));
-        auto examples = std::make_unique<ButtonModel>("EXAMPLES", "Examples", [this] { openExamples(); });
-        examplesItem_ = static_cast<int>(items_.size());
-        items_.push_back(std::make_unique<CellsItem>(
-            std::move(examples), std::vector<funkgui::Rect>{ { kMargin + 72.0f, kToolbarY, 96.0f, kButtonH } },
+        examplesItem_ = add(std::make_unique<CellsItem>(
+            std::make_unique<ButtonModel>("EXAMPLES", "Examples", [this] { openExamples(); }), cells(1),
             funkgui::CellStyle::boxed, idFor(),
             [](char* out, std::size_t n) { std::snprintf(out, n, "EXAMPLES   REPLACE THE TEXT WITH ONE, AND RUN IT"); }));
 
-        // The editor.
-        auto filesItem = std::make_unique<FilesItem>(funkgui::Rect{ kMargin, kTabsY, contentW, kTabH },
-                                                     funkgui::Rect{ kMargin, kEditorY, contentW, kEditorH }, idFor(),
-                                                     problems_, [this](int tab) { closeFile(tab); });
-        editorItem_ = static_cast<int>(items_.size());
-        items_.push_back(std::move(filesItem));
-
-        // The problems, under it.
-        const float problemsY = kEditorY + kEditorH + 8.0f;
-        const funkgui::Rect problems{ kMargin, problemsY, contentW, kProblemRowH * static_cast<float>(kProblemRows) };
-        problemsItem_ = static_cast<int>(items_.size());
-        items_.push_back(std::make_unique<ProblemsItem>(problems, idFor(), problems_,
-                                                        [this](const Problem& p) { jumpTo(p); }));
-
-        // The dials, in one row under the problems.
-        const float dialsY = problems.bottom() + 16.0f;
+        // The editor, the problems under it, the dials under them.
+        editorItem_ = add(std::make_unique<FilesItem>(funkgui::Rect{}, funkgui::Rect{}, idFor(), problems_,
+                                                      [this](int tab) { closeFile(tab); }));
+        problemsItem_ = add(std::make_unique<ProblemsItem>(funkgui::Rect{}, idFor(), problems_,
+                                                           [this](const Problem& p) { jumpTo(p); }));
         itemOfSlot_.assign(static_cast<std::size_t>(kMaxControls), -1);
         for (int c = 0; c < kMaxControls && c < static_cast<int>(ports.size()); ++c)
-        {
-            itemOfSlot_[static_cast<std::size_t>(c)] = static_cast<int>(items_.size());
-            const float x = kMargin + static_cast<float>(c) * (kDialCellW + kDialGap);
-            items_.push_back(std::make_unique<DialItem>(*ports[static_cast<std::size_t>(c)],
-                                                        funkgui::DialGeom{ x, dialsY }, idFor()));
-        }
-        height_ = dialsY + 80.0f + 12.0f + kFooterH;
+            itemOfSlot_[static_cast<std::size_t>(c)] = add(std::make_unique<DialItem>(
+                *ports[static_cast<std::size_t>(c)], funkgui::DialGeom{ 0.0f, 0.0f }, idFor()));
+
+        // The chat: the model, NEW, KEY; the thinking levels; the conversation; the message box; SEND or STOP.
+        modelItem_ = add(std::make_unique<CellsItem>(
+            std::make_unique<LiveButtonModel>(
+                [this] {
+                    for (const ChatModel& m : chat_.models)
+                        if (m.id == chat_.model)
+                            return upper(m.name);
+                    return chat_.model.empty() ? std::string("MODEL") : upper(chat_.model);
+                },
+                "Model", [this] { openModels(); }),
+            cells(1), funkgui::CellStyle::boxed, idFor(),
+            [](char* out, std::size_t n) { std::snprintf(out, n, "MODEL   THE CLAUDE MODEL THE CHAT TALKS TO"); }));
+        newChatItem_ = add(std::make_unique<CellsItem>(
+            std::make_unique<ButtonModel>("NEW", "New chat", [this] { newChat(); }), cells(1),
+            funkgui::CellStyle::boxed, idFor(),
+            [](char* out, std::size_t n) { std::snprintf(out, n, "NEW   FORGET THIS CONVERSATION AND START ANOTHER"); }));
+        keyItem_ = add(std::make_unique<CellsItem>(
+            std::make_unique<ButtonModel>("KEY", "Anthropic API key", [this] { openKeyDialog(); }), cells(1),
+            funkgui::CellStyle::boxed, idFor(), [this](char* out, std::size_t n) {
+                std::snprintf(out, n, "KEY   YOUR ANTHROPIC API KEY, STORED ENCRYPTED ON THIS MAC   %s",
+                              chat_.hasKey ? "ONE IS STORED" : "NONE IS STORED");
+            }));
+        auto effort = std::make_unique<EffortModel>([this](const std::string& e) { port_.chat().setEffort(e); });
+        EffortModel* effortModel = effort.get();
+        effort_ = effortModel;
+        effortItem_ = add(std::make_unique<CellsItem>(
+            std::move(effort), cells(EffortModel::kMaxLevels), funkgui::CellStyle::text, idFor(),
+            [effortModel](char* out, std::size_t n) {
+                std::snprintf(out, n, "THINKING   %s   HOW MUCH CLAUDE THINKS BEFORE IT ANSWERS, AND HOW HARD IT WORKS",
+                              upper(effortModel->current()).c_str());
+            },
+            [effortModel] { return effortModel->count() > 0; }));
+        transcriptItem_ = add(std::make_unique<TranscriptItem>(funkgui::Rect{}, idFor()));
+        inputItem_ = add(std::make_unique<InputItem>(funkgui::Rect{}, idFor(), [this] { sendChat(); }));
+        sendItem_ = add(std::make_unique<CellsItem>(
+            std::make_unique<LiveButtonModel>([this] { return std::string(chat_.busy ? "STOP" : "SEND"); },
+                                              "Send or stop",
+                                              [this] {
+                                                  if (chat_.busy)
+                                                      port_.chat().stop();
+                                                  else
+                                                      sendChat();
+                                              }),
+            cells(1), funkgui::CellStyle::boxed, idFor(), [this](char* out, std::size_t n) {
+                std::snprintf(out, n, "%s", chat_.busy ? "STOP   END CLAUDE'S TURN; WHAT IT DID STAYS"
+                                                       : "SEND   THE MESSAGE TO CLAUDE (RETURN IN THE MESSAGE BOX)");
+            }));
 
         // THEME, in the header's right corner.
-        const float right = width_ - kMargin;
-        auto theme = std::make_unique<funkgui::ThemeCells>(
-            std::vector<funkgui::Rect>{ { right - kThemeW, 15.0f, 72.0f, 18.0f },
-                                        { right - 54.0f, 15.0f, 54.0f, 18.0f } },
-            nullptr, funkgui::Point{}, idFor());
-        items_.push_back(std::make_unique<CellsItem>(std::move(theme), [this](char* out, std::size_t n) {
-            std::snprintf(out, n, "THEME   %s", funkgui::Theme::name(host_ != nullptr ? host_->themeIndex() : 0));
-        }));
+        themeItem_ = add(std::make_unique<CellsItem>(
+            std::make_unique<funkgui::ThemeCells>(cells(2), nullptr, funkgui::Point{}, idFor()),
+            [this](char* out, std::size_t n) {
+                std::snprintf(out, n, "THEME   %s", funkgui::Theme::name(host_ != nullptr ? host_->themeIndex() : 0));
+            }));
 
         // ZOOM, in the footer's right corner; shown when the host offers zoom steps (the plugin's editor does).
         auto zoom = std::make_unique<ZoomModel>();
         ZoomModel* zoomModel = zoom.get();
-        std::vector<funkgui::Rect> zoomCells;
-        for (int k = 0; k < ZoomModel::kMaxSteps; ++k)
-            zoomCells.push_back({ right - 44.0f * static_cast<float>(ZoomModel::kMaxSteps - k), height_ - 28.0f, 42.0f,
-                                  18.0f });
-        items_.push_back(std::make_unique<CellsItem>(
-            std::move(zoom), std::move(zoomCells), funkgui::CellStyle::text, idFor(),
+        zoomItem_ = add(std::make_unique<CellsItem>(
+            std::move(zoom), cells(ZoomModel::kMaxSteps), funkgui::CellStyle::text, idFor(),
             [zoomModel](char* out, std::size_t n) {
                 const int a = zoomModel->active();
                 std::snprintf(out, n, "ZOOM   %s", a >= 0 ? zoomModel->label(a) : "");
@@ -1172,7 +1315,9 @@ namespace testingplaygroundsynth::ui
             [zoomModel] { return zoomModel->count() > 0; }));
         zoom_ = zoomModel;
 
-        // The processor's files and status.
+        layout();
+
+        // The processor's files and status, and the chat.
         files().load(port_.draft());
         seenDraft_ = port_.draftRevision();
         syncedFiles_ = files().revision();
@@ -1180,6 +1325,81 @@ namespace testingplaygroundsynth::ui
         refresh(0.0);
         focus_ = editorItem_;
         setFocus(editorItem_);
+    }
+
+    void Panel::layout()
+    {
+        const float W = width_, H = height_;
+        const float footerTop = H - kFooterH;
+        const float bottom = footerTop - kBottomGap;     // the dials' and the message box's bottom
+
+        // The columns.
+        chatW_ = std::clamp(std::round(W * kChatShare), kChatMinW, kChatMaxW);
+        chatX_ = W - kMargin - chatW_;
+        leftW_ = chatX_ - kChatGap - kMargin;
+
+        // The left column: the toolbar, the tabs and the editor, the problems, the dials.
+        static_cast<CellsItem&>(*items_[static_cast<std::size_t>(runItem_)])
+            .setCells({ { kMargin, kToolbarY, 64.0f, kButtonH } });
+        static_cast<CellsItem&>(*items_[static_cast<std::size_t>(examplesItem_)])
+            .setCells({ { kMargin + 72.0f, kToolbarY, 96.0f, kButtonH } });
+        const float dialsY = bottom - kDialCellH;
+        const float problemsH = kProblemRowH * static_cast<float>(kProblemRows);
+        const float problemsY = dialsY - 16.0f - problemsH;
+        files().setGeometry({ kMargin, kTabsY, leftW_, kTabH },
+                            { kMargin, kEditorY, leftW_, std::max(80.0f, problemsY - 8.0f - kEditorY) });
+        static_cast<ProblemsItem&>(*items_[static_cast<std::size_t>(problemsItem_)])
+            .setBounds({ kMargin, problemsY, leftW_, problemsH });
+        const float gaps = static_cast<float>(kMaxControls - 1);
+        const float dialGap = std::clamp((leftW_ - kDialCellW * static_cast<float>(kMaxControls)) / gaps, kDialMinGap,
+                                         kDialGap);
+        for (int c = 0; c < kMaxControls; ++c)
+            if (const int i = itemOfSlot_[static_cast<std::size_t>(c)]; i >= 0)
+                static_cast<DialItem&>(*items_[static_cast<std::size_t>(i)])
+                    .setGeom(funkgui::DialGeom{ kMargin + static_cast<float>(c) * (kDialCellW + dialGap), dialsY });
+
+        // The chat's column.
+        const float right = W - kMargin;
+        static_cast<CellsItem&>(*items_[static_cast<std::size_t>(modelItem_)])
+            .setCells({ { chatX_, kToolbarY, chatW_ - 2.0f * (kChatButtonW + 8.0f), kButtonH } });
+        static_cast<CellsItem&>(*items_[static_cast<std::size_t>(newChatItem_)])
+            .setCells({ { right - 2.0f * kChatButtonW - 8.0f, kToolbarY, kChatButtonW, kButtonH } });
+        static_cast<CellsItem&>(*items_[static_cast<std::size_t>(keyItem_)])
+            .setCells({ { right - kChatButtonW, kToolbarY, kChatButtonW, kButtonH } });
+        thinkingY_ = kTabsY + 2.0f;
+        std::vector<funkgui::Rect> effortCells;
+        for (int k = 0; k < EffortModel::kMaxLevels; ++k)
+            effortCells.push_back({ chatX_ + kThinkingLabelW + kEffortCellW * static_cast<float>(k), thinkingY_,
+                                    kEffortCellW - 2.0f, 18.0f });
+        static_cast<CellsItem&>(*items_[static_cast<std::size_t>(effortItem_)]).setCells(std::move(effortCells));
+        const float inputY = bottom - kInputH;
+        activityY_ = inputY - 8.0f - kActivityH;
+        transcriptItem().setBounds({ chatX_, kEditorY, chatW_, std::max(60.0f, activityY_ - 8.0f - kEditorY) });
+        inputItem().setBounds({ chatX_, inputY, chatW_, kInputH });
+        static_cast<CellsItem&>(*items_[static_cast<std::size_t>(sendItem_)])
+            .setCells({ { right - kSendW, activityY_, kSendW, kActivityH } });
+
+        // THEME, ZOOM.
+        static_cast<CellsItem&>(*items_[static_cast<std::size_t>(themeItem_)])
+            .setCells({ { right - kThemeW, 15.0f, 72.0f, 18.0f }, { right - 54.0f, 15.0f, 54.0f, 18.0f } });
+        std::vector<funkgui::Rect> zoomCells;
+        for (int k = 0; k < ZoomModel::kMaxSteps; ++k)
+            zoomCells.push_back({ right - 44.0f * static_cast<float>(ZoomModel::kMaxSteps - k), H - 28.0f, 42.0f,
+                                  18.0f });
+        static_cast<CellsItem&>(*items_[static_cast<std::size_t>(zoomItem_)]).setCells(std::move(zoomCells));
+        ++layoutRevision_;
+        dirty_ = true;
+    }
+
+    void Panel::resize(int w, int h)
+    {
+        const float nw = static_cast<float>(std::max(w, kMinWidth));
+        const float nh = static_cast<float>(std::max(h, kMinHeight));
+        if (nw == width_ && nh == height_)
+            return;
+        width_ = nw;
+        height_ = nh;
+        layout();
     }
 
     // The host closes the open gestures before it lets go of the Panel; no HostServices call from here.
@@ -1207,6 +1427,54 @@ namespace testingplaygroundsynth::ui
         return { r.x + 20.0f, r.centreY() };
     }
 
+    funkgui::Point Panel::centreOf(int item) const { return items_[static_cast<std::size_t>(item)]->centre(); }
+    funkgui::Point Panel::centreOfSend() const { return centreOf(sendItem_); }
+    funkgui::Point Panel::centreOfModel() const { return centreOf(modelItem_); }
+    funkgui::Point Panel::centreOfNewChat() const { return centreOf(newChatItem_); }
+    funkgui::Point Panel::centreOfKey() const { return centreOf(keyItem_); }
+    int Panel::effortCount() const { return effort_ != nullptr ? effort_->count() : 0; }
+    std::optional<funkgui::Point> Panel::centreOfEffort(int i) const
+    {
+        if (i < 0 || i >= effortCount())
+            return std::nullopt;
+        const float x = chatX_ + kThinkingLabelW + kEffortCellW * static_cast<float>(i) + (kEffortCellW - 2.0f) * 0.5f;
+        return funkgui::Point{ x, thinkingY_ + 9.0f };
+    }
+    funkgui::Point Panel::centreOfKeyField() const
+    {
+        const funkgui::Rect r = keyDialog().field;
+        return { r.centreX(), r.centreY() };
+    }
+    funkgui::Point Panel::centreOfKeySave() const
+    {
+        const funkgui::Rect r = keyDialog().save;
+        return { r.centreX(), r.centreY() };
+    }
+    funkgui::Point Panel::centreOfKeyCancel() const
+    {
+        const funkgui::Rect r = keyDialog().cancel;
+        return { r.centreX(), r.centreY() };
+    }
+    std::optional<funkgui::Point> Panel::centreOfKeyRemove() const
+    {
+        if (!chat_.hasKey)
+            return std::nullopt;
+        const funkgui::Rect r = keyDialog().remove;
+        return funkgui::Point{ r.centreX(), r.centreY() };
+    }
+
+    TranscriptItem& Panel::transcriptItem()
+    {
+        return static_cast<TranscriptItem&>(*items_[static_cast<std::size_t>(transcriptItem_)]);
+    }
+    const TranscriptItem& Panel::transcriptItem() const
+    {
+        return static_cast<const TranscriptItem&>(*items_[static_cast<std::size_t>(transcriptItem_)]);
+    }
+    InputItem& Panel::inputItem() { return static_cast<InputItem&>(*items_[static_cast<std::size_t>(inputItem_)]); }
+    funkgui::TextEditor& Panel::chatInput() noexcept { return inputItem().editor(); }
+    const std::string& Panel::transcript() const { return transcriptItem().text(); }
+
     void Panel::attach(funkgui::HostServices& host)
     {
         host_ = &host;
@@ -1214,6 +1482,8 @@ namespace testingplaygroundsynth::ui
         if (zoom_ != nullptr)
             static_cast<ZoomModel*>(zoom_)->attach(host);
         files().attach(&host);
+        transcriptItem().attach(&host);
+        inputItem().attach(&host);
     }
 
     int Panel::width() const { return static_cast<int>(width_); }
@@ -1267,14 +1537,15 @@ namespace testingplaygroundsynth::ui
 
     void Panel::refresh(double nowSec)
     {
-        // The draft, when a host loaded a session while the editor was open.
+        // The draft, when a host loaded a session while the editor was open, or Claude changed the files.
         bool textChanged = false;
         if (const uint64_t d = port_.draftRevision(); d != seenDraft_)
         {
             seenDraft_ = d;
-            files().load(port_.draft());
+            files().merge(port_.draft());
             syncedFiles_ = files().revision();
             textChanged = true;
+            dirty_ = true;
         }
         // The files as typed, and the tab shown, to the processor (it outlives this window).
         if (files().revision() != syncedFiles_)
@@ -1348,6 +1619,328 @@ namespace testingplaygroundsynth::ui
                 dirty_ = true;
             }
         }
+        refreshChat(nowSec);
+    }
+
+    // ---- the chat -----------------------------------------------------------------------------------------------------
+    namespace
+    {
+        // What the conversation shows while it is empty.
+        std::string chatHint(const ChatState& s)
+        {
+            std::string h =
+                "Claude can build and change this plugin's program: describe a sound and it writes the FMinus, runs "
+                "it, fixes what does not compile and sets the dials. Ask it about FMinus, DSP or the code, or why "
+                "something clicks.\n\n";
+            if (!s.hasKey)
+                h += "First, KEY (above) asks for your Anthropic API key (console.anthropic.com). It is stored "
+                     "encrypted on this Mac, for both playground plugins; the chat's requests are billed to it.";
+            else if (product::kIsInstrument)
+                h += "Try: \"a warm detuned pad\", \"a plucked string with a slow decay\", \"explain what this "
+                     "voice does\".";
+            else
+                h += "Try: \"a tape delay with wow and flutter\", \"make the filter resonate more\", \"explain "
+                     "what this program does\".";
+            if (!s.keyProblem.empty())
+                h += "\n\n! " + s.keyProblem;
+            return asciiText(h);
+        }
+
+        std::string activityText(const ChatState& s, double seconds)
+        {
+            if (s.busy)
+            {
+                char buf[96];
+                std::snprintf(buf, sizeof buf, "%s   %.0f S", s.activity.empty() ? "WORKING" : asciiText(s.activity).c_str(),
+                              std::max(0.0, seconds));
+                return upper(buf);
+            }
+            return upper(asciiText(s.usage));
+        }
+    }
+
+    void Panel::refreshChat(double nowSec)
+    {
+        ChatPort& chat = port_.chat();
+        const uint64_t r = chat.chatRevision();
+        // The conversation as it streams, 30 times a second at most; the key's state once a second (the other playground
+        // plugin may have stored one).
+        const bool changed = r != seenChat_ && (chatAt_ < 0.0 || nowSec - chatAt_ >= 1.0 / 30.0 || nowSec < chatAt_
+                                               || !chat_.busy);
+        const bool stale = chatAt_ < 0.0 || nowSec - chatAt_ >= 1.0 || nowSec < chatAt_;
+        if (changed || stale)
+        {
+            seenChat_ = r;
+            chatAt_ = nowSec;
+            const bool hadKey = chat_.hasKey;
+            const bool wasBusy = chat_.busy;
+            chat_ = chat.chatState();
+            if (chat_.busy && !wasBusy)
+                busySince_ = nowSec;
+            transcriptItem().show(chat_.entries, chatHint(chat_));
+            std::vector<std::string> efforts;
+            for (const ChatModel& m : chat_.models)
+                if (m.id == chat_.model)
+                    efforts = m.efforts;
+            static_cast<EffortModel*>(effort_)->set(efforts, chat_.effort);
+            inputItem().setPlaceholder(chat_.busy ? "Claude is working: STOP ends its turn"
+                                                  : "A message to Claude (Return sends it)");
+            if (hadKey != chat_.hasKey)
+                dirty_ = true;
+            dirty_ = dirty_ || changed;
+        }
+        const std::string a = activityText(chat_, nowSec - busySince_);
+        if (a != activity_)
+        {
+            activity_ = a;
+            dirty_ = true;
+        }
+    }
+
+    void Panel::sendChat()
+    {
+        funkgui::TextEditor& in = inputItem().editor();
+        const std::string text = in.text();
+        if (text.find_first_not_of(" \t\n") == std::string::npos || chat_.busy)
+            return;
+        if (!chat_.hasKey)
+        {
+            pendingSend_ = text;                         // it goes once a key is saved
+            openKeyDialog();
+            return;
+        }
+        port_.chat().send(text);
+        in.setText("");
+        chatAt_ = -1.0;                                  // the user's message, shown at once
+        refreshChat(host_ != nullptr ? host_->nowSeconds() : 0.0);
+        dirty_ = true;
+    }
+
+    void Panel::openModels()
+    {
+        if (host_ == nullptr || chat_.models.empty())
+            return;
+        funkgui::MenuRequest request;
+        int id = 1;
+        for (const ChatModel& m : chat_.models)
+        {
+            funkgui::MenuItem item;
+            item.id = id++;
+            item.label = m.name;
+            item.checked = m.id == chat_.model;
+            request.items.push_back(std::move(item));
+        }
+        request.anchor = static_cast<const CellsItem&>(*items_[static_cast<std::size_t>(modelItem_)]).bounds();
+        request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
+        const std::vector<ChatModel> models = chat_.models;
+        host_->showMenu(request, [this, models](int chosen) {
+            if (chosen < 1 || chosen > static_cast<int>(models.size()))
+                return;
+            port_.chat().setModel(models[static_cast<std::size_t>(chosen - 1)].id);
+            chatAt_ = -1.0;
+            dirty_ = true;
+        });
+    }
+
+    void Panel::newChat()
+    {
+        const auto forget = [this] {
+            port_.chat().newChat();
+            chatAt_ = -1.0;
+            dirty_ = true;
+        };
+        if (chat_.entries.empty() || host_ == nullptr)
+        {
+            forget();
+            return;
+        }
+        funkgui::MenuRequest request;
+        request.items.push_back({ 1, chat_.busy ? "Stop Claude and start a new chat (this one is forgotten)"
+                                                : "Start a new chat (this one is forgotten)" });
+        request.anchor = static_cast<const CellsItem&>(*items_[static_cast<std::size_t>(newChatItem_)]).bounds();
+        request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
+        host_->showMenu(request, [forget](int chosen) {
+            if (chosen == 1)
+                forget();
+        });
+    }
+
+    // ---- the key dialog -----------------------------------------------------------------------------------------------
+    Panel::KeyDialog Panel::keyDialog() const
+    {
+        KeyDialog d;
+        const float w = std::min(kKeyDialogW, width_ - 2.0f * kMargin);
+        d.box = { std::round((width_ - w) * 0.5f), std::round((height_ - kKeyDialogH) * 0.42f), w, kKeyDialogH };
+        d.field = { d.box.x + 20.0f, d.box.y + 112.0f, w - 40.0f, 26.0f };
+        const float by = d.box.bottom() - 20.0f - kButtonH;
+        d.save = { d.box.right() - 20.0f - 72.0f, by, 72.0f, kButtonH };
+        d.cancel = { d.save.x - 8.0f - 80.0f, by, 80.0f, kButtonH };
+        d.remove = { d.box.x + 20.0f, by, 80.0f, kButtonH };
+        return d;
+    }
+
+    void Panel::openKeyDialog()
+    {
+        if (keyOpen_)
+            return;
+        keyOpen_ = true;
+        keyEdit_.set("", kMaxKeyLength);
+        keyWhy_.clear();
+        focusBeforeKey_ = focus_;
+        setFocus(-1);
+        ring_ = false;
+        dirty_ = true;
+    }
+
+    void Panel::closeKeyDialog()
+    {
+        keyOpen_ = false;
+        keyEdit_.set("", kMaxKeyLength);                 // nothing of the key stays in the panel
+        keyWhy_.clear();
+        pendingSend_.clear();
+        if (focusBeforeKey_ >= 0)
+            setFocus(focusBeforeKey_);
+        focusBeforeKey_ = -1;
+        dirty_ = true;
+    }
+
+    void Panel::saveKeyFromDialog()
+    {
+        std::string typed = keyEdit_.buffer;
+        while (!typed.empty() && typed.back() == ' ')
+            typed.pop_back();
+        while (!typed.empty() && typed.front() == ' ')
+            typed.erase(typed.begin());
+        if (typed.empty())
+        {
+            keyWhy_ = "PASTE A KEY FIRST (CMD-V)";
+            dirty_ = true;
+            return;
+        }
+        std::string why;
+        if (!port_.chat().saveKey(typed, why))
+        {
+            keyWhy_ = upper(asciiText(why));
+            dirty_ = true;
+            return;
+        }
+        const std::string pending = pendingSend_;
+        closeKeyDialog();
+        chatAt_ = -1.0;
+        refreshChat(host_ != nullptr ? host_->nowSeconds() : 0.0);
+        if (!pending.empty())
+        {
+            setFocus(inputItem_);
+            sendChat();
+        }
+    }
+
+    void Panel::removeKeyFromDialog()
+    {
+        port_.chat().forgetKey();
+        closeKeyDialog();
+        chatAt_ = -1.0;
+        refreshChat(host_ != nullptr ? host_->nowSeconds() : 0.0);
+    }
+
+    // Every key is the dialog's while it is open: Return saves, Escape cancels, Cmd-V pastes; the caret stays at the end
+    // (the key is masked, so there is nothing to move it over).
+    bool Panel::keyDialogKey(const funkgui::KeyEvent& e)
+    {
+        using funkgui::Key;
+        if (e.key == Key::enter)
+            saveKeyFromDialog();
+        else if (e.key == Key::escape)
+            closeKeyDialog();
+        else if (e.key == Key::character && e.mods.cmd && (e.ch == 'v' || e.ch == 'V'))
+        {
+            if (host_ != nullptr && keyEdit_.paste(host_->clipboardText(), kMaxKeyLength))
+                keyWhy_.clear();
+        }
+        else if (e.key == Key::character && e.mods.cmd && (e.ch == 'a' || e.ch == 'A'))
+            keyEdit_.allSelected = !keyEdit_.buffer.empty();
+        else if (e.key == Key::left || e.key == Key::right || e.key == Key::home || e.key == Key::end
+                 || e.key == Key::up || e.key == Key::down || e.key == Key::tab)
+        {
+        }
+        else if (keyEdit_.key(e, kMaxKeyLength))
+            keyWhy_.clear();
+        keyEdit_.caret = static_cast<int>(keyEdit_.buffer.size());
+        dirty_ = true;
+        return true;
+    }
+
+    void Panel::keyDialogPointerDown(funkgui::Point p)
+    {
+        const KeyDialog d = keyDialog();
+        if (d.save.contains(p))
+            saveKeyFromDialog();
+        else if (d.cancel.contains(p))
+            closeKeyDialog();
+        else if (chat_.hasKey && d.remove.contains(p))
+            removeKeyFromDialog();
+        dirty_ = true;
+    }
+
+    // The key as the field shows it: its first characters ("sk-ant-"), then a star for each of the others (at most 40),
+    // then its last four.
+    std::string Panel::maskedKey() const
+    {
+        const std::string& b = keyEdit_.buffer;
+        const std::size_t head = std::min<std::size_t>(7, b.size());
+        const std::size_t tail = b.size() > head + 4 ? 4 : 0;
+        const std::size_t hidden = b.size() - head - tail;
+        return b.substr(0, head) + std::string(std::min<std::size_t>(hidden, 40), '*') + b.substr(b.size() - tail);
+    }
+
+    void Panel::drawKeyDialog(funkgui::Canvas& c, const funkgui::Theme& th) const
+    {
+        namespace type = funkgui::type;
+        const KeyDialog d = keyDialog();
+        const funkgui::Canvas::Scope s(c, kKeyDialogTag, false);
+        c.rrect(0.0f, 0.0f, width_, height_, 0.0f, th.ground.withAlpha(0.72f));
+        c.rrect(d.box.x, d.box.y, d.box.w, d.box.h, 4.0f, th.ground, 1.0f, th.ink32);
+        float y = d.box.y + 22.0f;
+        c.text("ANTHROPIC API KEY", d.box.x + 20.0f, y, type::kWordmark, th.ink100);
+        y += 30.0f;
+        const char* lines[] = { "The chat uses your own key, from console.anthropic.com (Settings, API keys).",
+                                "It is stored encrypted on this Mac, for both playground plugins, and is sent",
+                                "only to api.anthropic.com. What the chat asks of Claude is billed to it." };
+        for (const char* line : lines)
+        {
+            c.text(fitText(c, line, kStatusStyle, d.box.w - 40.0f).c_str(), d.box.x + 20.0f, y, kStatusStyle, th.ink70);
+            y += 15.0f;
+        }
+        // The field.
+        const funkgui::Rect f = d.field;
+        c.rrect(f.x, f.y, f.w, f.h, 2.0f, th.ground, 1.0f, keyWhy_.empty() ? th.ink52 : th.signal);
+        const float textTop = c.capCentreTop(f.centreY(), type::kMicro);
+        const std::string shown = keyEdit_.buffer.empty() ? std::string() : maskedKey();
+        const float maxW = f.w - 20.0f;
+        if (shown.empty())
+            c.text("sk-ant-...   (Cmd-V pastes it)", f.x + 10.0f, textTop, type::kMicro, th.ink32);
+        else
+        {
+            const float w = std::min(c.textWidth(shown.c_str(), type::kMicro), maxW);
+            if (keyEdit_.allSelected)
+                c.rrect(f.x + 9.0f, f.y + 5.0f, w + 2.0f, f.h - 10.0f, 1.0f, th.accentDim);
+            c.text(fitText(c, shown, type::kMicro, maxW).c_str(), f.x + 10.0f, textTop, type::kMicro, th.ink100);
+        }
+        const float cx = f.x + 10.0f + (shown.empty() ? 0.0f : std::min(c.textWidth(shown.c_str(), type::kMicro), maxW));
+        c.rrect(cx, f.y + 6.0f, 1.5f, f.h - 12.0f, 0.0f, th.accent);
+        if (!keyWhy_.empty())
+            c.text(fitText(c, keyWhy_, kStatusStyle, f.w).c_str(), f.x, f.bottom() + 8.0f, kStatusStyle, th.signal);
+        // The buttons.
+        const auto button = [&](const funkgui::Rect& r, const char* label, bool primary) {
+            const bool hover = hasPointer_ && r.contains(pointer_);
+            c.rrect(r.x, r.y, r.w, r.h, 2.0f, primary ? th.accentDim : th.ground, 1.0f, hover ? th.accent : th.ink52);
+            c.text(label, r.centreX(), c.capCentreTop(r.centreY(), type::kMicro), type::kMicro,
+                   hover ? th.accent : th.ink100, funkgui::Align::centre);
+        };
+        button(d.save, "SAVE", true);
+        button(d.cancel, "CANCEL", false);
+        if (chat_.hasKey)
+            button(d.remove, "REMOVE", false);
     }
 
     void Panel::openExamples()
@@ -1465,6 +2058,7 @@ namespace testingplaygroundsynth::ui
     {
         const funkgui::Theme th = productTheme(hostTheme);
         const float contentW = width_ - 2.0f * kMargin;
+        const float leftRight = kMargin + leftW_;
 
         // Header: the name, the kind and version.
         {
@@ -1479,46 +2073,71 @@ namespace testingplaygroundsynth::ui
             const funkgui::Canvas::Scope s(c, funkgui::tags::none, false);
             c.hairlineH(kMargin, kHeaderRuleY, contentW, th.ink16);
             c.hairlineH(kMargin, height_ - kFooterH, contentW, th.ink16);
+            const float ruleX = chatX_ - kChatGap * 0.5f;
+            c.hairlineV(ruleX, kToolbarY, height_ - kFooterH - kBottomGap - kToolbarY, th.ink16);
         }
 
-        // The toolbar's status and meter.
+        // The toolbar's status and meter, over the editor.
         {
             const funkgui::Canvas::Scope s(c, kStatusTag, false);
             const float statusX = kMargin + 72.0f + 96.0f + 20.0f;
             const float textTop = c.capCentreTop(kToolbarY + kButtonH * 0.5f, kStatusStyle);
             const float meterW = c.textWidth(meter_.c_str(), kStatusStyle);
             const funkgui::Col statusInk = !lastOk_ && !compiling_ ? th.signal : (edited_ ? th.ink70 : th.ink52);
-            c.text(fitText(c, status_, kStatusStyle, contentW - 188.0f - meterW - 24.0f).c_str(), statusX, textTop,
-                   kStatusStyle, statusInk);
+            c.text(fitText(c, status_, kStatusStyle, std::max(0.0f, leftRight - statusX - meterW - 24.0f)).c_str(),
+                   statusX, textTop, kStatusStyle, statusInk);
             const bool alarm = port_.alerts() != 0;
-            c.text(meter_.c_str(), width_ - kMargin, textTop, kStatusStyle, alarm ? th.signal : th.ink32,
-                   funkgui::Align::right);
+            c.text(meter_.c_str(), leftRight, textTop, kStatusStyle, alarm ? th.signal : th.ink32, funkgui::Align::right);
+        }
+
+        // The chat's own text: the thinking levels' caption, what Claude is doing.
+        {
+            const funkgui::Canvas::Scope s(c, kChatTag, false);
+            if (effortCount() > 0)
+                c.text("THINKING", chatX_, c.capCentreTop(thinkingY_ + 9.0f, funkgui::type::kMicro), funkgui::type::kMicro,
+                       th.ink52);
+            const float textTop = c.capCentreTop(activityY_ + kActivityH * 0.5f, kStatusStyle);
+            c.text(fitText(c, activity_, kStatusStyle, chatW_ - kSendW - 16.0f).c_str(), chatX_, textTop, kStatusStyle,
+                   chat_.busy ? th.ink70 : th.ink32);
         }
 
         for (std::size_t i = 0; i < items_.size(); ++i)
             if (items_[i]->shown())
                 items_[i]->draw(c, th, ring_ && focus_ == static_cast<int>(i));
 
-        // Footer: the spec line of the control under the hand, else the focused one, else the last one touched.
-        int src = pressed_;
-        if (src < 0 && hasPointer_)
-            src = itemAt(pointer_);
-        if (src < 0)
-            src = focus_ >= 0 ? focus_ : touched_;
-        if (src >= 0)
+        // Footer: the spec line of the control under the hand, else the focused one, else the last one touched; the
+        // dialog's own while it is open.
+        char line[256] = {};
+        if (keyOpen_)
+            std::snprintf(line, sizeof line, "KEY   CMD-V PASTES IT   RETURN SAVES IT   ESCAPE CANCELS");
+        else
         {
-            char line[256] = {};
-            items_[static_cast<std::size_t>(src)]->specLine(line, sizeof line);
-            const float zoomW = items_.back()->shown() ? 44.0f * ZoomModel::kMaxSteps + 12.0f : 0.0f;
+            int src = pressed_;
+            if (src < 0 && hasPointer_)
+                src = itemAt(pointer_);
+            if (src < 0)
+                src = focus_ >= 0 ? focus_ : touched_;
+            if (src >= 0)
+                items_[static_cast<std::size_t>(src)]->specLine(line, sizeof line);
+        }
+        if (line[0] != '\0')
+        {
+            const float zoomW = items_[static_cast<std::size_t>(zoomItem_)]->shown() ? 44.0f * ZoomModel::kMaxSteps + 12.0f
+                                                                                    : 0.0f;
             const std::string shown = fitFields(c, line, contentW - zoomW);
             const funkgui::Canvas::Scope s(c, funkgui::tags::hint, false);
             c.text(shown.c_str(), kMargin, height_ - 24.0f, funkgui::type::kMicro, th.ink52);
         }
+
+        if (keyOpen_)
+            drawKeyDialog(c, th);
     }
 
     // ---- input --------------------------------------------------------------------------------------------------------
     int Panel::itemAt(funkgui::Point p) const
     {
+        if (keyOpen_)
+            return -1;                                   // the dialog covers the panel
         for (std::size_t i = 0; i < items_.size(); ++i)
             if (items_[i]->shown() && items_[i]->contains(p))
                 return static_cast<int>(i);
@@ -1547,15 +2166,26 @@ namespace testingplaygroundsynth::ui
         dirty_ = true;
     }
 
+    int Panel::textItem() const
+    {
+        return focus_ >= 0 && items_[static_cast<std::size_t>(focus_)]->takesAllKeys() ? focus_ : -1;
+    }
+
     void Panel::pointerDown(const funkgui::PointerEvent& e)
     {
         ring_ = false;                                   // the pointer is the affordance now
         pointer_ = { e.x, e.y };
         hasPointer_ = true;
+        if (keyOpen_)
+        {
+            pressed_ = -1;
+            keyDialogPointerDown(pointer_);
+            return;
+        }
         pressed_ = itemAt(pointer_);
         if (pressed_ >= 0 && items_[static_cast<std::size_t>(pressed_)]->focusable())
             setFocus(pressed_);
-        else if (pressed_ < 0 && focus_ == editorItem_)
+        else if (pressed_ < 0 && textItem() >= 0)
             setFocus(-1);                                // a press beside everything takes the caret away
         if (pressed_ >= 0 && gestures_ && host_ != nullptr)
         {
@@ -1583,6 +2213,8 @@ namespace testingplaygroundsynth::ui
 
     void Panel::doubleClick(const funkgui::PointerEvent& e)
     {
+        if (keyOpen_)
+            return;
         const int i = itemAt({ e.x, e.y });
         if (i >= 0 && gestures_)
         {
@@ -1621,21 +2253,29 @@ namespace testingplaygroundsynth::ui
     bool Panel::key(const funkgui::KeyEvent& e)
     {
         dirty_ = true;
+        if (keyOpen_)
+            return keyDialogKey(e);
         // RUN, from anywhere in the panel.
         if (e.key == funkgui::Key::enter && (e.mods.cmd || e.mods.ctrl))
         {
             runNow();
             return true;
         }
-        // The editor, while it has the caret: every key is its own (Tab indents), but Escape, which leaves it.
-        if (focus_ == editorItem_ && files().editor().focused())
+        // A text field, while it has the caret: every key is its own (Tab indents in the editor), but Escape, which
+        // leaves it, and a Tab it does not use, which moves on.
+        if (const int t = textItem(); t >= 0)
         {
-            if (gestures_ && items_[static_cast<std::size_t>(editorItem_)]->key(e, *gestures_))
+            if (gestures_ && items_[static_cast<std::size_t>(t)]->key(e, *gestures_))
                 return true;
             if (e.key == funkgui::Key::escape)
             {
                 setFocus(-1);
                 return true;
+            }
+            if (e.key == funkgui::Key::tab)
+            {
+                ring_ = moveFocus(e.mods.shift ? -1 : 1);
+                return ring_;
             }
             return false;
         }
@@ -1656,13 +2296,62 @@ namespace testingplaygroundsynth::ui
 
     funkgui::Cursor Panel::cursor() const
     {
+        if (keyOpen_)
+        {
+            const KeyDialog d = keyDialog();
+            const bool button = d.save.contains(pointer_) || d.cancel.contains(pointer_)
+                             || (chat_.hasKey && d.remove.contains(pointer_));
+            return button ? funkgui::Cursor::pointingHand : funkgui::Cursor::normal;
+        }
         const int i = pressed_ >= 0 ? pressed_ : (hasPointer_ ? itemAt(pointer_) : -1);
         return i >= 0 ? items_[static_cast<std::size_t>(i)]->cursorAt(pointer_) : funkgui::Cursor::normal;
     }
 
     // ---- accessibility ------------------------------------------------------------------------------------------------
+    namespace
+    {
+        // The key dialog's ids, past every item's.
+        constexpr uint32_t kKeyDialogId = 0x7FFF0000u;
+        constexpr uint32_t kKeyFieldId = kKeyDialogId + 1, kKeySaveId = kKeyDialogId + 2,
+                           kKeyCancelId = kKeyDialogId + 3, kKeyRemoveId = kKeyDialogId + 4;
+    }
+
     void Panel::accessibility(std::vector<funkgui::A11yItem>& out) const
     {
+        if (keyOpen_)
+        {
+            const KeyDialog d = keyDialog();
+            funkgui::A11yItem box;
+            box.id = kKeyDialogId;
+            box.role = funkgui::a11yrole::group;
+            box.bounds = d.box;
+            box.title = "Anthropic API key";
+            box.description = "Stored encrypted on this Mac, for both playground plugins";
+            out.push_back(box);
+            funkgui::A11yItem field;
+            field.id = kKeyFieldId;
+            field.parent = kKeyDialogId;
+            field.role = funkgui::a11yrole::editableText;
+            field.bounds = d.field;
+            field.title = "Key";
+            field.value = keyEdit_.buffer.empty() ? "empty" : std::to_string(keyEdit_.buffer.size()) + " characters";
+            field.help = keyWhy_.empty() ? "Command V pastes it" : keyWhy_;
+            out.push_back(std::move(field));
+            const auto button = [&](uint32_t id, const funkgui::Rect& r, const char* title) {
+                funkgui::A11yItem b;
+                b.id = id;
+                b.parent = kKeyDialogId;
+                b.role = funkgui::A11yRole::button;
+                b.bounds = r;
+                b.title = title;
+                out.push_back(std::move(b));
+            };
+            button(kKeySaveId, d.save, "Save");
+            button(kKeyCancelId, d.cancel, "Cancel");
+            if (chat_.hasKey)
+                button(kKeyRemoveId, d.remove, "Remove the stored key");
+            return;
+        }
         for (const auto& item : items_)
             if (item->shown())
                 item->accessibility(out);
@@ -1670,18 +2359,33 @@ namespace testingplaygroundsynth::ui
 
     uint32_t Panel::a11yRevision() const
     {
-        // Items come and go with the program's dials, the host's zoom and the files' tabs.
-        uint32_t r = items_.back()->shown() ? 1u : 0u;
+        // Items come and go with the program's dials, the host's zoom, the files' tabs, the model's thinking levels and
+        // the key dialog, and move with the panel's size.
+        uint32_t r = items_[static_cast<std::size_t>(zoomItem_)]->shown() ? 1u : 0u;
         for (int c = 0; c < kMaxControls; ++c)
             if (const int i = itemOfSlot_[static_cast<std::size_t>(c)]; i >= 0 && items_[static_cast<std::size_t>(i)]->shown())
                 r |= 2u << c;
-        return r | (files().layoutRevision() << 12);
+        r |= static_cast<uint32_t>(effortCount()) << 9;
+        r |= (keyOpen_ ? 1u : 0u) << 12;
+        r |= (chat_.hasKey ? 1u : 0u) << 13;
+        return r ^ (files().layoutRevision() << 14) ^ (layoutRevision_ << 22);
     }
 
     void Panel::a11yAction(uint32_t id, funkgui::A11yAction a, double value)
     {
         if (!gestures_)
             return;
+        if (keyOpen_)
+        {
+            if (id == kKeySaveId)
+                saveKeyFromDialog();
+            else if (id == kKeyCancelId)
+                closeKeyDialog();
+            else if (id == kKeyRemoveId && chat_.hasKey)
+                removeKeyFromDialog();
+            dirty_ = true;
+            return;
+        }
         for (const auto& item : items_)
             if (item->shown() && item->a11yAction(id, a, value, *gestures_))
                 break;

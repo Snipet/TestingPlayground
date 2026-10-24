@@ -3,8 +3,11 @@
 An instrument (AU, VST3 and Standalone, macOS on Apple silicon) whose voices you write while it plays: its editor is a
 text field holding an [FMinus](https://github.com/Snipet/FMinus) program, the plugin compiles it when you press RUN
 (or Cmd-Return), and the next block plays it; the keys you hold start again on the new program while the old one's
-voices fade out. The program's parameters become the dials under the text. Built on JUCE 8.0.4, with a GPU editor made
-with [FunkGui](https://github.com/Snipet/FunkGui) (its `TextEditor`) and FMinus, the JIT compiler for DSP, linked in.
+voices fade out. The program's parameters become the dials under the text. A chat with Claude at the right of the
+editor writes and changes the program for you: describe a sound and it writes the FMinus voice, runs it, fixes what
+does not compile and leaves the dials at good settings, so a sentence does what a preset did. Built on JUCE 8.0.4, with
+a GPU editor made with [FunkGui](https://github.com/Snipet/FunkGui) (its `TextEditor`) and FMinus, the JIT compiler
+for DSP, linked in.
 
 <!-- origin -->
 It began as the sine voice synth of the Visage version (git tag `legacy-visage`), ported onto FSynth's DSP core and
@@ -130,7 +133,44 @@ file there whose first line is `// <Title>: what it is`.
 - **The session** keeps the program that plays (all its files), the files as you left them (run or not), the tab
   shown, and the dials. A session whose program no longer compiles (an older FMinus, say) leaves the first example
   playing, its files in the editor. A session saved before files loads as a program of one file.
+- **The window** resizes in both directions, from 1000 x 600 (logical px, before ZOOM) up: the editor and the chat's
+  conversation take the height, the chat about a third of the width. The session keeps the size.
 - THEME (header) and ZOOM (footer) are machine-wide preferences.
+
+## The chat
+
+The column at the right is a conversation with Claude, through the [Claude API](https://docs.claude.com) with your
+own key. Claude sees the plugin's files, whether they play, the last compile's messages and the dials (sent with each
+message when they changed), and it can act on them: read, write, edit, rename and delete the files (the editor's tabs
+follow, and Cmd-Z in a file undoes its change), run the program (RUN; the compile's messages come back to it), set
+the dials, and read the CPU load and the output guard's alerts. Ask it for a sound ("a warm detuned pad", "a plucked
+string"), a change ("a slower attack", "more resonance"), an explanation ("what does this voice do?"), or help with an
+error or a click. It knows FMinus and the plugin's contract (its instructions are in
+`Source/plugin/ChatPrompt.cpp`).
+
+- **KEY** asks for your Anthropic API key (from console.anthropic.com, Settings, API keys): paste it (Cmd-V) and
+  SAVE. A message sent before a key is stored opens the same dialog and goes once the key is saved. REMOVE forgets
+  the key.
+- **The model** (the button at the top: a menu of the models your key can use that think adaptively) and **THINKING**
+  (low to max: how much Claude thinks before it answers, and how hard it works) are machine-wide, shared by both
+  playground plugins. Higher levels and larger models answer better and cost more.
+- **The message box**: Return sends, Shift-Return breaks the line. While Claude works, the line above the box says
+  what it is doing and SEND is **STOP**, which ends its turn at once (what it did stays). **NEW** forgets the
+  conversation (it asks first). After each reply the line shows its tokens: in (and how many were read from the
+  cache) and out.
+- **The session** keeps the conversation, so a project reopens with its chat; the key is never in it.
+- **Network**: the chat is the only part of the plugin that uses the network, and only when you send a message: HTTPS
+  to `api.anthropic.com` (the Messages API, streamed, and the models list once per key). Requests are billed to your
+  key. A turn goes on while the editor is closed.
+
+**Where the key is.** `~/Library/Application Support/Funk/Playground/anthropic-key.bin` (the folder 0700, the file
+0600), shared by the effect and the synth playground, in any host and in their Standalones; `chat.json` beside it
+keeps the model and the level. The file holds the key encrypted with AES-256-CBC and authenticated with HMAC-SHA256
+(CommonCrypto), under keys derived with PBKDF2 (100,000 rounds, a fresh salt each save) from this Mac's device ID and
+your account: copied to another Mac or read by another account it is useless, and nothing on disk shows the key in
+clear. A program running as you on this Mac could derive the same keys, as it could read your other files: the
+encryption protects the key at rest (backups, a copied folder, a stray search), not from such a program. To revoke a
+key, delete it at console.anthropic.com.
 
 ## Build and run
 
@@ -172,6 +212,9 @@ build-dev/TestingPlaygroundSynth_probes --list
 | `dsp.swap` | the Engine: a held note's voice fades out when another program arrives, which starts the key again; seventeen notes steal the oldest; a voice that returns false is free; a real dial glides over 20 ms sample by sample, an integer one steps at the block; a NaN, an infinity and 10 leave as 0, 0 and 4, with their alerts |
 | `plugin.process` | the processor as a host drives it: P1 to P8 named and worded as the program's, host writes reach the program (within 0.05 dB), a host's NaN ignored (its text a dash), a block of 0 samples (with a note-on in it) and a block larger than announced change nothing, the bypass is silent and its edges do not click, a block before prepareToPlay is silent; a note-on at velocity 0 and All Notes Off release |
 | `plugin.state` | the session round-trips (a program of two files, the draft's three files and its tab, the dials, the output bit for bit); a run moves a renamed parameter's dial to its default and keeps a kept one's; a session whose program does not compile leaves the last one playing; one without a program plays the first example; one saved before files loads as one file; one with too many files or bad names loads tidied; a NaN dial loads as 0.5 |
+| `plugin.chatstore` | the key on disk, in a folder of the probe's own: a key's shape; saved, the file is the format above with no 12 characters of the key in it, 0600 in a 0700 folder, and loads back; saved twice it differs (fresh salt and IV); one byte changed anywhere, or the file cut short, and it does not load; forgotten, it is gone; the model and level round-trip, a damaged chat.json loads as none |
+| `plugin.chat` | the chat's agent against a scripted API (no network): the event stream however it is cut, a message rebuilt (thinking and its signature, text, a tool call's streamed input, the usage); no key, no request; a turn that writes a voice, runs it, sets its dial and answers; each request's shape (model, adaptive thinking, effort, the cached system prompt, the tools, fallbacks, the API version) and the history append-only; another model and level; a tool input that is not JSON; a retry after 529; a 401; a refusal; a fallback; STOP; the session; NEW |
+| `gui.chat` | the chat column and resizing, headless, to `gui.chat.png`, `.key.png`, `.paper.png`, `.small.png` and `.large.png`: the hint; the key dialog (opened by a message with no key, Escape, modal, a key refused, pasted, never shown or spoken, SAVE sends the waiting message, REMOVE); Return and Shift-Return; a turn shown (thinking, what Claude did, the answer, a code block, the usage), its files as tabs, the program playing, Cmd-Z undoing Claude's change; the model menu and the levels; STOP; NEW; the least size and a large one, every item inside; the session keeps the size |
 | `gui.dump` | the panel headless to `gui.dump.png`, `.paper.png`, `.error.png`, `.edited.png` and `.files.png`: settles, every glyph, the draft in the editor and a dial for each parameter; typing, Cmd-Return, a syntax error (status, problem line, gutter mark, the click that jumps to it), the EXAMPLES menu and its undo; the files' tabs (+, renaming in place, a taken name refused, Escape, typing into a second file, an `#include` of it that runs, its error's problem and marks, the click that shows its file, closing with and without asking); a dial's drag and double-click, Escape and Tab |
 | `lint.layers`, `lint.exports` | Source/dsp, Source/fsdsp and Source/fminus without JUCE or FunkGui, FMinus through its public header only; each bundle exports its entry points and nothing else |
 
@@ -209,9 +252,13 @@ Source/dsp/              the audio side, plain C++20 without JUCE: Engine (the v
                          thread), Controls, Events, Sources (a program's files)
 Source/fsdsp/core/       FSynth's DSP core, vendored at the tag in SEED.tsv (scripts/sync-dsp-core.sh)
 Source/plugin/           the JUCE AudioProcessor: MIDI to events, P1 to P8, the program's files and the draft in the
-                         session, the bypass; EditorPort.h, what the editor reaches besides the parameters
+                         session, the bypass; EditorPort.h, what the editor reaches besides the parameters;
+                         the chat: ChatAgent (the conversation, its turns and Claude's tools), ChatPrompt.cpp (Claude's
+                         instructions), ClaudeApi (the Messages API over HTTPS), ChatStore (the key, encrypted),
+                         ChatPort.h (what the editor reaches of it)
 Source/editor/           the FunkGui panel (Panel.cpp: the toolbar, the files' tabs and TextEditors, the problems, the
-                         dials), Theme.h;
+                         dials, the chat's column and the key dialog; its layout follows the window's size),
+                         ChatItems (the conversation and the message box), Items.h, Theme.h;
                          gpu/ starts it in the plugin
 Tools/probes/            tests that measure: fminus/, dsp/, plugin/, gui/ (the panel, headless)
 scripts/                 plugin.py, test.sh, sync-dsp-core.sh, install.sh
