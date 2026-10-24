@@ -1,8 +1,8 @@
 // Source/plugin/Processor.cpp: see Processor.h.
 #include "plugin/Processor.h"
 
+#include "Examples.h"
 #include "Product.h"
-#include "ScriptSource.h"
 
 #include "fsdsp/core/Sanitize.h"
 
@@ -14,99 +14,73 @@ namespace testingplayground
 {
     namespace
     {
-        // The host's text for a plain value (generic editors, automation lanes): the value and its unit.
-        juce::String hostText(const ParamSpec& s, float v)
-        {
-            if (!std::isfinite(v))                               // a host's NaN: the sound keeps the last good value
-                return juce::String::fromUTF8("\xE2\x80\x93");
-            char buf[48];
-            switch (s.unit)
-            {
-                case Unit::db:
-                    std::snprintf(buf, sizeof buf, "%.1f dB", static_cast<double>(v));
-                    break;
-                case Unit::hz:
-                    if (v < 10.0f)                               // low rates (an LFO) need their decimals
-                        std::snprintf(buf, sizeof buf, "%.2f Hz", static_cast<double>(v));
-                    else if (v < 100.0f)
-                        std::snprintf(buf, sizeof buf, "%.1f Hz", static_cast<double>(v));
-                    else if (v < 1000.0f)
-                        std::snprintf(buf, sizeof buf, "%.0f Hz", static_cast<double>(v));
-                    else
-                        std::snprintf(buf, sizeof buf, "%.2f kHz", static_cast<double>(v) / 1000.0);
-                    break;
-                case Unit::ms:
-                    if (v < 10.0f)
-                        std::snprintf(buf, sizeof buf, "%.2f ms", static_cast<double>(v));
-                    else if (v < 1000.0f)
-                        std::snprintf(buf, sizeof buf, "%.1f ms", static_cast<double>(v));
-                    else
-                        std::snprintf(buf, sizeof buf, "%.2f s", static_cast<double>(v) / 1000.0);
-                    break;
-                case Unit::percent:
-                    std::snprintf(buf, sizeof buf, "%.0f %%", static_cast<double>(v));
-                    break;
-                case Unit::m:
-                    std::snprintf(buf, sizeof buf, "%.1f m", static_cast<double>(v));
-                    break;
-                case Unit::none:
-                    std::snprintf(buf, sizeof buf, "%.2f", static_cast<double>(v));
-                    break;
-            }
-            return juce::String::fromUTF8(buf);
-        }
-
-        // The inverse, for a value typed into a host's field: a number, scaled by its unit word ("2.5 kHz", "1.2 s").
-        float parseText(const ParamSpec& s, const juce::String& text)
-        {
-            const juce::String t = text.trim().toLowerCase();
-            float v = t.getFloatValue();
-            if (s.unit == Unit::hz && t.containsChar('k'))
-                v *= 1000.0f;
-            if (s.unit == Unit::ms && t.endsWith("s") && !t.endsWith("ms"))
-                v *= 1000.0f;
-            return std::clamp(v, s.min, s.max);
-        }
-
-        // The LFO shape in the plugin state: <LFO><POINT x=".." y=".." curve=".."/>...</LFO>, beside the parameters.
-        // Values are stored as doubles, which JUCE writes with enough digits to give back the same floats.
-        const juce::Identifier kLfoTag{ "LFO" }, kPointTag{ "POINT" }, kX{ "x" }, kY{ "y" }, kCurve{ "curve" };
-
-        // The Visage version (tag legacy-visage) saved <PARAMS><PARAM id="gain" value="..."/></PARAMS>: the same
-        // plugin identity (Funk/Tstn) and the same GAIN (ID, range, plain dB value), under another root tag.
-        const juce::Identifier kLegacyStateTag{ "PARAMS" };
+        // The program in the plugin state: <PROGRAM source=".." draft=".."/>, beside the parameters.
+        const juce::Identifier kProgramTag{ "PROGRAM" }, kSource{ "source" }, kDraft{ "draft" };
         const juce::Identifier kParamId{ "id" }, kParamValue{ "value" };   // the APVTS's <PARAM id value> children
 
-        juce::ValueTree shapeTree(const LfoShape& shape)
+        constexpr int kMaxChannels = 8;                          // handed to the Engine (the layouts allow two)
+        constexpr double kAlertMs = 2000.0;                      // how long an alert stays shown
+
+        juce::String idOf(int c) { return "p" + juce::String(c + 1); }
+
+        // The host's text for slot c's normalised value: the program's plain value, with a dash for a host's NaN.
+        juce::String plainText(const Control& c, float v)
         {
-            juce::ValueTree tree{ kLfoTag };
-            for (int i = 0; i < shape.count; ++i)
+            if (!std::isfinite(v))
+                return juce::String::fromUTF8("\xE2\x80\x93");
+            if (!c.used)
+                return juce::String(static_cast<double>(v), 2);
+            const float p = plainOf(c, v);
+            switch (c.type)
             {
-                const ShapePoint& p = shape.points[static_cast<std::size_t>(i)];
-                juce::ValueTree point{ kPointTag };
-                point.setProperty(kX, static_cast<double>(p.x), nullptr);
-                point.setProperty(kY, static_cast<double>(p.y), nullptr);
-                point.setProperty(kCurve, static_cast<double>(p.curve), nullptr);
-                tree.appendChild(point, nullptr);
+                case ControlType::toggle:  return p >= 0.5f ? "on" : "off";
+                case ControlType::integer: return juce::String(static_cast<int>(p));
+                case ControlType::real:    break;
             }
-            return tree;
+            char buf[32];
+            const double a = std::fabs(static_cast<double>(p));
+            std::snprintf(buf, sizeof buf, a >= 100.0 ? "%.0f" : (a >= 10.0 ? "%.1f" : "%.2f"), static_cast<double>(p));
+            return juce::String(buf);
         }
 
-        // The shape of an <LFO> tree (unsanitised); an invalid tree gives no points (sanitize: the default shape).
-        LfoShape shapeOf(const juce::ValueTree& tree)
+        // P1 to P8: a host parameter whose name and text are the running program's (Processor::control).
+        class ControlParameter final : public juce::AudioParameterFloat
         {
-            LfoShape shape;
-            for (const juce::ValueTree& point : tree)
+        public:
+            ControlParameter(int slot, const Processor& owner)
+                : juce::AudioParameterFloat(juce::ParameterID{ idOf(slot), 1 }, "P" + juce::String(slot + 1),
+                                            juce::NormalisableRange<float>(0.0f, 1.0f), 0.5f),
+                  slot_(slot), owner_(owner) {}
+
+            juce::String getName(int maximumStringLength) const override
             {
-                if (!point.hasType(kPointTag) || shape.count == LfoShape::kMaxPoints)
-                    continue;
-                ShapePoint& p = shape.points[static_cast<std::size_t>(shape.count++)];
-                p.x = static_cast<float>(static_cast<double>(point.getProperty(kX, 0.0)));
-                p.y = static_cast<float>(static_cast<double>(point.getProperty(kY, 0.5)));
-                p.curve = static_cast<float>(static_cast<double>(point.getProperty(kCurve, 0.0)));
+                const Control c = owner_.control(slot_);
+                juce::String name = juce::String(slot_ + 1);
+                if (c.used)
+                    name << " " << juce::String(c.name);
+                return name.substring(0, maximumStringLength);
             }
-            return shape;
-        }
+
+            juce::String getText(float v, int maximumStringLength) const override
+            {
+                return plainText(owner_.control(slot_), v).substring(0, maximumStringLength);
+            }
+
+            float getValueForText(const juce::String& text) const override
+            {
+                const Control c = owner_.control(slot_);
+                const juce::String t = text.trim().toLowerCase();
+                if (!c.used)
+                    return std::clamp(t.getFloatValue(), 0.0f, 1.0f);
+                if (c.type == ControlType::toggle)
+                    return t == "on" || t == "yes" || t == "true" || t.getFloatValue() >= 0.5f ? 1.0f : 0.0f;
+                return normOf(c, t.getFloatValue());
+            }
+
+        private:
+            int slot_;
+            const Processor& owner_;
+        };
 
         // The Event of a MIDI message an instrument plays, else false: note-on (at velocity 0, a note-off), note-off,
         // and the controllers All Sound Off (120) and All Notes Off (123), both allNotesOff. The caller sets the
@@ -132,8 +106,6 @@ namespace testingplayground
                 return false;
             return true;
         }
-
-        constexpr int kMaxChannels = 8;                          // handed to the Engine (the layouts allow two)
     }
 
     juce::AudioProcessor::BusesProperties Processor::buses()
@@ -148,25 +120,8 @@ namespace testingplayground
     juce::AudioProcessorValueTreeState::ParameterLayout Processor::createLayout()
     {
         std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
-        for (const ParamSpec& s : kParams)
-        {
-            const juce::ParameterID id{ s.id, 1 };
-            if (s.control == Control::choice)
-            {
-                juce::StringArray names;
-                for (int i = 0; i < s.numChoices; ++i)
-                    names.add(s.choices[i]);
-                params.push_back(std::make_unique<juce::AudioParameterChoice>(id, s.name, names,
-                                                                              static_cast<int>(s.def)));
-                continue;
-            }
-            const ParamSpec* spec = &s;                              // kParams has static storage
-            const auto attributes = juce::AudioParameterFloatAttributes()
-                .withStringFromValueFunction([spec](float v, int) { return hostText(*spec, v); })
-                .withValueFromStringFunction([spec](const juce::String& t) { return parseText(*spec, t); });
-            params.push_back(std::make_unique<juce::AudioParameterFloat>(
-                id, s.name, juce::NormalisableRange<float>(s.min, s.max, 0.0f, skewOf(s)), s.def, attributes));
-        }
+        for (int c = 0; c < kMaxControls; ++c)
+            params.push_back(std::make_unique<ControlParameter>(c, *this));
         return { params.begin(), params.end() };
     }
 
@@ -174,26 +129,29 @@ namespace testingplayground
         : juce::AudioProcessor(buses()),
           apvts_(*this, nullptr, "PARAMETERS", createLayout())
     {
-        for (std::size_t i = 0; i < param::count; ++i)
+        for (int c = 0; c < kMaxControls; ++c)
         {
-            raw_[i] = apvts_.getRawParameterValue(kParams[i].id);
-            juce::RangedAudioParameter* p = apvts_.getParameter(kParams[i].id);
-            jassert(raw_[i] != nullptr && p != nullptr);            // two rows with one id?
-            portStore_.push_back(std::make_unique<funkgui::JuceParamPort>(*p));
+            const auto i = static_cast<std::size_t>(c);
+            raw_[i] = apvts_.getRawParameterValue(idOf(c));
+            params_[i] = apvts_.getParameter(idOf(c));
+            jassert(raw_[i] != nullptr && params_[i] != nullptr);
+            portStore_.push_back(std::make_unique<funkgui::JuceParamPort>(*params_[i]));
             ports_.push_back(portStore_.back().get());
         }
-        storeShape(defaultShape());
 
-        // The FMinus script: the plugin's own copy first, which always compiles (fminus.script checks it); then the
-        // file it came from, watched for edits while the plugin runs, where there is one (ScriptWatcher.h).
-        std::string errors;
-        const bool loaded = engine_.script().load(kScriptSource, "script.fm", errors);
-        jassert(loaded);
-        juce::ignoreUnused(loaded);
-        watcher_ = std::make_unique<ScriptWatcher>(engine_.script(), kScriptPath, kScriptSource);
+        // The first example plays from the start (fminus.examples checks it compiles), its dials at their defaults.
+        draft_ = kExamples[0].source;
+        const CompileStatus s = compiler_.compileNow(draft_);
+        jassert(s.ok);
+        seen_ = s.revision;
+        apply(s, true);
+        startTimerHz(20);
     }
 
-    Processor::~Processor() = default;
+    Processor::~Processor()
+    {
+        stopTimer();
+    }
 
     const juce::String Processor::getName() const { return product::kName; }
     bool Processor::acceptsMidi() const { return product::kIsInstrument; }
@@ -217,38 +175,29 @@ namespace testingplayground
         maxBlock_ = std::max(1, maximumExpectedSamplesPerBlock);
         largestCall_ = 0;
         engine_.prepare(sampleRate, maxBlock_);
-        sampleRate_.store(engine_.sampleRate(), std::memory_order_relaxed);
-        takeTable_ = true;                                       // the fresh Engine gets the shape on its first block
-        wet_.prepare(engine_.sampleRate());                      // fsdsp::kFadeMs, 20 ms
+        wet_.prepare(engine_.rate());                            // fsdsp::kFadeMs, 20 ms
         wetSet_ = false;
         weight_.assign(static_cast<std::size_t>(maxBlock_), 0.0f);
         if constexpr (!product::kIsInstrument)
             dry_.assign(static_cast<std::size_t>(kMaxChannels) * static_cast<std::size_t>(maxBlock_), 0.0f);
+        for (int c = 0; c < kMaxControls; ++c)                   // the first block starts on the dials as they are
+            values_[static_cast<std::size_t>(c)] = std::clamp(raw_[static_cast<std::size_t>(c)]->load(), 0.0f, 1.0f);
         prepared_ = true;
     }
 
     void Processor::releaseResources() {}
 
+    // ---- the audio thread --------------------------------------------------------------------------------------------
     void Processor::readParameters() noexcept
     {
-        // A host can write a NaN (JUCE's ranges pass it through): such a value keeps the last good one, so the Engine
-        // only ever sees finite values within the table's range (a NaN in a smoother would stay there for good).
-        for (std::size_t i = 0; i < param::count; ++i)
-            if (const float v = raw_[i]->load(std::memory_order_relaxed); std::isfinite(v))
-                values_[i] = std::clamp(v, kParams[i].min, kParams[i].max);
-
-        // A new LFO table, before setParams: the first block after prepareToPlay starts on it rather than fading to it.
-        if (const uint32_t published = published_.load(std::memory_order_acquire); takeTable_ || published != taken_)
-            if (table_.read(incoming_))
-            {
-                engine_.setLfoTable(incoming_);
-                taken_ = published;
-                takeTable_ = false;
-            }
-        engine_.setParams(values_);
+        // A host can write a NaN (JUCE's ranges pass it through): such a value keeps the last good one.
+        for (std::size_t c = 0; c < raw_.size(); ++c)
+            if (const float v = raw_[c]->load(std::memory_order_relaxed); std::isfinite(v))
+                values_[c] = std::clamp(v, 0.0f, 1.0f);
+        engine_.setControls(values_);
     }
 
-    void Processor::run(juce::AudioBuffer<float>& buffer, const juce::MidiBuffer& midi, bool bypassed) noexcept
+    void Processor::play(juce::AudioBuffer<float>& buffer, const juce::MidiBuffer& midi, bool bypassed) noexcept
     {
         const int n = buffer.getNumSamples();
         const int numOut = std::min(getTotalNumOutputChannels(), buffer.getNumChannels());
@@ -257,9 +206,8 @@ namespace testingplayground
         const int numCh = std::min(numOut, kMaxChannels);         // any further channel stays as it is
 
         // The Engine from `done` to `end` (at most maxBlock_ samples) with the events collected so far, their offsets
-        // counted from `done`. Cutting the block there changes no sample: the Engine plays every event on its own
-        // sample, and its output does not depend on how the host splits its blocks. While processing (w steady at 1)
-        // the output is the Engine's, untouched; otherwise the bypass fade, or the bypassed sound, follows.
+        // counted from `done`. While processing (w steady at 1) the output is the Engine's, untouched; otherwise the
+        // bypass fade, or the bypassed sound, follows.
         std::size_t numEvents = 0;
         int done = 0;
         const auto playTo = [&](int end) {
@@ -367,7 +315,7 @@ namespace testingplayground
 
     void Processor::hostBlock(juce::AudioBuffer<float>& buffer, const juce::MidiBuffer& midi, bool bypassed) noexcept
     {
-        const juce::ScopedNoDenormals noDenormals;
+        const juce::ScopedNoDenormals noDenormals;              // the mode the programs are compiled for
         if (!prepared_)
         {
             runUnprepared(buffer);
@@ -381,7 +329,7 @@ namespace testingplayground
             wetSet_ = true;
         }
         readParameters();
-        run(buffer, midi, bypassed);
+        play(buffer, midi, bypassed);
     }
 
     void Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
@@ -389,14 +337,12 @@ namespace testingplayground
         hostBlock(buffer, midi, false);
     }
 
-    // Not JUCE's default (the input passed through at once): the Engine keeps running and its output fades out (see
-    // Processor.h); for an instrument, on the note-offs only, so a note let go during the bypass releases and none
-    // starts.
     void Processor::processBlockBypassed(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
     {
         hostBlock(buffer, midi, true);
     }
 
+    // ---- the message thread ------------------------------------------------------------------------------------------
     bool Processor::hasEditor() const { return true; }
 
     juce::AudioProcessorEditor* Processor::createEditor()
@@ -410,10 +356,79 @@ namespace testingplayground
     const juce::String Processor::getProgramName(int) { return {}; }
     void Processor::changeProgramName(int, const juce::String&) {}
 
+    Control Processor::control(int c) const
+    {
+        if (c < 0 || c >= kMaxControls)
+            return {};
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        return controls_[static_cast<std::size_t>(c)];
+    }
+
+    void Processor::apply(const CompileStatus& s, bool reset)
+    {
+        if (!s.ok)
+            return;                                              // the program that played plays on
+        Controls before;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            before = controls_;
+            controls_ = s.controls;
+            running_ = s.source;
+        }
+        if (reset)
+            for (int c = 0; c < kMaxControls; ++c)
+            {
+                const Control& now = s.controls[static_cast<std::size_t>(c)];
+                const Control& was = before[static_cast<std::size_t>(c)];
+                if (!now.used || (was.used && sameName(was, now)))
+                    continue;                                    // the same parameter keeps its dial's value
+                juce::RangedAudioParameter& p = *params_[static_cast<std::size_t>(c)];
+                p.beginChangeGesture();
+                p.setValueNotifyingHost(normOf(now, now.def));
+                p.endChangeGesture();
+            }
+        updateHostDisplay(juce::AudioProcessor::ChangeDetails().withParameterInfoChanged(true));
+    }
+
+    void Processor::poll()
+    {
+        if (compiler_.revision() != seen_)
+        {
+            const CompileStatus s = compiler_.status();
+            seen_ = s.revision;
+            apply(s, editorRun_ != 0 && s.request == editorRun_);
+        }
+        const double now = juce::Time::getMillisecondCounterHiRes();
+        if (const uint32_t a = engine_.takeAlerts(); a != 0)
+        {
+            alerts_ |= a;
+            alertsAt_ = now;
+        }
+        else if (alerts_ != 0 && now - alertsAt_ > kAlertMs)
+            alerts_ = 0;
+    }
+
+    void Processor::settle()
+    {
+        compiler_.wait();
+        poll();
+    }
+
+    void Processor::timerCallback()
+    {
+        poll();
+    }
+
     void Processor::getStateInformation(juce::MemoryBlock& destData)
     {
         juce::ValueTree state = apvts_.copyState();
-        state.appendChild(shapeTree(shape()), nullptr);
+        juce::ValueTree program{ kProgramTag };
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            program.setProperty(kSource, juce::String::fromUTF8(running_.c_str()), nullptr);
+            program.setProperty(kDraft, juce::String::fromUTF8(draft_.c_str()), nullptr);
+        }
+        state.appendChild(program, nullptr);
         if (const std::unique_ptr<juce::XmlElement> xml = state.createXml())
             copyXmlToBinary(*xml, destData);
     }
@@ -421,65 +436,80 @@ namespace testingplayground
     void Processor::setStateInformation(const void* data, int sizeInBytes)
     {
         const std::unique_ptr<juce::XmlElement> xml = getXmlFromBinary(data, sizeInBytes);
-        if (xml == nullptr)
+        if (xml == nullptr || !xml->hasTagName(apvts_.state.getType()))
             return;
-        juce::ValueTree state;
-        if (xml->hasTagName(apvts_.state.getType()))
-            state = juce::ValueTree::fromXml(*xml);
-        else if (xml->hasTagName(kLegacyStateTag.toString()))      // a session saved by the Visage version
-        {
-            state = juce::ValueTree(apvts_.state.getType());
-            state.copyPropertiesAndChildrenFrom(juce::ValueTree::fromXml(*xml), nullptr);
-        }
-        else
-            return;
+        juce::ValueTree state = juce::ValueTree::fromXml(*xml);
         // A value that is not a finite number (a damaged or crafted state, or one saved after a host wrote a NaN)
-        // loads as the parameter's default: a parameter never holds a NaN from a state.
-        for (const ParamSpec& s : kParams)
+        // loads as the middle of the range: a parameter never holds a NaN from a state.
+        for (int c = 0; c < kMaxControls; ++c)
         {
-            juce::ValueTree p = state.getChildWithProperty(kParamId, juce::var(juce::String(s.id)));
+            juce::ValueTree p = state.getChildWithProperty(kParamId, juce::var(idOf(c)));
             if (p.isValid() && p.hasProperty(kParamValue)
                 && !std::isfinite(static_cast<double>(p.getProperty(kParamValue))))
-                p.setProperty(kParamValue, static_cast<double>(s.def), nullptr);
+                p.setProperty(kParamValue, 0.5, nullptr);
         }
-        const juce::ValueTree lfo = state.getChildWithName(kLfoTag);
-        storeShape(lfo.isValid() ? shapeOf(lfo) : defaultShape());   // a state without one: the default
-        state.removeChild(lfo, nullptr);
+        const juce::ValueTree program = state.getChildWithName(kProgramTag);
+        std::string source = program.getProperty(kSource).toString().toStdString();
+        std::string draft = program.getProperty(kDraft).toString().toStdString();
+        if (source.empty())
+            source = kExamples[0].source;
+        if (draft.empty())
+            draft = source;
+        state.removeChild(program, nullptr);
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            draft_ = std::move(draft);
+            ++draftRevision_;
+        }
+        // The session's program, compiled now, its dials as the session has them.
+        const CompileStatus s = compiler_.compileNow(source);
+        seen_ = s.revision;
+        apply(s, false);
         apvts_.replaceState(state);
     }
 
     // ---- EditorPort ------------------------------------------------------------------------------------------------------
-    LfoShape Processor::shape() const
+    std::string Processor::draft() const
     {
-        const std::lock_guard<std::mutex> lock(shapeMutex_);
-        return shape_;
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        return draft_;
     }
 
-    uint64_t Processor::shapeRevision() const { return shapeRevision_.load(std::memory_order_acquire); }
-
-    void Processor::setShape(const LfoShape& shape) { storeShape(shape); }
-
-    void Processor::endShapeEdit()
+    uint64_t Processor::draftRevision() const
     {
-        updateHostDisplay(juce::AudioProcessor::ChangeDetails().withNonParameterStateChanged(true));
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        return draftRevision_;
     }
 
-    float Processor::sampleRate() const { return sampleRate_.load(std::memory_order_relaxed); }
-
-    void Processor::storeShape(const LfoShape& in)
+    void Processor::setDraft(const std::string& text)
     {
-        LfoShape s = in;
-        sanitize(s);
-        LfoTable table;
-        renderTable(s, table);
-        const std::lock_guard<std::mutex> lock(shapeMutex_);  // one writer of table_ at a time (Seqlock's rule)
-        if (s == shape_ && published_.load(std::memory_order_relaxed) != 0)
-            return;
-        shape_ = s;
-        table_.publish(table);
-        published_.fetch_add(1, std::memory_order_release);
-        shapeRevision_.fetch_add(1, std::memory_order_release);
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        draft_ = text;
     }
+
+    void Processor::run(const std::string& source)
+    {
+        editorRun_ = compiler_.request(source);
+    }
+
+    bool Processor::compiling() const { return compiler_.busy(); }
+    CompileStatus Processor::status() const { return compiler_.status(); }
+    uint64_t Processor::statusRevision() const { return compiler_.revision(); }
+
+    std::string Processor::runningSource() const
+    {
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        return running_;
+    }
+
+    Controls Processor::controls() const
+    {
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        return controls_;
+    }
+
+    float Processor::load() const { return engine_.load(); }
+    uint32_t Processor::alerts() const { return alerts_; }
 }
 
 // JUCE's entry point for every format.

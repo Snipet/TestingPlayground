@@ -1,0 +1,65 @@
+// Echo: a stereo delay with feedback, ping-pong or straight. Its two lines come from calloc in init and go back with
+// free in end, both off the audio thread: process may not allocate, and FMinus refuses one that could.
+module Effect
+{
+    param float time [[fminus::range(10, 1000)]] [[fminus::default(350)]];       // ms
+    param float feedback [[fminus::range(0, 0.95)]] [[fminus::default(0.4)]];
+    param float mix [[fminus::range(0, 1)]] [[fminus::default(0.35)]];
+    param bool pingpong [[fminus::default(1)]];
+    float* lineL;
+    float* lineR;
+    int length;     // samples a line holds: a second and a little
+    int at;         // where the next sample goes
+    float rate;
+
+    void init(float sampleRate)
+    {
+        rate = sampleRate;
+        length = (int)sampleRate + 4;
+        lineL = calloc(length, sizeof(float));
+        lineR = calloc(length, sizeof(float));
+        if (!lineL || !lineR)
+            length = 0;
+    }
+
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        if (length == 0)
+            return;
+        for (int i = 0; i < n; ++i)
+        {
+            // The delay in samples, between two of them: a moving TIME bends the pitch instead of clicking.
+            const float d = fminf(fmaxf(time[i] * 0.001f * rate, 1), (float)(length - 2));
+            float pos = (float)at - d;
+            if (pos < 0)
+                pos += (float)length;
+            const int i0 = (int)pos;
+            const int i1 = i0 + 1 == length ? 0 : i0 + 1;
+            const float frac = pos - (float)i0;
+            const float dl = lineL[i0] + frac * (lineL[i1] - lineL[i0]);
+            const float dr = lineR[i0] + frac * (lineR[i1] - lineR[i0]);
+            const float xl = left[i];
+            const float xr = right[i];
+            if (pingpong[i])
+            {
+                lineL[at] = 0.5f * (xl + xr) + feedback[i] * dr;
+                lineR[at] = feedback[i] * dl;
+            }
+            else
+            {
+                lineL[at] = xl + feedback[i] * dl;
+                lineR[at] = xr + feedback[i] * dr;
+            }
+            left[i] = xl + mix[i] * dl;
+            right[i] = xr + mix[i] * dr;
+            if (++at == length)
+                at = 0;
+        }
+    }
+
+    void end()
+    {
+        free(lineL);
+        free(lineR);
+    }
+};

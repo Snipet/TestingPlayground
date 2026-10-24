@@ -1,15 +1,15 @@
 // Source/editor/Panel.cpp: see Panel.h.
 #include "editor/Panel.h"
 
-#include "editor/ParamModel.h"
-#include "editor/ShapeView.h"
 #include "editor/Theme.h"
 
 #include "plugin/EditorPort.h"
 
-#include "dsp/FdnLayout.h"
-#include "dsp/Params.h"
+#include "dsp/Compiler.h"
+#include "dsp/Controls.h"
+#include "dsp/Engine.h"
 
+#include "Examples.h"
 #include "Product.h"
 
 #include <funkgui/canvas/Canvas.h>
@@ -17,25 +17,28 @@
 #include <funkgui/core/Theme.h>
 #include <funkgui/core/TypeScale.h>
 #include <funkgui/panel/HostServices.h>
-#include <funkgui/text/FontService.h>
-#include <funkgui/text/TextFit.h>
+#include <funkgui/text/Highlighter.h>
 #include <funkgui/widgets/Dial.h>
-#include <funkgui/widgets/RuleSlider.h>
 #include <funkgui/widgets/SegmentedSelector.h>
+#include <funkgui/widgets/TextEditor.h>
 #include <funkgui/widgets/ThemeCells.h>
+#include <funkgui/widgets/ValueModel.h>
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <functional>
+#include <sstream>
 #include <string_view>
 #include <utility>
 
 namespace testingplayground::ui
 {
-    // ---- one control or view on the panel: a Dial, a RuleSlider, a row of cells, the graph, the readout -----------------
+    // ---- one control or view on the panel ---------------------------------------------------------------------------
     class Item
     {
     public:
@@ -44,7 +47,7 @@ namespace testingplayground::ui
         virtual void tick(float dt, bool hovered, bool focused, funkgui::Point pointer) = 0;
         virtual void draw(funkgui::Canvas&, const funkgui::Theme&, bool focusRing) const = 0;
         virtual bool contains(funkgui::Point) const = 0;
-        virtual funkgui::Cursor cursorAt(funkgui::Point) const = 0;
+        virtual funkgui::Cursor cursorAt(funkgui::Point) const { return funkgui::Cursor::normal; }
         virtual void pointerMove(const funkgui::PointerEvent&) {}
         virtual void pointerExit() {}
         virtual void pointerDown(const funkgui::PointerEvent&, funkgui::GestureController&, funkgui::HostServices&) = 0;
@@ -52,45 +55,78 @@ namespace testingplayground::ui
         virtual void pointerUp(const funkgui::PointerEvent&, funkgui::GestureController&) {}
         virtual void doubleClick(const funkgui::PointerEvent&, funkgui::GestureController&) {}
         virtual bool wheel(const funkgui::WheelEvent&, funkgui::GestureController&, double /*nowSec*/) { return false; }
-        virtual bool key(const funkgui::KeyEvent&, funkgui::GestureController&) = 0;
+        virtual bool key(const funkgui::KeyEvent&, funkgui::GestureController&) { return false; }
         virtual void accessibility(std::vector<funkgui::A11yItem>&) const = 0;
         virtual bool a11yAction(uint32_t id, funkgui::A11yAction, double value, funkgui::GestureController&) = 0;
         virtual void specLine(char* out, std::size_t n) const = 0;
-        virtual bool settled() const = 0;
+        virtual bool settled() const { return true; }
         virtual funkgui::Point centre() const = 0;
         virtual bool shown() const { return true; }      // false: not drawn, no input, no Tab stop
         virtual bool focusable() const { return true; }  // false: no Tab stop (a readout)
+        virtual void focusChanged(bool /*focused*/) {}
     };
+
+    std::vector<Problem> parseProblems(const std::string& messages)
+    {
+        std::vector<Problem> out;
+        std::istringstream in(messages);
+        std::string line;
+        while (std::getline(in, line))
+        {
+            if (line.empty())
+                continue;
+            Problem p;
+            // "<file>:<line>:<col>: <kind>: <text>" or "<file>: <kind>: <text>"
+            const std::size_t colon = line.find(':');
+            std::string rest = colon == std::string::npos ? line : line.substr(colon + 1);
+            int ln = 0, col = 0, used = 0;
+            if (std::sscanf(rest.c_str(), "%d:%d: %n", &ln, &col, &used) >= 2 && used > 0)
+            {
+                p.line = ln;
+                p.column = col;
+                rest = rest.substr(static_cast<std::size_t>(used));
+            }
+            while (!rest.empty() && rest.front() == ' ')
+                rest.erase(rest.begin());
+            if (rest.rfind("error: ", 0) == 0)
+                rest = rest.substr(7);
+            else if (rest.rfind("note: ", 0) == 0)
+            {
+                p.error = false;
+                rest = rest.substr(6);
+            }
+            else if (rest.rfind("warning: ", 0) == 0)
+            {
+                p.error = false;
+                rest = rest.substr(9);
+            }
+            p.text = rest;
+            out.push_back(std::move(p));
+        }
+        return out;
+    }
 
     namespace
     {
-        // ---- layout (logical px) --------------------------------------------------------------------------------------
-        constexpr float kMargin = 24.0f;
-        constexpr float kMinContentW = 552.0f;
-        constexpr float kMaxHeaderContentW = 600.0f;     // the widest the content grows for a long name
+        // ---- layout (logical px) ----------------------------------------------------------------------------------
+        constexpr float kMargin = 20.0f;
+        constexpr float kWidth = 980.0f;
         constexpr float kTitleTop = 17.0f;
-        constexpr float kSubtitleGap = 14.0f;            // between the name and its kind and version
-        constexpr float kThemeW = 128.0f;                // the THEME cells, from the content's right edge
-        constexpr float kThemeGap = 20.0f;               // the least space between the header text and the THEME cells
+        constexpr float kSubtitleGap = 14.0f;
+        constexpr float kThemeW = 128.0f;
         constexpr float kHeaderRuleY = 46.0f;
-        constexpr float kSectionTop = 64.0f;
+        constexpr float kToolbarY = 56.0f;
+        constexpr float kButtonH = 22.0f;
+        constexpr float kEditorY = 88.0f;
+        constexpr float kEditorH = 404.0f;
+        constexpr float kProblemRowH = 15.0f;
+        constexpr int   kProblemRows = 4;
         constexpr float kDialCellW = 60.0f;              // funkgui::DialGeom, primary: 60 x 80
-        constexpr float kSliderW = 180.0f;               // the rule; the hit rectangle is 12 px wider, 80 px tall
-        constexpr float kGapX = 18.0f;                   // between two controls in a row
-        constexpr float kControlRowH = 96.0f;            // an 80 px control and the gap below it
-        constexpr float kChoiceCellW = 48.0f;            // LINES: 4 | 8 | 16
-        constexpr float kChoiceCellH = 22.0f;
-        constexpr float kChoiceBlockH = 52.0f;           // a choice's caption and cells
-        constexpr float kRuleGap = 14.0f;                // above the modulation section, below its rule
-        constexpr float kModColumnGap = 24.0f;           // between the graph and the RATE / DEPTH column
-        constexpr float kModColumnH = 176.0f;            // two dials: 80 + 16 + 80
-        constexpr float kReadoutH = 26.0f;               // the DELAYS line under the graph
+        constexpr float kDialGap = 30.0f;
         constexpr float kFooterH = 36.0f;
-
         constexpr uint32_t kA11yStride = 64;             // item i's ids: kA11yStride * (i + 1) + 0..63
 
-        // The rows laid out in the modulation column, beside the graph, rather than in the reverb row.
-        bool isModulation(std::size_t i) noexcept { return i == param::modrate || i == param::moddepth; }
+        constexpr funkgui::TextStyle kStatusStyle{ 10.0f, 1.4f, 0.03f, false };
 
         std::string upper(std::string_view s)
         {
@@ -114,12 +150,99 @@ namespace testingplayground::ui
             return s;
         }
 
-        // ---- a Dial over a parameter ------------------------------------------------------------------------------
+        // `s` cut to `maxW` px of `style`, with an ellipsis when it is cut.
+        std::string fitText(const funkgui::Canvas& c, std::string s, const funkgui::TextStyle& style, float maxW)
+        {
+            if (c.textWidth(s.c_str(), style) <= maxW)
+                return s;
+            while (!s.empty() && c.textWidth((s + "...").c_str(), style) > maxW)
+                s.pop_back();
+            return s + "...";
+        }
+
+        // FMinus's words, for the editor's highlighter: C's that FMinus has, and its own (module, param, the vector
+        // types). It has no strings and no preprocessor.
+        funkgui::text::KeywordRules fminusRules()
+        {
+            funkgui::text::KeywordRules r;
+            r.keywords = { "break", "const", "continue", "else", "false", "for", "if", "module", "param", "restrict",
+                           "return", "sizeof", "this", "true", "while" };
+            r.types = { "bool", "float", "float2", "float4", "float8", "int", "poly", "void" };
+            r.lineComment = "//";
+            r.blockOpen = "/*";
+            r.blockClose = "*/";
+            r.quotes = "";
+            r.preprocessor = 0;
+            return r;
+        }
+
+        // ---- a dial over P1..P8, labelled with the running program's parameter -------------------------------------
+        class ControlModel final : public funkgui::ValueModel
+        {
+        public:
+            explicit ControlModel(funkgui::ParamPort& port) : port_(port) {}
+
+            void setControl(const Control& c, uint32_t revision)
+            {
+                control_ = c;
+                revision_ = revision;
+                const std::string name = upper(c.name);
+                std::snprintf(label_, sizeof label_, "%s", name.c_str());
+            }
+            const Control& control() const noexcept { return control_; }
+
+            uint64_t key() const override
+            {
+                return (static_cast<uint64_t>(revision_) << 32) | std::bit_cast<uint32_t>(port_.value01());
+            }
+            void view(funkgui::ValueView& v) const override
+            {
+                const float raw = port_.value01();
+                if (std::isfinite(raw))
+                    last01_ = raw;
+                v = funkgui::ValueView{};
+                v.state = funkgui::ValueState::continuous;
+                v.label = label_;
+                v.track = last01_;
+                v.trackDefault = normOf(control_, control_.def);
+                v.atDefault = std::fabs(plainOf(control_, last01_) - control_.def) < 1e-6f;
+                const float p = plainOf(control_, last01_);
+                switch (control_.type)
+                {
+                    case ControlType::toggle:
+                        std::snprintf(v.text.value, sizeof v.text.value, "%s", p >= 0.5f ? "ON" : "OFF");
+                        break;
+                    case ControlType::integer:
+                        std::snprintf(v.text.value, sizeof v.text.value, "%d", static_cast<int>(p));
+                        break;
+                    case ControlType::real:
+                    {
+                        const double a = std::fabs(static_cast<double>(p));
+                        std::snprintf(v.text.value, sizeof v.text.value,
+                                      a >= 100.0 ? "%.0f" : (a >= 10.0 ? "%.1f" : "%.2f"), static_cast<double>(p));
+                        break;
+                    }
+                }
+                std::snprintf(v.text.spoken, sizeof v.text.spoken, "%s %s", control_.name, v.text.value);
+            }
+            funkgui::ParamPort* port() override { return &port_; }
+            float host01FromTrack(float t) const override { return std::clamp(t, 0.0f, 1.0f); }
+            float defaultHost01() const override { return normOf(control_, control_.def); }
+
+        private:
+            funkgui::ParamPort& port_;
+            Control control_{};
+            uint32_t revision_ = 0;
+            char label_[40] = {};
+            mutable float last01_ = 0.5f;                // the last finite value01 view() saw: a host's NaN shows it
+        };
+
         class DialItem final : public Item
         {
         public:
-            DialItem(const ParamSpec& spec, funkgui::ParamPort& port, funkgui::DialGeom g, uint32_t id)
-                : model_(spec, port), dial_(model_, g, id) {}
+            DialItem(funkgui::ParamPort& port, funkgui::DialGeom g, uint32_t id) : model_(port), dial_(model_, g, id) {}
+
+            ControlModel& model() noexcept { return model_; }
 
             void tick(float dt, bool hovered, bool focused, funkgui::Point) override
             {
@@ -160,80 +283,14 @@ namespace testingplayground::ui
             void specLine(char* out, std::size_t n) const override { dial_.specLine(out, n); }
             bool settled() const override { return dial_.settled(); }
             funkgui::Point centre() const override { return dial_.geom().centre(); }
+            bool shown() const override { return model_.control().used; }
 
         private:
-            ParamModel model_;                           // before dial_, which refers to it
+            ControlModel model_;                         // before dial_, which refers to it
             funkgui::Dial dial_;
         };
 
-        // ---- a RuleSlider over a parameter ------------------------------------------------------------------------
-        class SliderItem final : public Item
-        {
-        public:
-            SliderItem(const ParamSpec& spec, funkgui::ParamPort& port, funkgui::SlotGeom g, uint32_t id)
-                : model_(spec, port), slider_(model_, g, id) {}
-
-            void tick(float dt, bool hovered, bool focused, funkgui::Point) override
-            {
-                slider_.tick(dt, hovered, focused, false);
-            }
-            void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override
-            {
-                slider_.draw(c, th, ring);
-            }
-            bool contains(funkgui::Point p) const override { return slider_.contains(p); }
-            funkgui::Cursor cursorAt(funkgui::Point p) const override { return slider_.cursorAt(p); }
-            void pointerMove(const funkgui::PointerEvent& e) override { slider_.pointerMove(e); }
-            void pointerExit() override { slider_.pointerExit(); }
-            void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController& g,
-                             funkgui::HostServices& h) override
-            {
-                slider_.pointerDown(e, g, h);
-            }
-            void pointerDrag(const funkgui::PointerEvent& e, funkgui::GestureController& g) override
-            {
-                slider_.pointerDrag(e, g);
-            }
-            void pointerUp(const funkgui::PointerEvent& e, funkgui::GestureController& g) override
-            {
-                slider_.pointerUp(e, g);
-            }
-            void doubleClick(const funkgui::PointerEvent&, funkgui::GestureController& g) override
-            {
-                slider_.doubleClick(g);
-            }
-            bool wheel(const funkgui::WheelEvent& e, funkgui::GestureController& g, double now) override
-            {
-                return slider_.wheel(e, g, now);
-            }
-            bool key(const funkgui::KeyEvent& e, funkgui::GestureController& g) override { return slider_.key(e, g); }
-            void accessibility(std::vector<funkgui::A11yItem>& out) const override
-            {
-                funkgui::A11yItem item;
-                slider_.accessibility(item);
-                out.push_back(item);
-            }
-            bool a11yAction(uint32_t id, funkgui::A11yAction a, double v, funkgui::GestureController& g) override
-            {
-                if (id != slider_.a11yId())
-                    return false;
-                slider_.a11yAction(a, v, g);
-                return true;
-            }
-            void specLine(char* out, std::size_t n) const override { slider_.specLine(out, n); }
-            bool settled() const override { return slider_.settled(); }
-            funkgui::Point centre() const override
-            {
-                const funkgui::SlotGeom& g = slider_.geom();
-                return { g.x + g.w * 0.5f, g.trackY() };
-            }
-
-        private:
-            ParamModel model_;
-            funkgui::RuleSlider slider_;
-        };
-
-        // ---- the ZOOM cells: the host's UI zoom steps (EditorHost's EditorConfig::zoomSteps) ------------------------
+        // ---- a row of cells: THEME, ZOOM, and the RUN and EXAMPLES buttons ------------------------------------------
         class ZoomModel final : public funkgui::CellModel
         {
         public:
@@ -284,23 +341,42 @@ namespace testingplayground::ui
             mutable std::array<std::array<char, 24>, kMaxSteps> spoken_{};
         };
 
-        // ---- a row of cells: a choice parameter (ParamCells), the THEME cells or the ZOOM cells ----------------------
+        // One cell that acts when chosen: RUN, EXAMPLES.
+        class ButtonModel final : public funkgui::CellModel
+        {
+        public:
+            ButtonModel(const char* label, const char* spoken, std::function<void()> act)
+                : label_(label), spoken_(spoken), act_(std::move(act)) {}
+
+            int count() const override { return 1; }
+            int active() const override { return -1; }
+            const char* label(int) const override { return label_; }
+            const char* spoken(int) const override { return spoken_; }
+            void select(int, funkgui::GestureController&) override
+            {
+                if (act_)
+                    act_();
+            }
+
+        private:
+            const char* label_;
+            const char* spoken_;
+            std::function<void()> act_;
+        };
+
         class CellsItem final : public Item
         {
         public:
             using SpecFn = std::function<void(char*, std::size_t)>;
             using ShownFn = std::function<bool()>;
 
-            // Over a model this item owns (ParamCells, ZoomModel).
             CellsItem(std::unique_ptr<funkgui::CellModel> model, std::vector<funkgui::Rect> cells,
-                      funkgui::CellStyle style, const char* caption, funkgui::Point captionAt, uint32_t id,
-                      SpecFn spec, ShownFn shown = {})
+                      funkgui::CellStyle style, uint32_t id, SpecFn spec, ShownFn shown = {})
                 : model_(std::move(model)),
-                  own_(std::make_unique<funkgui::SegmentedSelector>(*model_, std::move(cells), style, caption,
-                                                                    captionAt, id)),
+                  own_(std::make_unique<funkgui::SegmentedSelector>(*model_, std::move(cells), style, nullptr,
+                                                                    funkgui::Point{}, id)),
                   sel_(own_.get()), spec_(std::move(spec)), shown_(std::move(shown)) {}
 
-            // The THEME cells (funkgui::ThemeCells: the machine-wide theme preference).
             CellsItem(std::unique_ptr<funkgui::ThemeCells> theme, SpecFn spec)
                 : theme_(std::move(theme)), sel_(&theme_->selector()), spec_(std::move(spec)) {}
 
@@ -332,6 +408,7 @@ namespace testingplayground::ui
                 const funkgui::Rect b = sel_->bounds();
                 return { b.x + b.w * 0.5f, b.y + b.h * 0.5f };
             }
+            funkgui::Rect bounds() const { return sel_->bounds(); }
             bool shown() const override { return !shown_ || shown_(); }
 
         private:
@@ -343,135 +420,174 @@ namespace testingplayground::ui
             ShownFn shown_;
         };
 
-        // The cell texts of a choice parameter (labels upper case, spoken as written).
-        std::vector<funkgui::CellText> choiceTexts(const ParamSpec& s)
-        {
-            std::vector<funkgui::CellText> texts;
-            for (int i = 0; i < s.numChoices; ++i)
-                texts.push_back({ s.choices[i], nullptr, nullptr });
-            return texts;
-        }
-
-        // ---- the LFO shape editor (ShapeView.h) -----------------------------------------------------------------------
-        class ShapeItem final : public Item
+        // ---- the program's text ---------------------------------------------------------------------------------------
+        class EditorItem final : public Item
         {
         public:
-            ShapeItem(EditorPort& port, funkgui::Rect bounds, uint32_t id) : view_(port, bounds, id) {}
-
-            ShapeView& view() noexcept { return view_; }
-
-            void tick(float dt, bool hovered, bool focused, funkgui::Point) override { view_.tick(dt, hovered, focused); }
-            void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override { view_.draw(c, th, ring); }
-            bool contains(funkgui::Point p) const override { return view_.contains(p); }
-            funkgui::Cursor cursorAt(funkgui::Point p) const override { return view_.cursorAt(p); }
-            void pointerMove(const funkgui::PointerEvent& e) override { view_.pointerMove(e); }
-            void pointerExit() override { view_.pointerExit(); }
-            void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController&,
-                             funkgui::HostServices& h) override
+            EditorItem(funkgui::Rect bounds, uint32_t id, const std::vector<int>& errorLines)
+                : editor_(id), errorLines_(errorLines)
             {
-                view_.pointerDown(e, h, productTheme(funkgui::Theme::byIndex(h.themeIndex())));
+                funkgui::TextEditorOptions o;
+                o.style = funkgui::editorFont(funkgui::EditorFont::code);
+                o.softTabs = true;
+                o.tabWidth = 4;
+                o.a11yTitle = "Program";
+                o.placeholder = "An FMinus program: EXAMPLES has some to start from";
+                editor_.setOptions(o);
+                editor_.setBounds(bounds);
+                editor_.setHighlighter(std::make_unique<funkgui::text::KeywordHighlighter>(fminusRules()));
+                editor_.setPalette(funkgui::TextEditor::defaultPalette());
             }
-            void pointerDrag(const funkgui::PointerEvent& e, funkgui::GestureController&) override { view_.pointerDrag(e); }
-            void pointerUp(const funkgui::PointerEvent& e, funkgui::GestureController&) override { view_.pointerUp(e); }
+
+            funkgui::TextEditor& editor() noexcept { return editor_; }
+
+            void tick(float dt, bool, bool, funkgui::Point) override { editor_.tick(dt); }
+            void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override
+            {
+                editor_.draw(c, th, ring);
+                // A mark in the gutter, beside the line number, on each line the last run's errors name.
+                if (errorLines_.empty())
+                    return;
+                const funkgui::Rect b = editor_.bounds();
+                const funkgui::Rect area = editor_.textArea();
+                const float rowH = editor_.rowHeight();
+                const float scrollY = editor_.scroll().y;
+                c.pushClip({ b.x + 1.0f, b.y + 1.0f, b.w - 2.0f, b.h - 2.0f });
+                {
+                    const funkgui::Canvas::Scope s(c, kMarkTag, false);
+                    for (const int line : errorLines_)
+                    {
+                        if (line < 1 || line > editor_.lineCount())
+                            continue;
+                        const int row = editor_.rowOf({ line - 1, 0 });
+                        const float y = area.y + static_cast<float>(row) * rowH - scrollY;
+                        if (y + rowH < b.y || y > b.bottom())
+                            continue;
+                        c.rrect(b.x + 3.0f, y + 2.0f, 3.0f, rowH - 4.0f, 1.0f, th.signal);
+                    }
+                }
+                c.popClip();
+            }
+            bool contains(funkgui::Point p) const override { return editor_.contains(p); }
+            funkgui::Cursor cursorAt(funkgui::Point p) const override { return editor_.cursorAt(p); }
+            void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController&, funkgui::HostServices&) override
+            {
+                editor_.pointerDown(e);
+            }
+            void pointerDrag(const funkgui::PointerEvent& e, funkgui::GestureController&) override
+            {
+                editor_.pointerDrag(e);
+            }
+            void pointerUp(const funkgui::PointerEvent& e, funkgui::GestureController&) override { editor_.pointerUp(e); }
             void doubleClick(const funkgui::PointerEvent& e, funkgui::GestureController&) override
             {
-                view_.doubleClick(e);
+                editor_.doubleClick(e);
             }
-            bool key(const funkgui::KeyEvent& e, funkgui::GestureController&) override { return view_.key(e); }
-            void accessibility(std::vector<funkgui::A11yItem>& out) const override { view_.accessibility(out); }
-            bool a11yAction(uint32_t id, funkgui::A11yAction a, double v, funkgui::GestureController&) override
+            bool wheel(const funkgui::WheelEvent& e, funkgui::GestureController&, double) override
             {
-                return view_.a11yAction(id, a, v);
+                return editor_.wheel(e);
             }
-            void specLine(char* out, std::size_t n) const override { view_.specLine(out, n); }
-            bool settled() const override { return view_.settled(); }
+            bool key(const funkgui::KeyEvent& e, funkgui::GestureController&) override { return editor_.key(e); }
+            void accessibility(std::vector<funkgui::A11yItem>& out) const override
+            {
+                funkgui::A11yItem item;
+                editor_.accessibility(item);
+                out.push_back(std::move(item));
+            }
+            bool a11yAction(uint32_t id, funkgui::A11yAction, double, funkgui::GestureController&) override
+            {
+                return id == editor_.a11yId();
+            }
+            void specLine(char* out, std::size_t n) const override
+            {
+                const funkgui::TextPos p = editor_.caret();
+                const std::string sel = editor_.selectedText();
+                if (sel.empty())
+                    std::snprintf(out, n, "PROGRAM   LINE %d   COLUMN %d   CMD-RETURN RUNS IT", p.line + 1, p.col + 1);
+                else
+                    std::snprintf(out, n, "PROGRAM   LINE %d   COLUMN %d   %zu SELECTED   CMD-RETURN RUNS IT",
+                                  p.line + 1, p.col + 1, sel.size());
+            }
             funkgui::Point centre() const override
             {
-                const funkgui::Rect r = view_.plot();
-                return { r.centreX(), r.centreY() };
+                const funkgui::Rect b = editor_.bounds();
+                return { b.centreX(), b.centreY() };
             }
+            void focusChanged(bool focused) override { editor_.setFocused(focused); }
 
         private:
-            ShapeView view_;
+            funkgui::TextEditor editor_;
+            const std::vector<int>& errorLines_;          // the Panel's
         };
 
-        // ---- the DELAYS readout: the delay lengths SIZE and LINES give, as the Engine computes them ---------------------
-        class DelaysItem final : public Item
+        // ---- the last run's messages ----------------------------------------------------------------------------------
+        class ProblemsItem final : public Item
         {
         public:
-            DelaysItem(funkgui::ParamPort& size, funkgui::ParamPort& lines, EditorPort& port, funkgui::Rect bounds,
-                       uint32_t id)
-                : size_(size), lines_(lines), port_(port), bounds_(bounds), id_(id),
-                  lastSize01_(size.default01()), lastLines01_(lines.default01()) {}
+            using Jump = std::function<void(const Problem&)>;
 
-            // "DELAYS" and the lengths in samples, at the processor's rate; recomputed only when an input changed. A
-            // non-finite value (a host's NaN) shows the last finite one, as the dials do (ParamModel.h).
-            const std::string& text() const
+            ProblemsItem(funkgui::Rect bounds, uint32_t id, const std::vector<Problem>& problems, Jump jump)
+                : bounds_(bounds), id_(id), problems_(problems), jump_(std::move(jump)) {}
+
+            funkgui::Rect rowRect(int i) const
             {
-                const float size = fromNormalised(kParams[param::size], shownValue01(size_.value01(), lastSize01_));
-                const int lines = linesFromChoice(fromNormalised(kParams[param::lines],
-                                                                 shownValue01(lines_.value01(), lastLines01_)));
-                const float fs = port_.sampleRate();
-                if (size != keySize_ || lines != keyLines_ || fs != keyRate_)
-                {
-                    keySize_ = size;
-                    keyLines_ = lines;
-                    keyRate_ = fs;
-                    const FdnLayout l = makeLayout(fs, size, lines);
-                    std::string s;
-                    for (int i = 0; i < l.lines; ++i)
-                    {
-                        if (i > 0)
-                            s += ' ';
-                        s += std::to_string(l.delay[static_cast<std::size_t>(i)]);
-                    }
-                    char rate[24];
-                    std::snprintf(rate, sizeof rate, "%.1f", static_cast<double>(fs) / 1000.0);
-                    numbers_ = s;
-                    text_ = "DELAYS " + s + " SAMPLES AT " + rate + " KHZ";
-                    rate_ = std::string("SAMPLES AT ") + rate + " KHZ";
-                }
-                return text_;
+                return { bounds_.x, bounds_.y + kProblemRowH * static_cast<float>(i), bounds_.w, kProblemRowH };
             }
 
-            void tick(float, bool, bool, funkgui::Point) override {}
+            void tick(float, bool, bool, funkgui::Point pointer) override { pointer_ = pointer; }
             void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool) const override
             {
                 namespace type = funkgui::type;
-                text();
-                const funkgui::Canvas::Scope s(c, funkgui::tags::none, false);
-                c.text("DELAYS", bounds_.x, bounds_.y, type::kCaption, th.ink52);
-                const float x0 = bounds_.x + c.textWidth("DELAYS", type::kCaption) + 12.0f;
-                const float unitW = c.textWidth(rate_.c_str(), type::kMicro);
-                c.text(rate_.c_str(), bounds_.right(), bounds_.y + 1.0f, type::kMicro, th.ink32, funkgui::Align::right);
-                // The numbers in one line, cut at a whole number (with an ellipsis) when they do not fit.
-                constexpr funkgui::TextStyle kNumbers{ 10.0f, 0.4f, 0.03f, true };
-                const float room = bounds_.right() - unitW - 12.0f - x0;
-                std::string shown = numbers_;
-                while (!shown.empty() && c.textWidth(shown.c_str(), kNumbers) > room)
+                const funkgui::Canvas::Scope s(c, kProblemTag, false);
+                const int shown = std::min(static_cast<int>(problems_.size()), kProblemRows);
+                for (int i = 0; i < shown; ++i)
                 {
-                    const std::size_t cut = shown.rfind(' ');
-                    shown.resize(cut == std::string::npos ? 0 : cut);
-                    if (!shown.empty() && c.textWidth((shown + " \xE2\x80\xA6").c_str(), kNumbers) <= room)
+                    const Problem& p = problems_[static_cast<std::size_t>(i)];
+                    const funkgui::Rect r = rowRect(i);
+                    const bool last = i == kProblemRows - 1 && static_cast<int>(problems_.size()) > kProblemRows;
+                    const bool hover = p.line > 0 && r.contains(pointer_);
+                    char place[24] = {};
+                    if (p.line > 0)
+                        std::snprintf(place, sizeof place, "%d:%d", p.line, p.column);
+                    c.text(place, r.x, r.y + 2.0f, type::kMicro, hover ? th.accent : th.ink52);
+                    const float x0 = r.x + 56.0f;
+                    std::string text = p.text;
+                    if (last)
                     {
-                        shown += " \xE2\x80\xA6";
-                        break;
+                        char more[32];
+                        std::snprintf(more, sizeof more, "   (and %d more)",
+                                      static_cast<int>(problems_.size()) - kProblemRows + 1);
+                        text += more;
                     }
+                    const funkgui::Col ink = p.error ? th.signal : th.ink52;
+                    c.text(fitText(c, text, type::kMicro, r.right() - x0).c_str(), x0, r.y + 2.0f, type::kMicro,
+                           hover ? th.accent : ink);
                 }
-                c.text(shown.c_str(), x0, bounds_.y + 1.0f, kNumbers, th.ink70);
             }
             bool contains(funkgui::Point p) const override { return bounds_.contains(p); }
-            funkgui::Cursor cursorAt(funkgui::Point) const override { return funkgui::Cursor::normal; }
-            void pointerDown(const funkgui::PointerEvent&, funkgui::GestureController&, funkgui::HostServices&) override {}
-            bool key(const funkgui::KeyEvent&, funkgui::GestureController&) override { return false; }
+            funkgui::Cursor cursorAt(funkgui::Point p) const override
+            {
+                const int i = rowAt(p);
+                return i >= 0 && problems_[static_cast<std::size_t>(i)].line > 0 ? funkgui::Cursor::pointingHand
+                                                                                 : funkgui::Cursor::normal;
+            }
+            void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController&, funkgui::HostServices&) override
+            {
+                const int i = rowAt({ e.x, e.y });
+                if (i >= 0 && jump_)
+                    jump_(problems_[static_cast<std::size_t>(i)]);
+            }
             void accessibility(std::vector<funkgui::A11yItem>& out) const override
             {
                 funkgui::A11yItem item;
                 item.id = id_;
                 item.role = funkgui::A11yRole::staticText;
                 item.bounds = bounds_;
-                item.title = "Delay lengths";
-                item.value = text();
+                item.title = "Problems";
+                for (const Problem& p : problems_)
+                    item.value += (item.value.empty() ? "" : "; ") + p.text;
+                if (item.value.empty())
+                    item.value = "none";
                 item.readOnly = true;
                 out.push_back(std::move(item));
             }
@@ -481,163 +597,81 @@ namespace testingplayground::ui
             }
             void specLine(char* out, std::size_t n) const override
             {
-                if (n > 0)
-                    std::snprintf(out, n, "%s", text().c_str());
+                const int i = rowAt(pointer_);
+                if (i >= 0 && problems_[static_cast<std::size_t>(i)].line > 0)
+                    std::snprintf(out, n, "PROBLEM   CLICK TO GO TO LINE %d", problems_[static_cast<std::size_t>(i)].line);
+                else if (n > 0)
+                    std::snprintf(out, n, "PROBLEMS   %zu", problems_.size());
             }
-            bool settled() const override { return true; }
             funkgui::Point centre() const override { return { bounds_.centreX(), bounds_.centreY() }; }
             bool focusable() const override { return false; }
 
         private:
-            funkgui::ParamPort& size_;
-            funkgui::ParamPort& lines_;
-            EditorPort& port_;
+            int rowAt(funkgui::Point p) const
+            {
+                const int shown = std::min(static_cast<int>(problems_.size()), kProblemRows);
+                for (int i = 0; i < shown; ++i)
+                    if (rowRect(i).contains(p))
+                        return i;
+                return -1;
+            }
+
             funkgui::Rect bounds_;
             uint32_t id_;
-            mutable float lastSize01_, lastLines01_;     // the last finite value01 of each (shownValue01)
-            mutable float keySize_ = -1.0f, keyRate_ = -1.0f;
-            mutable int keyLines_ = -1;
-            mutable std::string text_, numbers_, rate_;
+            const std::vector<Problem>& problems_;       // the Panel's
+            Jump jump_;
+            funkgui::Point pointer_{ -1.0e4f, -1.0e4f };
         };
     }
 
-    // ---- construction: the layout -------------------------------------------------------------------------------------
-    Panel::Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& editorPort, std::string_view name)
+    // ---- construction: the layout -----------------------------------------------------------------------------------
+    Panel::Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& port) : port_(port)
     {
-        title_ = upper(name.empty() ? std::string_view(product::kName) : name);
-        subtitle_ = upper(product::kKind) + "  " + product::kVersion;
-
-        // The content is wide enough for the reverb row's dials and sliders beside the choice cells.
-        float rowW = 0.0f, choiceW = 0.0f;
-        for (std::size_t i = 0; i < kParams.size(); ++i)
-        {
-            const ParamSpec& s = kParams[i];
-            if (isModulation(i))
-                continue;
-            if (s.control == Control::dial)
-                rowW += kDialCellW + kGapX;
-            else if (s.control == Control::slider)
-                rowW += kSliderW + 12.0f + kGapX;
-            else if (s.control == Control::choice)
-                choiceW = std::max(choiceW, kChoiceCellW * static_cast<float>(s.numChoices));
-        }
-        float contentW = std::max(kMinContentW, rowW + (choiceW > 0.0f ? 2.0f * kGapX + choiceW : 0.0f));
-
-        // Wider when the header (the name, its kind and version, the THEME cells) needs it, up to kMaxHeaderContentW.
-        // Text is measured with the atlas every Canvas draws with (FontService; text::width is Canvas::textWidth).
-        const funkgui::FontAtlasSdf& atlas = funkgui::FontService::get().atlas();
-        const float titleW = funkgui::text::width(atlas, title_.c_str(), funkgui::type::kWordmark);
-        const float subtitleW = funkgui::text::width(atlas, subtitle_.c_str(), funkgui::type::kMicro);
-        contentW = std::max(contentW, std::min(titleW + kSubtitleGap + subtitleW + kThemeGap + kThemeW,
-                                               kMaxHeaderContentW));
-        width_ = 2.0f * kMargin + contentW;
-        header_.widest = contentW >= kMaxHeaderContentW;
-
-        // The header's text ends kThemeGap before the THEME cells: the kind and version only when they fit there, the
-        // name cut with an ellipsis when even it does not.
-        const float room = contentW - kThemeW - kThemeGap;
-        header_.themeLeft = kMargin + contentW - kThemeW;
-        if (titleW > room)
-        {
-            char cut[256];
-            funkgui::text::fitEllipsis(atlas, title_.c_str(), funkgui::type::kWordmark, room, cut, sizeof cut);
-            title_ = cut;
-            header_.titleCut = true;
-        }
-        header_.titleRight = kMargin + funkgui::text::width(atlas, title_.c_str(), funkgui::type::kWordmark);
-        header_.subtitleShown = header_.titleRight + kSubtitleGap + subtitleW <= kMargin + room;
-        header_.subtitleRight = header_.subtitleShown ? header_.titleRight + kSubtitleGap + subtitleW : 0.0f;
-
-        // The reverb row: dials and sliders left to right in table order, wrapping before the choice block on the
-        // first row and at the content's width after it; the choice rows stacked at the first row's right end.
-        itemOfParam_.assign(kParams.size(), -1);
+        title_ = upper(product::kName);
+        subtitle_ = upper(product::kKind) + "  " + product::kVersion + "  FMINUS";
+        width_ = kWidth;
+        const float contentW = width_ - 2.0f * kMargin;
         const auto idFor = [this] { return kA11yStride * static_cast<uint32_t>(items_.size() + 1); };
-        float rowTop = kSectionTop, x = 0.0f, rowH = 0.0f;
-        float choiceTop = kSectionTop;
-        const auto rowLimit = [&] { return rowTop == kSectionTop && choiceW > 0.0f ? contentW - choiceW - kGapX
-                                                                                   : contentW; };
-        const auto newRow = [&] {
-            if (rowH > 0.0f)
-                rowTop += rowH;
-            x = 0.0f;
-            rowH = 0.0f;
-        };
-        for (std::size_t i = 0; i < kParams.size() && i < ports.size(); ++i)
+
+        // The toolbar's buttons.
+        auto run = std::make_unique<ButtonModel>("RUN", "Run the program", [this] { runNow(); });
+        runItem_ = static_cast<int>(items_.size());
+        items_.push_back(std::make_unique<CellsItem>(
+            std::move(run), std::vector<funkgui::Rect>{ { kMargin, kToolbarY, 64.0f, kButtonH } },
+            funkgui::CellStyle::boxed, idFor(),
+            [](char* out, std::size_t n) { std::snprintf(out, n, "RUN   COMPILE THE PROGRAM AND PLAY IT (CMD-RETURN)"); }));
+        auto examples = std::make_unique<ButtonModel>("EXAMPLES", "Examples", [this] { openExamples(); });
+        examplesItem_ = static_cast<int>(items_.size());
+        items_.push_back(std::make_unique<CellsItem>(
+            std::move(examples), std::vector<funkgui::Rect>{ { kMargin + 72.0f, kToolbarY, 96.0f, kButtonH } },
+            funkgui::CellStyle::boxed, idFor(),
+            [](char* out, std::size_t n) { std::snprintf(out, n, "EXAMPLES   REPLACE THE TEXT WITH ONE, AND RUN IT"); }));
+
+        // The editor.
+        auto editor = std::make_unique<EditorItem>(funkgui::Rect{ kMargin, kEditorY, contentW, kEditorH }, idFor(),
+                                                   errorLines_);
+        editor_ = &editor->editor();
+        editorItem_ = static_cast<int>(items_.size());
+        items_.push_back(std::move(editor));
+
+        // The problems, under it.
+        const float problemsY = kEditorY + kEditorH + 8.0f;
+        const funkgui::Rect problems{ kMargin, problemsY, contentW, kProblemRowH * static_cast<float>(kProblemRows) };
+        problemsItem_ = static_cast<int>(items_.size());
+        items_.push_back(std::make_unique<ProblemsItem>(problems, idFor(), problems_,
+                                                        [this](const Problem& p) { jumpTo(p); }));
+
+        // The dials, in one row under the problems.
+        const float dialsY = problems.bottom() + 16.0f;
+        itemOfSlot_.assign(static_cast<std::size_t>(kMaxControls), -1);
+        for (int c = 0; c < kMaxControls && c < static_cast<int>(ports.size()); ++c)
         {
-            const ParamSpec& s = kParams[i];
-            if (isModulation(i))
-                continue;
-            if (s.control == Control::dial)
-            {
-                if (x > 0.0f && x + kDialCellW > rowLimit())
-                    newRow();
-                itemOfParam_[i] = static_cast<int>(items_.size());
-                items_.push_back(std::make_unique<DialItem>(s, *ports[i], funkgui::DialGeom{ kMargin + x, rowTop },
-                                                            idFor()));
-                x += kDialCellW + kGapX;
-                rowH = std::max(rowH, kControlRowH);
-            }
-            else if (s.control == Control::slider)
-            {
-                if (x > 0.0f && x + kSliderW + 12.0f > rowLimit())
-                    newRow();
-                itemOfParam_[i] = static_cast<int>(items_.size());
-                items_.push_back(std::make_unique<SliderItem>(
-                    s, *ports[i], funkgui::SlotGeom{ kMargin + x + 6.0f, rowTop, kSliderW }, idFor()));
-                x += kSliderW + 12.0f + kGapX;
-                rowH = std::max(rowH, kControlRowH);
-            }
-            else if (s.control == Control::choice && s.numChoices > 0)
-            {
-                const float left = kMargin + contentW - kChoiceCellW * static_cast<float>(s.numChoices);
-                std::vector<funkgui::Rect> cells;
-                for (int k = 0; k < s.numChoices; ++k)
-                    cells.push_back({ left + kChoiceCellW * static_cast<float>(k), choiceTop + 18.0f,
-                                      kChoiceCellW - 4.0f, kChoiceCellH });
-                auto model = std::make_unique<funkgui::ParamCells>(*ports[i], choiceTexts(s));
-                const funkgui::ParamCells* cellsModel = model.get();
-                const ParamSpec* spec = &s;
-                itemOfParam_[i] = static_cast<int>(items_.size());
-                items_.push_back(std::make_unique<CellsItem>(
-                    std::move(model), std::move(cells), funkgui::CellStyle::boxed, s.label,
-                    funkgui::Point{ left, choiceTop }, idFor(), [spec, cellsModel](char* out, std::size_t n) {
-                        const int a = cellsModel->active();
-                        std::snprintf(out, n, "%s   %s", spec->label, a >= 0 ? cellsModel->label(a) : "");
-                    }));
-                choiceTop += kChoiceBlockH;
-            }
+            itemOfSlot_[static_cast<std::size_t>(c)] = static_cast<int>(items_.size());
+            const float x = kMargin + static_cast<float>(c) * (kDialCellW + kDialGap);
+            items_.push_back(std::make_unique<DialItem>(*ports[static_cast<std::size_t>(c)],
+                                                        funkgui::DialGeom{ x, dialsY }, idFor()));
         }
-        newRow();
-        ruleY_ = std::max(rowTop, choiceTop) + 2.0f;
-
-        // The modulation section: the graph, the RATE / DEPTH column beside it, the DELAYS line under it.
-        const float modTop = ruleY_ + kRuleGap;
-        const float columnX = kMargin + contentW - kDialCellW;
-        float columnTop = modTop, columnBottom = modTop;
-        for (std::size_t i = 0; i < kParams.size() && i < ports.size(); ++i)
-        {
-            const ParamSpec& s = kParams[i];
-            if (!isModulation(i) || s.control == Control::hidden)
-                continue;
-            itemOfParam_[i] = static_cast<int>(items_.size());
-            items_.push_back(std::make_unique<DialItem>(s, *ports[i], funkgui::DialGeom{ columnX, columnTop }, idFor()));
-            columnBottom = columnTop + 80.0f;
-            columnTop += kControlRowH;
-        }
-        const float graphRight = columnX - kModColumnGap;
-        const funkgui::Rect graph{ kMargin, modTop, graphRight - kMargin,
-                                   std::max(kModColumnH, columnBottom - modTop) };
-        auto shapeItem = std::make_unique<ShapeItem>(editorPort, graph, idFor());
-        shape_ = &shapeItem->view();
-        items_.push_back(std::move(shapeItem));
-
-        const funkgui::Rect readout{ kMargin, graph.bottom() + 12.0f, contentW, kReadoutH - 12.0f };
-        auto delays = std::make_unique<DelaysItem>(*ports[param::size], *ports[param::lines], editorPort, readout,
-                                                   idFor());
-        readout_ = delays.get();
-        items_.push_back(std::move(delays));
-
-        height_ = readout.bottom() + 8.0f + kFooterH;
+        height_ = dialsY + 80.0f + 12.0f + kFooterH;
 
         // THEME, in the header's right corner.
         const float right = width_ - kMargin;
@@ -646,8 +680,7 @@ namespace testingplayground::ui
                                         { right - 54.0f, 15.0f, 54.0f, 18.0f } },
             nullptr, funkgui::Point{}, idFor());
         items_.push_back(std::make_unique<CellsItem>(std::move(theme), [this](char* out, std::size_t n) {
-            std::snprintf(out, n, "THEME   %s",
-                          funkgui::Theme::name(host_ != nullptr ? host_->themeIndex() : 0));
+            std::snprintf(out, n, "THEME   %s", funkgui::Theme::name(host_ != nullptr ? host_->themeIndex() : 0));
         }));
 
         // ZOOM, in the footer's right corner; shown when the host offers zoom steps (the plugin's editor does).
@@ -658,29 +691,47 @@ namespace testingplayground::ui
             zoomCells.push_back({ right - 44.0f * static_cast<float>(ZoomModel::kMaxSteps - k), height_ - 28.0f, 42.0f,
                                   18.0f });
         items_.push_back(std::make_unique<CellsItem>(
-            std::move(zoom), std::move(zoomCells), funkgui::CellStyle::text, nullptr, funkgui::Point{}, idFor(),
+            std::move(zoom), std::move(zoomCells), funkgui::CellStyle::text, idFor(),
             [zoomModel](char* out, std::size_t n) {
                 const int a = zoomModel->active();
                 std::snprintf(out, n, "ZOOM   %s", a >= 0 ? zoomModel->label(a) : "");
             },
             [zoomModel] { return zoomModel->count() > 0; }));
         zoom_ = zoomModel;
+
+        // The processor's text and status.
+        editor_->setText(port_.draft());
+        seenDraft_ = port_.draftRevision();
+        syncedText_ = editor_->revision();
+        running_ = port_.runningSource();
+        refresh(0.0);
+        focus_ = editorItem_;
+        setFocus(editorItem_);
     }
 
-    // The host closes the open gestures before it lets go of the Panel (EditorHost, HeadlessHost); the
-    // GestureController's own destructor closes anything left. No HostServices call from here: the host may be gone.
+    // The host closes the open gestures before it lets go of the Panel; no HostServices call from here.
     Panel::~Panel() = default;
 
-    std::optional<funkgui::Point> Panel::centreOf(std::size_t param) const
+    std::optional<funkgui::Point> Panel::centreOfDial(int slot) const
     {
-        if (param >= itemOfParam_.size() || itemOfParam_[param] < 0)
+        if (slot < 0 || slot >= kMaxControls)
             return std::nullopt;
-        return items_[static_cast<std::size_t>(itemOfParam_[param])]->centre();
+        const Item& item = *items_[static_cast<std::size_t>(itemOfSlot_[static_cast<std::size_t>(slot)])];
+        if (!item.shown())
+            return std::nullopt;
+        return item.centre();
     }
 
-    std::string Panel::delaysText() const
+    funkgui::Point Panel::centreOfRun() const { return items_[static_cast<std::size_t>(runItem_)]->centre(); }
+    funkgui::Point Panel::centreOfExamples() const
     {
-        return static_cast<const DelaysItem*>(readout_)->text();
+        return items_[static_cast<std::size_t>(examplesItem_)]->centre();
+    }
+    funkgui::Point Panel::centreOfProblem(int i) const
+    {
+        const auto& p = static_cast<const ProblemsItem&>(*items_[static_cast<std::size_t>(problemsItem_)]);
+        const funkgui::Rect r = p.rowRect(i);
+        return { r.x + 20.0f, r.centreY() };
     }
 
     void Panel::attach(funkgui::HostServices& host)
@@ -689,14 +740,160 @@ namespace testingplayground::ui
         gestures_.emplace(host);
         if (zoom_ != nullptr)
             static_cast<ZoomModel*>(zoom_)->attach(host);
+        editor_->attach(&host);
     }
 
     int Panel::width() const { return static_cast<int>(width_); }
     int Panel::height() const { return static_cast<int>(height_); }
 
-    // ---- frame ----------------------------------------------------------------------------------------------------------
+    // ---- the processor's state ------------------------------------------------------------------------------------------
+    void Panel::runNow()
+    {
+        const std::string source = editor_->text();
+        port_.setDraft(source);
+        syncedText_ = editor_->revision();
+        port_.run(source);
+        compiling_ = true;
+        dirty_ = true;
+    }
+
+    void Panel::refresh(double nowSec)
+    {
+        // The draft, when a host loaded a session while the editor was open.
+        if (const uint64_t d = port_.draftRevision(); d != seenDraft_)
+        {
+            seenDraft_ = d;
+            editor_->setText(port_.draft());
+            syncedText_ = editor_->revision();
+        }
+        // The text as typed, to the processor (it outlives this window).
+        bool textChanged = false;
+        if (editor_->revision() != syncedText_)
+        {
+            port_.setDraft(editor_->text());
+            syncedText_ = editor_->revision();
+            textChanged = true;
+        }
+        // A finished compile: its messages, and the dials of the program that plays.
+        bool statusChanged = false;
+        if (const uint64_t r = port_.statusRevision(); r != seenStatus_)
+        {
+            seenStatus_ = r;
+            const CompileStatus s = port_.status();
+            lastOk_ = s.ok;
+            lastMs_ = s.ms;
+            problems_ = parseProblems(s.errors + s.notes);
+            errorLines_.clear();
+            for (const Problem& p : problems_)
+                if (p.error && p.line > 0 && std::find(errorLines_.begin(), errorLines_.end(), p.line) == errorLines_.end())
+                    errorLines_.push_back(p.line);
+            // The dials and the source of the program that plays: this compile's when it compiled (the processor
+            // takes them on its own timer, which may not have run yet), else the ones before.
+            const Controls cs = s.ok ? s.controls : port_.controls();
+            if (s.ok)
+                running_ = s.source;
+            ++controlsRevision_;
+            for (int c = 0; c < kMaxControls; ++c)
+                if (const int i = itemOfSlot_[static_cast<std::size_t>(c)]; i >= 0)
+                    static_cast<DialItem&>(*items_[static_cast<std::size_t>(i)])
+                        .model()
+                        .setControl(cs[static_cast<std::size_t>(c)], controlsRevision_);
+            statusChanged = true;
+        }
+        compiling_ = port_.compiling();
+        if (textChanged || statusChanged)
+            edited_ = editor_->text() != running_;
+        const std::string statusBefore = status_;
+
+        // The status line and the meter.
+        if (compiling_)
+            status_ = "COMPILING";
+        else if (!lastOk_)
+        {
+            int errors = 0;
+            for (const Problem& p : problems_)
+                errors += p.error ? 1 : 0;
+            char buf[96];
+            std::snprintf(buf, sizeof buf, "%d ERROR%s   THE LAST PROGRAM THAT COMPILED PLAYS ON", errors,
+                          errors == 1 ? "" : "S");
+            status_ = buf;
+        }
+        else
+        {
+            char buf[96];
+            std::snprintf(buf, sizeof buf, "%s   COMPILED IN %.0f MS", edited_ ? "EDITED: CMD-RETURN RUNS IT" : "RUNNING",
+                          lastMs_);
+            status_ = buf;
+        }
+        if (status_ != statusBefore)
+            dirty_ = true;
+
+        // The meter, four times a second at most: a frame for it when it changed.
+        if (meterAt_ < 0.0 || nowSec - meterAt_ >= 0.25 || nowSec < meterAt_)
+        {
+            meterAt_ = nowSec;
+            char meter[64];
+            const uint32_t a = port_.alerts();
+            std::snprintf(meter, sizeof meter, "%s%sCPU %.1f%%",
+                          (a & Engine::nonFinite) != 0 ? "NAN REPLACED   " : "",
+                          (a & Engine::clipped) != 0 ? "CLIPPED   " : "", static_cast<double>(port_.load()) * 100.0);
+            if (meter_ != meter)
+            {
+                meter_ = meter;
+                dirty_ = true;
+            }
+        }
+    }
+
+    void Panel::openExamples()
+    {
+        if (host_ == nullptr)
+            return;
+        funkgui::MenuRequest request;
+        int id = 1;
+        for (const Example& e : kExamples)
+            request.items.push_back({ id++, e.title });
+        request.anchor = static_cast<const CellsItem&>(*items_[static_cast<std::size_t>(examplesItem_)]).bounds();
+        request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
+        host_->showMenu(request, [this](int chosen) {
+            if (chosen < 1 || chosen > static_cast<int>(std::size(kExamples)))
+                return;
+            // The example replaces the text as one edit (Cmd-Z brings the text back), and runs.
+            editor_->selectAll();
+            editor_->insert(kExamples[static_cast<std::size_t>(chosen - 1)].source);
+            editor_->setCaret({ 0, 0 });
+            editor_->setScroll(0.0f, 0.0f);
+            setFocus(editorItem_);
+            runNow();
+        });
+    }
+
+    void Panel::jumpTo(const Problem& p)
+    {
+        if (p.line <= 0)
+            return;
+        editor_->setCaret({ p.line - 1, std::max(0, p.column - 1) });
+        editor_->scrollToCaret();
+        setFocus(editorItem_);
+        dirty_ = true;
+    }
+
+    void Panel::setFocus(int item)
+    {
+        if (focus_ != item && focus_ >= 0)
+            items_[static_cast<std::size_t>(focus_)]->focusChanged(false);
+        focus_ = item;
+        if (item >= 0)
+        {
+            touched_ = item;
+            items_[static_cast<std::size_t>(item)]->focusChanged(true);
+        }
+    }
+
+    // ---- frame --------------------------------------------------------------------------------------------------------
     void Panel::tick(float dt)
     {
+        refresh(host_ != nullptr ? host_->nowSeconds() : 0.0);
         const int hovered = hasPointer_ && pressed_ < 0 ? itemAt(pointer_) : pressed_;
         const funkgui::Point far{ -1.0e4f, -1.0e4f };
         for (std::size_t i = 0; i < items_.size(); ++i)
@@ -711,11 +908,12 @@ namespace testingplayground::ui
     {
         if (gestures_)
             gestures_->poll(nowSec);                     // closes a wheel gesture after its burst
+        refresh(nowSec);                                 // a compile finishing while nothing moves
     }
 
     bool Panel::wantsFullRate() const
     {
-        if (dirty_)
+        if (dirty_ || compiling_)
             return true;
         return std::any_of(items_.begin(), items_.end(), [](const auto& it) { return !it->settled(); });
     }
@@ -725,20 +923,33 @@ namespace testingplayground::ui
         const funkgui::Theme th = productTheme(hostTheme);
         const float contentW = width_ - 2.0f * kMargin;
 
-        // Header: the name, the kind and version (when they fit: header_), the rules.
+        // Header: the name, the kind and version.
         {
             const funkgui::Canvas::Scope s(c, kHeaderTextTag, false);
             c.text(title_.c_str(), kMargin, kTitleTop, funkgui::type::kWordmark, th.ink100);
-            if (header_.subtitleShown)
-                c.text(subtitle_.c_str(), header_.titleRight + kSubtitleGap,
-                       c.sharedBaselineTop(kTitleTop, funkgui::type::kWordmark, funkgui::type::kMicro),
-                       funkgui::type::kMicro, th.ink32);
+            const float titleRight = kMargin + c.textWidth(title_.c_str(), funkgui::type::kWordmark);
+            c.text(subtitle_.c_str(), titleRight + kSubtitleGap,
+                   c.sharedBaselineTop(kTitleTop, funkgui::type::kWordmark, funkgui::type::kMicro),
+                   funkgui::type::kMicro, th.ink32);
         }
         {
             const funkgui::Canvas::Scope s(c, funkgui::tags::none, false);
             c.hairlineH(kMargin, kHeaderRuleY, contentW, th.ink16);
-            c.hairlineH(kMargin, ruleY_, contentW, th.ink16);
             c.hairlineH(kMargin, height_ - kFooterH, contentW, th.ink16);
+        }
+
+        // The toolbar's status and meter.
+        {
+            const funkgui::Canvas::Scope s(c, kStatusTag, false);
+            const float statusX = kMargin + 72.0f + 96.0f + 20.0f;
+            const float textTop = c.capCentreTop(kToolbarY + kButtonH * 0.5f, kStatusStyle);
+            const float meterW = c.textWidth(meter_.c_str(), kStatusStyle);
+            const funkgui::Col statusInk = !lastOk_ && !compiling_ ? th.signal : (edited_ ? th.ink70 : th.ink52);
+            c.text(fitText(c, status_, kStatusStyle, contentW - 188.0f - meterW - 24.0f).c_str(), statusX, textTop,
+                   kStatusStyle, statusInk);
+            const bool alarm = port_.alerts() != 0;
+            c.text(meter_.c_str(), width_ - kMargin, textTop, kStatusStyle, alarm ? th.signal : th.ink32,
+                   funkgui::Align::right);
         }
 
         for (std::size_t i = 0; i < items_.size(); ++i)
@@ -750,10 +961,10 @@ namespace testingplayground::ui
         if (src < 0 && hasPointer_)
             src = itemAt(pointer_);
         if (src < 0)
-            src = ring_ ? focus_ : touched_;
+            src = focus_ >= 0 ? focus_ : touched_;
         if (src >= 0)
         {
-            char line[256];
+            char line[256] = {};
             items_[static_cast<std::size_t>(src)]->specLine(line, sizeof line);
             const float zoomW = items_.back()->shown() ? 44.0f * ZoomModel::kMaxSteps + 12.0f : 0.0f;
             const std::string shown = fitFields(c, line, contentW - zoomW);
@@ -799,11 +1010,13 @@ namespace testingplayground::ui
         pointer_ = { e.x, e.y };
         hasPointer_ = true;
         pressed_ = itemAt(pointer_);
+        if (pressed_ >= 0 && items_[static_cast<std::size_t>(pressed_)]->focusable())
+            setFocus(pressed_);
+        else if (pressed_ < 0 && focus_ == editorItem_)
+            setFocus(-1);                                // a press beside everything takes the caret away
         if (pressed_ >= 0 && gestures_ && host_ != nullptr)
         {
             touched_ = pressed_;
-            if (items_[static_cast<std::size_t>(pressed_)]->focusable())
-                focus_ = pressed_;
             items_[static_cast<std::size_t>(pressed_)]->pointerDown(e, *gestures_, *host_);
         }
         dirty_ = true;
@@ -831,7 +1044,7 @@ namespace testingplayground::ui
         if (i >= 0 && gestures_)
         {
             touched_ = i;
-            items_[static_cast<std::size_t>(i)]->doubleClick(e, *gestures_);   // a control: back to the default
+            items_[static_cast<std::size_t>(i)]->doubleClick(e, *gestures_);
         }
         dirty_ = true;
     }
@@ -855,8 +1068,7 @@ namespace testingplayground::ui
             i = i < 0 ? (dir > 0 ? 0 : n - 1) : (i + dir + n) % n;
             if (items_[static_cast<std::size_t>(i)]->shown() && items_[static_cast<std::size_t>(i)]->focusable())
             {
-                focus_ = i;
-                touched_ = i;
+                setFocus(i);
                 return true;
             }
         }
@@ -866,6 +1078,24 @@ namespace testingplayground::ui
     bool Panel::key(const funkgui::KeyEvent& e)
     {
         dirty_ = true;
+        // RUN, from anywhere in the panel.
+        if (e.key == funkgui::Key::enter && (e.mods.cmd || e.mods.ctrl))
+        {
+            runNow();
+            return true;
+        }
+        // The editor, while it has the caret: every key is its own (Tab indents), but Escape, which leaves it.
+        if (focus_ == editorItem_ && editor_->focused())
+        {
+            if (gestures_ && items_[static_cast<std::size_t>(editorItem_)]->key(e, *gestures_))
+                return true;
+            if (e.key == funkgui::Key::escape)
+            {
+                setFocus(-1);
+                return true;
+            }
+            return false;
+        }
         if (e.key == funkgui::Key::tab)
         {
             ring_ = moveFocus(e.mods.shift ? -1 : 1);
@@ -897,7 +1127,12 @@ namespace testingplayground::ui
 
     uint32_t Panel::a11yRevision() const
     {
-        return items_.back()->shown() ? 2u : 1u;         // the ZOOM cells come and go with the host's zoom
+        // Items come and go with the program's dials and the host's zoom.
+        uint32_t r = items_.back()->shown() ? 1u : 0u;
+        for (int c = 0; c < kMaxControls; ++c)
+            if (const int i = itemOfSlot_[static_cast<std::size_t>(c)]; i >= 0 && items_[static_cast<std::size_t>(i)]->shown())
+                r |= 2u << c;
+        return r;
     }
 
     void Panel::a11yAction(uint32_t id, funkgui::A11yAction a, double value)

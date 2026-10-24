@@ -1,0 +1,53 @@
+// Filter: a state-variable filter, low-, band- or high-pass, its cutoff swept sample by sample. It is the
+// topology-preserving form (V. Zavalishin, The Art of VA Filter Design), in A. Simper's equations: stable at any
+// cutoff below the Nyquist frequency. Svf is a module of its own, and Effect holds one for each channel.
+module Svf
+{
+    float ic1;   // the integrators' states
+    float ic2;
+
+    // One sample: g = tan(pi fc / fs), k = 1 / Q; mode 0 low-pass, 1 band-pass, 2 high-pass.
+    float tick(float x, float g, float k, int mode)
+    {
+        const float a1 = 1 / (1 + g * (g + k));
+        const float a2 = g * a1;
+        const float a3 = g * a2;
+        const float v3 = x - ic2;
+        const float v1 = a1 * ic1 + a2 * v3;          // band-pass
+        const float v2 = ic2 + a2 * ic1 + a3 * v3;    // low-pass
+        ic1 = 2 * v1 - ic1;
+        ic2 = 2 * v2 - ic2;
+        if (mode == 0)
+            return v2;
+        if (mode == 1)
+            return v1;
+        return x - k * v1 - v2;
+    }
+};
+
+module Effect
+{
+    param float cutoff [[fminus::range(20, 18000)]] [[fminus::default(1000)]];   // Hz
+    param float resonance [[fminus::range(0, 1)]] [[fminus::default(0.3)]];      // Q from 0.5 to 25
+    param int mode [[fminus::range(0, 2)]] [[fminus::default(0)]];              // low, band, high
+    Svf l;
+    Svf r;
+    float piOverRate;
+
+    void init(float rate)
+    {
+        piOverRate = 3.14159265f / rate;
+    }
+
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            const float w = fminf(piOverRate * cutoff[i], 1.5f);   // below pi / 2: tan stays finite
+            const float g = sinf(w) / cosf(w);
+            const float k = 2 - 1.96f * resonance[i];
+            left[i] = l.tick(left[i], g, k, mode[i]);
+            right[i] = r.tick(right[i], g, k, mode[i]);
+        }
+    }
+};

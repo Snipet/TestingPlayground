@@ -1,0 +1,30 @@
+// Drive: tanh saturation, a one-pole low-pass after it for the tone, and a dry/wet mix.
+module Effect
+{
+    param float drive [[fminus::range(0, 36)]] [[fminus::default(12)]];          // dB into the tanh
+    param float tone [[fminus::range(500, 16000)]] [[fminus::default(6000)]];    // Hz
+    param float mix [[fminus::range(0, 1)]] [[fminus::default(1)]];
+    param float output [[fminus::range(-24, 6)]] [[fminus::default(-6)]];        // dB
+    float yl;                                                                    // the low-pass's states
+    float yr;
+    float twoPiOverRate;
+
+    void init(float rate)
+    {
+        twoPiOverRate = 6.28318531f / rate;
+    }
+
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            const float g = expf(0.115129255f * drive[i]);
+            const float k = 1 - expf(-twoPiOverRate * tone[i]);
+            const float o = expf(0.115129255f * output[i]);
+            yl += k * (tanhf(g * left[i]) - yl);
+            yr += k * (tanhf(g * right[i]) - yr);
+            left[i] = o * (left[i] + mix[i] * (yl - left[i]));
+            right[i] = o * (right[i] + mix[i] * (yr - right[i]));
+        }
+    }
+};
