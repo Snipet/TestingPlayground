@@ -8,6 +8,7 @@
 #include "dsp/Controls.h"
 #include "dsp/Engine.h"
 #include "dsp/Events.h"
+#include "dsp/Sources.h"
 #include "fminus/Patch.h"
 
 #include <algorithm>
@@ -39,7 +40,13 @@ namespace probe
         // False, with the messages in `errors`, when it does not compile.
         bool load(const std::string& source, std::string* errors = nullptr)
         {
-            testingplayground::Patch::Result r = testingplayground::Patch::compile(source, engine_.rate());
+            return load(testingplayground::singleFile(source), errors);
+        }
+
+        // The same for a program of several files (Sources.h).
+        bool load(const testingplayground::Sources& files, std::string* errors = nullptr)
+        {
+            testingplayground::Patch::Result r = testingplayground::Patch::compile(files, engine_.rate());
             if (errors != nullptr)
                 *errors = r.errors + r.notes;
             if (!r.patch)

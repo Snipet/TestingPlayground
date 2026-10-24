@@ -11,16 +11,16 @@ namespace testingplayground
 {
     namespace
     {
-        CompileStatus build(Engine& engine, const std::string& source, uint64_t id)
+        CompileStatus build(Engine& engine, Sources files, uint64_t id)
         {
-            Patch::Result r = Patch::compile(source, engine.rate(), Compiler::kFileName);
+            Patch::Result r = Patch::compile(files, engine.rate());
             CompileStatus s;
             s.request = id;
             s.ok = r.patch != nullptr;
             s.errors = std::move(r.errors);
             s.notes = std::move(r.notes);
             s.ms = r.compileMs;
-            s.source = source;
+            s.sources = std::move(files);
             if (r.patch)
             {
                 s.controls = r.patch->controls();
@@ -42,12 +42,12 @@ namespace testingplayground
         thread_.join();
     }
 
-    uint64_t Compiler::request(std::string source)
+    uint64_t Compiler::request(Sources files)
     {
         uint64_t id = 0;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            queued_ = std::move(source);
+            queued_ = std::move(files);
             hasQueued_ = true;
             id = queuedId_ = ++nextId_;
         }
@@ -55,14 +55,14 @@ namespace testingplayground
         return id;
     }
 
-    CompileStatus Compiler::compileNow(std::string source)
+    CompileStatus Compiler::compileNow(Sources files)
     {
         uint64_t id = 0;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             id = ++nextId_;
         }
-        CompileStatus s = build(engine_, source, id);
+        CompileStatus s = build(engine_, std::move(files), id);
         finish(s);
         return status();
     }
@@ -103,12 +103,12 @@ namespace testingplayground
                 break;
             if (hasQueued_)
             {
-                std::string source = std::move(queued_);
+                Sources files = std::move(queued_);
                 const uint64_t id = queuedId_;
                 hasQueued_ = false;
                 compiling_ = true;
                 lock.unlock();
-                CompileStatus s = build(engine_, source, id);
+                CompileStatus s = build(engine_, std::move(files), id);
                 finish(std::move(s));
                 lock.lock();
                 compiling_ = false;
