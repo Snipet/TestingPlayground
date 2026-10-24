@@ -1,0 +1,54 @@
+// Sine: one sine a voice under an attack and a release. Edit it, then press RUN (or Cmd-Return).
+//
+// The plugin plays a module Voice, one instance a note, sixteen at once. start gets the MIDI note (69 is A, 440 Hz)
+// and its velocity (0 to 1), stop the key's release, and process the voice's next n samples into both channels, which
+// arrive at 0, returning false once the voice is silent for good: that frees it. The params are the dials under the
+// editor, up to eight, the same in every voice: a float is read sample by sample, attack[i], and glides when its dial
+// turns; an int or a bool is read once a call.
+module Voice
+{
+    param float attack [[fminus::range(1, 2000)]] [[fminus::default(5)]];      // ms
+    param float release [[fminus::range(5, 5000)]] [[fminus::default(300)]];   // ms, to -60 dB
+    param float level [[fminus::range(-36, 0)]] [[fminus::default(-12)]];      // dB
+    float rate;
+    float phase;      // 0 to 1
+    float step;       // the frequency, in cycles a sample
+    float velocity;
+    float env;        // 0 to 1
+    bool held;
+
+    void init(float sampleRate)
+    {
+        rate = sampleRate;
+    }
+
+    void start(float note, float vel)
+    {
+        step = 440 * expf(0.0577622650f * (note - 69)) / rate;   // 2^((note - 69) / 12)
+        velocity = vel;
+        held = true;
+    }
+
+    void stop()
+    {
+        held = false;
+    }
+
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        const float up = 1000 / (attack[0] * rate);                     // the envelope's rise a sample
+        const float down = expf(-6907.7553f / (release[0] * rate));     // its fall: -60 dB in `release` ms
+        const float gain = velocity * expf(0.115129255f * level[0]);
+        for (int i = 0; i < n; ++i)
+        {
+            env = held ? fminf(1, env + up) : env * down;
+            const float out = gain * env * sinf(6.28318531f * phase);
+            left[i] += out;
+            right[i] += out;
+            phase += step;
+            if (phase >= 1)
+                phase -= 1;
+        }
+        return held || env > 0.0001f;
+    }
+};

@@ -5,8 +5,10 @@
 #                         its commit and those of its submodules bgfx, bx and bimg are asserted
 #   shaderc               the prebuilt ${FP_DEPS_DIR}/tools/shaderc-<tag>/shaderc when its stamp names the pinned
 #                         bgfx.cmake commit, else built from bgfx.cmake (slow: about 2,000 CPU-seconds)
-#   FunkGui v0.16.0       FetchContent at the tag from FP_FUNKGUI_REPO: this machine's local repository
-#                         (~/audio/libraries/FunkGui) when it exists, else GitHub; the tag's commit is asserted
+#   FunkGui a85d8ea       FetchContent at the pinned commit from FP_FUNKGUI_REPO: this machine's local repository
+#                         (~/audio/libraries/FunkGui) when it exists, else GitHub; the commit is asserted. It is
+#                         v0.16.0 plus TextEditor (branch claude/kind-shannon-9olcln), which no tag holds yet: move
+#                         the pin to the next tag that does
 #   FMinus                FetchContent at the pinned commit from FP_FMINUS_REPO (~/audio/libraries/FMinus, else
 #                         GitHub): the JIT compiler, its library and runtime only. Its LLVM, Bison and Flex are the
 #                         ones FMinus's own builds put in its deps cache (FP_FMINUS_DEPS_DIR), read, never built here
@@ -29,10 +31,12 @@ set(FP_BGFX_API          153)
 set(FP_BGFX_SUB_SHAS     bgfx=c7684e20da1e385edc439ef39cdb42b8c661016f
                          bx=0b001f5f36579e8aea07efa5af139ca18dad9505
                          bimg=3b4baab0128ac499c5c3bc37202781bf54084049)
-set(FP_FUNKGUI_TAG       v0.16.0)
-set(FP_FUNKGUI_SHA       e1982bd5e393aa7191ef2a32478c078441c456f3)   # the tag's commit (rev-parse v0.16.0^{commit})
+# FunkGui at a commit, not a tag: v0.16.0 (e1982bd) plus its TextEditor, the editor's script field. GIT_TAG takes the
+# commit itself; the version is still 0.16.0 there.
+set(FP_FUNKGUI_TAG       a85d8ea8c350394df2cfa750b1bea697d2e7c2ea)
+set(FP_FUNKGUI_SHA       a85d8ea8c350394df2cfa750b1bea697d2e7c2ea)
 set(FP_FUNKGUI_VERSION   0.16.0)
-set(FP_FMINUS_SHA        7543a49482d2bb3b6e14fbcd156b579807161aa1)   # FMinus has no tags: a commit of its main
+set(FP_FMINUS_SHA        b748e3b0f3351ed95ef8c61be1a851d0bf0e5a14)   # FMinus has no tags: a commit of its main
 set(FP_FMINUS_LLVM       23.1.3)                                     # the LLVM that commit pins (cmake/FMinusPins.cmake)
 
 # ---- helpers ---------------------------------------------------------------------------------------------------------

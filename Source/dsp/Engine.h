@@ -1,128 +1,157 @@
-// Source/dsp/Engine.h: the instrument, JUCE-free. The legacy sine synth (tag legacy-visage: SineOscillator, Voice,
-// VoiceScheduler, Gain and the processor's MIDI loop), ported onto FSynth's DSP core:
+// Source/dsp/Engine.h: the audio side, JUCE-free. It plays the program the editor last ran (a Patch, Patch.h) and
+// changes programs without a click:
+//   an effect     the new program and the old run side by side for 20 ms while the output crossfades (smootherstep)
+//                 from the old one's to the new one's; the first program fades in from the dry input
+//   an instrument the old program's voices fade out over 20 ms while the new one plays from the next block, and the
+//                 keys still held start their notes again on it
 //
-//   voices     16, as the legacy synth had, in four quads of four SIMD lanes (fsdsp::simd). A voice is a sine
-//              (SineOscillator.h) under an ADSR (Adsr.h) at its note's level: 0.25 x velocity, the legacy headroom, so
-//              one note at full velocity peaks at -12.04 dBFS and four at 0 dBFS
-//   notes      at their sample offsets within the block: process() renders up to each event, then applies it
-//   policy     VoiceScheduler.h, the legacy one: the same note retriggers its voice, else a silent voice starts it,
-//              else the oldest note's voice is stolen
-//   output     the voices' sum, times GAIN, the same on both channels; then the FMinus script
-//              (Source/fminus/script.fm, Script.h), as much of it as SCRIPT says: none, by default
+// Voices (an instrument). A note-on starts a voice on a free instance of the program (Patch::kInstances), a note-off
+// stops it (Voice::stop), and a voice whose process returns false is free again. The voices run in calls cut at every
+// absolute multiple of kGrid samples (and at each event), and a voice that has returned false, or faded to silence, is
+// freed at the next such multiple: so which instance a later note gets, and the output, do not depend on how the
+// host splits its blocks. At most Patch::kVoices sound at once:
+// one more steals the oldest released voice, else the oldest, fading it out over 2 ms (fsdsp::kStealFadeMs) on its own
+// instance while the new note starts on another. A key pressed again while it still sounds stops its voice first.
 //
-// Nothing steps:
-//   - a retriggered voice keeps its phase, its envelope rises from where it is, and its level moves to the new
-//     velocity's along a smootherstep over 2 ms (fsdsp::kStealFadeMs);
-//   - a stolen voice fades out along the same 2 ms curve, then starts its new note from silence (phase 0, envelope 0),
-//     so a note that steals sounds 2 ms late;
-//   - GAIN and SUSTAIN are smoothed per sample (fsdsp::Smoother4, 20 ms); ATTACK, DECAY and RELEASE change slopes only.
-// The legacy synth stepped in the first two places: a stolen voice jumped to its new pitch and velocity mid-waveform, a
-// retriggered one to its new velocity; and ATTACK and RELEASE reached only the notes started after a change. Its GAIN
-// did not step (a 10 ms one-pole); SUSTAIN is new. Everything advances per sample and every ramp ends on a fixed
-// sample, so the output does not depend on how the host splits its blocks.
+// Dials. setControls() takes the host's normalised values (P1 to P8) once a block. A real control glides to its new
+// value over 20 ms, sample by sample, and while it moves the program reads it as a stream of those samples (a null
+// stream, and the value, while it holds still: FMinus's flat copy of the method); an integer or a toggle is set once a
+// block. A new program starts on the dials' values, without a glide.
 //
-// Other changes from the legacy synth: every note that starts from silence starts at phase 0 (the legacy Voice never
-// reset its oscillator, and an idle voice did not advance it, so a reused voice resumed at its previous note's last
-// phase: harmless under an envelope from 0, but not the same samples); and the release lasts RELEASE from any level
-// (Adsr.h).
+// The output guard. Whatever a program computes, what leaves the Engine is finite and within +-4 (+12 dBFS): a NaN or
+// an infinity becomes 0, and a sample beyond is clipped. Either raises an alert (takeAlerts) the editor shows. A NaN in
+// a program's state stays there: running the program again starts it from scratch.
 //
-// The processor calls, on the audio thread: prepare() before playback (the only place that may allocate), setParams()
-// once per block with the plain values of Params.h (finite, within the table's range), then process() with the
-// block's note events, at most prepare()'s maxBlockSize samples per call (the processor cuts a larger host block, or
-// one with more than kMaxEventsPerBlock events, into parts); the output channels are written (not added to). A call
-// with 0 samples (or no channel) still applies its events. Hosts call tailSeconds() from any thread, so it reads an
-// atomic that setParams() stores.
-// activeVoices() and voice() describe the voices, for the probes.
+// Threads. prepare() while the audio thread is stopped (it allocates); setControls() and process() on the audio
+// thread (no allocation, no lock, no I/O); offer() and collect() off it (Compiler.h), under a mutex prepare() shares.
+// A program crosses by an atomic pointer each way: offer() leaves it in `pending_`, the audio thread takes it at the
+// start of a block once the previous swap is over, and leaves the old one in `retired_` for collect() to destroy.
 #pragma once
 
-#include "dsp/Adsr.h"
+#include "dsp/Controls.h"
 #include "dsp/Events.h"
-#include "dsp/Params.h"
-#include "fminus/Script.h"
-#include "dsp/VoiceScheduler.h"
+#include "fminus/Patch.h"
 
-#include "fsdsp/core/Simd.h"
-#include "fsdsp/core/Smoother.h"
+#include "fsdsp/core/Ramp.h"
 
 #include <array>
 #include <atomic>
-#include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <span>
+#include <vector>
 
 namespace testingplaygroundsynth
 {
     class Engine
     {
     public:
-        static constexpr int   kVoices = 16;
-        static constexpr float kVoiceLevel = 0.25f;                   // a voice at full velocity, before GAIN
-
-        // One voice, as the probes see it.
-        struct VoiceState
+        enum Alert : uint32_t
         {
-            bool  sounding = false;      // held, releasing, or fading out after a steal: not free
-            int   note = -1;             // the note it sounds now (-1: none since reset)
-            bool  held = false;          // its key is down (the envelope's gate)
-            float envelope = 0.0f;       // the ADSR's level, 0..1
-            float level = 0.0f;          // 0.25 x velocity, ramped
-            int   next = -1;             // stolen: the note it starts when its fade ends; else -1
+            nonFinite = 1u << 0,   // a NaN or an infinity, replaced by 0
+            clipped = 1u << 1,     // a sample beyond +-4, clipped
         };
 
-        void prepare(double sampleRate, int maxBlockSize);           // allocates the script's buffers
-        void reset() noexcept;                                        // every voice off; the next setParams snaps
-        void setParams(const ParamValues& values) noexcept;
+        Engine() = default;
+        ~Engine();
+        Engine(const Engine&) = delete;
+        Engine& operator=(const Engine&) = delete;
+
+        // While the audio thread is stopped. A program waiting is taken at once, without a fade, and the one playing
+        // starts again at the new rate (its instances as new).
+        void prepare(double sampleRate, int maxBlockSize);
+
+        // ---- the audio thread ------------------------------------------------------------------------------------
+        void setControls(const std::array<float, kMaxControls>& normalised) noexcept;
+        // At most prepare()'s maxBlockSize samples (the processor cuts a host's larger block); events sorted by offset.
         void process(float* const* channels, int numChannels, int numSamples, std::span<const Event> events) noexcept;
 
-        double tailSeconds() const noexcept { return releaseSeconds_.load(std::memory_order_relaxed); }
-        float  sampleRate() const noexcept { return fs_; }
-        int    rampSamples() const noexcept { return rampSamples_; }   // a retrigger's or a steal's ramp
-        int    activeVoices() const noexcept;
-        VoiceState voice(int v) const noexcept;
-        Script& script() noexcept { return script_; }                  // the FMinus script on the output (Script.h)
+        // ---- off the audio thread --------------------------------------------------------------------------------
+        void offer(std::unique_ptr<Patch> patch);     // plays from the next block, as above
+        void collect();                               // destroys the programs the audio thread handed back
+
+        // ---- any thread ------------------------------------------------------------------------------------------
+        float rate() const noexcept { return rate_.load(std::memory_order_relaxed); }
+        double tailSeconds() const noexcept { return 5.0; }
+        // The busiest recent block's processing time over the block's own length (1 = a whole core), decaying.
+        float load() const noexcept { return load_.load(std::memory_order_relaxed); }
+        uint32_t takeAlerts() noexcept { return alerts_.exchange(0, std::memory_order_relaxed); }
+
+        // For the probes, while the audio thread is stopped.
+        bool playing() const noexcept { return current_ != nullptr || pending_.load() != nullptr; }
+        bool swapping() const noexcept { return old_ != nullptr || pending_.load() != nullptr; }
+        int activeVoices() const noexcept;
 
     private:
-        static constexpr std::size_t kN = static_cast<std::size_t>(kVoices);
-        static constexpr std::size_t kQuads = kN / 4;
-        using Scheduler = VoiceScheduler<kN>;
+        // A value that moves to its target over a fixed time, linearly, landing on it exactly.
+        struct Glide
+        {
+            float cur = 0.0f, tgt = 0.0f, inc = 0.0f;
+            int left = 0;
 
-        void noteOn(int note, float velocity) noexcept;
-        void noteOff(int note) noexcept;
+            void set(float target, int length) noexcept;
+            float tick() noexcept;
+            bool moving() const noexcept { return left > 0; }
+        };
+
+        static constexpr int kGrid = 16;                  // the voices' calls end on multiples of it (absolute)
+
+        struct Voice
+        {
+            Patch* patch = nullptr;     // null: free
+            int instance = 0;
+            int key = -1;
+            uint64_t age = 0;           // when it started (a count of note-ons)
+            bool released = false;
+            bool ending = false;        // its process returned false: free at the next multiple of kGrid
+            bool fading = false;        // stolen, or its program swapped out: gain falls to 0, then the voice is free
+            float gain = 1.0f, fall = 0.0f;   // per sample, while fading
+        };
+
+        void takePending() noexcept;
+        void retire(Patch*& p) noexcept;              // hands p back (or keeps it until the slot is empty)
+        void glideControls(int n) noexcept;           // the ramps over the block: streamBuf_, streaming_
+        void feed(Patch& p, int offset, int instance) noexcept;   // the dials into p: streams from `offset`
+        void processEffect(float* const* channels, int numChannels, int n) noexcept;
+        void processInstrument(float* const* channels, int numChannels, int n, std::span<const Event> events) noexcept;
+        void noteOn(int key, float velocity) noexcept;
+        void noteOff(int key) noexcept;
         void allNotesOff() noexcept;
-        bool sounding(std::size_t v) const noexcept;
-        float levelNow(std::size_t v) const noexcept;                 // the level ramp's value at this sample
-        void rampTo(std::size_t v, float level) noexcept;             // the level to `level` over rampSamples_
-        void start(std::size_t v, int note, uint32_t inc, float level, bool keyDown) noexcept;
-        void render(float* left, float* right, int n) noexcept;      // n samples with no event inside
-        void renderSpan(float* left, float* right, int n) noexcept;  // ... and no ramp ending inside
+        void render(int from, int to) noexcept;       // every voice over [from, to) of the block, into acc
+        void renderPart(int from, int to, bool onGrid) noexcept;   // one call a voice; to is a multiple of kGrid?
+        int freeInstance(const Patch& p) const noexcept;
+        void guard(float* x, int n) noexcept;
+
+        std::mutex mutex_;                            // offer, collect, prepare; never the audio thread
+        std::atomic<Patch*> pending_{ nullptr };
+        std::atomic<Patch*> retired_{ nullptr };
+        Patch* current_ = nullptr;                    // the audio thread's
+        Patch* old_ = nullptr;                        // fading out, or waiting for retired_ to empty
+        Patch* hold_ = nullptr;                       // done, waiting for retired_ to empty
 
         float fs_ = 48000.0f;
-        float pitchOffset_ = 0.0f;                    // SineOscillator4::pitchOffset(fs_)
-        int   rampSamples_ = 96;                      // fsdsp::kStealFadeMs at fs_
-        adsr::Rates rates_{};
-        std::atomic<double> releaseSeconds_{ 0.05 };
-        fsdsp::Smoother4 smooth_{};                   // lane 0: the linear output gain; lane 1: SUSTAIN, 0..1
-        bool  primed_ = false;
-        Scheduler scheduler_{};
+        std::atomic<float> rate_{ 48000.0f };
+        int maxBlock_ = 0;
+        fsdsp::SmoothRamp xfade_{};                   // an effect's new program's weight, 0 to 1
+        bool xfading_ = false;
 
-        // Per voice v (quad v / 4, lane v % 4).
-        alignas(16) std::array<uint32_t, kN> phase_{};
-        alignas(16) std::array<uint32_t, kN> inc_{};
-        adsr::Bank<kN> env_{};
-        alignas(16) std::array<float, kN> levelFrom_{};    // the level ramp: from, to, its position 0..1 (1: at rest)
-        alignas(16) std::array<float, kN> levelTo_{};
-        alignas(16) std::array<float, kN> rampPos_{};
-        alignas(16) std::array<float, kN> rampStep_{};     // 1 / rampSamples_ while a ramp runs, else 0
-        std::array<int, kN> rampLeft_{};                    // samples left in the ramp; 0: none
-        std::array<int, kN> playing_{};                     // the note sounding; -1: none since reset
+        std::array<float, kMaxControls> norm_{};
+        bool normSet_ = false;                        // setControls has run since prepare()
+        std::array<Glide, kMaxControls> glide_{};
+        std::array<bool, kMaxControls> streaming_{};
+        const Patch* fedPatch_ = nullptr;             // the program the glides were last aimed for
+        std::vector<float> streamBuf_;                // kMaxControls x maxBlock_
 
-        // A stolen voice, while it fades out: the note it starts when the fade ends.
-        std::array<bool, kN> stolen_{};
-        std::array<int, kN> nextNote_{};
-        std::array<uint32_t, kN> nextInc_{};
-        std::array<float, kN> nextLevel_{};
-        std::array<bool, kN> nextKeyDown_{};
+        std::array<Voice, 2 * Patch::kInstances> voices_{};
+        std::array<bool, 128> held_{};
+        std::array<float, 128> heldVelocity_{};
+        uint64_t noteCount_ = 0;
+        uint64_t clock_ = 0;                          // samples processed since prepare(): the grid's origin
+        int stealFade_ = 96, swapFade_ = 960;         // samples (2 ms and 20 ms at the rate)
 
-        Script script_;                               // after GAIN: its share is SCRIPT
+        std::vector<float> accL_, accR_, voiceL_, voiceR_, dryL_, dryR_, mono_;
+        std::atomic<float> load_{ 0.0f };
+        std::atomic<uint32_t> alerts_{ 0 };
     };
 }
