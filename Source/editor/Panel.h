@@ -147,6 +147,11 @@ namespace testingplaygroundsynth::ui
         funkgui::Point centreOfRun() const;
         funkgui::Point centreOfExamples() const;
         funkgui::Point centreOfLibrary() const;
+        funkgui::Point centreOfRandom() const;
+        // RANDOM (fminus/Random.h): the program for `seed` (its library files as tabs, those the editor lacks; its text
+        // in place of the program's, an edit Cmd-Z takes back), run. When the tabs left cannot hold its files, the next
+        // seeds are tried (up to 64); false, with a notice in the status, when none fits.
+        bool makeRandom(uint32_t seed);
         // LIBRARY's choice (Library.h): the file as a tab, #included by the program; shown when it is there. False for
         // a name the library has not, or no room for a tab.
         bool addLibraryFile(const std::string& name);
@@ -206,6 +211,8 @@ namespace testingplaygroundsynth::ui
         void refresh(double nowSec);                     // the port's status, draft and dials, when they changed
         void openExamples();
         void openLibrary();
+        uint32_t nextSeed();                             // RANDOM's: from the clock and a count
+        void notice(const std::string& text);            // the status says it for a few seconds
         void jumpTo(const Problem&);
         void closeFile(int tab);                         // a tab's x: asks first when the file has text
         FilesItem& files();
@@ -251,7 +258,7 @@ namespace testingplaygroundsynth::ui
         std::vector<int> itemOfDisplay_;                 // display -> item index
         Meters meters_{};                                // the Engine's, as the last frame read them
         std::vector<float> scopeIn_, scopeOut_;          // the scopes' samples, read each frame they show
-        int editorItem_ = -1, problemsItem_ = -1, runItem_ = -1, examplesItem_ = -1, libraryItem_ = -1;
+        int editorItem_ = -1, problemsItem_ = -1, runItem_ = -1, examplesItem_ = -1, libraryItem_ = -1, randomItem_ = -1;
         int themeItem_ = -1, zoomItem_ = -1;
         int newChatItem_ = -1, keyItem_ = -1, chatViewItem_ = -1, inputItem_ = -1;
         int modelItem_ = -1, thinkingItem_ = -1, sendItem_ = -1;
@@ -259,6 +266,9 @@ namespace testingplaygroundsynth::ui
         float width_ = 0.0f, height_ = 0.0f;
         uint32_t layoutRevision_ = 0;                    // bumps with each layout()
         std::string title_, subtitle_, status_, meter_;
+        std::string notice_;                             // RANDOM's word in the status, until noticeUntil_
+        double noticeUntil_ = -1.0;
+        uint32_t randomCount_ = 0;
 
         // The places layout() found, which draw() uses.
         float leftW_ = 0.0f;                             // the left column's width (the editor's)
