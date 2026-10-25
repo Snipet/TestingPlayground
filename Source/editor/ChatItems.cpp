@@ -1,7 +1,11 @@
 // Source/editor/ChatItems.cpp: see ChatItems.h.
 #include "editor/ChatItems.h"
 
+#include <funkgui/text/FontService.h>
+#include <funkgui/text/TextFit.h>
+
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 
 namespace testingplaygroundsynth::ui
@@ -128,125 +132,48 @@ namespace testingplaygroundsynth::ui
         return out;
     }
 
-    uint32_t TranscriptHighlighter::line(std::string_view line, uint32_t stateIn, std::vector<funkgui::text::Span>& out) const
+    // ---- the message box --------------------------------------------------------------------------------------------
+    namespace
     {
-        const int n = static_cast<int>(line.size());
-        const auto whole = [&](uint16_t style) {
-            if (n > 0)
-                out.push_back({ 0, n, style });
-        };
-        const bool isFence = line.substr(0, 3) == "```" || line.substr(0, 7) == "    ```" || line.substr(0, 7) == "  ~ ```";
-        if (isFence)
-        {
-            whole(fence);
-            return stateIn == 0 ? 1u : 0u;
-        }
-        if (stateIn == 1)
-        {
-            whole(code);
-            return 1;
-        }
-        if (line == "YOU" || line == "CLAUDE")
-            whole(speaker);
-        else if (line.substr(0, 4) == "  > ")
-            whole(tool);
-        else if (line.substr(0, 4) == "  ~ ")
-            whole(thinking);
-        else if (line.substr(0, 2) == "! ")
-            whole(error);
-        else if (line.substr(0, 2) == "- ")
-            whole(note);
-        return 0;
+        constexpr float kBoxPad = 6.0f;              // the editor's inset from the box (its frame is clipped away)
+        constexpr float kEditorPadding = 4.0f;       // TextEditorOptions::padding
+        constexpr float kBoxRadius = 14.0f;
     }
 
-    std::vector<funkgui::text::HighlightStyle> transcriptPalette()
-    {
-        using S = funkgui::text::HighlightStyle;
-        std::vector<S> p(8);
-        p[TranscriptHighlighter::plain] = S{ S::Ink::ink100 };
-        p[TranscriptHighlighter::speaker] = S{ S::Ink::ink52, {}, 0.08f };
-        p[TranscriptHighlighter::tool] = S{ S::Ink::accent };
-        p[TranscriptHighlighter::thinking] = S{ S::Ink::ink52 };
-        p[TranscriptHighlighter::error] = S{ S::Ink::signal };
-        p[TranscriptHighlighter::note] = S{ S::Ink::ink52 };
-        p[TranscriptHighlighter::code] = S{ S::Ink::ink70 };
-        p[TranscriptHighlighter::fence] = S{ S::Ink::ink32 };
-        return p;
-    }
-
-    // ---- the transcript -------------------------------------------------------------------------------------------------
-    TranscriptItem::TranscriptItem(funkgui::Rect bounds, uint32_t id) : editor_(id)
+    InputItem::InputItem(uint32_t id, std::function<void()> send) : editor_(id), send_(std::move(send))
     {
         funkgui::TextEditorOptions o;
-        o.style = funkgui::editorFont(funkgui::EditorFont::code);
-        o.wordWrap = true;
-        o.lineNumbers = false;
-        o.readOnly = true;
-        o.highlightLine = false;
-        o.a11yTitle = "Chat with Claude";
-        editor_.setOptions(o);
-        editor_.setBounds(bounds);
-        editor_.setHighlighter(std::make_unique<TranscriptHighlighter>());
-        editor_.setPalette(transcriptPalette());
-    }
-
-    void TranscriptItem::setBounds(funkgui::Rect bounds)
-    {
-        const bool atEnd = editor_.scroll().y >= editor_.contentHeight() - editor_.textArea().h - 1.0f;
-        editor_.setBounds(bounds);
-        if (atEnd)
-            editor_.setScroll(0.0f, 1.0e9f);
-    }
-
-    void TranscriptItem::show(const std::vector<ChatEntry>& entries, const std::string& hint)
-    {
-        std::string t = entries.empty() ? hint : transcriptText(entries);
-        if (t == text_)
-            return;
-        // Following the end: when the view was at the bottom (or the text only grew a little past it), it stays there.
-        const float bottom = editor_.contentHeight() - editor_.textArea().h;
-        const bool atEnd = text_.empty() || editor_.scroll().y >= bottom - editor_.rowHeight() * 2.0f;
-        const funkgui::Point keep = editor_.scroll();
-        text_ = std::move(t);
-        editor_.setText(text_);
-        if (atEnd)
-            editor_.setScroll(0.0f, 1.0e9f);
-        else
-            editor_.setScroll(keep.x, keep.y);
-    }
-
-    void TranscriptItem::accessibility(std::vector<funkgui::A11yItem>& out) const
-    {
-        funkgui::A11yItem item;
-        editor_.accessibility(item);
-        item.readOnly = true;
-        out.push_back(std::move(item));
-    }
-
-    void TranscriptItem::specLine(char* out, std::size_t n) const
-    {
-        std::snprintf(out, n, "CHAT   SELECT TEXT AND CMD-C TO COPY IT   THE WHEEL SCROLLS");
-    }
-
-    funkgui::Point TranscriptItem::centre() const
-    {
-        const funkgui::Rect b = editor_.bounds();
-        return { b.centreX(), b.centreY() };
-    }
-
-    // ---- the message box ------------------------------------------------------------------------------------------------
-    InputItem::InputItem(funkgui::Rect bounds, uint32_t id, std::function<void()> send)
-        : editor_(id), send_(std::move(send))
-    {
-        funkgui::TextEditorOptions o;
-        o.style = funkgui::editorFont(funkgui::EditorFont::code);
+        o.style = chat::kBody;
+        o.lineSpacing = 1.45f;
         o.wordWrap = true;
         o.lineNumbers = false;
         o.autoIndent = false;
         o.highlightLine = false;
+        o.padding = kEditorPadding;
         o.a11yTitle = "Message to Claude";
         editor_.setOptions(o);
-        editor_.setBounds(bounds);
+    }
+
+    funkgui::Rect InputItem::editorBounds(funkgui::Rect box, float barH) const
+    {
+        return { box.x + kBoxPad, box.y + kBoxPad, box.w - 2.0f * kBoxPad, std::max(10.0f, box.h - barH - 2.0f * kBoxPad) };
+    }
+
+    void InputItem::setBounds(funkgui::Rect box, float barH)
+    {
+        box_ = box;
+        barH_ = barH;
+        editor_.setBounds(editorBounds(box, barH));
+    }
+
+    funkgui::Rect InputItem::bar() const noexcept { return { box_.x, box_.bottom() - barH_, box_.w, barH_ }; }
+
+    float InputItem::desiredHeight(float width, float barH) const
+    {
+        // The rows the text takes at that width: the editor wraps at its own width, so measure there.
+        const int rows = std::clamp(editor_.rowCount(), 1, kMaxRows);
+        (void)width;
+        return 2.0f * kBoxPad + static_cast<float>(rows) * editor_.rowHeight() + 2.0f * kEditorPadding + 2.0f + barH;
     }
 
     void InputItem::setPlaceholder(const std::string& text)
@@ -257,6 +184,25 @@ namespace testingplaygroundsynth::ui
         funkgui::TextEditorOptions o = editor_.options();
         o.placeholder = text;
         editor_.setOptions(o);
+    }
+
+    bool InputItem::contains(funkgui::Point p) const
+    {
+        // The box above its bar: the bar's buttons are items of their own.
+        return funkgui::Rect{ box_.x, box_.y, box_.w, box_.h - barH_ }.contains(p);
+    }
+
+    void InputItem::draw(funkgui::Canvas& c, const funkgui::Theme& th, bool) const
+    {
+        const chat::Palette p = chat::palette(th);
+        const bool focused = editor_.focused();
+        c.rrect(box_.x, box_.y, box_.w, box_.h, kBoxRadius, p.composer, 1.0f,
+                focused ? funkgui::mix(p.composerEdge, p.accent, 0.38f) : p.composerEdge);
+        // The editor without its square frame: a clip just inside it.
+        const funkgui::Rect e = editor_.bounds();
+        c.pushClip({ e.x + 1.5f, e.y + 1.5f, e.w - 3.0f, e.h - 3.0f });
+        editor_.draw(c, th, false);
+        c.popClip();
     }
 
     bool InputItem::key(const funkgui::KeyEvent& e, funkgui::GestureController&)
@@ -294,4 +240,105 @@ namespace testingplaygroundsynth::ui
         const funkgui::Rect b = editor_.bounds();
         return { b.centreX(), b.centreY() };
     }
+
+    // ---- buttons ------------------------------------------------------------------------------------------------------
+    ButtonItem::ButtonItem(uint32_t id, Spec spec) : id_(id), spec_(std::move(spec)) {}
+
+    float ButtonItem::preferredWidth() const
+    {
+        if (spec_.shape != Shape::pill)
+            return bounds_.h;
+        const std::string label = spec_.label ? spec_.label() : std::string();
+        const float tw = funkgui::text::width(funkgui::FontService::get().atlas(), label.c_str(), chat::kSmall);
+        const bool icon = spec_.icon && spec_.icon() != chat::Icon::none;
+        return std::ceil(12.0f + (icon ? 18.0f : 0.0f) + tw + (spec_.chevron ? 16.0f : 0.0f) + 10.0f);
+    }
+
+    void ButtonItem::draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const
+    {
+        const chat::Palette p = chat::palette(th);
+        const bool on = enabled();
+        const Look look = spec_.look ? spec_.look() : Look::ghost;
+        const chat::Icon icon = spec_.icon ? spec_.icon() : chat::Icon::none;
+        const funkgui::Rect& r = bounds_;
+        const float radius = spec_.shape == Shape::square ? 8.0f : r.h * 0.5f;
+        funkgui::Col fill = p.card.withAlpha(0.0f), edge = p.card.withAlpha(0.0f), ink = on ? p.soft : p.faint;
+        if (look == Look::primary)
+        {
+            fill = on ? (hovered_ ? funkgui::mix(p.accent, p.text, 0.12f) : p.accent) : p.hover;
+            ink = on ? p.onAccent : p.faint;
+        }
+        else
+        {
+            if (look == Look::outlined)
+                edge = p.composerEdge;
+            if (hovered_ && on)
+            {
+                fill = p.hover;
+                ink = p.text;
+            }
+        }
+        if (spec_.shape == Shape::circle)
+            c.disc(r.centreX(), r.centreY(), r.h * 0.5f, fill, look == Look::outlined ? 1.0f : 0.0f, edge);
+        else
+            c.rrect(r.x, r.y, r.w, r.h, radius, fill, look == Look::outlined ? 1.0f : 0.0f, edge);
+        if (ring && focused_)
+            c.rrect(r.x - 2.0f, r.y - 2.0f, r.w + 4.0f, r.h + 4.0f, radius + 2.0f, p.card.withAlpha(0.0f), 1.5f, p.accent);
+
+        if (spec_.shape != Shape::pill)
+        {
+            chat::drawIcon(c, icon, r.centreX(), r.centreY(), spec_.shape == Shape::circle ? 13.0f : 14.0f, ink);
+            return;
+        }
+        float x = r.x + 12.0f;
+        if (icon != chat::Icon::none)
+        {
+            chat::drawIcon(c, icon, x + 6.0f, r.centreY(), 12.0f, ink);
+            x += 18.0f;
+        }
+        const std::string label = spec_.label ? spec_.label() : std::string();
+        const float room = r.right() - x - (spec_.chevron ? 22.0f : 10.0f);
+        c.text(fitText(c, label, chat::kSmall, room).c_str(), x, c.capCentreTop(r.centreY(), chat::kSmall), chat::kSmall, ink);
+        if (spec_.chevron)
+            chat::drawIcon(c, chat::Icon::chevronDown, r.right() - 14.0f, r.centreY() + 0.5f, 8.0f, ink);
+    }
+
+    void ButtonItem::pointerDown(const funkgui::PointerEvent&, funkgui::GestureController&, funkgui::HostServices&)
+    {
+        if (enabled() && spec_.act)
+            spec_.act();
+    }
+
+    bool ButtonItem::key(const funkgui::KeyEvent& e, funkgui::GestureController&)
+    {
+        if (e.key != funkgui::Key::enter && e.key != funkgui::Key::space)
+            return false;
+        if (enabled() && spec_.act)
+            spec_.act();
+        return true;
+    }
+
+    void ButtonItem::accessibility(std::vector<funkgui::A11yItem>& out) const
+    {
+        funkgui::A11yItem item;
+        item.id = id_;
+        item.role = funkgui::A11yRole::button;
+        item.bounds = bounds_;
+        item.title = spec_.a11yTitle;
+        if (spec_.label)
+            item.value = spec_.label();
+        item.enabled = enabled();
+        out.push_back(std::move(item));
+    }
+
+    bool ButtonItem::a11yAction(uint32_t id, funkgui::A11yAction, double, funkgui::GestureController&)
+    {
+        if (id != id_)
+            return false;
+        if (enabled() && spec_.act)
+            spec_.act();
+        return true;
+    }
+
+    void ButtonItem::specLine(char* out, std::size_t n) const { std::snprintf(out, n, "%s", spec_.spec.c_str()); }
 }
