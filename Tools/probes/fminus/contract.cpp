@@ -14,6 +14,10 @@
 //              its default)
 //   DEFAULTS   a module the main one holds has its parameters at their fminus::default when the program starts
 //   INIT       init runs with the sample rate before the first block
+//   SHARED     a module Shared is made once for the program: its init runs once, with the rate, before every instance's
+//              init, which reads what it made through the main module's Shared* field; again at a new rate; the audio
+//              thread reads it through the pointer; a Shared nothing points at is a note; a Shared::init of another
+//              type is the plugin's message
 //   INCLUDE    a program of several files (Sources.h): one that includes another compiles and plays what it includes;
 //              the main module may be in an included file; two files that include a third read it once; an error in
 //              an included file names that file and its line, after clang's include stack; an #include of a name no
@@ -174,6 +178,40 @@ PROBE(fminus, contract)
         const float y = firstSample(program("", body));
         P.near("init.rate", static_cast<double>(y), 0.48, 1e-6);
     }
+    // SHARED
+    {
+        const std::string shared = "module Shared\n{\n    float rate;\n    int inits;\n    float table[64];\n"
+                                   "    void init(float r)\n    {\n        rate = r;\n        inits += 1;\n"
+                                   "        for (int k = 0; k < 64; ++k)\n            table[k] = k;\n    }\n};\n";
+        const std::string body = "    Shared* shared;\n    float seenRate;\n    int seenInits;\n"
+                                 "    void init(float r)\n    {\n        seenRate = shared->rate;\n        seenInits = shared->inits;\n    }\n"
+                                 + process("            left[i] = shared->table[7] / 10 + seenInits * 0.1f + seenRate / 1000000;\n");
+        const std::string lines = "#pragma panel number seenInits\n#pragma panel number seenRate 0 200000\n";
+        const tp::Patch::Result r = compile(program(lines + shared, body));
+        P.eq("shared.compiles", r.patch ? 1 : 0, 1);
+        P.eq("shared.no_note", r.notes.empty() ? 1 : 0, 1);
+        if (r.patch)
+        {
+            P.eq("shared.made", r.patch->shared() ? 1 : 0, 1);
+            bool every = r.patch->instances() == (kInstrument ? tp::Patch::kInstances : 1);
+            for (int i = 0; i < r.patch->instances(); ++i)
+                every = every && r.patch->tap(0, i) == 1.0f && r.patch->tap(1, i) == 48000.0f;
+            P.eq("shared.init_once_before_every_instance", every ? 1 : 0, 1);
+            r.patch->reset(96000.0f);
+            bool again = true;
+            for (int i = 0; i < r.patch->instances(); ++i)
+                again = again && r.patch->tap(0, i) == 1.0f && r.patch->tap(1, i) == 96000.0f;
+            P.eq("shared.again_at_a_new_rate", again ? 1 : 0, 1);
+        }
+        P.near("shared.read_on_the_audio_thread", static_cast<double>(firstSample(program(shared, body))), 0.848, 1e-5);
+        const tp::Patch::Result lone = compile(program(shared, process("            left[i] = 0;\n")));
+        P.eq("shared.unreached_note", lone.patch && has(lone.notes, std::string("no field of ") + mod) ? 1 : 0, 1);
+        P.eq("shared.none_without_it", lone.patch && !compile(program("", process("            left[i] = 0;\n"))).patch->shared() ? 1 : 0, 1);
+        const tp::Patch::Result wrong = compile(program("module Shared\n{\n    float x;\n    void init() { x = 1; }\n};\n",
+                                                        "    Shared* shared;\n" + process("            left[i] = shared->x;\n")));
+        P.eq("shared.init_signature", !wrong.patch && has(wrong.errors, "Shared::init: the plugin calls it as `void init(float rate)`") ? 1 : 0, 1);
+    }
+
     // INCLUDE
     {
         // The output's first sample, scaled by a function from another file.
