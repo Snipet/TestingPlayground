@@ -11,6 +11,7 @@
 //   gui.dump.panel.png   the same dials in the sections its #pragma panel lines ask for; .panel.paper.png in PAPER,
 //                        .panel.small.png at the least size
 //   gui.dump.example.png the program Claude's instructions build from the library (ChatAgent::promptExample)
+//   gui.dump.displays.png a program with every display and every dial style, audio flowing; .displays.paper.png
 // and checks:
 //   FRAME     the frame settles, every glyph is in the font, the editor shows the processor's draft (the first
 //             example), and the dials are the program's parameters: one for each, the rest not shown
@@ -50,9 +51,18 @@
 //             lacks are greyed
 //   EXAMPLE   that program, its library files added through LIBRARY's path: it runs with no note, its panel's sections
 //             titled, every dial in one
+//   DISPLAYS  a program with every display (meter, vu, led, number, scope; of the audio and of its fields) and every
+//             dial style (vintage, fader, switch, buttons with options), coloured, and audio through the processor:
+//             each item inside its section's frame; the meters show what the Engine measured (the output's peak in
+//             dBFS within 0.3 dB, a field's value across its range), the light a field's brightness, the number a
+//             field's value, the scope a trace of the output's amplitude; a click on a button chooses its value and
+//             a click on the switch flips it (one host gesture each); a fader's drag raises its dial; the host shows
+//             an option's name for the buttons' value. Another program run: until the audio thread takes it, its
+//             light reads 0 (never the last program's first field), then its own value
 //   KEYS      Escape leaves the editor, after which Tab moves the focus ring (and no key reaches the text)
 #include "Probe.h"
 
+#include "editor/DisplayItem.h"
 #include "editor/Panel.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
@@ -160,7 +170,7 @@ namespace
             float lastX = -1.0f, lastY = -1.0f;
             for (const int c : members[k])
             {
-                const tp::ui::DialPlace& d = L.dials[static_cast<std::size_t>(c)];
+                const tp::ui::ItemPlace& d = L.dials[static_cast<std::size_t>(c)];
                 const float w = d.small ? tp::ui::kSmallDialW : tp::ui::kDialW, h = d.small ? tp::ui::kSmallDialH : tp::ui::kDialH;
                 inside = inside && d.x >= f.x && d.x + w <= f.right() && d.top >= f.y && d.top + h <= f.bottom();
                 ordered = ordered && (d.top > lastY + 20.0f || (std::fabs(d.top - lastY) <= 20.0f && d.x > lastX));
@@ -687,6 +697,203 @@ PROBE(gui, dump)
         }
     }
 
+    // DISPLAYS: every display and dial style, with audio running.
+    {
+        const std::string program = editor.text();
+        constexpr bool kInstrument = tp::product::kIsInstrument;
+        const std::string lines = std::string(kInstrument ? "" : "#pragma panel meter in \"IN\"\n")
+                                  + "#pragma panel meter out as bars \"OUT\"\n"
+                                    "#pragma panel vu out \"OUTPUT\"\n"
+                                    "#pragma panel scope out as screen \"SCOPE\"\n"
+                                    "#pragma panel meter gr 0 1 \"GR\"\n"
+                                    "#pragma panel led env \"ENV\"\n"
+                                    "#pragma panel number lfo -1 1 \"LFO\"\n"
+                                    "#pragma panel scope wob -1 1 as trace \"TRACE\"\n"
+                                  + std::string(kInstrument ? "#pragma panel section \"SOURCE\" drive tone wave invert\n"
+                                                            : "#pragma panel section \"SOURCE\" in drive tone wave invert\n")
+                                  + "#pragma panel section \"DYNAMICS\" gr env lfo\n"
+                                    "#pragma panel row\n"
+                                    "#pragma panel section \"OUTPUT\" level bars out\n"
+                                    "#pragma panel section \"MONITOR\" screen trace\n"
+                                    "#pragma panel style drive vintage\n"
+                                    "#pragma panel style tone fader\n"
+                                    "#pragma panel style wave buttons\n"
+                                    "#pragma panel options wave \"SINE\" \"TRI\" \"SAW\"\n"
+                                    "#pragma panel style invert switch\n"
+                                    "#pragma panel color \"DYNAMICS\" orange\n"
+                                    "#pragma panel color drive red\n"
+                                    "#pragma panel color screen blue\n";
+        // gr, env and lfo are fields the program writes; the dials keep the sound fixed (an effect: half its input).
+        const std::string members = "    param float drive [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
+                                   "    param float tone [[fminus::range(0, 1)]] [[fminus::default(0.25)]];\n"
+                                   "    param int wave [[fminus::range(0, 2)]] [[fminus::default(0)]];\n"
+                                   "    param bool invert [[fminus::default(0)]];\n"
+                                   "    param float level [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
+                                   "    float gr;\n    float env;\n    float lfo;\n    float wob;\n    float ph;\n    float t;\n";
+        const std::string body = kInstrument
+            ? "module Voice\n{\n" + members + "    void start(float n, float v) {}\n"
+              "    bool process(float* restrict left, float* restrict right, int n)\n    {\n"
+              "        for (int i = 0; i < n; ++i)\n        {\n"
+              "            const float s = 0.25f * sinf(6.28318531f * ph);\n            ph += 0.0125f;\n"
+              "            if (ph >= 1) ph -= 1;\n            left[i] += s;\n            right[i] += s;\n        }\n"
+              "        gr = 0.25f;\n        env = 0.75f;\n        lfo = 0.5f;\n"
+              "        t += (float)n / 48000;\n        wob = sinf(6.28318531f * 3 * t);\n        return true;\n    }\n};\n"
+            : "module Effect\n{\n" + members + "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+              "        for (int i = 0; i < n; ++i)\n        {\n            left[i] *= 0.5f;\n            right[i] *= 0.5f;\n        }\n"
+              "        gr = 0.25f;\n        env = 0.75f;\n        lfo = 0.5f;\n"
+              "        t += (float)n / 48000;\n        wob = sinf(6.28318531f * 3 * t);\n    }\n};\n";
+        editor.selectAll();
+        editor.insert(lines + body);
+        host.keys("cmd+return");
+        settleRun(processor, host);
+        P.eq("displays.compiles", port.status().ok ? 1 : 0, 1);
+        P.eq("displays.no_notes", port.status().notes.empty() ? 1 : 0, 1);
+        if (!port.status().notes.empty())
+            std::printf("notes:\n%s", port.status().notes.c_str());
+
+        // Audio: an effect's input a 600 Hz sine at -6 dBFS (out at -12); an instrument a held note (out at -12).
+        constexpr double kRate = 48000.0;
+        constexpr int kBlock = 256;
+        processor.prepareToPlay(kRate, kBlock);
+        juce::AudioBuffer<float> buffer(2, kBlock);
+        double phase = 0.0;
+        const auto push = [&](int blocks, bool noteOn) {
+            for (int b = 0; b < blocks; ++b)
+            {
+                juce::MidiBuffer midi;
+                if (noteOn && b == 0)
+                    midi.addEvent(juce::MidiMessage::noteOn(1, 60, static_cast<juce::uint8>(100)), 0);
+                for (int i = 0; i < kBlock; ++i)
+                {
+                    const float v = kInstrument ? 0.0f : static_cast<float>(0.5 * std::sin(phase));
+                    phase += 2.0 * 3.14159265358979 * 600.0 / kRate;
+                    buffer.setSample(0, i, v);
+                    buffer.setSample(1, i, v);
+                }
+                processor.processBlock(buffer, midi);
+            }
+        };
+        // A block, then a frame, as a host plays: 180 of each (the ballistics settle, the field's trace fills).
+        push(1, true);
+        for (int k = 0; k < 180; ++k)
+        {
+            push(1, false);
+            host.tick(1);
+        }
+        int displays = 0;
+        bool framed = true;
+        const tp::ui::DialsLayout& L = panel.dialsLayout();
+        for (int d = 0; d < tp::kMaxDisplays; ++d)
+        {
+            const tp::ui::DisplayItem& item = panel.displayItem(d);
+            if (!item.shown())
+                continue;
+            ++displays;
+            const tp::ui::ItemPlace& p = L.displays[static_cast<std::size_t>(d)];
+            bool inside = false;
+            for (const tp::ui::SectionFrame& f : L.sections)
+                inside = inside || (p.x >= f.r.x && p.x + p.w <= f.r.right() && p.top >= f.r.y && p.top + p.h <= f.r.bottom());
+            framed = framed && inside;
+        }
+        P.eq("displays.shown", displays, kInstrument ? 7 : 8);
+        const tp::ui::DisplayItem* trace = nullptr;
+        for (int d = 0; d < tp::kMaxDisplays; ++d)
+            if (panel.displayItem(d).shown() && panel.displayItem(d).display().name == "trace")
+                trace = &panel.displayItem(d);
+        P.eq("displays.inside_frames", framed ? 1 : 0, 1);
+        const auto byName = [&](const std::string& source, tp::DisplayKind kind) -> const tp::ui::DisplayItem* {
+            for (int d = 0; d < tp::kMaxDisplays; ++d)
+            {
+                const tp::ui::DisplayItem& item = panel.displayItem(d);
+                if (item.shown() && item.display().source == source && item.display().kind == kind)
+                    return &item;
+            }
+            return nullptr;
+        };
+        const tp::ui::DisplayItem* outMeter = byName("out", tp::DisplayKind::meter);
+        const tp::ui::DisplayItem* grMeter = byName("gr", tp::DisplayKind::meter);
+        const tp::ui::DisplayItem* envLed = byName("env", tp::DisplayKind::led);
+        const tp::ui::DisplayItem* lfoNumber = byName("lfo", tp::DisplayKind::number);
+        const tp::ui::DisplayItem* vu = byName("out", tp::DisplayKind::vu);
+        if (outMeter != nullptr)
+        {
+            std::printf("out meter: %s dBFS (level %.3f)\n", outMeter->readout().c_str(), static_cast<double>(outMeter->level()));
+            P.near("displays.out_peak_db", std::atof(outMeter->readout().c_str()), -12.04, 0.3);
+        }
+        if (grMeter != nullptr)
+            P.near("displays.field_meter", static_cast<double>(grMeter->level()), 0.25, 0.01);
+        if (envLed != nullptr)
+            P.near("displays.field_light", static_cast<double>(envLed->level()), 0.75, 0.01);
+        if (lfoNumber != nullptr)
+            P.eq("displays.field_number", lfoNumber->readout() == "0.500" ? 1 : 0, 1);
+        if (vu != nullptr)
+            P.in("displays.vu_needle", static_cast<double>(vu->level()), 0.3, 1.0);   // -15 dBFS RMS: +3 VU, full
+        P.eq("displays.field_trace", trace != nullptr && trace->traceSize() == tp::ui::DisplayItem::kHistory ? 1 : 0, 1);
+        P.eq("displays.missing_glyphs", static_cast<int64_t>(host.draw().missingGlyphs), 0);
+        writePng(P, host, "gui.dump.displays.png", "displays");
+        {
+            funkgui::UiPreferences::get().setTheme(1);
+            tp::ui::Panel paper(processor.ports(), port);
+            funkgui::HeadlessHost paperHost(paper, 1, 2.0f);
+            push(8, false);
+            paperHost.tick(60);
+            writePng(P, paperHost, "gui.dump.displays.paper.png", "displays.paper");
+            funkgui::UiPreferences::get().setTheme(0);
+        }
+
+        // The controls: slots 0 drive, 1 tone, 2 wave (buttons), 3 invert (switch).
+        funkgui::ParamPort& wave = *processor.ports()[2];
+        funkgui::ParamPort& invert = *processor.ports()[3];
+        funkgui::ParamPort& tone = *processor.ports()[1];
+        const funkgui::Point saw = panel.centreOfButton(2, 2);
+        host.click(saw.x, saw.y);
+        host.settle();
+        P.near("displays.button_chooses", static_cast<double>(processor.control(2).min) + 2.0,
+               static_cast<double>(tp::plainOf(processor.control(2), wave.value01())), 1e-4);
+        P.eq("displays.host_option_name", processor.getParameters()[2]->getCurrentValueAsText() == "SAW" ? 1 : 0, 1);
+        const auto sw = panel.centreOfDial(3);
+        const float invertBefore = invert.value01();
+        if (sw)
+            host.click(sw->x, sw->y);
+        host.settle();
+        P.eq("displays.switch_flips", invert.value01() != invertBefore ? 1 : 0, 1);
+        const auto fd = panel.centreOfDial(1);
+        const float toneBefore = tone.value01();
+        if (fd)
+            host.drag(fd->x, fd->y, fd->x, fd->y - 60.0f);
+        host.settle();
+        P.ge("displays.fader_drags", static_cast<double>(tone.value01() - toneBefore), 0.1);
+
+        // Another program, its first field a light: dark until the audio thread plays it (the last program's first
+        // field, gr, is 0.25), then its own.
+        {
+            const std::string other = kInstrument
+                ? "#pragma panel led lit \"LIT\"\nmodule Voice\n{\n    float lit;\n    void start(float n, float v) {}\n"
+                  "    bool process(float* restrict left, float* restrict right, int n) { lit = 1; return true; }\n};\n"
+                : "#pragma panel led lit \"LIT\"\nmodule Effect\n{\n    float lit;\n"
+                  "    void process(float* restrict left, float* restrict right, int n) { lit = 1; }\n};\n";
+            editor.selectAll();
+            editor.insert(other);
+            host.keys("cmd+return");
+            settleRun(processor, host);
+            host.tick(30);
+            const tp::ui::DisplayItem* lit = byName("lit", tp::DisplayKind::led);
+            P.near("displays.next_program_waits", lit != nullptr ? static_cast<double>(lit->level()) : -1.0, 0.0, 1e-6);
+            push(1, true);
+            for (int k = 0; k < 30; ++k)
+            {
+                push(1, false);
+                host.tick(1);
+            }
+            P.near("displays.then_its_own", lit != nullptr ? static_cast<double>(lit->level()) : -1.0, 1.0, 0.01);
+        }
+
+        editor.selectAll();
+        editor.insert(program);
+        host.keys("cmd+return");
+        settleRun(processor, host);
+    }
+
     // EXAMPLE: the program Claude's instructions show, as the editor builds it.
     {
         const std::string program = editor.text();
@@ -712,7 +919,8 @@ PROBE(gui, dump)
         for (const tp::ui::SectionFrame& f : panel.dialsLayout().sections)
             titled = titled && !f.title.empty();
         for (const tp::PanelSection& s : port.panel().sections)
-            placed += static_cast<int>(s.slots.size());
+            for (const tp::PanelItem& it : s.items)
+                placed += it.display ? 0 : 1;
         for (const tp::Control& c : port.controls())
             used += c.used ? 1 : 0;
         P.eq("example.sections_titled", titled ? 1 : 0, 1);

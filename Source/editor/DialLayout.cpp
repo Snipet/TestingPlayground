@@ -1,4 +1,4 @@
-// Source/editor/DialLayout.cpp: the dials' places (DialLayout.h).
+// Source/editor/DialLayout.cpp: the dials' and displays' places (DialLayout.h).
 #include "editor/DialLayout.h"
 
 #include <algorithm>
@@ -14,15 +14,16 @@ namespace testingplaygroundsynth::ui
         constexpr float kRowGap = 12.0f;                 // between rows of dials
         // Sections.
         constexpr float kPadX = 10.0f;                   // inside a frame, left and right
-        constexpr float kSlotGap = 4.0f;                 // between two dials' slots
+        constexpr float kSlotGap = 4.0f;                 // between two items' slots
         constexpr float kLabelPad = 8.0f;                // a slot is its label's width and this, at least the cell's
         constexpr float kTitleRoom = 14.0f;              // a frame is its title's width and this either side, at least
         constexpr float kBetween = 10.0f;                // between two frames in a row
         constexpr float kSectionRowGap = 10.0f;          // between rows of frames
-        constexpr float kLineGap = 8.0f;                 // between lines of dials in a frame
-        constexpr float kBottomPad = 4.0f;               // under the dials, inside the frame
+        constexpr float kLineGap = 8.0f;                 // between lines of items in a frame
+        constexpr float kBottomPad = 4.0f;               // under the items, inside the frame
         constexpr float kMaxGrow = 2.0f;                 // a frame widened to even out the rows: at most this times
-        constexpr float kSmallInRow = 14.0f;             // a small dial's top below a full one's: their knobs in line
+        constexpr float kSmallInRow = 14.0f;             // a small knob's top below a full one's: their knobs in line
+        constexpr float kButtonsExtra = 26.0f;           // buttons: a light, the gaps, beside the widest option
 
         DialsLayout plainRows(const PanelSpec& spec, int used, float x, float width, float bottom)
         {
@@ -39,22 +40,86 @@ namespace testingplaygroundsynth::ui
             out.top = bottom - kDialH - static_cast<float>(out.rows - 1) * rowStep;
             for (int c = 0; c < kMaxControls; ++c)
             {
-                DialPlace& d = out.dials[static_cast<std::size_t>(c)];
+                ItemPlace& d = out.dials[static_cast<std::size_t>(c)];
                 d.small = spec.small[static_cast<std::size_t>(c)];
+                d.w = d.small ? kSmallDialW : kDialW;
+                d.h = d.small ? kSmallDialH : kDialH;
                 d.x = x + static_cast<float>(c % out.cols) * (kDialW + gap) + (d.small ? 0.5f * (kDialW - kSmallDialW) : 0.0f);
                 d.top = out.top + static_cast<float>(c / out.cols) * rowStep + (d.small ? kSmallInRow : 0.0f);
             }
             return out;
         }
 
+        // An int's or a bool's values (0 for a real dial).
+        int valuesOf(const Control& c)
+        {
+            if (c.type == ControlType::toggle)
+                return 2;
+            if (c.type == ControlType::integer)
+                return static_cast<int>(std::lround(c.max) - std::lround(c.min)) + 1;
+            return 0;
+        }
+
+        struct Cell
+        {
+            float w = kDialW, h = kDialH;
+            bool small = false;
+            bool knob = false;                   // a knob (small or not): its top sits with the knobs' line
+        };
+
+        Cell cellOf(const PanelSpec& spec, const Controls& controls, const DialMeasure& m, PanelItem it, bool allSmall)
+        {
+            if (it.display)
+            {
+                const PanelDisplay& d = spec.displays[static_cast<std::size_t>(it.index)];
+                switch (d.kind)
+                {
+                    case DisplayKind::meter:  return { d.audio() ? kMeterW : kMeterMonoW, kDialH, false, false };
+                    case DisplayKind::vu:     return { kVuW, kDialH, false, false };
+                    case DisplayKind::led:    return { kLedW, kDialH, false, false };
+                    case DisplayKind::number: return { kNumberW, kDialH, false, false };
+                    case DisplayKind::scope:  return { kScopeW, kDialH, false, false };
+                }
+                return {};
+            }
+            const std::size_t c = static_cast<std::size_t>(it.index);
+            switch (spec.styles[c])
+            {
+                case DialStyle::knob:
+                case DialStyle::vintage:
+                {
+                    const bool small = allSmall || spec.small[c];
+                    return { small ? kSmallDialW : kDialW, small ? kSmallDialH : kDialH, small, true };
+                }
+                case DialStyle::fader:  return { kFaderW, kDialH, false, false };
+                case DialStyle::toggle: return { kSwitchW, kDialH, false, false };
+                case DialStyle::buttons:
+                {
+                    const int n = std::clamp(valuesOf(controls[c]), 1, kMaxOptions);
+                    float widest = 0.0f;
+                    for (int k = 0; k < n; ++k)
+                    {
+                        const std::vector<std::string>& names = spec.options[c];
+                        const std::string text = static_cast<std::size_t>(k) < names.size() && !names[static_cast<std::size_t>(k)].empty()
+                                                     ? names[static_cast<std::size_t>(k)]
+                                                     : std::to_string(std::lround(controls[c].min) + k);
+                        widest = std::max(widest, m.micro ? m.micro(text) : 6.0f * static_cast<float>(text.size()));
+                    }
+                    return { std::max(kSwitchW, std::round(widest + kButtonsExtra)),
+                             std::max(kDialH, kButtonsTop + static_cast<float>(n) * kButtonRowH + 4.0f), false, false };
+                }
+            }
+            return {};
+        }
+
         struct Section
         {
             const PanelSection* spec = nullptr;
-            std::vector<int> slots;              // its dials that the program has
+            std::vector<PanelItem> items;        // its items that the program has
+            std::vector<Cell> cells;
             std::vector<float> w;                // their slots' natural widths
             int perLine = 1, lines = 1;
             float natural = 0.0f;                // the frame's natural width
-            bool full = false;                   // it has a full-size dial
         };
 
         struct Row
@@ -62,34 +127,42 @@ namespace testingplaygroundsynth::ui
             std::vector<int> sections;
             float natural = 0.0f;
             float h = 0.0f;
-            float cellH = kSmallDialH;           // its dials' height: a full dial's when it has one
+            float lineH = kSmallDialH;           // its lines' height: its tallest item's
         };
 
-        DialsLayout sectionRows(const PanelSpec& spec, const Controls& controls, const DialMeasure& measure, float x,
-                                float width, float bottom, bool allSmall)
+        DialsLayout sectionRows(const PanelSpec& spec, const std::vector<PanelSection>& specSections, const Controls& controls,
+                                const DialMeasure& measure, float x, float width, float bottom, bool allSmall)
         {
             DialsLayout out;
             out.allSmall = allSmall;
-            const auto smallOf = [&](int c) { return allSmall || spec.small[static_cast<std::size_t>(c)]; };
-            const auto cellW = [&](int c) { return smallOf(c) ? kSmallDialW : kDialW; };
 
-            // Each section's slots, and as few lines as fit the column.
+            // Each section's items, and as few lines as fit the column.
             std::vector<Section> sections;
-            for (const PanelSection& ps : spec.sections)
+            for (const PanelSection& ps : specSections)
             {
                 Section s;
                 s.spec = &ps;
-                for (const int c : ps.slots)
+                for (const PanelItem& it : ps.items)
                 {
-                    if (c < 0 || c >= kMaxControls || !controls[static_cast<std::size_t>(c)].used)
+                    if (it.display ? it.index < 0 || it.index >= static_cast<int>(spec.displays.size())
+                                   : it.index < 0 || it.index >= kMaxControls || !controls[static_cast<std::size_t>(it.index)].used)
                         continue;
-                    s.slots.push_back(c);
-                    s.w.push_back(std::max(cellW(c), (measure.label ? measure.label(c, smallOf(c)) : 0.0f) + kLabelPad));
-                    s.full = s.full || !smallOf(c);
+                    const Cell cell = cellOf(spec, controls, measure, it, allSmall);
+                    float labelW = 0.0f;
+                    if (it.display)
+                    {
+                        const PanelDisplay& d = spec.displays[static_cast<std::size_t>(it.index)];
+                        labelW = measure.caption ? measure.caption(d.label.empty() ? d.name : d.label) : 0.0f;
+                    }
+                    else if (measure.label)
+                        labelW = measure.label(it.index, cell.small);
+                    s.items.push_back(it);
+                    s.cells.push_back(cell);
+                    s.w.push_back(std::max(cell.w, labelW + kLabelPad));
                 }
-                if (s.slots.empty())
+                if (s.items.empty())
                     continue;
-                const int n = static_cast<int>(s.slots.size());
+                const int n = static_cast<int>(s.items.size());
                 const float room = width - 2.0f * kPadX;
                 float widest = 0.0f;
                 for (s.lines = 1;; ++s.lines)
@@ -179,22 +252,25 @@ namespace testingplaygroundsynth::ui
                 int lines = 1;
                 for (const int i : r.sections)
                 {
-                    lines = std::max(lines, sections[static_cast<std::size_t>(i)].lines);
-                    if (sections[static_cast<std::size_t>(i)].full)
-                        r.cellH = kDialH;
+                    const Section& s = sections[static_cast<std::size_t>(i)];
+                    lines = std::max(lines, s.lines);
+                    for (const Cell& cell : s.cells)
+                        r.lineH = std::max(r.lineH, cell.h);
                 }
-                r.h = kSectionDialsTop + static_cast<float>(lines) * r.cellH + static_cast<float>(lines - 1) * kLineGap
+                r.h = kSectionDialsTop + static_cast<float>(lines) * r.lineH + static_cast<float>(lines - 1) * kLineGap
                     + kBottomPad;
                 widestRow = std::max(widestRow, r.natural);
                 total += r.h;
             }
-            total += static_cast<float>(rows.size() - 1) * kSectionRowGap;
+            total += static_cast<float>(std::max<std::size_t>(rows.size(), 1) - 1) * kSectionRowGap;
             out.rows = static_cast<int>(rows.size());
             out.top = bottom - total;
 
             // The places, row by row: the shorter rows' frames widened toward the widest row.
-            for (int c = 0; c < kMaxControls; ++c)
-                out.dials[static_cast<std::size_t>(c)] = { x, bottom - kDialH, false };
+            for (ItemPlace& d : out.dials)
+                d = { x, bottom - kDialH, kDialW, kDialH, false };
+            for (ItemPlace& d : out.displays)
+                d = { x, bottom - kDialH, kDialW, kDialH, false };
             float rowTop = out.top;
             for (const Row& r : rows)
             {
@@ -207,8 +283,9 @@ namespace testingplaygroundsynth::ui
                 {
                     const Section& s = sections[static_cast<std::size_t>(i)];
                     const float w = std::min(s.natural + extra * s.natural / std::max(sumNatural, 1.0f), kMaxGrow * s.natural);
-                    out.sections.push_back({ { sx, rowTop + kSectionTitleTop, w, r.h - kSectionTitleTop }, s.spec->title });
-                    const int n = static_cast<int>(s.slots.size());
+                    out.sections.push_back(
+                        { { sx, rowTop + kSectionTitleTop, w, r.h - kSectionTitleTop }, s.spec->title, s.spec->color });
+                    const int n = static_cast<int>(s.items.size());
                     for (int k = 0, line = 0; k < n; k += s.perLine, ++line)
                     {
                         const int end = std::min(n, k + s.perLine);
@@ -216,16 +293,20 @@ namespace testingplaygroundsynth::ui
                         for (int j = k; j < end; ++j)
                             natural += s.w[static_cast<std::size_t>(j)] + kSlotGap;
                         const float spare = (w - 2.0f * kPadX - natural) / static_cast<float>(end - k);
-                        const float lineTop = rowTop + kSectionDialsTop + static_cast<float>(line) * (r.cellH + kLineGap);
+                        const float lineTop = rowTop + kSectionDialsTop + static_cast<float>(line) * (r.lineH + kLineGap);
                         float slotX = sx + kPadX;
                         for (int j = k; j < end; ++j)
                         {
-                            const int c = s.slots[static_cast<std::size_t>(j)];
+                            const PanelItem it = s.items[static_cast<std::size_t>(j)];
+                            const Cell& cell = s.cells[static_cast<std::size_t>(j)];
                             const float slotW = s.w[static_cast<std::size_t>(j)] + spare;
-                            DialPlace& d = out.dials[static_cast<std::size_t>(c)];
-                            d.small = smallOf(c);
-                            d.x = std::round(slotX + 0.5f * (slotW - cellW(c)));
-                            d.top = lineTop + (d.small && r.cellH == kDialH ? kSmallInRow : 0.0f);
+                            ItemPlace& d = it.display ? out.displays[static_cast<std::size_t>(it.index)]
+                                                      : out.dials[static_cast<std::size_t>(it.index)];
+                            d.small = cell.small;
+                            d.w = cell.w;
+                            d.h = cell.h;
+                            d.x = std::round(slotX + 0.5f * (slotW - cell.w));
+                            d.top = lineTop + (cell.small && r.lineH >= kDialH ? kSmallInRow : 0.0f);
                             slotX += slotW + kSlotGap;
                         }
                     }
@@ -241,14 +322,30 @@ namespace testingplaygroundsynth::ui
                             float width, float bottom, float maxHeight)
     {
         int used = 0;
+        bool knobs = true;
         for (int c = 0; c < kMaxControls; ++c)
             if (controls[static_cast<std::size_t>(c)].used)
+            {
                 used = c + 1;
-        if (spec.sections.empty())
+                const DialStyle st = spec.styles[static_cast<std::size_t>(c)];
+                knobs = knobs && (st == DialStyle::knob || st == DialStyle::vintage);
+            }
+        if (spec.sections.empty() && spec.displays.empty() && knobs)
             return plainRows(spec, used, x, width, bottom);
-        DialsLayout out = sectionRows(spec, controls, measure, x, width, bottom, false);
+        // No section line, but a style a plain row does not hold: one section, untitled, of every dial.
+        std::vector<PanelSection> one;
+        const std::vector<PanelSection>* sections = &spec.sections;
+        if (spec.sections.empty())
+        {
+            one.emplace_back();
+            for (int c = 0; c < kMaxControls; ++c)
+                if (controls[static_cast<std::size_t>(c)].used)
+                    one.back().items.push_back({ false, c });
+            sections = &one;
+        }
+        DialsLayout out = sectionRows(spec, *sections, controls, measure, x, width, bottom, false);
         if (bottom - out.top > maxHeight)
-            out = sectionRows(spec, controls, measure, x, width, bottom, true);
+            out = sectionRows(spec, *sections, controls, measure, x, width, bottom, true);
         return out;
     }
 }

@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -32,14 +33,34 @@ namespace testingplaygroundsynth
         constexpr const char* kModule = kInstrument ? "Voice" : "Effect";
 
         // One of the plugin's calls into the program: the method, whether the plugin needs it, how the plugin calls
-        // it (as the author would declare it), and the line appended to the program for it.
+        // it (as the author would declare it), the line appended to the program for it, and its module (null: the
+        // main one).
         struct Call
         {
             const char* method;
             bool required;
             const char* declaration;
             const char* shim;
+            const char* module = nullptr;
         };
+
+        // The module Shared's, when the program has one (Patch.h).
+        constexpr const char* kSharedModule = "Shared";
+        constexpr Call kSharedCalls[] = {
+            { "init", false, "void init(float rate)",
+              "void playground_shared_init(Shared* self, float rate) { self->init(rate); }", kSharedModule },
+            { "end", false, "void end()", "void playground_shared_end(Shared* self) { self->end(); }", kSharedModule },
+        };
+
+        // A field's type as FMinus writes it ("Shared *") without its spaces.
+        std::string squeezed(const std::string& type)
+        {
+            std::string s;
+            for (const char ch : type)
+                if (ch != ' ')
+                    s += ch;
+            return s;
+        }
 
         constexpr Call kEffectCalls[] = {
             { "process", true, "void process(float* restrict left, float* restrict right, int n)",
@@ -109,7 +130,7 @@ namespace testingplaygroundsynth
                     const std::size_t colon = rest.find(": ");
                     const std::string kind = colon == std::string::npos ? "error" : rest.substr(0, colon);
                     const std::string why = colon == std::string::npos ? rest : rest.substr(colon + 2);
-                    out += prefix + " " + kind + ": " + kModule + "::" + c.method + ": ";
+                    out += prefix + " " + kind + ": " + (c.module != nullptr ? c.module : kModule) + "::" + c.method + ": ";
                     if (why.find("nonblocking") != std::string::npos)
                         out += "it runs on the audio thread, so it must not reach calloc, malloc or free (the note "
                                "below says where it does)";
@@ -166,7 +187,7 @@ namespace testingplaygroundsynth
         }
     }
 
-    struct Patch::Shared
+    struct Patch::Compiled
     {
         using Process = void(void*, float*, float*, int);
         using Render = bool(void*, float*, float*, int);
@@ -182,25 +203,39 @@ namespace testingplaygroundsynth
         Plain* stop = nullptr;
         Init* init = nullptr;
         Plain* end = nullptr;
+        Init* sharedInit = nullptr;                // the module Shared's
+        Plain* sharedEnd = nullptr;
     };
 
-    Patch::Patch() : s_(std::make_unique<Shared>()) {}
+    Patch::Patch() : s_(std::make_unique<Compiled>()) {}
 
     Patch::~Patch()
     {
         freeInstances();
     }
 
-    void Patch::freeInstances() noexcept
+    void Patch::endInstances() noexcept
     {
         for (std::size_t i = 0; i < instances_.size(); ++i)
         {
             if (initialised_[i] && s_->end != nullptr)
                 s_->end(instances_[i]);
-            std::free(instances_[i]);
+            initialised_[i] = false;
         }
+        if (sharedInitialised_ && s_->sharedEnd != nullptr)
+            s_->sharedEnd(shared_);
+        sharedInitialised_ = false;
+    }
+
+    void Patch::freeInstances() noexcept
+    {
+        endInstances();
+        for (void* p : instances_)
+            std::free(p);
         instances_.clear();
         initialised_.clear();
+        std::free(shared_);
+        shared_ = nullptr;
     }
 
     Patch::Result Patch::compile(std::string_view source, float sampleRate, std::string_view fileName)
@@ -271,6 +306,17 @@ namespace testingplaygroundsynth
                 r.errors += file + ": error: " + kModule + " needs a method `" + c.declaration + "`" +
                             (audioThread(c) ? ", which the plugin calls on the audio thread" : "") + "\n";
         }
+        // The module Shared's methods, when it has any.
+        const fminus::Program::Module* sharedDecl = first->module(kSharedModule);
+        bool sharedInit = false, sharedEnd = false;
+        if (sharedDecl != nullptr)
+            for (const Call& c : kSharedCalls)
+                if (std::find(sharedDecl->methods.begin(), sharedDecl->methods.end(),
+                              std::string(kSharedModule) + "::" + c.method) != sharedDecl->methods.end())
+                {
+                    shims.push_back(&c);
+                    (std::strcmp(c.method, "init") == 0 ? sharedInit : sharedEnd) = true;
+                }
         if (!r.errors.empty())
         {
             r.compileMs = msSince(t0);
@@ -315,7 +361,7 @@ namespace testingplaygroundsynth
             return r;
         }
         fminus::Program& program = *patch->s_->program;
-        Shared& s = *patch->s_;
+        Compiled& s = *patch->s_;
         s.module = program.module(kModule);
         const auto look = [&](const char* method, auto*& fn) {
             if (!has(method))
@@ -337,6 +383,15 @@ namespace testingplaygroundsynth
         }
         look("init", s.init);
         look("end", s.end);
+        const auto lookShared = [&](const char* name, auto*& fn) {
+            std::string missing;
+            fn = program.function<std::remove_pointer_t<std::remove_reference_t<decltype(fn)>>>(name, missing);
+            r.errors += missing;
+        };
+        if (sharedInit)
+            lookShared("playground_shared_init", s.sharedInit);
+        if (sharedEnd)
+            lookShared("playground_shared_end", s.sharedEnd);
         if (!r.errors.empty() || s.module == nullptr)
         {
             r.compileMs = msSince(t0);
@@ -364,8 +419,47 @@ namespace testingplaygroundsynth
             patch->instances_.push_back(p);
             patch->initialised_.push_back(false);
         }
+        // The module Shared's one instance, and the main module's fields that point at it.
+        if (const fminus::Program::Module* m = program.module(kSharedModule))
+        {
+            patch->sharedAlign_ = std::max<std::size_t>(m->alignment, alignof(std::max_align_t));
+            patch->sharedSize_ = (std::max<std::size_t>(m->size, 1) + patch->sharedAlign_ - 1) / patch->sharedAlign_
+                               * patch->sharedAlign_;
+            patch->shared_ = std::aligned_alloc(patch->sharedAlign_, patch->sharedSize_);
+            if (patch->shared_ == nullptr)
+            {
+                r.errors = file + ": error: no memory for the module Shared\n";
+                r.compileMs = msSince(t0);
+                return r;
+            }
+            std::memset(patch->shared_, 0, patch->sharedSize_);
+            for (const fminus::Program::Module::Field& f : s.module->fields)
+                if (squeezed(f.type) == std::string(kSharedModule) + "*" && f.size == sizeof(void*))
+                    patch->sharedFields_.push_back(f.offset);
+            if (patch->sharedFields_.empty())
+                r.notes += file + ": note: the plugin makes one module Shared for the program, but no field of " + kModule
+                         + " points at it (`Shared* shared;`), so nothing reaches it\n";
+        }
         patch->sources_ = files;
-        patch->panel_ = readPanelSpec(compiled, patch->controls_, r.notes);
+        // The panel, and a tap (where it sits in an instance) for each display of one of the main module's fields.
+        std::vector<PanelField> fields;
+        for (const fminus::Program::Module::Field& f : s.module->fields)
+            fields.push_back({ f.name, f.type });
+        patch->panel_ = readPanelSpec(compiled, patch->controls_, fields, kInstrument, r.notes);
+        for (const PanelDisplay& d : patch->panel_.displays)
+        {
+            if (d.tap < 0)
+                continue;
+            for (const fminus::Program::Module::Field& f : s.module->fields)
+                if (f.name == d.source)
+                {
+                    Tap t;
+                    t.offset = f.offset;
+                    t.type = f.type == "float" ? Tap::Type::real : (f.type == "int" ? Tap::Type::integer : Tap::Type::boolean);
+                    patch->taps_.push_back(t);
+                    break;
+                }
+        }
         patch->reset(sampleRate);
         r.compileMs = msSince(t0);
         r.patch = std::move(patch);
@@ -393,17 +487,27 @@ namespace testingplaygroundsynth
     void Patch::reset(float sampleRate)
     {
         rate_ = sampleRate > 0.0f ? sampleRate : 48000.0f;
+        endInstances();
+        // Shared first: the instances' init may read what its init made.
+        if (shared_ != nullptr)
+        {
+            std::memset(shared_, 0, sharedSize_);
+            setDefaults(shared_, kSharedModule, 0);
+            if (s_->sharedInit != nullptr)
+                s_->sharedInit(shared_, rate_);
+            sharedInitialised_ = true;
+        }
         for (std::size_t i = 0; i < instances_.size(); ++i)
         {
             void* p = instances_[i];
-            if (initialised_[i] && s_->end != nullptr)
-                s_->end(p);
             std::memset(p, 0, instanceSize_);
             setDefaults(p, kModule, 0);
             for (std::size_t c = 0; c < params_.size(); ++c)   // the dials at their defaults until the Engine sets them
                 if (params_[c] != nullptr)
                     fminus::Program::setValue(p, *static_cast<const fminus::Program::Parameter*>(params_[c]),
                                               static_cast<double>(controls_[c].def));
+            for (const std::size_t at : sharedFields_)
+                std::memcpy(static_cast<char*>(p) + at, &shared_, sizeof shared_);
             if (s_->init != nullptr)
                 s_->init(p, rate_);
             initialised_[i] = true;
@@ -464,5 +568,31 @@ namespace testingplaygroundsynth
         if (s_->render == nullptr || i < 0 || i >= static_cast<int>(instances_.size()))
             return false;
         return s_->render(instances_[static_cast<std::size_t>(i)], left, right, n);
+    }
+
+    float Patch::tap(int t, int i) const noexcept
+    {
+        if (t < 0 || t >= static_cast<int>(taps_.size()) || i < 0 || i >= static_cast<int>(instances_.size()))
+            return 0.0f;
+        const Tap& k = taps_[static_cast<std::size_t>(t)];
+        const char* at = static_cast<const char*>(instances_[static_cast<std::size_t>(i)]) + k.offset;
+        switch (k.type)
+        {
+            case Tap::Type::real:
+            {
+                float v = 0.0f;
+                std::memcpy(&v, at, sizeof v);
+                return std::isfinite(v) ? v : 0.0f;
+            }
+            case Tap::Type::integer:
+            {
+                int32_t v = 0;
+                std::memcpy(&v, at, sizeof v);
+                return static_cast<float>(v);
+            }
+            case Tap::Type::boolean:
+                return *at != 0 ? 1.0f : 0.0f;
+        }
+        return 0.0f;
     }
 }

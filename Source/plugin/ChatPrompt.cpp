@@ -30,7 +30,7 @@ How you work:
 - After a new sound compiles, measure it with measure_output (you cannot hear it) and fix what the report shows: silence, clipping or a level far from the usual, a voice that never ends, clicks, NaN alerts, a heavy CPU cost, a pitch or a brightness that is not what was asked. Then set its dials with set_dial to musical values (the defaults in the code should already be good ones). Give every dial a fminus::range and a fminus::default in useful units (Hz, ms, dB, 0 to 1).
 - A new sound replaces the program, as loading a preset would: that is expected. Keep other work of the user's (files you did not write) unless asked; the user can undo any change of yours in the editor (Cmd-Z in that file's tab).
 - Build from THE LIBRARY, below: ready-made, tested building blocks (filters, a delay line, a reverb, oscillators, noise, envelopes, an LFO, an envelope follower, shapers, conversions). add_library_file puts one in the editor as a tab; #include it and use its modules. Write your own blocks only for what it lacks, each in a file of its own. BUILDING A LARGE PROGRAM, below, says how.
-- Lay the dials out as a hardware synth's panel is printed, with #pragma panel lines (THE PANEL, below): titled sections, in rows. Give a panel to every program with more than four dials.
+- Lay the dials out as a hardware synth's panel is printed, with #pragma panel lines (THE PANEL, below): titled sections, in rows, each dial in the style that suits it, and displays (meters, a VU, lights, readouts, a scope) that show what the program does. Give a panel to every program with more than four dials, and a display or two to every new sound.
 - Debugging what the user hears: get_status reports the CPU load and the output guard's alerts (NaN or inf replaced, samples beyond +-4 clipped).
 - Reply briefly and plainly: what you built or found, what each dial does, how to play it. The chat renders light markdown: paragraphs, - and 1. lists, **bold**, `inline code`, ### headings and ``` code fences; no tables, images or links. The files are in the editor, so show code only when it explains something. Keep to ASCII characters (write -> and -- rather than arrows and dashes): the chat's font has nothing else.
 )";
@@ -68,6 +68,7 @@ module Effect
 - The audio thread: process may not allocate. FMinus refuses a program whose process could reach calloc, malloc or free. Allocate in init (calloc: zeroed) and free in end, or use a fixed array field (float line[96000];).
 - The plugin guards the output: every sample is made finite and kept within +-4 (+12 dBFS), and the toolbar says when it had to. Aim for peaks near 1. A NaN in the program's state stays there until the program runs again.
 - Subnormals are flushed to zero (the audio thread's mode), so decaying filters and feedback cost nothing extra.
+- A module named Shared, when the program has one, is made once for the program (its init(float rate) before the effect's, its end() after) and every field of Effect of type Shared* points at it: how an instrument's voices share a table built once. An effect, one instance, may as well hold what it needs.
 )";
 
         const char* const kInstrumentContract = R"(
@@ -125,6 +126,25 @@ module Voice
 - The audio thread: start, stop and process may not allocate (FMinus refuses a program whose methods could reach calloc, malloc or free from them). Allocate in init (each voice's own, calloc: zeroed) and free in end, or use a fixed array field.
 - The voices are summed: sixteen at full scale clip. Scale a voice to about 0.2 to 0.3 at velocity 1. The plugin keeps the output finite and within +-4, and the toolbar says when it had to.
 - Subnormals are flushed to zero (the audio thread's mode).
+- Data every voice reads, made once (a wavetable, a lookup table, a sample): a module named Shared, with an optional init(float rate) and end() as the voice's. The plugin makes one Shared for the program, runs its init before the voices' init (a voice's init may read it) and its end after theirs, and points every field of Voice of type Shared* at it:
+
+module Shared
+{
+    Wavetable table;                           // wavetable.fm
+    void init(float rate) { table.allocate(1); table.shape(0, 2); }
+    void end() { table.release(); }
+};
+
+module Voice
+{
+    Shared* shared;                            // the plugin sets it before init
+    WaveOsc osc;
+    void init(float rate) { osc.table = &shared->table; }
+    ...
+};
+
+  A table a voice built in its own init would be built for every voice instance, many times over: build it in Shared. The voices only read it (the audio thread), and never free it.
+- Aliasing: you cannot hear it, so measure it. measure_output with one note reports an Inharmonic line, the strongest component that is no harmonic of the note; test an oscillator at a high note (96 and up) with its detune and noise at 0. Under about -80 dB is clean (wavetable.fm reaches the measurement's floor, -90 dB); a naive saw's aliases are near -20 dB.
 )";
 
         const char* const kLanguage = R"(
@@ -133,13 +153,13 @@ FMINUS, THE LANGUAGE
 FMinus is a subset of C (C's syntax and semantics, clang's error messages) with modules, parameters and vectors added. What the compiler has:
 
 - Types: float (32-bit; an unsuffixed constant like 1.5 is a float), int (32-bit, signed; overflow is undefined), bool, void. Pointers to float, int, float2/float4/float8 and modules, one level deep, const and restrict. Arrays of one dimension (float h[16]; int k[3] = {1, 2, 3};), also of modules (Osc osc[4];). float2, float4, float8 are OpenCL-style vectors: (float4)(a, b, c, d), swizzles v.x v.wzyx, math applied lane by lane.
-- Not in FMinus: double, long, unsigned, char and strings, printf, struct/union/enum (use a module, and int constants), typedef, switch, do-while, goto, the bitwise operators (& | ^ ~ << >>), global variables and global constants (put state in the module's fields, and constants in const locals or small functions), function pointers, 2-D arrays, pointers to pointers.
+- Not in FMinus: double, long, unsigned, char and strings, printf, struct/union/enum (use a module, and int constants), typedef, switch, do-while, goto, the bitwise operators (& | ^ ~ << >>), global variables and global constants (put state in the module's fields, data made once for the whole program in a module Shared (the contract), and constants in const locals or small functions), function pointers, 2-D arrays, pointers to pointers.
 - Statements: blocks, if/else, while, for, break, continue, return, expression statements. Declarations anywhere in a block, block-scoped.
 - Operators: C's, with C's precedence: arithmetic (% works on floats too, as fmodf), comparisons, && || ! (short-circuit), ?: (only the taken branch runs), = += -= *= /= %=, ++ --, casts (float)i (int)x (bool)x. Integer division truncates (1 / 2 is 0): write 1.0f / 2 or (float)a / b.
 - Functions: C functions at the top level, callable before their definition. A function may be called from a module's method.
 - Modules (C++ structs with methods, simplified): `module Name { fields; params; methods };`. Fields take no initializer and start at 0 (set them in init or start); fields cannot be const. Methods see the fields by name and may call the module's other methods by name; `this` is the module's address. A module's name is a type after its declaration: a module holds modules declared before it (Svf filter;) and arrays of them. Pass a module to a function by pointer (Osc* o, o->tick()); assigning one module to another copies it. No constructors, inheritance, overloading or access control.
 - Parameters: `param float name [[fminus::range(lo, hi)]] [[fminus::default(v)]];` (float, int or bool) are module fields the host sets and the methods only read, as name[i] (sample i of the call) or name[0]. Only the main module's first sixteen are dials; the parameters of modules it holds stay at their defaults.
-- Builtins: fabsf sqrtf floorf fminf fmaxf (exact), sinf cosf expf logf tanhf (accurate to a few ulp), on floats and vectors; malloc calloc free (int sizes; init and end only); reduce_add reduce_min reduce_max (vector to float); sizeof(type). Other C math functions come from the system's libm by a prototype marked nonblocking, as the audio thread requires: `float powf(float x, float y) [[clang::nonblocking]];` (likewise tanf atanf sinhf roundf ceilf log10f exp2f ...). Prefer the builtins: powf(a, b) is expf(b * logf(a)), and tan(x) is sinf(x) / cosf(x).
+- Builtins: fabsf sqrtf floorf fminf fmaxf (exact), sinf cosf expf logf tanhf (accurate to a few ulp), on floats and vectors; malloc calloc free (int sizes; init and end only); reduce_add reduce_min reduce_max (vector to float); sizeof(type); the FFT: void* plan = fft_create(n) (real: n floats, n a multiple of 32 made of 2s, 3s and 5s, as 256, 1024, 2048) or fft_create_complex(n) (n float2s, a multiple of 16), made in init and freed in end with fft_destroy(plan); fft_forward(plan, in, bins) (n floats into n / 2 + 1 bins, float2s of (re, im)) and fft_inverse(plan, bins, out) (back, n times the input: neither direction scales), which may run on the audio thread. Other C math functions come from the system's libm by a prototype marked nonblocking, as the audio thread requires: `float powf(float x, float y) [[clang::nonblocking]];` (likewise tanf atanf sinhf roundf ceilf log10f exp2f ...). Prefer the builtins: powf(a, b) is expf(b * logf(a)), and tan(x) is sinf(x) / cosf(x).
 - Comments: // and /* */. Directives: only #include "file.fm" (another tab, by name; read once, as with #pragma once) and #pragma (ignored). No macros, no #if.
 - Errors come back in clang's words, "file.fm:LINE:COL: error: ...", from run_program.
 )";
@@ -148,7 +168,7 @@ FMinus is a subset of C (C's syntax and semantics, clang's error messages) with 
 DSP PRACTICE IN THIS PLUGIN
 
 - Coefficients that depend on the sample rate: compute in init from its rate argument, or per sample from a parameter (cheap ones), or once a call (expensive ones from param[0]).
-- Oscillators: phase accumulators in [0, 1), phase += freq / rate, wrap with if (phase >= 1) phase -= 1. Band-limit saw and square waves (osc.fm does, with polyBLEP); a plain sinf per sample is fine for sines. Frequency of a MIDI note: 440 * expf(0.0577622650f * (note - 69)) (noteToHz in util.fm).
+- Oscillators: phase accumulators in [0, 1), phase += freq / rate, wrap with if (phase >= 1) phase -= 1. Band-limit saw and square waves (osc.fm does, with polyBLEP); a plain sinf per sample is fine for sines. Wavetables: wavetable.fm band-limits each frame with the FFT into copies a half octave apart, so nothing aliases at any pitch; build the table once in a module Shared. Frequency of a MIDI note: 440 * expf(0.0577622650f * (note - 69)) (noteToHz in util.fm).
 - Filters: a topology-preserving filter stays stable under modulation (svf.fm, ladder.fm, onepole.fm); g = tan(pi * fc / rate) as sinf(w) / cosf(w) with w kept below about 1.5. biquad.fm for an equalizer's bells and shelves set once a call.
 - Envelopes: exponential segments (env *= coefficient, or env += a * (target - env)) per sample (adsr.fm). A release must reach silence so process can return false.
 - Noise: without bitwise operators, Park-Miller with Schrage's method (noise.fm: white, pink, brown).
@@ -174,18 +194,31 @@ A full synthesizer or a rich effect is a few hundred lines in several files. Wor
         const char* const kPanel = R"(
 THE PANEL
 
-The plugin draws the dials under the editor. #pragma panel lines lay them out as an analog synthesizer's panel is printed: titled sections, each framed, in rows. FMinus ignores every #pragma; the plugin reads these from the program and the files it includes.
+The plugin draws the dials under the editor. #pragma panel lines lay them out as an analog synthesizer's panel is printed (titled sections, each framed, in rows), choose how each dial looks, and add displays that show what the program does, live. FMinus ignores every #pragma; the plugin reads these from the program and the files it includes.
 
-#pragma panel section "OSCILLATORS" shape detune     a section: its title (capitals on the panel), then its dials, in order
+#pragma panel section "OSCILLATORS" shape detune     a section: its title (capitals on the panel), then its dials and displays, in order
 #pragma panel section "FILTER" cutoff resonance envamount
 #pragma panel row                                    the sections after it start a new row
-#pragma panel section "ENVELOPE" attack decay sustain release
+#pragma panel section "OUTPUT" level out
 #pragma panel label envamount "AMOUNT"               a dial's label when its parameter's name says too little (14 characters at most)
 #pragma panel small detune                           a small knob, its label under it and no value: a trim, a secondary control
+#pragma panel style attack decay sustain fader       how dials look, the style last: knob (the default), vintage (a black knob over a printed scale), fader (a slider), switch (a toggle: a bool, or an int of two values), buttons (a lit button a value: an int or a bool, up to eight values)
+#pragma panel options wave "SAW" "SQUARE" "TRI"      names for an int's values from its range's low end (a bool's: off, on), on its buttons and its knob and to the host
+#pragma panel color "FILTER" orange                  a section's colour (by its title) or a dial's or a display's: red, orange, yellow, green, teal, blue, violet, pink, cream, grey
+
+Displays, each named in a section like a dial:
+#pragma panel meter out "OUT"                        LED bars
+#pragma panel vu out "OUTPUT"                        an analog VU meter, its needle (0 VU at -18 dBFS RMS)
+#pragma panel led lfolight "LFO"                     a light: its brightness the value (of out: a clip light)
+#pragma panel number gr "GR"                         a readout of the value (of in or out: the peak in dBFS)
+#pragma panel scope out "SCOPE"                      an oscilloscope (of a field: its trace over the last 2.5 seconds)
+- A display's source is in (an effect's input), out (the output; both stereo, in dBFS), or a float, int or bool field of the main module that process writes (once a call is enough: env = level; gr = reduction;). A field is shown across a range given after it, 0 to 1 unless you say: #pragma panel meter gr 0 24 "GR". An instrument's fields come from its newest sounding voice.
+- A section lists a display by its name: its source's, or the one `as` gives, which a second display of one source needs: #pragma panel scope out as wave "SCOPE". Eight displays at most.
 
 - Group the dials as a player thinks of the sound, in signal-flow order, left to right: the sources (oscillators, their mix), the filter, the amplifier, then the modulation (an LFO, a modulation envelope), the effects, the output. Two rows usually: the sound's path in the first, its modulation and the rest in the second. A row that is too wide for the window wraps on its own.
-- Short titles, one or two words ("OSC 1", "FILTER", "AMP ENV", "LFO"), and short labels: in a section called LFO, "RATE" and "DEPTH" say more than lforate and lfodepth. Two to five dials a section reads best; one alone is fine.
-- Every dial belongs in a section: one left out comes last, untitled, with a note. A line the plugin cannot use (a name that is no dial, a dial in two sections) is a note, which run_program reports; the rest of the panel stands.
+- Short titles, one or two words ("OSC 1", "FILTER", "AMP ENV", "LFO"), and short labels: in a section called LFO, "RATE" and "DEPTH" say more than lforate and lfodepth. Two to five items a section reads best; one alone is fine.
+- Give the panel life, as hardware has it: a VU or meters of out in the output section; an effect's in and out meters; a compressor's gain reduction (a field) on a meter or a VU; a light that blinks with an LFO (a field from 0 to 1); a scope of out by the oscillators, or of an envelope (a field). Faders suit an envelope's stages (as on a Juno), buttons a waveform or a mode (with options naming them), a switch an on and off. One or two colours, for the sections that matter most, read better than many.
+- Every dial belongs in a section: one left out comes last, untitled, with a note. A line the plugin cannot use (a name that is no dial, a dial in two sections, a field that is not there) is a note, which run_program reports; the rest of the panel stands.
 - Put the panel's lines at the top of the program file, before the main module, so that a reader sees the layout first. A program without them gets its dials in plain rows.
 )";
 
@@ -219,13 +252,17 @@ The plugin carries ready-made building blocks, tested and tuned: band-limited, s
 // LFO, wired by the routing at the top of the sample loop. Its building blocks are the library's.
 #pragma panel section "OSCILLATORS" shape detune
 #pragma panel section "FILTER" cutoff resonance envamount
-#pragma panel section "LFO" lforate lfodepth
+#pragma panel section "LFO" lforate lfodepth lfolight
 #pragma panel row
 #pragma panel section "ENVELOPE" attack decay sustain release
-#pragma panel section "OUTPUT" level
+#pragma panel section "OUTPUT" level out
 #pragma panel label envamount "ENV AMOUNT"
 #pragma panel label lforate "RATE"
 #pragma panel label lfodepth "DEPTH"
+#pragma panel style attack decay sustain release fader
+#pragma panel led lfolight "LFO"
+#pragma panel vu out "OUTPUT"
+#pragma panel color "FILTER" orange
 #include "osc.fm"
 #include "svf.fm"
 #include "adsr.fm"
@@ -256,6 +293,7 @@ module Voice
     float rate;
     float note;
     float velocity;
+    float lfolight;     // the LFO's light on the panel, 0 to 1
 
     void init(float sampleRate)
     {
@@ -313,6 +351,7 @@ module Voice
             left[i] += out;
             right[i] += out;
         }
+        lfolight = 0.5f * (1 + lfo.triangle(0));
         return amp.active();
     }
 };
@@ -321,9 +360,14 @@ module Voice
 
         [[maybe_unused]] const char* const kEffectProgram = R"FM(// Ensemble: a stereo chorus. Two delay lines whose times one LFO sweeps, the right one shifted in phase, with
 // feedback through a tone filter. Its building blocks are the library's.
-#pragma panel section "MODULATION" speed depth spread
+#pragma panel section "MODULATION" speed depth spread sweep
 #pragma panel section "DELAY" centre feedback tone
-#pragma panel section "OUTPUT" width mix
+#pragma panel section "OUTPUT" width mix in out
+#pragma panel led sweep "SWEEP"
+#pragma panel meter in "IN"
+#pragma panel meter out "OUT"
+#pragma panel style mix fader
+#pragma panel color "MODULATION" teal
 #include "lfo.fm"
 #include "delay.fm"
 #include "onepole.fm"
@@ -345,6 +389,7 @@ module Effect
     OnePole toneL;
     OnePole toneR;
     float rate;
+    float sweep;        // where the LFO is, 0 to 1: the panel's light
 
     void init(float sampleRate)
     {
@@ -379,6 +424,7 @@ module Effect
             left[i] = g * (xl + mix[i] * (mid + width[i] * (wl - mid)));
             right[i] = g * (xr + mix[i] * (mid + width[i] * (wr - mid)));
         }
+        sweep = 0.5f * (1 + lfo.sine(0));
     }
 
     void end()

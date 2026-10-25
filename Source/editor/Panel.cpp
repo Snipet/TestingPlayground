@@ -5,6 +5,8 @@
 #include "editor/ChatStyle.h"
 #include "editor/ChatView.h"
 #include "editor/DialLayout.h"
+#include "editor/DisplayItem.h"
+#include "editor/Looks.h"
 #include "editor/Items.h"
 
 #include "editor/Theme.h"
@@ -42,6 +44,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <iterator>
 #include <sstream>
 #include <string_view>
 #include <utility>
@@ -164,14 +167,53 @@ namespace testingplaygroundsynth::ui
         public:
             explicit ControlModel(funkgui::ParamPort& port) : port_(port) {}
 
-            void setControl(const Control& c, const std::string& label, uint32_t revision)
+            void setControl(const Control& c, const std::string& label, const std::vector<std::string>& options,
+                            uint32_t revision)
             {
                 control_ = c;
                 revision_ = revision;
+                options_.clear();
+                for (const std::string& o : options)
+                    options_.push_back(upper(asciiText(o)));
                 const std::string name = upper(asciiText(label.empty() ? std::string(c.name) : label));
                 std::snprintf(label_, sizeof label_, "%s", name.c_str());
             }
             const Control& control() const noexcept { return control_; }
+            const char* label() const noexcept { return label_; }
+
+            // An int's or a bool's values: how many (0 for a real dial), which one it is at, and each one's name.
+            int count() const
+            {
+                if (control_.type == ControlType::toggle)
+                    return 2;
+                if (control_.type == ControlType::integer)
+                    return static_cast<int>(std::lround(control_.max) - std::lround(control_.min)) + 1;
+                return 0;
+            }
+            int index() const { return static_cast<int>(std::lround(plainOf(control_, value01())) - std::lround(control_.min)); }
+            std::string nameOf(int k) const
+            {
+                if (k >= 0 && static_cast<std::size_t>(k) < options_.size() && !options_[static_cast<std::size_t>(k)].empty())
+                    return options_[static_cast<std::size_t>(k)];
+                if (control_.type == ControlType::toggle)
+                    return k == 0 ? "OFF" : "ON";
+                return std::to_string(std::lround(control_.min) + k);
+            }
+            float normOfIndex(int k) const { return normOf(control_, control_.min + static_cast<float>(k)); }
+            float value01() const
+            {
+                const float raw = port_.value01();
+                if (std::isfinite(raw))
+                    last01_ = raw;
+                return last01_;
+            }
+            bool atDefault() const { return std::fabs(plainOf(control_, value01()) - control_.def) < 1e-6f; }
+            std::string valueText() const
+            {
+                funkgui::ValueView v;
+                view(v);
+                return v.text.value;
+            }
 
             uint64_t key() const override
             {
@@ -179,23 +221,19 @@ namespace testingplaygroundsynth::ui
             }
             void view(funkgui::ValueView& v) const override
             {
-                const float raw = port_.value01();
-                if (std::isfinite(raw))
-                    last01_ = raw;
+                const float t = value01();
                 v = funkgui::ValueView{};
                 v.state = funkgui::ValueState::continuous;
                 v.label = label_;
-                v.track = last01_;
+                v.track = t;
                 v.trackDefault = normOf(control_, control_.def);
-                v.atDefault = std::fabs(plainOf(control_, last01_) - control_.def) < 1e-6f;
-                const float p = plainOf(control_, last01_);
+                v.atDefault = atDefault();
+                const float p = plainOf(control_, t);
                 switch (control_.type)
                 {
                     case ControlType::toggle:
-                        std::snprintf(v.text.value, sizeof v.text.value, "%s", p >= 0.5f ? "ON" : "OFF");
-                        break;
                     case ControlType::integer:
-                        std::snprintf(v.text.value, sizeof v.text.value, "%d", static_cast<int>(p));
+                        std::snprintf(v.text.value, sizeof v.text.value, "%s", nameOf(index()).c_str());
                         break;
                     case ControlType::real:
                     {
@@ -216,44 +254,146 @@ namespace testingplaygroundsynth::ui
             Control control_{};
             uint32_t revision_ = 0;
             char label_[40] = {};
-            mutable float last01_ = 0.5f;                // the last finite value01 view() saw: a host's NaN shows it
+            std::vector<std::string> options_;
+            mutable float last01_ = 0.5f;                // the last finite value01 seen: a host's NaN shows it
         };
 
+        // A dial in its style (DialLayout.h's cell, Looks.h's drawing). FunkGui's Dial takes a knob's, a vintage knob's
+        // and a fader's input (a drag up raises it, the wheel, the keys, a double-click for the default) and every
+        // style's accessibility; a switch flips and a button chooses its value on a click, one gesture each.
         class DialItem final : public Item
         {
         public:
             DialItem(funkgui::ParamPort& port, funkgui::DialGeom g, uint32_t id) : model_(port), dial_(model_, g, id) {}
 
             ControlModel& model() noexcept { return model_; }
-            void setGeom(funkgui::DialGeom g) { dial_.setGeom(g); }
+            const ControlModel& model() const noexcept { return model_; }
+            DialStyle style() const noexcept { return style_; }
+            const funkgui::Rect& cell() const noexcept { return cell_; }
 
-            void tick(float dt, bool hovered, bool focused, funkgui::Point) override
+            // Its style, colour and place.
+            void setLook(DialStyle style, const std::string& color, const ItemPlace& p)
+            {
+                style_ = style;
+                color_ = color;
+                small_ = p.small;
+                cell_ = { p.x, p.top, p.w, p.h };
+                if (style == DialStyle::knob || style == DialStyle::vintage)
+                    dial_.setGeom(funkgui::DialGeom{ p.x, p.top, p.small ? funkgui::DialSize::compact : funkgui::DialSize::primary });
+                else
+                    dial_.setGeom(funkgui::DialGeom{ std::round(cell_.centreX() - 0.5f * kDialW), p.top, funkgui::DialSize::primary });
+            }
+
+            void tick(float dt, bool hovered, bool focused, funkgui::Point pointer) override
             {
                 dial_.tick(dt, hovered, focused, false);
+                hovered_ = hovered;
+                hoverRow_ = hovered && style_ == DialStyle::buttons ? rowAt(pointer) : -1;
             }
-            void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override { dial_.draw(c, th, ring); }
-            bool contains(funkgui::Point p) const override { return dial_.contains(p); }
-            funkgui::Cursor cursorAt(funkgui::Point p) const override { return dial_.cursorAt(p); }
+            void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override
+            {
+                const bool tinted = !color_.empty();
+                const funkgui::Col col = looks::panelColor(color_, th, th.accent);
+                if (style_ == DialStyle::knob)
+                {
+                    if (!tinted)
+                        return dial_.draw(c, th, ring);
+                    funkgui::Theme t = th;
+                    t.accent = col;
+                    t.accentDim = funkgui::premix(th.ground, col, 0.4f);
+                    return dial_.draw(c, t, ring);
+                }
+                const std::string value = model_.valueText();
+                looks::Knob k;
+                k.cell = cell_;
+                k.small = small_;
+                k.t = model_.value01();
+                k.label = model_.label();
+                k.value = value.c_str();
+                k.atDefault = model_.atDefault();
+                k.hover = hovered_;
+                k.focus = ring;
+                k.color = col;
+                k.tinted = tinted;
+                switch (style_)
+                {
+                    case DialStyle::knob:
+                    case DialStyle::vintage: looks::vintage(c, th, k); break;
+                    case DialStyle::fader:   looks::fader(c, th, k); break;
+                    case DialStyle::toggle:  looks::toggle(c, th, k, value.c_str()); break;
+                    case DialStyle::buttons:
+                    {
+                        std::vector<std::string> names;
+                        for (int i = 0; i < std::min(model_.count(), kMaxOptions); ++i)
+                            names.push_back(model_.nameOf(i));
+                        looks::buttons(c, th, k, names, model_.index(), hoverRow_);
+                        break;
+                    }
+                }
+            }
+            bool contains(funkgui::Point p) const override
+            {
+                return style_ == DialStyle::knob ? dial_.contains(p) : cell_.contains(p);
+            }
+            funkgui::Cursor cursorAt(funkgui::Point p) const override
+            {
+                if (style_ == DialStyle::toggle || style_ == DialStyle::buttons)
+                    return funkgui::Cursor::pointingHand;
+                return dial_.cursorAt(p);
+            }
             void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController& g,
                              funkgui::HostServices& h) override
             {
+                if (style_ == DialStyle::toggle)
+                {
+                    g.tap(*model_.port(), model_.normOfIndex(model_.index() == 0 ? model_.count() - 1 : 0));
+                    return;
+                }
+                if (style_ == DialStyle::buttons)
+                {
+                    if (const int row = rowAt({ e.x, e.y }); row >= 0)
+                        g.tap(*model_.port(), model_.normOfIndex(row));
+                    return;
+                }
                 dial_.pointerDown(e, g, h);
             }
             void pointerDrag(const funkgui::PointerEvent& e, funkgui::GestureController& g) override
             {
+                if (clicks())
+                    return;
                 dial_.pointerDrag(e, g);
             }
-            void pointerUp(const funkgui::PointerEvent& e, funkgui::GestureController& g) override { dial_.pointerUp(e, g); }
-            void doubleClick(const funkgui::PointerEvent&, funkgui::GestureController& g) override { dial_.doubleClick(g); }
+            void pointerUp(const funkgui::PointerEvent& e, funkgui::GestureController& g) override
+            {
+                if (clicks())
+                    return;
+                dial_.pointerUp(e, g);
+            }
+            void doubleClick(const funkgui::PointerEvent&, funkgui::GestureController& g) override
+            {
+                if (!clicks())
+                    dial_.doubleClick(g);
+            }
             bool wheel(const funkgui::WheelEvent& e, funkgui::GestureController& g, double now) override
             {
                 return dial_.wheel(e, g, now);
             }
-            bool key(const funkgui::KeyEvent& e, funkgui::GestureController& g) override { return dial_.key(e, g); }
+            bool key(const funkgui::KeyEvent& e, funkgui::GestureController& g) override
+            {
+                if (clicks() && (e.key == funkgui::Key::enter || e.key == funkgui::Key::space))
+                {
+                    const int n = std::max(model_.count(), 1);
+                    g.tap(*model_.port(), model_.normOfIndex((model_.index() + 1) % n));
+                    return true;
+                }
+                return dial_.key(e, g);
+            }
             void accessibility(std::vector<funkgui::A11yItem>& out) const override
             {
                 funkgui::A11yItem item;
                 dial_.accessibility(item);
+                if (style_ != DialStyle::knob)
+                    item.bounds = cell_;
                 out.push_back(item);
             }
             bool a11yAction(uint32_t id, funkgui::A11yAction a, double v, funkgui::GestureController& g) override
@@ -265,12 +405,32 @@ namespace testingplaygroundsynth::ui
             }
             void specLine(char* out, std::size_t n) const override { dial_.specLine(out, n); }
             bool settled() const override { return dial_.settled(); }
-            funkgui::Point centre() const override { return dial_.geom().centre(); }
+            funkgui::Point centre() const override
+            {
+                return style_ == DialStyle::knob ? dial_.geom().centre() : funkgui::Point{ cell_.centreX(), cell_.centreY() };
+            }
             bool shown() const override { return model_.control().used; }
 
+            // A button's row under p (buttons), else -1.
+            int rowAt(funkgui::Point p) const
+            {
+                if (!cell_.contains(p))
+                    return -1;
+                const int row = static_cast<int>(std::floor((p.y - cell_.y - kButtonsTop) / kButtonRowH));
+                return row >= 0 && row < std::min(model_.count(), kMaxOptions) ? row : -1;
+            }
+
         private:
+            bool clicks() const noexcept { return style_ == DialStyle::toggle || style_ == DialStyle::buttons; }
+
             ControlModel model_;                         // before dial_, which refers to it
             funkgui::Dial dial_;
+            DialStyle style_ = DialStyle::knob;
+            std::string color_;
+            bool small_ = false;
+            funkgui::Rect cell_;
+            bool hovered_ = false;
+            int hoverRow_ = -1;
         };
 
         // ---- a row of cells: THEME, ZOOM, and the RUN and EXAMPLES buttons ------------------------------------------
@@ -1246,6 +1406,10 @@ namespace testingplaygroundsynth::ui
         for (int c = 0; c < kMaxControls && c < static_cast<int>(ports.size()); ++c)
             itemOfSlot_[static_cast<std::size_t>(c)] = add(std::make_unique<DialItem>(
                 *ports[static_cast<std::size_t>(c)], funkgui::DialGeom{ 0.0f, 0.0f }, idFor()));
+        // The program's displays (#pragma panel meter, vu, led, number, scope), shown as it has them.
+        itemOfDisplay_.assign(static_cast<std::size_t>(kMaxDisplays), -1);
+        for (int d = 0; d < kMaxDisplays; ++d)
+            itemOfDisplay_[static_cast<std::size_t>(d)] = add(std::make_unique<DisplayItem>(idFor()));
 
         // The chat: the header's buttons (a new chat, the API key), the conversation, the message box and the buttons in
         // its bar (the model, the thinking level, send or stop).
@@ -1359,7 +1523,20 @@ namespace testingplaygroundsynth::ui
         measure.title = [](const std::string& title) {
             return funkgui::text::width(funkgui::FontService::get().atlas(), upper(asciiText(title)).c_str(), kSectionTitle);
         };
+        measure.caption = [](const std::string& text) {
+            return funkgui::text::width(funkgui::FontService::get().atlas(), upper(asciiText(text)).c_str(), funkgui::type::kCaption);
+        };
+        measure.micro = [](const std::string& text) {
+            return funkgui::text::width(funkgui::FontService::get().atlas(), upper(asciiText(text)).c_str(), funkgui::type::kMicro);
+        };
         dials_ = layoutDials(panelSpec_, controls_, measure, kMargin, leftW_, bottom, roomForDials);
+        for (int d = 0; d < kMaxDisplays; ++d)
+        {
+            auto& item = static_cast<DisplayItem&>(*items_[static_cast<std::size_t>(itemOfDisplay_[static_cast<std::size_t>(d)])]);
+            const bool has = d < static_cast<int>(panelSpec_.displays.size());
+            item.setDisplay(has ? &panelSpec_.displays[static_cast<std::size_t>(d)] : nullptr);
+            item.setCell(dials_.displays[static_cast<std::size_t>(d)]);
+        }
         const float problemsY = dials_.top - 16.0f - problemsH;
         files().setGeometry({ kMargin, kTabsY, leftW_, kTabH },
                             { kMargin, kEditorY, leftW_, std::max(80.0f, problemsY - 8.0f - kEditorY) });
@@ -1367,12 +1544,9 @@ namespace testingplaygroundsynth::ui
             .setBounds({ kMargin, problemsY, leftW_, problemsH });
         for (int c = 0; c < kMaxControls; ++c)
             if (const int i = itemOfSlot_[static_cast<std::size_t>(c)]; i >= 0)
-            {
-                const DialPlace& d = dials_.dials[static_cast<std::size_t>(c)];
                 static_cast<DialItem&>(*items_[static_cast<std::size_t>(i)])
-                    .setGeom(funkgui::DialGeom{ d.x, d.top,
-                                                d.small ? funkgui::DialSize::compact : funkgui::DialSize::primary });
-            }
+                    .setLook(panelSpec_.styles[static_cast<std::size_t>(c)], panelSpec_.colors[static_cast<std::size_t>(c)],
+                             dials_.dials[static_cast<std::size_t>(c)]);
 
         // The chat's card.
         const float right = W - kMargin;
@@ -1469,6 +1643,18 @@ namespace testingplaygroundsynth::ui
     {
         return items_[static_cast<std::size_t>(examplesItem_)]->centre();
     }
+    const DisplayItem& Panel::displayItem(int d) const
+    {
+        return static_cast<const DisplayItem&>(
+            *items_[static_cast<std::size_t>(itemOfDisplay_[static_cast<std::size_t>(std::clamp(d, 0, kMaxDisplays - 1))])]);
+    }
+
+    funkgui::Point Panel::centreOfButton(int slot, int value) const
+    {
+        const ItemPlace& p = dials_.dials[static_cast<std::size_t>(std::clamp(slot, 0, kMaxControls - 1))];
+        return { p.x + 0.5f * p.w, p.top + kButtonsTop + (static_cast<float>(value) + 0.5f) * kButtonRowH };
+    }
+
     funkgui::Point Panel::centreOfLibrary() const { return items_[static_cast<std::size_t>(libraryItem_)]->centre(); }
     funkgui::Point Panel::centreOfProblem(int i) const
     {
@@ -1619,7 +1805,7 @@ namespace testingplaygroundsynth::ui
                     static_cast<DialItem&>(*items_[static_cast<std::size_t>(i)])
                         .model()
                         .setControl(cs[static_cast<std::size_t>(c)], spec.labels[static_cast<std::size_t>(c)],
-                                    controlsRevision_);
+                                    spec.options[static_cast<std::size_t>(c)], controlsRevision_);
             // Other dials or another panel: their places again (a second row takes height from the editor).
             bool sameDials = spec == panelSpec_;
             for (int c = 0; c < kMaxControls && sameDials; ++c)
@@ -1630,6 +1816,7 @@ namespace testingplaygroundsynth::ui
             }
             controls_ = cs;
             panelSpec_ = spec;
+            panelProgram_ = s.ok ? s.request : port_.program();
             if (!sameDials)
                 layout();
             statusChanged = true;
@@ -2263,6 +2450,37 @@ namespace testingplaygroundsynth::ui
         // The message box follows its text, one row to eight: the conversation gives it the room.
         if (std::fabs(inputItem().desiredHeight(inputItem().box().w, kBarH) - composerH_) > 0.5f)
             layoutChat();
+        // The displays: what the Engine published since the last frame, and the scopes' samples.
+        {
+            Meters m;
+            if (port_.meters(m))
+                meters_ = m;
+            // The fields are this panel's program's once the audio thread plays it; until then they are another's,
+            // and read as 0.
+            Meters shown = meters_;
+            if (shown.program != panelProgram_)
+                std::fill(std::begin(shown.taps), std::end(shown.taps), 0.0f);
+            bool readIn = false, readOut = false;
+            for (const int i : itemOfDisplay_)
+            {
+                bool input = false;
+                if (static_cast<const DisplayItem&>(*items_[static_cast<std::size_t>(i)]).wantsScope(input))
+                    (input ? readIn : readOut) = true;
+            }
+            if (readIn || readOut)
+                scopeIn_.resize(DisplayItem::kScopeSamples), scopeOut_.resize(DisplayItem::kScopeSamples);
+            if (readIn)
+                port_.scope(true, scopeIn_.data(), DisplayItem::kScopeSamples);
+            if (readOut)
+                port_.scope(false, scopeOut_.data(), DisplayItem::kScopeSamples);
+            for (const int i : itemOfDisplay_)
+            {
+                auto& item = static_cast<DisplayItem&>(*items_[static_cast<std::size_t>(i)]);
+                bool input = false;
+                const bool scope = item.wantsScope(input);
+                item.update(shown, scope ? (input ? scopeIn_.data() : scopeOut_.data()) : nullptr, dt);
+            }
+        }
         const int hovered = hasPointer_ && pressed_ < 0 ? itemAt(pointer_) : pressed_;
         const funkgui::Point far{ -1.0e4f, -1.0e4f };
         for (std::size_t i = 0; i < items_.size(); ++i)
@@ -2344,11 +2562,16 @@ namespace testingplaygroundsynth::ui
         // The dials' sections, as a panel's printing: a frame each, its title cut into the top edge.
         {
             const funkgui::Canvas::Scope s(c, kSectionTag, false);
-            const funkgui::Col edge = th.ink32;
             for (const SectionFrame& f : dials_.sections)
             {
                 const funkgui::Rect& r = f.r;
-                c.rrect(r.x, r.y, r.w, r.h, 0.0f, funkgui::mix(th.ground, th.ink16, 0.22f));
+                // A colour tints the frame's fill and edge, and its title.
+                const bool tinted = !f.color.empty();
+                const funkgui::Col col = looks::panelColor(f.color, th, th.accent);
+                const funkgui::Col edge = tinted ? funkgui::premix(th.ground, col, 0.65f) : th.ink32;
+                const funkgui::Col fill = tinted ? funkgui::premix(funkgui::mix(th.ground, th.ink16, 0.22f), col, 0.08f)
+                                                 : funkgui::mix(th.ground, th.ink16, 0.22f);
+                c.rrect(r.x, r.y, r.w, r.h, 0.0f, fill);
                 const std::string title = upper(asciiText(f.title));
                 if (title.empty())
                     c.hairlineH(r.x, r.y, r.w, edge);
@@ -2359,7 +2582,7 @@ namespace testingplaygroundsynth::ui
                     c.hairlineH(r.x, r.y, std::max(0.0f, l - r.x), edge);
                     c.hairlineH(rr, r.y, std::max(0.0f, r.right() - rr), edge);
                     c.text(fitText(c, title, kSectionTitle, r.w - 16.0f).c_str(), r.centreX(), c.capCentreTop(r.y, kSectionTitle),
-                           kSectionTitle, th.ink70, funkgui::Align::centre);
+                           kSectionTitle, tinted ? col : th.ink70, funkgui::Align::centre);
                 }
                 c.hairlineV(r.x, r.y, r.h, edge);
                 c.hairlineV(r.right() - 1.0f, r.y, r.h, edge);
@@ -2638,6 +2861,9 @@ namespace testingplaygroundsynth::ui
                 r |= 2u << c;
         r |= (keyOpen_ ? 1u : 0u) << 17;
         r |= (chat_.hasKey ? 1u : 0u) << 18;
+        for (int d = 0; d < kMaxDisplays; ++d)                // bits 19 to 26
+            if (items_[static_cast<std::size_t>(itemOfDisplay_[static_cast<std::size_t>(d)])]->shown())
+                r |= 1u << (19 + d);
         // The counters times odd constants: a change in any one of them changes the revision.
         return r ^ (files().layoutRevision() * 0x85EBCA77u) ^ (layoutRevision_ * 0xC2B2AE3Du) ^ (chatA11y_ * 2654435761u);
     }

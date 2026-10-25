@@ -257,15 +257,116 @@ namespace testingplaygroundsynth
         const auto t0 = std::chrono::steady_clock::now();
         takePending();
         glideControls(n);
+        measureIn(channels, numChannels, n);
         if constexpr (kInstrument)
             processInstrument(channels, numChannels, n, events);
         else
             processEffect(channels, numChannels, n);
+        publish(channels, numChannels, n);
 
         const double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         const float share = static_cast<float>(took * static_cast<double>(fs_) / static_cast<double>(n));
         const float decayed = load_.load(std::memory_order_relaxed) * std::pow(0.5f, static_cast<float>(n) / (0.3f * fs_));
         load_.store(std::max(share, decayed), std::memory_order_relaxed);
+    }
+
+    namespace
+    {
+        // A channel's levels after n more samples (what is not finite counts as 0): its peak, which falls 20 dB a
+        // second between louder ones (so that a reader at a lower rate sees every peak), and its RMS, smoothed over
+        // 50 ms.
+        void levels(const float* x, int n, float fs, float& peak, float& rms) noexcept
+        {
+            float p = 0.0f;
+            double s = 0.0;
+            for (int i = 0; i < n; ++i)
+            {
+                const float v = std::isfinite(x[i]) ? x[i] : 0.0f;
+                p = std::max(p, std::fabs(v));
+                s += static_cast<double>(v) * static_cast<double>(v);
+            }
+            const float seconds = static_cast<float>(n) / std::max(fs, 1.0f);
+            peak = std::max(p, peak * std::exp(-2.30258509f * seconds));
+            const float keep = std::exp(-seconds / 0.05f);
+            const float block = static_cast<float>(s / static_cast<double>(std::max(n, 1)));
+            rms = std::sqrt(keep * rms * rms + (1.0f - keep) * block);
+            if (peak < 1.0e-9f)
+                peak = 0.0f;
+            if (rms < 1.0e-9f)
+                rms = 0.0f;
+        }
+    }
+
+    void Engine::measureIn(float* const* channels, int numChannels, int n) noexcept
+    {
+        const uint32_t at = scopeAt_.load(std::memory_order_relaxed);
+        if constexpr (kInstrument)
+        {
+            frame_.inPeak[0] = frame_.inPeak[1] = frame_.inRms[0] = frame_.inRms[1] = 0.0f;
+            for (int i = 0; i < n; ++i)
+                scopeIn_[(at + static_cast<uint32_t>(i)) & (kScopeLength - 1)].store(0.0f, std::memory_order_relaxed);
+        }
+        else
+        {
+            const float* l = channels[0];
+            const float* r = numChannels > 1 ? channels[1] : channels[0];
+            levels(l, n, fs_, frame_.inPeak[0], frame_.inRms[0]);
+            levels(r, n, fs_, frame_.inPeak[1], frame_.inRms[1]);
+            for (int i = 0; i < n; ++i)
+            {
+                const float v = 0.5f * (l[i] + r[i]);
+                scopeIn_[(at + static_cast<uint32_t>(i)) & (kScopeLength - 1)].store(std::isfinite(v) ? v : 0.0f,
+                                                                                    std::memory_order_relaxed);
+            }
+        }
+    }
+
+    void Engine::publish(float* const* channels, int numChannels, int n) noexcept
+    {
+        const float* l = channels[0];
+        const float* r = numChannels > 1 ? channels[1] : channels[0];
+        levels(l, n, fs_, frame_.outPeak[0], frame_.outRms[0]);
+        levels(r, n, fs_, frame_.outPeak[1], frame_.outRms[1]);
+        const uint32_t at = scopeAt_.load(std::memory_order_relaxed);
+        for (int i = 0; i < n; ++i)
+            scopeOut_[(at + static_cast<uint32_t>(i)) & (kScopeLength - 1)].store(0.5f * (l[i] + r[i]), std::memory_order_relaxed);
+        scopeAt_.store(at + static_cast<uint32_t>(n), std::memory_order_release);
+
+        // The program's taps: an effect's instance, an instrument's newest voice that sounds.
+        for (float& t : frame_.taps)
+            t = 0.0f;
+        frame_.program = current_ != nullptr ? current_->program() : 0;
+        if (current_ != nullptr && current_->taps() > 0)
+        {
+            int instance = -1;
+            if constexpr (kInstrument)
+            {
+                uint64_t newest = 0;
+                for (const Voice& v : voices_)
+                    if (v.patch == current_ && !v.fading && !v.ending && (instance < 0 || v.age >= newest))
+                    {
+                        newest = v.age;
+                        instance = v.instance;
+                    }
+            }
+            else
+                instance = 0;
+            if (instance >= 0)
+                for (int t = 0; t < std::min(current_->taps(), kMaxDisplays); ++t)
+                    frame_.taps[t] = current_->tap(t, instance);
+        }
+        ++frame_.frame;
+        meters_.publish(frame_);
+    }
+
+    void Engine::scope(bool input, float* out, int n) const noexcept
+    {
+        const int count = std::clamp(n, 0, kScopeLength);
+        const uint32_t end = scopeAt_.load(std::memory_order_acquire);
+        const std::array<std::atomic<float>, kScopeLength>& ring = input ? scopeIn_ : scopeOut_;
+        for (int i = 0; i < count; ++i)
+            out[i] = ring[(end - static_cast<uint32_t>(count) + static_cast<uint32_t>(i)) & (kScopeLength - 1)]
+                         .load(std::memory_order_relaxed);
     }
 
     void Engine::processEffect(float* const* channels, int numChannels, int n) noexcept

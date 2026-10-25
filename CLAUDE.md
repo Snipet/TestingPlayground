@@ -22,11 +22,11 @@ picks): change both, and keep them the same but for the namespace, the examples 
 | `cmake/Product.cmake` | identity: name, kind (an instrument), codes, bundle id, namespace (`testingplaygroundsynth`), environment prefix | `scripts/plugin.py` rewrites it; the plugin code stays unique among the user's plugins |
 | `cmake/Deps.cmake` | the pins: JUCE, bgfx, FunkGui (v0.18.0: the TextEditor, resizable Panels), FMinus (a commit) | move a pin's tag, commit and version together |
 | `Source/fsdsp/core/**` | FSynth's DSP core, vendored (`SEED.tsv`) | do not edit casually: `scripts/sync-dsp-core.sh` refuses to overwrite edits |
-| `Source/fminus/**` | `Patch` (a program compiled for the plugin: the contract, the appended calls, the instances); `PanelSpec` (its `#pragma panel` lines, read from the files it compiled); `examples/*.fm`, the EXAMPLES (the first the default program; first line `// <Title>: ...`); `library/<n>-<category>/*.fm`, the LIBRARY (first line `// <file name>: what it is`, then its usage header; `fminus.library` measures each) | JUCE-free; FMinus only through `fminus/FMinus.h` (C++17, no LLVM), never its internals or LLVM's headers (`lint.layers`) |
-| `Source/dsp/**` | `Engine` (programs swapped by crossfade, the dials as glided streams, voices for an instrument, the output guard), `Compiler` (compiles off the audio thread, offers to the Engine, collects), `Controls.h` (slot mapping), `Events.h`, `Measure` (a program rendered offline in an Engine of its own and measured in words: the chat's measure_output) | JUCE-free C++20 |
+| `Source/fminus/**` | `Patch` (a program compiled for the plugin: the contract, the appended calls, the instances and the module Shared's one, the taps: the main module's fields its displays read); `PanelSpec` (its `#pragma panel` lines, read from the files it compiled: sections, dial styles and options, colours, displays); `examples/*.fm`, the EXAMPLES (the first the default program; first line `// <Title>: ...`); `library/<n>-<category>/*.fm`, the LIBRARY (first line `// <file name>: what it is`, then its usage header; `fminus.library` measures each) | JUCE-free; FMinus only through `fminus/FMinus.h` (C++17, no LLVM), never its internals or LLVM's headers (`lint.layers`) |
+| `Source/dsp/**` | `Engine` (programs swapped by crossfade, the dials as glided streams, voices for an instrument, the output guard, the meters the displays read: `Engine::Meters` and the scope's rings), `Compiler` (compiles off the audio thread, offers to the Engine, collects), `Controls.h` (slot mapping), `Events.h`, `Measure` (a program rendered offline in an Engine of its own and measured in words: the chat's measure_output) | JUCE-free C++20 |
 | `Source/plugin/**` | the JUCE `AudioProcessor`: P1 to P16 (`ControlParameter`: the program's names and texts), one FunkGui port each, the program's files and the draft in the session, the bypass, the compiler's outcome polled on the message thread; `EditorPort.h`; the chat with Claude: `ChatAgent` (the conversation, the turn on its own thread, Claude's tools through `ChatHost`), `ChatPrompt.cpp` (the system prompt), `ClaudeApi` (the Messages API over HTTPS), `ChatStore` (the key, encrypted), `ChatPort.h` | reads parameters once per block, calls the Engine; copes with what a host may do (below); the chat's rules below |
-| `Source/editor/**` | the FunkGui `Panel`, resizable (`layout()` places every item for the size; `kMinWidth` x `kMinHeight`): toolbar (RUN, EXAMPLES, LIBRARY, status, load), the files' tabs, a `funkgui::TextEditor` each with FMinus highlighting and error marks, the problems list, the dials (`DialLayout`: plain rows, or the panel's sections); the chat's card (`ChatView`: the conversation, laid out and drawn as a chat app does; `ChatItems`: the message box and the chat's buttons; `ChatStyle.h`: the rounded look, its palette mixed from the theme's tokens) and the key dialog; `Items.h`; `Theme.h`; `gpu/` the EditorHost factory (the window's size goes to the session) | reaches the processor only through its ports and `EditorPort` (the chat through `EditorPort::chat()`) |
-| `Tools/probes/**` | probes on FunkGui's Harness: `fminus/` (the examples, the contract, the library, the panel's lines), `dsp/` (the Engine), `plugin/`, `gui/`; `common/Rig.h` runs a program in an Engine | spec rows only, no golden files |
+| `Source/editor/**` | the FunkGui `Panel`, resizable (`layout()` places every item for the size; `kMinWidth` x `kMinHeight`): toolbar (RUN, EXAMPLES, LIBRARY, status, load), the files' tabs, a `funkgui::TextEditor` each with FMinus highlighting and error marks, the problems list, the dials (`DialLayout`: plain rows, or the panel's sections; `Looks`: the dial styles and the displays drawn; `DisplayItem`: a display's motion); the chat's card (`ChatView`: the conversation, laid out and drawn as a chat app does; `ChatItems`: the message box and the chat's buttons; `ChatStyle.h`: the rounded look, its palette mixed from the theme's tokens) and the key dialog; `Items.h`; `Theme.h`; `gpu/` the EditorHost factory (the window's size goes to the session) | reaches the processor only through its ports and `EditorPort` (the chat through `EditorPort::chat()`) |
+| `Tools/probes/**` | probes on FunkGui's Harness: `fminus/` (the examples, the contract, the library, the panel's lines), `dsp/` (the Engine, its meters), `plugin/`, `gui/`; `common/Rig.h` runs a program in an Engine | spec rows only, no golden files |
 
 There are no starters here (`scripts/starters/` is the template's; the ones this project had predated the FMinus
 editor and went with the old DSP): `plugin.py clone` copies this playground (its plugin code must be free across
@@ -62,10 +62,10 @@ editor and went with the old DSP): `plugin.py clone` copies this playground (its
   `lint.exports` checks the built bundles). LLVM's weak symbols, exported, would be merged with every other plugin's
   that exports them, and the plugins would share LLVM's state.
 - FMinus compiles off the audio thread only (`Compiler`: its thread, or `compileNow` on the message thread or a host's
-  state call). A program's instances are created, reset (`init`) and destroyed (`end`) off the audio thread too; the
-  audio thread only calls the appended nonblocking functions (process, start, stop) and sets parameters. Never call
-  a program function through another type than its declaration's: the appended lines (Patch.cpp) are what make the
-  types right, so a new call needs its own line.
+  state call). A program's instances, and its module `Shared`'s one (init'd before them, end'd after), are created,
+  reset (`init`) and destroyed (`end`) off the audio thread too; the audio thread only calls the appended nonblocking
+  functions (process, start, stop) and sets parameters. Never call a program function through another type than its
+  declaration's: the appended lines (Patch.cpp) are what make the types right, so a new call needs its own line.
 - The Engine's handovers are two atomic pointers (`pending_`, `retired_`): offer, take at a block's start once the last
   swap is over, hand back. The audio thread never deletes a Patch. `Engine::setControls` and `process` allocate, lock
   and log nothing; `prepare()` (audio stopped) is the only place that sizes buffers.
@@ -74,6 +74,12 @@ editor and went with the old DSP): `plugin.py clone` copies this playground (its
   output does not depend on how the host splits its blocks (the examples are checked at 64 and 333, a release mid-block
   included), except where a dial moves (once a block): the voices run in calls cut on the absolute 16-sample grid and
   are freed only on it (Engine::kGrid), so keep both.
+- The displays read what the audio thread publishes, without a lock: after each block the Engine measures the
+  output and reads the displays' fields (`Patch::tap`, a field of the newest sounding voice's instance) into
+  `Engine::Meters`, through an `fsdsp::Seqlock`, and writes the scope's ring of atomics; the editor reads them each
+  frame (`Panel::tick`). `Meters::program` names the program the fields are of (`Patch::program`, the compile's
+  request id): the panel shows them only on that program's displays, since the audio thread takes a new program at
+  its next block. Nothing there allocates; `dsp.meters` checks the values.
 - The output guard (Engine::guard) stays: whatever a program computes, what leaves the plugin is finite and within
   +-4. Hosts and speakers come first.
 - The processor copes with what a host may do: the bypass crossfades between the Engine's output and silence and the
@@ -131,11 +137,15 @@ editor and went with the old DSP): `plugin.py clone` copies this playground (its
   before its set or allocate. Measure it in `fminus.library` (a harness there runs its modules over buffers), and run
   `plugin.chatexample` (the headers are in the prompt).
 - **A new call into programs** (pitch bend, the sustain pedal, say): add a `Call` row in `Patch.cpp` (the method, whether
-  it is required, how the plugin declares it, the appended line), a pointer in `Patch::Shared` looked up in
+  it is required, how the plugin declares it, the appended line), a pointer in `Patch::Compiled` looked up in
   `compile()`, a method on `Patch` the Engine calls; document it in Patch.h and the README.
 - **A view**: add an `Item` in `Source/editor/Panel.cpp` (a FunkGui widget, or your own drawing on the
   `funkgui::Canvas`, under a tag of its own after `ui::kMarkTag` when a probe needs to find it) and place it in the
   constructor; then check `gui.dump`'s PNGs.
+- **A dial style or a display kind**: its enum in `PanelSpec.h` (`DialStyle`, `DisplayKind`) and its word in
+  `PanelSpec.cpp` (with a note where it does not suit), its size in `DialLayout`, its drawing in `Looks`, a display's
+  motion in `DisplayItem` (a dial's in Panel.cpp's `DialItem`); teach it in the prompt's THE PANEL (`ChatPrompt.cpp`);
+  run `fminus.panel`, `gui.dump` (look at `gui.dump.displays*.png`) and `plugin.chatexample`.
 - **A probe**: a file `Tools/probes/<layer>/<name>.cpp` whose first line is `// PROBE name=<layer>.<name> timeout=<s>`
   and whose body is `PROBE(<layer>, <name>) { ...; return P.finish(); }`. Use spec rows (`P.near`, `P.le`, `P.ge`,
   `P.in`, `P.eq`); helpers are in `Tools/probes/common/Audio.h` and `Tools/probes/common/Rig.h`.
