@@ -22,6 +22,17 @@
 //   scope()           the last n samples of the input or the output (Engine::scope)
 //   load()            the audio thread's busiest recent block, as a share of its time (Engine::load)
 //   alerts()          the output guard's alerts of the last two seconds (Engine::Alert bits)
+//   presets()         the presets saved on this Mac (PresetStore.h), by name, with when each was last saved
+//   presetFolder()    where they are, "~/..." for the home folder
+//   tidyPresetName()  a typed name as savePreset would save it ("" when nothing is left of it)
+//   savePreset()      the editor's files (the draft) and the dials as they are now, by name, under `name` (over one of
+//                     that name); false, with why, when it cannot
+//   loadPreset()      a preset's files become the draft (the editor shows them: draftRevision bumps) and run; its dials
+//                     are set by name once they compile. False, with why, when there is none, or it is not this
+//                     plugin's, or its file is damaged
+//   deletePreset()    its file deleted
+//   presetName()      the preset loaded or saved last ("" for none), kept in the session
+//   presetEdited()    whether the draft has changed since (a new instance's first files count as saved)
 //   chat()            the chat with Claude (ChatPort.h)
 #pragma once
 
@@ -34,6 +45,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace testingplaygroundsynth
 {
@@ -44,6 +56,12 @@ namespace testingplaygroundsynth
         int active = 0;
 
         friend bool operator==(const Draft&, const Draft&) = default;
+    };
+
+    struct PresetEntry
+    {
+        std::string name;
+        std::string when;                        // its last save, "2026-10-25 14:02" (local time)
     };
 
     class EditorPort
@@ -69,6 +87,14 @@ namespace testingplaygroundsynth
         virtual float load() const = 0;
         virtual uint32_t alerts() const = 0;
 
+        virtual std::vector<PresetEntry> presets() const = 0;
+        virtual std::string presetFolder() const = 0;
+        virtual std::string tidyPresetName(const std::string& typed) const = 0;
+        virtual bool savePreset(const std::string& name, std::string& why) = 0;
+        virtual bool loadPreset(const std::string& name, std::string& why) = 0;
+        virtual bool deletePreset(const std::string& name, std::string& why) = 0;
+        virtual std::string presetName() const = 0;
+        virtual bool presetEdited() const = 0;
         virtual ChatPort& chat() = 0;
     };
 }
