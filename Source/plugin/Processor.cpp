@@ -76,12 +76,13 @@ namespace testingplayground
             return juce::String(buf);
         }
 
-        // P1 to P16: a host parameter whose name and text are the running program's (Processor::control).
+        // P1 to P32: a host parameter whose name and text are the running program's (Processor::control). P17 on came
+        // with the plugin's second parameter version (the AU's version hint), so a host's automation of the first stays.
         class ControlParameter final : public juce::AudioParameterFloat
         {
         public:
             ControlParameter(int slot, const Processor& owner)
-                : juce::AudioParameterFloat(juce::ParameterID{ idOf(slot), 1 }, "P" + juce::String(slot + 1),
+                : juce::AudioParameterFloat(juce::ParameterID{ idOf(slot), slot < kFirstControls ? 1 : 2 }, "P" + juce::String(slot + 1),
                                             juce::NormalisableRange<float>(0.0f, 1.0f), 0.5f),
                   slot_(slot), owner_(owner) {}
 

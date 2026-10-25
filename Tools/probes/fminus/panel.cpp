@@ -7,7 +7,7 @@
 //   UNTITLED  a section without a title has the title ""
 //   REST      the dials no section names come last, in slot order, untitled, with a note naming them
 //   NOTES     each line the plugin cannot use is a note on its file and line, and the program still plays: an unknown
-//             word, a name that is no dial (a seventeenth parameter's too), a dial in two sections (the first keeps
+//             word, a name that is no dial (a parameter's past the 32 dials too), a dial in two sections (the first keeps
 //             it), a text without its closing quote, a label without its text, a section without a dial (not drawn),
 //             small without a name, row with words after it, a title and a label too long (cut)
 //   FILES     lines in an included file count, after the program's; in a file no #include reads they do not; other
@@ -152,9 +152,9 @@ PROBE(fminus, panel)
                                    "#pragma panel row now\n"                             // 8: words after row
                                    "#pragma panel section \"AN EXTREMELY LONG SECTION TITLE\" cutoff\n"   // 9: cut
                                    "#pragma panel section \"open cutoff\n"               // 10: no closing quote
-                                   "#pragma panel section \"D\" p17\n";                  // 11: a parameter past the dials
+                                   "#pragma panel section \"D\" p" + std::to_string(tp::kMaxControls + 1) + "\n";   // 11: past the dials
         std::vector<std::string> params = kDials;
-        for (int k = 9; k <= 17; ++k)
+        for (int k = 9; k <= tp::kMaxControls + 1; ++k)
             params.push_back("p" + std::to_string(k));
         const Compiled c = compile(program(before, params));
         P.eq("notes.still_plays", c.ok ? 1 : 0, 1);
@@ -172,7 +172,7 @@ PROBE(fminus, panel)
         P.eq("notes.row_words", noteOn(8, "row takes nothing") ? 1 : 0, 1);
         P.eq("notes.title_cut", noteOn(9, "is cut to 24 characters") ? 1 : 0, 1);
         P.eq("notes.open_quote", noteOn(10, "without its closing") ? 1 : 0, 1);
-        P.eq("notes.past_the_dials", noteOn(11, "there is no dial p17") ? 1 : 0, 1);
+        P.eq("notes.past_the_dials", noteOn(11, ("there is no dial p" + std::to_string(tp::kMaxControls + 1)).c_str()) ? 1 : 0, 1);
         const std::vector<tp::PanelSection>& s = c.panel.sections;
         P.eq("notes.first_keeps_dial", !s.empty() && s[0].title == "A" && dialsOf(s[0]) == std::vector<int>{ 0 } ? 1 : 0, 1);
         P.eq("notes.label_kept_cut", c.panel.labels[1] == std::string("LONG LABEL TEXT HERE").substr(0, 14) ? 1 : 0, 1);

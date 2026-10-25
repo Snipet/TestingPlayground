@@ -1,7 +1,7 @@
 // Source/plugin/Processor.h: the JUCE AudioProcessor. It plays an FMinus program that the editor's text field holds
 // (README.md, "Writing a program"): the Engine (Source/dsp/Engine.h) runs it, the Compiler (Source/dsp/Compiler.h)
 // compiles what the editor runs, and the processor owns the rest:
-//   - sixteen host parameters, P1 to P16, normalised 0..1, which the running program's first sixteen parameters take
+//   - thirty-two host parameters, P1 to P32, normalised 0..1, which the running program's first 32 parameters take
 //     (Controls.h). Each is a ControlParameter: its name and its text are the program's ("2 cutoff", "1200.0"), and a
 //     host is told when they change (parameterInfoChanged). One FunkGui ParamPort each, what the editor's dials write
 //     through. A run that brings a parameter the program did not have in that slot moves it to its default;
@@ -97,7 +97,7 @@ namespace testingplayground
 
         // ---- for the editor (message thread) and the probes ------------------------------------------------------
         juce::AudioProcessorValueTreeState& parameters() noexcept { return apvts_; }
-        std::span<funkgui::ParamPort* const> ports() const noexcept { return ports_; }   // P1 to P16
+        std::span<funkgui::ParamPort* const> ports() const noexcept { return ports_; }   // P1 to P32
         EditorPort& editorPort() noexcept { return *this; }
         ChatAgent& chatAgent() noexcept { return chat_; }        // probes: its transport, its turns
         // The editor's size (logical px) as the user left it, kept in the session; 0 x 0: the Panel's default.

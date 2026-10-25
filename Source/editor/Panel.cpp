@@ -163,7 +163,7 @@ namespace testingplayground::ui
         // A section's title, cut into its frame's top edge (DialLayout.h).
         constexpr funkgui::TextStyle kSectionTitle{ 10.0f, 2.4f, 0.10f, false };
 
-        // ---- a dial over P1..P16, labelled with the running program's parameter (or its #pragma panel label) --------
+        // ---- a dial over P1..P32, labelled with the running program's parameter (or its #pragma panel label) --------
         class ControlModel final : public funkgui::ValueModel
         {
         public:
@@ -2917,11 +2917,13 @@ namespace testingplayground::ui
     {
         // Items come and go with the program's dials, the host's zoom, the files' tabs, the conversation (as it grows and
         // scrolls) and the key dialog, and move with the panel's size.
-        static_assert(kMaxControls <= 16, "the dials' bits");
+        static_assert(kMaxControls <= 32, "the dials' mask");
         uint32_t r = items_[static_cast<std::size_t>(zoomItem_)]->shown() ? 1u : 0u;
-        for (int c = 0; c < kMaxControls; ++c)                // bits 1 to 16
+        uint32_t dials = 0;                                   // the dials shown, one bit each, mixed in below
+        for (int c = 0; c < kMaxControls; ++c)
             if (const int i = itemOfSlot_[static_cast<std::size_t>(c)]; i >= 0 && items_[static_cast<std::size_t>(i)]->shown())
-                r |= 2u << c;
+                dials |= 1u << c;
+        r ^= dials * 0x27D4EB2Fu;
         r |= (keyOpen_ ? 1u : 0u) << 17;
         r |= (chat_.hasKey ? 1u : 0u) << 18;
         for (int d = 0; d < kMaxDisplays; ++d)                // bits 19 to 26
