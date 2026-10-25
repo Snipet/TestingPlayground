@@ -10,7 +10,8 @@
 //   ALLOCATES  one whose audio-thread method could reach calloc is refused: "it runs on the audio thread", with
 //              FMinus's note naming the program's line that calls it
 //   SYNTAX     a syntax error is FMinus's message, with the line and column in the program
-//   DIALS      nine parameters: the first eight are the dials, in order; the ninth gets a note (it keeps its default)
+//   DIALS      seventeen parameters: the first sixteen are the dials, in order; the seventeenth gets a note (it keeps
+//              its default)
 //   DEFAULTS   a module the main one holds has its parameters at their fminus::default when the program starts
 //   INIT       init runs with the sample rate before the first block
 //   INCLUDE    a program of several files (Sources.h): one that includes another compiles and plays what it includes;
@@ -54,7 +55,7 @@ namespace
                    "        for (int i = 0; i < n; ++i)\n        {\n" + inner + "        }\n    }\n";
     }
 
-    bool has(const std::string& s, const char* what) { return s.find(what) != std::string::npos; }
+    bool has(const std::string& s, const std::string& what) { return s.find(what) != std::string::npos; }
 
     tp::Patch::Result compile(const std::string& source)
     {
@@ -139,8 +140,8 @@ PROBE(fminus, contract)
     // DIALS
     {
         std::string params;
-        for (int k = 1; k <= 9; ++k)
-            params += "    param float p" + std::to_string(k) + " [[fminus::range(0, 10)]] [[fminus::default(" +
+        for (int k = 1; k <= tp::kMaxControls + 1; ++k)
+            params += "    param float p" + std::to_string(k) + " [[fminus::range(0, 100)]] [[fminus::default(" +
                       std::to_string(k) + ")]];\n";
         const auto r = compile(program("", params + process("            left[i] = p1[i];\n")));
         P.eq("dials.compiles", r.patch ? 1 : 0, 1);
@@ -149,11 +150,12 @@ PROBE(fminus, contract)
             int used = 0;
             for (const tp::Control& c : r.patch->controls())
                 used += c.used ? 1 : 0;
-            P.eq("dials.eight", used, 8);
-            P.eq("dials.in_order", std::string(r.patch->controls()[7].name) == "p8" ? 1 : 0, 1);
+            P.eq("dials.all_slots", used, tp::kMaxControls);
+            const std::string last = r.patch->controls()[tp::kMaxControls - 1].name;
+            P.eq("dials.in_order", last == "p" + std::to_string(tp::kMaxControls) ? 1 : 0, 1);
             P.near("dials.default", static_cast<double>(r.patch->controls()[2].def), 3.0, 1e-6);
         }
-        P.eq("dials.ninth_noted", has(r.notes, "p9 has no dial") ? 1 : 0, 1);
+        P.eq("dials.next_noted", has(r.notes, "p" + std::to_string(tp::kMaxControls + 1) + " has no dial") ? 1 : 0, 1);
     }
 
     // DEFAULTS: a held module's parameter at its default (0.25), read in the main module's process.
