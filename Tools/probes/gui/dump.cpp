@@ -7,12 +7,14 @@
 //   gui.dump.error.png   a run with a syntax error: the status, the problem's line, the mark in the gutter
 //   gui.dump.edited.png  after the EXAMPLES menu: another example, running, its dials
 //   gui.dump.files.png   two files, the second shown, after a run whose error is in it: its tab's mark, the problem
-//   gui.dump.dials.png   a program of sixteen dials, in two rows of eight; .dials.small.png at the least size
+//   gui.dump.dials.png   a program of sixteen dials, in two rows of eight; .dials.small.png at the least size;
+//                        .dials.most.png the most (32), .dials.most.small.png at the least size
 //   gui.dump.panel.png   the same dials in the sections its #pragma panel lines ask for; .panel.paper.png in PAPER,
 //                        .panel.small.png at the least size
 //   gui.dump.example.png the program Claude's instructions build from the library (ChatAgent::promptExample)
 //   gui.dump.displays.png a program with every display and every dial style, audio flowing; .displays.paper.png
 //   gui.dump.random.png  a program RANDOM made, running
+//   gui.dump.presets.png the preset browser, three presets saved, one chosen
 // and checks:
 //   FRAME     the frame settles, every glyph is in the font, the editor shows the processor's draft (the first
 //             example), and the dials are the program's parameters: one for each, the rest not shown
@@ -37,8 +39,9 @@
 //   ROWS      a program of sixteen dials shows them all, in order, in rows: two of eight at the default size and at
 //             the least, one of sixteen on a wide panel, each row's dials evenly spaced, none overlapping another,
 //             all of them in the left column (left of the chat's card) and under the problems list; the editor
-//             gives up the second row's height. Back to a program of fewer dials, one row again, and the editor's
-//             height back
+//             gives up the second row's height. The most, 32: full size in three or four rows at the default size,
+//             all small at the least, the same checks. Back to a program of fewer dials, one row again, and the
+//             editor's height back
 //   PANEL     the sixteen dials in five sections (#pragma panel): two rows of frames, as the row line asks, their
 //             titles in order; each dial inside its section's frame, in its order; no frame over another, all in the
 //             left column under the problems list; the rows of frames even (the shorter widened toward the longer);
@@ -64,11 +67,17 @@
 //             library's), the program shown and run with no note; Cmd-Z gives the text back in one step; the RANDOM
 //             button makes another, which runs with no note; with twelve tabs of other files, a notice in the status
 //             and the text untouched
+//   PRESETS   (a folder of the probe's own) the PRESETS button opens the browser, the program's title in its field; a
+//             name typed and Return save the program and its dials: the browser closes, the status says so, the
+//             header names it; an edit makes the header say EDITED; opened again, the preset is listed and chosen, and
+//             Load first asks (the files have changes no preset holds), then loads: the text back, EDITED gone; Save
+//             under a name a preset has asks, then replaces; Delete asks, then deletes; Escape closes
 //   KEYS      Escape leaves the editor, after which Tab moves the focus ring (and no key reaches the text)
 #include "Probe.h"
 
 #include "editor/DisplayItem.h"
 #include "editor/Panel.h"
+#include "plugin/PresetStore.h"
 #include "fminus/Random.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
@@ -120,11 +129,13 @@ namespace
     // A program of this plugin's kind with the first `count` of these parameters and no panel line.
     std::string dialsProgram(int count)
     {
-        static_assert(tp::kMaxControls == 16, "the names below");
+        static_assert(tp::kMaxControls == 32, "the names below");
         const char* const names[] = { "shape",   "detune",   "sub",     "noise",  "cutoff", "resonance", "envamount", "keytrack",
-                                      "lforate", "lfodepth", "attack",  "decay",  "sustain", "release",  "glide",     "level" };
+                                      "lforate", "lfodepth", "attack",  "decay",  "sustain", "release",  "glide",     "level",
+                                      "shape2",  "detune2",  "sub2",    "noise2", "cutoff2", "drive",    "fenvattack", "fenvdecay",
+                                      "lfo2rate", "lfo2depth", "pan",   "spread", "chorus", "delaytime", "feedback",  "mix" };
         std::string params;
-        for (int k = 0; k < count && k < 16; ++k)
+        for (int k = 0; k < count && k < tp::kMaxControls; ++k)
             params += std::string("    param float ") + names[k] + " [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n";
         if constexpr (tp::product::kIsInstrument)
             return "module Voice\n{\n" + params + "    float note;\n    void start(float n, float v) { note = n; }\n"
@@ -219,9 +230,10 @@ namespace
     // (row by row, left to right), even spacing in each row, no two dials' cells (60 x 80) overlapping, every cell in
     // the left column and under the problems list.
     void checkRows(funkgui::test::Probe& P, const std::string& key, const tp::ui::Panel& panel,
-                   const std::vector<funkgui::Point>& dials, int rows)
+                   const std::vector<funkgui::Point>& dials, int rows, bool small = false)
     {
-        constexpr float kCellW = 60.0f, kCellH = 80.0f, kCentreY = 34.0f;   // funkgui::DialGeom, primary
+        // funkgui::DialGeom's cells: primary, or compact
+        const float kCellW = small ? 54.0f : 60.0f, kCellH = small ? 52.0f : 80.0f, kCentreY = small ? 20.0f : 34.0f;
         std::set<float> ys;
         for (const funkgui::Point& d : dials)
             ys.insert(d.y);
@@ -250,6 +262,15 @@ namespace
         P.eq(key + ".evenly_spaced", even ? 1 : 0, 1);
         P.eq(key + ".none_overlap", apart ? 1 : 0, 1);
         P.eq(key + ".in_left_column", inside ? 1 : 0, 1);
+    }
+
+    // Types `text` (no commas) as the keys it takes.
+    void typeText(funkgui::HeadlessHost& host, const std::string& text)
+    {
+        std::string spec;
+        for (const char ch : text)
+            spec += (spec.empty() ? "" : ",") + (ch == ' ' ? std::string("space") : std::string(1, ch));
+        host.keys(spec.c_str());
     }
 
     // Lets a run finish: the compiler, the processor's poll, the panel's next frames.
@@ -509,7 +530,7 @@ PROBE(gui, dump)
         settleRun(processor, host);
         P.eq("rows.compiles", port.status().ok ? 1 : 0, 1);
         std::vector<funkgui::Point> dials = shownDials(panel);
-        P.eq("rows.all_shown", static_cast<int64_t>(dials.size()), tp::kMaxControls);
+        P.eq("rows.all_shown", static_cast<int64_t>(dials.size()), 16);
         checkRows(P, "rows.default", panel, dials, 2);
         P.near("rows.editor_gives_a_row", static_cast<double>(editorH - editor.bounds().h), 92.0, 0.5);
         {
@@ -524,6 +545,26 @@ PROBE(gui, dump)
         host.resize(1900, 1100);
         host.settle();
         checkRows(P, "rows.wide", panel, shownDials(panel), 1);
+        host.resize(tp::ui::kDefaultWidth, tp::ui::kDefaultHeight);
+        host.settle();
+        // The most, 32: full-size rows at the default size; at the least size every one small, still in rows.
+        editor.selectAll();
+        editor.insert(dialsProgram(tp::kMaxControls));
+        host.keys("cmd+return");
+        settleRun(processor, host);
+        dials = shownDials(panel);
+        P.eq("rows.most_shown", static_cast<int64_t>(dials.size()), tp::kMaxControls);
+        std::printf("32 dials: %d rows, %s\n", panel.dialRows(), panel.dialsLayout().allSmall ? "small" : "full size");
+        P.eq("rows.most_full_size", panel.dialsLayout().allSmall ? 0 : 1, 1);
+        checkRows(P, "rows.most", panel, dials, panel.dialRows());
+        P.in("rows.most_rows", static_cast<double>(panel.dialRows()), 3.0, 4.0);
+        writePng(P, host, "gui.dump.dials.most.png", "rows.most");
+        host.resize(tp::ui::kMinWidth, tp::ui::kMinHeight);
+        host.settle();
+        std::printf("32 dials at the least size: %d rows, %s\n", panel.dialRows(), panel.dialsLayout().allSmall ? "small" : "full size");
+        P.eq("rows.most_least_small", panel.dialsLayout().allSmall ? 1 : 0, 1);
+        checkRows(P, "rows.most_least", panel, shownDials(panel), panel.dialRows(), true);
+        writePng(P, host, "gui.dump.dials.most.small.png", "rows.most_least");
         host.resize(tp::ui::kDefaultWidth, tp::ui::kDefaultHeight);
         host.settle();
         // Back to three dials: one row, and the editor's height back.
@@ -1024,6 +1065,106 @@ PROBE(gui, dump)
         host.keys("cmd+return");
         settleRun(processor, host);
         P.eq("random.back", panel.fileCount() == 1 && port.status().ok ? 1 : 0, 1);
+    }
+
+    // PRESETS
+    {
+        const juce::File folder = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                      .getChildFile("gui-presets-" + juce::String(juce::Time::currentTimeMillis()));
+        folder.deleteRecursively();
+        tp::presetstore::setDirectoryForTests(folder);
+        const std::string program = editor.text();
+        const float W = static_cast<float>(tp::ui::kDefaultWidth), H = static_cast<float>(tp::ui::kDefaultHeight);
+        tp::ui::PresetBrowser& browser = panel.presetBrowser();
+        const auto click = [&](const funkgui::Rect& r) {
+            host.click(r.centreX(), r.centreY());
+            host.settle();
+        };
+        const funkgui::Point open = panel.centreOfPresets();
+        host.click(open.x, open.y);
+        host.settle();
+        P.eq("presets.opens", browser.isOpen() ? 1 : 0, 1);
+        const std::string title = program.substr(3, program.find(':') - 3);   // "// <Title>: ..."
+        P.eq("presets.title_in_field", browser.name() == title ? 1 : 0, 1);
+        P.eq("presets.empty_list", browser.entries().empty() ? 1 : 0, 1);
+        host.keys("cmd+a");
+        typeText(host, "My Patch");
+        host.keys("return");
+        host.tick(1);
+        P.eq("presets.saved_closes", !browser.isOpen() && tp::presetstore::exists("My Patch") ? 1 : 0, 1);
+        P.eq("presets.status_says", panel.statusText().find("PRESET SAVED: MY PATCH") != std::string::npos ? 1 : 0, 1);
+        P.eq("presets.header_names_it", panel.presetText() == "PRESET  MY PATCH" ? 1 : 0, 1);
+        // An edit: the header says so.
+        host.click(editor.bounds().x + 200.0f, editor.bounds().y + 40.0f);
+        host.keys("end");
+        typeText(host, " ");
+        host.tick(2);
+        P.eq("presets.header_edited", panel.presetText() == "PRESET  MY PATCH  EDITED" ? 1 : 0, 1);
+        // Two more, for the list.
+        for (const char* name : { "Another One", "Zebra Pad" })
+        {
+            host.click(open.x, open.y);
+            host.settle();
+            host.keys("cmd+a");
+            typeText(host, name);
+            host.keys("return");
+            host.tick(1);
+        }
+        P.eq("presets.three_saved", static_cast<int64_t>(tp::presetstore::list().size()), 3);
+        // Load "My Patch" over an edit: asked first, then loaded.
+        editor.selectAll();
+        editor.insert("// an edit no preset holds\n" + program);
+        host.tick(2);
+        host.click(open.x, open.y);
+        host.settle();
+        P.eq("presets.listed_by_name", browser.entries().size() == 3 && browser.entries()[0].name == "Another One"
+                                           && browser.entries()[2].name == "Zebra Pad" ? 1 : 0, 1);
+        P.eq("presets.current_chosen", browser.chosen() == 2 ? 1 : 0, 1);         // Zebra Pad, saved last
+        const funkgui::Point row1 = browser.centreOfRow(1, W, H);
+        host.click(row1.x, row1.y);
+        host.settle();
+        P.eq("presets.row_chosen", browser.chosen() == 1 && browser.name() == "My Patch" ? 1 : 0, 1);
+        writePng(P, host, "gui.dump.presets.png", "presets");
+        click(browser.places(W, H).load);
+        P.eq("presets.load_asks", browser.isOpen() && browser.why().find("Load anyway") != std::string::npos ? 1 : 0, 1);
+        click(browser.places(W, H).load);
+        processor.settle();
+        host.tick(2);
+        host.settle();
+        P.eq("presets.loaded", !browser.isOpen() && panel.editor().text() == program ? 1 : 0, 1);   // saved before the edit
+        P.eq("presets.loaded_runs", port.status().ok ? 1 : 0, 1);
+        P.eq("presets.header_after_load", panel.presetText() == "PRESET  MY PATCH" ? 1 : 0, 1);
+        // Save under a name taken: asked, then replaced.
+        host.click(open.x, open.y);
+        host.settle();
+        host.keys("cmd+a");
+        typeText(host, "zebra pad");
+        click(browser.places(W, H).save);
+        P.eq("presets.save_asks", browser.isOpen() && browser.why().find("Replace") != std::string::npos ? 1 : 0, 1);
+        click(browser.places(W, H).save);
+        P.eq("presets.replaced", !browser.isOpen() && tp::presetstore::exists("zebra pad")
+                                     && tp::presetstore::list().size() == 3 ? 1 : 0, 1);
+        // Delete: asked, then deleted; Escape closes.
+        host.click(open.x, open.y);
+        host.settle();
+        const funkgui::Point row0 = browser.centreOfRow(0, W, H);
+        host.click(row0.x, row0.y);
+        host.settle();
+        click(browser.places(W, H).remove);
+        P.eq("presets.delete_asks", browser.isOpen() && tp::presetstore::exists("Another One") ? 1 : 0, 1);
+        click(browser.places(W, H).remove);
+        P.eq("presets.deleted", browser.isOpen() && !tp::presetstore::exists("Another One") && browser.entries().size() == 2
+                                    ? 1 : 0, 1);
+        host.keys("escape");
+        host.settle();
+        P.eq("presets.escape_closes", browser.isOpen() ? 0 : 1, 1);
+        // Back: the program as it was.
+        editor.selectAll();
+        editor.insert(program);
+        host.keys("cmd+return");
+        settleRun(processor, host);
+        tp::presetstore::setDirectoryForTests({});
+        folder.deleteRecursively();
     }
 
     // KEYS

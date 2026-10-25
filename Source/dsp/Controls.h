@@ -1,4 +1,4 @@
-// Source/dsp/Controls.h: the program's dials (JUCE-free). The plugin has kMaxControls host parameters, P1 to P16, each
+// Source/dsp/Controls.h: the program's dials (JUCE-free). The plugin has kMaxControls host parameters, P1 to P32, each
 // normalised 0..1; the running program's first kMaxControls parameters (its main module's, in declaration order) take
 // them, and a Control says how slot i's normalised value maps onto the program's parameter:
 //
@@ -18,7 +18,8 @@
 
 namespace testingplayground
 {
-    inline constexpr int kMaxControls = 16;
+    inline constexpr int kMaxControls = 32;
+    inline constexpr int kFirstControls = 16;          // the parameters of the plugin's first version (P1 to P16)
 
     enum class ControlType : uint8_t { real, integer, toggle };
 

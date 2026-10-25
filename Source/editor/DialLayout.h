@@ -1,8 +1,8 @@
 // Source/editor/DialLayout.h: where the dials and displays go, under the problems list (the Panel's layout).
 //
 //   plain rows   a program with no section, no display and only knobs: the dials, in order, in as few rows as the
-//                column's width holds, shared out evenly between the rows (a row of sixteen on a wide panel, two of
-//                eight at the default size)
+//                column's width holds, shared out evenly between the rows (sixteen: a row on a wide panel, two of
+//                eight at the default size); all small when full-size rows would be taller than the panel can give
 //   sections     what the program's #pragma panel lines ask for (fminus/PanelSpec.h), as an analog synth's panel is
 //                printed: each section a frame with its title cut into the top edge, its items inside (dials of every
 //                style, and displays), the sections left to right in rows (a row breaks where the program says, or a
@@ -52,7 +52,7 @@ namespace testingplayground::ui
         float top = 0.0f;                     // the area's top; its bottom is the `bottom` asked for
         int rows = 1;                         // rows of dials (plain) or of sections
         int cols = 1;                         // plain: the dials in a full row
-        bool allSmall = false;                // the sections took every knob small to fit the height
+        bool allSmall = false;                // every knob small to fit the height (the sections or the rows)
     };
 
     struct DialMeasure

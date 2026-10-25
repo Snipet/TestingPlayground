@@ -4,7 +4,7 @@
 //   SAME     a seed gives the same program twice; the seeds give different programs
 //   FORM     its first line names it with its seed; it #includes the library files it lists, which are the library's
 //   COMPILE  each compiles with its library files beside it, with no error and no note (its panel's lines too)
-//   PANEL    at most sixteen dials, every one in a titled section
+//   PANEL    at most 32 dials, every one in a titled section
 //   PLAYS    an instrument: a chord held a second and released, finite, audible, under 0 dBFS, no alert, every voice
 //            ended within five seconds; an effect: noise and a sine through it, finite, audible, under +6 dBFS, no
 //            alert, and silence through a fresh one silent

@@ -25,27 +25,35 @@ namespace testingplayground::ui
         constexpr float kSmallInRow = 14.0f;             // a small knob's top below a full one's: their knobs in line
         constexpr float kButtonsExtra = 26.0f;           // buttons: a light, the gaps, beside the widest option
 
-        DialsLayout plainRows(const PanelSpec& spec, int used, float x, float width, float bottom)
+        // Full-size dials in as few rows as the width holds; when those rows are taller than maxHeight, every dial
+        // small (as many more a row as their width allows).
+        DialsLayout plainRows(const PanelSpec& spec, int used, float x, float width, float bottom, float maxHeight)
         {
-            DialsLayout out;
             const int n = std::max(used, 1);
-            const int fit = std::clamp(static_cast<int>(std::floor((width + kMinGap) / (kDialW + kMinGap))), 1, kMaxControls);
-            out.rows = (n + fit - 1) / fit;
+            const auto rowsFor = [&](float cellW) {
+                const int fit = std::clamp(static_cast<int>(std::floor((width + kMinGap) / (cellW + kMinGap))), 1, kMaxControls);
+                return (n + fit - 1) / fit;
+            };
+            const bool allSmall = static_cast<float>(rowsFor(kDialW)) * (kDialH + kRowGap) - kRowGap > maxHeight;
+            const float cellW = allSmall ? kSmallDialW : kDialW, cellH = allSmall ? kSmallDialH : kDialH;
+            DialsLayout out;
+            out.allSmall = allSmall;
+            out.rows = rowsFor(cellW);
             out.cols = (n + out.rows - 1) / out.rows;
-            const float gap = out.cols > 1 ? std::clamp((width - kDialW * static_cast<float>(out.cols))
+            const float gap = out.cols > 1 ? std::clamp((width - cellW * static_cast<float>(out.cols))
                                                             / static_cast<float>(out.cols - 1),
                                                         kMinGap, kGap)
                                            : kGap;
-            const float rowStep = kDialH + kRowGap;
-            out.top = bottom - kDialH - static_cast<float>(out.rows - 1) * rowStep;
+            const float rowStep = cellH + kRowGap;
+            out.top = bottom - cellH - static_cast<float>(out.rows - 1) * rowStep;
             for (int c = 0; c < kMaxControls; ++c)
             {
                 ItemPlace& d = out.dials[static_cast<std::size_t>(c)];
-                d.small = spec.small[static_cast<std::size_t>(c)];
+                d.small = allSmall || spec.small[static_cast<std::size_t>(c)];
                 d.w = d.small ? kSmallDialW : kDialW;
                 d.h = d.small ? kSmallDialH : kDialH;
-                d.x = x + static_cast<float>(c % out.cols) * (kDialW + gap) + (d.small ? 0.5f * (kDialW - kSmallDialW) : 0.0f);
-                d.top = out.top + static_cast<float>(c / out.cols) * rowStep + (d.small ? kSmallInRow : 0.0f);
+                d.x = x + static_cast<float>(c % out.cols) * (cellW + gap) + (d.small && !allSmall ? 0.5f * (kDialW - kSmallDialW) : 0.0f);
+                d.top = out.top + static_cast<float>(c / out.cols) * rowStep + (d.small && !allSmall ? kSmallInRow : 0.0f);
             }
             return out;
         }
@@ -331,7 +339,7 @@ namespace testingplayground::ui
                 knobs = knobs && (st == DialStyle::knob || st == DialStyle::vintage);
             }
         if (spec.sections.empty() && spec.displays.empty() && knobs)
-            return plainRows(spec, used, x, width, bottom);
+            return plainRows(spec, used, x, width, bottom, maxHeight);
         // No section line, but a style a plain row does not hold: one section, untitled, of every dial.
         std::vector<PanelSection> one;
         const std::vector<PanelSection>* sections = &spec.sections;

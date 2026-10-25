@@ -1,7 +1,7 @@
 // Source/plugin/Processor.h: the JUCE AudioProcessor. It plays an FMinus program that the editor's text field holds
 // (README.md, "Writing a program"): the Engine (Source/dsp/Engine.h) runs it, the Compiler (Source/dsp/Compiler.h)
 // compiles what the editor runs, and the processor owns the rest:
-//   - sixteen host parameters, P1 to P16, normalised 0..1, which the running program's first sixteen parameters take
+//   - thirty-two host parameters, P1 to P32, normalised 0..1, which the running program's first 32 parameters take
 //     (Controls.h). Each is a ControlParameter: its name and its text are the program's ("2 cutoff", "1200.0"), and a
 //     host is told when they change (parameterInfoChanged). One FunkGui ParamPort each, what the editor's dials write
 //     through. A run that brings a parameter the program did not have in that slot moves it to its default;
@@ -40,6 +40,7 @@
 
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
+#include "plugin/PresetStore.h"
 
 #include "dsp/Compiler.h"
 #include "dsp/Controls.h"
@@ -97,7 +98,7 @@ namespace testingplayground
 
         // ---- for the editor (message thread) and the probes ------------------------------------------------------
         juce::AudioProcessorValueTreeState& parameters() noexcept { return apvts_; }
-        std::span<funkgui::ParamPort* const> ports() const noexcept { return ports_; }   // P1 to P16
+        std::span<funkgui::ParamPort* const> ports() const noexcept { return ports_; }   // P1 to P32
         EditorPort& editorPort() noexcept { return *this; }
         ChatAgent& chatAgent() noexcept { return chat_; }        // probes: its transport, its turns
         // The editor's size (logical px) as the user left it, kept in the session; 0 x 0: the Panel's default.
@@ -146,6 +147,14 @@ namespace testingplayground
         void scope(bool input, float* out, int n) const override;
         float load() const override;
         uint32_t alerts() const override;
+        std::vector<PresetEntry> presets() const override;
+        std::string presetFolder() const override;
+        std::string tidyPresetName(const std::string& typed) const override { return presetstore::tidyName(typed); }
+        bool savePreset(const std::string& name, std::string& why) override;
+        bool loadPreset(const std::string& name, std::string& why) override;
+        bool deletePreset(const std::string& name, std::string& why) override;
+        std::string presetName() const override;
+        bool presetEdited() const override;
         ChatPort& chat() override { return chat_; }
 
         // ChatHost: Claude's tools (ChatAgent.h), from the agent's worker thread.
@@ -169,6 +178,11 @@ namespace testingplayground
         Controls controls_{};
         PanelSpec panel_;                                        // the running program's (programMutex_)
         uint64_t program_ = 0;                                   // its compile (CompileStatus::request)
+        std::string presetName_;                                 // the preset loaded or saved last (programMutex_)
+        Sources presetFiles_;                                    // the draft's files then: presetEdited() compares
+        // A preset's dials, by name, for when its program's compile lands (poll; message thread).
+        std::vector<std::pair<std::string, float>> presetDials_;
+        uint64_t presetRequest_ = 0;
 
         juce::AudioProcessorValueTreeState apvts_;
         std::array<std::atomic<float>*, kMaxControls> raw_{};   // the normalised values the audio thread reads
