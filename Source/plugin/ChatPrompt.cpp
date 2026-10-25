@@ -61,7 +61,7 @@ module Effect
 
 - process must have exactly this signature. A mono bus passes the left channel and a copy as right, which is not heard.
 - The module's fields are its state: they start at 0 and live as long as the program; init sets them. Keep state per sample, so the output does not depend on the host's block size.
-- Dials: the module's first eight parameters, in declaration order, are the plugin's dials and the host's parameters P1 to P8. A float parameter is read sample by sample, gain[i], and glides over 20 ms when its dial turns (gain[0] reads it once a call). An int or bool parameter is read once a call (mode[0], or mode[i]). fminus::range sets the dial's span and fminus::default its starting value.
+- Dials: the module's first sixteen parameters, in declaration order, are the plugin's dials and the host's parameters P1 to P16. A float parameter is read sample by sample, gain[i], and glides over 20 ms when its dial turns (gain[0] reads it once a call). An int or bool parameter is read once a call (mode[0], or mode[i]). fminus::range sets the dial's span and fminus::default its starting value.
 - The audio thread: process may not allocate. FMinus refuses a program whose process could reach calloc, malloc or free. Allocate in init (calloc: zeroed) and free in end, or use a fixed array field (float line[96000];).
 - The plugin guards the output: every sample is made finite and kept within +-4 (+12 dBFS), and the toolbar says when it had to. Aim for peaks near 1. A NaN in the program's state stays there until the program runs again.
 - Subnormals are flushed to zero (the audio thread's mode), so decaying filters and feedback cost nothing extra.
@@ -118,7 +118,7 @@ module Voice
 - start begins a note on a voice that may have played another before: set everything the note needs (fields keep their values between notes). stop releases it. process adds the voice's next n samples into both channels (they arrive at 0, so writing works too) and returns false once the voice is silent for good, which frees it. A voice that never returns false holds its slot forever: always let the release end.
 - The signatures must be exactly these. Sixteen voices sound at once; a seventeenth note steals the oldest released voice (else the oldest), with a 2 ms fade. A key pressed again while its note sounds stops that voice first. Sustain pedal and pitch bend are not passed on.
 - The module's fields are its state: they start at 0 when the program runs; init sets the rate-dependent ones. Keep state per sample, so the output does not depend on the host's block size (the plugin calls voices in parts that end on multiples of 16 samples).
-- Dials: the module's first eight parameters, in declaration order, are the dials and the host's P1 to P8, the same values in every voice. A float parameter is read sample by sample, cutoff[i], and glides over 20 ms when its dial turns (cutoff[0] reads it once a call). An int or bool parameter is read once a call. fminus::range sets the dial's span and fminus::default its starting value.
+- Dials: the module's first sixteen parameters, in declaration order, are the dials and the host's P1 to P16, the same values in every voice. A float parameter is read sample by sample, cutoff[i], and glides over 20 ms when its dial turns (cutoff[0] reads it once a call). An int or bool parameter is read once a call. fminus::range sets the dial's span and fminus::default its starting value.
 - The audio thread: start, stop and process may not allocate (FMinus refuses a program whose methods could reach calloc, malloc or free from them). Allocate in init (each voice's own, calloc: zeroed) and free in end, or use a fixed array field.
 - The voices are summed: sixteen at full scale clip. Scale a voice to about 0.2 to 0.3 at velocity 1. The plugin keeps the output finite and within +-4, and the toolbar says when it had to.
 - Subnormals are flushed to zero (the audio thread's mode).
@@ -135,7 +135,7 @@ FMinus is a subset of C (C's syntax and semantics, clang's error messages) with 
 - Operators: C's, with C's precedence: arithmetic (% works on floats too, as fmodf), comparisons, && || ! (short-circuit), ?: (only the taken branch runs), = += -= *= /= %=, ++ --, casts (float)i (int)x (bool)x. Integer division truncates (1 / 2 is 0): write 1.0f / 2 or (float)a / b.
 - Functions: C functions at the top level, callable before their definition. A function may be called from a module's method.
 - Modules (C++ structs with methods, simplified): `module Name { fields; params; methods };`. Fields take no initializer and start at 0 (set them in init or start); fields cannot be const. Methods see the fields by name and may call the module's other methods by name; `this` is the module's address. A module's name is a type after its declaration: a module holds modules declared before it (Svf filter;) and arrays of them. Pass a module to a function by pointer (Osc* o, o->tick()); assigning one module to another copies it. No constructors, inheritance, overloading or access control.
-- Parameters: `param float name [[fminus::range(lo, hi)]] [[fminus::default(v)]];` (float, int or bool) are module fields the host sets and the methods only read, as name[i] (sample i of the call) or name[0]. Only the main module's first eight are dials; the parameters of modules it holds stay at their defaults.
+- Parameters: `param float name [[fminus::range(lo, hi)]] [[fminus::default(v)]];` (float, int or bool) are module fields the host sets and the methods only read, as name[i] (sample i of the call) or name[0]. Only the main module's first sixteen are dials; the parameters of modules it holds stay at their defaults.
 - Builtins: fabsf sqrtf floorf fminf fmaxf (exact), sinf cosf expf logf tanhf (accurate to a few ulp), on floats and vectors; malloc calloc free (int sizes; init and end only); reduce_add reduce_min reduce_max (vector to float); sizeof(type). Other C math functions come from the system's libm by a prototype marked nonblocking, as the audio thread requires: `float powf(float x, float y) [[clang::nonblocking]];` (likewise tanf atanf sinhf roundf ceilf log10f exp2f ...). Prefer the builtins: powf(a, b) is expf(b * logf(a)), and tan(x) is sinf(x) / cosf(x).
 - Comments: // and /* */. Directives: only #include "file.fm" (another tab, by name; read once, as with #pragma once) and #pragma (ignored). No macros, no #if.
 - Errors come back in clang's words, "file.fm:LINE:COL: error: ...", from run_program.
@@ -159,10 +159,10 @@ DSP PRACTICE IN THIS PLUGIN
 BUILDING A LARGE PROGRAM
 
 A full synthesizer or a rich effect is a few hundred lines in several files. Work like this:
-- Plan in a sentence or two (the structure, the modulation, the eight dials), then write every file in one response: several write_file calls side by side, the included files first and the program last, then run_program once. Fix what it reports and run again until it compiles; then measure_output; then set the dials.
+- Plan in a sentence or two (the structure, the modulation, the dials), then write every file in one response: several write_file calls side by side, the included files first and the program last, then run_program once. Fix what it reports and run again until it compiles; then measure_output; then set the dials.
 - One building block a file: oscillators, filters, envelopes, LFOs, delay lines, each a module (its state as fields, its work as methods that take what they need as arguments) or plain functions. The program's file holds the main module, which holds the blocks as fields (Osc osc1; Svf filter; Osc unison[4];) and wires them. The parameters of a module the main module holds stay at their defaults, so give the blocks arguments instead.
 - Modulation: in the sample loop compute the sources first (envelopes, LFOs, velocity, the note), then each destination from them in musical units (octaves for a frequency, dB for a level) so amounts add: fc = cutoff[i] * expf(0.693147181f * octaves). Keep the routing small and explicit, at the top of the loop, a comment a route. An expensive coefficient (a filter's tan) may be computed every 16 samples from the modulated value when per sample costs too much; measure_output reports the cost.
-- Eight dials at most (the main module's first eight parameters): choose the controls a player reaches for (a cutoff, a resonance, an envelope amount, an LFO's rate and depth, an attack, a release, a level) and make the rest named, commented constants in the code, which you change when asked. A ninth parameter is ignored, with a note. An int parameter with a few values can choose a mode (a waveform, a routing).
+- Sixteen dials at most (the main module's first sixteen parameters), shown in declaration order in one or two rows: give a player the controls they reach for, in the order they read them, a section's together (an oscillator's shape and tuning; a cutoff, a resonance, an envelope amount; an LFO's rate and depth; an envelope's attack, decay, sustain and release; a mix; a level), and make the rest named, commented constants in the code, which you change when asked. A seventeenth parameter is ignored, with a note. An int parameter with a few values can choose a mode (a waveform, a routing).
 - An instrument's main module is one voice: sixteen can sound at once and their sum must not clip, so a voice peaks near 0.2 to 0.3. Reset a voice's state in start only when it was silent, so a note played again while it sounds does not click.
 - Later changes: edit_file for a passage (exactly as it is now), write_file for a rewrite. A file marked unchanged in <plugin_state> is as you last saw it.
 - A long conversation may be summarized to make room: the plugin then sends the current files again, and read_file always shows a file as it is now.
@@ -340,13 +340,18 @@ module Lfo
 
 module Voice
 {
-    // The eight dials: what a player reaches for. Everything else is a constant below.
+    // The dials, in the order a player reads them: the oscillators, the filter and its modulation, the envelopes,
+    // the level. Everything else is a constant below.
+    param float shape [[fminus::range(0, 1)]] [[fminus::default(0.2)]];            // 0 sawtooth, 1 square
+    param float detune [[fminus::range(0, 50)]] [[fminus::default(10)]];           // cents, the second oscillator up
     param float cutoff [[fminus::range(40, 12000)]] [[fminus::default(900)]];      // Hz, before the modulation
     param float resonance [[fminus::range(0, 1)]] [[fminus::default(0.35)]];
     param float envamount [[fminus::range(-4, 6)]] [[fminus::default(2.5)]];       // octaves the filter envelope adds
     param float lforate [[fminus::range(0.05, 12)]] [[fminus::default(4.5)]];      // Hz
     param float lfodepth [[fminus::range(0, 1)]] [[fminus::default(0.25)]];        // to the cutoff, and a little vibrato
     param float attack [[fminus::range(1, 3000)]] [[fminus::default(8)]];          // ms, both envelopes
+    param float decay [[fminus::range(20, 4000)]] [[fminus::default(600)]];        // ms (the filter envelope's 1.5 x)
+    param float sustain [[fminus::range(0, 1)]] [[fminus::default(0.7)]];          // the amplitude's
     param float release [[fminus::range(10, 6000)]] [[fminus::default(450)]];      // ms
     param float level [[fminus::range(-36, 0)]] [[fminus::default(-14)]];          // dB
 
@@ -392,17 +397,18 @@ module Voice
         // Once a call: what changes slowly.
         const float rise = 1000 / (attack[0] * rate);
         const float down = fallIn(release[0], rate);
-        const float ampFall = fallIn(600, rate);           // the amplitude's decay (600 ms) to a sustain of 0.7
-        const float filterFall = fallIn(900, rate);        // the filter envelope's decay (900 ms) to 0.2
+        const float ampFall = fallIn(decay[0], rate);              // the amplitude's decay, to the sustain dial
+        const float filterFall = fallIn(1.5f * decay[0], rate);    // the filter envelope's, slower, to 0.2
+        const float spread = expf(0.000577622650f * detune[0]);    // cents to a frequency ratio
         const float base = 440 * expf(0.0577622650f * (note - 69)) / rate;
-        const float keytrack = 0.5f * (note - 60) / 12;    // octaves: the cutoff follows the keyboard halfway
-        const float k = 2 - 1.95f * resonance[0];          // 1 / Q
+        const float keytrack = 0.5f * (note - 60) / 12;            // octaves: the cutoff follows the keyboard halfway
+        const float k = 2 - 1.95f * resonance[0];                  // 1 / Q
         const float gain = velocity * expf(0.115129255f * level[0]);
         const float lfoStep = lforate[0] / rate;
         for (int i = 0; i < n; ++i)
         {
             // The sources.
-            const float a = amp.tick(rise, ampFall, 0.7f, down);
+            const float a = amp.tick(rise, ampFall, sustain[i], down);
             const float f = fenv.tick(rise, filterFall, 0.2f, down);
             const float l = lfo.triangleAt(0);
             lfo.advance(lfoStep);
@@ -413,7 +419,7 @@ module Voice
             const float fc = fminf(cutoff[i] * expf(0.693147181f * octaves), 0.45f * rate);
             const float pitch = expf(0.693147181f * 0.004f * lfodepth[i] * l);
 
-            const float s = 0.5f * (osc1.tick(base * pitch, 0.2f) + osc2.tick(base * pitch * 1.0058f, 0.2f));
+            const float s = 0.5f * (osc1.tick(base * pitch, shape[i]) + osc2.tick(base * pitch * spread, shape[i]));
             const float out = gain * a * filter.lowpass(s, fc, k, rate);
             left[i] += out;
             right[i] += out;

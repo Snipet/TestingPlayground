@@ -72,7 +72,7 @@ namespace probe
         // before each block (its argument: the block's first sample).
         Stereo run(const Stereo& in, int block, const std::vector<Note>& notes = {},
                    const std::vector<int>& sizes = {},
-                   const std::function<void(std::size_t, std::array<float, 8>&)>& perBlock = {})
+                   const std::function<void(std::size_t, std::array<float, testingplaygroundsynth::kMaxControls>&)>& perBlock = {})
         {
             Stereo out = in;
             std::size_t pos = 0, k = 0, nextNote = 0;

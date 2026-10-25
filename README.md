@@ -78,8 +78,8 @@ module Voice
   out over 2 ms while the new note starts on another instance. A key pressed again while its note still sounds stops
   that voice first. The voices are summed, a mono output gets their two channels' average, and sustain pedals and
   pitch bend are not passed on (yet).
-- **Dials.** The module's first eight parameters, in the order they are declared, are the dials, and the host's
-  parameters P1 to P8 (a host shows "1 release", and the value in the program's units); every voice reads the same
+- **Dials.** The module's first sixteen parameters, in the order they are declared, are the dials, and the host's
+  parameters P1 to P16 (a host shows "1 release", and the value in the program's units); every voice reads the same
   values. A `float` glides when its dial turns: it is read sample by sample, `release[i]`, as a stream of 20 ms ramps,
   and held still otherwise (`release[0]` reads it once a call). An `int` or a `bool` is read once a call.
   `fminus::range` sets the dial's span (a float without one spans 0 to 1, an int 0 to 10) and `fminus::default` where
@@ -129,7 +129,9 @@ file there whose first line is `// <Title>: what it is`.
   leave the text (the panel's keys then move the focus over the dials). It has the caret when the editor opens.
 - **Problems.** The last run's messages are listed under the text, with their file, line and column; a click on one
   shows its file and puts the caret there, and each line with an error has a mark in the gutter.
-- **The dials** are the program's parameters (above); drag, scroll, or use the keys once Tab has focused one.
+- **The dials** are the program's parameters (above), in order, in as few rows as the width holds (sixteen in two
+  rows of eight at the default size, in one row on a wide window); drag, scroll, or use the keys once Tab has
+  focused one.
 - **The session** keeps the program that plays (all its files), the files as you left them (run or not), the tab
   shown, and the dials. A session whose program no longer compiles (an older FMinus, say) leaves the first example
   playing, its files in the editor. A session saved before files loads as a program of one file.
@@ -220,15 +222,15 @@ build-dev/TestingPlaygroundSynth_probes --list
 | Probe | Checks |
 | --- | --- |
 | `fminus.examples` | every example compiles with no message, its dials named, with ranges and defaults inside them; plays a chord for a second and releases it, finite, audible and with no alert; the same bits in blocks of 64 and 333; its voices end within eight seconds |
-| `fminus.contract` | what a program needs, and what the plugin says when it does not fit: no module `Voice`, no `start`, a `process` of another type (refused, never called), one that could allocate, a syntax error with its line; eight dials and a note for the ninth parameter; a held module's parameters at their defaults; init gets the rate; several files: an included function plays, the main module in an included file, a file two files include read once, an included file's error with its name and include stack, a file not found, the plugin's message for a wrong `process` after an `#include` |
+| `fminus.contract` | what a program needs, and what the plugin says when it does not fit: no module `Voice`, no `start`, a `process` of another type (refused, never called), one that could allocate, a syntax error with its line; sixteen dials and a note for the seventeenth parameter; a held module's parameters at their defaults; init gets the rate; several files: an included function plays, the main module in an included file, a file two files include read once, an included file's error with its name and include stack, a file not found, the plugin's message for a wrong `process` after an `#include` |
 | `dsp.swap` | the Engine: a held note's voice fades out when another program arrives, which starts the key again; seventeen notes steal the oldest; a voice that returns false is free; a real dial glides over 20 ms sample by sample, an integer one steps at the block; a NaN, an infinity and 10 leave as 0, 0 and 4, with their alerts |
-| `plugin.process` | the processor as a host drives it: P1 to P8 named and worded as the program's, host writes reach the program (within 0.05 dB), a host's NaN ignored (its text a dash), a block of 0 samples (with a note-on in it) and a block larger than announced change nothing, the bypass is silent and its edges do not click, a block before prepareToPlay is silent; a note-on at velocity 0 and All Notes Off release |
+| `plugin.process` | the processor as a host drives it: P1 to P16 named and worded as the program's, host writes reach the program (within 0.05 dB), a host's NaN ignored (its text a dash), a block of 0 samples (with a note-on in it) and a block larger than announced change nothing, the bypass is silent and its edges do not click, a block before prepareToPlay is silent; a note-on at velocity 0 and All Notes Off release |
 | `plugin.state` | the session round-trips (a program of two files, the draft's three files and its tab, the dials, the output bit for bit); a run moves a renamed parameter's dial to its default and keeps a kept one's; a session whose program does not compile leaves the last one playing; one without a program plays the first example; one saved before files loads as one file; one with too many files or bad names loads tidied; a NaN dial loads as 0.5 |
 | `plugin.chatstore` | the key on disk, in a folder of the probe's own: a key's shape; saved, the file is the format above with no 12 characters of the key in it, 0600 in a 0700 folder, and loads back; saved twice it differs (fresh salt and IV); one byte changed anywhere, or the file cut short, and it does not load; forgotten, it is gone; the model and level round-trip, a damaged chat.json loads as none |
 | `plugin.chat` | the chat's agent against a scripted API (no network): the event stream however it is cut, a message rebuilt (thinking and its signature, text, a tool call's streamed input, a compaction block, the usage over its iterations); no key, no request; a turn that writes a voice, runs it, sets its dial and answers; each request's shape (model, the model's own max_tokens, adaptive thinking, effort, the cached system prompt, the nine tools, fallbacks and compaction with their betas, the API version) and the history append-only; another model and level; a tool input that is not JSON; a retry after 529; a 401; a refusal; a fallback; a file Claude has seen named but not resent; measure_output through the agent; a stream cut short asked again and shown once; a compaction (the history pruned, the files sent again); STOP; the session; NEW |
 | `plugin.chatexample` | the system prompt has the large-program section and its program in several files word for word; that program compiles with no message, plays finite and audible, the same in blocks of 64 and 333, its voices ending; measure_output's numbers on programs whose answer is known (a level, a pitch, a gain, an impulse), and its notes for a voice that never ends or an effect that makes sound from silence |
 | `gui.chat` | the chat column and resizing, headless, to `gui.chat.png`, `.empty.png`, `.key.png`, `.paper.png`, `.small.png` and `.large.png`: the empty chat (key button, suggestions); the key dialog (opened by a message with no key, Escape, modal, a key refused, pasted, never spoken, Save sends the waiting message, Remove); the message box growing with its rows and shrinking when sent; a turn shown (thinking that opens and closes, what Claude did, the answer, a code block and its Copy, an answer's Copy, the usage), its files as tabs, the program playing, Cmd-Z undoing Claude's change; the model and thinking menus; stop; new chat; a suggestion into the box, unsent; the wheel and the jump to the end; the least size with twelve narrowed tabs and a large size, every item inside; the session keeps the size |
-| `gui.dump` | the panel headless to `gui.dump.png`, `.paper.png`, `.error.png`, `.edited.png` and `.files.png`: settles, every glyph, the draft in the editor and a dial for each parameter; typing, Cmd-Return, a syntax error (status, problem line, gutter mark, the click that jumps to it), the EXAMPLES menu and its undo; the files' tabs (+, renaming in place, a taken name refused, Escape, typing into a second file, an `#include` of it that runs, its error's problem and marks, the click that shows its file, closing with and without asking); a dial's drag and double-click, Escape and Tab |
+| `gui.dump` | the panel headless to `gui.dump.png`, `.paper.png`, `.error.png`, `.edited.png`, `.files.png`, `.dials.png` and `.dials.small.png`: settles, every glyph, the draft in the editor and a dial for each parameter; typing, Cmd-Return, a syntax error (status, problem line, gutter mark, the click that jumps to it), the EXAMPLES menu and its undo; the files' tabs (+, renaming in place, a taken name refused, Escape, typing into a second file, an `#include` of it that runs, its error's problem and marks, the click that shows its file, closing with and without asking); a dial's drag and double-click; sixteen dials in rows (two at the default and the least size, one when wide; in order, evenly spaced, inside the left column, the editor giving up a row's height); Escape and Tab |
 | `lint.layers`, `lint.exports` | Source/dsp, Source/fsdsp and Source/fminus without JUCE or FunkGui, FMinus through its public header only; each bundle exports its entry points and nothing else |
 
 A probe is one file in `Tools/probes/<layer>/` whose first line registers it (`// PROBE name=dsp.mytest timeout=60`)
@@ -265,13 +267,13 @@ Source/dsp/              the audio side, plain C++20 without JUCE: Engine (the v
                          thread), Controls, Events, Sources (a program's files), Measure (a program rendered offline
                          and measured, for the chat)
 Source/fsdsp/core/       FSynth's DSP core, vendored at the tag in SEED.tsv (scripts/sync-dsp-core.sh)
-Source/plugin/           the JUCE AudioProcessor: MIDI to events, P1 to P8, the program's files and the draft in the
+Source/plugin/           the JUCE AudioProcessor: MIDI to events, P1 to P16, the program's files and the draft in the
                          session, the bypass; EditorPort.h, what the editor reaches besides the parameters;
                          the chat: ChatAgent (the conversation, its turns and Claude's tools), ChatPrompt.cpp (Claude's
                          instructions and its program in several files), ClaudeApi (the Messages API over HTTPS),
                          ChatStore (the key, encrypted), ChatPort.h (what the editor reaches of it)
 Source/editor/           the FunkGui panel (Panel.cpp: the toolbar, the files' tabs and TextEditors, the problems, the
-                         dials, the chat's card and the key dialog; its layout follows the window's size),
+                         dials in rows, the chat's card and the key dialog; its layout follows the window's size),
                          ChatView (the conversation), ChatItems (the message box, the chat's buttons), ChatStyle.h
                          (the chat's rounded look, its palette from the theme), Items.h, Theme.h;
                          gpu/ starts it in the plugin

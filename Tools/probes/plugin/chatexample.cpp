@@ -98,7 +98,7 @@ PROBE(plugin, chatexample)
                 P.in(ck + ".default_in_range", static_cast<double>(ctl.def), static_cast<double>(ctl.min),
                      static_cast<double>(ctl.max));
             }
-            P.eq("example.eight_dials", dials, tp::kMaxControls);
+            P.in("example.dials", static_cast<double>(dials), 8.0, static_cast<double>(tp::kMaxControls));
             const probe::Stereo out = rig.run(input, 256, chord);
             P.eq("example.finite", probe::allFinite(out.l) && probe::allFinite(out.r) ? 1 : 0, 1);
             const double level = std::max(probe::rmsDb(out.l, 0, static_cast<std::size_t>(kFs)),

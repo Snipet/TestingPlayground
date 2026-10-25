@@ -110,7 +110,8 @@ namespace testingplaygroundsynth::ui
         constexpr float kDialCellW = 60.0f;              // funkgui::DialGeom, primary: 60 x 80
         constexpr float kDialCellH = 80.0f;
         constexpr float kDialGap = 30.0f;                // between dials, while the column has room
-        constexpr float kDialMinGap = 8.0f;
+        constexpr float kDialMinGap = 16.0f;             // the least, which keeps long labels (kCaption) apart
+        constexpr float kDialRowGap = 12.0f;             // between rows of dials
         constexpr float kFooterH = 36.0f;
         constexpr float kBottomGap = 12.0f;              // over the footer's rule
         // The chat's column, at the right.
@@ -132,7 +133,27 @@ namespace testingplaygroundsynth::ui
         constexpr int   kMaxKeyLength = 320;
         constexpr uint32_t kA11yStride = 64;             // item i's ids: kA11yStride * (i + 1) + 0..63
 
-        // ---- a dial over P1..P8, labelled with the running program's parameter -------------------------------------
+        // ---- the dials' grid: as few rows as the column's width holds, the dials shared out evenly ------------------
+        struct DialGrid
+        {
+            int rows = 1, cols = 1;
+            float gap = kDialGap;
+        };
+        DialGrid dialGrid(int used, float width)
+        {
+            const int n = std::max(used, 1);
+            const int fit = std::clamp(static_cast<int>(std::floor((width + kDialMinGap) / (kDialCellW + kDialMinGap))), 1,
+                                       kMaxControls);
+            DialGrid g;
+            g.rows = (n + fit - 1) / fit;
+            g.cols = (n + g.rows - 1) / g.rows;
+            if (g.cols > 1)
+                g.gap = std::clamp((width - kDialCellW * static_cast<float>(g.cols)) / static_cast<float>(g.cols - 1),
+                                   kDialMinGap, kDialGap);
+            return g;
+        }
+
+        // ---- a dial over P1..P16, labelled with the running program's parameter ------------------------------------
         class ControlModel final : public funkgui::ValueModel
         {
         public:
@@ -1296,20 +1317,23 @@ namespace testingplaygroundsynth::ui
             .setCells({ { kMargin, kToolbarY, 64.0f, kButtonH } });
         static_cast<CellsItem&>(*items_[static_cast<std::size_t>(examplesItem_)])
             .setCells({ { kMargin + 72.0f, kToolbarY, 96.0f, kButtonH } });
-        const float dialsY = bottom - kDialCellH;
+        // The dials in rows, the first on top: slot c in row c / cols, column c % cols (an unused slot is not shown).
+        const DialGrid grid = dialGrid(dialsUsed_, leftW_);
+        dialRows_ = grid.rows;
+        dialCols_ = grid.cols;
+        const float rowStep = kDialCellH + kDialRowGap;
+        const float dialsY = bottom - kDialCellH - static_cast<float>(grid.rows - 1) * rowStep;
         const float problemsH = kProblemRowH * static_cast<float>(kProblemRows);
         const float problemsY = dialsY - 16.0f - problemsH;
         files().setGeometry({ kMargin, kTabsY, leftW_, kTabH },
                             { kMargin, kEditorY, leftW_, std::max(80.0f, problemsY - 8.0f - kEditorY) });
         static_cast<ProblemsItem&>(*items_[static_cast<std::size_t>(problemsItem_)])
             .setBounds({ kMargin, problemsY, leftW_, problemsH });
-        const float gaps = static_cast<float>(kMaxControls - 1);
-        const float dialGap = std::clamp((leftW_ - kDialCellW * static_cast<float>(kMaxControls)) / gaps, kDialMinGap,
-                                         kDialGap);
         for (int c = 0; c < kMaxControls; ++c)
             if (const int i = itemOfSlot_[static_cast<std::size_t>(c)]; i >= 0)
                 static_cast<DialItem&>(*items_[static_cast<std::size_t>(i)])
-                    .setGeom(funkgui::DialGeom{ kMargin + static_cast<float>(c) * (kDialCellW + dialGap), dialsY });
+                    .setGeom(funkgui::DialGeom{ kMargin + static_cast<float>(c % grid.cols) * (kDialCellW + grid.gap),
+                                                dialsY + static_cast<float>(c / grid.cols) * rowStep });
 
         // The chat's card.
         const float right = W - kMargin;
@@ -1549,11 +1573,21 @@ namespace testingplaygroundsynth::ui
             if (s.ok)
                 running_ = s.sources;
             ++controlsRevision_;
+            int used = 0;
             for (int c = 0; c < kMaxControls; ++c)
+            {
+                if (cs[static_cast<std::size_t>(c)].used)
+                    used = c + 1;
                 if (const int i = itemOfSlot_[static_cast<std::size_t>(c)]; i >= 0)
                     static_cast<DialItem&>(*items_[static_cast<std::size_t>(i)])
                         .model()
                         .setControl(cs[static_cast<std::size_t>(c)], controlsRevision_);
+            }
+            // Another count of dials may take another grid (a second row takes height from the editor).
+            const DialGrid grid = dialGrid(used, leftW_);
+            dialsUsed_ = used;
+            if (grid.rows != dialRows_ || grid.cols != dialCols_)
+                layout();
             statusChanged = true;
         }
         compiling_ = port_.compiling();
@@ -2465,13 +2499,15 @@ namespace testingplaygroundsynth::ui
     {
         // Items come and go with the program's dials, the host's zoom, the files' tabs, the conversation (as it grows and
         // scrolls) and the key dialog, and move with the panel's size.
+        static_assert(kMaxControls <= 16, "the dials' bits");
         uint32_t r = items_[static_cast<std::size_t>(zoomItem_)]->shown() ? 1u : 0u;
-        for (int c = 0; c < kMaxControls; ++c)
+        for (int c = 0; c < kMaxControls; ++c)                // bits 1 to 16
             if (const int i = itemOfSlot_[static_cast<std::size_t>(c)]; i >= 0 && items_[static_cast<std::size_t>(i)]->shown())
                 r |= 2u << c;
-        r |= (keyOpen_ ? 1u : 0u) << 12;
-        r |= (chat_.hasKey ? 1u : 0u) << 13;
-        return r ^ (files().layoutRevision() << 14) ^ (layoutRevision_ << 22) ^ (chatA11y_ * 2654435761u);
+        r |= (keyOpen_ ? 1u : 0u) << 17;
+        r |= (chat_.hasKey ? 1u : 0u) << 18;
+        // The counters times odd constants: a change in any one of them changes the revision.
+        return r ^ (files().layoutRevision() * 0x85EBCA77u) ^ (layoutRevision_ * 0xC2B2AE3Du) ^ (chatA11y_ * 2654435761u);
     }
 
     void Panel::a11yAction(uint32_t id, funkgui::A11yAction a, double value)
