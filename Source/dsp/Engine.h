@@ -13,7 +13,7 @@
 // one more steals the oldest released voice, else the oldest, fading it out over 2 ms (fsdsp::kStealFadeMs) on its own
 // instance while the new note starts on another. A key pressed again while it still sounds stops its voice first.
 //
-// Dials. setControls() takes the host's normalised values (P1 to P16) once a block. A real control glides to its new
+// Dials. setControls() takes the host's normalised values (P1 to P32) once a block. A real control glides to its new
 // value over 20 ms, sample by sample, and while it moves the program reads it as a stream of those samples (a null
 // stream, and the value, while it holds still: FMinus's flat copy of the method); an integer or a toggle is set once a
 // block. A new program starts on the dials' values, without a glide.

@@ -2,7 +2,7 @@
 //
 // fminus.examples: every program of the editor's EXAMPLES (Source/fminus/examples/*.fm, the first the default) as the
 // plugin compiles and plays it (Patch::compile, the Engine), at 48 kHz:
-//   COMPILE  it compiles for this plugin's kind, with no message; its dials are its first parameters, at most sixteen,
+//   COMPILE  it compiles for this plugin's kind, with no message; its dials are its first parameters, at most 32,
 //            each with a name, a range (min < max) and a default inside it
 //   PLAY     two seconds at the defaults: an effect over stereo noise at -12 dBFS, an instrument playing a chord
 //            (C4, E4, G4 at velocity 0.8, released at 1 s): the output is finite and audible (above -60 dBFS RMS over

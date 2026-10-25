@@ -10,7 +10,7 @@
 //   ALLOCATES  one whose audio-thread method could reach calloc is refused: "it runs on the audio thread", with
 //              FMinus's note naming the program's line that calls it
 //   SYNTAX     a syntax error is FMinus's message, with the line and column in the program
-//   DIALS      seventeen parameters: the first sixteen are the dials, in order; the seventeenth gets a note (it keeps
+//   DIALS      33 parameters: the first 32 are the dials, in order; the 33rd gets a note (it keeps
 //              its default)
 //   DEFAULTS   a module the main one holds has its parameters at their fminus::default when the program starts
 //   INIT       init runs with the sample rate before the first block

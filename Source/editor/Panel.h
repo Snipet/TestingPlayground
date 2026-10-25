@@ -20,7 +20,7 @@
 //             last run's errors name
 //   problems  the last run's messages, a line each (the first four, and how many more), each with its file; a click
 //             on one with a line number shows its file and puts the caret there
-//   dials     the running program's parameters, P1 to P16 (a funkgui::Dial each, labelled with the parameter's name
+//   dials     the running program's parameters, P1 to P32 (a funkgui::Dial each, labelled with the parameter's name
 //             or its #pragma panel label; an unused slot shows nothing), placed by DialLayout.h: in the titled
 //             sections the program's #pragma panel lines ask for, framed as on an analog synth's panel, or else in
 //             order, in as few rows as the column's width holds. A drag, the wheel or the keys write through the
