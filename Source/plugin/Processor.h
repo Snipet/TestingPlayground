@@ -113,6 +113,7 @@ namespace testingplaygroundsynth
 
         // Slot c's dial as the program that plays has it (ControlParameter's name and text).
         Control control(int c) const;
+        std::vector<std::string> controlOptions(int c) const;   // its values' names (#pragma panel options), maybe none
 
     private:
         static BusesProperties buses();                          // the kind's buses (product::kIsInstrument)
@@ -140,6 +141,9 @@ namespace testingplaygroundsynth
         Sources running() const override;
         Controls controls() const override;
         PanelSpec panel() const override;
+        uint64_t program() const override;
+        bool meters(Meters& out) const override;
+        void scope(bool input, float* out, int n) const override;
         float load() const override;
         uint32_t alerts() const override;
         ChatPort& chat() override { return chat_; }
@@ -164,6 +168,7 @@ namespace testingplaygroundsynth
         uint64_t draftRevision_ = 1;
         Controls controls_{};
         PanelSpec panel_;                                        // the running program's (programMutex_)
+        uint64_t program_ = 0;                                   // its compile (CompileStatus::request)
 
         juce::AudioProcessorValueTreeState apvts_;
         std::array<std::atomic<float>*, kMaxControls> raw_{};   // the normalised values the audio thread reads

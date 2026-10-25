@@ -53,11 +53,15 @@ namespace probe
                 return false;
             controls_ = r.patch->controls();
             panel_ = r.patch->panel();
+            r.patch->setProgram(++loaded_);                     // as the Compiler names them
             engine_.offer(std::move(r.patch));
             engine_.prepare(fs_, maxBlock_);
             norm_ = defaults();
             return true;
         }
+
+        // The last program loaded's id (Patch::program): 1 for the first.
+        uint64_t program() const noexcept { return loaded_; }
 
         // The dials at their programs' defaults, normalised.
         std::array<float, testingplaygroundsynth::kMaxControls> defaults() const
@@ -117,6 +121,7 @@ namespace probe
         testingplaygroundsynth::Controls controls_{};
         testingplaygroundsynth::PanelSpec panel_;
         std::array<float, testingplaygroundsynth::kMaxControls> norm_{};
+        uint64_t loaded_ = 0;
     };
 
     // Stereo noise at `amp` (a fixed seed: the same every run), `n` samples.

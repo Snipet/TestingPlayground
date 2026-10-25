@@ -1,5 +1,11 @@
 // FM bell: two-operator frequency modulation. A modulator at RATIO times the note's frequency moves the carrier's
 // phase by up to INDEX radians; both decay, the brightness faster than the level, as a struck bell's partials do.
+// The panel shows the brightness fall (a meter of the field bright) and the wave turn from a clang to a sine (a scope).
+#pragma panel section "OPERATORS" ratio index bright
+#pragma panel section "BELL" decay level wave
+#pragma panel meter bright "BRIGHT"
+#pragma panel scope out as wave "WAVE"
+#pragma panel color "OPERATORS" violet
 module Voice
 {
     param float ratio [[fminus::range(0.5, 8)]] [[fminus::default(3.5)]];

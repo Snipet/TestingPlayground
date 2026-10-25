@@ -55,6 +55,7 @@
 
 #include "dsp/Controls.h"
 #include "dsp/Sources.h"
+#include "dsp/Engine.h"
 #include "editor/DialLayout.h"
 #include "fminus/PanelSpec.h"
 
@@ -90,6 +91,7 @@ namespace testingplaygroundsynth::ui
     class FilesItem;                                     // the files' tabs and editors (Panel.cpp)
     class ChatView;                                      // the chat's conversation (ChatView.h)
     class InputItem;                                     // the chat's message box (ChatItems.h)
+    class DisplayItem;                                   // a program's display (DisplayItem.h)
 
     // The size (logical px): the default, the least.
     inline constexpr int kDefaultWidth = 1360, kDefaultHeight = 760;
@@ -139,6 +141,8 @@ namespace testingplaygroundsynth::ui
         std::optional<funkgui::Point> centreOfDial(int slot) const;    // nullopt for an unused slot
         int dialRows() const noexcept { return dials_.rows; }             // the rows of dials, or of sections
         const DialsLayout& dialsLayout() const noexcept { return dials_; }
+        const DisplayItem& displayItem(int d) const;                      // display d of the program's (shown or not)
+        funkgui::Point centreOfButton(int slot, int value) const;         // a buttons dial's row for that value
         funkgui::Rect chatCard() const noexcept { return card_; }
         funkgui::Point centreOfRun() const;
         funkgui::Point centreOfExamples() const;
@@ -244,6 +248,9 @@ namespace testingplaygroundsynth::ui
         EditorPort& port_;
         std::vector<std::unique_ptr<Item>> items_;
         std::vector<int> itemOfSlot_;                    // dial slot -> item index
+        std::vector<int> itemOfDisplay_;                 // display -> item index
+        Meters meters_{};                                // the Engine's, as the last frame read them
+        std::vector<float> scopeIn_, scopeOut_;          // the scopes' samples, read each frame they show
         int editorItem_ = -1, problemsItem_ = -1, runItem_ = -1, examplesItem_ = -1, libraryItem_ = -1;
         int themeItem_ = -1, zoomItem_ = -1;
         int newChatItem_ = -1, keyItem_ = -1, chatViewItem_ = -1, inputItem_ = -1;
@@ -257,6 +264,7 @@ namespace testingplaygroundsynth::ui
         float leftW_ = 0.0f;                             // the left column's width (the editor's)
         Controls controls_{};                            // the dials of the program that plays, as refresh() saw them
         PanelSpec panelSpec_;                            // its #pragma panel lines
+        uint64_t panelProgram_ = 0;                      // the compile they came from (EditorPort::program)
         DialsLayout dials_;                              // their places
         float chatX_ = 0.0f, chatW_ = 0.0f;
         funkgui::Rect card_;                             // the chat's card

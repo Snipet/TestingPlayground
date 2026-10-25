@@ -1,10 +1,15 @@
 // Saw and filter: a band-limited sawtooth (polyBLEP) through a resonant low-pass whose cutoff an ADSR envelope opens.
 // The envelope's stages are the voice's: attack up to 1, decay down to the sustain level while the key is held, and
-// release to silence after stop. The #pragma panel lines lay the dials out in titled sections, as a synth's panel.
+// release to silence after stop. The #pragma panel lines lay the dials out in titled sections, as a synth's panel:
+// faders for the envelope, a light that follows it (the field env, the newest voice's) and a VU of the output.
 #pragma panel section "FILTER" cutoff resonance sweep
-#pragma panel section "ENVELOPE" attack decay sustain release
-#pragma panel section "OUTPUT" level
+#pragma panel section "ENVELOPE" attack decay sustain release env
+#pragma panel section "OUTPUT" level out
 #pragma panel label sweep "ENV AMOUNT"
+#pragma panel style attack decay sustain release fader
+#pragma panel led env "ENV"
+#pragma panel vu out "OUTPUT"
+#pragma panel color "FILTER" orange
 
 // The polyBLEP correction for a sawtooth at phase t (0 to 1) stepping dt a sample: it rounds off the jump at the wrap.
 float blep(float t, float dt)

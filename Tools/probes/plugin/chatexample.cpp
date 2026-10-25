@@ -135,7 +135,8 @@ PROBE(plugin, chatexample)
             bool titled = !rig.panel().sections.empty();
             for (const tp::PanelSection& s : rig.panel().sections)
             {
-                placed += static_cast<int>(s.slots.size());
+                for (const tp::PanelItem& it : s.items)
+                    placed += it.display ? 0 : 1;
                 titled = titled && !s.title.empty();
             }
             std::printf("example panel: %zu sections, %d dials placed\n", rig.panel().sections.size(), placed);

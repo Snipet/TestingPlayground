@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -365,7 +366,25 @@ namespace testingplaygroundsynth
             patch->initialised_.push_back(false);
         }
         patch->sources_ = files;
-        patch->panel_ = readPanelSpec(compiled, patch->controls_, r.notes);
+        // The panel, and a tap (where it sits in an instance) for each display of one of the main module's fields.
+        std::vector<PanelField> fields;
+        for (const fminus::Program::Module::Field& f : s.module->fields)
+            fields.push_back({ f.name, f.type });
+        patch->panel_ = readPanelSpec(compiled, patch->controls_, fields, kInstrument, r.notes);
+        for (const PanelDisplay& d : patch->panel_.displays)
+        {
+            if (d.tap < 0)
+                continue;
+            for (const fminus::Program::Module::Field& f : s.module->fields)
+                if (f.name == d.source)
+                {
+                    Tap t;
+                    t.offset = f.offset;
+                    t.type = f.type == "float" ? Tap::Type::real : (f.type == "int" ? Tap::Type::integer : Tap::Type::boolean);
+                    patch->taps_.push_back(t);
+                    break;
+                }
+        }
         patch->reset(sampleRate);
         r.compileMs = msSince(t0);
         r.patch = std::move(patch);
@@ -464,5 +483,31 @@ namespace testingplaygroundsynth
         if (s_->render == nullptr || i < 0 || i >= static_cast<int>(instances_.size()))
             return false;
         return s_->render(instances_[static_cast<std::size_t>(i)], left, right, n);
+    }
+
+    float Patch::tap(int t, int i) const noexcept
+    {
+        if (t < 0 || t >= static_cast<int>(taps_.size()) || i < 0 || i >= static_cast<int>(instances_.size()))
+            return 0.0f;
+        const Tap& k = taps_[static_cast<std::size_t>(t)];
+        const char* at = static_cast<const char*>(instances_[static_cast<std::size_t>(i)]) + k.offset;
+        switch (k.type)
+        {
+            case Tap::Type::real:
+            {
+                float v = 0.0f;
+                std::memcpy(&v, at, sizeof v);
+                return std::isfinite(v) ? v : 0.0f;
+            }
+            case Tap::Type::integer:
+            {
+                int32_t v = 0;
+                std::memcpy(&v, at, sizeof v);
+                return static_cast<float>(v);
+            }
+            case Tap::Type::boolean:
+                return *at != 0 ? 1.0f : 0.0f;
+        }
+        return 0.0f;
     }
 }
