@@ -40,6 +40,7 @@
 
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
+#include "plugin/PresetStore.h"
 
 #include "dsp/Compiler.h"
 #include "dsp/Controls.h"
@@ -146,6 +147,14 @@ namespace testingplaygroundsynth
         void scope(bool input, float* out, int n) const override;
         float load() const override;
         uint32_t alerts() const override;
+        std::vector<PresetEntry> presets() const override;
+        std::string presetFolder() const override;
+        std::string tidyPresetName(const std::string& typed) const override { return presetstore::tidyName(typed); }
+        bool savePreset(const std::string& name, std::string& why) override;
+        bool loadPreset(const std::string& name, std::string& why) override;
+        bool deletePreset(const std::string& name, std::string& why) override;
+        std::string presetName() const override;
+        bool presetEdited() const override;
         ChatPort& chat() override { return chat_; }
 
         // ChatHost: Claude's tools (ChatAgent.h), from the agent's worker thread.
@@ -169,6 +178,11 @@ namespace testingplaygroundsynth
         Controls controls_{};
         PanelSpec panel_;                                        // the running program's (programMutex_)
         uint64_t program_ = 0;                                   // its compile (CompileStatus::request)
+        std::string presetName_;                                 // the preset loaded or saved last (programMutex_)
+        Sources presetFiles_;                                    // the draft's files then: presetEdited() compares
+        // A preset's dials, by name, for when its program's compile lands (poll; message thread).
+        std::vector<std::pair<std::string, float>> presetDials_;
+        uint64_t presetRequest_ = 0;
 
         juce::AudioProcessorValueTreeState apvts_;
         std::array<std::atomic<float>*, kMaxControls> raw_{};   // the normalised values the audio thread reads

@@ -45,6 +45,8 @@
 // Message thread only. The ports and the EditorPort belong to the processor and outlive the Panel.
 #pragma once
 
+#include "editor/PresetBrowser.h"
+
 #include <funkgui/a11y/A11yItem.h>
 #include <funkgui/canvas/Tags.h>
 #include <funkgui/core/Geometry.h>
@@ -105,6 +107,7 @@ namespace testingplaygroundsynth::ui
     inline constexpr funkgui::Tag kTabTag = funkgui::tags::firstProduct + 4;          // the files' tabs
     inline constexpr funkgui::Tag kChatTag = funkgui::tags::firstProduct + 5;         // the chat's own text
     inline constexpr funkgui::Tag kKeyDialogTag = funkgui::tags::firstProduct + 6;    // the key dialog
+    inline constexpr funkgui::Tag kPresetsTag = funkgui::tags::firstProduct + 8;      // the preset browser
     inline constexpr funkgui::Tag kSectionTag = funkgui::tags::firstProduct + 7;      // the dials' sections
 
     // One message of the last run, as the problems list shows it.
@@ -148,6 +151,12 @@ namespace testingplaygroundsynth::ui
         funkgui::Point centreOfExamples() const;
         funkgui::Point centreOfLibrary() const;
         funkgui::Point centreOfRandom() const;
+        funkgui::Point centreOfPresets() const;
+        // PRESETS: the browser (PresetBrowser.h), opened with the preset's name, or the program's title (its first
+        // line's words before a colon), in its field.
+        void openPresets();
+        PresetBrowser& presetBrowser() noexcept { return presets_; }
+        const std::string& presetText() const noexcept { return presetText_; }   // the header's "PRESET  NAME  EDITED"
         // RANDOM (fminus/Random.h): the program for `seed` (its library files as tabs, those the editor lacks; its text
         // in place of the program's, an edit Cmd-Z takes back), run. When the tabs left cannot hold its files, the next
         // seeds are tried (up to 64); false, with a notice in the status, when none fits.
@@ -212,6 +221,7 @@ namespace testingplaygroundsynth::ui
         void openExamples();
         void openLibrary();
         uint32_t nextSeed();                             // RANDOM's: from the clock and a count
+        void afterPresets(bool wasOpen);                 // the browser's notice to the status, the focus back
         void notice(const std::string& text);            // the status says it for a few seconds
         void jumpTo(const Problem&);
         void closeFile(int tab);                         // a tab's x: asks first when the file has text
@@ -258,7 +268,8 @@ namespace testingplaygroundsynth::ui
         std::vector<int> itemOfDisplay_;                 // display -> item index
         Meters meters_{};                                // the Engine's, as the last frame read them
         std::vector<float> scopeIn_, scopeOut_;          // the scopes' samples, read each frame they show
-        int editorItem_ = -1, problemsItem_ = -1, runItem_ = -1, examplesItem_ = -1, libraryItem_ = -1, randomItem_ = -1;
+        int editorItem_ = -1, problemsItem_ = -1, runItem_ = -1, examplesItem_ = -1, libraryItem_ = -1, randomItem_ = -1,
+            presetsItem_ = -1;
         int themeItem_ = -1, zoomItem_ = -1;
         int newChatItem_ = -1, keyItem_ = -1, chatViewItem_ = -1, inputItem_ = -1;
         int modelItem_ = -1, thinkingItem_ = -1, sendItem_ = -1;
@@ -266,7 +277,10 @@ namespace testingplaygroundsynth::ui
         float width_ = 0.0f, height_ = 0.0f;
         uint32_t layoutRevision_ = 0;                    // bumps with each layout()
         std::string title_, subtitle_, status_, meter_;
-        std::string notice_;                             // RANDOM's word in the status, until noticeUntil_
+        std::string presetText_;                         // the header's: the preset loaded or saved last
+        PresetBrowser presets_{ port_ };
+        int focusBeforePresets_ = -1;
+        std::string notice_;                             // RANDOM's or PRESETS' word in the status, until noticeUntil_
         double noticeUntil_ = -1.0;
         uint32_t randomCount_ = 0;
 
