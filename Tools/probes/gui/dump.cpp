@@ -8,6 +8,8 @@
 //   gui.dump.edited.png  after the EXAMPLES menu: another example, running, its dials
 //   gui.dump.files.png   two files, the second shown, after a run whose error is in it: its tab's mark, the problem
 //   gui.dump.dials.png   a program of sixteen dials, in two rows of eight; .dials.small.png at the least size
+//   gui.dump.panel.png   the same dials in the sections its #pragma panel lines ask for; .panel.paper.png in PAPER,
+//                        .panel.small.png at the least size
 // and checks:
 //   FRAME     the frame settles, every glyph is in the font, the editor shows the processor's draft (the first
 //             example), and the dials are the program's parameters: one for each, the rest not shown
@@ -34,6 +36,12 @@
 //             all of them in the left column (left of the chat's card) and under the problems list; the editor
 //             gives up the second row's height. Back to a program of fewer dials, one row again, and the editor's
 //             height back
+//   PANEL     the sixteen dials in five sections (#pragma panel): two rows of frames, as the row line asks, their
+//             titles in order; each dial inside its section's frame, in its order; no frame over another, all in the
+//             left column under the problems list; the rows of frames even (the shorter widened toward the longer);
+//             the labels asked for (the dials' accessibility titles) and the small dials compact; at the least size
+//             every dial is still inside its frame. A panel line that names no dial is a note in the problems list,
+//             with its line, and the panel stands without it
 //   KEYS      Escape leaves the editor, after which Tab moves the focus ring (and no key reaches the text)
 #include "Probe.h"
 
@@ -83,19 +91,92 @@ namespace
     }
 
     // A program of this plugin's kind with kMaxControls parameters, whose names are of a synthesizer's lengths.
-    std::string sixteenDials()
+    // A program of this plugin's kind with the first `count` of these parameters and no panel line.
+    std::string dialsProgram(int count)
     {
         static_assert(tp::kMaxControls == 16, "the names below");
         const char* const names[] = { "shape",   "detune",   "sub",     "noise",  "cutoff", "resonance", "envamount", "keytrack",
                                       "lforate", "lfodepth", "attack",  "decay",  "sustain", "release",  "glide",     "level" };
         std::string params;
-        for (const char* name : names)
-            params += std::string("    param float ") + name + " [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n";
+        for (int k = 0; k < count && k < 16; ++k)
+            params += std::string("    param float ") + names[k] + " [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n";
         if constexpr (tp::product::kIsInstrument)
             return "module Voice\n{\n" + params + "    float note;\n    void start(float n, float v) { note = n; }\n"
                    "    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n";
         else
             return "module Effect\n{\n" + params + "    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
+    }
+
+    std::string sixteenDials() { return dialsProgram(16); }
+
+    // sixteenDials() laid out in five sections, two rows, with labels and small dials; `extra` goes after the lines.
+    std::string panelProgram(const std::string& extra = "")
+    {
+        return "#pragma panel section \"OSCILLATORS\" shape detune sub noise\n"
+               "#pragma panel section \"FILTER\" cutoff resonance envamount keytrack\n"
+               "#pragma panel section \"LFO\" lforate lfodepth\n"
+               "#pragma panel row\n"
+               "#pragma panel section \"ENVELOPE\" attack decay sustain release\n"
+               "#pragma panel section \"OUTPUT\" glide level\n"
+               "#pragma panel label envamount \"ENV AMT\"\n"
+               "#pragma panel label lforate \"RATE\"\n"
+               "#pragma panel label lfodepth \"DEPTH\"\n"
+               "#pragma panel small sub noise keytrack glide\n"
+               + extra + sixteenDials();
+    }
+
+    // The checks of a sectioned layout: `titles` in order and `rows` rows; each dial of `members` (slots by section)
+    // inside its frame and in order; no two frames overlapping; all in the left column, under the problems list.
+    void checkSections(funkgui::test::Probe& P, const std::string& key, const tp::ui::Panel& panel,
+                       const std::vector<std::string>& titles, const std::vector<std::vector<int>>& members, int rows)
+    {
+        const tp::ui::DialsLayout& L = panel.dialsLayout();
+        P.eq(key + ".sections", static_cast<int64_t>(L.sections.size()), static_cast<int64_t>(titles.size()));
+        P.eq(key + ".rows", panel.dialRows(), rows);
+        bool named = L.sections.size() == titles.size(), inside = true, ordered = true, apart = true, column = true;
+        for (std::size_t k = 0; k < L.sections.size() && k < titles.size(); ++k)
+        {
+            named = named && L.sections[k].title == titles[k];
+            const funkgui::Rect& f = L.sections[k].r;
+            column = column && f.x >= 0.0f && f.right() <= panel.chatCard().x && f.bottom() <= panel.chatCard().bottom()
+                  && f.y >= panel.centreOfProblem(3).y + 7.5f;
+            for (std::size_t j = 0; j < k; ++j)
+            {
+                const funkgui::Rect& g = L.sections[j].r;
+                apart = apart && (f.right() <= g.x || g.right() <= f.x || f.bottom() <= g.y || g.bottom() <= f.y);
+            }
+            if (k >= members.size())
+                continue;
+            float lastX = -1.0f, lastY = -1.0f;
+            for (const int c : members[k])
+            {
+                const tp::ui::DialPlace& d = L.dials[static_cast<std::size_t>(c)];
+                const float w = d.small ? tp::ui::kSmallDialW : tp::ui::kDialW, h = d.small ? tp::ui::kSmallDialH : tp::ui::kDialH;
+                inside = inside && d.x >= f.x && d.x + w <= f.right() && d.top >= f.y && d.top + h <= f.bottom();
+                ordered = ordered && (d.top > lastY + 20.0f || (std::fabs(d.top - lastY) <= 20.0f && d.x > lastX));
+                lastX = d.x;
+                lastY = d.top;
+            }
+        }
+        P.eq(key + ".titles_in_order", named ? 1 : 0, 1);
+        P.eq(key + ".dials_inside_frames", inside ? 1 : 0, 1);
+        P.eq(key + ".dials_in_order", ordered ? 1 : 0, 1);
+        P.eq(key + ".frames_apart", apart ? 1 : 0, 1);
+        P.eq(key + ".in_left_column", column ? 1 : 0, 1);
+    }
+
+    // The accessibility title of the dial at slot c.
+    std::string dialTitle(const tp::ui::Panel& panel, int c)
+    {
+        std::vector<funkgui::A11yItem> items;
+        panel.accessibility(items);
+        const auto at = panel.centreOfDial(c);
+        if (!at)
+            return {};
+        for (const funkgui::A11yItem& it : items)
+            if (it.bounds.contains(*at))
+                return it.title;
+        return {};
     }
 
     // The dials shown, their centres in slot order.
@@ -388,9 +469,13 @@ PROBE(gui, dump)
         settleRun(processor, host);
     }
 
-    // ROWS
+    // ROWS, from a program of three dials and no panel line.
     {
         const std::string program = editor.text();
+        editor.selectAll();
+        editor.insert(dialsProgram(3));
+        host.keys("cmd+return");
+        settleRun(processor, host);
         const float editorH = editor.bounds().h;
         editor.selectAll();
         editor.insert(sixteenDials());
@@ -415,18 +500,87 @@ PROBE(gui, dump)
         checkRows(P, "rows.wide", panel, shownDials(panel), 1);
         host.resize(tp::ui::kDefaultWidth, tp::ui::kDefaultHeight);
         host.settle();
-        // Back to the program before: its dials in one row, and the editor's height back.
+        // Back to three dials: one row, and the editor's height back.
+        editor.selectAll();
+        editor.insert(dialsProgram(3));
+        host.keys("cmd+return");
+        settleRun(processor, host);
+        dials = shownDials(panel);
+        P.eq("rows.fewer_shown", static_cast<int64_t>(dials.size()), 3);
+        checkRows(P, "rows.fewer", panel, dials, 1);
+        P.near("rows.editor_height_back", static_cast<double>(editor.bounds().h), static_cast<double>(editorH), 0.01);
         editor.selectAll();
         editor.insert(program);
         host.keys("cmd+return");
         settleRun(processor, host);
-        dials = shownDials(panel);
-        int wanted = 0;
-        for (const tp::Control& c : port.status().controls)
-            wanted += c.used ? 1 : 0;
-        P.eq("rows.fewer_shown", static_cast<int64_t>(dials.size()), wanted);
-        checkRows(P, "rows.fewer", panel, dials, 1);
-        P.near("rows.editor_height_back", static_cast<double>(editor.bounds().h), static_cast<double>(editorH), 0.01);
+    }
+
+    // PANEL
+    {
+        const std::string program = editor.text();
+        editor.selectAll();
+        editor.insert(panelProgram());
+        host.keys("cmd+return");
+        settleRun(processor, host);
+        P.eq("panel.compiles", port.status().ok ? 1 : 0, 1);
+        P.eq("panel.no_notes", port.status().notes.empty() ? 1 : 0, 1);
+        if (!port.status().notes.empty())
+            std::printf("notes:\n%s", port.status().notes.c_str());
+        const std::vector<std::string> titles{ "OSCILLATORS", "FILTER", "LFO", "ENVELOPE", "OUTPUT" };
+        const std::vector<std::vector<int>> members{ { 0, 1, 2, 3 }, { 4, 5, 6, 7 }, { 8, 9 }, { 10, 11, 12, 13 }, { 14, 15 } };
+        checkSections(P, "panel.default", panel, titles, members, 2);
+        const tp::ui::DialsLayout& L = panel.dialsLayout();
+        if (L.sections.size() == 5)
+        {
+            const float row1 = L.sections[2].r.right() - L.sections[0].r.x, row2 = L.sections[4].r.right() - L.sections[3].r.x;
+            std::printf("rows of frames: %.0f and %.0f px wide\n", static_cast<double>(row1), static_cast<double>(row2));
+            P.le("panel.rows_even_px", static_cast<double>(std::fabs(row1 - row2)), 1.0);
+        }
+        P.eq("panel.small_dials", L.dials[2].small && L.dials[3].small && L.dials[7].small && L.dials[14].small
+                                      && !L.dials[0].small && !L.dials[4].small ? 1 : 0, 1);
+        P.eq("panel.label_asked", dialTitle(panel, 6) == "ENV AMT" ? 1 : 0, 1);
+        P.eq("panel.label_name", dialTitle(panel, 4) == "CUTOFF" ? 1 : 0, 1);
+        {
+            const funkgui::PrimList& frame = host.draw();
+            P.ge("panel.frames_drawn", countTag(frame, tp::ui::kSectionTag), 5.0);
+            P.eq("panel.missing_glyphs", static_cast<int64_t>(frame.missingGlyphs), 0);
+            writePng(P, host, "gui.dump.panel.png", "panel");
+        }
+        {
+            // PAPER: another panel over the same processor, which shows the program that plays.
+            funkgui::UiPreferences::get().setTheme(1);
+            tp::ui::Panel paper(processor.ports(), port);
+            funkgui::HeadlessHost paperHost(paper, 1, 2.0f);
+            paperHost.settle();
+            P.eq("panel.paper.sections", static_cast<int64_t>(paper.dialsLayout().sections.size()), 5);
+            writePng(P, paperHost, "gui.dump.panel.paper.png", "panel.paper");
+            funkgui::UiPreferences::get().setTheme(0);
+        }
+        host.resize(tp::ui::kMinWidth, tp::ui::kMinHeight);
+        host.settle();
+        checkSections(P, "panel.least", panel, titles, members, panel.dialRows());
+        writePng(P, host, "gui.dump.panel.small.png", "panel.least");
+        host.resize(tp::ui::kDefaultWidth, tp::ui::kDefaultHeight);
+        host.settle();
+        // A line that names no dial: a note on its line; the rest of the panel stands.
+        editor.selectAll();
+        editor.insert(panelProgram("#pragma panel section \"MORE\" nosuch\n"));
+        host.keys("cmd+return");
+        settleRun(processor, host);
+        bool noted = false;
+        for (const tp::ui::Problem& p : panel.problems())
+            noted = noted || (!p.error && p.line == 11 && p.text.find("no dial nosuch") != std::string::npos);
+        P.eq("panel.bad_line_noted", noted ? 1 : 0, 1);
+        P.eq("panel.stands", static_cast<int64_t>(panel.dialsLayout().sections.size()), 5);
+        editor.selectAll();
+        editor.insert(dialsProgram(3));
+        host.keys("cmd+return");
+        settleRun(processor, host);
+        P.eq("panel.plain_again", panel.dialsLayout().sections.empty() ? 1 : 0, 1);
+        editor.selectAll();
+        editor.insert(program);
+        host.keys("cmd+return");
+        settleRun(processor, host);
     }
 
     // KEYS

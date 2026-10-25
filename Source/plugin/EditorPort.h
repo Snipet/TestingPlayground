@@ -14,6 +14,7 @@
 //   statusRevision()  bumps with each compile that finishes
 //   running()         the files of the program that plays (none before the first compiles)
 //   controls()        the dials of the program that plays
+//   panel()           how its #pragma panel lines lay them out (PanelSpec.h)
 //   load()            the audio thread's busiest recent block, as a share of its time (Engine::load)
 //   alerts()          the output guard's alerts of the last two seconds (Engine::Alert bits)
 //   chat()            the chat with Claude (ChatPort.h)
@@ -54,6 +55,7 @@ namespace testingplaygroundsynth
         virtual uint64_t statusRevision() const = 0;
         virtual Sources running() const = 0;
         virtual Controls controls() const = 0;
+        virtual PanelSpec panel() const = 0;
 
         virtual float load() const = 0;
         virtual uint32_t alerts() const = 0;
