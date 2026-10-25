@@ -15,6 +15,7 @@
 
 #include "dsp/Controls.h"
 #include "dsp/Sources.h"
+#include "fminus/PanelSpec.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -37,6 +38,7 @@ namespace testingplayground
         std::string notes;                     // the plugin's notes on a program that plays
         double      ms = 0.0;
         Controls    controls{};                // the program's dials, when ok
+        PanelSpec   panel;                     // how its #pragma panel lines lay them out, when ok
         Sources     sources;                   // the files compiled
     };
 

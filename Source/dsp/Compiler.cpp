@@ -24,6 +24,7 @@ namespace testingplayground
             if (r.patch)
             {
                 s.controls = r.patch->controls();
+                s.panel = r.patch->panel();
                 engine.offer(std::move(r.patch));
             }
             return s;

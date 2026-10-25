@@ -13,7 +13,7 @@
 //            thinking, each with its levels
 //   REQUEST  each request has the model, max_tokens (the model's own limit, from /v1/models), stream, adaptive
 //            thinking (summarized), the effort, the system prompt cached for an hour, the automatic cache breakpoint,
-//            the nine tools each with eager_input_streaming, "fallbacks" and server-side compaction (its edit, trigger
+//            the ten tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
 //            and instructions) with their beta headers for a model that takes them, the API version and the key, and
 //            no temperature, top_p or top_k; the first message carries the plugin's state; the history is append-only
 //            (each request's messages begin with the previous request's, unchanged, signatures included) and the
@@ -30,6 +30,9 @@
 //   CONTEXT  the plugin's state names a file Claude has seen (as it wrote it) without its text; a file the user edited
 //            goes with its text; when nothing changed no state goes at all
 //   MEASURE  measure_output through the agent: its result is the render's report, with the dials asked for
+//   LIBRARY  add_library_file: the library's file as a tab of the editor, its text in the result (and seen: the next
+//            state names it without its text), a what Claude did entry; a name the library has not is an error
+//            result naming its files; the same file again is there already, not added twice
 //   BROKEN   a stream cut short (no message_stop) is asked again; what it showed is taken back, and the answer appears
 //            once
 //   COMPACT  a compaction block: a note, the usage counts the compaction; the next request starts at the user message
@@ -47,6 +50,7 @@
 #include "plugin/ClaudeApi.h"
 #include "plugin/Processor.h"
 
+#include "Library.h"
 #include "Product.h"
 
 #include <funkgui/panel/HeadlessGuiScope.h>
@@ -315,8 +319,16 @@ PROBE(plugin, chat)
         int eager = 0;
         for (const auto& t : tools)
             eager += static_cast<bool>(t.getProperty("eager_input_streaming", false)) ? 1 : 0;
-        P.eq("request.tools", tools.size(), 9);
-        P.eq("request.tools_eager", eager, 9);
+        P.eq("request.tools", tools.size(), 10);
+        P.eq("request.tools_eager", eager, 10);
+        bool libraryEnum = false;
+        for (const auto& t : tools)
+            if (str(t, "name") == "add_library_file")
+            {
+                const juce::var name = t.getProperty("input_schema", {}).getProperty("properties", {}).getProperty("name", {});
+                libraryEnum = arr(name.getProperty("enum", {})).size() == static_cast<int>(std::size(tp::kLibrary));
+            }
+        P.eq("request.library_enum", libraryEnum ? 1 : 0, 1);
         P.eq("request.fallbacks", str(b0, "fallbacks") == "default" ? 1 : 0, 1);
         P.eq("request.beta_header",
              script->header(1, "anthropic-beta") == "server-side-fallback-2026-07-01,compact-2026-01-12" ? 1 : 0, 1);
@@ -524,6 +536,59 @@ PROBE(plugin, chat)
         P.eq("measure.report", has(report, "Rendered offline") && has(report, "level 0.5") ? 1 : 0, 1);
         P.eq("measure.kind", has(report, tp::product::kIsInstrument ? "Note 60" : "Sine 220 Hz") ? 1 : 0, 1);
         P.eq("measure.entry", lastText(agent.chatState(), tp::ChatEntry::Kind::tool) == "measured the sound" ? 1 : 0, 1);
+    }
+
+    // ---- LIBRARY -------------------------------------------------------------------------------------------------------
+    {
+        script->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .tool("toolu_l1", "add_library_file", input({ { "name", "svf.fm" } }))
+                                           .tool("toolu_l2", "add_library_file", input({ { "name", "nosuch.fm" } }))
+                                           .end("tool_use")));
+        script->add(fake::Response::ok(
+            fake::Sse().start().tool("toolu_l3", "add_library_file", input({ { "name", "svf.fm" } })).end("tool_use")));
+        script->add(fake::Response::ok(fake::Sse().start().text("Added a filter.").end()));
+        const int before = script->postCount();
+        agent.send("add a filter");
+        agent.waitIdle();
+        const tp::LibraryFile* svf = tp::findLibraryFile("svf.fm");
+        const tp::Draft d = processor.editorPort().draft();
+        bool tab = false;
+        for (const tp::SourceFile& f : d.files)
+            tab = tab || (f.name == "svf.fm" && svf != nullptr && f.text == svf->source);
+        P.eq("library.tab", tab ? 1 : 0, 1);
+        // The results: in the request after each tool call.
+        const auto results = [&](int post) {
+            const juce::Array<juce::var> m = messagesOf(script->body(post));
+            return arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {}));
+        };
+        const juce::Array<juce::var> first = results(before + 1);
+        const juce::Array<juce::var> second = results(before + 2);
+        const std::string added = first.size() == 2 ? str(first[0], "content") : std::string();
+        P.eq("library.result_added", has(added, "Added svf.fm") && svf != nullptr && has(added, svf->source) ? 1 : 0, 1);
+        P.eq("library.unknown_error", first.size() == 2 && static_cast<bool>(first[1].getProperty("is_error", false))
+                                          && has(str(first[1], "content"), "no file nosuch.fm") && has(str(first[1], "content"), "ladder.fm")
+                                          ? 1 : 0, 1);
+        P.eq("library.again_there", second.size() == 1 && has(str(second[0], "content"), "has svf.fm already") ? 1 : 0, 1);
+        int copies = 0;
+        for (const tp::SourceFile& f : d.files)
+            copies += f.name == "svf.fm" ? 1 : 0;
+        P.eq("library.not_twice", copies, 1);
+        bool entry = false;
+        for (const tp::ChatEntry& e : agent.chatState().entries)
+            entry = entry || (e.kind == tp::ChatEntry::Kind::tool && e.text == "added svf.fm from the library");
+        P.eq("library.entry", entry ? 1 : 0, 1);
+        // Seen: the next state names it without its text.
+        processor.getParameters()[0]->setValueNotifyingHost(0.4f);
+        script->add(fake::Response::ok(fake::Sse().start().text("Yes.").end()));
+        agent.send("is it there?");
+        agent.waitIdle();
+        const juce::Array<juce::var> m = messagesOf(script->body(script->postCount() - 1));
+        std::string state;
+        for (const auto& b : arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {})))
+            if (str(b, "text").rfind("<plugin_state>", 0) == 0)
+                state = str(b, "text");
+        P.eq("library.seen", has(state, "<file name=\"svf.fm\"") && !has(state, "module Svf") ? 1 : 0, 1);
     }
 
     // ---- BROKEN --------------------------------------------------------------------------------------------------------

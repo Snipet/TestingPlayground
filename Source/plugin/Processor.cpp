@@ -406,6 +406,7 @@ namespace testingplayground
             const std::lock_guard<std::mutex> lock(programMutex_);
             before = controls_;
             controls_ = s.controls;
+            panel_ = s.panel;
             running_ = s.sources;
         }
         if (reset)
@@ -589,6 +590,12 @@ namespace testingplayground
     {
         const std::lock_guard<std::mutex> lock(programMutex_);
         return controls_;
+    }
+
+    PanelSpec Processor::panel() const
+    {
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        return panel_;
     }
 
     float Processor::load() const { return engine_.load(); }

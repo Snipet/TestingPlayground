@@ -1,0 +1,59 @@
+// onepole.fm: one-pole low- and high-pass, 6 dB/octave, and a DC blocker.
+//
+// Topology-preserving, so a moving cutoff stays smooth: a tone control, a damping in a feedback loop, a smoother.
+//
+//   OnePole tone;                  a field of your module
+//   tone.set(fc, rate);            the cutoff in Hz (-3 dB there); every sample while it moves, else once a call
+//   y = tone.lowpass(x);           one sample, low-passed; or
+//   y = tone.highpass(x);          one sample, high-passed (call one of the two a sample)
+//   tone.clear();                  silence
+//
+//   DcBlock dc;                    a high-pass at 10 Hz, for what feedback, folding or asymmetric shaping leave
+//   dc.set(rate);                  in init
+//   y = dc.tick(x);
+module OnePole
+{
+    float s;
+    float G;
+
+    void set(float fc, float rate)
+    {
+        const float r = fmaxf(rate, 1000);
+        const float w = 3.14159265f * fminf(fmaxf(fc, 1), 0.49f * r) / r;
+        const float g = sinf(w) / cosf(w);
+        G = g / (1 + g);
+    }
+
+    float lowpass(float x)
+    {
+        const float v = (x - s) * G;
+        const float y = v + s;
+        s = y + v;
+        return y;
+    }
+
+    float highpass(float x)
+    {
+        return x - lowpass(x);
+    }
+
+    void clear()
+    {
+        s = 0;
+    }
+};
+
+module DcBlock
+{
+    OnePole low;
+
+    void set(float rate)
+    {
+        low.set(10, rate);
+    }
+
+    float tick(float x)
+    {
+        return low.highpass(x);
+    }
+};

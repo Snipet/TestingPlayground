@@ -1,0 +1,86 @@
+// util.fm: decibels, pitch, equal-power panning and crossfades, a smoother.
+//
+// The conversions and helpers most programs need; the smoother for anything that must not step (a gain set once a
+// call, a pitch that glides).
+//
+//   g = dbToGain(db);   db = gainToDb(g);
+//   hz = noteToHz(note);           MIDI note numbers (69: A, 440 Hz), fractions too
+//   r = semitones(st);  r = cents(c);   frequency ratios: f * semitones(7) is a fifth up
+//   l = panLeft(pan);  r = panRight(pan);   pan -1 (left) to 1 (right), equal power: the sum of their squares is 1
+//   y = crossfade(a, b, t);        t 0 (a) to 1 (b), equal power: for two uncorrelated signals (a dry and a wet)
+//   y = lerp(a, b, t);             a straight blend (two in-phase signals)
+//   y = clampf(x, lo, hi);
+//   Smooth glide;                  a field: glide.set(ms, rate) (once a call), y = glide.tick(target) a sample:
+//                                  follows the target, 63 % of the way in ms; glide.jump(value) skips there
+float dbToGain(float db)
+{
+    return expf(0.115129255f * db);
+}
+
+float gainToDb(float g)
+{
+    return 8.68588964f * logf(fmaxf(fabsf(g), 0.000001f));
+}
+
+float noteToHz(float note)
+{
+    return 440 * expf(0.0577622650f * (note - 69));
+}
+
+float semitones(float st)
+{
+    return expf(0.0577622650f * st);
+}
+
+float cents(float c)
+{
+    return expf(0.000577622650f * c);
+}
+
+float panLeft(float pan)
+{
+    return cosf(0.785398163f * (fminf(fmaxf(pan, -1), 1) + 1));
+}
+
+float panRight(float pan)
+{
+    return sinf(0.785398163f * (fminf(fmaxf(pan, -1), 1) + 1));
+}
+
+float crossfade(float a, float b, float t)
+{
+    const float u = 1.57079633f * fminf(fmaxf(t, 0), 1);
+    return cosf(u) * a + sinf(u) * b;
+}
+
+float lerp(float a, float b, float t)
+{
+    return a + t * (b - a);
+}
+
+float clampf(float x, float lo, float hi)
+{
+    return fminf(fmaxf(x, lo), hi);
+}
+
+module Smooth
+{
+    float value;
+    float coef;
+
+    void set(float ms, float rate)
+    {
+        coef = 1 - expf(-1 / (fmaxf(ms, 0.01f) * 0.001f * fmaxf(rate, 1000)));
+    }
+
+    float tick(float target)
+    {
+        value += coef * (target - value);
+        return value;
+    }
+
+    void jump(float v)
+    {
+        value = v;
+    }
+};

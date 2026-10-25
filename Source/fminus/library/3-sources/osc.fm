@@ -1,0 +1,135 @@
+// osc.fm: band-limited oscillators: saw, pulse with a width, triangle, sine, and a morph between them.
+//
+// PolyBLEP and polyBLAMP corrections, so no harsh aliasing up the keyboard; the morph goes from saw through square
+// to triangle.
+//
+//   Osc osc;                       a field of your module, one per oscillator
+//   step = hz / rate;              the frequency in cycles a sample (keep it below 0.5)
+//   y = osc.saw(step);             -1 to 1, rising; or
+//   y = osc.pulse(step, width);    width 0.05 to 0.95 of a cycle high (0.5: a square, -1 to 1), without DC (a narrow
+//                                  pulse peaks near 2, as an analog one does); or
+//   y = osc.triangle(step);        or
+//   y = osc.sine(step);            or
+//   y = osc.morph(step, shape);    shape 0 saw, 0.5 square, 1 triangle, and between
+// Each advances the phase: call one of them a sample (two waves of one oscillator: two Osc in step, reset alike).
+//   osc.reset(phase);              0 to 1: where a cycle starts (a voice's start, or hard sync)
+//   osc.phase                      0 to 1, where it is
+module Osc
+{
+    float phase;
+
+    void reset(float at)
+    {
+        phase = at - floorf(at);
+    }
+
+    // The polyBLEP correction for a step of -2 at phase 0 (t: the phase, dt: its step a sample).
+    float blep(float t, float dt)
+    {
+        if (t < dt)
+        {
+            const float x = t / dt;
+            return x + x - x * x - 1;
+        }
+        if (t > 1 - dt)
+        {
+            const float x = (t - 1) / dt;
+            return x * x + x + x + 1;
+        }
+        return 0;
+    }
+
+    // The polyBLAMP correction for a corner whose slope rises by one a sample, at phase 0.
+    float blamp(float t, float dt)
+    {
+        if (t < dt)
+        {
+            const float x = 1 - t / dt;
+            return x * x * x * 0.166666667f;
+        }
+        if (t > 1 - dt)
+        {
+            const float x = (t - 1) / dt + 1;
+            return x * x * x * 0.166666667f;
+        }
+        return 0;
+    }
+
+    void advance(float dt)
+    {
+        phase += dt;
+        if (phase >= 1)
+            phase -= 1;
+    }
+
+    float sawAt(float t, float dt)
+    {
+        return 2 * t - 1 - blep(t, dt);
+    }
+
+    // High for `width` of the cycle from phase 0, its mean taken off.
+    float pulseAt(float t, float dt, float width)
+    {
+        float t2 = t - width;
+        if (t2 < 0)
+            t2 += 1;
+        return (t < width ? 1.0f : -1.0f) + blep(t, dt) - blep(t2, dt) + 1 - 2 * width;
+    }
+
+    float triangleAt(float t, float dt)
+    {
+        float t2 = t + 0.5f;
+        if (t2 >= 1)
+            t2 -= 1;
+        return 1 - 4 * fabsf(t - 0.5f) + 8 * dt * (blamp(t, dt) - blamp(t2, dt));
+    }
+
+    float saw(float step)
+    {
+        const float dt = fminf(fabsf(step), 0.5f);
+        const float y = sawAt(phase, dt);
+        advance(dt);
+        return y;
+    }
+
+    float pulse(float step, float width)
+    {
+        const float dt = fminf(fabsf(step), 0.5f);
+        const float y = pulseAt(phase, dt, fminf(fmaxf(width, 0.05f), 0.95f));
+        advance(dt);
+        return y;
+    }
+
+    float triangle(float step)
+    {
+        const float dt = fminf(fabsf(step), 0.5f);
+        const float y = triangleAt(phase, dt);
+        advance(dt);
+        return y;
+    }
+
+    float sine(float step)
+    {
+        const float y = sinf(6.28318531f * phase);
+        advance(fminf(fabsf(step), 0.5f));
+        return y;
+    }
+
+    // The square falls where the saw does, at phase 0, so that their blend keeps the fundamental.
+    float morph(float step, float shape)
+    {
+        const float dt = fminf(fabsf(step), 0.5f);
+        const float s = fminf(fmaxf(shape, 0), 1);
+        const float square = -pulseAt(phase, dt, 0.5f);
+        float y = 0;
+        if (s < 0.5f)
+        {
+            const float a = sawAt(phase, dt);
+            y = a + 2 * s * (square - a);
+        }
+        else
+            y = square + (2 * s - 1) * (triangleAt(phase, dt) - square);
+        advance(dt);
+        return y;
+    }
+};

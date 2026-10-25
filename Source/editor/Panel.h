@@ -8,8 +8,9 @@
 //
 //   header    the product name, its kind and version, and the THEME cells (GRAPHITE, PAPER)
 //   toolbar   RUN (Cmd-Return in the editor too), EXAMPLES (a menu: the example replaces the text, undoably, and
-//             runs), the status (running, edited, compiling, the errors' count, the compile time) and, at the right,
-//             the audio thread's load and the output guard's alerts (NaN replaced, clipped)
+//             runs), LIBRARY (a menu of ready-made building blocks, Library.h: one becomes a tab and the program
+//             #includes it), the status (running, edited, compiling, the errors' count, the compile time) and, at
+//             the right, the audio thread's load and the output guard's alerts (NaN replaced, clipped)
 //   files     a tab for each of the program's files (Sources.h; at most kMaxFiles): the program's first, then the
 //             files it can #include by name. A click shows a file, a double-click edits its name in place (Return keeps
 //             it, Escape cancels), the + adds a file (its name being edited), a tab's x closes its file (asking first
@@ -19,11 +20,12 @@
 //             last run's errors name
 //   problems  the last run's messages, a line each (the first four, and how many more), each with its file; a click
 //             on one with a line number shows its file and puts the caret there
-//   dials     the running program's parameters, P1 to P16 (a funkgui::Dial each, labelled with the parameter's name;
-//             an unused slot shows nothing), in order, in as few rows as the column's width holds (a row of sixteen
-//             on a wide panel, two of eight at the default size), the dials shared out evenly between the rows: a
-//             drag, the wheel or the keys write through the processor's ports, and a double-click returns to the
-//             parameter's fminus::default. The editor gives up the height a second row takes
+//   dials     the running program's parameters, P1 to P16 (a funkgui::Dial each, labelled with the parameter's name
+//             or its #pragma panel label; an unused slot shows nothing), placed by DialLayout.h: in the titled
+//             sections the program's #pragma panel lines ask for, framed as on an analog synth's panel, or else in
+//             order, in as few rows as the column's width holds. A drag, the wheel or the keys write through the
+//             processor's ports, and a double-click returns to the parameter's fminus::default. The editor gives up
+//             the height that more rows take
 //   chat      at the right, a rounded card set apart from the square panel (ChatStyle.h): its header (the title, a new
 //             chat (asking first), the API key), the conversation (ChatView.h: bubbles, light markdown, thinking rows,
 //             cards of what Claude did, code blocks with Copy, an empty chat's suggestions), the message box that grows
@@ -51,7 +53,10 @@
 #include <funkgui/params/GestureController.h>
 #include <funkgui/params/ParamPort.h>
 
+#include "dsp/Controls.h"
 #include "dsp/Sources.h"
+#include "editor/DialLayout.h"
+#include "fminus/PanelSpec.h"
 
 #include "plugin/ChatPort.h"
 
@@ -98,6 +103,7 @@ namespace testingplayground::ui
     inline constexpr funkgui::Tag kTabTag = funkgui::tags::firstProduct + 4;          // the files' tabs
     inline constexpr funkgui::Tag kChatTag = funkgui::tags::firstProduct + 5;         // the chat's own text
     inline constexpr funkgui::Tag kKeyDialogTag = funkgui::tags::firstProduct + 6;    // the key dialog
+    inline constexpr funkgui::Tag kSectionTag = funkgui::tags::firstProduct + 7;      // the dials' sections
 
     // One message of the last run, as the problems list shows it.
     struct Problem
@@ -131,10 +137,15 @@ namespace testingplayground::ui
         funkgui::Point centreOfNewTab() const;
         funkgui::Point centreOfCloseTab(int i) const;
         std::optional<funkgui::Point> centreOfDial(int slot) const;    // nullopt for an unused slot
-        int dialRows() const noexcept { return dialRows_; }               // the rows the dials are laid out in
+        int dialRows() const noexcept { return dials_.rows; }             // the rows of dials, or of sections
+        const DialsLayout& dialsLayout() const noexcept { return dials_; }
         funkgui::Rect chatCard() const noexcept { return card_; }
         funkgui::Point centreOfRun() const;
         funkgui::Point centreOfExamples() const;
+        funkgui::Point centreOfLibrary() const;
+        // LIBRARY's choice (Library.h): the file as a tab, #included by the program; shown when it is there. False for
+        // a name the library has not, or no room for a tab.
+        bool addLibraryFile(const std::string& name);
         funkgui::Point centreOfProblem(int i) const;
         const std::vector<Problem>& problems() const noexcept { return problems_; }
         const std::string& statusText() const noexcept { return status_; }
@@ -190,6 +201,7 @@ namespace testingplayground::ui
         void setFocus(int item);
         void refresh(double nowSec);                     // the port's status, draft and dials, when they changed
         void openExamples();
+        void openLibrary();
         void jumpTo(const Problem&);
         void closeFile(int tab);                         // a tab's x: asks first when the file has text
         FilesItem& files();
@@ -232,7 +244,7 @@ namespace testingplayground::ui
         EditorPort& port_;
         std::vector<std::unique_ptr<Item>> items_;
         std::vector<int> itemOfSlot_;                    // dial slot -> item index
-        int editorItem_ = -1, problemsItem_ = -1, runItem_ = -1, examplesItem_ = -1;
+        int editorItem_ = -1, problemsItem_ = -1, runItem_ = -1, examplesItem_ = -1, libraryItem_ = -1;
         int themeItem_ = -1, zoomItem_ = -1;
         int newChatItem_ = -1, keyItem_ = -1, chatViewItem_ = -1, inputItem_ = -1;
         int modelItem_ = -1, thinkingItem_ = -1, sendItem_ = -1;
@@ -243,8 +255,9 @@ namespace testingplayground::ui
 
         // The places layout() found, which draw() uses.
         float leftW_ = 0.0f;                             // the left column's width (the editor's)
-        int dialsUsed_ = 0;                              // the running program's dials (its first slots)
-        int dialRows_ = 1, dialCols_ = 1;                // their grid, for leftW_
+        Controls controls_{};                            // the dials of the program that plays, as refresh() saw them
+        PanelSpec panelSpec_;                            // its #pragma panel lines
+        DialsLayout dials_;                              // their places
         float chatX_ = 0.0f, chatW_ = 0.0f;
         funkgui::Rect card_;                             // the chat's card
         float headerY_ = 0.0f;                           // its header row

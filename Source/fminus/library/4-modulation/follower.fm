@@ -1,0 +1,61 @@
+// follower.fm: an envelope follower and a compressor's gain curve.
+//
+// How loud a signal is, moment to moment, for dynamics: a compressor, a gate, ducking, an envelope that opens a
+// filter.
+//
+//   Follower level;                a field of your module
+//   level.set(attack, release, rate);   ms each: how fast it rises and falls; once a call
+//   e = level.peak(x);             the peak level of x, 0 and up (1: full scale); or
+//   e = level.rms(x);              the RMS level, steadier (call one of the two a sample)
+//   db = toDb(e);                  a level in dB (-120 for silence)
+//   g = compressorGainDb(db, threshold, ratio, knee);
+//                                  the gain in dB (0 or less) a compressor applies at level db: threshold in dB,
+//                                  ratio 1 and up (1: none), knee the width in dB of the soft corner (0: hard).
+//                                  A limiter: a ratio of 20 or more
+module Follower
+{
+    float env;
+    float up;
+    float fall;
+
+    void set(float attackMs, float releaseMs, float rate)
+    {
+        const float r = fmaxf(rate, 1000);
+        up = 1 - expf(-1 / (fmaxf(attackMs, 0.01f) * 0.001f * r));
+        fall = 1 - expf(-1 / (fmaxf(releaseMs, 0.01f) * 0.001f * r));
+    }
+
+    float peak(float x)
+    {
+        const float a = fabsf(x);
+        env += (a > env ? up : fall) * (a - env);
+        return env;
+    }
+
+    float rms(float x)
+    {
+        const float p = x * x;
+        env += (p > env ? up : fall) * (p - env);
+        return sqrtf(env);
+    }
+};
+
+float toDb(float level)
+{
+    return 8.68588964f * logf(fmaxf(level, 0.000001f));
+}
+
+float compressorGainDb(float db, float threshold, float ratio, float knee)
+{
+    const float over = db - threshold;
+    const float slope = 1 - 1 / fmaxf(ratio, 1);
+    const float k = fmaxf(knee, 0);
+    if (2 * over <= -k)
+        return 0;
+    if (2 * over < k)
+    {
+        const float x = over + 0.5f * k;
+        return -slope * x * x / (2 * k);
+    }
+    return -slope * over;
+}

@@ -1,0 +1,98 @@
+// delay.fm: a delay line, read between samples: echoes, chorus, flanger, vibrato.
+//
+// A ring buffer read a whole number of samples back or between samples, so that a moving delay bends the pitch (a
+// chorus, a flanger, a tape's wow) instead of clicking.
+//
+//   Delay line;                    a field of your module
+//   line.allocate(samples);        in init: room for the longest delay, (int)(seconds * rate); free it with
+//   line.release();                in end (process may not allocate)
+//   y = line.read(delay);          the input `delay` samples ago (at least 1), between samples linearly; read before
+//                                  you write in a sample: y = line.read(d); line.write(x + feedback * y);
+//   y = line.readCubic(delay);     the same through four points (at least 2 samples): smoother while it moves
+//   y = line.tap(samples);         a whole number of samples back, for fixed taps
+//   line.write(x);                 one sample in, each sample
+//   line.clear();                  silence
+// Every call is safe before allocate (it reads 0 and writes nothing).
+module Delay
+{
+    float* buffer;
+    int length;
+    int at;
+
+    void allocate(int samples)
+    {
+        release();
+        const int n = samples > 1 ? samples + 4 : 5;
+        buffer = calloc(n, sizeof(float));
+        length = buffer ? n : 0;
+        at = 0;
+    }
+
+    void release()
+    {
+        if (length > 0)
+            free(buffer);
+        length = 0;
+    }
+
+    void write(float x)
+    {
+        if (length == 0)
+            return;
+        buffer[at] = x;
+        at += 1;
+        if (at == length)
+            at = 0;
+    }
+
+    // The sample written `back` samples ago (1: the last written).
+    float sampleBack(int back)
+    {
+        int i = at - back;
+        if (i < 0)
+            i += length;
+        return buffer[i];
+    }
+
+    float tap(int samples)
+    {
+        if (length == 0)
+            return 0;
+        return sampleBack(samples < 1 ? 1 : (samples > length - 1 ? length - 1 : samples));
+    }
+
+    float read(float delay)
+    {
+        if (length == 0)
+            return 0;
+        const float d = fminf(fmaxf(delay, 1), (float)(length - 3));
+        const int whole = (int)d;
+        const float frac = d - (float)whole;
+        const float a = sampleBack(whole);
+        return a + frac * (sampleBack(whole + 1) - a);
+    }
+
+    float readCubic(float delay)
+    {
+        if (length == 0)
+            return 0;
+        const float d = fminf(fmaxf(delay, 2), (float)(length - 3));
+        const int whole = (int)d;
+        const float t = d - (float)whole;
+        const float ym1 = sampleBack(whole - 1);
+        const float y0 = sampleBack(whole);
+        const float y1 = sampleBack(whole + 1);
+        const float y2 = sampleBack(whole + 2);
+        // Hermite: through y0 and y1, the slopes from their neighbours.
+        const float c1 = 0.5f * (y1 - ym1);
+        const float c2 = ym1 - 2.5f * y0 + 2 * y1 - 0.5f * y2;
+        const float c3 = 0.5f * (y2 - ym1) + 1.5f * (y0 - y1);
+        return ((c3 * t + c2) * t + c1) * t + y0;
+    }
+
+    void clear()
+    {
+        for (int i = 0; i < length; ++i)
+            buffer[i] = 0;
+    }
+};
