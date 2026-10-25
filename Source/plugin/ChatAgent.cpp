@@ -701,7 +701,8 @@ namespace testingplaygroundsynth
             tools.add(tool("measure_output",
                            "Render the program in the editor offline and measure what comes out. An instrument: the "
                            "notes held and released, reporting the held level (peak and RMS in dBFS, DC, the stereo "
-                           "correlation), the strongest partials and the spectral centroid, the largest step between "
+                           "correlation), the strongest partials and the spectral centroid, with one note the strongest "
+                           "component that is no harmonic of it (aliasing, or the sound's own), the largest step between "
                            "two samples (clicks), when the release falls 60 dB and whether the voice ends, and a "
                            "chord's summed level. An effect: a sine, noise, an impulse and silence through it, "
                            "reporting the gain, the partials it adds, the brightness in and out, the impulse "

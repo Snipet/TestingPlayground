@@ -20,6 +20,11 @@
 //   OSC       at 440 Hz each wave has its RMS (saw and triangle 0.577, square 1, sine 0.707), no DC, 440 rising zero
 //             crossings a second; a 25 % pulse has no DC; the morph keeps its fundamental between saw and square;
 //             at 3.7 kHz the saw's strongest alias below 16 kHz is at least 10 dB under a naive saw's
+//   WAVETABLE each shape at 440 Hz with its RMS (sine 0.707, triangle and saw 0.577, square 1), no DC, 440 rising zero
+//             crossings; the saw at 1, 3.7, 7 and 11 kHz with nothing that is no harmonic above -80 dB below 20 kHz (a
+//             naive saw's aliases are above -40 dB); at the end of a fade the 16th harmonic of 1061 Hz (17 kHz) at a
+//             saw's level; a glide's copies move continuously and only up; a saw-to-square morph keeps its
+//             fundamental (0.764 halfway); the copies' harmonics; every call safe before allocate and build
 //   NOISE     white is uniform in -1..1 (RMS 0.577, no DC); pink and brown as loud (within 10 %); the low end
 //             outweighs the top more from white to pink to brown; two seeds differ
 //   ADSR      the attack reaches 1 in its time (within 0.1 ms), the decay settles on the sustain, the release ends
@@ -268,6 +273,69 @@ void noiseRun(float* y, int n, int kind, int seed)
         noise.seed(seed);
     for (int i = 0; i < n; ++i)
         y[i] = kind == 0 ? noise.white() : (kind == 1 ? noise.pink() : noise.brown());
+}
+)FM";
+
+    const char* const kWavetable = R"FM(#include "wavetable.fm"
+
+// A table of `frames` frames, the shapes from `first` on, read by one oscillator at `step` for n samples.
+void wtRun(float* y, int n, float step, float position, int first, int frames)
+{
+    Wavetable t;
+    t.allocate(frames);
+    for (int f = 0; f < frames; ++f)
+        t.shape(f, first + f);
+    WaveOsc o;
+    o.table = &t;
+    for (int i = 0; i < n; ++i)
+        y[i] = o.tick(step, position);
+    t.release();
+}
+
+// A saw gliding from step s0 to s1, exponentially, over n samples, and the oscillator's level each sample.
+void wtGlide(float* y, float* level, int n, float s0, float s1)
+{
+    Wavetable t;
+    t.allocate(1);
+    t.shape(0, 2);
+    WaveOsc o;
+    o.table = &t;
+    const float k = expf(logf(s1 / s0) / n);
+    float s = s0;
+    for (int i = 0; i < n; ++i)
+    {
+        y[i] = o.tick(s, 0);
+        level[i] = o.level;
+        s *= k;
+    }
+    t.release();
+}
+
+// Every call before allocate and build: the sum of what they read (silence: 0).
+float wtUnbuilt()
+{
+    Wavetable t;
+    WaveOsc o;
+    float sum = fabsf(o.tick(0.01f, 0));
+    o.table = &t;
+    sum += fabsf(o.tick(0.01f, 0.5f));
+    float* c = t.cycle(3);
+    c[0] = 1;
+    t.build(0);
+    t.shape(0, 2);
+    sum += fabsf(t.at(0.3f, 5, 1));
+    t.release();
+    t.allocate(2);
+    sum += fabsf(o.tick(0.02f, 0.5f));
+    t.release();
+    t.release();
+    return sum;
+}
+
+int wtHarmonics(int j)
+{
+    Wavetable t;
+    return t.harmonics(j);
 }
 )FM";
 
@@ -646,6 +714,97 @@ PROBE(fminus, library)
             noise(other.data(), N, 0, 7);
             P.eq("noise.seeds_differ", other != white ? 1 : 0, 1);
         }
+    }
+
+    // ---- WAVETABLE ---------------------------------------------------------------------------------------------------
+    {
+        std::string errors;
+        const auto p = compileHarness(kWavetable, errors);
+        P.eq("wavetable.compile", p != nullptr && errors.empty() ? 1 : 0, 1);
+        if (!errors.empty())
+            std::printf("%s", errors.c_str());
+        auto* run = function<void(float*, int, float, float, int, int)>(p.get(), "wtRun");
+        auto* glide = function<void(float*, float*, int, float, float)>(p.get(), "wtGlide");
+        auto* unbuilt = function<float()>(p.get(), "wtUnbuilt");
+        auto* harmonics = function<int(int)>(p.get(), "wtHarmonics");
+        std::vector<float> y(n);
+        if (run != nullptr)
+        {
+            const char* names[] = { "sine", "triangle", "saw", "square" };
+            const double rmsWant[] = { 0.7071, 0.577, 0.577, 1.0 };
+            for (int w = 0; w < 4; ++w)
+            {
+                run(y.data(), N, 440.0f / kRate, 0.0f, w, 1);
+                const std::string k = std::string("wavetable.") + names[w];
+                P.near(k + ".rms", rms(y), rmsWant[w], 0.02);
+                P.le(k + ".no_dc", std::fabs(mean(y)), 0.002);
+                P.near(k + ".crossings", static_cast<double>(risingCrossings(y)), 440.0, 1.0);
+            }
+            for (const double f0 : { 1000.0, 3700.0, 7000.0, 11000.0 })
+            {
+                run(y.data(), N, static_cast<float>(f0 / kFs), 0.0f, 2, 1);
+                const tp::measure::Peak odd = tp::measure::inharmonic(y, kFs, f0, 20000.0);
+                std::printf("the wavetable saw at %.0f Hz: nothing that is no harmonic above %.1f dB (at %.0f Hz)\n", f0,
+                            odd.db, odd.hz);
+                P.le("wavetable.saw_" + std::to_string(static_cast<int>(f0)) + "_hz_no_alias_db", odd.db, -80.0);
+            }
+            {
+                const double f0 = 3700.0;
+                std::vector<float> naive(n);
+                double ph = 0.0;
+                for (std::size_t i = 0; i < n; ++i)
+                {
+                    naive[i] = static_cast<float>(2.0 * ph - 1.0);
+                    ph += f0 / kFs;
+                    ph -= std::floor(ph);
+                }
+                const tp::measure::Peak odd = tp::measure::inharmonic(naive, kFs, f0, 20000.0);
+                std::printf("a naive saw at %.0f Hz: an alias at %.1f dB (%.0f Hz)\n", f0, odd.db, odd.hz);
+                P.ge("wavetable.naive_saw_aliases_db", odd.db, -40.0);
+            }
+            // The end of a fade (2 log2(2048 step) just under 11): copy 12 alone, sixteen harmonics.
+            {
+                const double f0 = kFs * std::pow(2.0, 5.5) / 2048.0 * 0.9999;
+                run(y.data(), N, static_cast<float>(f0 / kFs), 0.0f, 2, 1);
+                const std::vector<tp::measure::Peak> peaks = tp::measure::spectrumPeaks(y, kFs, 64);
+                double h16 = -200.0;
+                for (const tp::measure::Peak& pk : peaks)
+                    if (std::fabs(pk.hz - 16.0 * f0) < 20.0)
+                        h16 = pk.db;
+                std::printf("at %.1f Hz the 16th harmonic (%.0f Hz) is %.2f dB under the fundamental\n", f0, 16.0 * f0, -h16);
+                P.near("wavetable.sixteenth_harmonic_kept_db", h16, 20.0 * std::log10(1.0 / 16.0), 0.5);
+            }
+            // A morph from a saw to a square: their fundamentals in phase.
+            run(y.data(), N, 440.0f / kRate, 0.0f, 2, 2);
+            P.near("wavetable.morph_start_saw", rms(y), 0.577, 0.02);
+            run(y.data(), N, 440.0f / kRate, 1.0f, 2, 2);
+            P.near("wavetable.morph_end_square", rms(y), 1.0, 0.02);
+            run(y.data(), N, 440.0f / kRate, 0.5f, 2, 2);
+            P.near("wavetable.morph_halfway", rms(y), 0.764, 0.02);
+        }
+        if (glide != nullptr)
+        {
+            std::vector<float> level(n);
+            glide(y.data(), level.data(), N, 200.0f / kRate, 8000.0f / kRate);
+            double jump = 0.0, back = 0.0;
+            for (std::size_t i = 1; i < n; ++i)
+            {
+                jump = std::max(jump, static_cast<double>(std::fabs(level[i] - level[i - 1])));
+                back = std::max(back, static_cast<double>(level[i - 1] - level[i]));
+            }
+            std::printf("a glide from 200 Hz to 8 kHz: its copies from %.2f to %.2f, the largest move a sample %.5f\n",
+                        static_cast<double>(level.front()), static_cast<double>(level.back()), jump);
+            P.le("wavetable.glide_continuous", jump, 0.001);
+            P.le("wavetable.glide_only_up", back, 1e-6);
+            P.eq("wavetable.glide_finite", std::all_of(y.begin(), y.end(), [](float v) { return std::isfinite(v); }) ? 1 : 0, 1);
+        }
+        if (harmonics != nullptr)
+        {
+            P.eq("wavetable.harmonics", harmonics(0) == 1023 && harmonics(1) == 724 && harmonics(2) == 512
+                                         && harmonics(12) == 16 && harmonics(20) == 1 ? 1 : 0, 1);
+        }
+        if (unbuilt != nullptr)
+            P.eq("wavetable.safe_before_build", unbuilt() == 0.0f ? 1 : 0, 1);
     }
 
     // ---- ADSR, LFO, FOLLOWER -----------------------------------------------------------------------------------------

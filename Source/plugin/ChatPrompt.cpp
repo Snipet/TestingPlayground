@@ -68,6 +68,7 @@ module Effect
 - The audio thread: process may not allocate. FMinus refuses a program whose process could reach calloc, malloc or free. Allocate in init (calloc: zeroed) and free in end, or use a fixed array field (float line[96000];).
 - The plugin guards the output: every sample is made finite and kept within +-4 (+12 dBFS), and the toolbar says when it had to. Aim for peaks near 1. A NaN in the program's state stays there until the program runs again.
 - Subnormals are flushed to zero (the audio thread's mode), so decaying filters and feedback cost nothing extra.
+- A module named Shared, when the program has one, is made once for the program (its init(float rate) before the effect's, its end() after) and every field of Effect of type Shared* points at it: how an instrument's voices share a table built once. An effect, one instance, may as well hold what it needs.
 )";
 
         const char* const kInstrumentContract = R"(
@@ -125,6 +126,25 @@ module Voice
 - The audio thread: start, stop and process may not allocate (FMinus refuses a program whose methods could reach calloc, malloc or free from them). Allocate in init (each voice's own, calloc: zeroed) and free in end, or use a fixed array field.
 - The voices are summed: sixteen at full scale clip. Scale a voice to about 0.2 to 0.3 at velocity 1. The plugin keeps the output finite and within +-4, and the toolbar says when it had to.
 - Subnormals are flushed to zero (the audio thread's mode).
+- Data every voice reads, made once (a wavetable, a lookup table, a sample): a module named Shared, with an optional init(float rate) and end() as the voice's. The plugin makes one Shared for the program, runs its init before the voices' init (a voice's init may read it) and its end after theirs, and points every field of Voice of type Shared* at it:
+
+module Shared
+{
+    Wavetable table;                           // wavetable.fm
+    void init(float rate) { table.allocate(1); table.shape(0, 2); }
+    void end() { table.release(); }
+};
+
+module Voice
+{
+    Shared* shared;                            // the plugin sets it before init
+    WaveOsc osc;
+    void init(float rate) { osc.table = &shared->table; }
+    ...
+};
+
+  A table a voice built in its own init would be built for every voice instance, many times over: build it in Shared. The voices only read it (the audio thread), and never free it.
+- Aliasing: you cannot hear it, so measure it. measure_output with one note reports an Inharmonic line, the strongest component that is no harmonic of the note; test an oscillator at a high note (96 and up) with its detune and noise at 0. Under about -80 dB is clean (wavetable.fm reaches the measurement's floor, -90 dB); a naive saw's aliases are near -20 dB.
 )";
 
         const char* const kLanguage = R"(
@@ -133,13 +153,13 @@ FMINUS, THE LANGUAGE
 FMinus is a subset of C (C's syntax and semantics, clang's error messages) with modules, parameters and vectors added. What the compiler has:
 
 - Types: float (32-bit; an unsuffixed constant like 1.5 is a float), int (32-bit, signed; overflow is undefined), bool, void. Pointers to float, int, float2/float4/float8 and modules, one level deep, const and restrict. Arrays of one dimension (float h[16]; int k[3] = {1, 2, 3};), also of modules (Osc osc[4];). float2, float4, float8 are OpenCL-style vectors: (float4)(a, b, c, d), swizzles v.x v.wzyx, math applied lane by lane.
-- Not in FMinus: double, long, unsigned, char and strings, printf, struct/union/enum (use a module, and int constants), typedef, switch, do-while, goto, the bitwise operators (& | ^ ~ << >>), global variables and global constants (put state in the module's fields, and constants in const locals or small functions), function pointers, 2-D arrays, pointers to pointers.
+- Not in FMinus: double, long, unsigned, char and strings, printf, struct/union/enum (use a module, and int constants), typedef, switch, do-while, goto, the bitwise operators (& | ^ ~ << >>), global variables and global constants (put state in the module's fields, data made once for the whole program in a module Shared (the contract), and constants in const locals or small functions), function pointers, 2-D arrays, pointers to pointers.
 - Statements: blocks, if/else, while, for, break, continue, return, expression statements. Declarations anywhere in a block, block-scoped.
 - Operators: C's, with C's precedence: arithmetic (% works on floats too, as fmodf), comparisons, && || ! (short-circuit), ?: (only the taken branch runs), = += -= *= /= %=, ++ --, casts (float)i (int)x (bool)x. Integer division truncates (1 / 2 is 0): write 1.0f / 2 or (float)a / b.
 - Functions: C functions at the top level, callable before their definition. A function may be called from a module's method.
 - Modules (C++ structs with methods, simplified): `module Name { fields; params; methods };`. Fields take no initializer and start at 0 (set them in init or start); fields cannot be const. Methods see the fields by name and may call the module's other methods by name; `this` is the module's address. A module's name is a type after its declaration: a module holds modules declared before it (Svf filter;) and arrays of them. Pass a module to a function by pointer (Osc* o, o->tick()); assigning one module to another copies it. No constructors, inheritance, overloading or access control.
 - Parameters: `param float name [[fminus::range(lo, hi)]] [[fminus::default(v)]];` (float, int or bool) are module fields the host sets and the methods only read, as name[i] (sample i of the call) or name[0]. Only the main module's first sixteen are dials; the parameters of modules it holds stay at their defaults.
-- Builtins: fabsf sqrtf floorf fminf fmaxf (exact), sinf cosf expf logf tanhf (accurate to a few ulp), on floats and vectors; malloc calloc free (int sizes; init and end only); reduce_add reduce_min reduce_max (vector to float); sizeof(type). Other C math functions come from the system's libm by a prototype marked nonblocking, as the audio thread requires: `float powf(float x, float y) [[clang::nonblocking]];` (likewise tanf atanf sinhf roundf ceilf log10f exp2f ...). Prefer the builtins: powf(a, b) is expf(b * logf(a)), and tan(x) is sinf(x) / cosf(x).
+- Builtins: fabsf sqrtf floorf fminf fmaxf (exact), sinf cosf expf logf tanhf (accurate to a few ulp), on floats and vectors; malloc calloc free (int sizes; init and end only); reduce_add reduce_min reduce_max (vector to float); sizeof(type); the FFT: void* plan = fft_create(n) (real: n floats, n a multiple of 32 made of 2s, 3s and 5s, as 256, 1024, 2048) or fft_create_complex(n) (n float2s, a multiple of 16), made in init and freed in end with fft_destroy(plan); fft_forward(plan, in, bins) (n floats into n / 2 + 1 bins, float2s of (re, im)) and fft_inverse(plan, bins, out) (back, n times the input: neither direction scales), which may run on the audio thread. Other C math functions come from the system's libm by a prototype marked nonblocking, as the audio thread requires: `float powf(float x, float y) [[clang::nonblocking]];` (likewise tanf atanf sinhf roundf ceilf log10f exp2f ...). Prefer the builtins: powf(a, b) is expf(b * logf(a)), and tan(x) is sinf(x) / cosf(x).
 - Comments: // and /* */. Directives: only #include "file.fm" (another tab, by name; read once, as with #pragma once) and #pragma (ignored). No macros, no #if.
 - Errors come back in clang's words, "file.fm:LINE:COL: error: ...", from run_program.
 )";
@@ -148,7 +168,7 @@ FMinus is a subset of C (C's syntax and semantics, clang's error messages) with 
 DSP PRACTICE IN THIS PLUGIN
 
 - Coefficients that depend on the sample rate: compute in init from its rate argument, or per sample from a parameter (cheap ones), or once a call (expensive ones from param[0]).
-- Oscillators: phase accumulators in [0, 1), phase += freq / rate, wrap with if (phase >= 1) phase -= 1. Band-limit saw and square waves (osc.fm does, with polyBLEP); a plain sinf per sample is fine for sines. Frequency of a MIDI note: 440 * expf(0.0577622650f * (note - 69)) (noteToHz in util.fm).
+- Oscillators: phase accumulators in [0, 1), phase += freq / rate, wrap with if (phase >= 1) phase -= 1. Band-limit saw and square waves (osc.fm does, with polyBLEP); a plain sinf per sample is fine for sines. Wavetables: wavetable.fm band-limits each frame with the FFT into copies a half octave apart, so nothing aliases at any pitch; build the table once in a module Shared. Frequency of a MIDI note: 440 * expf(0.0577622650f * (note - 69)) (noteToHz in util.fm).
 - Filters: a topology-preserving filter stays stable under modulation (svf.fm, ladder.fm, onepole.fm); g = tan(pi * fc / rate) as sinf(w) / cosf(w) with w kept below about 1.5. biquad.fm for an equalizer's bells and shelves set once a call.
 - Envelopes: exponential segments (env *= coefficient, or env += a * (target - env)) per sample (adsr.fm). A release must reach silence so process can return false.
 - Noise: without bitwise operators, Park-Miller with Schrage's method (noise.fm: white, pink, brown).

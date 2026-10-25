@@ -118,6 +118,25 @@ namespace testingplaygroundsynth::measure
             return m;
         }
 
+        // The steps a sound makes every cycle: the median over [from, to) of each window's largest step between two
+        // neighbouring samples (windows of w samples), against which a click is the one step far larger.
+        [[maybe_unused]] double usualStep(const Stereo& s, std::size_t from, std::size_t to, std::size_t w)
+        {
+            std::vector<double> maxima;
+            for (std::size_t a = std::max<std::size_t>(from, 1); w > 0 && a + w <= std::min(to, s.size()); a += w)
+            {
+                double m = 0.0;
+                for (std::size_t i = a; i < a + w; ++i)
+                    m = std::max(m, std::max(std::fabs(static_cast<double>(s.l[i]) - s.l[i - 1]),
+                                             std::fabs(static_cast<double>(s.r[i]) - s.r[i - 1])));
+                maxima.push_back(m);
+            }
+            if (maxima.empty())
+                return 0.0;
+            std::nth_element(maxima.begin(), maxima.begin() + static_cast<std::ptrdiff_t>(maxima.size() / 2), maxima.end());
+            return maxima[maxima.size() / 2];
+        }
+
         // When the level (10 ms windows) has fallen `belowDb` under `refDb` for good, in samples after `from`; -1 when it
         // has not by the end.
         long fallTime(const Stereo& s, std::size_t from, double refDb, double belowDb, double rate)
@@ -354,6 +373,53 @@ namespace testingplaygroundsynth::measure
         return found;
     }
 
+    Peak inharmonic(const std::vector<float>& x, double rate, double f0, double maxHz)
+    {
+        std::size_t n = 1;
+        while (n * 2 <= x.size() && n < 32768)
+            n *= 2;
+        Peak worst{ 0.0, -200.0 };
+        if (n < 256 || !(f0 > 0.0))
+            return worst;
+        const std::size_t off = (x.size() - n) / 2;
+        std::vector<std::complex<double>> a(n);
+        const double step = 2.0 * std::numbers::pi / static_cast<double>(n - 1);
+        for (std::size_t i = 0; i < n; ++i)
+        {
+            const double t = step * static_cast<double>(i);
+            const double w = 0.35875 - 0.48829 * std::cos(t) + 0.14128 * std::cos(2.0 * t) - 0.01168 * std::cos(3.0 * t);
+            a[i] = { static_cast<double>(x[off + i]) * w, 0.0 };
+        }
+        fft(a);
+        const std::size_t bins = n / 2;
+        const double hzPerBin = rate / static_cast<double>(n);
+        std::vector<double> mag(bins);
+        double top = 0.0;
+        for (std::size_t k = 0; k < bins; ++k)
+            top = std::max(top, mag[k] = std::abs(a[k]));
+        if (!(top > 1e-12))
+            return worst;
+        const std::size_t last = std::min(bins - 2, static_cast<std::size_t>(std::min(maxHz, 0.5 * rate) / hzPerBin));
+        std::size_t at = 0;
+        for (std::size_t k = std::max<std::size_t>(2, static_cast<std::size_t>(20.0 / hzPerBin)); k <= last; ++k)
+        {
+            const double hz = static_cast<double>(k) * hzPerBin;
+            const double h = std::max(1.0, std::round(hz / f0));         // the nearest harmonic (below f0: f0)
+            if (std::fabs(hz - h * f0) <= 6.0 * hzPerBin)
+                continue;                                                // within a harmonic's main lobe
+            if (at == 0 || mag[k] > mag[at])
+                at = k;
+        }
+        if (at == 0 || !(mag[at] > 0.0))
+            return worst;
+        const double y0 = std::log(mag[at - 1] + 1e-300), y1 = std::log(mag[at] + 1e-300), y2 = std::log(mag[at + 1] + 1e-300);
+        const double den = y0 - 2.0 * y1 + y2;
+        const double d = den != 0.0 ? std::clamp(0.5 * (y0 - y2) / den, -0.5, 0.5) : 0.0;
+        worst.hz = (static_cast<double>(at) + d) * hzPerBin;
+        worst.db = toDb(mag[at] / top);
+        return worst;
+    }
+
     std::string run(const Sources& files, const Request& request)
     {
         const double rate = request.rate > 1000.0 ? request.rate : 48000.0;
@@ -442,10 +508,17 @@ namespace testingplaygroundsynth::measure
 
             std::size_t at = 0;
             const double step = largestStep(r.out, at);
+            // A wave's own edges come every cycle: windows of a cycle and a half of the lowest note, at least 10 ms.
+            const double lowestHz = noteHz(*std::min_element(notes.begin(), notes.end()));
+            const std::size_t window = static_cast<std::size_t>(std::max(0.01 * rate, 1.5 * rate / lowestHz));
+            const double usual = usualStep(r.out, settle, holdN, window);
             out += "Largest step between two samples: " + fmt("%.3f", step) + " at " + seconds(static_cast<double>(at) / rate)
-                 + (heldPeak > 0.0 ? fmt(" (%.0f%% of the held peak).\n", step / heldPeak * 100.0) : ".\n");
-            if (heldPeak > 0.0 && step > 0.35 * heldPeak && step > 0.05)
-                warnings.push_back("A step that large is likely a click (an envelope or a phase that jumps).");
+                 + (heldPeak > 0.0 ? fmt(" (%.0f%% of the held peak", step / heldPeak * 100.0) : std::string(" ("))
+                 + (heldPeak > 0.0 ? "; " : "") + "the held sound's own largest steps, every cycle: " + fmt("%.3f", usual)
+                 + ").\n";
+            if (heldPeak > 0.0 && step > 0.35 * heldPeak && step > 0.05 && step > 2.0 * usual)
+                warnings.push_back("A step that large, and far larger than the sound's own, is likely a click (an envelope "
+                                   "or a phase that jumps).");
 
             const long fall = fallTime(r.out, holdN, toDb(heldRms), 60.0, rate);
             out += "Release: ";
@@ -468,6 +541,20 @@ namespace testingplaygroundsynth::measure
             if (notes.size() == 1)
             {
                 const int n = notes.front();
+                // What is no harmonic of the note: aliasing, unless the sound means it.
+                const Peak odd = inharmonic(mono(r.out, settle, holdN), rate, noteHz(n), 20000.0);
+                if (heldRms >= 1e-5)
+                {
+                    out += "Inharmonic: ";
+                    if (odd.db < -90.0)
+                        out += "nothing below 20 kHz that is no harmonic of the note, down to -90 dB under the strongest "
+                               "component (the measurement's floor).\n";
+                    else
+                        out += "the strongest component below 20 kHz that is no harmonic of the note is " + fmt("%.0f dB", odd.db)
+                             + " under the strongest, at " + fmt("%.0f Hz", odd.hz)
+                             + ": aliasing, or the sound's own (detuning, FM, noise). To test an oscillator's aliasing, measure"
+                               " a high note (96 and up) with its detune and noise at 0.\n";
+                }
                 std::vector<int> chord{ n };
                 for (const int k : { 4, 7, 12 })
                     if (n + k <= 127)
