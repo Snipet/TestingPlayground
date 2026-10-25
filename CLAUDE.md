@@ -108,18 +108,24 @@ from FunkPluginTemplate.
 - **measure_output** renders the editor's files offline (`dsp/Measure.h`, a fresh compile in an Engine of its own,
   never the one that plays) and reports in words; `plugin.chatexample` checks its numbers on programs whose answer is
   known.
-- **The system prompt** (`ChatPrompt.cpp`) teaches Claude FMinus, the contract, how to build a large program and the
-  examples, and shows a program in several files for this plugin's kind (`ChatAgent::promptExample`), which
-  `plugin.chatexample` compiles and plays: a change to the contract (Patch.h), the language's rules or the examples
-  changes it too, and the example must keep compiling.
+- **The system prompt** (`ChatPrompt.cpp`) teaches Claude FMinus, the contract, how to build a large program, the
+  panel's `#pragma panel` lines (PanelSpec.h), the library (every file's header, from Library.h) and the examples, and
+  shows a program built from the library for this plugin's kind (`ChatAgent::promptExample`: the program and the
+  library files it includes), which `plugin.chatexample` compiles and plays: a change to the contract (Patch.h), the
+  panel's lines, the language's rules, a library file's header or the examples changes it too, and the example must
+  keep compiling with no note.
+- **add_library_file** puts a library file in the editor as a tab (never over a file of that name) and returns its
+  whole text, so Claude has seen it (`seen_`); the program's `#include` is Claude's to write.
 
 ## Recipes
 
 - **An example**: a file `Source/fminus/examples/<n>-<name>.fm` whose first line is `// <Title>: what it is`; it
   appears in the EXAMPLES menu in file-name order (the first is the default program). Run `fminus.examples`.
 - **A library file**: `Source/fminus/library/<n>-<category>/<name>.fm`, its first line `// <name>.fm: what it is`
-  (the LIBRARY menu shows it), then `//` and a usage header (the comment lines it starts with); names that no other library file uses; no allocation outside methods init and end call; safe
-  before its set or allocate. Measure it in `fminus.library` (a harness there runs its modules over buffers).
+  (the LIBRARY menu shows it), then `//` and a usage header (the comment lines it starts with, which Claude's
+  instructions quote); names that no other library file uses; no allocation outside methods init and end call; safe
+  before its set or allocate. Measure it in `fminus.library` (a harness there runs its modules over buffers), and run
+  `plugin.chatexample` (the headers are in the prompt).
 - **A new call into programs** (an instrument's pitch bend, say): add a `Call` row in `Patch.cpp` (the method, whether
   it is required, how the plugin declares it, the appended line), a pointer in `Patch::Shared` looked up in
   `compile()`, a method on `Patch` the Engine calls; document it in Patch.h and the README.

@@ -2,12 +2,13 @@
 //
 // plugin.chatexample: what the chat's system prompt teaches, and Claude's measure_output tool (dsp/Measure.h), at
 // 48 kHz:
-//   PROMPT   the system prompt has the large-program section, the tools' workflow (measure_output), and every file of
-//            the program in several files, word for word
-//   EXAMPLE  that program (ChatAgent::promptExample, this plugin's kind) compiles with no message; its dials are named,
-//            with ranges and defaults inside them; it plays two seconds finite and audible with no alert (an effect
-//            over noise, an instrument a chord released at 1 s); blocks of 64 and 333 give the same bits; an
-//            instrument's voices end
+//   PROMPT   the system prompt has the large-program section, the tools' workflow (measure_output, add_library_file),
+//            THE PANEL with its #pragma lines, THE LIBRARY with every library file's header word for word, and the
+//            program built from the library, word for word; the program's other files are the library's, as it has them
+//   EXAMPLE  that program (ChatAgent::promptExample, this plugin's kind) compiles with no message (its panel lines
+//            too); its dials are named, with ranges and defaults inside them, and every one is in a titled section of
+//            its panel; it plays two seconds finite and audible with no alert (an effect over noise, an instrument a
+//            chord released at 1 s); blocks of 64 and 333 give the same bits; an instrument's voices end
 //   MEASURE  measure::run on programs whose answer is known: an instrument's sine voice at 0.25 (peak -12.0 dBFS,
 //            its partial at the note's frequency, the voice ending, a chord's level reported) or an effect's gain of
 //            0.5 (-6.0 dB on the sine and on the noise, an impulse's response at once); the spectrum's peak of a
@@ -22,6 +23,7 @@
 #include "dsp/Measure.h"
 #include "plugin/ChatAgent.h"
 
+#include "Library.h"
 #include "Product.h"
 
 #include <algorithm>
@@ -37,6 +39,22 @@ namespace tp = testingplayground;
 namespace
 {
     bool has(const std::string& s, const std::string& part) { return s.find(part) != std::string::npos; }
+
+    // A file's header: the comment lines it starts with.
+    std::string header(const std::string& text)
+    {
+        std::string out;
+        std::size_t at = 0;
+        while (at < text.size() && text.compare(at, 2, "//") == 0)
+        {
+            const std::size_t end = text.find('\n', at);
+            out += text.substr(at, end == std::string::npos ? std::string::npos : end + 1 - at);
+            if (end == std::string::npos)
+                break;
+            at = end + 1;
+        }
+        return out;
+    }
 
     // The first partial a report lists, in Hz (0 when none).
     [[maybe_unused]] double firstPartial(const std::string& r)
@@ -56,11 +74,24 @@ PROBE(plugin, chatexample)
     const tp::Sources example = tp::ChatAgent::promptExample();
     P.eq("prompt.large_section", has(prompt, "BUILDING A LARGE PROGRAM") ? 1 : 0, 1);
     P.eq("prompt.measure_workflow", has(prompt, "measure_output") ? 1 : 0, 1);
+    P.eq("prompt.library_tool", has(prompt, "add_library_file") ? 1 : 0, 1);
+    P.eq("prompt.panel_section", has(prompt, "THE PANEL") && has(prompt, "#pragma panel section") && has(prompt, "#pragma panel row")
+                                     && has(prompt, "#pragma panel label") && has(prompt, "#pragma panel small") ? 1 : 0, 1);
+    int headers = 0;
+    for (const tp::LibraryFile& f : tp::kLibrary)
+        headers += has(prompt, std::string("<library_file name=\"") + f.name + "\" category=\"" + f.category + "\">\n"
+                                   + header(f.source) + "</library_file>") ? 1 : 0;
+    P.eq("prompt.library_headers", headers, static_cast<int64_t>(std::size(tp::kLibrary)));
     P.ge("prompt.example_files", static_cast<double>(example.size()), 3.0);
-    int inPrompt = 0;
-    for (const tp::SourceFile& f : example)
-        inPrompt += has(prompt, "<file name=\"" + f.name + "\">\n" + f.text) ? 1 : 0;
-    P.eq("prompt.example_word_for_word", inPrompt, static_cast<int64_t>(example.size()));
+    P.eq("prompt.example_word_for_word",
+         !example.empty() && has(prompt, "\">\n" + example[0].text + "</example_program>") ? 1 : 0, 1);
+    int fromLibrary = 0;
+    for (std::size_t k = 1; k < example.size(); ++k)
+    {
+        const tp::LibraryFile* f = tp::findLibraryFile(example[k].name);
+        fromLibrary += f != nullptr && example[k].text == f->source ? 1 : 0;
+    }
+    P.eq("prompt.example_uses_library", fromLibrary, static_cast<int64_t>(example.size()) - 1);
     P.eq("prompt.program_first_in_editor", example.empty() ? 0 : (example[0].name == tp::kProgramName ? 1 : 0), 1);
     P.le("prompt.files_fit_editor", static_cast<double>(example.size()), static_cast<double>(tp::kMaxFiles));
     std::printf("system prompt: %zu characters; the example: %zu files\n", prompt.size(), example.size());
@@ -99,6 +130,17 @@ PROBE(plugin, chatexample)
                      static_cast<double>(ctl.max));
             }
             P.in("example.dials", static_cast<double>(dials), 8.0, static_cast<double>(tp::kMaxControls));
+            // Its panel: every dial in a titled section (none left over for an untitled one).
+            int placed = 0;
+            bool titled = !rig.panel().sections.empty();
+            for (const tp::PanelSection& s : rig.panel().sections)
+            {
+                placed += static_cast<int>(s.slots.size());
+                titled = titled && !s.title.empty();
+            }
+            std::printf("example panel: %zu sections, %d dials placed\n", rig.panel().sections.size(), placed);
+            P.eq("example.panel_titled", titled ? 1 : 0, 1);
+            P.eq("example.panel_has_every_dial", placed, dials);
             const probe::Stereo out = rig.run(input, 256, chord);
             P.eq("example.finite", probe::allFinite(out.l) && probe::allFinite(out.r) ? 1 : 0, 1);
             const double level = std::max(probe::rmsDb(out.l, 0, static_cast<std::size_t>(kFs)),

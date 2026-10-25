@@ -10,6 +10,7 @@
 //   gui.dump.dials.png   a program of sixteen dials, in two rows of eight; .dials.small.png at the least size
 //   gui.dump.panel.png   the same dials in the sections its #pragma panel lines ask for; .panel.paper.png in PAPER,
 //                        .panel.small.png at the least size
+//   gui.dump.example.png the program Claude's instructions build from the library (ChatAgent::promptExample)
 // and checks:
 //   FRAME     the frame settles, every glyph is in the font, the editor shows the processor's draft (the first
 //             example), and the dials are the program's parameters: one for each, the rest not shown
@@ -47,10 +48,13 @@
 //             edit Cmd-Z takes back in one step), and the program still runs; the processor's draft has it; chosen
 //             again, it is ticked and shown, not added twice; with no room for another tab, the files the program
 //             lacks are greyed
+//   EXAMPLE   that program, its library files added through LIBRARY's path: it runs with no note, its panel's sections
+//             titled, every dial in one
 //   KEYS      Escape leaves the editor, after which Tab moves the focus ring (and no key reaches the text)
 #include "Probe.h"
 
 #include "editor/Panel.h"
+#include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
 #include "plugin/Processor.h"
 
@@ -681,6 +685,52 @@ PROBE(gui, dump)
             settleRun(processor, host);
             P.eq("library.back", panel.fileCount() == 1 && port.status().ok ? 1 : 0, 1);
         }
+    }
+
+    // EXAMPLE: the program Claude's instructions show, as the editor builds it.
+    {
+        const std::string program = editor.text();
+        const tp::Sources example = tp::ChatAgent::promptExample();
+        editor.selectAll();
+        editor.insert(example.front().text);
+        int added = 0;
+        for (std::size_t k = 1; k < example.size(); ++k)
+            added += panel.addLibraryFile(example[k].name) ? 1 : 0;
+        P.eq("example.library_added", added, static_cast<int64_t>(example.size()) - 1);
+        host.tick(1);                                             // the files go to the processor on a frame
+        P.eq("example.program_untouched", port.draft().files[0].text == example.front().text ? 1 : 0, 1);
+        const funkgui::Point tab0 = panel.centreOfTab(0);
+        host.click(tab0.x, tab0.y);
+        host.keys("cmd+return");
+        settleRun(processor, host);
+        P.eq("example.runs", port.status().ok ? 1 : 0, 1);
+        P.eq("example.no_note", port.status().notes.empty() ? 1 : 0, 1);
+        if (!port.status().notes.empty())
+            std::printf("%s", port.status().notes.c_str());
+        int placed = 0, used = 0;
+        bool titled = !panel.dialsLayout().sections.empty();
+        for (const tp::ui::SectionFrame& f : panel.dialsLayout().sections)
+            titled = titled && !f.title.empty();
+        for (const tp::PanelSection& s : port.panel().sections)
+            placed += static_cast<int>(s.slots.size());
+        for (const tp::Control& c : port.controls())
+            used += c.used ? 1 : 0;
+        P.eq("example.sections_titled", titled ? 1 : 0, 1);
+        P.eq("example.every_dial_placed", placed, used);
+        writePng(P, host, "gui.dump.example.png", "example");
+        // Back: the library's tabs closed (each asks), the program as before.
+        while (panel.fileCount() > 1)
+        {
+            const funkgui::Point x = panel.centreOfCloseTab(panel.fileCount() - 1);
+            host.click(x.x, x.y);
+            host.chooseMenuItem(1);
+            host.settle();
+        }
+        host.click(tab0.x, tab0.y);
+        panel.editor().selectAll();
+        panel.editor().insert(program);
+        host.keys("cmd+return");
+        settleRun(processor, host);
     }
 
     // KEYS
