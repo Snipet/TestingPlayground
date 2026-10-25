@@ -38,6 +38,8 @@ namespace testingplaygroundsynth
         std::string id;                       // "claude-opus-5-5"
         std::string name;                     // "Claude Opus 5.5"
         std::vector<std::string> efforts;     // the thinking levels it takes: "low", "medium", ...
+        int maxTokens = 64000;                // its longest answer (thinking included), from /v1/models
+        bool compaction = false;              // it takes server-side compaction (long conversations summarized)
     };
 
     struct ChatState

@@ -95,6 +95,15 @@ namespace fake
             return blockStop(i);
         }
 
+        // A compaction block: its summary arrives whole, in one compaction_delta (the compaction docs).
+        Sse& compaction(const std::string& summary)
+        {
+            const int i = blocks_++;
+            blockStart(i, claude::object({ { "type", "compaction" } }));
+            delta(i, claude::object({ { "type", "compaction_delta" }, { "content", juce::String::fromUTF8(summary.c_str()) } }));
+            return blockStop(i);
+        }
+
         Sse& ping() { return event("ping", claude::object({ { "type", "ping" } })); }
 
         Sse& end(const std::string& stopReason = "end_turn", int output = 321)
@@ -103,6 +112,20 @@ namespace fake
                                                     { "delta", claude::object({ { "stop_reason", juce::String(stopReason) },
                                                                                 { "stop_sequence", juce::var() } }) },
                                                     { "usage", claude::object({ { "output_tokens", output } }) } }));
+            return event("message_stop", claude::object({ { "type", "message_stop" } }));
+        }
+
+        // The end of a request that compacted: its usage lists the iterations (a compaction's, then the answer's).
+        Sse& endCompacted(int compactIn, int compactOut, int in, int out)
+        {
+            juce::Array<juce::var> iterations;
+            iterations.add(claude::object({ { "type", "compaction" }, { "input_tokens", compactIn }, { "output_tokens", compactOut } }));
+            iterations.add(claude::object({ { "type", "message" }, { "input_tokens", in }, { "output_tokens", out } }));
+            event("message_delta", claude::object({ { "type", "message_delta" },
+                                                    { "delta", claude::object({ { "stop_reason", "end_turn" },
+                                                                                { "stop_sequence", juce::var() } }) },
+                                                    { "usage", claude::object({ { "input_tokens", in }, { "output_tokens", out },
+                                                                                { "iterations", iterations } }) } }));
             return event("message_stop", claude::object({ { "type", "message_stop" } }));
         }
 
@@ -243,7 +266,7 @@ namespace fake
                 --script_->streaming;
                 return { 0, "cancelled", {}, -1 };
             }
-            return { 200, {}, {}, -1 };
+            return { 200, {}, {}, r.retryAfter };   // a stream cut short (no message_stop) may ask for a quick retry
         }
 
         claude::HttpResult get(const std::string& path, const claude::Headers& headers, const std::atomic<bool>&) override
@@ -264,6 +287,8 @@ namespace fake
         std::string id, name;
         bool adaptive = true;
         std::vector<std::string> efforts;
+        int maxTokens = 128000;
+        bool compaction = true;
     };
 
     inline std::string modelsBody(const std::vector<ModelInfo>& models)
@@ -284,10 +309,14 @@ namespace fake
                 { { "thinking", claude::object({ { "supported", true },
                                                  { "types", claude::object({ { "adaptive", claude::object({ { "supported", m.adaptive } }) },
                                                                              { "enabled", claude::object({ { "supported", !m.adaptive } }) } }) } }) },
-                  { "effort", effort } });
+                  { "effort", effort },
+                  { "context_management",
+                    claude::object({ { "compact_20260112", claude::object({ { "supported", m.compaction } }) } }) } });
             data.add(claude::object({ { "type", "model" },
                                       { "id", juce::String(m.id) },
                                       { "display_name", juce::String(m.name) },
+                                      { "max_input_tokens", 1000000 },
+                                      { "max_tokens", m.maxTokens },
                                       { "capabilities", caps } }));
         }
         return claude::toJson(claude::object({ { "data", data }, { "has_more", false } }));

@@ -11,20 +11,29 @@
 //            answers. The draft holds the program and it plays, the dial has the value, the conversation shows the
 //            user's message, the thinking, the answer and what Claude did; the models are /v1/models's with adaptive
 //            thinking, each with its levels
-//   REQUEST  each request has the model, max_tokens, stream, adaptive thinking (summarized), the effort, the system
-//            prompt cached for an hour, the automatic cache breakpoint, the eight tools each with eager_input_streaming,
-//            "fallbacks" and its beta header for a model that takes it, the API version and the key, and no
-//            temperature, top_p or top_k; the first message carries the plugin's state; the history is append-only
+//   REQUEST  each request has the model, max_tokens (the model's own limit, from /v1/models), stream, adaptive
+//            thinking (summarized), the effort, the system prompt cached for an hour, the automatic cache breakpoint,
+//            the nine tools each with eager_input_streaming, "fallbacks" and server-side compaction (its edit, trigger
+//            and instructions) with their beta headers for a model that takes them, the API version and the key, and
+//            no temperature, top_p or top_k; the first message carries the plugin's state; the history is append-only
 //            (each request's messages begin with the previous request's, unchanged, signatures included) and the
 //            tool results answer the tool calls by id
-//   CHOICE   another model and level: the next request has them; a model that takes no fallbacks gets none (and no
-//            beta header); a level the model does not take is refused; a change during a turn waits for the next
+//   CHOICE   another model and level: the next request has them; a model that takes no fallbacks and no compaction
+//            gets neither (and no beta header), and its own max_tokens; a level the model does not take is refused; a
+//            change during a turn waits for the next
 //   INVALID  a tool call whose input is not JSON gets an INVALID_JSON error result, runs nothing, and the turn goes on
 //   RETRY    an overloaded API (529, retry-after 1 s) is asked again and the turn completes
 //   ERROR    a key the API refuses (401): the turn ends with the API's message, and the next message joins the
 //            unanswered one (the roles keep alternating)
 //   REFUSAL  stop_reason refusal: the turn ends with an error entry; the answer stays in the history as text alone
 //   FALLBACK a fallback block: a note; in the history the blocks before it keep only their text and it is dropped
+//   CONTEXT  the plugin's state names a file Claude has seen (as it wrote it) without its text; a file the user edited
+//            goes with its text; when nothing changed no state goes at all
+//   MEASURE  measure_output through the agent: its result is the render's report, with the dials asked for
+//   BROKEN   a stream cut short (no message_stop) is asked again; what it showed is taken back, and the answer appears
+//            once
+//   COMPACT  a compaction block: a note, the usage counts the compaction; the next request starts at the user message
+//            before it (what came before is dropped), echoes the block, and sends the files' text again
 //   STOP     a stalled stream: stop() ends the turn at once; the history ends with Claude's text so far
 //   STATE    the conversation is in the session: a second processor loading the first's state has the same entries
 //            and the same history
@@ -192,6 +201,22 @@ PROBE(plugin, chat)
         p.feed(broken.str(), [&](const std::string& e, const std::string& d) { bad.event(e, d); });
         P.eq("parse.invalid_listed", bad.invalidToolInputs().size() == 1 && bad.invalidToolInputs()[0].first == "toolu_x"
                                          && bad.invalidToolInputs()[0].second == "{\"a\": " ? 1 : 0, 1);
+        // A compaction block, and a usage with its iterations.
+        std::size_t summarised = 0;
+        claude::MessageBuilder::Callbacks ccb;
+        ccb.compaction = [&](std::size_t n) { summarised = n; };
+        claude::MessageBuilder comp(ccb);
+        fake::Sse compacted;
+        compacted.start().compaction("The story so far.").text("Go on.").endCompacted(160000, 2500, 3000, 120);
+        claude::SseParser cp;
+        cp.feed(compacted.str(), [&](const std::string& e, const std::string& d) { comp.event(e, d); });
+        const juce::Array<juce::var> cc = arr(comp.content());
+        P.eq("parse.compaction_block", cc.size() == 2 && str(cc[0], "type") == "compaction"
+                                           && str(cc[0], "content") == "The story so far." ? 1 : 0, 1);
+        P.eq("parse.compaction_callback", static_cast<int64_t>(summarised), 17);
+        P.eq("parse.compaction_usage", comp.usage().input == 163000 && comp.usage().output == 2620
+                                           && comp.usage().compactions == 1 ? 1 : 0, 1);
+
         const juce::Array<juce::var> badContent = arr(bad.content());
         const auto* in = badContent.isEmpty() ? nullptr : badContent[0].getProperty("input", {}).getDynamicObject();
         P.eq("parse.invalid_input_empty", in != nullptr && in->getProperties().size() == 0 ? 1 : 0, 1);
@@ -202,7 +227,7 @@ PROBE(plugin, chat)
     auto script = std::make_shared<fake::Script>();
     script->models = fake::modelsBody({ { "claude-opus-5-5", "Claude Opus 5.5", true, { "low", "medium", "high", "xhigh", "max" } },
                                         { "claude-sonnet-5-5", "Claude Sonnet 5.5", true, { "low", "medium", "high", "xhigh" } },
-                                        { "claude-haiku-5-5", "Claude Haiku 5.5", true, { "low", "medium", "high" } },
+                                        { "claude-haiku-5-5", "Claude Haiku 5.5", true, { "low", "medium", "high" }, 64000, false },
                                         { "claude-old-4", "Claude Old 4", false, {} } });
     agent.setTransport(std::make_unique<fake::Transport>(script));
 
@@ -262,7 +287,7 @@ PROBE(plugin, chat)
             if (m.id == "claude-sonnet-5-5")
                 sonnetLevels = m.efforts == std::vector<std::string>{ "low", "medium", "high", "xhigh" };
         P.eq("turn.model_levels", sonnetLevels ? 1 : 0, 1);
-        P.eq("turn.usage", has(s.usage, "CACHED") ? 1 : 0, 1);
+        P.eq("turn.usage", has(s.usage, "cached") ? 1 : 0, 1);
         P.eq("turn.idle", s.busy ? 1 : 0, 0);
     }
 
@@ -270,7 +295,13 @@ PROBE(plugin, chat)
     {
         const juce::var b0 = claude::parseJson(script->body(0));
         P.eq("request.model", str(b0, "model") == "claude-opus-5-5" ? 1 : 0, 1);
-        P.eq("request.max_tokens", static_cast<int64_t>(static_cast<int>(b0.getProperty("max_tokens", 0))), 64000);
+        P.eq("request.max_tokens", static_cast<int64_t>(static_cast<int>(b0.getProperty("max_tokens", 0))), 128000);
+        const juce::var edits = b0.getProperty("context_management", {}).getProperty("edits", {});
+        const juce::Array<juce::var> editList = arr(edits);
+        P.eq("request.compaction_edit",
+             editList.size() == 1 && str(editList[0], "type") == "compact_20260112"
+                     && static_cast<int>(editList[0].getProperty("trigger", {}).getProperty("value", 0)) == 150000
+                     && !str(editList[0], "instructions").empty() ? 1 : 0, 1);
         P.eq("request.stream", static_cast<bool>(b0.getProperty("stream", false)) ? 1 : 0, 1);
         const juce::var thinking = b0.getProperty("thinking", {});
         P.eq("request.thinking_adaptive", str(thinking, "type") == "adaptive" && str(thinking, "display") == "summarized" ? 1 : 0, 1);
@@ -284,10 +315,11 @@ PROBE(plugin, chat)
         int eager = 0;
         for (const auto& t : tools)
             eager += static_cast<bool>(t.getProperty("eager_input_streaming", false)) ? 1 : 0;
-        P.eq("request.tools", tools.size(), 8);
-        P.eq("request.tools_eager", eager, 8);
+        P.eq("request.tools", tools.size(), 9);
+        P.eq("request.tools_eager", eager, 9);
         P.eq("request.fallbacks", str(b0, "fallbacks") == "default" ? 1 : 0, 1);
-        P.eq("request.beta_header", script->header(1, "anthropic-beta") == "server-side-fallback-2026-07-01" ? 1 : 0, 1);
+        P.eq("request.beta_header",
+             script->header(1, "anthropic-beta") == "server-side-fallback-2026-07-01,compact-2026-01-12" ? 1 : 0, 1);
         P.eq("request.version", script->header(1, "anthropic-version") == claude::kApiVersion ? 1 : 0, 1);
         P.eq("request.key", script->header(1, "x-api-key") == fake::fakeKey() ? 1 : 0, 1);
         P.eq("request.no_sampling", b0.hasProperty("temperature") || b0.hasProperty("top_p") || b0.hasProperty("top_k") ? 1 : 0, 0);
@@ -328,6 +360,8 @@ PROBE(plugin, chat)
         const juce::var h = claude::parseJson(script->body(script->postCount() - 1));
         P.eq("choice.haiku", str(h, "model") == "claude-haiku-5-5" ? 1 : 0, 1);
         P.eq("choice.no_fallbacks", h.hasProperty("fallbacks") ? 1 : 0, 0);
+        P.eq("choice.no_compaction", h.hasProperty("context_management") ? 1 : 0, 0);
+        P.eq("choice.own_max_tokens", static_cast<int64_t>(static_cast<int>(h.getProperty("max_tokens", 0))), 64000);
         P.eq("choice.no_beta", script->header(static_cast<int>(script->headers.size()) - 1, "anthropic-beta").empty() ? 1 : 0, 1);
         P.eq("choice.stored", tp::chatstore::loadChoice().model == "claude-haiku-5-5" ? 1 : 0, 1);
 
@@ -438,6 +472,105 @@ PROBE(plugin, chat)
         P.eq("fallback.history",
              c.size() == 3 && str(c[0], "text") == "Part one. " && str(c[1], "type") == "thinking"
                      && str(c[1], "signature") == "sig-g" && str(c[2], "text") == "Part two." ? 1 : 0, 1);
+    }
+
+    // ---- CONTEXT -------------------------------------------------------------------------------------------------------
+    {
+        // The plugin's state in the last request's last user message ("" when it carries none).
+        const auto lastState = [&] {
+            const juce::Array<juce::var> m = messagesOf(script->body(script->postCount() - 1));
+            if (m.isEmpty())
+                return std::string();
+            for (const auto& b : arr(m[m.size() - 1].getProperty("content", {})))
+                if (str(b, "text").rfind("<plugin_state>", 0) == 0)
+                    return str(b, "text");
+            return std::string();
+        };
+        processor.getParameters()[0]->setValueNotifyingHost(0.3f);     // the dials changed: a state goes
+        script->add(fake::Response::ok(fake::Sse().start().text("Noted.").end()));
+        agent.send("what do you see?");
+        agent.waitIdle();
+        const std::string seen = lastState();
+        P.eq("context.seen_file_named", has(seen, "<file name=\"program.fm\" lines=") && has(seen, "unchanged=\"true\"") ? 1 : 0, 1);
+        P.eq("context.seen_file_no_text", has(seen, "left[i] *= level[i]") || has(seen, "return false;") ? 0 : 1, 1);
+        tp::Draft d = processor.editorPort().draft();
+        d.files[0].text += "// a comment of the user's\n";
+        processor.editorPort().setDraft(d);
+        script->add(fake::Response::ok(fake::Sse().start().text("Seen.").end()));
+        agent.send("and now?");
+        agent.waitIdle();
+        P.eq("context.edited_file_sent", has(lastState(), "// a comment of the user's") ? 1 : 0, 1);
+        script->add(fake::Response::ok(fake::Sse().start().text("Same.").end()));
+        agent.send("again?");
+        agent.waitIdle();
+        P.eq("context.nothing_changed_nothing_sent", lastState().empty() ? 1 : 0, 1);
+    }
+
+    // ---- MEASURE -------------------------------------------------------------------------------------------------------
+    {
+        juce::Array<juce::var> notes;
+        notes.add(60);
+        script->add(fake::Response::ok(fake::Sse().start().tool("toolu_m", "measure_output",
+                                                                 input({ { "notes", juce::var(notes) },
+                                                                         { "dials", input({ { "level", 0.5 } }) } }))
+                                           .end("tool_use")));
+        script->add(fake::Response::ok(fake::Sse().start().text("Measured.").end()));
+        agent.send("how does it sound?");
+        agent.waitIdle();
+        const juce::Array<juce::var> m = messagesOf(script->body(script->postCount() - 1));
+        const juce::Array<juce::var> results = arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {}));
+        const std::string report = results.isEmpty() ? std::string() : str(results[0], "content");
+        std::printf("measure_output, through the agent:\n%s", report.c_str());
+        P.eq("measure.report", has(report, "Rendered offline") && has(report, "level 0.5") ? 1 : 0, 1);
+        P.eq("measure.kind", has(report, tp::product::kIsInstrument ? "Note 60" : "Sine 220 Hz") ? 1 : 0, 1);
+        P.eq("measure.entry", lastText(agent.chatState(), tp::ChatEntry::Kind::tool) == "measured the sound" ? 1 : 0, 1);
+    }
+
+    // ---- BROKEN --------------------------------------------------------------------------------------------------------
+    {
+        fake::Response cut = fake::Response::ok(fake::Sse().start().text("Half an answ"));   // no message_stop
+        cut.retryAfter = 1;
+        script->add(cut);
+        script->add(fake::Response::ok(fake::Sse().start().text("A whole answer.").end()));
+        const int before = script->postCount();
+        agent.send("tell me");
+        agent.waitIdle();
+        const tp::ChatState st = agent.chatState();
+        P.eq("broken.asked_again", script->postCount() - before, 2);
+        P.eq("broken.answer_once", lastText(st, tp::ChatEntry::Kind::assistant) == "A whole answer." ? 1 : 0, 1);
+        bool half = false;
+        for (const tp::ChatEntry& e : st.entries)
+            half = half || has(e.text, "Half an answ");
+        P.eq("broken.half_taken_back", half ? 0 : 1, 1);
+        P.eq("broken.note", has(lastText(st, tp::ChatEntry::Kind::note), "broke off") ? 1 : 0, 1);
+    }
+
+    // ---- COMPACT -------------------------------------------------------------------------------------------------------
+    {
+        script->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .compaction("The user built a level control; the dial is at 1.5.")
+                                           .text("Carrying on from the summary.")
+                                           .endCompacted(160000, 2500, 3000, 120)));
+        agent.send("keep going");
+        agent.waitIdle();
+        const tp::ChatState st = agent.chatState();
+        P.eq("compact.note", has(lastText(st, tp::ChatEntry::Kind::note), "summarized") ? 1 : 0, 1);
+        P.eq("compact.usage", has(st.usage, "163K tokens in") && has(st.usage, "summarized") ? 1 : 0, 1);
+        script->add(fake::Response::ok(fake::Sse().start().text("Fine.").end()));
+        agent.send("next");
+        agent.waitIdle();
+        const juce::Array<juce::var> m = messagesOf(script->body(script->postCount() - 1));
+        P.eq("compact.history_pruned", m.size(), 3);
+        const juce::Array<juce::var> answer = arr(m.size() > 1 ? m[1].getProperty("content", {}) : juce::var());
+        P.eq("compact.block_echoed", !answer.isEmpty() && str(answer[0], "type") == "compaction"
+                                         && str(answer[0], "content") == "The user built a level control; the dial is at 1.5."
+                                         ? 1 : 0, 1);
+        bool filesAgain = false;
+        for (const auto& b : arr(m.size() > 2 ? m[2].getProperty("content", {}) : juce::var()))
+            filesAgain = filesAgain || (has(str(b, "text"), "<file name=\"program.fm\">") && has(str(b, "text"), "// a comment"));
+        P.eq("compact.files_sent_again", filesAgain ? 1 : 0, 1);
+        P.eq("compact.alternates", alternates(m) ? 1 : 0, 1);
     }
 
     // ---- STOP ----------------------------------------------------------------------------------------------------------
