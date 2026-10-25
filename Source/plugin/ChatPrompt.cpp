@@ -471,6 +471,9 @@ module Effect
             for (const Example& e : kExamples)
                 s += std::string("\n<example title=\"") + e.title + "\">\n" + e.source
                    + (std::string(e.source).empty() || std::string(e.source).back() == '\n' ? "" : "\n") + "</example>\n";
+            s += "\nRANDOM\n\nThe editor's RANDOM button puts a program together from the library's building blocks, with random "
+                 "settings, a panel and a name, for inspiration; its first line says so, with its seed (\"(random 4821)\"). "
+                 "When the user asks you to build on one, it is theirs: keep what they like and change what they ask.\n";
             return s;
         }
     }
