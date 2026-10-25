@@ -6,8 +6,9 @@
 //   SseParser       Server-Sent Events: the stream cut into (event, data) pairs, however the chunks fall.
 //   MessageBuilder  a streamed message (message_start, content_block_start/delta/stop, message_delta, error) put back
 //                   together: its content blocks exactly as the API sent them (thinking blocks with their signatures,
-//                   tool_use blocks with their input parsed from the streamed JSON), the stop reason and the usage, and
-//                   callbacks as text, thinking and tool calls arrive, for the chat's live view.
+//                   tool_use blocks with their input parsed from the streamed JSON, a compaction block's summary), the
+//                   stop reason and the usage (summed over the request's iterations when the API lists them), and
+//                   callbacks as text, thinking, tool calls and compactions arrive, for the chat's live view.
 //   apiError        an error response's message ("invalid x-api-key"), from its JSON body.
 //
 // Requests are built by ChatAgent; the API version is kApiVersion (2026-10-21: no temperature, top_p or top_k).
@@ -68,6 +69,7 @@ namespace testingplayground::claude
     struct Usage
     {
         int64_t input = 0, output = 0, cacheRead = 0, cacheWrite = 0;
+        int compactions = 0;                  // compaction iterations in the request (usage.iterations)
     };
 
     class MessageBuilder
@@ -78,8 +80,9 @@ namespace testingplayground::claude
             std::function<void(std::string_view text)> text;           // a text delta
             std::function<void(std::string_view text)> thinking;       // a thinking (summary) delta
             std::function<void(const std::string& name)> toolStart;    // a tool_use block begins
-            std::function<void(std::size_t bytes)> toolInput;          // its input has grown to `bytes`
+            std::function<void(const std::string& json)> toolInput;    // its input so far (partial JSON)
             std::function<void(const std::string& from, const std::string& to)> fallback;   // a fallback block
+            std::function<void(std::size_t chars)> compaction;         // a compaction block (the summary's size)
         };
 
         explicit MessageBuilder(Callbacks callbacks = {}) : cb_(std::move(callbacks)) {}
@@ -90,6 +93,7 @@ namespace testingplayground::claude
         const std::string& stopReason() const noexcept { return stopReason_; }
         const std::string& model() const noexcept { return model_; }
         const std::string& error() const noexcept { return error_; }  // an error event's message
+        const std::string& errorType() const noexcept { return errorType_; }   // its type ("overloaded_error")
         const Usage& usage() const noexcept { return usage_; }
 
         // The content blocks as received (an array of objects). A tool_use block whose streamed input is not a JSON
@@ -101,13 +105,13 @@ namespace testingplayground::claude
         struct Block
         {
             juce::var object;                 // the block as it stands
-            std::string text, thinking, signature, json;
+            std::string text, thinking, signature, json, summary;
             std::string type;
         };
 
         Callbacks cb_;
         std::vector<Block> blocks_;
-        std::string stopReason_, model_, error_;
+        std::string stopReason_, model_, error_, errorType_;
         Usage usage_;
         bool finished_ = false;
         std::vector<std::pair<std::string, std::string>> invalid_;

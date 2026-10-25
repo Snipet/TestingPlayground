@@ -82,7 +82,7 @@ namespace testingplayground::claude
                 juce::String extra;
                 for (const auto& [k, v] : headers)
                     extra << juce::String(k) << ": " << juce::String::fromUTF8(v.c_str()) << "\r\n";
-                stream.withExtraHeaders(extra).withConnectionTimeout(30000);
+                stream.withExtraHeaders(extra).withConnectionTimeout(120000);   // idle time allowed between data
 
                 // A blocking read ends only by data or cancel(): a watcher cancels it when asked.
                 std::atomic<bool> done{ false };
@@ -222,6 +222,8 @@ namespace testingplayground::claude
                 b.text = b.object.getProperty("text", "").toString().toStdString();
             else if (b.type == "thinking")
                 b.thinking = b.object.getProperty("thinking", "").toString().toStdString();
+            else if (b.type == "compaction")
+                b.summary = b.object.getProperty("content", "").toString().toStdString();
             else if (b.type == "tool_use" && cb_.toolStart)
                 cb_.toolStart(b.object.getProperty("name", "").toString().toStdString());
             else if (b.type == "fallback" && cb_.fallback)
@@ -260,7 +262,12 @@ namespace testingplayground::claude
             {
                 b.json += d.getProperty("partial_json", "").toString().toStdString();
                 if (cb_.toolInput)
-                    cb_.toolInput(b.json.size());
+                    cb_.toolInput(b.json);
+            }
+            else if (dt == "compaction_delta")
+            {
+                // The summary arrives whole, in one delta (the compaction docs).
+                b.summary += d.getProperty("content", "").toString().toStdString();
             }
         }
         else if (kind == "content_block_stop")
@@ -279,6 +286,12 @@ namespace testingplayground::claude
                 bo->setProperty("thinking", juce::String::fromUTF8(b.thinking.c_str()));
                 if (!b.signature.empty())
                     bo->setProperty("signature", juce::String(b.signature));
+            }
+            else if (b.type == "compaction")
+            {
+                bo->setProperty("content", juce::String::fromUTF8(b.summary.c_str()));
+                if (cb_.compaction)
+                    cb_.compaction(b.summary.size());
             }
             else if (b.type == "tool_use")
             {
@@ -312,6 +325,26 @@ namespace testingplayground::claude
                 usage_.cacheRead = static_cast<int64_t>(u.getProperty("cache_read_input_tokens", 0));
             if (u.hasProperty("cache_creation_input_tokens"))
                 usage_.cacheWrite = static_cast<int64_t>(u.getProperty("cache_creation_input_tokens", 0));
+            // With compaction on, the iterations list every sampling step: the top-level counts leave out a
+            // compaction's, so the request's whole cost is their sum.
+            const juce::var iterations = u.getProperty("iterations", juce::var());
+            if (const auto* its = iterations.getArray(); its != nullptr && !its->isEmpty())
+            {
+                int64_t in = 0, out = 0;
+                int compactions = 0;
+                for (const auto& it : *its)
+                {
+                    in += static_cast<int64_t>(it.getProperty("input_tokens", 0));
+                    out += static_cast<int64_t>(it.getProperty("output_tokens", 0));
+                    compactions += it.getProperty("type", "").toString() == "compaction" ? 1 : 0;
+                }
+                if (compactions > 0)
+                {
+                    usage_.input = in;
+                    usage_.output = out;
+                }
+                usage_.compactions = compactions;
+            }
         }
         else if (kind == "message_stop")
         {
@@ -321,9 +354,9 @@ namespace testingplayground::claude
         {
             const juce::var e = o->getProperty("error");
             error_ = e.getProperty("message", "").toString().toStdString();
-            const std::string et = e.getProperty("type", "").toString().toStdString();
-            if (!et.empty())
-                error_ = et + ": " + error_;
+            errorType_ = e.getProperty("type", "").toString().toStdString();
+            if (!errorType_.empty())
+                error_ = errorType_ + ": " + error_;
         }
     }
 
@@ -338,6 +371,8 @@ namespace testingplayground::claude
                     o->setProperty("text", juce::String::fromUTF8(b.text.c_str()));
                 else if (b.type == "thinking")
                     o->setProperty("thinking", juce::String::fromUTF8(b.thinking.c_str()));
+                else if (b.type == "compaction" && !b.summary.empty())
+                    o->setProperty("content", juce::String::fromUTF8(b.summary.c_str()));
                 out.add(b.object);
             }
         return juce::var(out);
