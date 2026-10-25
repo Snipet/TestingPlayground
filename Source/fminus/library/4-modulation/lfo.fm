@@ -1,0 +1,76 @@
+// lfo.fm: a low-frequency oscillator: sine, triangle, saw, square, sample and hold.
+//
+// -1 to 1. Every shape reads the same phase, at an offset you choose (0.25: a quarter cycle on, for a second output
+// in quadrature, or the other side of a stereo chorus); the random one steps once a cycle.
+//
+//   Lfo lfo;                       a field of your module
+//   lfo.advance(hz / rate);        once a sample (or lfo.advance(hz * n / rate) once a call, for a slow one)
+//   y = lfo.sine(offset);          offset in cycles, 0 for the plain wave
+//   y = lfo.triangle(offset);  y = lfo.saw(offset);  y = lfo.square(offset);
+//   y = lfo.random();              a new value each cycle, held (offset does not apply)
+//   lfo.reset(phase);              0 to 1 (a key's retrigger)
+//   lfo.phase                      0 to 1
+module Lfo
+{
+    float phase;
+    float held;
+    int state;
+
+    void reset(float at)
+    {
+        phase = at - floorf(at);
+    }
+
+    void draw()
+    {
+        if (state <= 0)
+            state = 4321;
+        const int hi = state / 127773;
+        const int lo = state % 127773;
+        state = 16807 * lo - 2836 * hi;
+        if (state <= 0)
+            state += 2147483647;
+        held = 2 * ((float)state / 2147483647.0f) - 1;
+    }
+
+    void advance(float step)
+    {
+        phase += step;
+        if (phase >= 1 || phase < 0)
+        {
+            phase -= floorf(phase);
+            draw();
+        }
+    }
+
+    float at(float offset)
+    {
+        const float p = phase + offset;
+        return p - floorf(p);
+    }
+
+    float sine(float offset)
+    {
+        return sinf(6.28318531f * at(offset));
+    }
+
+    float triangle(float offset)
+    {
+        return 1 - 4 * fabsf(at(offset) - 0.5f);
+    }
+
+    float saw(float offset)
+    {
+        return 2 * at(offset) - 1;
+    }
+
+    float square(float offset)
+    {
+        return at(offset) < 0.5f ? 1.0f : -1.0f;
+    }
+
+    float random()
+    {
+        return held;
+    }
+};

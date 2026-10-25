@@ -8,8 +8,9 @@
 //
 //   header    the product name, its kind and version, and the THEME cells (GRAPHITE, PAPER)
 //   toolbar   RUN (Cmd-Return in the editor too), EXAMPLES (a menu: the example replaces the text, undoably, and
-//             runs), the status (running, edited, compiling, the errors' count, the compile time) and, at the right,
-//             the audio thread's load and the output guard's alerts (NaN replaced, clipped)
+//             runs), LIBRARY (a menu of ready-made building blocks, Library.h: one becomes a tab and the program
+//             #includes it), the status (running, edited, compiling, the errors' count, the compile time) and, at
+//             the right, the audio thread's load and the output guard's alerts (NaN replaced, clipped)
 //   files     a tab for each of the program's files (Sources.h; at most kMaxFiles): the program's first, then the
 //             files it can #include by name. A click shows a file, a double-click edits its name in place (Return keeps
 //             it, Escape cancels), the + adds a file (its name being edited), a tab's x closes its file (asking first
@@ -141,6 +142,10 @@ namespace testingplayground::ui
         funkgui::Rect chatCard() const noexcept { return card_; }
         funkgui::Point centreOfRun() const;
         funkgui::Point centreOfExamples() const;
+        funkgui::Point centreOfLibrary() const;
+        // LIBRARY's choice (Library.h): the file as a tab, #included by the program; shown when it is there. False for
+        // a name the library has not, or no room for a tab.
+        bool addLibraryFile(const std::string& name);
         funkgui::Point centreOfProblem(int i) const;
         const std::vector<Problem>& problems() const noexcept { return problems_; }
         const std::string& statusText() const noexcept { return status_; }
@@ -196,6 +201,7 @@ namespace testingplayground::ui
         void setFocus(int item);
         void refresh(double nowSec);                     // the port's status, draft and dials, when they changed
         void openExamples();
+        void openLibrary();
         void jumpTo(const Problem&);
         void closeFile(int tab);                         // a tab's x: asks first when the file has text
         FilesItem& files();
@@ -238,7 +244,7 @@ namespace testingplayground::ui
         EditorPort& port_;
         std::vector<std::unique_ptr<Item>> items_;
         std::vector<int> itemOfSlot_;                    // dial slot -> item index
-        int editorItem_ = -1, problemsItem_ = -1, runItem_ = -1, examplesItem_ = -1;
+        int editorItem_ = -1, problemsItem_ = -1, runItem_ = -1, examplesItem_ = -1, libraryItem_ = -1;
         int themeItem_ = -1, zoomItem_ = -1;
         int newChatItem_ = -1, keyItem_ = -1, chatViewItem_ = -1, inputItem_ = -1;
         int modelItem_ = -1, thinkingItem_ = -1, sendItem_ = -1;

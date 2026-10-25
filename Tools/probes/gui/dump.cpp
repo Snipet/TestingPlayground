@@ -42,6 +42,11 @@
 //             the labels asked for (the dials' accessibility titles) and the small dials compact; at the least size
 //             every dial is still inside its frame. A panel line that names no dial is a note in the problems list,
 //             with its line, and the panel stands without it
+//   LIBRARY   the LIBRARY button opens a menu of every library file under its category's heading; choosing one adds
+//             it as a tab, shown, with the library's text, and the program #includes it after its description (an
+//             edit Cmd-Z takes back in one step), and the program still runs; the processor's draft has it; chosen
+//             again, it is ticked and shown, not added twice; with no room for another tab, the files the program
+//             lacks are greyed
 //   KEYS      Escape leaves the editor, after which Tab moves the focus ring (and no key reaches the text)
 #include "Probe.h"
 
@@ -50,6 +55,7 @@
 #include "plugin/Processor.h"
 
 #include "Examples.h"
+#include "Library.h"
 #include "Product.h"
 
 #include <funkgui/canvas/Prim.h>
@@ -581,6 +587,100 @@ PROBE(gui, dump)
         editor.insert(program);
         host.keys("cmd+return");
         settleRun(processor, host);
+    }
+
+    // LIBRARY
+    {
+        const std::string program = editor.text();
+        const funkgui::Point button = panel.centreOfLibrary();
+        host.click(button.x, button.y);
+        const funkgui::MenuRequest* libMenu = host.pendingMenu();
+        P.eq("library.menu", libMenu != nullptr ? 1 : 0, 1);
+        if (libMenu != nullptr)
+        {
+            int files = 0, headings = 0;
+            for (const funkgui::MenuItem& it : libMenu->items)
+            {
+                files += it.id > 0 && it.id <= static_cast<int>(std::size(tp::kLibrary)) ? 1 : 0;
+                headings += it.id > static_cast<int>(std::size(tp::kLibrary)) && !it.enabled ? 1 : 0;
+            }
+            P.eq("library.every_file", files, static_cast<int64_t>(std::size(tp::kLibrary)));
+            P.ge("library.headings", static_cast<double>(headings), 4.0);
+            int svf = 0;
+            for (std::size_t i = 0; i < std::size(tp::kLibrary); ++i)
+                if (std::string(tp::kLibrary[i].name) == "svf.fm")
+                    svf = static_cast<int>(i) + 1;
+            P.eq("library.chosen", host.chooseMenuItem(svf) ? 1 : 0, 1);
+            host.settle();
+            const int tab = panel.fileCount() - 1;
+            P.eq("library.tab_added", panel.fileCount() == 2 && panel.fileName(tab) == "svf.fm" ? 1 : 0, 1);
+            P.eq("library.tab_shown", panel.activeFile(), tab);
+            P.eq("library.library_text", panel.editor().text() == tp::findLibraryFile("svf.fm")->source ? 1 : 0, 1);
+            const tp::Draft d = port.draft();
+            P.eq("library.in_draft", d.files.size() == 2 && d.files[1].name == "svf.fm" ? 1 : 0, 1);
+            // The program includes it, after its description.
+            const std::string with = d.files.empty() ? std::string() : d.files[0].text;
+            const std::size_t inc = with.find("#include \"svf.fm\"\n");
+            P.eq("library.program_includes", inc != std::string::npos ? 1 : 0, 1);
+            P.eq("library.after_description", inc != std::string::npos && with.compare(0, 2, "//") == 0
+                                                  && with.substr(0, inc).find("module") == std::string::npos ? 1 : 0, 1);
+            host.keys("cmd+return");
+            settleRun(processor, host);
+            P.eq("library.still_runs", port.status().ok && port.running().size() == 2 ? 1 : 0, 1);
+            // Chosen again: ticked, shown, not added twice.
+            const funkgui::Point tab0 = panel.centreOfTab(0);
+            host.click(tab0.x, tab0.y);
+            host.settle();
+            host.click(button.x, button.y);
+            libMenu = host.pendingMenu();
+            bool ticked = false;
+            if (libMenu != nullptr)
+                for (const funkgui::MenuItem& it : libMenu->items)
+                    ticked = ticked || (it.id == svf && it.checked);
+            P.eq("library.ticked", ticked ? 1 : 0, 1);
+            host.chooseMenuItem(svf);
+            host.settle();
+            P.eq("library.not_twice", panel.fileCount() == 2 && panel.activeFile() == 1 ? 1 : 0, 1);
+            // Cmd-Z in the program takes the #include back, in one step.
+            host.click(tab0.x, tab0.y);
+            host.settle();
+            P.eq("library.undo_include", panel.editor().undo() && panel.editor().text() == program ? 1 : 0, 1);
+            panel.editor().redo();
+            host.settle();
+            // With no room for another tab, the files the program lacks are greyed.
+            while (panel.fileCount() < static_cast<int>(tp::kMaxFiles))
+            {
+                const funkgui::Point plus = panel.centreOfNewTab();
+                host.click(plus.x, plus.y);
+                host.keys("escape");
+                host.settle();
+            }
+            host.click(button.x, button.y);
+            libMenu = host.pendingMenu();
+            int open = 0;
+            if (libMenu != nullptr)
+                for (const funkgui::MenuItem& it : libMenu->items)
+                    open += it.id > 0 && it.id <= static_cast<int>(std::size(tp::kLibrary)) && it.enabled ? 1 : 0;
+            P.eq("library.full_greyed", open, 1);                  // svf.fm alone, which is there
+            host.cancelMenu();
+            // Back: the extra tabs closed (empty, at once), svf.fm closed (it asks), the program as before.
+            while (panel.fileCount() > 2)
+            {
+                const funkgui::Point x = panel.centreOfCloseTab(panel.fileCount() - 1);
+                host.click(x.x, x.y);
+                host.settle();
+            }
+            const funkgui::Point x1 = panel.centreOfCloseTab(1);
+            host.click(x1.x, x1.y);
+            host.chooseMenuItem(1);
+            host.settle();
+            host.click(tab0.x, tab0.y);
+            panel.editor().selectAll();
+            panel.editor().insert(program);
+            host.keys("cmd+return");
+            settleRun(processor, host);
+            P.eq("library.back", panel.fileCount() == 1 && port.status().ok ? 1 : 0, 1);
+        }
     }
 
     // KEYS
