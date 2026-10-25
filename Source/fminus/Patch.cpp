@@ -220,11 +220,16 @@ namespace testingplayground
         const std::string file = files.front().name;
         const std::string_view source = files.front().text;
         // An #include finds the file of that name; the program's own included again reads nothing, as FMinus reads
-        // each file once.
+        // each file once. The files read, in the order first read: the panel's lines come from them.
+        std::vector<const SourceFile*> compiled{ &files.front() };
         const fminus::Program::IncludeResolver include =
-            [&files](std::string_view name, std::string_view) -> std::optional<fminus::Program::IncludedFile> {
+            [&files, &compiled](std::string_view name, std::string_view) -> std::optional<fminus::Program::IncludedFile> {
             if (const SourceFile* f = findFile(files, name))
+            {
+                if (std::find(compiled.begin(), compiled.end(), f) == compiled.end())
+                    compiled.push_back(f);
                 return fminus::Program::IncludedFile{ f->name, f->text };
+            }
             return std::nullopt;
         };
 
@@ -360,6 +365,7 @@ namespace testingplayground
             patch->initialised_.push_back(false);
         }
         patch->sources_ = files;
+        patch->panel_ = readPanelSpec(compiled, patch->controls_, r.notes);
         patch->reset(sampleRate);
         r.compileMs = msSince(t0);
         r.patch = std::move(patch);

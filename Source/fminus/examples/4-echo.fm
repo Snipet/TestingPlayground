@@ -1,5 +1,9 @@
 // Echo: a stereo delay with feedback, ping-pong or straight. Its two lines come from calloc in init and go back with
-// free in end, both off the audio thread: process may not allocate, and FMinus refuses one that could.
+// free in end, both off the audio thread: process may not allocate, and FMinus refuses one that could. The #pragma
+// panel lines lay the dials out in titled sections, as a hardware unit's panel.
+#pragma panel section "ECHO" time feedback pingpong
+#pragma panel section "OUTPUT" mix
+#pragma panel label pingpong "PING-PONG"
 module Effect
 {
     param float time [[fminus::range(10, 1000)]] [[fminus::default(350)]];       // ms

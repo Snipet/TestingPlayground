@@ -4,6 +4,7 @@
 #include "editor/ChatItems.h"
 #include "editor/ChatStyle.h"
 #include "editor/ChatView.h"
+#include "editor/DialLayout.h"
 #include "editor/Items.h"
 
 #include "editor/Theme.h"
@@ -107,11 +108,6 @@ namespace testingplayground::ui
         constexpr float kProblemRowH = 15.0f;
         constexpr float kPlaceW = 150.0f;                // a problem's file, line and column
         constexpr int   kProblemRows = 4;
-        constexpr float kDialCellW = 60.0f;              // funkgui::DialGeom, primary: 60 x 80
-        constexpr float kDialCellH = 80.0f;
-        constexpr float kDialGap = 30.0f;                // between dials, while the column has room
-        constexpr float kDialMinGap = 16.0f;             // the least, which keeps long labels (kCaption) apart
-        constexpr float kDialRowGap = 12.0f;             // between rows of dials
         constexpr float kFooterH = 36.0f;
         constexpr float kBottomGap = 12.0f;              // over the footer's rule
         // The chat's column, at the right.
@@ -133,37 +129,20 @@ namespace testingplayground::ui
         constexpr int   kMaxKeyLength = 320;
         constexpr uint32_t kA11yStride = 64;             // item i's ids: kA11yStride * (i + 1) + 0..63
 
-        // ---- the dials' grid: as few rows as the column's width holds, the dials shared out evenly ------------------
-        struct DialGrid
-        {
-            int rows = 1, cols = 1;
-            float gap = kDialGap;
-        };
-        DialGrid dialGrid(int used, float width)
-        {
-            const int n = std::max(used, 1);
-            const int fit = std::clamp(static_cast<int>(std::floor((width + kDialMinGap) / (kDialCellW + kDialMinGap))), 1,
-                                       kMaxControls);
-            DialGrid g;
-            g.rows = (n + fit - 1) / fit;
-            g.cols = (n + g.rows - 1) / g.rows;
-            if (g.cols > 1)
-                g.gap = std::clamp((width - kDialCellW * static_cast<float>(g.cols)) / static_cast<float>(g.cols - 1),
-                                   kDialMinGap, kDialGap);
-            return g;
-        }
+        // A section's title, cut into its frame's top edge (DialLayout.h).
+        constexpr funkgui::TextStyle kSectionTitle{ 10.0f, 2.4f, 0.10f, false };
 
-        // ---- a dial over P1..P16, labelled with the running program's parameter ------------------------------------
+        // ---- a dial over P1..P16, labelled with the running program's parameter (or its #pragma panel label) --------
         class ControlModel final : public funkgui::ValueModel
         {
         public:
             explicit ControlModel(funkgui::ParamPort& port) : port_(port) {}
 
-            void setControl(const Control& c, uint32_t revision)
+            void setControl(const Control& c, const std::string& label, uint32_t revision)
             {
                 control_ = c;
                 revision_ = revision;
-                const std::string name = upper(c.name);
+                const std::string name = upper(asciiText(label.empty() ? std::string(c.name) : label));
                 std::snprintf(label_, sizeof label_, "%s", name.c_str());
             }
             const Control& control() const noexcept { return control_; }
@@ -1317,23 +1296,35 @@ namespace testingplayground::ui
             .setCells({ { kMargin, kToolbarY, 64.0f, kButtonH } });
         static_cast<CellsItem&>(*items_[static_cast<std::size_t>(examplesItem_)])
             .setCells({ { kMargin + 72.0f, kToolbarY, 96.0f, kButtonH } });
-        // The dials in rows, the first on top: slot c in row c / cols, column c % cols (an unused slot is not shown).
-        const DialGrid grid = dialGrid(dialsUsed_, leftW_);
-        dialRows_ = grid.rows;
-        dialCols_ = grid.cols;
-        const float rowStep = kDialCellH + kDialRowGap;
-        const float dialsY = bottom - kDialCellH - static_cast<float>(grid.rows - 1) * rowStep;
+        // The dials: in plain rows, or in the sections the program's #pragma panel lines ask for (DialLayout.h), as
+        // tall as the panel can give them while the editor keeps 120 px.
         const float problemsH = kProblemRowH * static_cast<float>(kProblemRows);
-        const float problemsY = dialsY - 16.0f - problemsH;
+        const float roomForDials = bottom - kEditorY - 120.0f - 8.0f - problemsH - 16.0f;
+        DialMeasure measure;
+        measure.label = [this](int slot, bool small) {
+            const std::string& label = panelSpec_.labels[static_cast<std::size_t>(slot)];
+            const std::string& name = controls_[static_cast<std::size_t>(slot)].name;
+            const std::string text = upper(asciiText(label.empty() ? name : label));
+            return funkgui::text::width(funkgui::FontService::get().atlas(), text.c_str(),
+                                        small ? funkgui::type::kMicro : funkgui::type::kCaption);
+        };
+        measure.title = [](const std::string& title) {
+            return funkgui::text::width(funkgui::FontService::get().atlas(), upper(asciiText(title)).c_str(), kSectionTitle);
+        };
+        dials_ = layoutDials(panelSpec_, controls_, measure, kMargin, leftW_, bottom, roomForDials);
+        const float problemsY = dials_.top - 16.0f - problemsH;
         files().setGeometry({ kMargin, kTabsY, leftW_, kTabH },
                             { kMargin, kEditorY, leftW_, std::max(80.0f, problemsY - 8.0f - kEditorY) });
         static_cast<ProblemsItem&>(*items_[static_cast<std::size_t>(problemsItem_)])
             .setBounds({ kMargin, problemsY, leftW_, problemsH });
         for (int c = 0; c < kMaxControls; ++c)
             if (const int i = itemOfSlot_[static_cast<std::size_t>(c)]; i >= 0)
+            {
+                const DialPlace& d = dials_.dials[static_cast<std::size_t>(c)];
                 static_cast<DialItem&>(*items_[static_cast<std::size_t>(i)])
-                    .setGeom(funkgui::DialGeom{ kMargin + static_cast<float>(c % grid.cols) * (kDialCellW + grid.gap),
-                                                dialsY + static_cast<float>(c / grid.cols) * rowStep });
+                    .setGeom(funkgui::DialGeom{ d.x, d.top,
+                                                d.small ? funkgui::DialSize::compact : funkgui::DialSize::primary });
+            }
 
         // The chat's card.
         const float right = W - kMargin;
@@ -1572,21 +1563,25 @@ namespace testingplayground::ui
             const Controls cs = s.ok ? s.controls : port_.controls();
             if (s.ok)
                 running_ = s.sources;
+            const PanelSpec spec = s.ok ? s.panel : port_.panel();
             ++controlsRevision_;
-            int used = 0;
             for (int c = 0; c < kMaxControls; ++c)
-            {
-                if (cs[static_cast<std::size_t>(c)].used)
-                    used = c + 1;
                 if (const int i = itemOfSlot_[static_cast<std::size_t>(c)]; i >= 0)
                     static_cast<DialItem&>(*items_[static_cast<std::size_t>(i)])
                         .model()
-                        .setControl(cs[static_cast<std::size_t>(c)], controlsRevision_);
+                        .setControl(cs[static_cast<std::size_t>(c)], spec.labels[static_cast<std::size_t>(c)],
+                                    controlsRevision_);
+            // Other dials or another panel: their places again (a second row takes height from the editor).
+            bool sameDials = spec == panelSpec_;
+            for (int c = 0; c < kMaxControls && sameDials; ++c)
+            {
+                const Control& a = cs[static_cast<std::size_t>(c)];
+                const Control& b = controls_[static_cast<std::size_t>(c)];
+                sameDials = a.used == b.used && std::strcmp(a.name, b.name) == 0;
             }
-            // Another count of dials may take another grid (a second row takes height from the editor).
-            const DialGrid grid = dialGrid(used, leftW_);
-            dialsUsed_ = used;
-            if (grid.rows != dialRows_ || grid.cols != dialCols_)
+            controls_ = cs;
+            panelSpec_ = spec;
+            if (!sameDials)
                 layout();
             statusChanged = true;
         }
@@ -2233,6 +2228,32 @@ namespace testingplayground::ui
             const funkgui::Rect box = inputItem().box();
             c.text(fitText(c, activity_, chat::kSmall, box.w - 8.0f).c_str(), box.x + 6.0f,
                    c.capCentreTop(usageY_ + kUsageH * 0.5f, chat::kSmall), chat::kSmall, chat_.busy ? p.dim : p.faint);
+        }
+
+        // The dials' sections, as a panel's printing: a frame each, its title cut into the top edge.
+        {
+            const funkgui::Canvas::Scope s(c, kSectionTag, false);
+            const funkgui::Col edge = th.ink32;
+            for (const SectionFrame& f : dials_.sections)
+            {
+                const funkgui::Rect& r = f.r;
+                c.rrect(r.x, r.y, r.w, r.h, 0.0f, funkgui::mix(th.ground, th.ink16, 0.22f));
+                const std::string title = upper(asciiText(f.title));
+                if (title.empty())
+                    c.hairlineH(r.x, r.y, r.w, edge);
+                else
+                {
+                    const float tw = std::min(c.textWidth(title.c_str(), kSectionTitle), r.w - 16.0f);
+                    const float l = r.centreX() - 0.5f * tw - 7.0f, rr = r.centreX() + 0.5f * tw + 7.0f;
+                    c.hairlineH(r.x, r.y, std::max(0.0f, l - r.x), edge);
+                    c.hairlineH(rr, r.y, std::max(0.0f, r.right() - rr), edge);
+                    c.text(fitText(c, title, kSectionTitle, r.w - 16.0f).c_str(), r.centreX(), c.capCentreTop(r.y, kSectionTitle),
+                           kSectionTitle, th.ink70, funkgui::Align::centre);
+                }
+                c.hairlineV(r.x, r.y, r.h, edge);
+                c.hairlineV(r.right() - 1.0f, r.y, r.h, edge);
+                c.hairlineH(r.x, r.bottom() - 1.0f, r.w, edge);
+            }
         }
 
         for (std::size_t i = 0; i < items_.size(); ++i)

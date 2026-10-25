@@ -139,6 +139,7 @@ namespace testingplayground
         uint64_t statusRevision() const override;
         Sources running() const override;
         Controls controls() const override;
+        PanelSpec panel() const override;
         float load() const override;
         uint32_t alerts() const override;
         ChatPort& chat() override { return chat_; }
@@ -162,6 +163,7 @@ namespace testingplayground
         Draft draft_;
         uint64_t draftRevision_ = 1;
         Controls controls_{};
+        PanelSpec panel_;                                        // the running program's (programMutex_)
 
         juce::AudioProcessorValueTreeState apvts_;
         std::array<std::atomic<float>*, kMaxControls> raw_{};   // the normalised values the audio thread reads

@@ -52,6 +52,7 @@ namespace probe
             if (!r.patch)
                 return false;
             controls_ = r.patch->controls();
+            panel_ = r.patch->panel();
             engine_.offer(std::move(r.patch));
             engine_.prepare(fs_, maxBlock_);
             norm_ = defaults();
@@ -105,6 +106,7 @@ namespace probe
 
         testingplayground::Engine& engine() noexcept { return engine_; }
         const testingplayground::Controls& controls() const noexcept { return controls_; }
+        const testingplayground::PanelSpec& panel() const noexcept { return panel_; }      // its #pragma panel lines
         std::array<float, testingplayground::kMaxControls>& norm() noexcept { return norm_; }
         double fs() const noexcept { return fs_; }
 
@@ -113,6 +115,7 @@ namespace probe
         int maxBlock_;
         testingplayground::Engine engine_;
         testingplayground::Controls controls_{};
+        testingplayground::PanelSpec panel_;
         std::array<float, testingplayground::kMaxControls> norm_{};
     };
 
