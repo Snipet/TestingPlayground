@@ -1,0 +1,56 @@
+// svf.fm: a state-variable filter, 12 dB/octave: low-, band-, high-pass and notch at once.
+//
+// Stable however fast its cutoff moves (Simper's topology-preserving form): the filter to sweep and modulate.
+//
+//   Svf filter;                    a field of your module
+//   filter.set(fc, res, rate);     the cutoff in Hz and the resonance, 0 to 1 (0: none; 1: it rings, near
+//                                  self-oscillation); every sample while they move, else once a call
+//   y = filter.tick(x);            one sample in: the low-pass out, and every output in the fields below
+//   filter.lp  filter.bp  filter.hp  filter.notch
+//                                  the low-pass, the band-pass (0 dB at the cutoff), the high-pass and the notch of
+//                                  the last tick
+//   filter.clear();                silence (a voice's start)
+module Svf
+{
+    float lp;
+    float bp;
+    float hp;
+    float notch;
+    float ic1;
+    float ic2;
+    float k;
+    float a1;
+    float a2;
+    float a3;
+
+    void set(float fc, float res, float rate)
+    {
+        const float r = fmaxf(rate, 1000);
+        const float w = 3.14159265f * fminf(fmaxf(fc, 5), 0.49f * r) / r;
+        const float g = sinf(w) / cosf(w);
+        k = 2 - 1.95f * fminf(fmaxf(res, 0), 1);
+        a1 = 1 / (1 + g * (g + k));
+        a2 = g * a1;
+        a3 = g * a2;
+    }
+
+    float tick(float x)
+    {
+        const float v3 = x - ic2;
+        const float v1 = a1 * ic1 + a2 * v3;
+        const float v2 = ic2 + a2 * ic1 + a3 * v3;
+        ic1 = 2 * v1 - ic1;
+        ic2 = 2 * v2 - ic2;
+        lp = v2;
+        bp = k * v1;
+        hp = x - k * v1 - v2;
+        notch = x - k * v1;
+        return v2;
+    }
+
+    void clear()
+    {
+        ic1 = 0;
+        ic2 = 0;
+    }
+};

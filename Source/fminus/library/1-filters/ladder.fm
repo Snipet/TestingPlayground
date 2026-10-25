@@ -1,0 +1,64 @@
+// ladder.fm: a transistor-ladder low-pass, 24 dB/octave, warm when driven, self-oscillating at full resonance.
+//
+// Its input stage saturates (tanh) as an analog one does, and from a resonance near 1 it sings on its own, a sine at
+// the cutoff. Four zero-delay one-poles in a feedback loop (Zavalishin's topology-preserving ladder).
+//
+//   Ladder filter;                 a field of your module
+//   filter.set(fc, res, rate);     the cutoff in Hz and the resonance, 0 to 1 (above about 0.95: self-oscillation);
+//                                  every sample while they move, else once a call
+//   y = filter.tick(x);            one sample. Its level: 0 dB at res 0, about -4 dB at res 1 (an analog ladder
+//                                  loses bass as the resonance rises; half of it is made up). x near 0.25 stays clean;
+//                                  louder drives the tanh
+//   filter.clear();                silence (a voice's start)
+module Ladder
+{
+    float s1;
+    float s2;
+    float s3;
+    float s4;
+    float G;
+    float k;
+    float makeup;
+
+    void set(float fc, float res, float rate)
+    {
+        const float r = fmaxf(rate, 1000);
+        const float w = 3.14159265f * fminf(fmaxf(fc, 5), 0.45f * r) / r;
+        const float g = sinf(w) / cosf(w);
+        G = g / (1 + g);
+        k = 4.2f * fminf(fmaxf(res, 0), 1);
+        makeup = 1 + 0.5f * k;
+    }
+
+    float tick(float x)
+    {
+        // The loop solved for the linear filter, then its input saturated: y4 = (G^4 x + S) / (1 + k G^4), where S is
+        // what the four states contribute.
+        const float b = 1 - G;
+        const float g2 = G * G;
+        const float S = b * (g2 * G * s1 + g2 * s2 + G * s3 + s4);
+        const float y4 = (g2 * g2 * x + S) / (1 + k * g2 * g2);
+        const float u = tanhf(x - k * y4);
+        float v = (u - s1) * G;
+        const float y1 = v + s1;
+        s1 = y1 + v;
+        v = (y1 - s2) * G;
+        const float y2 = v + s2;
+        s2 = y2 + v;
+        v = (y2 - s3) * G;
+        const float y3 = v + s3;
+        s3 = y3 + v;
+        v = (y3 - s4) * G;
+        const float y = v + s4;
+        s4 = y + v;
+        return makeup * y;
+    }
+
+    void clear()
+    {
+        s1 = 0;
+        s2 = 0;
+        s3 = 0;
+        s4 = 0;
+    }
+};

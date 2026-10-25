@@ -39,6 +39,7 @@
 #pragma once
 
 #include "dsp/Controls.h"
+#include "fminus/PanelSpec.h"
 #include "dsp/Sources.h"
 
 #include <cstddef>
@@ -86,6 +87,8 @@ namespace testingplaygroundsynth
         float rate() const noexcept { return rate_; }
 
         const Controls& controls() const noexcept { return controls_; }
+        // The dials' panel its #pragma panel lines ask for (PanelSpec.h), from the program and the files it includes.
+        const PanelSpec& panel() const noexcept { return panel_; }
         int instances() const noexcept { return static_cast<int>(instances_.size()); }
         const Sources& sources() const noexcept { return sources_; }
 
@@ -115,6 +118,7 @@ namespace testingplaygroundsynth
         std::vector<bool> initialised_;
         std::size_t instanceSize_ = 0, instanceAlign_ = 16;
         Controls controls_{};
+        PanelSpec panel_;
         std::vector<const void*> params_;              // per control: its fminus::Program::Parameter (null: unused)
         Sources sources_;
         float rate_ = 48000.0f;

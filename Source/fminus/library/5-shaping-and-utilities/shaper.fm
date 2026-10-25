@@ -1,0 +1,58 @@
+// shaper.fm: distortion: clipping, a tanh drive, a wavefolder, a tube-like curve, a bit crusher.
+//
+// Shaping adds harmonics, which can alias: drive a band-limited signal, and low-pass after it when it gets harsh.
+//
+//   y = softClip(x);               x / (1 + |x|): gentle, never past 1
+//   y = hardClip(x, limit);        flat at +-limit
+//   y = drive(x, amount);          tanh, amount 0 (clean) to 1 (heavy): +-1 stays +-1, quiet parts come up
+//   y = fold(x, amount);           a sine wavefolder (a west-coast timbre): amount 0 (a soft curve) to 1 (full-scale
+//                                  peaks fold over three times)
+//   y = asym(x, bias);             even harmonics, a tube's warmth: bias 0 to 1; it leaves DC (DcBlock in
+//                                  onepole.fm)
+//   Crusher crush;                 a field: y = crush.tick(x, bits, hold): bits 1 to 16 (16: clean), hold 1 and up
+//                                  (samples each value is held: 4 sounds like a quarter of the rate)
+float softClip(float x)
+{
+    return x / (1 + fabsf(x));
+}
+
+float hardClip(float x, float limit)
+{
+    return fminf(fmaxf(x, -limit), limit);
+}
+
+float drive(float x, float amount)
+{
+    const float g = 1 + 19 * fminf(fmaxf(amount, 0), 1);
+    return tanhf(g * x) / tanhf(g);
+}
+
+float fold(float x, float amount)
+{
+    const float g = 1 + 5 * fminf(fmaxf(amount, 0), 1);
+    return sinf(1.57079633f * g * x);
+}
+
+float asym(float x, float bias)
+{
+    const float b = 0.8f * fminf(fmaxf(bias, 0), 1);
+    return tanhf(x + b) - tanhf(b);
+}
+
+module Crusher
+{
+    float held;
+    float count;
+
+    float tick(float x, float bits, float hold)
+    {
+        count += 1;
+        if (count >= fmaxf(hold, 1))
+        {
+            count = 0;
+            const float steps = expf(0.693147181f * (fminf(fmaxf(bits, 1), 16) - 1));   // 2 ^ (bits - 1)
+            held = floorf(x * steps + 0.5f) / steps;
+        }
+        return held;
+    }
+};
