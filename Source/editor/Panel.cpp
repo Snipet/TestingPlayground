@@ -16,6 +16,7 @@
 #include "dsp/Compiler.h"
 #include "dsp/Controls.h"
 #include "dsp/Engine.h"
+#include "fminus/Random.h"
 
 #include "Examples.h"
 #include "Library.h"
@@ -43,6 +44,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <chrono>
 #include <functional>
 #include <iterator>
 #include <sstream>
@@ -1396,6 +1398,12 @@ namespace testingplayground::ui
             [](char* out, std::size_t n) {
                 std::snprintf(out, n, "LIBRARY   A READY-MADE BUILDING BLOCK AS A TAB OF ITS OWN, #INCLUDED BY THE PROGRAM");
             }));
+        randomItem_ = add(std::make_unique<CellsItem>(
+            std::make_unique<ButtonModel>("RANDOM", "A random program", [this] { makeRandom(nextSeed()); }), cells(1),
+            funkgui::CellStyle::boxed, idFor(),
+            [](char* out, std::size_t n) {
+                std::snprintf(out, n, "RANDOM   A NEW PROGRAM FROM THE LIBRARY'S BUILDING BLOCKS, FOR INSPIRATION");
+            }));
 
         // The editor, the problems under it, the dials under them.
         editorItem_ = add(std::make_unique<FilesItem>(funkgui::Rect{}, funkgui::Rect{}, idFor(), problems_,
@@ -1508,6 +1516,8 @@ namespace testingplayground::ui
             .setCells({ { kMargin + 72.0f, kToolbarY, 96.0f, kButtonH } });
         static_cast<CellsItem&>(*items_[static_cast<std::size_t>(libraryItem_)])
             .setCells({ { kMargin + 176.0f, kToolbarY, 88.0f, kButtonH } });
+        static_cast<CellsItem&>(*items_[static_cast<std::size_t>(randomItem_)])
+            .setCells({ { kMargin + 272.0f, kToolbarY, 80.0f, kButtonH } });
         // The dials: in plain rows, or in the sections the program's #pragma panel lines ask for (DialLayout.h), as
         // tall as the panel can give them while the editor keeps 120 px.
         const float problemsH = kProblemRowH * static_cast<float>(kProblemRows);
@@ -1656,6 +1666,7 @@ namespace testingplayground::ui
     }
 
     funkgui::Point Panel::centreOfLibrary() const { return items_[static_cast<std::size_t>(libraryItem_)]->centre(); }
+    funkgui::Point Panel::centreOfRandom() const { return items_[static_cast<std::size_t>(randomItem_)]->centre(); }
     funkgui::Point Panel::centreOfProblem(int i) const
     {
         const auto& p = static_cast<const ProblemsItem&>(*items_[static_cast<std::size_t>(problemsItem_)]);
@@ -1827,7 +1838,9 @@ namespace testingplayground::ui
         const std::string statusBefore = status_;
 
         // The status line and the meter.
-        if (compiling_)
+        if (nowSec < noticeUntil_)
+            status_ = notice_;
+        else if (compiling_)
             status_ = "COMPILING";
         else if (!lastOk_)
         {
@@ -2357,6 +2370,56 @@ namespace testingplayground::ui
         });
     }
 
+    // RANDOM: a program from the library's building blocks (Random.h), as EXAMPLES puts one in: the program's text
+    // replaced as one edit and run, the other files staying; the library files it #includes as tabs.
+    bool Panel::makeRandom(uint32_t seed)
+    {
+        random::Program p;
+        bool fits = false;
+        for (uint32_t k = 0; k < 64 && !fits; ++k)
+        {
+            p = random::make(seed + k);
+            int missing = 0;
+            for (const std::string& f : p.library)
+                missing += files().find(f) < 0 ? 1 : 0;
+            fits = files().count() + missing <= static_cast<int>(kMaxFiles);
+        }
+        if (!fits)
+        {
+            notice("RANDOM NEEDS ROOM FOR ITS LIBRARY FILES: CLOSE A TAB");
+            return false;
+        }
+        files().endRename();
+        for (const std::string& name : p.library)
+            if (files().find(name) < 0)
+                if (const LibraryFile* f = findLibraryFile(name))
+                    files().addFile(f->name, f->source);
+        files().select(0);
+        funkgui::TextEditor& program = files().editor();
+        program.selectAll();
+        program.insert(p.text);
+        program.setCaret({ 0, 0 });
+        program.setScroll(0.0f, 0.0f);
+        setFocus(editorItem_);
+        runNow();
+        dirty_ = true;
+        return true;
+    }
+
+    uint32_t Panel::nextSeed()
+    {
+        const auto ticks = static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+        ++randomCount_;
+        return 1 + static_cast<uint32_t>((ticks / 1000 + static_cast<uint64_t>(randomCount_) * 7919u) % random::kMaxSeed);
+    }
+
+    void Panel::notice(const std::string& text)
+    {
+        notice_ = text;
+        noticeUntil_ = (host_ != nullptr ? host_->nowSeconds() : 0.0) + 4.0;
+        dirty_ = true;
+    }
+
     bool Panel::addLibraryFile(const std::string& name)
     {
         const LibraryFile* f = findLibraryFile(name);
@@ -2529,7 +2592,7 @@ namespace testingplayground::ui
         // The toolbar's status and meter, over the editor.
         {
             const funkgui::Canvas::Scope s(c, kStatusTag, false);
-            const float statusX = kMargin + 176.0f + 88.0f + 20.0f;
+            const float statusX = kMargin + 272.0f + 80.0f + 20.0f;
             const float textTop = c.capCentreTop(kToolbarY + kButtonH * 0.5f, kStatusStyle);
             const float meterW = c.textWidth(meter_.c_str(), kStatusStyle);
             const funkgui::Col statusInk = !lastOk_ && !compiling_ ? th.signal : (edited_ ? th.ink70 : th.ink52);

@@ -12,6 +12,7 @@
 //                        .panel.small.png at the least size
 //   gui.dump.example.png the program Claude's instructions build from the library (ChatAgent::promptExample)
 //   gui.dump.displays.png a program with every display and every dial style, audio flowing; .displays.paper.png
+//   gui.dump.random.png  a program RANDOM made, running
 // and checks:
 //   FRAME     the frame settles, every glyph is in the font, the editor shows the processor's draft (the first
 //             example), and the dials are the program's parameters: one for each, the rest not shown
@@ -59,11 +60,16 @@
 //             a click on the switch flips it (one host gesture each); a fader's drag raises its dial; the host shows
 //             an option's name for the buttons' value. Another program run: until the audio thread takes it, its
 //             light reads 0 (never the last program's first field), then its own value
+//   RANDOM    a seed's program (fminus/Random.h) in place of the program's text, its library files as tabs (the
+//             library's), the program shown and run with no note; Cmd-Z gives the text back in one step; the RANDOM
+//             button makes another, which runs with no note; with twelve tabs of other files, a notice in the status
+//             and the text untouched
 //   KEYS      Escape leaves the editor, after which Tab moves the focus ring (and no key reaches the text)
 #include "Probe.h"
 
 #include "editor/DisplayItem.h"
 #include "editor/Panel.h"
+#include "fminus/Random.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
 #include "plugin/Processor.h"
@@ -939,6 +945,85 @@ PROBE(gui, dump)
         panel.editor().insert(program);
         host.keys("cmd+return");
         settleRun(processor, host);
+    }
+
+    // RANDOM
+    {
+        const std::string program = editor.text();
+        const int tabsBefore = panel.fileCount();
+        const tp::random::Program want = tp::random::make(4242);
+        P.eq("random.made", panel.makeRandom(4242) ? 1 : 0, 1);
+        settleRun(processor, host);
+        P.eq("random.text", panel.editor().text() == want.text ? 1 : 0, 1);
+        P.eq("random.program_shown", panel.activeFile(), 0);
+        const auto tabOf = [&](const std::string& name) {
+            for (int i = 0; i < panel.fileCount(); ++i)
+                if (panel.fileName(i) == name)
+                    return i;
+            return -1;
+        };
+        bool tabs = true;
+        const tp::Draft d = port.draft();
+        for (const std::string& f : want.library)
+        {
+            const int i = tabOf(f);
+            tabs = tabs && i > 0 && static_cast<std::size_t>(i) < d.files.size()
+                && d.files[static_cast<std::size_t>(i)].text == tp::findLibraryFile(f)->source;
+        }
+        P.eq("random.library_tabs", tabs ? 1 : 0, 1);
+        P.eq("random.tab_count", panel.fileCount(), tabsBefore + static_cast<int64_t>(want.library.size()));
+        P.eq("random.runs", port.status().ok && port.status().notes.empty() ? 1 : 0, 1);
+        if (!port.status().ok || !port.status().notes.empty())
+            std::printf("%s%s", port.status().errors.c_str(), port.status().notes.c_str());
+        P.eq("random.plays_it", !port.running().empty() && port.running().front().text == want.text ? 1 : 0, 1);
+        P.eq("random.undo", panel.editor().undo() && panel.editor().text() == program ? 1 : 0, 1);
+        panel.editor().redo();
+        host.settle();
+        // The button: another program.
+        const funkgui::Point button = panel.centreOfRandom();
+        host.click(button.x, button.y);
+        settleRun(processor, host);
+        const std::string made = panel.editor().text();
+        P.eq("random.button_new", made != want.text && made.rfind("// ", 0) == 0 && made.find(" (random ") != std::string::npos
+                                      ? 1 : 0, 1);
+        P.eq("random.button_runs", port.status().ok && port.status().notes.empty() ? 1 : 0, 1);
+        std::printf("RANDOM made: %s\n", made.substr(0, made.find('\n')).c_str());
+        writePng(P, host, "gui.dump.random.png", "random");
+        // Back to the program alone, then twelve tabs of other files: no room.
+        const funkgui::Point tab0 = panel.centreOfTab(0);
+        while (panel.fileCount() > 1)
+        {
+            const funkgui::Point x = panel.centreOfCloseTab(panel.fileCount() - 1);
+            host.click(x.x, x.y);
+            host.chooseMenuItem(1);
+            host.settle();
+        }
+        host.click(tab0.x, tab0.y);
+        panel.editor().selectAll();
+        panel.editor().insert(program);
+        while (panel.fileCount() < static_cast<int>(tp::kMaxFiles))
+        {
+            const funkgui::Point plus = panel.centreOfNewTab();
+            host.click(plus.x, plus.y);
+            host.keys("escape");
+            host.settle();
+        }
+        host.click(tab0.x, tab0.y);
+        P.eq("random.no_room", panel.makeRandom(77) ? 0 : 1, 1);
+        host.tick(1);
+        P.eq("random.no_room_says_so", panel.statusText().find("RANDOM NEEDS ROOM") != std::string::npos ? 1 : 0, 1);
+        P.eq("random.no_room_text_untouched", panel.editor().text() == program && panel.fileCount() == static_cast<int>(tp::kMaxFiles)
+                                                  ? 1 : 0, 1);
+        while (panel.fileCount() > 1)
+        {
+            const funkgui::Point x = panel.centreOfCloseTab(panel.fileCount() - 1);
+            host.click(x.x, x.y);
+            host.settle();
+        }
+        host.click(tab0.x, tab0.y);
+        host.keys("cmd+return");
+        settleRun(processor, host);
+        P.eq("random.back", panel.fileCount() == 1 && port.status().ok ? 1 : 0, 1);
     }
 
     // KEYS
