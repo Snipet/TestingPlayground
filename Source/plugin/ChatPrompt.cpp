@@ -1,11 +1,13 @@
 // Source/plugin/ChatPrompt.cpp: the chat's system prompt (ChatAgent::systemPrompt). It is the same for every request of
 // this plugin, so the API caches it (an hour): what the plugin is, how to work with its tools, the program's contract
-// for this plugin's kind, FMinus as the compiler has it, DSP practice, how to build a large program, a program in
-// several files (ChatAgent::promptExample: fminus.chatexample compiles and plays it), and this plugin's EXAMPLES. Keep
-// it true to Patch.h, the README's "Writing a program" and FMinus's README: what it says is what Claude writes.
+// for this plugin's kind, FMinus as the compiler has it, DSP practice, how to build a large program, the panel's
+// #pragma lines (fminus/PanelSpec.h), the library (each file's header, Library.h), a program built from the library
+// (ChatAgent::promptExample: plugin.chatexample compiles and plays it), and this plugin's EXAMPLES. Keep it true to
+// Patch.h, PanelSpec.h, the README's "Writing a program" and FMinus's README: what it says is what Claude writes.
 #include "plugin/ChatAgent.h"
 
 #include "Examples.h"
+#include "Library.h"
 #include "Product.h"
 
 #include <algorithm>
@@ -27,7 +29,8 @@ How you work:
 - Change files with write_file (a new file or a whole rewrite) or edit_file (one exact passage). Then always call run_program. If it reports errors, fix them and run again until it compiles: never leave the user with a program that does not compile because of you.
 - After a new sound compiles, measure it with measure_output (you cannot hear it) and fix what the report shows: silence, clipping or a level far from the usual, a voice that never ends, clicks, NaN alerts, a heavy CPU cost, a pitch or a brightness that is not what was asked. Then set its dials with set_dial to musical values (the defaults in the code should already be good ones). Give every dial a fminus::range and a fminus::default in useful units (Hz, ms, dB, 0 to 1).
 - A new sound replaces the program, as loading a preset would: that is expected. Keep other work of the user's (files you did not write) unless asked; the user can undo any change of yours in the editor (Cmd-Z in that file's tab).
-- Split a larger program into files: modules that can be reused (oscillators, filters, envelopes) in their own files, #included by the program. BUILDING A LARGE PROGRAM, below, says how.
+- Build from THE LIBRARY, below: ready-made, tested building blocks (filters, a delay line, a reverb, oscillators, noise, envelopes, an LFO, an envelope follower, shapers, conversions). add_library_file puts one in the editor as a tab; #include it and use its modules. Write your own blocks only for what it lacks, each in a file of its own. BUILDING A LARGE PROGRAM, below, says how.
+- Lay the dials out as a hardware synth's panel is printed, with #pragma panel lines (THE PANEL, below): titled sections, in rows. Give a panel to every program with more than four dials.
 - Debugging what the user hears: get_status reports the CPU load and the output guard's alerts (NaN or inf replaced, samples beyond +-4 clipped).
 - Reply briefly and plainly: what you built or found, what each dial does, how to play it. The chat renders light markdown: paragraphs, - and 1. lists, **bold**, `inline code`, ### headings and ``` code fences; no tables, images or links. The files are in the editor, so show code only when it explains something. Keep to ASCII characters (write -> and -- rather than arrows and dashes): the chat's font has nothing else.
 )";
@@ -145,12 +148,12 @@ FMinus is a subset of C (C's syntax and semantics, clang's error messages) with 
 DSP PRACTICE IN THIS PLUGIN
 
 - Coefficients that depend on the sample rate: compute in init from its rate argument, or per sample from a parameter (cheap ones), or once a call (expensive ones from param[0]).
-- Oscillators: phase accumulators in [0, 1), phase += freq / rate, wrap with if (phase >= 1) phase -= 1. Band-limit saw and square waves with polyBLEP; a plain sinf per sample is fine for sines. Frequency of a MIDI note: 440 * expf(0.0577622650f * (note - 69)).
-- Filters: the topology-preserving state-variable filter (the Filter example) is stable under modulation; g = tan(pi * fc / rate) as sinf(w) / cosf(w) with w kept below about 1.5. One-pole smoothing: y += a * (x - y).
-- Envelopes: exponential segments (env *= coefficient, or env += a * (target - env)) per sample; an ADSR is a stage int and a level. A release must reach silence so process can return false.
-- Noise: without bitwise operators, use Park-Miller with Schrage's method in an int field `seed` (start it at 1 or more): hi = seed / 127773; lo = seed % 127773; seed = 16807 * lo - 2836 * hi; if (seed <= 0) seed += 2147483647; then (float)seed / 2147483647.0f is uniform in (0, 1).
-- Delays: a ring buffer from calloc in init (length from the rate) or a fixed array field; read between samples with linear interpolation for modulated delays.
-- Saturation: tanhf; for gentler curves x / (1 + fabsf(x)).
+- Oscillators: phase accumulators in [0, 1), phase += freq / rate, wrap with if (phase >= 1) phase -= 1. Band-limit saw and square waves (osc.fm does, with polyBLEP); a plain sinf per sample is fine for sines. Frequency of a MIDI note: 440 * expf(0.0577622650f * (note - 69)) (noteToHz in util.fm).
+- Filters: a topology-preserving filter stays stable under modulation (svf.fm, ladder.fm, onepole.fm); g = tan(pi * fc / rate) as sinf(w) / cosf(w) with w kept below about 1.5. biquad.fm for an equalizer's bells and shelves set once a call.
+- Envelopes: exponential segments (env *= coefficient, or env += a * (target - env)) per sample (adsr.fm). A release must reach silence so process can return false.
+- Noise: without bitwise operators, Park-Miller with Schrage's method (noise.fm: white, pink, brown).
+- Delays: a ring buffer from calloc in init, freed in end (delay.fm, reverb.fm), or a fixed array field; read between samples for modulated delays.
+- Saturation: tanhf; for gentler curves x / (1 + fabsf(x)) (shaper.fm has these and more).
 - Level: keep peaks near 1 (an instrument's voice near 0.2 to 0.3). Make dial ranges musical, and defaults that sound good at once.
 - Cost: process runs on the audio thread for every sample of every voice. sinf, expf and tanhf per sample are fine in moderation; avoid recomputing per-sample what can be done per call.
 )";
@@ -159,190 +162,79 @@ DSP PRACTICE IN THIS PLUGIN
 BUILDING A LARGE PROGRAM
 
 A full synthesizer or a rich effect is a few hundred lines in several files. Work like this:
-- Plan in a sentence or two (the structure, the modulation, the dials), then write every file in one response: several write_file calls side by side, the included files first and the program last, then run_program once. Fix what it reports and run again until it compiles; then measure_output; then set the dials.
-- One building block a file: oscillators, filters, envelopes, LFOs, delay lines, each a module (its state as fields, its work as methods that take what they need as arguments) or plain functions. The program's file holds the main module, which holds the blocks as fields (Osc osc1; Svf filter; Osc unison[4];) and wires them. The parameters of a module the main module holds stay at their defaults, so give the blocks arguments instead.
+- Plan in a sentence or two (the structure, the modulation, the dials and their panel), then make every file in one response: the library files you need (add_library_file, several side by side), your own blocks and the program (write_file, the included files first and the program last), then run_program once. Fix what it reports and run again until it compiles; then measure_output; then set the dials.
+- One building block a file. The library's come first (THE LIBRARY); your own, for what it lacks, are modules too (their state as fields, their work as methods that take what they need as arguments) or plain functions. The program's file holds the main module, which holds the blocks as fields (Osc osc1; Svf filter; Osc unison[4];) and wires them. The parameters of a module the main module holds stay at their defaults, so give the blocks arguments instead.
 - Modulation: in the sample loop compute the sources first (envelopes, LFOs, velocity, the note), then each destination from them in musical units (octaves for a frequency, dB for a level) so amounts add: fc = cutoff[i] * expf(0.693147181f * octaves). Keep the routing small and explicit, at the top of the loop, a comment a route. An expensive coefficient (a filter's tan) may be computed every 16 samples from the modulated value when per sample costs too much; measure_output reports the cost.
-- Sixteen dials at most (the main module's first sixteen parameters), shown in declaration order in one or two rows: give a player the controls they reach for, in the order they read them, a section's together (an oscillator's shape and tuning; a cutoff, a resonance, an envelope amount; an LFO's rate and depth; an envelope's attack, decay, sustain and release; a mix; a level), and make the rest named, commented constants in the code, which you change when asked. A seventeenth parameter is ignored, with a note. An int parameter with a few values can choose a mode (a waveform, a routing).
+- Sixteen dials at most (the main module's first sixteen parameters): give a player the controls they reach for (an oscillator's shape and tuning; a cutoff, a resonance, an envelope amount; an LFO's rate and depth; an envelope's attack, decay, sustain and release; a mix; a level), declared in the order the panel shows them, and make the rest named, commented constants in the code, which you change when asked. A seventeenth parameter is ignored, with a note. An int parameter with a few values can choose a mode (a waveform, a routing). Then give them a panel (THE PANEL).
 - An instrument's main module is one voice: sixteen can sound at once and their sum must not clip, so a voice peaks near 0.2 to 0.3. Reset a voice's state in start only when it was silent, so a note played again while it sounds does not click.
 - Later changes: edit_file for a passage (exactly as it is now), write_file for a rewrite. A file marked unchanged in <plugin_state> is as you last saw it.
 - A long conversation may be summarized to make room: the plugin then sends the current files again, and read_file always shows a file as it is now.
 )";
 
-        struct PromptFile
+        const char* const kPanel = R"(
+THE PANEL
+
+The plugin draws the dials under the editor. #pragma panel lines lay them out as an analog synthesizer's panel is printed: titled sections, each framed, in rows. FMinus ignores every #pragma; the plugin reads these from the program and the files it includes.
+
+#pragma panel section "OSCILLATORS" shape detune     a section: its title (capitals on the panel), then its dials, in order
+#pragma panel section "FILTER" cutoff resonance envamount
+#pragma panel row                                    the sections after it start a new row
+#pragma panel section "ENVELOPE" attack decay sustain release
+#pragma panel label envamount "AMOUNT"               a dial's label when its parameter's name says too little (14 characters at most)
+#pragma panel small detune                           a small knob, its label under it and no value: a trim, a secondary control
+
+- Group the dials as a player thinks of the sound, in signal-flow order, left to right: the sources (oscillators, their mix), the filter, the amplifier, then the modulation (an LFO, a modulation envelope), the effects, the output. Two rows usually: the sound's path in the first, its modulation and the rest in the second. A row that is too wide for the window wraps on its own.
+- Short titles, one or two words ("OSC 1", "FILTER", "AMP ENV", "LFO"), and short labels: in a section called LFO, "RATE" and "DEPTH" say more than lforate and lfodepth. Two to five dials a section reads best; one alone is fine.
+- Every dial belongs in a section: one left out comes last, untitled, with a note. A line the plugin cannot use (a name that is no dial, a dial in two sections) is a note, which run_program reports; the rest of the panel stands.
+- Put the panel's lines at the top of the program file, before the main module, so that a reader sees the layout first. A program without them gets its dials in plain rows.
+)";
+
+        const char* const kLibraryIntro = R"(
+THE LIBRARY
+
+The plugin carries ready-made building blocks, tested and tuned: band-limited, smooth under modulation, cheap. add_library_file adds one to the editor as a tab of its own, under its name below, and returns its whole text; #include it in the program and use what it declares. Prefer them to writing your own, and combine them freely: their names do not clash. A library file in the editor belongs to the program like any other file: edit it when it lacks something, or write a block of your own. What each one is and how to use it, as its header says:
+
+)";
+
+        // A library file's header: the comment lines it starts with.
+        std::string headerOf(const char* source)
         {
-            const char* name;
-            const char* text;
-        };
-
-        const PromptFile kInstrumentExample[] = {
-            { "osc.fm", R"FM(// osc.fm: a band-limited oscillator, from a sawtooth (shape 0) to a square (shape 1), with polyBLEP.
-
-// The polyBLEP correction at phase t (0 to 1) for a step of dt a sample: it rounds off a jump of 2 at t = 0.
-float blep(float t, float dt)
-{
-    if (t < dt)
-    {
-        const float x = t / dt;
-        return x + x - x * x - 1;
-    }
-    if (t > 1 - dt)
-    {
-        const float x = (t - 1) / dt;
-        return x * x + x + x + 1;
-    }
-    return 0;
-}
-
-module Osc
-{
-    float phase;     // 0 to 1
-
-    void reset(float at)
-    {
-        phase = at;
-    }
-
-    // The next sample at `step` cycles a sample (the frequency over the rate), between saw and square by `shape`.
-    float tick(float step, float shape)
-    {
-        const float dt = fminf(step, 0.5f);
-        const float saw = 2 * phase - 1 - blep(phase, dt);
-        float half = phase + 0.5f;
-        if (half >= 1)
-            half -= 1;
-        const float square = saw - (2 * half - 1 - blep(half, dt));   // a saw minus one half a cycle on
-        phase += dt;
-        if (phase >= 1)
-            phase -= 1;
-        return saw + shape * (square - saw);
-    }
-};
-)FM" },
-            { "filter.fm", R"FM(// filter.fm: the topology-preserving state-variable filter (Simper's form): stable however fast its cutoff moves.
-module Svf
-{
-    float ic1;
-    float ic2;
-
-    void clear()
-    {
-        ic1 = 0;
-        ic2 = 0;
-    }
-
-    // The low-pass output for x, at a cutoff of fc Hz (kept below the Nyquist frequency) and a damping k = 1 / Q
-    // (2: none, near 0: it rings).
-    float lowpass(float x, float fc, float k, float rate)
-    {
-        const float w = fminf(3.14159265f * fc / rate, 1.5f);
-        const float g = sinf(w) / cosf(w);
-        const float a1 = 1 / (1 + g * (g + k));
-        const float a2 = g * a1;
-        const float a3 = g * a2;
-        const float v3 = x - ic2;
-        const float v1 = a1 * ic1 + a2 * v3;
-        const float v2 = ic2 + a2 * ic1 + a3 * v3;
-        ic1 = 2 * v1 - ic1;
-        ic2 = 2 * v2 - ic2;
-        return v2;
-    }
-};
-)FM" },
-            { "env.fm", R"FM(// env.fm: an ADSR envelope with exponential decay and release. stage: 0 idle, 1 attack, 2 decay and sustain,
-// 3 release.
-module Adsr
-{
-    float level;
-    int stage;
-
-    void gate(bool on)
-    {
-        if (on)
-            stage = 1;
-        else if (stage != 0)
-            stage = 3;
-    }
-
-    // One sample. rise: the attack's step a sample; fall and down: the decay's and the release's coefficients
-    // (fallIn); sustain: 0 to 1.
-    float tick(float rise, float fall, float sustain, float down)
-    {
-        if (stage == 1)
-        {
-            level += rise;
-            if (level >= 1)
+            std::string out;
+            const std::string text = source;
+            std::size_t at = 0;
+            while (at < text.size() && text.compare(at, 2, "//") == 0)
             {
-                level = 1;
-                stage = 2;
+                const std::size_t end = text.find('\n', at);
+                out += text.substr(at, end == std::string::npos ? std::string::npos : end + 1 - at);
+                if (end == std::string::npos)
+                    break;
+                at = end + 1;
             }
+            return out;
         }
-        else if (stage == 2)
-            level = sustain + (level - sustain) * fall;
-        else if (stage == 3)
-        {
-            level *= down;
-            if (level < 0.0001f)
-            {
-                level = 0;
-                stage = 0;
-            }
-        }
-        return level;
-    }
 
-    bool active()
-    {
-        return stage != 0;
-    }
-};
-
-// The coefficient that takes an exponential segment 60 dB down in ms milliseconds.
-float fallIn(float ms, float rate)
-{
-    return expf(-6907.7553f / (fmaxf(ms, 0.1f) * rate));
-}
-)FM" },
-            { "lfo.fm", R"FM(// lfo.fm: a low-frequency oscillator, -1 to 1, read at an offset of its phase (for a second, shifted output).
-module Lfo
-{
-    float phase;
-
-    void reset()
-    {
-        phase = 0;
-    }
-
-    float sineAt(float offset)
-    {
-        return sinf(6.28318531f * (phase + offset));
-    }
-
-    float triangleAt(float offset)
-    {
-        float p = phase + offset;
-        p -= floorf(p);
-        return 1 - 4 * fabsf(p - 0.5f);
-    }
-
-    void advance(float step)
-    {
-        phase += step;
-        phase -= floorf(phase);
-    }
-};
-)FM" },
-            { "program.fm", R"FM(// Modular voice: two detuned oscillators, a resonant low-pass, an amplitude envelope, a filter envelope and an
-// LFO, wired by the routing at the top of the sample loop. The building blocks are in their own files.
+        // A program built from the library, for each kind (ChatAgent::promptExample), and the library files it includes
+        // in their order: plugin.chatexample compiles and plays it.
+        [[maybe_unused]] const char* const kInstrumentProgram = R"FM(// Modular voice: two detuned oscillators, a resonant low-pass, an amplitude envelope, a filter envelope and an
+// LFO, wired by the routing at the top of the sample loop. Its building blocks are the library's.
+#pragma panel section "OSCILLATORS" shape detune
+#pragma panel section "FILTER" cutoff resonance envamount
+#pragma panel section "LFO" lforate lfodepth
+#pragma panel row
+#pragma panel section "ENVELOPE" attack decay sustain release
+#pragma panel section "OUTPUT" level
+#pragma panel label envamount "ENV AMOUNT"
+#pragma panel label lforate "RATE"
+#pragma panel label lfodepth "DEPTH"
 #include "osc.fm"
-#include "filter.fm"
-#include "env.fm"
+#include "svf.fm"
+#include "adsr.fm"
 #include "lfo.fm"
 
 module Voice
 {
-    // The dials, in the order a player reads them: the oscillators, the filter and its modulation, the envelopes,
-    // the level. Everything else is a constant below.
-    param float shape [[fminus::range(0, 1)]] [[fminus::default(0.2)]];            // 0 sawtooth, 1 square
+    // The dials, in the order the panel shows them. Everything else is a constant below.
+    param float shape [[fminus::range(0, 1)]] [[fminus::default(0.2)]];            // 0 saw, 0.5 square, 1 triangle
     param float detune [[fminus::range(0, 50)]] [[fminus::default(10)]];           // cents, the second oscillator up
     param float cutoff [[fminus::range(40, 12000)]] [[fminus::default(900)]];      // Hz, before the modulation
     param float resonance [[fminus::range(0, 1)]] [[fminus::default(0.35)]];
@@ -380,7 +272,7 @@ module Voice
             osc1.reset(0);
             osc2.reset(0.37f);
             filter.clear();
-            lfo.reset();
+            lfo.reset(0);
         }
         amp.gate(true);
         fenv.gate(true);
@@ -394,143 +286,61 @@ module Voice
 
     bool process(float* restrict left, float* restrict right, int n)
     {
-        // Once a call: what changes slowly.
-        const float rise = 1000 / (attack[0] * rate);
-        const float down = fallIn(release[0], rate);
-        const float ampFall = fallIn(decay[0], rate);              // the amplitude's decay, to the sustain dial
-        const float filterFall = fallIn(1.5f * decay[0], rate);    // the filter envelope's, slower, to 0.2
-        const float spread = expf(0.000577622650f * detune[0]);    // cents to a frequency ratio
+        // Once a call: the envelopes' times and what changes slowly.
+        amp.set(attack[0], decay[0], sustain[0], release[0], rate);
+        fenv.set(attack[0], 1.5f * decay[0], 0.2f, release[0], rate);
         const float base = 440 * expf(0.0577622650f * (note - 69)) / rate;
+        const float spread = expf(0.000577622650f * detune[0]);    // cents to a frequency ratio
         const float keytrack = 0.5f * (note - 60) / 12;            // octaves: the cutoff follows the keyboard halfway
-        const float k = 2 - 1.95f * resonance[0];                  // 1 / Q
         const float gain = velocity * expf(0.115129255f * level[0]);
         const float lfoStep = lforate[0] / rate;
         for (int i = 0; i < n; ++i)
         {
             // The sources.
-            const float a = amp.tick(rise, ampFall, sustain[i], down);
-            const float f = fenv.tick(rise, filterFall, 0.2f, down);
-            const float l = lfo.triangleAt(0);
+            const float a = amp.tick();
+            const float f = fenv.tick();
+            const float l = lfo.triangle(0);
             lfo.advance(lfoStep);
 
             // The routing, in octaves: filter envelope, LFO, velocity and the keyboard to the cutoff; the LFO to the
             // pitch (vibrato of a few cents).
             const float octaves = envamount[i] * f + 1.5f * lfodepth[i] * l + 0.5f * (velocity - 0.5f) + keytrack;
-            const float fc = fminf(cutoff[i] * expf(0.693147181f * octaves), 0.45f * rate);
+            filter.set(cutoff[i] * expf(0.693147181f * octaves), resonance[i], rate);
             const float pitch = expf(0.693147181f * 0.004f * lfodepth[i] * l);
 
-            const float s = 0.5f * (osc1.tick(base * pitch, shape[i]) + osc2.tick(base * pitch * spread, shape[i]));
-            const float out = gain * a * filter.lowpass(s, fc, k, rate);
+            const float s = 0.5f * (osc1.morph(base * pitch, shape[i]) + osc2.morph(base * pitch * spread, shape[i]));
+            const float out = gain * a * filter.tick(s);
             left[i] += out;
             right[i] += out;
         }
         return amp.active();
     }
 };
-)FM" },
-        };
+)FM";
+        [[maybe_unused]] const char* const kInstrumentUses[] = { "osc.fm", "svf.fm", "adsr.fm", "lfo.fm" };
 
-        const PromptFile kEffectExample[] = {
-            { "lfo.fm", R"FM(// lfo.fm: a low-frequency oscillator, -1 to 1, read at an offset of its phase (for a second, shifted output).
-module Lfo
-{
-    float phase;
-
-    float sineAt(float offset)
-    {
-        return sinf(6.28318531f * (phase + offset));
-    }
-
-    void advance(float step)
-    {
-        phase += step;
-        phase -= floorf(phase);
-    }
-};
-)FM" },
-            { "delayline.fm", R"FM(// delayline.fm: a delay line on a ring buffer, read between samples (linear interpolation) so that a moving delay
-// bends the pitch instead of clicking. allocate in init and release in end: process may not allocate.
-module DelayLine
-{
-    float* buffer;
-    int length;
-    int at;
-
-    void allocate(int samples)
-    {
-        buffer = calloc(samples, sizeof(float));
-        length = buffer ? samples : 0;
-        at = 0;
-    }
-
-    void release()
-    {
-        free(buffer);
-        length = 0;
-    }
-
-    // The sample written `delay` samples ago (at least 1, at most length - 2).
-    float read(float delay)
-    {
-        if (length == 0)
-            return 0;
-        const float d = fminf(fmaxf(delay, 1), (float)(length - 2));
-        float pos = (float)at - d;
-        if (pos < 0)
-            pos += (float)length;
-        const int i0 = (int)pos;
-        const int i1 = i0 + 1 == length ? 0 : i0 + 1;
-        const float frac = pos - (float)i0;
-        return buffer[i0] + frac * (buffer[i1] - buffer[i0]);
-    }
-
-    void write(float x)
-    {
-        if (length == 0)
-            return;
-        buffer[at] = x;
-        at += 1;
-        if (at == length)
-            at = 0;
-    }
-};
-)FM" },
-            { "tone.fm", R"FM(// tone.fm: a one-pole low-pass, y += a (x - y), and its coefficient for a cutoff in Hz.
-module OnePole
-{
-    float y;
-
-    float lowpass(float x, float a)
-    {
-        y += a * (x - y);
-        return y;
-    }
-};
-
-float toneCoef(float fc, float rate)
-{
-    return 1 - expf(-6.28318531f * fminf(fc, 0.45f * rate) / rate);
-}
-)FM" },
-            { "program.fm", R"FM(// Ensemble: a stereo chorus. Two delay lines whose times one LFO sweeps, the right one shifted in phase, with
-// feedback through a tone filter. The building blocks are in their own files.
+        [[maybe_unused]] const char* const kEffectProgram = R"FM(// Ensemble: a stereo chorus. Two delay lines whose times one LFO sweeps, the right one shifted in phase, with
+// feedback through a tone filter. Its building blocks are the library's.
+#pragma panel section "MODULATION" speed depth spread
+#pragma panel section "DELAY" centre feedback tone
+#pragma panel section "OUTPUT" width mix
 #include "lfo.fm"
-#include "delayline.fm"
-#include "tone.fm"
+#include "delay.fm"
+#include "onepole.fm"
 
 module Effect
 {
     param float speed [[fminus::range(0.05, 8)]] [[fminus::default(0.8)]];       // Hz
     param float depth [[fminus::range(0, 10)]] [[fminus::default(3)]];           // ms of sweep
+    param float spread [[fminus::range(0, 0.5)]] [[fminus::default(0.25)]];      // cycles between the sides' sweeps
     param float centre [[fminus::range(1, 30)]] [[fminus::default(9)]];          // ms, the delay at rest
     param float feedback [[fminus::range(-0.9, 0.9)]] [[fminus::default(0.2)]];
     param float tone [[fminus::range(500, 16000)]] [[fminus::default(7000)]];    // Hz, the wet path's low-pass
-    param float spread [[fminus::range(0, 0.5)]] [[fminus::default(0.25)]];      // cycles between the sides' sweeps
     param float width [[fminus::range(0, 1)]] [[fminus::default(1)]];            // 0: the wet signal in mono
     param float mix [[fminus::range(0, 1)]] [[fminus::default(0.5)]];
 
-    DelayLine lineL;
-    DelayLine lineR;
+    Delay lineL;
+    Delay lineR;
     Lfo lfo;
     OnePole toneL;
     OnePole toneR;
@@ -539,25 +349,26 @@ module Effect
     void init(float sampleRate)
     {
         rate = sampleRate;
-        lineL.allocate((int)(0.05f * sampleRate) + 4);     // 50 ms: the longest delay and sweep
-        lineR.allocate((int)(0.05f * sampleRate) + 4);
+        lineL.allocate((int)(0.05f * sampleRate));     // 50 ms: the longest delay and sweep
+        lineR.allocate((int)(0.05f * sampleRate));
     }
 
     void process(float* restrict left, float* restrict right, int n)
     {
         const float step = speed[0] / rate;
-        const float a = toneCoef(tone[0], rate);
+        toneL.set(tone[0], rate);
+        toneR.set(tone[0], rate);
         for (int i = 0; i < n; ++i)
         {
             // The modulation: one LFO, read twice, sweeps both delays.
-            const float ml = lfo.sineAt(0);
-            const float mr = lfo.sineAt(spread[i]);
+            const float ml = lfo.sine(0);
+            const float mr = lfo.sine(spread[i]);
             lfo.advance(step);
             const float dl = (centre[i] + 0.5f * depth[i] * (1 + ml)) * 0.001f * rate;   // samples
             const float dr = (centre[i] + 0.5f * depth[i] * (1 + mr)) * 0.001f * rate;
 
-            const float wl = toneL.lowpass(lineL.read(dl), a);
-            const float wr = toneR.lowpass(lineR.read(dr), a);
+            const float wl = toneL.lowpass(lineL.readCubic(dl));
+            const float wr = toneR.lowpass(lineR.readCubic(dr));
             const float xl = left[i];
             const float xr = right[i];
             lineL.write(xl + feedback[i] * wl);
@@ -576,19 +387,8 @@ module Effect
         lineR.release();
     }
 };
-)FM" },
-        };
-
-        template <std::size_t N>
-        Sources filesOf(const PromptFile (&files)[N])
-        {
-            Sources out;
-            for (const PromptFile& f : files)
-                out.push_back({ f.name, f.text });
-            // The program first, as the editor has it; the others in the order written.
-            std::rotate(out.begin(), out.end() - 1, out.end());
-            return out;
-        }
+)FM";
+        [[maybe_unused]] const char* const kEffectUses[] = { "lfo.fm", "delay.fm", "onepole.fm" };
 
         std::string replaceAll(std::string s, const std::string& from, const std::string& to)
         {
@@ -608,17 +408,19 @@ module Effect
             s += kLanguage;
             s += kCraft;
             s += kLarge;
-            s += "\nA PROGRAM IN SEVERAL FILES (it compiles and plays as it is; write files in the order they are #included, "
-                 "the program last)\n\n<example_files title=\"";
+            s += kPanel;
+            s += kLibraryIntro;
+            for (const LibraryFile& f : kLibrary)
+                s += std::string("<library_file name=\"") + f.name + "\" category=\"" + f.category + "\">\n" + headerOf(f.source)
+                   + "</library_file>\n";
+            const Sources example = ChatAgent::promptExample();      // the program first, then its library files
+            std::string uses;
+            for (std::size_t k = 1; k < example.size(); ++k)
+                uses += (k == 1 ? "" : " ") + example[k].name;
+            s += "\nA PROGRAM BUILT FROM THE LIBRARY (it compiles and plays as it is, with the library's " + uses
+                 + " added by add_library_file)\n\n<example_program title=\"";
             s += instrument ? "Modular voice" : "Ensemble";
-            s += "\">\n";
-            const Sources example = ChatAgent::promptExample();      // the program first, as the editor has it
-            for (std::size_t k = 1; k <= example.size(); ++k)
-            {
-                const SourceFile& f = example[k % example.size()];   // shown with the program last
-                s += "<file name=\"" + f.name + "\">\n" + f.text + "</file>\n";
-            }
-            s += "</example_files>\n";
+            s += "\" uses=\"" + uses + "\">\n" + example.front().text + "</example_program>\n";
             s += "\nTHIS PLUGIN'S EXAMPLES (the editor's EXAMPLES menu; the first is the program a new instance plays)\n";
             for (const Example& e : kExamples)
                 s += std::string("\n<example title=\"") + e.title + "\">\n" + e.source
@@ -629,7 +431,17 @@ module Effect
 
     Sources ChatAgent::promptExample()
     {
-        return product::kIsInstrument ? filesOf(kInstrumentExample) : filesOf(kEffectExample);
+        Sources out{ { kProgramName, product::kIsInstrument ? kInstrumentProgram : kEffectProgram } };
+        const auto add = [&out](const auto& names) {
+            for (const char* name : names)
+                if (const LibraryFile* f = findLibraryFile(name))
+                    out.push_back({ f->name, f->source });
+        };
+        if constexpr (product::kIsInstrument)
+            add(kInstrumentUses);
+        else
+            add(kEffectUses);
+        return out;
     }
 
     const std::string& ChatAgent::systemPrompt()

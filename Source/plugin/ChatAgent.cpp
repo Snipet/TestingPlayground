@@ -5,6 +5,8 @@
 
 #include "dsp/Measure.h"
 
+#include "Library.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -195,6 +197,36 @@ namespace testingplaygroundsynth
                      + number(k.max) + "] default " + number(k.def) + ", now " + number(host.chatDialValue(c)) + "\n";
             }
             return out.empty() ? "none\n" : out;
+        }
+
+        // The panel a program's #pragma panel lines made, in a line: its sections in order ("/" where a row starts),
+        // the labels and the small dials; none without a section line.
+        std::string panelLine(const PanelSpec& p, const Controls& controls)
+        {
+            const auto nameOf = [&](int c) { return std::string(controls[static_cast<std::size_t>(c)].name); };
+            std::string out;
+            for (std::size_t k = 0; k < p.sections.size(); ++k)
+            {
+                const PanelSection& s = p.sections[k];
+                out += k == 0 ? "" : (s.newRow ? " / " : " | ");
+                out += (s.title.empty() ? std::string("(untitled)") : s.title) + ": ";
+                for (std::size_t j = 0; j < s.slots.size(); ++j)
+                    out += (j == 0 ? "" : " ") + nameOf(s.slots[j]);
+            }
+            std::string labels, small;
+            for (int c = 0; c < kMaxControls; ++c)
+            {
+                if (!controls[static_cast<std::size_t>(c)].used)
+                    continue;
+                if (!p.labels[static_cast<std::size_t>(c)].empty())
+                    labels += (labels.empty() ? "" : ", ") + nameOf(c) + " \"" + p.labels[static_cast<std::size_t>(c)] + "\"";
+                if (p.small[static_cast<std::size_t>(c)])
+                    small += (small.empty() ? "" : " ") + nameOf(c);
+            }
+            if (out.empty() && labels.empty() && small.empty())
+                return {};
+            return "Its panel: " + (out.empty() ? std::string("no sections") : out) + (labels.empty() ? "" : "; labels " + labels)
+                   + (small.empty() ? "" : "; small " + small) + "\n";
         }
 
         std::string compileLine(const CompileStatus& s)
@@ -524,7 +556,7 @@ namespace testingplaygroundsynth
                          + std::string(running == d.files ? "these files" : "an earlier version of the files (they "
                                                                             "were edited since the last run)")
                          + "\nLast compile: " + compileLine(status) + "Dials of the program that plays:\n"
-                         + dialLines(host_.chatDials(), host_);
+                         + dialLines(host_.chatDials(), host_) + (status.ok ? panelLine(status.panel, status.controls) : "");
         const uint32_t a = host_.chatAlerts();
         tail += "Output alerts: ";
         tail += a == 0 ? "none" : ((a & 1u) != 0 ? ((a & 2u) != 0 ? "NaN or inf replaced, clipped" : "NaN or inf replaced")
@@ -594,6 +626,18 @@ namespace testingplaygroundsynth
                        "Delete a file the program no longer needs (never the program, the first file). Ask the user "
                        "before deleting a file you did not write.",
                        claude::object({ { "name", prop("string", "The file's name") } }), { "name" }));
+        {
+            juce::Array<juce::var> names;
+            for (const LibraryFile& f : kLibrary)
+                names.add(juce::String(f.name));
+            juce::var name = prop("string", "The library file's name, as THE LIBRARY lists it");
+            name.getDynamicObject()->setProperty("enum", names);
+            tools.add(tool("add_library_file",
+                           "Add one of the plugin's ready-made building blocks (THE LIBRARY in your instructions) to the "
+                           "editor as a tab of its own, and get its whole text back. #include it in the program to use "
+                           "it. A file of that name in the editor already is left as it is.",
+                           claude::object({ { "name", name } }), { "name" }));
+        }
         tools.add(tool("run_program",
                        "Compile the files as they are now and, when they compile, play them (as the editor's RUN "
                        "does). Returns the compiler's messages, or the dials of the new program. Call it after every "
@@ -1232,6 +1276,48 @@ namespace testingplaygroundsynth
             note("deleted " + file);
             return "Deleted " + file + ".";
         }
+        if (name == "add_library_file")
+        {
+            std::string file;
+            if (!stringArg("name", file))
+                return fail("add_library_file needs a name");
+            const LibraryFile* lib = findLibraryFile(file);
+            if (lib == nullptr)
+            {
+                std::string have;
+                for (const LibraryFile& f : kLibrary)
+                    have += (have.empty() ? "" : ", ") + std::string(f.name);
+                return fail("The library has no file " + file + ". Its files: " + have);
+            }
+            const std::string text = lib->source;
+            const int lines = lineCount(text);
+            const std::string count = std::to_string(lines) + (lines == 1 ? " line" : " lines");
+            Draft d = host_.chatDraft();
+            if (const int i = findFile(d, file); i >= 0)
+            {
+                if (d.files[static_cast<std::size_t>(i)].text != text)
+                    return "The editor has a file " + file + " already, changed from the library's; it is left as it "
+                           "is (read_file shows it, write_file replaces it).";
+                {
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    markSeen(file, text);
+                }
+                return "The editor has " + file + " already, as the library has it (" + count + "):\n" + text;
+            }
+            if (d.files.size() >= kMaxFiles)
+                return fail("The editor holds at most " + std::to_string(kMaxFiles) + " files; delete one first");
+            setActivity("Adding " + file);
+            d.files.push_back({ file, text });
+            d.active = static_cast<int>(d.files.size()) - 1;
+            host_.chatSetDraft(d);
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                markSeen(file, text);
+            }
+            note("added " + file + " from the library");
+            return "Added " + file + " (" + count + "). #include \"" + file + "\" in the program to use it. Its text:\n"
+                   + text;
+        }
         if (name == "run_program")
         {
             setActivity("Compiling");
@@ -1245,7 +1331,8 @@ namespace testingplaygroundsynth
                 note("ran it: compiled in " + number(std::round(s.ms)) + " ms, " + std::to_string(dials) + " dial"
                      + (dials == 1 ? "" : "s"));
                 return "Compiled in " + number(std::round(s.ms)) + " ms; it plays now.\nIts dials:\n"
-                     + dialLines(s.controls, host_) + (s.notes.empty() ? "" : "Notes:\n" + capped(s.notes));
+                     + dialLines(s.controls, host_) + panelLine(s.panel, s.controls)
+                     + (s.notes.empty() ? "" : "Notes:\n" + capped(s.notes));
             }
             int errors = 0;
             for (std::size_t p = s.errors.find(": error:"); p != std::string::npos; p = s.errors.find(": error:", p + 1))
