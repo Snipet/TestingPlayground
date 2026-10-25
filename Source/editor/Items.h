@@ -10,6 +10,7 @@
 #include <funkgui/panel/HostServices.h>
 #include <funkgui/panel/Input.h>
 #include <funkgui/params/GestureController.h>
+#include <funkgui/text/Highlighter.h>
 
 #include <cctype>
 #include <cstddef>
@@ -51,6 +52,23 @@ namespace testingplayground::ui
     };
 
     inline constexpr funkgui::TextStyle kStatusStyle{ 10.0f, 1.4f, 0.03f, false };
+
+    // FMinus's words, for the editor's highlighter and the chat's code blocks: C's that FMinus has, and its own (module,
+    // param, the vector types). It has no strings, and of the preprocessor only #include and #pragma: a line that starts
+    // with # is one preprocessor span.
+    inline funkgui::text::KeywordRules fminusRules()
+    {
+        funkgui::text::KeywordRules r;
+        r.keywords = { "break", "const", "continue", "else", "false", "for", "if", "module", "param", "restrict",
+                       "return", "sizeof", "this", "true", "while" };
+        r.types = { "bool", "float", "float2", "float4", "float8", "int", "poly", "void" };
+        r.lineComment = "//";
+        r.blockOpen = "/*";
+        r.blockClose = "*/";
+        r.quotes = "";
+        r.preprocessor = '#';
+        return r;
+    }
 
     inline std::string upper(std::string_view s)
     {
