@@ -200,33 +200,70 @@ namespace testingplayground
         }
 
         // The panel a program's #pragma panel lines made, in a line: its sections in order ("/" where a row starts),
-        // the labels and the small dials; none without a section line.
+        // their items (a display as its source and kind), then the labels, small dials, styles, options and colours;
+        // none without a panel line.
         std::string panelLine(const PanelSpec& p, const Controls& controls)
         {
-            const auto nameOf = [&](int c) { return std::string(controls[static_cast<std::size_t>(c)].name); };
+            const auto dialName = [&](int c) { return std::string(controls[static_cast<std::size_t>(c)].name); };
+            const auto kindOf = [](DisplayKind k) {
+                switch (k)
+                {
+                    case DisplayKind::meter:  return "meter";
+                    case DisplayKind::vu:     return "vu";
+                    case DisplayKind::led:    return "led";
+                    case DisplayKind::number: return "number";
+                    case DisplayKind::scope:  return "scope";
+                }
+                return "";
+            };
+            const auto itemName = [&](const PanelItem& it) {
+                if (!it.display)
+                    return dialName(it.index);
+                const PanelDisplay& d = p.displays[static_cast<std::size_t>(it.index)];
+                return d.name + " (" + kindOf(d.kind) + (d.name == d.source ? std::string() : " of " + d.source) + ")";
+            };
             std::string out;
             for (std::size_t k = 0; k < p.sections.size(); ++k)
             {
                 const PanelSection& s = p.sections[k];
                 out += k == 0 ? "" : (s.newRow ? " / " : " | ");
                 out += (s.title.empty() ? std::string("(untitled)") : s.title) + ": ";
-                for (std::size_t j = 0; j < s.slots.size(); ++j)
-                    out += (j == 0 ? "" : " ") + nameOf(s.slots[j]);
+                for (std::size_t j = 0; j < s.items.size(); ++j)
+                    out += (j == 0 ? "" : " ") + itemName(s.items[j]);
             }
-            std::string labels, small;
+            const char* const styleNames[] = { "knob", "vintage", "fader", "switch", "buttons" };
+            std::string labels, small, styles, options, colors;
             for (int c = 0; c < kMaxControls; ++c)
             {
-                if (!controls[static_cast<std::size_t>(c)].used)
+                const std::size_t i = static_cast<std::size_t>(c);
+                if (!controls[i].used)
                     continue;
-                if (!p.labels[static_cast<std::size_t>(c)].empty())
-                    labels += (labels.empty() ? "" : ", ") + nameOf(c) + " \"" + p.labels[static_cast<std::size_t>(c)] + "\"";
-                if (p.small[static_cast<std::size_t>(c)])
-                    small += (small.empty() ? "" : " ") + nameOf(c);
+                if (!p.labels[i].empty())
+                    labels += (labels.empty() ? "" : ", ") + dialName(c) + " \"" + p.labels[i] + "\"";
+                if (p.small[i])
+                    small += (small.empty() ? "" : " ") + dialName(c);
+                if (p.styles[i] != DialStyle::knob)
+                    styles += (styles.empty() ? "" : ", ") + dialName(c) + " " + styleNames[static_cast<int>(p.styles[i])];
+                if (!p.options[i].empty())
+                {
+                    options += (options.empty() ? "" : ", ") + dialName(c);
+                    for (const std::string& o : p.options[i])
+                        options += " \"" + o + "\"";
+                }
+                if (!p.colors[i].empty())
+                    colors += (colors.empty() ? "" : ", ") + dialName(c) + " " + p.colors[i];
             }
-            if (out.empty() && labels.empty() && small.empty())
+            for (const PanelSection& sec : p.sections)
+                if (!sec.color.empty())
+                    colors += (colors.empty() ? "" : ", ") + ("\"" + sec.title + "\" ") + sec.color;
+            for (const PanelDisplay& d : p.displays)
+                if (!d.color.empty())
+                    colors += (colors.empty() ? "" : ", ") + d.name + " " + d.color;
+            if (out.empty() && labels.empty() && small.empty() && styles.empty() && options.empty() && colors.empty())
                 return {};
             return "Its panel: " + (out.empty() ? std::string("no sections") : out) + (labels.empty() ? "" : "; labels " + labels)
-                   + (small.empty() ? "" : "; small " + small) + "\n";
+                   + (small.empty() ? "" : "; small " + small) + (styles.empty() ? "" : "; styles " + styles)
+                   + (options.empty() ? "" : "; options " + options) + (colors.empty() ? "" : "; colours " + colors) + "\n";
         }
 
         std::string compileLine(const CompileStatus& s)
@@ -664,7 +701,8 @@ namespace testingplayground
             tools.add(tool("measure_output",
                            "Render the program in the editor offline and measure what comes out. An instrument: the "
                            "notes held and released, reporting the held level (peak and RMS in dBFS, DC, the stereo "
-                           "correlation), the strongest partials and the spectral centroid, the largest step between "
+                           "correlation), the strongest partials and the spectral centroid, with one note the strongest "
+                           "component that is no harmonic of it (aliasing, or the sound's own), the largest step between "
                            "two samples (clicks), when the release falls 60 dB and whether the voice ends, and a "
                            "chord's summed level. An effect: a sine, noise, an impulse and silence through it, "
                            "reporting the gain, the partials it adds, the brightness in and out, the impulse "

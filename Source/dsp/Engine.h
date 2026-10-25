@@ -22,6 +22,11 @@
 // an infinity becomes 0, and a sample beyond is clipped. Either raises an alert (takeAlerts) the editor shows. A NaN in
 // a program's state stays there: running the program again starts it from scratch.
 //
+// Meters. Each block the Engine measures what came in (an effect's input) and what goes out, keeps the last
+// kScopeLength samples of each for the scopes, and reads the fields the program's displays show (Patch::tap: an
+// effect's instance, an instrument's newest sounding voice), and publishes them (Meters) through a seqlock, which the
+// editor reads at its frame rate.
+//
 // Threads. prepare() while the audio thread is stopped (it allocates); setControls() and process() on the audio
 // thread (no allocation, no lock, no I/O); offer() and collect() off it (Compiler.h), under a mutex prepare() shares.
 // A program crosses by an atomic pointer each way: offer() leaves it in `pending_`, the audio thread takes it at the
@@ -33,6 +38,7 @@
 #include "fminus/Patch.h"
 
 #include "fsdsp/core/Ramp.h"
+#include "fsdsp/core/Seqlock.h"
 
 #include <array>
 #include <atomic>
@@ -44,9 +50,21 @@
 
 namespace testingplayground
 {
+    // What the editor's displays show, as of the last block.
+    struct Meters
+    {
+        uint32_t frame = 0;                           // bumps with each block
+        float inPeak[2] = {}, inRms[2] = {};          // the input (an effect's), left and right, linear: the peak
+                                                      // falls 20 dB a second, the RMS is smoothed over 50 ms
+        float outPeak[2] = {}, outRms[2] = {};        // the output
+        float taps[kMaxDisplays] = {};                // the fields the program's displays show (PanelDisplay::tap)
+        uint64_t program = 0;                         // the program they are of (Patch::program), 0 while none plays
+    };
+
     class Engine
     {
     public:
+        static constexpr int kScopeLength = 4096;     // samples the scopes keep (a power of two), of input and output
         enum Alert : uint32_t
         {
             nonFinite = 1u << 0,   // a NaN or an infinity, replaced by 0
@@ -77,6 +95,10 @@ namespace testingplayground
         // The busiest recent block's processing time over the block's own length (1 = a whole core), decaying.
         float load() const noexcept { return load_.load(std::memory_order_relaxed); }
         uint32_t takeAlerts() noexcept { return alerts_.exchange(0, std::memory_order_relaxed); }
+        // The last block's meters; false while the audio thread publishes (keep the frame before).
+        bool meters(Meters& out) const noexcept { return meters_.read(out); }
+        // The last n samples (at most kScopeLength) of the input or the output, mono, oldest first.
+        void scope(bool input, float* out, int n) const noexcept;
 
         // For the probes, while the audio thread is stopped.
         bool playing() const noexcept { return current_ != nullptr || pending_.load() != nullptr; }
@@ -122,6 +144,9 @@ namespace testingplayground
         void renderPart(int from, int to, bool onGrid) noexcept;   // one call a voice; to is a multiple of kGrid?
         int freeInstance(const Patch& p) const noexcept;
         void guard(float* x, int n) noexcept;
+        // The block's levels and samples (before and after the program), the program's taps, published.
+        void measureIn(float* const* channels, int numChannels, int n) noexcept;
+        void publish(float* const* channels, int numChannels, int n) noexcept;
 
         std::mutex mutex_;                            // offer, collect, prepare; never the audio thread
         std::atomic<Patch*> pending_{ nullptr };
@@ -153,5 +178,10 @@ namespace testingplayground
         std::vector<float> accL_, accR_, voiceL_, voiceR_, dryL_, dryR_, mono_;
         std::atomic<float> load_{ 0.0f };
         std::atomic<uint32_t> alerts_{ 0 };
+
+        fsdsp::Seqlock<Meters> meters_;
+        Meters frame_{};                              // the audio thread's, built over a block
+        std::array<std::atomic<float>, kScopeLength> scopeIn_{}, scopeOut_{};
+        std::atomic<uint32_t> scopeAt_{ 0 };          // samples written so far
     };
 }

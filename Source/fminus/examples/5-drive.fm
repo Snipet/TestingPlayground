@@ -1,6 +1,10 @@
 // Drive: tanh saturation, a one-pole low-pass after it for the tone, and a dry/wet mix.
-#pragma panel section "DRIVE" drive tone
-#pragma panel section "OUTPUT" mix output
+#pragma panel section "DRIVE" in drive tone
+#pragma panel section "OUTPUT" mix output out
+#pragma panel meter in "IN"
+#pragma panel meter out "OUT"
+#pragma panel style drive vintage
+#pragma panel color "DRIVE" red
 module Effect
 {
     param float drive [[fminus::range(0, 36)]] [[fminus::default(12)]];          // dB into the tanh

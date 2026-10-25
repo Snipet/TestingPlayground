@@ -23,6 +23,13 @@
 //                                                               for good, which frees the voice
 //       void end();                                             optional
 //
+//   either kind, optionally: module Shared, made once for the program, which every field of the main module of type
+//   Shared* points at: what an instrument's voices share (wavetables, lookup tables, a sample), built once
+//       void init(float rate);                                  optional: before the main module's instances' init,
+//                                                               off the audio thread (again when the rate changes)
+//       void end();                                             optional: after theirs
+//   The audio thread reads it through those pointers; it is the plugin's to free, never a voice's.
+//
 // The methods the audio thread calls (process, start, stop) must not allocate: FMinus refuses a program whose methods
 // could reach calloc, malloc or free from them (init and end may: a delay line's memory). They need no
 // [[clang::nonblocking]] of their own: the plugin calls each through a function of its own with the type it calls it
@@ -43,6 +50,7 @@
 #include "dsp/Sources.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -91,6 +99,12 @@ namespace testingplayground
         const PanelSpec& panel() const noexcept { return panel_; }
         int instances() const noexcept { return static_cast<int>(instances_.size()); }
         const Sources& sources() const noexcept { return sources_; }
+        // Whether the program has a module Shared (made once, its init run before the main module's).
+        bool shared() const noexcept { return shared_ != nullptr; }
+        // The compile it came from (the Compiler's request id; 0 when none was given). The Engine publishes it with the
+        // fields its displays read (Meters::program), so a panel never shows one program's fields on another's displays.
+        uint64_t program() const noexcept { return program_; }
+        void setProgram(uint64_t id) noexcept { program_ = id; }
 
         // ---- the audio thread ------------------------------------------------------------------------------------
         // Control c's value (its plain value, Controls.h) in instance i, or in every instance (i < 0): what a stream
@@ -107,20 +121,38 @@ namespace testingplayground
         void stop(int i) noexcept;
         bool render(int i, float* left, float* right, int n) noexcept;
 
+        // The field display t (PanelDisplay::tap) shows: its value in instance i, as a float (an int's number, a bool's
+        // 0 or 1). After a block, on the audio thread.
+        int taps() const noexcept { return static_cast<int>(taps_.size()); }
+        float tap(int t, int i) const noexcept;
+
     private:
-        struct Shared;                                 // the Program and the function pointers
+        struct Compiled;                               // the Program and the function pointers
         Patch();
+        void endInstances() noexcept;                  // the main module's end in every instance, then Shared's
         void freeInstances() noexcept;
         void setDefaults(void* instance, std::string_view moduleName, int depth) const;
 
-        std::unique_ptr<Shared> s_;
+        std::unique_ptr<Compiled> s_;
         std::vector<void*> instances_;
         std::vector<bool> initialised_;
         std::size_t instanceSize_ = 0, instanceAlign_ = 16;
         Controls controls_{};
         PanelSpec panel_;
+        struct Tap
+        {
+            enum class Type : uint8_t { real, integer, boolean };
+            std::size_t offset = 0;                    // in an instance, in bytes
+            Type type = Type::real;
+        };
+        std::vector<Tap> taps_;
         std::vector<const void*> params_;              // per control: its fminus::Program::Parameter (null: unused)
         Sources sources_;
         float rate_ = 48000.0f;
+        uint64_t program_ = 0;
+        void* shared_ = nullptr;                       // the module Shared's one instance, or null
+        bool sharedInitialised_ = false;
+        std::size_t sharedSize_ = 0, sharedAlign_ = 16;
+        std::vector<std::size_t> sharedFields_;        // the main module's fields of type Shared*: their offsets
     };
 }

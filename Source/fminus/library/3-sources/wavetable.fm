@@ -1,0 +1,217 @@
+// wavetable.fm: wavetables without aliasing: each frame band-limited by the FFT, and an oscillator that reads them.
+//
+// A frame is one cycle of a wave, 2048 samples. build() takes its spectrum (fft_forward) and makes 21 copies of it
+// (fft_inverse), each with only the harmonics that stay below half the sample rate up to a pitch: every one for the
+// lowest notes, a factor of 1.41 fewer each copy, the fundamental alone at the top. The oscillator reads the brightest
+// copy that cannot alias at its step, between samples through four points, and fades into the next copy over a
+// quarter octave, so a glide never steps. Nothing aliases at any pitch; every harmonic below 0.35 of the sample rate
+// (17 kHz at 48 kHz) sounds at full strength, and most below 0.42. Frames morph by position. A table is 172 KB a frame: build it once,
+// for every voice, in your module Shared (the plugin makes one for the program and points each voice's Shared* field
+// at it).
+//
+//   Wavetable table;              a field of your module Shared (or of one voice, for its own)
+//   table.allocate(frames);       in init (it allocates): `frames` frames, 1 to 256, silent until built
+//   table.shape(f, which);        frame f a sine (0), triangle (1), saw (2) or square (3), built; or your own wave:
+//   float* c = table.cycle(f);    frame f's cycle to fill, 2048 samples: c[i] at phase i / 2048.0f, about -1 to 1
+//   table.build(f);               then its band-limited copies (in init: 22 FFTs), its DC taken out
+//   table.release();              in end
+//   WaveOsc osc;                  a voice's oscillator (one per oscillator)
+//   osc.table = &shared->table;   in init: the table it reads (shared: the voice's Shared* field)
+//   y = osc.tick(step, position); step: the frequency in cycles a sample (hz / rate, below 0.5); position 0 to 1
+//                                 across the frames, blending the two it falls between
+//   osc.reset(phase);             0 to 1: where a cycle starts (a voice's start, or hard sync)
+//   osc.phase                     0 to 1, where it is
+//   y = table.at(phase, wavetableLevel(step), position);   one read at a phase of your own (FM, phase distortion);
+//                                 wavetableLevel takes a log, so compute it when the step changes
+// The shapes' fundamentals are in phase (the saw rises, as osc.fm's), so frames morph without cancelling. Every call is
+// safe before allocate and build (silence).
+
+// Which copies a step reads (cycles a sample): the brightest that cannot alias, its index the integer part, and how far
+// it has faded into the next, the fraction. Copy j keeps no harmonic past half the rate while 2 log2(2048 step) <= j.
+float wavetableLevel(float step)
+{
+    const float s = fabsf(step);
+    if (s < 0.000001f)
+        return 0;
+    const float u = 2.88539008f * logf(s) + 22;           // 2 log2(2048 step)
+    float j = -floorf(-u);                                 // the brightest copy that cannot alias
+    if (j < 0)
+        j = 0;
+    float fade = (u - j + 0.5f) * 2;                       // into the next over the last half of j's range
+    fade = fade < 0 ? 0 : (fade > 1 ? 1 : fade);
+    const float l = j + fade;
+    return l > 20 ? 20 : l;
+}
+
+module Wavetable
+{
+    float* data;                // frames x 21 copies x 2052 samples: a copy's 2048, one before them and three after
+    int frames;
+    bool owned;
+    void* plan;                 // the FFT's, for build
+    float* work;
+    float2* bins;
+    float2* cut;
+    float spare[2048];          // what cycle() gives before allocate
+
+    void allocate(int count)
+    {
+        release();
+        const int n = count < 1 ? 1 : (count > 256 ? 256 : count);
+        data = calloc(n * 21 * 2052, sizeof(float));
+        work = calloc(2048, sizeof(float));
+        bins = calloc(1025, sizeof(float2));
+        cut = calloc(1025, sizeof(float2));
+        plan = fft_create(2048);
+        owned = true;
+        frames = data && work && bins && cut && plan ? n : 0;
+    }
+
+    void release()
+    {
+        if (owned)
+        {
+            free(data);
+            free(work);
+            free(bins);
+            free(cut);
+            fft_destroy(plan);
+        }
+        owned = false;
+        frames = 0;
+    }
+
+    float* cycle(int f)
+    {
+        if (frames == 0)
+            return spare;
+        const int k = f < 0 ? 0 : (f >= frames ? frames - 1 : f);
+        return data + k * 21 * 2052 + 1;                   // the lowest copy's samples, which build reads
+    }
+
+    // The harmonics copy j keeps: 1023, then a factor of the square root of 2 fewer each copy, at least 1.
+    int harmonics(int j)
+    {
+        int h = 1024;
+        for (int k = 0; k < j / 2; ++k)
+            h = h / 2;
+        if (j % 2 == 1)
+            h = (int)(h * 0.70710678f);
+        return h > 1023 ? 1023 : (h < 1 ? 1 : h);
+    }
+
+    void build(int f)
+    {
+        if (f < 0 || f >= frames)
+            return;
+        float* raw = data + f * 21 * 2052 + 1;
+        for (int i = 0; i < 2048; ++i)
+            work[i] = raw[i];
+        fft_forward(plan, work, bins);
+        bins[0] = (float2)(0, 0);                          // no DC
+        for (int j = 0; j < 21; ++j)
+        {
+            const int keep = harmonics(j);
+            for (int k = 0; k < 1025; ++k)
+                cut[k] = k <= keep ? bins[k] : (float2)(0, 0);
+            fft_inverse(plan, cut, work);
+            float* c = data + (f * 21 + j) * 2052;
+            for (int i = 0; i < 2048; ++i)
+                c[i + 1] = work[i] * 0.00048828125f;       // the inverse's scale, 1 / 2048
+            c[0] = c[2048];
+            c[2049] = c[1];
+            c[2050] = c[2];
+            c[2051] = c[3];
+        }
+    }
+
+    // Frame f a sine, a triangle, a saw or a square, their fundamentals in phase (a rising saw's), built.
+    void shape(int f, int which)
+    {
+        if (f < 0 || f >= frames)
+            return;
+        float* c = cycle(f);
+        for (int i = 0; i < 2048; ++i)
+        {
+            const float x = i / 2048.0f;
+            float y = -sinf(6.28318531f * x);
+            if (which == 1)
+            {
+                float u = x - 0.75f;                       // 0, -1 at a quarter, 1 at three quarters
+                u -= floorf(u + 0.5f);
+                y = 1 - 4 * fabsf(u);
+            }
+            else if (which == 2)
+                y = 2 * x - 1;
+            else if (which == 3)
+                y = x < 0.5f ? -1 : 1;                     // it falls where the saw does
+            c[i] = y;
+        }
+        build(f);
+    }
+
+    // Copy `copy` of frame f at phase (0 to 1), through four points (Catmull-Rom).
+    float point(int f, int copy, float phase)
+    {
+        const float* c = data + (f * 21 + copy) * 2052;
+        const float x = phase * 2048;
+        const int i = (int)x;
+        const float t = x - i;
+        const float a = c[i], b = c[i + 1], d = c[i + 2], e = c[i + 3];
+        return b + 0.5f * t * (d - a + t * (2 * a - 5 * b + 4 * d - e + t * (3 * (b - d) + e - a)));
+    }
+
+    float at(float phase, float level, float position)
+    {
+        if (frames == 0)
+            return 0;
+        const float p = phase - floorf(phase);
+        const float l = level < 0 ? 0 : (level > 20 ? 20 : level);
+        const int j = (int)l;
+        const float fade = l - j;
+        const float q = (position < 0 ? 0 : (position > 1 ? 1 : position)) * (frames - 1);
+        int f = (int)q;
+        if (f > frames - 2)
+            f = frames > 1 ? frames - 2 : 0;
+        const float t = frames > 1 ? q - f : 0;
+        float y = point(f, j, p);
+        if (fade > 0)
+            y += fade * (point(f, j + 1, p) - y);
+        if (t > 0)
+        {
+            float z = point(f + 1, j, p);
+            if (fade > 0)
+                z += fade * (point(f + 1, j + 1, p) - z);
+            y += t * (z - y);
+        }
+        return y;
+    }
+};
+
+module WaveOsc
+{
+    Wavetable* table;
+    float phase;
+    float step;                 // the last step, and the copies it reads
+    float level;
+
+    void reset(float at)
+    {
+        phase = at - floorf(at);
+    }
+
+    float tick(float dt, float position)
+    {
+        const float s = fminf(fabsf(dt), 0.5f);
+        if (s != step)
+        {
+            step = s;
+            level = wavetableLevel(s);
+        }
+        const float y = table ? table->at(phase, level, position) : 0;
+        phase += s;
+        if (phase >= 1)
+            phase -= 1;
+        return y;
+    }
+};

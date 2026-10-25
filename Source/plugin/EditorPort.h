@@ -15,6 +15,11 @@
 //   running()         the files of the program that plays (none before the first compiles)
 //   controls()        the dials of the program that plays
 //   panel()           how its #pragma panel lines lay them out (PanelSpec.h)
+//   program()         the compile it came from (CompileStatus::request): the meters' taps are its fields once
+//                     Meters::program says so (until the audio thread takes it, they are the last program's)
+//   meters()          the last block's levels and the program's taps, for the panel's displays (Engine::Meters); false
+//                     while the audio thread publishes (keep the last)
+//   scope()           the last n samples of the input or the output (Engine::scope)
 //   load()            the audio thread's busiest recent block, as a share of its time (Engine::load)
 //   alerts()          the output guard's alerts of the last two seconds (Engine::Alert bits)
 //   chat()            the chat with Claude (ChatPort.h)
@@ -24,6 +29,7 @@
 
 #include "dsp/Compiler.h"
 #include "dsp/Controls.h"
+#include "dsp/Engine.h"
 #include "dsp/Sources.h"
 
 #include <cstdint>
@@ -56,6 +62,9 @@ namespace testingplayground
         virtual Sources running() const = 0;
         virtual Controls controls() const = 0;
         virtual PanelSpec panel() const = 0;
+        virtual uint64_t program() const = 0;
+        virtual bool meters(Meters& out) const = 0;
+        virtual void scope(bool input, float* out, int n) const = 0;
 
         virtual float load() const = 0;
         virtual uint32_t alerts() const = 0;
