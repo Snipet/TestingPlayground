@@ -76,7 +76,7 @@ namespace testingplaygroundsynth
             return juce::String(buf);
         }
 
-        // P1 to P8: a host parameter whose name and text are the running program's (Processor::control).
+        // P1 to P16: a host parameter whose name and text are the running program's (Processor::control).
         class ControlParameter final : public juce::AudioParameterFloat
         {
         public:
