@@ -7,6 +7,7 @@
 //   gui.dump.error.png   a run with a syntax error: the status, the problem's line, the mark in the gutter
 //   gui.dump.edited.png  after the EXAMPLES menu: another example, running, its dials
 //   gui.dump.files.png   two files, the second shown, after a run whose error is in it: its tab's mark, the problem
+//   gui.dump.dials.png   a program of sixteen dials, in two rows of eight; .dials.small.png at the least size
 // and checks:
 //   FRAME     the frame settles, every glyph is in the font, the editor shows the processor's draft (the first
 //             example), and the dials are the program's parameters: one for each, the rest not shown
@@ -28,6 +29,11 @@
 //             on the problem shows that file with the caret on the line. A click on the first tab shows the program
 //             again. The processor's draft has both files and the tab shown. The x of a file with text asks first (a
 //             menu; dismissed, the file stays), and closing it shows the tab before; an empty file closes at once
+//   ROWS      a program of sixteen dials shows them all, in order, in rows: two of eight at the default size and at
+//             the least, one of sixteen on a wide panel, each row's dials evenly spaced, none overlapping another,
+//             all of them in the left column (left of the chat's card) and under the problems list; the editor
+//             gives up the second row's height. Back to a program of fewer dials, one row again, and the editor's
+//             height back
 //   KEYS      Escape leaves the editor, after which Tab moves the focus ring (and no key reaches the text)
 #include "Probe.h"
 
@@ -36,6 +42,7 @@
 #include "plugin/Processor.h"
 
 #include "Examples.h"
+#include "Product.h"
 
 #include <funkgui/canvas/Prim.h>
 #include <funkgui/canvas/PrimList.h>
@@ -44,10 +51,14 @@
 #include <funkgui/prefs/UiPreferences.h>
 #include <funkgui/widgets/TextEditor.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
+#include <set>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace tp = testingplayground;
 
@@ -69,6 +80,69 @@ namespace
         P.eq(key + ".png_written", ok ? 1 : 0, 1);
         std::printf("wrote %s\n", path.c_str());
         return ok;
+    }
+
+    // A program of this plugin's kind with kMaxControls parameters, whose names are of a synthesizer's lengths.
+    std::string sixteenDials()
+    {
+        static_assert(tp::kMaxControls == 16, "the names below");
+        const char* const names[] = { "shape",   "detune",   "sub",     "noise",  "cutoff", "resonance", "envamount", "keytrack",
+                                      "lforate", "lfodepth", "attack",  "decay",  "sustain", "release",  "glide",     "level" };
+        std::string params;
+        for (const char* name : names)
+            params += std::string("    param float ") + name + " [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n";
+        if constexpr (tp::product::kIsInstrument)
+            return "module Voice\n{\n" + params + "    float note;\n    void start(float n, float v) { note = n; }\n"
+                   "    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n";
+        else
+            return "module Effect\n{\n" + params + "    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
+    }
+
+    // The dials shown, their centres in slot order.
+    std::vector<funkgui::Point> shownDials(const tp::ui::Panel& panel)
+    {
+        std::vector<funkgui::Point> out;
+        for (int c = 0; c < tp::kMaxControls; ++c)
+            if (const auto at = panel.centreOfDial(c))
+                out.push_back(*at);
+        return out;
+    }
+
+    // The checks of a layout of `dials` (in slot order) in `rows` rows: the rows' count and their lengths, the order
+    // (row by row, left to right), even spacing in each row, no two dials' cells (60 x 80) overlapping, every cell in
+    // the left column and under the problems list.
+    void checkRows(funkgui::test::Probe& P, const std::string& key, const tp::ui::Panel& panel,
+                   const std::vector<funkgui::Point>& dials, int rows)
+    {
+        constexpr float kCellW = 60.0f, kCellH = 80.0f, kCentreY = 34.0f;   // funkgui::DialGeom, primary
+        std::set<float> ys;
+        for (const funkgui::Point& d : dials)
+            ys.insert(d.y);
+        P.eq(key + ".rows", static_cast<int64_t>(ys.size()), rows);
+        P.eq(key + ".panel_rows", panel.dialRows(), rows);
+        const std::size_t perRow = (dials.size() + static_cast<std::size_t>(rows) - 1) / static_cast<std::size_t>(rows);
+        bool ordered = true, even = true, apart = true, inside = true;
+        for (std::size_t k = 0; k < dials.size(); ++k)
+        {
+            const std::size_t row = k / perRow, col = k % perRow;
+            if (col > 0)
+            {
+                ordered = ordered && dials[k].y == dials[k - 1].y && dials[k].x > dials[k - 1].x;
+                if (col > 1)
+                    even = even && std::fabs((dials[k].x - dials[k - 1].x) - (dials[k - 1].x - dials[k - 2].x)) < 0.01f;
+            }
+            else if (row > 0)
+                ordered = ordered && dials[k].y > dials[k - 1].y;
+            for (std::size_t j = 0; j < k; ++j)
+                apart = apart && (std::fabs(dials[k].x - dials[j].x) >= kCellW || std::fabs(dials[k].y - dials[j].y) >= kCellH);
+            const float left = dials[k].x - 0.5f * kCellW, top = dials[k].y - kCentreY;
+            inside = inside && left >= 0.0f && left + kCellW <= panel.chatCard().x && top + kCellH <= panel.chatCard().bottom()
+                  && top >= panel.centreOfProblem(3).y + 7.5f;          // the list's fourth row, its last
+        }
+        P.eq(key + ".in_order", ordered ? 1 : 0, 1);
+        P.eq(key + ".evenly_spaced", even ? 1 : 0, 1);
+        P.eq(key + ".none_overlap", apart ? 1 : 0, 1);
+        P.eq(key + ".in_left_column", inside ? 1 : 0, 1);
     }
 
     // Lets a run finish: the compiler, the processor's poll, the panel's next frames.
@@ -312,6 +386,47 @@ PROBE(gui, dump)
         panel.editor().insert(program);
         host.keys("cmd+return");
         settleRun(processor, host);
+    }
+
+    // ROWS
+    {
+        const std::string program = editor.text();
+        const float editorH = editor.bounds().h;
+        editor.selectAll();
+        editor.insert(sixteenDials());
+        host.keys("cmd+return");
+        settleRun(processor, host);
+        P.eq("rows.compiles", port.status().ok ? 1 : 0, 1);
+        std::vector<funkgui::Point> dials = shownDials(panel);
+        P.eq("rows.all_shown", static_cast<int64_t>(dials.size()), tp::kMaxControls);
+        checkRows(P, "rows.default", panel, dials, 2);
+        P.near("rows.editor_gives_a_row", static_cast<double>(editorH - editor.bounds().h), 92.0, 0.5);
+        {
+            const funkgui::PrimList& frame = host.draw();
+            P.eq("rows.missing_glyphs", static_cast<int64_t>(frame.missingGlyphs), 0);
+            writePng(P, host, "gui.dump.dials.png", "rows");
+        }
+        host.resize(tp::ui::kMinWidth, tp::ui::kMinHeight);
+        host.settle();
+        checkRows(P, "rows.least", panel, shownDials(panel), 2);
+        writePng(P, host, "gui.dump.dials.small.png", "rows.least");
+        host.resize(1900, 1100);
+        host.settle();
+        checkRows(P, "rows.wide", panel, shownDials(panel), 1);
+        host.resize(tp::ui::kDefaultWidth, tp::ui::kDefaultHeight);
+        host.settle();
+        // Back to the program before: its dials in one row, and the editor's height back.
+        editor.selectAll();
+        editor.insert(program);
+        host.keys("cmd+return");
+        settleRun(processor, host);
+        dials = shownDials(panel);
+        int wanted = 0;
+        for (const tp::Control& c : port.status().controls)
+            wanted += c.used ? 1 : 0;
+        P.eq("rows.fewer_shown", static_cast<int64_t>(dials.size()), wanted);
+        checkRows(P, "rows.fewer", panel, dials, 1);
+        P.near("rows.editor_height_back", static_cast<double>(editor.bounds().h), static_cast<double>(editorH), 0.01);
     }
 
     // KEYS

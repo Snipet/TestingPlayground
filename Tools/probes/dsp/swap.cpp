@@ -92,7 +92,7 @@ PROBE(dsp, swap)
         auto quarter = compile(program("", "0.25f * x"), e.rate());
         P.eq("programs.compile", half && quarter ? 1 : 0, 1);
         const std::size_t first = 40 * 256, second = 120 * 256;
-        const probe::Stereo out = rig.run(in, 256, {}, {}, [&](std::size_t pos, std::array<float, 8>&) {
+        const probe::Stereo out = rig.run(in, 256, {}, {}, [&](std::size_t pos, std::array<float, tp::kMaxControls>&) {
             if (pos == first)
                 e.offer(std::move(half));
             if (pos == second)
@@ -125,7 +125,7 @@ PROBE(dsp, swap)
         auto next = compile(program("", "0.5f"), e.rate());
         const std::size_t offer = 20 * 256;
         const probe::Stereo out = rig.run(probe::Stereo(static_cast<std::size_t>(0.25 * kFs)), 256, { held }, {},
-                                          [&](std::size_t pos, std::array<float, 8>&) {
+                                          [&](std::size_t pos, std::array<float, tp::kMaxControls>&) {
                                               if (pos == offer)
                                                   e.offer(std::move(next));
                                           });
@@ -161,7 +161,7 @@ PROBE(dsp, swap)
         const std::size_t move = 8 * 256;
         const probe::Stereo out = rig.run(sineInput(32 * 256), 256, kInstrument ? std::vector<probe::Note>{ held }
                                                                                  : std::vector<probe::Note>{},
-                                          {}, [&](std::size_t pos, std::array<float, 8>& norm) {
+                                          {}, [&](std::size_t pos, std::array<float, tp::kMaxControls>& norm) {
                                               norm[0] = pos >= move ? 1.0f : 0.0f;
                                           });
         P.near("glide.before", static_cast<double>(out.l[move - 1]), 0.0, 0.0);
@@ -181,7 +181,7 @@ PROBE(dsp, swap)
         const std::size_t move = 8 * 256;
         const probe::Stereo out = rig.run(sineInput(16 * 256), 256, kInstrument ? std::vector<probe::Note>{ held }
                                                                                  : std::vector<probe::Note>{},
-                                          {}, [&](std::size_t pos, std::array<float, 8>& norm) {
+                                          {}, [&](std::size_t pos, std::array<float, tp::kMaxControls>& norm) {
                                               norm[0] = pos >= move ? 1.0f : 0.0f;
                                           });
         P.near("knob.before", static_cast<double>(out.l[move - 1]), 0.0, 0.0);

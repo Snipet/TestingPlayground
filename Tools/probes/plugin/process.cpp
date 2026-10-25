@@ -3,8 +3,8 @@
 // plugin.process: the processor as a host drives it, at 48 kHz in blocks of 256, playing its default program (the first
 // of the EXAMPLES: an effect's Gain and pan, an instrument's Sine). An effect gets a 1 kHz sine at -12 dBFS on the left
 // and a 3 kHz sine at -18 dBFS on the right; an instrument plays A4 (440 Hz) at full velocity.
-//   NAMES   P1 to P8 are the program's dials to a host: P1's name is "1 gain" (an instrument's "1 attack"), its text
-//           the plain value; an unused slot's name is its number alone
+//   NAMES   P1 to P16 are the program's dials to a host: P1's name is "1 gain" (an instrument's "1 attack"), its text
+//           the plain value; an unused slot's name is its number alone (P8, and the last, P16)
 //   HOST    a value written through the host (setValueNotifyingHost) reaches the program: an effect's gain at +6 dB
 //           puts the left out at -6 dBFS and the right at -12 dBFS; an instrument's level at -6 dB puts the note at
 //           -6 dBFS; within 0.05 dB, once the dial's 20 ms glide is over
@@ -137,6 +137,9 @@ PROBE(plugin, process)
                     p.getParameters()[0]->getCurrentValueAsText().toRawUTF8(), p.getParameters()[7]->getName(100).toRawUTF8());
         P.eq("names.p1", name == (kInstrument ? "1 attack" : "1 gain") ? 1 : 0, 1);
         P.eq("names.p8_unused", p.getParameters()[7]->getName(100) == "8" ? 1 : 0, 1);
+        P.eq("names.params", static_cast<int64_t>(p.getParameters().size()) >= tp::kMaxControls ? 1 : 0, 1);
+        P.eq("names.p16_unused",
+             p.getParameters()[tp::kMaxControls - 1]->getName(100) == juce::String(tp::kMaxControls) ? 1 : 0, 1);
         P.eq("names.p1_text", p.getParameters()[0]->getCurrentValueAsText() == (kInstrument ? "5.00" : "0.00") ? 1 : 0,
              1);
     }

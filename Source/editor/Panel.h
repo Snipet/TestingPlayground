@@ -19,9 +19,11 @@
 //             last run's errors name
 //   problems  the last run's messages, a line each (the first four, and how many more), each with its file; a click
 //             on one with a line number shows its file and puts the caret there
-//   dials     the running program's parameters, P1 to P8 (a funkgui::Dial each, labelled with the parameter's name;
-//             an unused slot shows nothing): a drag, the wheel or the keys write through the processor's ports, and a
-//             double-click returns to the parameter's fminus::default
+//   dials     the running program's parameters, P1 to P16 (a funkgui::Dial each, labelled with the parameter's name;
+//             an unused slot shows nothing), in order, in as few rows as the column's width holds (a row of sixteen
+//             on a wide panel, two of eight at the default size), the dials shared out evenly between the rows: a
+//             drag, the wheel or the keys write through the processor's ports, and a double-click returns to the
+//             parameter's fminus::default. The editor gives up the height a second row takes
 //   chat      at the right, a rounded card set apart from the square panel (ChatStyle.h): its header (the title, a new
 //             chat (asking first), the API key), the conversation (ChatView.h: bubbles, light markdown, thinking rows,
 //             cards of what Claude did, code blocks with Copy, an empty chat's suggestions), the message box that grows
@@ -129,6 +131,8 @@ namespace testingplayground::ui
         funkgui::Point centreOfNewTab() const;
         funkgui::Point centreOfCloseTab(int i) const;
         std::optional<funkgui::Point> centreOfDial(int slot) const;    // nullopt for an unused slot
+        int dialRows() const noexcept { return dialRows_; }               // the rows the dials are laid out in
+        funkgui::Rect chatCard() const noexcept { return card_; }
         funkgui::Point centreOfRun() const;
         funkgui::Point centreOfExamples() const;
         funkgui::Point centreOfProblem(int i) const;
@@ -239,6 +243,8 @@ namespace testingplayground::ui
 
         // The places layout() found, which draw() uses.
         float leftW_ = 0.0f;                             // the left column's width (the editor's)
+        int dialsUsed_ = 0;                              // the running program's dials (its first slots)
+        int dialRows_ = 1, dialCols_ = 1;                // their grid, for leftW_
         float chatX_ = 0.0f, chatW_ = 0.0f;
         funkgui::Rect card_;                             // the chat's card
         float headerY_ = 0.0f;                           // its header row
