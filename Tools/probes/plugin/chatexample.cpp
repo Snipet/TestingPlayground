@@ -14,13 +14,17 @@
 //            0.5 (-6.0 dB on the sine and on the noise, an impulse's response at once); the spectrum's peak of a
 //            1 kHz sine within 0.5 Hz; a program that does not compile reports its messages; a dial name that is
 //            not one is reported; a voice that never ends (or an effect that makes sound from silence) is flagged;
-//            the example's own report is not silent and has no alert
+//            the example's own report is not silent and has no alert; an instrument's Inharmonic line: clean for the
+//            sine voice; at C7 a naive saw's aliases above -40 dB, a wavetable voice's (wavetable.fm, its table built
+//            once in a module Shared) clean; a saw's own edges are no click, a phase that jumps once is
+//            (the prompt teaches the FFT's builtins and the module Shared too)
 #include "Probe.h"
 
 #include "Audio.h"
 #include "Rig.h"
 
 #include "dsp/Measure.h"
+#include "fminus/Patch.h"
 #include "plugin/ChatAgent.h"
 
 #include "Library.h"
@@ -75,6 +79,9 @@ PROBE(plugin, chatexample)
     P.eq("prompt.large_section", has(prompt, "BUILDING A LARGE PROGRAM") ? 1 : 0, 1);
     P.eq("prompt.measure_workflow", has(prompt, "measure_output") ? 1 : 0, 1);
     P.eq("prompt.library_tool", has(prompt, "add_library_file") ? 1 : 0, 1);
+    P.eq("prompt.fft", has(prompt, "fft_create(n)") && has(prompt, "fft_forward(plan, in, bins)")
+                           && has(prompt, "fft_inverse(plan, bins, out)") ? 1 : 0, 1);
+    P.eq("prompt.shared", has(prompt, "module Shared") && has(prompt, "Shared*") ? 1 : 0, 1);
     P.eq("prompt.panel_section", has(prompt, "THE PANEL") && has(prompt, "#pragma panel section") && has(prompt, "#pragma panel row")
                                      && has(prompt, "#pragma panel label") && has(prompt, "#pragma panel small") ? 1 : 0, 1);
     int headers = 0;
@@ -212,6 +219,70 @@ PROBE(plugin, chatexample)
         P.eq("measure.voice_ends", has(r, "The last voice ended") ? 1 : 0, 1);
         P.eq("measure.chord", has(r, "A chord (57 61 64 69)") ? 1 : 0, 1);
         P.eq("measure.unknown_dial", has(r, "No dial is named 'volume'") ? 1 : 0, 1);
+        P.eq("measure.sine_nothing_inharmonic", has(r, "Inharmonic: nothing below 20 kHz") ? 1 : 0, 1);
+        // Aliasing at C7 (2093 Hz): a naive saw's shows; a wavetable's, its table built once in Shared, does not.
+        {
+            const auto inharmonicDb = [](const std::string& report) {
+                const std::string key = "no harmonic of the note is ";
+                const std::size_t at = report.find(key);
+                return at == std::string::npos ? -200.0 : std::atof(report.c_str() + at + key.size());
+            };
+            tp::measure::Request high;
+            high.notes = { 96 };
+            std::string naive = voice;
+            naive.replace(naive.find("sinf(6.28318531f * phase)"), 25, "(2 * phase - 1)");
+            const std::string a = tp::measure::run(tp::singleFile(naive), high);
+            std::printf("a naive saw at C7:\n%s", a.c_str());
+            P.ge("measure.naive_saw_aliases_db", inharmonicDb(a), -40.0);
+            P.eq("measure.saw_edges_no_click", !has(a, "likely a click") ? 1 : 0, 1);
+            const tp::LibraryFile* lib = tp::findLibraryFile("wavetable.fm");
+            const std::string program =
+                "#include \"wavetable.fm\"\n"
+                "module Shared\n{\n    Wavetable table;\n"
+                "    void init(float rate) { table.allocate(1); table.shape(0, 2); }\n"
+                "    void end() { table.release(); }\n};\n"
+                "module Voice\n{\n"
+                "    param float level [[fminus::range(0, 1)]] [[fminus::default(0.25)]];\n"
+                "    Shared* shared;\n    WaveOsc osc;\n    float rate; float step; bool held; float env;\n"
+                "    void init(float r) { rate = r; osc.table = &shared->table; }\n"
+                "    void start(float note, float v)\n    {\n"
+                "        step = 440 * expf(0.0577622650f * (note - 69)) / rate; held = true; env = 1; osc.reset(0);\n    }\n"
+                "    void stop() { held = false; }\n"
+                "    bool process(float* restrict left, float* restrict right, int n)\n"
+                "    {\n"
+                "        for (int i = 0; i < n; ++i)\n"
+                "        {\n"
+                "            if (!held) env *= 0.999f;\n"
+                "            const float out = level[i] * env * osc.tick(step, 0);\n"
+                "            left[i] += out; right[i] += out;\n"
+                "        }\n"
+                "        return held || env > 0.0001f;\n"
+                "    }\n};\n";
+            P.eq("measure.wavetable_in_library", lib != nullptr ? 1 : 0, 1);
+            if (lib != nullptr)
+            {
+                const tp::Sources files{ { tp::kProgramName, program }, { "wavetable.fm", lib->source } };
+                const tp::Patch::Result compiled = tp::Patch::compile(files, static_cast<float>(kFs));
+                P.eq("measure.wavetable_compiles_clean", compiled.patch != nullptr && compiled.notes.empty() ? 1 : 0, 1);
+                if (!compiled.errors.empty() || !compiled.notes.empty())
+                    std::printf("%s%s", compiled.errors.c_str(), compiled.notes.c_str());
+                const std::string w = tp::measure::run(files, high);
+                std::printf("a wavetable saw at C7, its table in Shared:\n%s", w.c_str());
+                P.eq("measure.wavetable_nothing_inharmonic", has(w, "Inharmonic: nothing below 20 kHz") ? 1 : 0, 1);
+                P.eq("measure.wavetable_audible", has(w, "Held: peak -") && !has(w, "It is silent") ? 1 : 0, 1);
+                P.eq("measure.wavetable_no_click", !has(w, "likely a click") ? 1 : 0, 1);
+            }
+        }
+        // A phase that jumps half a cycle once, at 0.5 s: a click.
+        {
+            std::string jump = voice;
+            jump.replace(jump.find("float env;"), 10, "float env; int count;");
+            jump.replace(jump.find("phase += step;"), 14, "phase += step; count += 1; if (count == 24000) phase += 0.5f;");
+            const std::string j = tp::measure::run(tp::singleFile(jump), {});
+            P.eq("measure.jump_is_a_click", has(j, "likely a click") ? 1 : 0, 1);
+            if (!has(j, "likely a click"))
+                std::printf("a sine that jumps:\n%s", j.c_str());
+        }
         std::string forever = voice;
         forever.replace(forever.find("return held || env > 0.0001f;"), 29, "return true;");
         const std::string f = tp::measure::run(tp::singleFile(forever), {});
