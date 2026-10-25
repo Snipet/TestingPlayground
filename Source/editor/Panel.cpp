@@ -16,6 +16,7 @@
 #include "dsp/Engine.h"
 
 #include "Examples.h"
+#include "Library.h"
 #include "Product.h"
 
 #include <funkgui/canvas/Canvas.h>
@@ -128,6 +129,31 @@ namespace testingplaygroundsynth::ui
         constexpr float kKeyDialogH = 240.0f;
         constexpr int   kMaxKeyLength = 320;
         constexpr uint32_t kA11yStride = 64;             // item i's ids: kA11yStride * (i + 1) + 0..63
+
+        // Where a new #include goes in a program: after the last #include before its first line of code, else after
+        // the comment lines it starts with (its description), else first.
+        int includeLineFor(const std::string& text)
+        {
+            std::istringstream in(text);
+            std::string l;
+            int row = 0, lastInclude = -1, comments = 0;
+            bool leading = true;
+            while (std::getline(in, l))
+            {
+                const std::size_t first = l.find_first_not_of(" \t\r");
+                const std::string_view t = first == std::string::npos ? std::string_view{} : std::string_view(l).substr(first);
+                const bool comment = t.rfind("//", 0) == 0;
+                if (t.rfind("#include", 0) == 0)
+                    lastInclude = row;
+                else if (!t.empty() && !comment && t[0] != '#')
+                    break;                               // the first line of code
+                if (leading && comment)
+                    comments = row + 1;
+                leading = leading && comment;
+                ++row;
+            }
+            return lastInclude >= 0 ? lastInclude + 1 : comments;
+        }
 
         // A section's title, cut into its frame's top edge (DialLayout.h).
         constexpr funkgui::TextStyle kSectionTitle{ 10.0f, 2.4f, 0.10f, false };
@@ -552,6 +578,20 @@ namespace testingplaygroundsynth::ui
             structure_ += kStructureStep;
             return true;
         }
+
+        // A file after the others with this name and text, shown. False when there is no room or the name is taken.
+        bool addFile(const std::string& fileName, const std::string& text)
+        {
+            if (tabs_.size() >= kMaxFiles || find(fileName) >= 0)
+                return false;
+            endRename();
+            tabs_.push_back(makeTab(fileName, text));
+            select(count() - 1);
+            structure_ += kStructureStep;
+            return true;
+        }
+
+        funkgui::TextEditor& editorOf(int i) { return *tabs_[static_cast<std::size_t>(i)].editor; }
 
         // Closes file i (not the program's); the tab before it is shown when it was.
         void remove(int i)
@@ -1190,6 +1230,12 @@ namespace testingplaygroundsynth::ui
             std::make_unique<ButtonModel>("EXAMPLES", "Examples", [this] { openExamples(); }), cells(1),
             funkgui::CellStyle::boxed, idFor(),
             [](char* out, std::size_t n) { std::snprintf(out, n, "EXAMPLES   REPLACE THE TEXT WITH ONE, AND RUN IT"); }));
+        libraryItem_ = add(std::make_unique<CellsItem>(
+            std::make_unique<ButtonModel>("LIBRARY", "Library", [this] { openLibrary(); }), cells(1),
+            funkgui::CellStyle::boxed, idFor(),
+            [](char* out, std::size_t n) {
+                std::snprintf(out, n, "LIBRARY   A READY-MADE BUILDING BLOCK AS A TAB OF ITS OWN, #INCLUDED BY THE PROGRAM");
+            }));
 
         // The editor, the problems under it, the dials under them.
         editorItem_ = add(std::make_unique<FilesItem>(funkgui::Rect{}, funkgui::Rect{}, idFor(), problems_,
@@ -1296,6 +1342,8 @@ namespace testingplaygroundsynth::ui
             .setCells({ { kMargin, kToolbarY, 64.0f, kButtonH } });
         static_cast<CellsItem&>(*items_[static_cast<std::size_t>(examplesItem_)])
             .setCells({ { kMargin + 72.0f, kToolbarY, 96.0f, kButtonH } });
+        static_cast<CellsItem&>(*items_[static_cast<std::size_t>(libraryItem_)])
+            .setCells({ { kMargin + 176.0f, kToolbarY, 88.0f, kButtonH } });
         // The dials: in plain rows, or in the sections the program's #pragma panel lines ask for (DialLayout.h), as
         // tall as the panel can give them while the editor keeps 120 px.
         const float problemsH = kProblemRowH * static_cast<float>(kProblemRows);
@@ -1421,6 +1469,7 @@ namespace testingplaygroundsynth::ui
     {
         return items_[static_cast<std::size_t>(examplesItem_)]->centre();
     }
+    funkgui::Point Panel::centreOfLibrary() const { return items_[static_cast<std::size_t>(libraryItem_)]->centre(); }
     funkgui::Point Panel::centreOfProblem(int i) const
     {
         const auto& p = static_cast<const ProblemsItem&>(*items_[static_cast<std::size_t>(problemsItem_)]);
@@ -2089,6 +2138,68 @@ namespace testingplaygroundsynth::ui
         });
     }
 
+    // LIBRARY: the library's files by category, a tick on those the program has. One the program lacks becomes a tab
+    // of its own, shown, and the program #includes it (one more line at its top, an edit Cmd-Z takes back); one it has
+    // is shown. With no room for another tab, the others are greyed.
+    void Panel::openLibrary()
+    {
+        if (host_ == nullptr)
+            return;
+        funkgui::MenuRequest request;
+        const bool room = files().count() < static_cast<int>(kMaxFiles);
+        constexpr int kHeading = 1000;                   // a category's heading: an id of its own, greyed (never chosen)
+        std::string category;
+        for (std::size_t i = 0; i < std::size(kLibrary); ++i)
+        {
+            const LibraryFile& f = kLibrary[i];
+            if (category != f.category)
+            {
+                if (!category.empty())
+                    request.items.push_back({ 0, {}, false, false, true });
+                category = f.category;
+                request.items.push_back({ kHeading + static_cast<int>(i), upper(category), false });
+            }
+            const bool have = files().find(f.name) >= 0;
+            request.items.push_back({ static_cast<int>(i) + 1, std::string(f.name) + "   " + f.summary, have || room, have });
+        }
+        request.anchor = static_cast<const CellsItem&>(*items_[static_cast<std::size_t>(libraryItem_)]).bounds();
+        request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
+        host_->showMenu(request, [this](int chosen) {
+            if (chosen >= 1 && chosen <= static_cast<int>(std::size(kLibrary)))
+                addLibraryFile(kLibrary[static_cast<std::size_t>(chosen - 1)].name);
+        });
+    }
+
+    bool Panel::addLibraryFile(const std::string& name)
+    {
+        const LibraryFile* f = findLibraryFile(name);
+        if (f == nullptr)
+            return false;
+        files().endRename();
+        if (const int tab = files().find(name); tab >= 0)
+        {
+            files().select(tab);
+            setFocus(editorItem_);
+            return true;
+        }
+        if (!files().addFile(f->name, f->source))
+            return false;
+        // The program includes it, unless it does already.
+        funkgui::TextEditor& program = files().editorOf(0);
+        const std::string line = "#include \"" + name + "\"";
+        if (program.text().find(line) == std::string::npos)
+        {
+            const int at = includeLineFor(program.text());
+            const funkgui::TextPos caret = program.caret();
+            program.setCaret({ at, 0 });
+            program.insert(line + "\n");
+            program.setCaret({ caret.line >= at ? caret.line + 1 : caret.line, caret.col });
+        }
+        setFocus(editorItem_);
+        dirty_ = true;
+        return true;
+    }
+
     void Panel::jumpTo(const Problem& p)
     {
         if (p.line <= 0)
@@ -2200,7 +2311,7 @@ namespace testingplaygroundsynth::ui
         // The toolbar's status and meter, over the editor.
         {
             const funkgui::Canvas::Scope s(c, kStatusTag, false);
-            const float statusX = kMargin + 72.0f + 96.0f + 20.0f;
+            const float statusX = kMargin + 176.0f + 88.0f + 20.0f;
             const float textTop = c.capCentreTop(kToolbarY + kButtonH * 0.5f, kStatusStyle);
             const float meterW = c.textWidth(meter_.c_str(), kStatusStyle);
             const funkgui::Col statusInk = !lastOk_ && !compiling_ ? th.signal : (edited_ ? th.ink70 : th.ink52);

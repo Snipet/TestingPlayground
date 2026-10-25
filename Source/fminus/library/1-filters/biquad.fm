@@ -1,0 +1,116 @@
+// biquad.fm: an equalizer's filter: peak, shelves, low-, high-, band-pass and notch.
+//
+// A second-order section with the designs of Robert Bristow-Johnson's cookbook.
+//
+//   Biquad eq;                          a field of your module
+//   eq.setLowpass(fc, q, rate);         q 0.707: no peak (Butterworth); higher rings at fc
+//   eq.setHighpass(fc, q, rate);
+//   eq.setBandpass(fc, q, rate);        0 dB at fc; q is fc over the bandwidth
+//   eq.setNotch(fc, q, rate);
+//   eq.setPeak(fc, q, gainDb, rate);    a bell: gainDb at fc (negative cuts)
+//   eq.setLowShelf(fc, gainDb, rate);   gainDb below fc, half of it at fc
+//   eq.setHighShelf(fc, gainDb, rate);  gainDb above fc
+//   y = eq.tick(x);                     one sample
+//   eq.clear();                         silence
+// A design costs a sinf, a cosf and a division or two: once a call, or every 16 samples while it moves (a biquad
+// whose coefficients jump every sample can crackle; svf.fm is the one to sweep fast).
+module Biquad
+{
+    float b0;
+    float b1;
+    float b2;
+    float a1;
+    float a2;
+    float z1;
+    float z2;
+
+    void design(float c0, float c1, float c2, float d0, float d1, float d2)
+    {
+        b0 = c0 / d0;
+        b1 = c1 / d0;
+        b2 = c2 / d0;
+        a1 = d1 / d0;
+        a2 = d2 / d0;
+    }
+
+    float omega(float fc, float rate)
+    {
+        const float r = fmaxf(rate, 1000);
+        return 6.28318531f * fminf(fmaxf(fc, 5), 0.49f * r) / r;
+    }
+
+    void setLowpass(float fc, float q, float rate)
+    {
+        const float w = omega(fc, rate);
+        const float c = cosf(w);
+        const float alpha = sinf(w) / (2 * fmaxf(q, 0.05f));
+        design(0.5f * (1 - c), 1 - c, 0.5f * (1 - c), 1 + alpha, -2 * c, 1 - alpha);
+    }
+
+    void setHighpass(float fc, float q, float rate)
+    {
+        const float w = omega(fc, rate);
+        const float c = cosf(w);
+        const float alpha = sinf(w) / (2 * fmaxf(q, 0.05f));
+        design(0.5f * (1 + c), -(1 + c), 0.5f * (1 + c), 1 + alpha, -2 * c, 1 - alpha);
+    }
+
+    void setBandpass(float fc, float q, float rate)
+    {
+        const float w = omega(fc, rate);
+        const float c = cosf(w);
+        const float alpha = sinf(w) / (2 * fmaxf(q, 0.05f));
+        design(alpha, 0, -alpha, 1 + alpha, -2 * c, 1 - alpha);
+    }
+
+    void setNotch(float fc, float q, float rate)
+    {
+        const float w = omega(fc, rate);
+        const float c = cosf(w);
+        const float alpha = sinf(w) / (2 * fmaxf(q, 0.05f));
+        design(1, -2 * c, 1, 1 + alpha, -2 * c, 1 - alpha);
+    }
+
+    void setPeak(float fc, float q, float gainDb, float rate)
+    {
+        const float w = omega(fc, rate);
+        const float c = cosf(w);
+        const float alpha = sinf(w) / (2 * fmaxf(q, 0.05f));
+        const float A = expf(0.0575646273f * gainDb);      // 10 ^ (gainDb / 40)
+        design(1 + alpha * A, -2 * c, 1 - alpha * A, 1 + alpha / A, -2 * c, 1 - alpha / A);
+    }
+
+    void setLowShelf(float fc, float gainDb, float rate)
+    {
+        const float w = omega(fc, rate);
+        const float c = cosf(w);
+        const float A = expf(0.0575646273f * gainDb);
+        const float t = 2 * sqrtf(A) * 0.707106781f * sinf(w);   // 2 sqrt(A) alpha, the shelf's slope 1
+        design(A * ((A + 1) - (A - 1) * c + t), 2 * A * ((A - 1) - (A + 1) * c), A * ((A + 1) - (A - 1) * c - t),
+               (A + 1) + (A - 1) * c + t, -2 * ((A - 1) + (A + 1) * c), (A + 1) + (A - 1) * c - t);
+    }
+
+    void setHighShelf(float fc, float gainDb, float rate)
+    {
+        const float w = omega(fc, rate);
+        const float c = cosf(w);
+        const float A = expf(0.0575646273f * gainDb);
+        const float t = 2 * sqrtf(A) * 0.707106781f * sinf(w);
+        design(A * ((A + 1) + (A - 1) * c + t), -2 * A * ((A - 1) + (A + 1) * c), A * ((A + 1) + (A - 1) * c - t),
+               (A + 1) - (A - 1) * c + t, 2 * ((A - 1) - (A + 1) * c), (A + 1) - (A - 1) * c - t);
+    }
+
+    float tick(float x)
+    {
+        const float y = b0 * x + z1;
+        z1 = b1 * x - a1 * y + z2;
+        z2 = b2 * x - a2 * y;
+        return y;
+    }
+
+    void clear()
+    {
+        z1 = 0;
+        z2 = 0;
+    }
+};

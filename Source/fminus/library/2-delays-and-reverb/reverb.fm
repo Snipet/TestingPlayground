@@ -1,0 +1,183 @@
+// reverb.fm: a stereo reverb, a room to a large hall (Freeverb).
+//
+// Jezar's Freeverb: eight damped feedback combs in parallel, then four allpasses in series, for each side, the right
+// tuned a little apart from the left. It costs about as much as a dozen filters.
+//
+//   Reverb verb;                   a field of your module
+//   verb.allocate(rate);           in init (its lines, for this rate); free them with
+//   verb.release();                in end
+//   verb.set(size, damping, width);   0 to 1 each: the decay (0: a room, 0.7 s to fall 60 dB; 0.5: 1.3 s; 1: 9 s),
+//                                  how dark the tail grows, and the stereo width (0: mono); once a call
+//   verb.tick(left, right);        one stereo sample in; the reverb alone (wet) in verb.left and verb.right, about
+//                                  as loud as the input: mix it with the dry signal yourself
+//   verb.clear();                  silence
+module Comb
+{
+    float* buffer;
+    int length;
+    int at;
+    float store;
+
+    void allocate(int samples)
+    {
+        buffer = calloc(samples, sizeof(float));
+        length = buffer ? samples : 0;
+        at = 0;
+    }
+
+    void release()
+    {
+        if (length > 0)
+            free(buffer);
+        length = 0;
+    }
+
+    float tick(float x, float feedback, float damp)
+    {
+        if (length == 0)
+            return 0;
+        const float out = buffer[at];
+        store = out + damp * (store - out);
+        buffer[at] = x + feedback * store;
+        at += 1;
+        if (at == length)
+            at = 0;
+        return out;
+    }
+
+    void clear()
+    {
+        for (int i = 0; i < length; ++i)
+            buffer[i] = 0;
+        store = 0;
+    }
+};
+
+module Allpass
+{
+    float* buffer;
+    int length;
+    int at;
+
+    void allocate(int samples)
+    {
+        buffer = calloc(samples, sizeof(float));
+        length = buffer ? samples : 0;
+        at = 0;
+    }
+
+    void release()
+    {
+        if (length > 0)
+            free(buffer);
+        length = 0;
+    }
+
+    float tick(float x)
+    {
+        if (length == 0)
+            return x;
+        const float delayed = buffer[at];
+        buffer[at] = x + 0.5f * delayed;
+        at += 1;
+        if (at == length)
+            at = 0;
+        return delayed - x;
+    }
+
+    void clear()
+    {
+        for (int i = 0; i < length; ++i)
+            buffer[i] = 0;
+    }
+};
+
+module Reverb
+{
+    float left;
+    float right;
+    Comb combL[8];
+    Comb combR[8];
+    Allpass passL[4];
+    Allpass passR[4];
+    float feedback;
+    float damp;
+    float wet1;
+    float wet2;
+
+    void allocate(float rate)
+    {
+        release();
+        // Freeverb's tunings, in samples at 44.1 kHz; the right side 23 longer.
+        const int combs[8] = { 1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617 };
+        const int passes[4] = { 556, 441, 341, 225 };
+        const float scale = fmaxf(rate, 8000) / 44100;
+        for (int i = 0; i < 8; ++i)
+        {
+            combL[i].allocate((int)((float)combs[i] * scale) + 1);
+            combR[i].allocate((int)((float)(combs[i] + 23) * scale) + 1);
+        }
+        for (int i = 0; i < 4; ++i)
+        {
+            passL[i].allocate((int)((float)passes[i] * scale) + 1);
+            passR[i].allocate((int)((float)(passes[i] + 23) * scale) + 1);
+        }
+        set(0.5f, 0.5f, 1);
+    }
+
+    void release()
+    {
+        for (int i = 0; i < 8; ++i)
+        {
+            combL[i].release();
+            combR[i].release();
+        }
+        for (int i = 0; i < 4; ++i)
+        {
+            passL[i].release();
+            passR[i].release();
+        }
+    }
+
+    void set(float size, float damping, float width)
+    {
+        feedback = 0.7f + 0.28f * fminf(fmaxf(size, 0), 1);
+        damp = 0.4f * fminf(fmaxf(damping, 0), 1);
+        const float w = fminf(fmaxf(width, 0), 1);
+        wet1 = 1.5f * (0.5f + 0.5f * w);
+        wet2 = 1.5f * (0.5f - 0.5f * w);
+    }
+
+    void tick(float inLeft, float inRight)
+    {
+        const float x = 0.015f * (inLeft + inRight);
+        float l = 0;
+        float r = 0;
+        for (int i = 0; i < 8; ++i)
+        {
+            l += combL[i].tick(x, feedback, damp);
+            r += combR[i].tick(x, feedback, damp);
+        }
+        for (int i = 0; i < 4; ++i)
+        {
+            l = passL[i].tick(l);
+            r = passR[i].tick(r);
+        }
+        left = wet1 * l + wet2 * r;
+        right = wet1 * r + wet2 * l;
+    }
+
+    void clear()
+    {
+        for (int i = 0; i < 8; ++i)
+        {
+            combL[i].clear();
+            combR[i].clear();
+        }
+        for (int i = 0; i < 4; ++i)
+        {
+            passL[i].clear();
+            passR[i].clear();
+        }
+    }
+};

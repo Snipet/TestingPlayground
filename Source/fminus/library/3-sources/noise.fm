@@ -1,0 +1,59 @@
+// noise.fm: white, pink and brown noise.
+//
+// White is flat, pink falls 3 dB an octave (softer, like rain), brown 6 dB (a rumble). Two Noise fields given
+// different seeds do not repeat each other.
+//
+//   Noise noise;                   a field of your module
+//   noise.seed(n);                 optional, n from 1: another sequence (two voices, two seeds)
+//   y = noise.white();             -1 to 1, uniform; or
+//   y = noise.pink();              as loud as white (the same RMS; its peaks reach about 3); or
+//   y = noise.brown();             the same
+// Each draws the next value: call one of them a sample.
+module Noise
+{
+    int state;
+    float b0;
+    float b1;
+    float b2;
+    float br;
+
+    void seed(int n)
+    {
+        state = n > 0 ? n : 1;
+    }
+
+    // Park-Miller's generator, by Schrage's method (no 64-bit products): uniform in (0, 1).
+    float uniform()
+    {
+        if (state <= 0)
+            state = 22222;
+        const int hi = state / 127773;
+        const int lo = state % 127773;
+        state = 16807 * lo - 2836 * hi;
+        if (state <= 0)
+            state += 2147483647;
+        return (float)state / 2147483647.0f;
+    }
+
+    float white()
+    {
+        return 2 * uniform() - 1;
+    }
+
+    // Paul Kellet's economy filter: three one-poles that sum to -3 dB/octave.
+    float pink()
+    {
+        const float w = white();
+        b0 = 0.99765f * b0 + w * 0.0990460f;
+        b1 = 0.96300f * b1 + w * 0.2965164f;
+        b2 = 0.57000f * b2 + w * 1.0526913f;
+        return 0.335f * (b0 + b1 + b2 + w * 0.1848f);
+    }
+
+    // White, integrated, leaking a little so that it stays near 0.
+    float brown()
+    {
+        br = 0.998f * br + 0.05f * white();
+        return 1.25f * br;
+    }
+};
