@@ -96,7 +96,16 @@ namespace testingplayground
 
             juce::String getText(float v, int maximumStringLength) const override
             {
-                return plainText(owner_.control(slot_), v).substring(0, maximumStringLength);
+                const Control c = owner_.control(slot_);
+                // An int's or a bool's value by the name the program's panel gives it (#pragma panel options).
+                if (c.used && c.type != ControlType::real && std::isfinite(v))
+                {
+                    const std::vector<std::string> names = owner_.controlOptions(slot_);
+                    const long k = std::lround(plainOf(c, v)) - std::lround(c.min);
+                    if (k >= 0 && static_cast<std::size_t>(k) < names.size() && !names[static_cast<std::size_t>(k)].empty())
+                        return juce::String(names[static_cast<std::size_t>(k)]).substring(0, maximumStringLength);
+                }
+                return plainText(c, v).substring(0, maximumStringLength);
             }
 
             float getValueForText(const juce::String& text) const override
@@ -105,6 +114,10 @@ namespace testingplayground
                 const juce::String t = text.trim().toLowerCase();
                 if (!c.used)
                     return std::clamp(t.getFloatValue(), 0.0f, 1.0f);
+                const std::vector<std::string> names = owner_.controlOptions(slot_);
+                for (std::size_t k = 0; k < names.size(); ++k)
+                    if (!names[k].empty() && t == juce::String(names[k]).toLowerCase())
+                        return normOf(c, c.min + static_cast<float>(k));
                 if (c.type == ControlType::toggle)
                     return t == "on" || t == "yes" || t == "true" || t.getFloatValue() >= 0.5f ? 1.0f : 0.0f;
                 return normOf(c, t.getFloatValue());
@@ -397,6 +410,17 @@ namespace testingplayground
         return controls_[static_cast<std::size_t>(c)];
     }
 
+    std::vector<std::string> Processor::controlOptions(int c) const
+    {
+        if (c < 0 || c >= kMaxControls)
+            return {};
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        return panel_.options[static_cast<std::size_t>(c)];
+    }
+
+    bool Processor::meters(Meters& out) const { return engine_.meters(out); }
+    void Processor::scope(bool input, float* out, int n) const { engine_.scope(input, out, n); }
+
     void Processor::apply(const CompileStatus& s, bool reset)
     {
         if (!s.ok)
@@ -407,6 +431,7 @@ namespace testingplayground
             before = controls_;
             controls_ = s.controls;
             panel_ = s.panel;
+            program_ = s.request;
             running_ = s.sources;
         }
         if (reset)
@@ -596,6 +621,12 @@ namespace testingplayground
     {
         const std::lock_guard<std::mutex> lock(programMutex_);
         return panel_;
+    }
+
+    uint64_t Processor::program() const
+    {
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        return program_;
     }
 
     float Processor::load() const { return engine_.load(); }

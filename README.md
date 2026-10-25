@@ -70,21 +70,44 @@ module Effect
   is then the program's file like any other, saved with it, and yours to change. They live in
   `Source/fminus/library/<n>-<category>/`.
 - **The panel.** `#pragma panel` lines lay the dials out as an analog synth's panel is printed, in titled sections,
-  framed, in rows (FMinus ignores every `#pragma`; the plugin reads these from the program and what it includes):
+  framed, in rows; they choose how each dial looks and add displays that show what the program does as it plays
+  (FMinus ignores every `#pragma`; the plugin reads these from the program and what it includes):
 
   ```c
-  #pragma panel section "OSCILLATORS" shape detune      // a section: its title, then its dials in order
+  #pragma panel section "OSCILLATORS" shape detune      // a section: its title, then its dials and displays in order
   #pragma panel section "FILTER" cutoff resonance amount
   #pragma panel row                                     // the sections after it start a new row
   #pragma panel section "ENVELOPE" attack decay sustain release
+  #pragma panel section "OUTPUT" level out              // out: the VU below
   #pragma panel label amount "ENV AMOUNT"               // a dial's label (else its name)
   #pragma panel small detune                            // a small knob: its label under it, no value
+  #pragma panel style cutoff vintage                    // knob (the default), vintage, fader, switch or buttons
+  #pragma panel style attack decay sustain release fader
+  #pragma panel style shape buttons
+  #pragma panel options shape "SAW" "SQUARE" "TRI"      // an int's values' names, from its range's low end
+  #pragma panel color "FILTER" orange                   // a section's colour, or a dial's or a display's
+  #pragma panel vu out "OUTPUT"                         // a display: meter, vu, led, number or scope
   ```
 
+  - **Dial styles**: `knob`; `vintage`, a black knob over a printed scale; `fader`, a slider; `switch`, a toggle (a
+    bool, or an int of two values); `buttons`, a lit button a value (an int or a bool, up to eight). A `style` line
+    names one dial or several, the style last. `options` names an int's values (a bool's: off, on): its buttons show
+    them, and its knob and the host say them.
+  - **Displays** show the plugin's audio, `in` (an effect's input) or `out` (the output; left and right, in dBFS), or
+    a float, int or bool field of the main module that process writes (`gr = reduction;`), across a range given
+    after it (0 to 1 unless it says: `#pragma panel meter gr 0 24 "GR"`). `meter`: LED bars, the highest held a
+    second (the audio's peaks); `vu`: an analog VU meter's needle (0 VU at -18 dBFS RMS); `led`: a light, a field's
+    value its brightness (of the audio: a clip light); `number`: a readout of the field (of the audio: its peak in
+    dBFS); `scope`: an oscilloscope (of a field: its trace over the last 2.5 seconds). An instrument's fields are its
+    newest sounding voice's. A section names a display by its source, or by the name `as` gives it, which a second
+    display of one source needs: `#pragma panel scope out as wave "WAVE"`. Eight displays at most. The colours: red,
+    orange, yellow, green, teal, blue, violet, pink, cream, grey.
+
   A row too wide for the window wraps, its sections shared out evenly; shorter rows widen toward the widest; when
-  the sections need more height than the window gives, every knob is drawn small. Dials no section names come last,
-  untitled. A line the plugin cannot use (a name that is no dial, a dial in two sections) is a note on its line, and
-  the rest stands (`Source/fminus/PanelSpec.h`).
+  the sections need more height than the window gives, every knob is drawn small. Dials and displays no section
+  names come last, untitled. A line the plugin cannot use (a name that is no dial, a dial in two sections, a field
+  that is not there, a style the dial does not suit) is a note on its line, and the rest stands
+  (`Source/fminus/PanelSpec.h`).
 - **Its types are checked.** The plugin calls each method through a line of its own with the type it calls it by, so
   a `process` with other parameters is an error ("Effect::process: the plugin calls it as ..."), never a crash.
 - **What the plugin guards, and what it cannot.** Every sample that leaves the plugin is finite and within +-4
@@ -97,7 +120,8 @@ module Effect
 
 The EXAMPLES menu holds five to start from (`Source/fminus/examples/`): Gain and pan (the program a new instance
 plays), Tremolo (init and the sample rate), Filter (a state-variable filter as a module of its own), Echo (a delay line
-from calloc in init, freed in end) and Drive (tanh saturation). To add one, add a file there whose first line is
+from calloc in init, freed in end; a VU and a switch) and Drive (tanh saturation; input and output meters, a vintage
+knob). To add one, add a file there whose first line is
 `// <Title>: what it is`.
 
 ## The editor
@@ -121,9 +145,10 @@ from calloc in init, freed in end) and Drive (tanh saturation). To add one, add 
   leave the text (the panel's keys then move the focus over the dials). It has the caret when the editor opens.
 - **Problems.** The last run's messages are listed under the text, with their file, line and column; a click on one
   shows its file and puts the caret there, and each line with an error has a mark in the gutter.
-- **The dials** are the program's parameters (above): in the sections its `#pragma panel` lines ask for (above), or
-  in order, in as few rows as the width holds (sixteen in two rows of eight at the default size, in one row on a
-  wide window); drag, scroll, or use the keys once Tab has focused one.
+- **The dials** are the program's parameters (above): in the sections its `#pragma panel` lines ask for (above),
+  in their styles and beside its displays, or in order, in as few rows as the width holds (sixteen in two rows of
+  eight at the default size, in one row on a wide window); drag, scroll, or use the keys once Tab has focused one. A
+  switch or a button takes a click (Return or Space steps it). The displays move with the sound, as hardware does.
 - **The session** keeps the program that plays (all its files), the files as you left them (run or not), the tab
   shown, and the dials. A session whose program no longer compiles (an older FMinus, say) leaves the first example
   playing, its files in the editor. A session saved before files loads as a program of one file.
@@ -218,15 +243,16 @@ build-dev/TestingPlayground_probes --list
 | `fminus.examples` | every example compiles with no message, its dials named, with ranges and defaults inside them; plays two seconds over noise, finite, audible and with no alert; the same bits in blocks of 64 and 333 |
 | `fminus.contract` | what a program needs, and what the plugin says when it does not fit: no module `Effect`, no `process`, a `process` of another type (refused, never called), one that could allocate, a syntax error with its line; sixteen dials and a note for the seventeenth parameter; a held module's parameters at their defaults; init gets the rate; several files: an included function plays, the main module in an included file, a file two files include read once, an included file's error with its name and include stack, a file not found, the plugin's message for a wrong `process` after an `#include` |
 | `fminus.library` | every library file named on its first line, with a usage header, compiling alone and all together; each measured: the filters' responses (SVF and biquad -3 dB at their cutoffs, notches under -60 dB, the ladder's 24 dB/octave and its self-oscillation at the cutoff), the delay exact to the sample and its four-point read, the reverb's decay times, width and level, the oscillators' levels, DC and pitch and the saw's aliasing against a naive one, the noises' levels and colours, the envelope's times and its retrigger without a step, the LFO, the follower and the compressor's curve, the shapers' bounds, the crusher's steps and the conversions |
-| `fminus.panel` | the `#pragma panel` lines: sections, titles, order, a row break, labels and small knobs, comments and commas; an untitled section; the dials left over, last and noted; a note on its line for each line it cannot use (an unknown word, no such dial, a dial twice, an open quote, a missing label, an empty section, a title or label too long), the program still playing; lines in an included file, after the program's, and none from a file no `#include` reads; labels without a section |
+| `fminus.panel` | the `#pragma panel` lines: sections, titles, order, a row break, labels and small knobs, comments and commas; an untitled section; the dials left over, last and noted; a note on its line for each line it cannot use (an unknown word, no such dial, a dial twice, an open quote, a missing label, an empty section, a title or label too long), the program still playing; lines in an included file, after the program's, and none from a file no `#include` reads; labels without a section; displays (each kind, of `in`, `out` and the main module's fields: name, `as`, label, range, the fields' taps in order; a display in a section and one left over; notes for a field that is not there, an array, a dial as a source, a name taken, a range from high to low, an instrument's `in`); styles where they suit and a note where not; options; colours; displays without a section line |
 | `dsp.swap` | the Engine: no program passes the input; the first program fades in from it, a second crossfades from the first over 20 ms with no step beyond the signal's own, bit for bit outside the fades, and the old one is handed back; a real dial glides over 20 ms sample by sample, an integer one steps at the block; a NaN, an infinity and 10 leave as 0, 0 and 4, with their alerts |
+| `dsp.meters` | what the Engine publishes for the displays: an effect's input and output peaks and RMS, left and right, within 1 % (an instrument's output); the peaks falling 10 dB in half a second and the RMS 40 dB; the fields the displays show (a float, an int, a bool, as written last; an instrument's from its newest sounding voice, then the one left, then none); the scope's samples bit for bit; the frame count; the program the fields are of, not one offered and not yet taken |
 | `plugin.process` | the processor as a host drives it: P1 to P16 named and worded as the program's, host writes reach the program (within 0.05 dB), a host's NaN ignored (its text a dash), a block of 0 samples and a block larger than announced change nothing, the bypass passes the input bit for bit and its edges do not click, a block before prepareToPlay passes the input with NaN and inf as 0 |
 | `plugin.state` | the session round-trips (a program of two files, the draft's three files and its tab, the dials, the output bit for bit); a run moves a renamed parameter's dial to its default and keeps a kept one's; a session whose program does not compile leaves the last one playing; one without a program plays the first example; one saved before files loads as one file; one with too many files or bad names loads tidied; a NaN dial loads as 0.5 |
 | `plugin.chatstore` | the key on disk, in a folder of the probe's own: a key's shape; saved, the file is the format above with no 12 characters of the key in it, 0600 in a 0700 folder, and loads back; saved twice it differs (fresh salt and IV); one byte changed anywhere, or the file cut short, and it does not load; forgotten, it is gone; the model and level round-trip, a damaged chat.json loads as none |
 | `plugin.chat` | the chat's agent against a scripted API (no network): the event stream however it is cut, a message rebuilt (thinking and its signature, text, a tool call's streamed input, a compaction block, the usage over its iterations); no key, no request; a turn that writes a program, runs it, sets its dial and answers; each request's shape (model, the model's own max_tokens, adaptive thinking, effort, the cached system prompt, the ten tools, fallbacks and compaction with their betas, the API version) and the history append-only; another model and level; a tool input that is not JSON; a retry after 529; a 401; a refusal; a fallback; a file Claude has seen named but not resent; measure_output through the agent; add_library_file (the tab, its text in the result and seen after it, an unknown name, the same file twice); a stream cut short asked again and shown once; a compaction (the history pruned, the files sent again); STOP; the session; NEW |
 | `plugin.chatexample` | the system prompt has the large-program section, the panel's lines, every library file's header and the program built from the library, word for word; that program compiles with no message (its panel too), every dial in a titled section, plays finite and audible, the same in blocks of 64 and 333, its voices ending; measure_output's numbers on programs whose answer is known (a level, a pitch, a gain, an impulse), and its notes for a voice that never ends or an effect that makes sound from silence |
 | `gui.chat` | the chat column and resizing, headless, to `gui.chat.png`, `.empty.png`, `.key.png`, `.paper.png`, `.small.png` and `.large.png`: the empty chat (key button, suggestions); the key dialog (opened by a message with no key, Escape, modal, a key refused, pasted, never spoken, Save sends the waiting message, Remove); the message box growing with its rows and shrinking when sent; a turn shown (thinking that opens and closes, what Claude did, the answer, a code block and its Copy, an answer's Copy, the usage), its files as tabs, the program playing, Cmd-Z undoing Claude's change; the model and thinking menus; stop; new chat; a suggestion into the box, unsent; the wheel and the jump to the end; the least size with twelve narrowed tabs and a large size, every item inside; the session keeps the size |
-| `gui.dump` | the panel headless to `gui.dump.png`, `.paper.png`, `.error.png`, `.edited.png`, `.files.png`, `.dials.png`, `.dials.small.png`, `.panel.png`, `.panel.paper.png`, `.panel.small.png` and `.example.png`: settles, every glyph, the draft in the editor and a dial for each parameter; typing, Cmd-Return, a syntax error (status, problem line, gutter mark, the click that jumps to it), the EXAMPLES menu and its undo; the files' tabs (+, renaming in place, a taken name refused, Escape, typing into a second file, an `#include` of it that runs, its error's problem and marks, the click that shows its file, closing with and without asking); a dial's drag and double-click; sixteen dials in rows (two at the default and the least size, one when wide; in order, evenly spaced, inside the left column, the editor giving up a row's height); sixteen dials in five sections (two rows of frames, titles in order, every dial inside its frame, the rows even, the labels and small knobs asked for, at the least size too; a bad panel line noted on its line); the LIBRARY menu (every file under its heading; a file added as a tab and #included after the program's description, undoable, still running; ticked and not added twice; greyed with twelve tabs); the program Claude's instructions build from the library, its files added through the menu's path, running with no note, every dial in a titled section; Escape and Tab |
+| `gui.dump` | the panel headless to `gui.dump.png`, `.paper.png`, `.error.png`, `.edited.png`, `.files.png`, `.dials.png`, `.dials.small.png`, `.panel.png`, `.panel.paper.png`, `.panel.small.png`, `.example.png`, `.displays.png` and `.displays.paper.png`: settles, every glyph, the draft in the editor and a dial for each parameter; typing, Cmd-Return, a syntax error (status, problem line, gutter mark, the click that jumps to it), the EXAMPLES menu and its undo; the files' tabs (+, renaming in place, a taken name refused, Escape, typing into a second file, an `#include` of it that runs, its error's problem and marks, the click that shows its file, closing with and without asking); a dial's drag and double-click; sixteen dials in rows (two at the default and the least size, one when wide; in order, evenly spaced, inside the left column, the editor giving up a row's height); sixteen dials in five sections (two rows of frames, titles in order, every dial inside its frame, the rows even, the labels and small knobs asked for, at the least size too; a bad panel line noted on its line); the LIBRARY menu (every file under its heading; a file added as a tab and #included after the program's description, undoable, still running; ticked and not added twice; greyed with twelve tabs); the program Claude's instructions build from the library, its files added through the menu's path, running with no note, every dial in a titled section; a program with every display and dial style, coloured, audio through the processor (each item in its frame; a meter at the Engine's peak within 0.3 dB, a field's meter, light, number and trace; a button's click chooses its value, the switch flips, a fader's drag raises its dial, the host says an option's name; another program's light dark until the audio thread plays it); Escape and Tab |
 | `lint.layers`, `lint.exports` | Source/dsp, Source/fsdsp and Source/fminus without JUCE or FunkGui, FMinus through its public header only; each bundle exports its entry points and nothing else |
 
 A probe is one file in `Tools/probes/<layer>/` whose first line registers it (`// PROBE name=dsp.mytest timeout=60`)
@@ -256,13 +282,15 @@ subnormals.
 ## What is where
 
 ```
-Source/fminus/           Patch: a program compiled for the plugin (the contract, the calls, the instances), JUCE-free;
-                         PanelSpec (its #pragma panel lines read);
+Source/fminus/           Patch: a program compiled for the plugin (the contract, the calls, the instances, the fields
+                         its displays read), JUCE-free;
+                         PanelSpec (its #pragma panel lines read: sections, dial styles, displays);
                          examples/*.fm, the EXAMPLES (compiled in by CMakeLists.txt as generated/Examples.h);
                          library/<n>-<category>/*.fm, the LIBRARY (as generated/Library.h)
 Source/dsp/              the audio side, plain C++20 without JUCE: Engine (programs swapped without a click, the dials
-                         glided into streams, the output guard), Compiler (compiles off the audio thread), Controls,
-                         Sources (a program's files), Measure (a program rendered offline and measured, for the chat)
+                         glided into streams, the output guard, the levels, fields and scope the displays read),
+                         Compiler (compiles off the audio thread), Controls, Sources (a program's files), Measure (a
+                         program rendered offline and measured, for the chat)
 Source/fsdsp/core/       FSynth's DSP core, vendored at the tag in SEED.tsv (scripts/sync-dsp-core.sh)
 Source/plugin/           the JUCE AudioProcessor: P1 to P16, the program's files and the draft in the session, the
                          bypass;
@@ -273,7 +301,10 @@ Source/plugin/           the JUCE AudioProcessor: P1 to P16, the program's files
                          ChatStore (the key, encrypted), ChatPort.h (what the editor reaches of it)
 Source/editor/           the FunkGui panel (Panel.cpp: the toolbar, the files' tabs and TextEditors, the problems, the
                          dials, the chat's card and the key dialog; its layout follows the window's size),
-                         DialLayout (the dials' places: plain rows, or the panel's sections),
+                         DialLayout (the dials' and displays' places: plain rows, or the panel's sections),
+                         Looks (the dial styles and the displays drawn: vintage knobs, faders, switches, buttons, LED
+                         meters, a VU, lights, readouts, a scope), DisplayItem (a display's motion: VU ballistics,
+                         peak hold),
                          ChatView (the conversation), ChatItems (the message box, the chat's buttons), ChatStyle.h
                          (the chat's rounded look, its palette from the theme), Items.h, Theme.h;
                          gpu/ starts it in the plugin

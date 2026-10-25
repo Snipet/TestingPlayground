@@ -25,6 +25,7 @@ namespace testingplayground
             {
                 s.controls = r.patch->controls();
                 s.panel = r.patch->panel();
+                r.patch->setProgram(id);                    // CompileStatus::request: Meters::program names it
                 engine.offer(std::move(r.patch));
             }
             return s;

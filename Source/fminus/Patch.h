@@ -43,6 +43,7 @@
 #include "dsp/Sources.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -91,6 +92,10 @@ namespace testingplayground
         const PanelSpec& panel() const noexcept { return panel_; }
         int instances() const noexcept { return static_cast<int>(instances_.size()); }
         const Sources& sources() const noexcept { return sources_; }
+        // The compile it came from (the Compiler's request id; 0 when none was given). The Engine publishes it with the
+        // fields its displays read (Meters::program), so a panel never shows one program's fields on another's displays.
+        uint64_t program() const noexcept { return program_; }
+        void setProgram(uint64_t id) noexcept { program_ = id; }
 
         // ---- the audio thread ------------------------------------------------------------------------------------
         // Control c's value (its plain value, Controls.h) in instance i, or in every instance (i < 0): what a stream
@@ -107,6 +112,11 @@ namespace testingplayground
         void stop(int i) noexcept;
         bool render(int i, float* left, float* right, int n) noexcept;
 
+        // The field display t (PanelDisplay::tap) shows: its value in instance i, as a float (an int's number, a bool's
+        // 0 or 1). After a block, on the audio thread.
+        int taps() const noexcept { return static_cast<int>(taps_.size()); }
+        float tap(int t, int i) const noexcept;
+
     private:
         struct Shared;                                 // the Program and the function pointers
         Patch();
@@ -119,8 +129,16 @@ namespace testingplayground
         std::size_t instanceSize_ = 0, instanceAlign_ = 16;
         Controls controls_{};
         PanelSpec panel_;
+        struct Tap
+        {
+            enum class Type : uint8_t { real, integer, boolean };
+            std::size_t offset = 0;                    // in an instance, in bytes
+            Type type = Type::real;
+        };
+        std::vector<Tap> taps_;
         std::vector<const void*> params_;              // per control: its fminus::Program::Parameter (null: unused)
         Sources sources_;
         float rate_ = 48000.0f;
+        uint64_t program_ = 0;
     };
 }

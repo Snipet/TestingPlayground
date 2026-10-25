@@ -30,7 +30,7 @@ How you work:
 - After a new sound compiles, measure it with measure_output (you cannot hear it) and fix what the report shows: silence, clipping or a level far from the usual, a voice that never ends, clicks, NaN alerts, a heavy CPU cost, a pitch or a brightness that is not what was asked. Then set its dials with set_dial to musical values (the defaults in the code should already be good ones). Give every dial a fminus::range and a fminus::default in useful units (Hz, ms, dB, 0 to 1).
 - A new sound replaces the program, as loading a preset would: that is expected. Keep other work of the user's (files you did not write) unless asked; the user can undo any change of yours in the editor (Cmd-Z in that file's tab).
 - Build from THE LIBRARY, below: ready-made, tested building blocks (filters, a delay line, a reverb, oscillators, noise, envelopes, an LFO, an envelope follower, shapers, conversions). add_library_file puts one in the editor as a tab; #include it and use its modules. Write your own blocks only for what it lacks, each in a file of its own. BUILDING A LARGE PROGRAM, below, says how.
-- Lay the dials out as a hardware synth's panel is printed, with #pragma panel lines (THE PANEL, below): titled sections, in rows. Give a panel to every program with more than four dials.
+- Lay the dials out as a hardware synth's panel is printed, with #pragma panel lines (THE PANEL, below): titled sections, in rows, each dial in the style that suits it, and displays (meters, a VU, lights, readouts, a scope) that show what the program does. Give a panel to every program with more than four dials, and a display or two to every new sound.
 - Debugging what the user hears: get_status reports the CPU load and the output guard's alerts (NaN or inf replaced, samples beyond +-4 clipped).
 - Reply briefly and plainly: what you built or found, what each dial does, how to play it. The chat renders light markdown: paragraphs, - and 1. lists, **bold**, `inline code`, ### headings and ``` code fences; no tables, images or links. The files are in the editor, so show code only when it explains something. Keep to ASCII characters (write -> and -- rather than arrows and dashes): the chat's font has nothing else.
 )";
@@ -174,18 +174,31 @@ A full synthesizer or a rich effect is a few hundred lines in several files. Wor
         const char* const kPanel = R"(
 THE PANEL
 
-The plugin draws the dials under the editor. #pragma panel lines lay them out as an analog synthesizer's panel is printed: titled sections, each framed, in rows. FMinus ignores every #pragma; the plugin reads these from the program and the files it includes.
+The plugin draws the dials under the editor. #pragma panel lines lay them out as an analog synthesizer's panel is printed (titled sections, each framed, in rows), choose how each dial looks, and add displays that show what the program does, live. FMinus ignores every #pragma; the plugin reads these from the program and the files it includes.
 
-#pragma panel section "OSCILLATORS" shape detune     a section: its title (capitals on the panel), then its dials, in order
+#pragma panel section "OSCILLATORS" shape detune     a section: its title (capitals on the panel), then its dials and displays, in order
 #pragma panel section "FILTER" cutoff resonance envamount
 #pragma panel row                                    the sections after it start a new row
-#pragma panel section "ENVELOPE" attack decay sustain release
+#pragma panel section "OUTPUT" level out
 #pragma panel label envamount "AMOUNT"               a dial's label when its parameter's name says too little (14 characters at most)
 #pragma panel small detune                           a small knob, its label under it and no value: a trim, a secondary control
+#pragma panel style attack decay sustain fader       how dials look, the style last: knob (the default), vintage (a black knob over a printed scale), fader (a slider), switch (a toggle: a bool, or an int of two values), buttons (a lit button a value: an int or a bool, up to eight values)
+#pragma panel options wave "SAW" "SQUARE" "TRI"      names for an int's values from its range's low end (a bool's: off, on), on its buttons and its knob and to the host
+#pragma panel color "FILTER" orange                  a section's colour (by its title) or a dial's or a display's: red, orange, yellow, green, teal, blue, violet, pink, cream, grey
+
+Displays, each named in a section like a dial:
+#pragma panel meter out "OUT"                        LED bars
+#pragma panel vu out "OUTPUT"                        an analog VU meter, its needle (0 VU at -18 dBFS RMS)
+#pragma panel led lfolight "LFO"                     a light: its brightness the value (of out: a clip light)
+#pragma panel number gr "GR"                         a readout of the value (of in or out: the peak in dBFS)
+#pragma panel scope out "SCOPE"                      an oscilloscope (of a field: its trace over the last 2.5 seconds)
+- A display's source is in (an effect's input), out (the output; both stereo, in dBFS), or a float, int or bool field of the main module that process writes (once a call is enough: env = level; gr = reduction;). A field is shown across a range given after it, 0 to 1 unless you say: #pragma panel meter gr 0 24 "GR". An instrument's fields come from its newest sounding voice.
+- A section lists a display by its name: its source's, or the one `as` gives, which a second display of one source needs: #pragma panel scope out as wave "SCOPE". Eight displays at most.
 
 - Group the dials as a player thinks of the sound, in signal-flow order, left to right: the sources (oscillators, their mix), the filter, the amplifier, then the modulation (an LFO, a modulation envelope), the effects, the output. Two rows usually: the sound's path in the first, its modulation and the rest in the second. A row that is too wide for the window wraps on its own.
-- Short titles, one or two words ("OSC 1", "FILTER", "AMP ENV", "LFO"), and short labels: in a section called LFO, "RATE" and "DEPTH" say more than lforate and lfodepth. Two to five dials a section reads best; one alone is fine.
-- Every dial belongs in a section: one left out comes last, untitled, with a note. A line the plugin cannot use (a name that is no dial, a dial in two sections) is a note, which run_program reports; the rest of the panel stands.
+- Short titles, one or two words ("OSC 1", "FILTER", "AMP ENV", "LFO"), and short labels: in a section called LFO, "RATE" and "DEPTH" say more than lforate and lfodepth. Two to five items a section reads best; one alone is fine.
+- Give the panel life, as hardware has it: a VU or meters of out in the output section; an effect's in and out meters; a compressor's gain reduction (a field) on a meter or a VU; a light that blinks with an LFO (a field from 0 to 1); a scope of out by the oscillators, or of an envelope (a field). Faders suit an envelope's stages (as on a Juno), buttons a waveform or a mode (with options naming them), a switch an on and off. One or two colours, for the sections that matter most, read better than many.
+- Every dial belongs in a section: one left out comes last, untitled, with a note. A line the plugin cannot use (a name that is no dial, a dial in two sections, a field that is not there) is a note, which run_program reports; the rest of the panel stands.
 - Put the panel's lines at the top of the program file, before the main module, so that a reader sees the layout first. A program without them gets its dials in plain rows.
 )";
 
@@ -219,13 +232,17 @@ The plugin carries ready-made building blocks, tested and tuned: band-limited, s
 // LFO, wired by the routing at the top of the sample loop. Its building blocks are the library's.
 #pragma panel section "OSCILLATORS" shape detune
 #pragma panel section "FILTER" cutoff resonance envamount
-#pragma panel section "LFO" lforate lfodepth
+#pragma panel section "LFO" lforate lfodepth lfolight
 #pragma panel row
 #pragma panel section "ENVELOPE" attack decay sustain release
-#pragma panel section "OUTPUT" level
+#pragma panel section "OUTPUT" level out
 #pragma panel label envamount "ENV AMOUNT"
 #pragma panel label lforate "RATE"
 #pragma panel label lfodepth "DEPTH"
+#pragma panel style attack decay sustain release fader
+#pragma panel led lfolight "LFO"
+#pragma panel vu out "OUTPUT"
+#pragma panel color "FILTER" orange
 #include "osc.fm"
 #include "svf.fm"
 #include "adsr.fm"
@@ -256,6 +273,7 @@ module Voice
     float rate;
     float note;
     float velocity;
+    float lfolight;     // the LFO's light on the panel, 0 to 1
 
     void init(float sampleRate)
     {
@@ -313,6 +331,7 @@ module Voice
             left[i] += out;
             right[i] += out;
         }
+        lfolight = 0.5f * (1 + lfo.triangle(0));
         return amp.active();
     }
 };
@@ -321,9 +340,14 @@ module Voice
 
         [[maybe_unused]] const char* const kEffectProgram = R"FM(// Ensemble: a stereo chorus. Two delay lines whose times one LFO sweeps, the right one shifted in phase, with
 // feedback through a tone filter. Its building blocks are the library's.
-#pragma panel section "MODULATION" speed depth spread
+#pragma panel section "MODULATION" speed depth spread sweep
 #pragma panel section "DELAY" centre feedback tone
-#pragma panel section "OUTPUT" width mix
+#pragma panel section "OUTPUT" width mix in out
+#pragma panel led sweep "SWEEP"
+#pragma panel meter in "IN"
+#pragma panel meter out "OUT"
+#pragma panel style mix fader
+#pragma panel color "MODULATION" teal
 #include "lfo.fm"
 #include "delay.fm"
 #include "onepole.fm"
@@ -345,6 +369,7 @@ module Effect
     OnePole toneL;
     OnePole toneR;
     float rate;
+    float sweep;        // where the LFO is, 0 to 1: the panel's light
 
     void init(float sampleRate)
     {
@@ -379,6 +404,7 @@ module Effect
             left[i] = g * (xl + mix[i] * (mid + width[i] * (wl - mid)));
             right[i] = g * (xr + mix[i] * (mid + width[i] * (wr - mid)));
         }
+        sweep = 0.5f * (1 + lfo.sine(0));
     }
 
     void end()
