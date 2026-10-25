@@ -1398,6 +1398,12 @@ namespace testingplayground::ui
             [](char* out, std::size_t n) {
                 std::snprintf(out, n, "LIBRARY   A READY-MADE BUILDING BLOCK AS A TAB OF ITS OWN, #INCLUDED BY THE PROGRAM");
             }));
+        presetsItem_ = add(std::make_unique<CellsItem>(
+            std::make_unique<ButtonModel>("PRESETS", "Presets", [this] { openPresets(); }), cells(1),
+            funkgui::CellStyle::boxed, idFor(),
+            [](char* out, std::size_t n) {
+                std::snprintf(out, n, "PRESETS   SAVE THE PROGRAM AND ITS DIALS ON THIS MAC, OR LOAD ONE");
+            }));
         randomItem_ = add(std::make_unique<CellsItem>(
             std::make_unique<ButtonModel>("RANDOM", "A random program", [this] { makeRandom(nextSeed()); }), cells(1),
             funkgui::CellStyle::boxed, idFor(),
@@ -1518,6 +1524,8 @@ namespace testingplayground::ui
             .setCells({ { kMargin + 176.0f, kToolbarY, 88.0f, kButtonH } });
         static_cast<CellsItem&>(*items_[static_cast<std::size_t>(randomItem_)])
             .setCells({ { kMargin + 272.0f, kToolbarY, 80.0f, kButtonH } });
+        static_cast<CellsItem&>(*items_[static_cast<std::size_t>(presetsItem_)])
+            .setCells({ { kMargin + 360.0f, kToolbarY, 88.0f, kButtonH } });
         // The dials: in plain rows, or in the sections the program's #pragma panel lines ask for (DialLayout.h), as
         // tall as the panel can give them while the editor keeps 120 px.
         const float problemsH = kProblemRowH * static_cast<float>(kProblemRows);
@@ -1667,6 +1675,7 @@ namespace testingplayground::ui
 
     funkgui::Point Panel::centreOfLibrary() const { return items_[static_cast<std::size_t>(libraryItem_)]->centre(); }
     funkgui::Point Panel::centreOfRandom() const { return items_[static_cast<std::size_t>(randomItem_)]->centre(); }
+    funkgui::Point Panel::centreOfPresets() const { return items_[static_cast<std::size_t>(presetsItem_)]->centre(); }
     funkgui::Point Panel::centreOfProblem(int i) const
     {
         const auto& p = static_cast<const ProblemsItem&>(*items_[static_cast<std::size_t>(problemsItem_)]);
@@ -1837,6 +1846,16 @@ namespace testingplayground::ui
             edited_ = files().draft().files != running_;
         const std::string statusBefore = status_;
 
+        // The header's preset.
+        {
+            const std::string name = port_.presetName();
+            std::string text = name.empty() ? std::string() : "PRESET  " + upper(name) + (port_.presetEdited() ? "  EDITED" : "");
+            if (text != presetText_)
+            {
+                presetText_ = std::move(text);
+                dirty_ = true;
+            }
+        }
         // The status line and the meter.
         if (nowSec < noticeUntil_)
             status_ = notice_;
@@ -2413,6 +2432,45 @@ namespace testingplayground::ui
         return 1 + static_cast<uint32_t>((ticks / 1000 + static_cast<uint64_t>(randomCount_) * 7919u) % random::kMaxSeed);
     }
 
+    void Panel::openPresets()
+    {
+        if (presets_.isOpen() || keyOpen_)
+            return;
+        std::string name = port_.presetName();
+        if (name.empty())
+        {
+            // The program's title: its first line's words after "//", before a colon or "(random".
+            const Draft d = port_.draft();
+            const std::string text = d.files.empty() ? std::string() : d.files.front().text;
+            std::string first = text.substr(0, text.find('\n'));
+            if (first.rfind("//", 0) == 0)
+            {
+                first = first.substr(2);
+                first = first.substr(0, std::min(first.find(':'), first.find(" (random")));
+                name = port_.tidyPresetName(first);
+            }
+        }
+        files().endRename();
+        port_.setDraft(files().draft());                 // what Save saves is what the tabs show
+        presets_.open(name);
+        focusBeforePresets_ = focus_;
+        setFocus(-1);
+        ring_ = false;
+        dirty_ = true;
+    }
+
+    void Panel::afterPresets(bool wasOpen)
+    {
+        if (const std::string n = presets_.takeNotice(); !n.empty())
+            notice(n);
+        if (wasOpen && !presets_.isOpen())
+        {
+            setFocus(focusBeforePresets_ >= 0 ? focusBeforePresets_ : editorItem_);
+            focusBeforePresets_ = -1;
+        }
+        dirty_ = true;
+    }
+
     void Panel::notice(const std::string& text)
     {
         notice_ = text;
@@ -2582,6 +2640,13 @@ namespace testingplayground::ui
             c.text(subtitle_.c_str(), titleRight + kSubtitleGap,
                    c.sharedBaselineTop(kTitleTop, funkgui::type::kWordmark, funkgui::type::kMicro),
                    funkgui::type::kMicro, th.ink32);
+            if (!presetText_.empty())
+            {
+                const float px = titleRight + kSubtitleGap + c.textWidth(subtitle_.c_str(), funkgui::type::kMicro) + 32.0f;
+                c.text(fitText(c, presetText_, funkgui::type::kMicro, std::max(0.0f, chatX_ - px)).c_str(), px,
+                       c.sharedBaselineTop(kTitleTop, funkgui::type::kWordmark, funkgui::type::kMicro), funkgui::type::kMicro,
+                       th.ink70);
+            }
         }
         {
             const funkgui::Canvas::Scope s(c, funkgui::tags::none, false);
@@ -2592,7 +2657,7 @@ namespace testingplayground::ui
         // The toolbar's status and meter, over the editor.
         {
             const funkgui::Canvas::Scope s(c, kStatusTag, false);
-            const float statusX = kMargin + 272.0f + 80.0f + 20.0f;
+            const float statusX = kMargin + 360.0f + 88.0f + 20.0f;
             const float textTop = c.capCentreTop(kToolbarY + kButtonH * 0.5f, kStatusStyle);
             const float meterW = c.textWidth(meter_.c_str(), kStatusStyle);
             const funkgui::Col statusInk = !lastOk_ && !compiling_ ? th.signal : (edited_ ? th.ink70 : th.ink52);
@@ -2662,6 +2727,8 @@ namespace testingplayground::ui
         char line[256] = {};
         if (keyOpen_)
             std::snprintf(line, sizeof line, "KEY   CMD-V PASTES IT   RETURN SAVES IT   ESCAPE CANCELS");
+        else if (presets_.isOpen())
+            std::snprintf(line, sizeof line, "PRESETS   UP AND DOWN CHOOSE   RETURN SAVES A NAME TYPED, ELSE LOADS   ESCAPE CLOSES");
         else
         {
             int src = pressed_;
@@ -2683,12 +2750,17 @@ namespace testingplayground::ui
 
         if (keyOpen_)
             drawKeyDialog(c, th);
+        if (presets_.isOpen())
+        {
+            const funkgui::Canvas::Scope s(c, kPresetsTag, false);
+            presets_.draw(c, th, width_, height_, pointer_, hasPointer_);
+        }
     }
 
     // ---- input --------------------------------------------------------------------------------------------------------
     int Panel::itemAt(funkgui::Point p) const
     {
-        if (keyOpen_)
+        if (keyOpen_ || presets_.isOpen())
             return -1;                                   // the dialog covers the panel
         for (std::size_t i = 0; i < items_.size(); ++i)
             if (items_[i]->shown() && items_[i]->contains(p))
@@ -2734,6 +2806,13 @@ namespace testingplayground::ui
             keyDialogPointerDown(pointer_);
             return;
         }
+        if (presets_.isOpen())
+        {
+            pressed_ = -1;
+            presets_.pointerDown(pointer_, width_, height_);
+            afterPresets(true);
+            return;
+        }
         pressed_ = itemAt(pointer_);
         if (pressed_ >= 0 && items_[static_cast<std::size_t>(pressed_)]->focusable())
             setFocus(pressed_);
@@ -2769,6 +2848,12 @@ namespace testingplayground::ui
     {
         if (keyOpen_)
             return;
+        if (presets_.isOpen())
+        {
+            presets_.doubleClick({ e.x, e.y }, width_, height_);
+            afterPresets(true);
+            return;
+        }
         const int i = itemAt({ e.x, e.y });
         if (i >= 0 && gestures_)
         {
@@ -2781,6 +2866,11 @@ namespace testingplayground::ui
     bool Panel::wheel(const funkgui::WheelEvent& e)
     {
         dirty_ = true;
+        if (presets_.isOpen())
+        {
+            presets_.wheel(e, width_, height_);
+            return true;
+        }
         const int i = itemAt({ e.x, e.y });
         if (i < 0 || !gestures_ || host_ == nullptr)
             return false;
@@ -2811,6 +2901,12 @@ namespace testingplayground::ui
         dirty_ = true;
         if (keyOpen_)
             return keyDialogKey(e);
+        if (presets_.isOpen())
+        {
+            presets_.key(e, host_, width_, height_);
+            afterPresets(true);
+            return true;
+        }
         // RUN, from anywhere in the panel.
         if (e.key == funkgui::Key::enter && (e.mods.cmd || e.mods.ctrl))
         {
@@ -2859,6 +2955,8 @@ namespace testingplayground::ui
                              || (chat_.hasKey && d.remove.contains(pointer_));
             return button ? funkgui::Cursor::pointingHand : funkgui::Cursor::normal;
         }
+        if (presets_.isOpen())
+            return presets_.cursor(pointer_, width_, height_);
         const int i = pressed_ >= 0 ? pressed_ : (hasPointer_ ? itemAt(pointer_) : -1);
         return i >= 0 ? items_[static_cast<std::size_t>(i)]->cursorAt(pointer_) : funkgui::Cursor::normal;
     }
@@ -2908,6 +3006,11 @@ namespace testingplayground::ui
                 button(kKeyRemoveId, d.remove, "Remove the stored key");
             return;
         }
+        if (presets_.isOpen())
+        {
+            presets_.accessibility(out, width_, height_);
+            return;
+        }
         for (const auto& item : items_)
             if (item->shown())
                 item->accessibility(out);
@@ -2925,6 +3028,7 @@ namespace testingplayground::ui
                 dials |= 1u << c;
         r ^= dials * 0x27D4EB2Fu;
         r |= (keyOpen_ ? 1u : 0u) << 17;
+        r ^= (presets_.isOpen() ? 0x9E3779B1u : 0u) ^ (presets_.revision() * 0x165667B1u);
         r |= (chat_.hasKey ? 1u : 0u) << 18;
         for (int d = 0; d < kMaxDisplays; ++d)                // bits 19 to 26
             if (items_[static_cast<std::size_t>(itemOfDisplay_[static_cast<std::size_t>(d)])]->shown())
@@ -2946,6 +3050,12 @@ namespace testingplayground::ui
             else if (id == kKeyRemoveId && chat_.hasKey)
                 removeKeyFromDialog();
             dirty_ = true;
+            return;
+        }
+        if (presets_.isOpen())
+        {
+            presets_.a11yAction(id, a, width_, height_);
+            afterPresets(true);
             return;
         }
         for (const auto& item : items_)

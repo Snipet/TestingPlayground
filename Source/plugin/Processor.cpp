@@ -1,6 +1,8 @@
 // Source/plugin/Processor.cpp: see Processor.h.
 #include "plugin/Processor.h"
 
+#include "plugin/PresetStore.h"
+
 #include "Examples.h"
 #include "Product.h"
 
@@ -18,7 +20,7 @@ namespace testingplayground
         // play) and <DRAFT> (the editor's), each of <FILE name=".." text=".."/>s. The version before files saved
         // <PROGRAM source=".." draft=".."/>, one file each.
         const juce::Identifier kProgramTag{ "PROGRAM" }, kRunTag{ "RUN" }, kDraftTag{ "DRAFT" }, kFileTag{ "FILE" };
-        const juce::Identifier kActive{ "active" }, kName{ "name" }, kText{ "text" };
+        const juce::Identifier kActive{ "active" }, kName{ "name" }, kText{ "text" }, kPreset{ "preset" };
         const juce::Identifier kSource{ "source" }, kDraft{ "draft" };   // the version before files
         const juce::Identifier kChatTag{ "CHAT" }, kJson{ "json" };      // the chat with Claude (ChatAgent::saveState)
         const juce::Identifier kEditorTag{ "EDITOR" }, kWidth{ "w" }, kHeight{ "h" };   // the editor's size
@@ -188,6 +190,7 @@ namespace testingplayground
 
         // The first example plays from the start (fminus.examples checks it compiles), its dials at their defaults.
         draft_.files = singleFile(kExamples[0].source);
+        presetFiles_ = draft_.files;                             // nothing to lose yet: no preset load asks first
         const CompileStatus s = compiler_.compileNow(draft_.files);
         jassert(s.ok);
         seen_ = s.revision;
@@ -458,6 +461,25 @@ namespace testingplayground
             seen_ = s.revision;
             const uint64_t run = editorRun_.load();
             apply(s, run != 0 && s.request == run);
+            // A preset's program: its dials, by name, once it compiled (an older request's result waits for its own).
+            if (presetRequest_ != 0 && s.request >= presetRequest_)
+            {
+                if (s.ok && s.request == presetRequest_)
+                    for (const auto& [name, plain] : presetDials_)
+                        for (int c = 0; c < kMaxControls; ++c)
+                        {
+                            const Control& k = s.controls[static_cast<std::size_t>(c)];
+                            if (!k.used || name != k.name)
+                                continue;
+                            juce::RangedAudioParameter& p = *params_[static_cast<std::size_t>(c)];
+                            p.beginChangeGesture();
+                            p.setValueNotifyingHost(normOf(k, plain));
+                            p.endChangeGesture();
+                            break;
+                        }
+                presetDials_.clear();
+                presetRequest_ = 0;
+            }
         }
         // Dials Claude set, after the compile that may have brought them: host gestures, on this thread.
         std::vector<std::pair<int, float>> dials;
@@ -510,6 +532,8 @@ namespace testingplayground
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
             program.setProperty(kActive, draft_.active, nullptr);
+            if (!presetName_.empty())
+                program.setProperty(kPreset, juce::String::fromUTF8(presetName_.c_str()), nullptr);
             program.appendChild(filesTree(kRunTag, running_), nullptr);
             program.appendChild(filesTree(kDraftTag, draft_.files), nullptr);
         }
@@ -568,6 +592,8 @@ namespace testingplayground
         }
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
+            presetName_ = presetstore::tidyName(program.getProperty(kPreset).toString().toStdString());
+            presetFiles_ = draft.files;                          // the session's files are its preset's, as saved
             draft_ = std::move(draft);
             ++draftRevision_;
         }
@@ -632,6 +658,98 @@ namespace testingplayground
 
     float Processor::load() const { return engine_.load(); }
     uint32_t Processor::alerts() const { return alerts_.load(); }
+
+    // ---- presets ---------------------------------------------------------------------------------------------------------
+    std::vector<PresetEntry> Processor::presets() const
+    {
+        std::vector<PresetEntry> out;
+        for (const presetstore::Entry& e : presetstore::list())
+            out.push_back({ e.name, juce::Time(e.modifiedMs).formatted("%Y-%m-%d %H:%M").toStdString() });
+        return out;
+    }
+
+    std::string Processor::presetFolder() const
+    {
+        const juce::String path = presetstore::directory().getFullPathName();
+        const juce::String home = juce::File::getSpecialLocation(juce::File::userHomeDirectory).getFullPathName();
+        return (path.startsWith(home + "/") ? "~" + path.substring(home.length()) : path).toStdString();
+    }
+
+    bool Processor::savePreset(const std::string& name, std::string& why)
+    {
+        presetstore::Preset p;
+        p.name = presetstore::tidyName(name);
+        Controls cs;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            p.files = draft_.files;
+            p.active = draft_.active;
+            cs = controls_;
+        }
+        for (int c = 0; c < kMaxControls; ++c)
+            if (const Control& k = cs[static_cast<std::size_t>(c)]; k.used)
+            {
+                const float norm = raw_[static_cast<std::size_t>(c)]->load();
+                p.dials.push_back({ k.name, std::isfinite(norm) ? plainOf(k, norm) : k.def });
+            }
+        if (!presetstore::save(p, &why))
+            return false;
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        presetName_ = p.name;
+        presetFiles_ = p.files;
+        return true;
+    }
+
+    bool Processor::loadPreset(const std::string& name, std::string& why)
+    {
+        std::optional<presetstore::Preset> p = presetstore::load(name, &why);
+        if (!p)
+            return false;
+        Draft d;
+        d.files = tidyFiles(std::move(p->files));
+        if (d.files.empty())
+        {
+            why = "\"" + p->name + "\" has no program";
+            return false;
+        }
+        d.active = std::clamp(p->active, 0, static_cast<int>(d.files.size()) - 1);
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            draft_ = d;
+            ++draftRevision_;                                    // the editor shows the preset's files
+            presetName_ = p->name;
+            presetFiles_ = d.files;
+        }
+        presetDials_.clear();
+        for (const presetstore::Dial& dial : p->dials)
+            presetDials_.emplace_back(dial.name, dial.value);
+        const uint64_t id = compiler_.request(d.files);
+        presetRequest_ = id;
+        editorRun_.store(id);
+        return true;
+    }
+
+    bool Processor::deletePreset(const std::string& name, std::string& why)
+    {
+        if (!presetstore::remove(name, &why))
+            return false;
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        if (juce::String(presetName_).equalsIgnoreCase(juce::String(name)))
+            presetName_.clear();
+        return true;
+    }
+
+    std::string Processor::presetName() const
+    {
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        return presetName_;
+    }
+
+    bool Processor::presetEdited() const
+    {
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        return draft_.files != presetFiles_;
+    }
 
     // ---- ChatHost (the agent's thread) -----------------------------------------------------------------------------------
     Draft Processor::chatDraft() const

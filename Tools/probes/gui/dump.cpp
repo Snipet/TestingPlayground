@@ -14,6 +14,7 @@
 //   gui.dump.example.png the program Claude's instructions build from the library (ChatAgent::promptExample)
 //   gui.dump.displays.png a program with every display and every dial style, audio flowing; .displays.paper.png
 //   gui.dump.random.png  a program RANDOM made, running
+//   gui.dump.presets.png the preset browser, three presets saved, one chosen
 // and checks:
 //   FRAME     the frame settles, every glyph is in the font, the editor shows the processor's draft (the first
 //             example), and the dials are the program's parameters: one for each, the rest not shown
@@ -66,11 +67,17 @@
 //             library's), the program shown and run with no note; Cmd-Z gives the text back in one step; the RANDOM
 //             button makes another, which runs with no note; with twelve tabs of other files, a notice in the status
 //             and the text untouched
+//   PRESETS   (a folder of the probe's own) the PRESETS button opens the browser, the program's title in its field; a
+//             name typed and Return save the program and its dials: the browser closes, the status says so, the
+//             header names it; an edit makes the header say EDITED; opened again, the preset is listed and chosen, and
+//             Load first asks (the files have changes no preset holds), then loads: the text back, EDITED gone; Save
+//             under a name a preset has asks, then replaces; Delete asks, then deletes; Escape closes
 //   KEYS      Escape leaves the editor, after which Tab moves the focus ring (and no key reaches the text)
 #include "Probe.h"
 
 #include "editor/DisplayItem.h"
 #include "editor/Panel.h"
+#include "plugin/PresetStore.h"
 #include "fminus/Random.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
@@ -255,6 +262,15 @@ namespace
         P.eq(key + ".evenly_spaced", even ? 1 : 0, 1);
         P.eq(key + ".none_overlap", apart ? 1 : 0, 1);
         P.eq(key + ".in_left_column", inside ? 1 : 0, 1);
+    }
+
+    // Types `text` (no commas) as the keys it takes.
+    void typeText(funkgui::HeadlessHost& host, const std::string& text)
+    {
+        std::string spec;
+        for (const char ch : text)
+            spec += (spec.empty() ? "" : ",") + (ch == ' ' ? std::string("space") : std::string(1, ch));
+        host.keys(spec.c_str());
     }
 
     // Lets a run finish: the compiler, the processor's poll, the panel's next frames.
@@ -1049,6 +1065,106 @@ PROBE(gui, dump)
         host.keys("cmd+return");
         settleRun(processor, host);
         P.eq("random.back", panel.fileCount() == 1 && port.status().ok ? 1 : 0, 1);
+    }
+
+    // PRESETS
+    {
+        const juce::File folder = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                      .getChildFile("gui-presets-" + juce::String(juce::Time::currentTimeMillis()));
+        folder.deleteRecursively();
+        tp::presetstore::setDirectoryForTests(folder);
+        const std::string program = editor.text();
+        const float W = static_cast<float>(tp::ui::kDefaultWidth), H = static_cast<float>(tp::ui::kDefaultHeight);
+        tp::ui::PresetBrowser& browser = panel.presetBrowser();
+        const auto click = [&](const funkgui::Rect& r) {
+            host.click(r.centreX(), r.centreY());
+            host.settle();
+        };
+        const funkgui::Point open = panel.centreOfPresets();
+        host.click(open.x, open.y);
+        host.settle();
+        P.eq("presets.opens", browser.isOpen() ? 1 : 0, 1);
+        const std::string title = program.substr(3, program.find(':') - 3);   // "// <Title>: ..."
+        P.eq("presets.title_in_field", browser.name() == title ? 1 : 0, 1);
+        P.eq("presets.empty_list", browser.entries().empty() ? 1 : 0, 1);
+        host.keys("cmd+a");
+        typeText(host, "My Patch");
+        host.keys("return");
+        host.tick(1);
+        P.eq("presets.saved_closes", !browser.isOpen() && tp::presetstore::exists("My Patch") ? 1 : 0, 1);
+        P.eq("presets.status_says", panel.statusText().find("PRESET SAVED: MY PATCH") != std::string::npos ? 1 : 0, 1);
+        P.eq("presets.header_names_it", panel.presetText() == "PRESET  MY PATCH" ? 1 : 0, 1);
+        // An edit: the header says so.
+        host.click(editor.bounds().x + 200.0f, editor.bounds().y + 40.0f);
+        host.keys("end");
+        typeText(host, " ");
+        host.tick(2);
+        P.eq("presets.header_edited", panel.presetText() == "PRESET  MY PATCH  EDITED" ? 1 : 0, 1);
+        // Two more, for the list.
+        for (const char* name : { "Another One", "Zebra Pad" })
+        {
+            host.click(open.x, open.y);
+            host.settle();
+            host.keys("cmd+a");
+            typeText(host, name);
+            host.keys("return");
+            host.tick(1);
+        }
+        P.eq("presets.three_saved", static_cast<int64_t>(tp::presetstore::list().size()), 3);
+        // Load "My Patch" over an edit: asked first, then loaded.
+        editor.selectAll();
+        editor.insert("// an edit no preset holds\n" + program);
+        host.tick(2);
+        host.click(open.x, open.y);
+        host.settle();
+        P.eq("presets.listed_by_name", browser.entries().size() == 3 && browser.entries()[0].name == "Another One"
+                                           && browser.entries()[2].name == "Zebra Pad" ? 1 : 0, 1);
+        P.eq("presets.current_chosen", browser.chosen() == 2 ? 1 : 0, 1);         // Zebra Pad, saved last
+        const funkgui::Point row1 = browser.centreOfRow(1, W, H);
+        host.click(row1.x, row1.y);
+        host.settle();
+        P.eq("presets.row_chosen", browser.chosen() == 1 && browser.name() == "My Patch" ? 1 : 0, 1);
+        writePng(P, host, "gui.dump.presets.png", "presets");
+        click(browser.places(W, H).load);
+        P.eq("presets.load_asks", browser.isOpen() && browser.why().find("Load anyway") != std::string::npos ? 1 : 0, 1);
+        click(browser.places(W, H).load);
+        processor.settle();
+        host.tick(2);
+        host.settle();
+        P.eq("presets.loaded", !browser.isOpen() && panel.editor().text() == program ? 1 : 0, 1);   // saved before the edit
+        P.eq("presets.loaded_runs", port.status().ok ? 1 : 0, 1);
+        P.eq("presets.header_after_load", panel.presetText() == "PRESET  MY PATCH" ? 1 : 0, 1);
+        // Save under a name taken: asked, then replaced.
+        host.click(open.x, open.y);
+        host.settle();
+        host.keys("cmd+a");
+        typeText(host, "zebra pad");
+        click(browser.places(W, H).save);
+        P.eq("presets.save_asks", browser.isOpen() && browser.why().find("Replace") != std::string::npos ? 1 : 0, 1);
+        click(browser.places(W, H).save);
+        P.eq("presets.replaced", !browser.isOpen() && tp::presetstore::exists("zebra pad")
+                                     && tp::presetstore::list().size() == 3 ? 1 : 0, 1);
+        // Delete: asked, then deleted; Escape closes.
+        host.click(open.x, open.y);
+        host.settle();
+        const funkgui::Point row0 = browser.centreOfRow(0, W, H);
+        host.click(row0.x, row0.y);
+        host.settle();
+        click(browser.places(W, H).remove);
+        P.eq("presets.delete_asks", browser.isOpen() && tp::presetstore::exists("Another One") ? 1 : 0, 1);
+        click(browser.places(W, H).remove);
+        P.eq("presets.deleted", browser.isOpen() && !tp::presetstore::exists("Another One") && browser.entries().size() == 2
+                                    ? 1 : 0, 1);
+        host.keys("escape");
+        host.settle();
+        P.eq("presets.escape_closes", browser.isOpen() ? 0 : 1, 1);
+        // Back: the program as it was.
+        editor.selectAll();
+        editor.insert(program);
+        host.keys("cmd+return");
+        settleRun(processor, host);
+        tp::presetstore::setDirectoryForTests({});
+        folder.deleteRecursively();
     }
 
     // KEYS

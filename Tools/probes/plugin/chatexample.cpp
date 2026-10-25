@@ -3,7 +3,7 @@
 // plugin.chatexample: what the chat's system prompt teaches, and Claude's measure_output tool (dsp/Measure.h), at
 // 48 kHz:
 //   PROMPT   the system prompt has the large-program section, the tools' workflow (measure_output, add_library_file),
-//            what the editor's RANDOM button makes,
+//            what the editor's RANDOM button makes and what PRESETS keeps,
 //            THE PANEL with its #pragma lines, THE LIBRARY with every library file's header word for word, and the
 //            program built from the library, word for word; the program's other files are the library's, as it has them
 //   EXAMPLE  that program (ChatAgent::promptExample, this plugin's kind) compiles with no message (its panel lines
@@ -81,6 +81,7 @@ PROBE(plugin, chatexample)
     P.eq("prompt.measure_workflow", has(prompt, "measure_output") ? 1 : 0, 1);
     P.eq("prompt.library_tool", has(prompt, "add_library_file") ? 1 : 0, 1);
     P.eq("prompt.random_button", has(prompt, "RANDOM button") ? 1 : 0, 1);
+    P.eq("prompt.presets_button", has(prompt, "PRESETS button") ? 1 : 0, 1);
     P.eq("prompt.fft", has(prompt, "fft_create(n)") && has(prompt, "fft_forward(plan, in, bins)")
                            && has(prompt, "fft_inverse(plan, bins, out)") ? 1 : 0, 1);
     P.eq("prompt.shared", has(prompt, "module Shared") && has(prompt, "Shared*") ? 1 : 0, 1);
