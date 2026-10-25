@@ -21,9 +21,9 @@ The synth playground (`../TestingPlaygroundSynth`) has the same code with the in
 | `cmake/Deps.cmake` | the pins: JUCE, bgfx, FunkGui (v0.18.0: the TextEditor, resizable Panels), FMinus (a commit) | move a pin's tag, commit and version together |
 | `Source/fsdsp/core/**` | FSynth's DSP core, vendored (`SEED.tsv`) | do not edit casually: `scripts/sync-dsp-core.sh` refuses to overwrite edits |
 | `Source/fminus/**` | `Patch` (a program compiled for the plugin: the contract, the appended calls, the instances); `examples/*.fm`, the EXAMPLES (the first the default program; first line `// <Title>: ...`) | JUCE-free; FMinus only through `fminus/FMinus.h` (C++17, no LLVM), never its internals or LLVM's headers (`lint.layers`) |
-| `Source/dsp/**` | `Engine` (programs swapped by crossfade, the dials as glided streams, voices for an instrument, the output guard), `Compiler` (compiles off the audio thread, offers to the Engine, collects), `Controls.h` (slot mapping), `Events.h` | JUCE-free C++20 |
+| `Source/dsp/**` | `Engine` (programs swapped by crossfade, the dials as glided streams, voices for an instrument, the output guard), `Compiler` (compiles off the audio thread, offers to the Engine, collects), `Controls.h` (slot mapping), `Events.h`, `Measure` (a program rendered offline in an Engine of its own and measured in words: the chat's measure_output) | JUCE-free C++20 |
 | `Source/plugin/**` | the JUCE `AudioProcessor`: P1 to P8 (`ControlParameter`: the program's names and texts), one FunkGui port each, the program's files and the draft in the session, the bypass, the compiler's outcome polled on the message thread; `EditorPort.h`; the chat with Claude: `ChatAgent` (the conversation, the turn on its own thread, Claude's tools through `ChatHost`), `ChatPrompt.cpp` (the system prompt), `ClaudeApi` (the Messages API over HTTPS), `ChatStore` (the key, encrypted), `ChatPort.h` | reads parameters once per block, calls the Engine; copes with what a host may do (below); the chat's rules below |
-| `Source/editor/**` | the FunkGui `Panel`, resizable (`layout()` places every item for the size; `kMinWidth` x `kMinHeight`): toolbar (RUN, EXAMPLES, status, load), the files' tabs, a `funkgui::TextEditor` each with FMinus highlighting and error marks, the problems list, the dials; the chat's column (`ChatItems`: the conversation, the message box) and the key dialog; `Items.h`; `Theme.h`; `gpu/` the EditorHost factory (the window's size goes to the session) | reaches the processor only through its ports and `EditorPort` (the chat through `EditorPort::chat()`) |
+| `Source/editor/**` | the FunkGui `Panel`, resizable (`layout()` places every item for the size; `kMinWidth` x `kMinHeight`): toolbar (RUN, EXAMPLES, status, load), the files' tabs, a `funkgui::TextEditor` each with FMinus highlighting and error marks, the problems list, the dials; the chat's card (`ChatView`: the conversation, laid out and drawn as a chat app does; `ChatItems`: the message box and the chat's buttons; `ChatStyle.h`: the rounded look, its palette mixed from the theme's tokens) and the key dialog; `Items.h`; `Theme.h`; `gpu/` the EditorHost factory (the window's size goes to the session) | reaches the processor only through its ports and `EditorPort` (the chat through `EditorPort::chat()`) |
 | `Tools/probes/**` | probes on FunkGui's Harness: `fminus/` (the examples, the contract), `dsp/` (the Engine), `plugin/`, `gui/`; `common/Rig.h` runs a program in an Engine | spec rows only, no golden files |
 
 There are no starters here (`scripts/starters/` is the template's): `plugin.py clone` copies this playground (its
@@ -36,8 +36,8 @@ from FunkPluginTemplate.
 - `cmake --workflow --preset dev-verify`: configure, build (Standalone, AU, VST3, probes) and run every test in
   `build-dev`. Done means it exits 0 with no warning from our sources (they build with `-Werror`).
 - `scripts/test.sh`: build and run the probes only (`-R <name>`, `-V` pass through to ctest). The editor rendered
-  headless lands in `build-dev/probe-out/` (`gui.dump*.png`, `gui.chat*.png`, the least size and a large one among
-  them): look at the PNGs after any editor change.
+  headless lands in `build-dev/probe-out/` (`gui.dump*.png`, `gui.chat*.png`: the empty chat, a conversation, the key
+  dialog, PAPER, the least size and a large one): look at the PNGs after any editor change.
 - An example added or changed is checked by `fminus.examples` (compiles with no message, plays, the same bits in
   blocks of 64 and 333). A change to the contract (Patch.h) changes `fminus.contract`, the README's "Writing a
   program", the examples' comments and the placeholder text with it.
@@ -100,8 +100,18 @@ from FunkPluginTemplate.
 - **Threads.** ChatPort calls run on the message thread; a turn runs on the agent's worker, which reaches the plugin
   only through `ChatHost` (the draft under `programMutex_`, RUN through the Compiler, a dial queued for `poll()`). The
   audio thread never sees the chat.
-- **The system prompt** (`ChatPrompt.cpp`) teaches Claude FMinus, the contract and the examples: a change to the
-  contract (Patch.h), the language's rules or the examples changes it too.
+- **Large work.** `max_tokens` is the model's own limit (from /v1/models, at most 128K); server-side compaction (beta
+  `compact-2026-01-12`, trigger 150K input tokens, instructions that keep the design and leave out code) on the
+  models that take it, the compaction block kept and what came before it dropped; a file's text goes in the
+  plugin's state only when Claude has not seen it (`seen_`); a broken stream is retried with what it showed taken
+  back; 80 requests a turn. `plugin.chat` checks each.
+- **measure_output** renders the editor's files offline (`dsp/Measure.h`, a fresh compile in an Engine of its own,
+  never the one that plays) and reports in words; `plugin.chatexample` checks its numbers on programs whose answer is
+  known.
+- **The system prompt** (`ChatPrompt.cpp`) teaches Claude FMinus, the contract, how to build a large program and the
+  examples, and shows a program in several files for this plugin's kind (`ChatAgent::promptExample`), which
+  `plugin.chatexample` compiles and plays: a change to the contract (Patch.h), the language's rules or the examples
+  changes it too, and the example must keep compiling.
 
 ## Recipes
 

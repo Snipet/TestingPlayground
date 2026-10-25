@@ -22,12 +22,15 @@
 //   dials     the running program's parameters, P1 to P8 (a funkgui::Dial each, labelled with the parameter's name;
 //             an unused slot shows nothing): a drag, the wheel or the keys write through the processor's ports, and a
 //             double-click returns to the parameter's fminus::default
-//   chat      at the right: the model (a menu of the models the key can use), NEW (forgets the conversation, asking
-//             first), KEY (the key dialog); the thinking levels the model takes; the conversation (ChatItems.h); what
-//             Claude is doing, and SEND or STOP; the message box (Return sends it, Shift-Return breaks the line)
-//   key       a dialog over the panel for the Anthropic API key: a masked field (Cmd-V pastes), SAVE, CANCEL and, when a
-//             key is stored, REMOVE. It opens from KEY, and when a message is sent before any key is stored (the
-//             message goes once a key is saved)
+//   chat      at the right, a rounded card set apart from the square panel (ChatStyle.h): its header (the title, a new
+//             chat (asking first), the API key), the conversation (ChatView.h: bubbles, light markdown, thinking rows,
+//             cards of what Claude did, code blocks with Copy, an empty chat's suggestions), the message box that grows
+//             with its text (Return sends it, Shift-Return breaks the line) with the model and thinking pills (menus)
+//             and the round send-or-stop button in its bar (ChatItems.h), and the line under it (what Claude is doing,
+//             else the last reply's tokens)
+//   key       a dialog over the panel for the Anthropic API key: a masked field (Cmd-V pastes), Save, Cancel and, when a
+//             key is stored, Remove key. It opens from the header's key, the empty chat's button, and when a message
+//             is sent before any key is stored (the message goes once a key is saved)
 //   footer    the spec line of the control under the hand (or focused, or last touched), and the ZOOM cells
 //
 // Keys go to a text field while it has the caret (the editor: Tab indents there; the chat's message box and its
@@ -78,7 +81,7 @@ namespace testingplayground::ui
 {
     class Item;                                          // one control or view on the panel (Panel.cpp)
     class FilesItem;                                     // the files' tabs and editors (Panel.cpp)
-    class TranscriptItem;                                // the chat's conversation (ChatItems.h)
+    class ChatView;                                      // the chat's conversation (ChatView.h)
     class InputItem;                                     // the chat's message box (ChatItems.h)
 
     // The size (logical px): the default, the least.
@@ -136,12 +139,13 @@ namespace testingplayground::ui
         funkgui::TextEditor& chatInput() noexcept;       // the message box
         const std::string& transcript() const;           // the conversation as shown (or the hint)
         const std::string& chatActivity() const noexcept { return activity_; }
-        funkgui::Point centreOfSend() const;             // SEND or STOP
-        funkgui::Point centreOfModel() const;
+        funkgui::Point centreOfSend() const;             // send, or stop
+        funkgui::Point centreOfModel() const;            // the model's pill (a menu)
+        funkgui::Point centreOfThinking() const;         // the thinking level's pill (a menu)
         funkgui::Point centreOfNewChat() const;
         funkgui::Point centreOfKey() const;
-        std::optional<funkgui::Point> centreOfEffort(int i) const;   // nullopt past the model's levels
-        int effortCount() const;
+        ChatView& chatView();                            // the conversation (its own probe hooks)
+        const ChatView& chatView() const;
         // The key dialog.
         bool keyDialogOpen() const noexcept { return keyOpen_; }
         const std::string& keyDialogWhy() const noexcept { return keyWhy_; }
@@ -191,12 +195,19 @@ namespace testingplayground::ui
 
         // The chat.
         void refreshChat(double nowSec);
+        void reshowChat();                               // the conversation laid out again (a row opened, ...)
         void sendChat();                                 // the message box's text, to Claude
+        void suggest(const std::string& text);           // a suggestion into the message box
         void openModels();
+        void openThinking();
         void newChat();
-        TranscriptItem& transcriptItem();
-        const TranscriptItem& transcriptItem() const;
+        void layoutChat();                               // the chat card's insides
+        void placeChatBar();                             // the message box's bar: the pills, send
+        std::string modelLabel() const;
+        std::string thinkingLabel() const;
+        std::vector<std::string> chatEfforts() const;    // the chosen model's thinking levels
         InputItem& inputItem();
+        const InputItem& inputItem() const;
         funkgui::Point centreOf(int item) const;
 
         // The key dialog.
@@ -219,10 +230,9 @@ namespace testingplayground::ui
         std::vector<int> itemOfSlot_;                    // dial slot -> item index
         int editorItem_ = -1, problemsItem_ = -1, runItem_ = -1, examplesItem_ = -1;
         int themeItem_ = -1, zoomItem_ = -1;
-        int modelItem_ = -1, newChatItem_ = -1, keyItem_ = -1, effortItem_ = -1;
-        int transcriptItem_ = -1, inputItem_ = -1, sendItem_ = -1;
+        int newChatItem_ = -1, keyItem_ = -1, chatViewItem_ = -1, inputItem_ = -1;
+        int modelItem_ = -1, thinkingItem_ = -1, sendItem_ = -1;
         funkgui::CellModel* zoom_ = nullptr;             // the ZOOM cells' model (an item owns it)
-        funkgui::CellModel* effort_ = nullptr;           // the thinking levels' model (an item owns it)
         float width_ = 0.0f, height_ = 0.0f;
         uint32_t layoutRevision_ = 0;                    // bumps with each layout()
         std::string title_, subtitle_, status_, meter_;
@@ -230,15 +240,19 @@ namespace testingplayground::ui
         // The places layout() found, which draw() uses.
         float leftW_ = 0.0f;                             // the left column's width (the editor's)
         float chatX_ = 0.0f, chatW_ = 0.0f;
-        float activityY_ = 0.0f;                         // the chat's activity row
-        float thinkingY_ = 0.0f;                         // the chat's thinking levels' row
+        funkgui::Rect card_;                             // the chat's card
+        float headerY_ = 0.0f;                           // its header row
+        float composerH_ = 0.0f;                         // the message box's height (it follows its text)
+        float usageY_ = 0.0f;                            // the line under the message box
+        std::string barLabels_;                          // the pills' labels when they were placed
 
         // The chat, as refresh() last saw it.
         uint64_t seenChat_ = 0;
         double chatAt_ = -1.0;                           // when it was last read (the host's clock)
         double busySince_ = -1.0;                        // when the turn under way began
         ChatState chat_;
-        std::string activity_;                           // the activity row's text
+        std::string activity_;                           // the line under the message box
+        uint32_t chatA11y_ = 0;                          // bumps when the conversation's items change
         std::string pendingSend_;                        // a message waiting for a key
 
         // The key dialog.

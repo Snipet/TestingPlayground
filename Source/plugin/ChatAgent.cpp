@@ -3,6 +3,8 @@
 
 #include "plugin/ChatStore.h"
 
+#include "dsp/Measure.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -13,11 +15,29 @@ namespace testingplayground
 {
     namespace
     {
-        constexpr int kMaxTokens = 64000;
+        constexpr int kDefaultMaxTokens = 64000;   // a model /v1/models has not described
+        constexpr int kMaxTokensCap = 128000;      // the longest answer asked for: a big file is written in one call
         constexpr int kMaxAttempts = 4;            // a request, retried on an overload, a rate limit or a dropped line
+        constexpr std::size_t kMaxToolOutput = 12000;   // a tool result's characters (a compile's messages)
         constexpr const char* kDefaultModel = "claude-opus-5-5";
         constexpr const char* kDefaultEffort = "medium";
         constexpr const char* kFallbackBeta = "server-side-fallback-2026-07-01";
+
+        // Server-side compaction (the compaction docs): once a request's input reaches the trigger, the API summarizes
+        // the conversation before it and answers from the summary; the summary comes back as a compaction block, which
+        // goes back with the rest of the answer, and the API ignores what came before it.
+        constexpr const char* kCompactBeta = "compact-2026-01-12";
+        constexpr int kCompactTrigger = 150000;   // input tokens (the API's default; 50,000 at least)
+        constexpr const char* kCompactInstructions =
+            "Summarize the conversation so far between a user and Claude, who builds and changes FMinus DSP programs "
+            "inside an audio plugin through tools (read_file, write_file, edit_file, run_program, set_dial, "
+            "measure_output, get_status). The summary replaces that part of the conversation, so keep everything "
+            "needed to carry on: what the user asked for, and their preferences about the sound and the code; what "
+            "was built: each file and what it holds, the signal flow and the modulation routing, what each dial does "
+            "and the values chosen; decisions made and ideas rejected, and why; problems met and how they were "
+            "solved, and measurements that matter; what is unfinished or was promised next; and the user's latest "
+            "request, word for word. Do not copy the programs' code: the plugin sends the current files after this "
+            "summary, and read_file shows any of them. Plain prose and short lists.";
 
         const std::vector<std::string> kAllEfforts{ "low", "medium", "high", "xhigh", "max" };
 
@@ -25,10 +45,10 @@ namespace testingplayground
         // every effort level.
         std::vector<ChatModel> builtInModels()
         {
-            return { { "claude-opus-5-5", "Claude Opus 5.5", kAllEfforts },
-                     { "claude-fable-5-1", "Claude Fable 5.1", kAllEfforts },
-                     { "claude-sonnet-5-5", "Claude Sonnet 5.5", kAllEfforts },
-                     { "claude-haiku-5-5", "Claude Haiku 5.5", kAllEfforts } };
+            return { { "claude-opus-5-5", "Claude Opus 5.5", kAllEfforts, 128000, true },
+                     { "claude-fable-5-1", "Claude Fable 5.1", kAllEfforts, 128000, true },
+                     { "claude-sonnet-5-5", "Claude Sonnet 5.5", kAllEfforts, 128000, true },
+                     { "claude-haiku-5-5", "Claude Haiku 5.5", kAllEfforts, 128000, true } };
         }
 
         // The models that take "fallbacks": "default" (a classifier's refusal retried on another model).
@@ -41,6 +61,60 @@ namespace testingplayground
         std::string str(const juce::var& v, const char* key)
         {
             return v.getProperty(key, "").toString().toStdString();
+        }
+
+        // FNV-1a, 64 bits: how the agent remembers which text of a file Claude has seen.
+        uint64_t hashText(std::string_view t)
+        {
+            uint64_t h = 1469598103934665603ull;
+            for (const char c : t)
+            {
+                h ^= static_cast<uint8_t>(c);
+                h *= 1099511628211ull;
+            }
+            return h;
+        }
+
+        // The string value of `key` in a JSON object that may still be arriving: "" until its closing quote has.
+        std::string partialString(const std::string& json, const char* key)
+        {
+            const std::string k = std::string("\"") + key + "\"";
+            std::size_t p = json.find(k);
+            if (p == std::string::npos)
+                return {};
+            p = json.find(':', p + k.size());
+            if (p == std::string::npos)
+                return {};
+            p = json.find('"', p + 1);
+            if (p == std::string::npos)
+                return {};
+            std::string out;
+            for (std::size_t i = p + 1; i < json.size(); ++i)
+            {
+                if (json[i] == '\\')
+                {
+                    if (++i >= json.size())
+                        return {};
+                    out += json[i];
+                }
+                else if (json[i] == '"')
+                    return out;
+                else
+                    out += json[i];
+            }
+            return {};
+        }
+
+        // `t` cut to kMaxToolOutput characters at a line's end, saying how much was left out.
+        std::string capped(const std::string& t)
+        {
+            if (t.size() <= kMaxToolOutput)
+                return t;
+            std::size_t cut = t.rfind('\n', kMaxToolOutput);
+            if (cut == std::string::npos || cut < kMaxToolOutput / 2)
+                cut = kMaxToolOutput;
+            const int lines = static_cast<int>(std::count(t.begin() + static_cast<std::ptrdiff_t>(cut), t.end(), '\n'));
+            return t.substr(0, cut) + "\n(" + std::to_string(lines) + " more lines left out: fix these first)\n";
         }
 
         juce::var text(const std::string& t)
@@ -303,7 +377,7 @@ namespace testingplayground
                 messages_.add(claude::object({ { "role", "user" }, { "content", content } }));
             }
             busy_ = true;
-            activity_ = "THINKING";
+            activity_ = "Thinking";
             cancel_.store(false);
             touch();
         }
@@ -316,7 +390,7 @@ namespace testingplayground
         const std::lock_guard<std::mutex> lock(mutex_);
         if (busy_)
         {
-            activity_ = "STOPPING";
+            activity_ = "Stopping";
             touch();
         }
     }
@@ -328,7 +402,8 @@ namespace testingplayground
         const std::lock_guard<std::mutex> lock(mutex_);
         messages_.clear();
         entries_.clear();
-        lastContext_.clear();
+        seen_.clear();
+        lastSignature_ = 0;                        // the next message sends the files again
         usage_.clear();
         activity_.clear();
         busy_ = false;
@@ -342,10 +417,7 @@ namespace testingplayground
         juce::Array<juce::var> entries;
         for (const ChatEntry& e : entries_)
             entries.add(claude::object({ { "k", kindName(e.kind) }, { "t", juce::String::fromUTF8(e.text.c_str()) } }));
-        return claude::toJson(claude::object({ { "version", 1 },
-                                               { "messages", messages_ },
-                                               { "entries", entries },
-                                               { "context", juce::String::fromUTF8(lastContext_.c_str()) } }));
+        return claude::toJson(claude::object({ { "version", 1 }, { "messages", messages_ }, { "entries", entries } }));
     }
 
     void ChatAgent::loadState(const std::string& json)
@@ -356,7 +428,8 @@ namespace testingplayground
         const std::lock_guard<std::mutex> lock(mutex_);
         messages_.clear();
         entries_.clear();
-        lastContext_.clear();
+        seen_.clear();
+        lastSignature_ = 0;                        // the next message sends the files again
         busy_ = false;
         activity_.clear();
         const juce::var messages = v.getProperty("messages", juce::var()), entries = v.getProperty("entries", juce::var());
@@ -365,12 +438,29 @@ namespace testingplayground
         if (const auto* arr = entries.getArray())
             for (const auto& e : *arr)
                 entries_.push_back({ kindOf(str(e, "k")), str(e, "t") });
-        lastContext_ = str(v, "context");
         touch();
     }
 
     // ---- bookkeeping (mutex held) -------------------------------------------------------------------------------------
     void ChatAgent::touch() { ++revision_; }
+
+    void ChatAgent::appendAnswer(const juce::Array<juce::var>& content)
+    {
+        messages_.add(claude::object({ { "role", "assistant" }, { "content", content } }));
+        const bool compacted = std::any_of(content.begin(), content.end(),
+                                           [](const juce::var& b) { return str(b, "type") == "compaction"; });
+        if (!compacted)
+            return;
+        // The API ignores everything before a compaction block: keep from the user message before the answer that
+        // carries it (so the history still starts with the user), and forget which files Claude has seen, since the
+        // summary leaves their text out (the next message sends them again).
+        if (messages_.size() > 2)
+            messages_.removeRange(0, messages_.size() - 2);
+        seen_.clear();
+        lastSignature_ = 0;
+    }
+
+    void ChatAgent::markSeen(const std::string& name, const std::string& text) { seen_[name] = hashText(text); }
 
     void ChatAgent::addEntry(ChatEntry::Kind kind, std::string t)
     {
@@ -419,32 +509,53 @@ namespace testingplayground
     }
 
     // ---- the plugin's state, for Claude -------------------------------------------------------------------------------
+    // Sent with a user message when anything in it changed since Claude last got one. A file whose text Claude has
+    // already seen (in an earlier block, through read_file, or as it wrote it) goes as one line instead of its text, so
+    // a long program is not sent again with every message.
     std::string ChatAgent::contextBlock()
     {
         const Draft d = host_.chatDraft();
         const Sources running = host_.chatRunning();
         const CompileStatus status = host_.chatLastStatus();
-        std::string c = "<plugin_state>\nThe plugin's files, a tab each in the editor (the program is the first; the "
-                        "editor shows ";
-        c += d.files.empty() ? std::string(kProgramName)
-                             : d.files[static_cast<std::size_t>(std::clamp(d.active, 0, static_cast<int>(d.files.size()) - 1))].name;
-        c += "):\n";
+        const std::string shown =
+            d.files.empty() ? std::string(kProgramName)
+                            : d.files[static_cast<std::size_t>(std::clamp(d.active, 0, static_cast<int>(d.files.size()) - 1))].name;
+        std::string tail = "What plays: "
+                         + std::string(running == d.files ? "these files" : "an earlier version of the files (they "
+                                                                            "were edited since the last run)")
+                         + "\nLast compile: " + compileLine(status) + "Dials of the program that plays:\n"
+                         + dialLines(host_.chatDials(), host_);
+        const uint32_t a = host_.chatAlerts();
+        tail += "Output alerts: ";
+        tail += a == 0 ? "none" : ((a & 1u) != 0 ? ((a & 2u) != 0 ? "NaN or inf replaced, clipped" : "NaN or inf replaced")
+                                                 : "clipped (beyond +-4)");
+        uint64_t signature = hashText(tail + '\x1f' + shown);
         for (const SourceFile& f : d.files)
+            signature = (signature ^ hashText(f.name + '\x1f' + f.text)) * 1099511628211ull;
+
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (signature == lastSignature_)
+            return {};
+        lastSignature_ = signature;
+        std::string c = "<plugin_state>\nThe plugin's files, a tab each in the editor (the program is the first; the "
+                        "editor shows " + shown + "):\n";
+        bool unchanged = false;
+        for (const SourceFile& f : d.files)
+        {
+            const auto it = seen_.find(f.name);
+            if (it != seen_.end() && it->second == hashText(f.text))
+            {
+                c += "<file name=\"" + f.name + "\" lines=\"" + std::to_string(lineCount(f.text)) + "\" unchanged=\"true\"/>\n";
+                unchanged = true;
+                continue;
+            }
             c += "<file name=\"" + f.name + "\">\n" + f.text + (f.text.empty() || f.text.back() == '\n' ? "" : "\n")
                + "</file>\n";
-        c += "What plays: " + std::string(running == d.files ? "these files" : "an earlier version of the files (they "
-                                                                               "were edited since the last run)")
-           + "\nLast compile: " + compileLine(status) + "Dials of the program that plays:\n"
-           + dialLines(host_.chatDials(), host_);
-        const uint32_t a = host_.chatAlerts();
-        c += "Output alerts: ";
-        c += a == 0 ? "none" : ((a & 1u) != 0 ? ((a & 2u) != 0 ? "NaN or inf replaced, clipped" : "NaN or inf replaced")
-                                              : "clipped (beyond +-4)");
-        c += "\n</plugin_state>";
-        const std::lock_guard<std::mutex> lock(mutex_);
-        if (c == lastContext_)
-            return {};
-        lastContext_ = c;
+            markSeen(f.name, f.text);
+        }
+        if (unchanged)
+            c += "(A file marked unchanged is as you last saw it in this conversation; read_file shows it again.)\n";
+        c += tail + "\n</plugin_state>";
         return c;
     }
 
@@ -495,6 +606,39 @@ namespace testingplayground
                        claude::object({ { "name", prop("string", "The parameter's name, as declared") },
                                         { "value", prop("number", "The value, inside the parameter's range") } }),
                        { "name", "value" }));
+        {
+            juce::var notes = claude::object({ { "type", "array" },
+                                               { "items", claude::object({ { "type", "integer" } }) },
+                                               { "description", "An instrument's MIDI notes, played together (69 is A, "
+                                                                "440 Hz). Default: one note, 48 (C3). An effect "
+                                                                "ignores it." } });
+            juce::var dials = claude::object({ { "type", "object" },
+                                               { "additionalProperties", claude::object({ { "type", "number" } }) },
+                                               { "description", "Dial values to render with, by parameter name, in "
+                                                                "the parameter's own units. Dials not named keep the "
+                                                                "values they have now." } });
+            tools.add(tool("measure_output",
+                           "Render the program in the editor offline and measure what comes out. An instrument: the "
+                           "notes held and released, reporting the held level (peak and RMS in dBFS, DC, the stereo "
+                           "correlation), the strongest partials and the spectral centroid, the largest step between "
+                           "two samples (clicks), when the release falls 60 dB and whether the voice ends, and a "
+                           "chord's summed level. An effect: a sine, noise, an impulse and silence through it, "
+                           "reporting the gain, the partials it adds, the brightness in and out, the impulse "
+                           "response's delay and decay, and any sound it makes from silence. Both: the output "
+                           "guard's alerts and the CPU cost. You cannot hear the plugin: measure every new sound once "
+                           "it compiles, and measure when debugging what the user hears. It compiles the files as "
+                           "they are now (they need not be running) and changes nothing that plays.",
+                           claude::object({ { "notes", notes },
+                                            { "velocity", prop("number", "An instrument's velocity, 0 to 1 (default 0.8)") },
+                                            { "hold_seconds", prop("number", "How long the notes are held (an effect: how "
+                                                                             "long the sine and the noise play); default "
+                                                                             "1, at most 10") },
+                                            { "tail_seconds", prop("number", "How long to go on after the release (an "
+                                                                             "effect: after the impulse); default 1.5, at "
+                                                                             "most 10") },
+                                            { "dials", dials } }),
+                           {}));
+        }
         tools.add(tool("get_status",
                        "Read the plugin's state now: the files, whether the program that plays matches them, the last "
                        "compile, the dials and their values, the CPU load and the output guard's alerts (NaN or inf "
@@ -510,8 +654,11 @@ namespace testingplayground
         system.add(claude::object({ { "type", "text" },
                                     { "text", juce::String::fromUTF8(systemPrompt().c_str()) },
                                     { "cache_control", claude::object({ { "type", "ephemeral" }, { "ttl", "1h" } }) } }));
+        const auto model = std::find_if(models_.begin(), models_.end(),
+                                        [&](const ChatModel& m) { return m.id == turnModel_; });
+        const int maxTokens = std::min(kMaxTokensCap, model != models_.end() ? model->maxTokens : kDefaultMaxTokens);
         juce::var body = claude::object({ { "model", juce::String(turnModel_) },
-                                          { "max_tokens", kMaxTokens },
+                                          { "max_tokens", maxTokens },
                                           { "stream", true },
                                           { "system", system },
                                           { "tools", toolDefinitions() },
@@ -519,8 +666,6 @@ namespace testingplayground
                                           { "thinking", claude::object({ { "type", "adaptive" },
                                                                          { "display", "summarized" } }) } });
         auto* o = body.getDynamicObject();
-        const auto model = std::find_if(models_.begin(), models_.end(),
-                                        [&](const ChatModel& m) { return m.id == turnModel_; });
         if (model != models_.end()
             && std::find(model->efforts.begin(), model->efforts.end(), turnEffort_) != model->efforts.end())
             o->setProperty("output_config", claude::object({ { "effort", juce::String(turnEffort_) } }));
@@ -530,6 +675,16 @@ namespace testingplayground
         {
             o->setProperty("fallbacks", "default");
             beta = kFallbackBeta;
+        }
+        if (model != models_.end() && model->compaction)
+        {
+            juce::Array<juce::var> edits;
+            edits.add(claude::object({ { "type", "compact_20260112" },
+                                       { "trigger", claude::object({ { "type", "input_tokens" },
+                                                                     { "value", kCompactTrigger } }) },
+                                       { "instructions", kCompactInstructions } }));
+            o->setProperty("context_management", claude::object({ { "edits", edits } }));
+            beta += std::string(beta.empty() ? "" : ",") + kCompactBeta;
         }
         return body;
     }
@@ -610,6 +765,12 @@ namespace testingplayground
                 if (!adaptive)
                     continue;                      // the requests use adaptive thinking
                 ChatModel cm{ str(m, "id"), str(m, "display_name"), {} };
+                cm.maxTokens = static_cast<int>(m.getProperty("max_tokens", kDefaultMaxTokens));
+                if (cm.maxTokens <= 0)
+                    cm.maxTokens = kDefaultMaxTokens;
+                cm.compaction = static_cast<bool>(caps.getProperty("context_management", juce::var())
+                                                      .getProperty("compact_20260112", juce::var())
+                                                      .getProperty("supported", false));
                 const juce::var effort = caps.getProperty("effort", juce::var());
                 for (const std::string& e : kAllEfforts)
                     if (static_cast<bool>(effort.getProperty(juce::String(e), juce::var()).getProperty("supported", false)))
@@ -664,41 +825,77 @@ namespace testingplayground
             std::string error;
             for (int attempt = 0; attempt < kMaxAttempts && !cancel_.load(); ++attempt)
             {
-                setActivity("THINKING");
+                setActivity("Thinking");
+                std::size_t shown = 0;                     // the entries before this attempt's
+                {
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    shown = entries_.size();
+                }
+                auto tool = std::make_shared<std::string>();   // the tool call streaming in
                 claude::MessageBuilder::Callbacks cb;
                 cb.text = [this](std::string_view t) {
                     {
                         const std::lock_guard<std::mutex> lock(mutex_);
                         appendToLast(ChatEntry::Kind::assistant, t);
                     }
-                    setActivity("WRITING");
+                    setActivity("Writing");
                 };
                 cb.thinking = [this](std::string_view t) {
                     const std::lock_guard<std::mutex> lock(mutex_);
                     appendToLast(ChatEntry::Kind::thinking, t);
                 };
-                cb.toolStart = [this](const std::string& name) {
-                    const std::string what = name == "write_file" || name == "edit_file" ? "WRITING CODE"
-                                           : name == "run_program"                     ? "ABOUT TO RUN"
-                                                                                       : "USING " + name;
-                    setActivity(what);
+                cb.toolStart = [this, tool](const std::string& name) {
+                    *tool = name;
+                    setActivity(name == "write_file" || name == "edit_file" ? std::string("Writing code")
+                                : name == "run_program"                     ? std::string("About to run the program")
+                                : name == "measure_output"                  ? std::string("About to measure the sound")
+                                                                            : "Using " + name);
+                };
+                cb.toolInput = [this, tool](const std::string& json) {
+                    // A big file takes a while to arrive: its name and size so far.
+                    if (*tool != "write_file" && *tool != "edit_file")
+                        return;
+                    const std::string file = partialString(json, "name");
+                    const std::string kb = std::to_string((json.size() + 1023) / 1024) + " KB";
+                    setActivity((*tool == "write_file" ? "Writing " : "Editing ") + (file.empty() ? std::string("code") : file)
+                                + " (" + kb + ")");
                 };
                 cb.fallback = [this](const std::string& from, const std::string& to) {
                     const std::lock_guard<std::mutex> lock(mutex_);
                     addEntry(ChatEntry::Kind::note, from + " declined this request; " + to + " carried on.");
                 };
+                cb.compaction = [this](std::size_t) {
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    addEntry(ChatEntry::Kind::note, "The conversation got long, so its earlier part was summarized to "
+                                                    "make room; Claude carries on from the summary.");
+                };
                 builder = std::make_unique<claude::MessageBuilder>(std::move(cb));
                 int status = 0, retryAfter = -1;
                 ok = streamOnce(body, beta, *builder, status, error, retryAfter);
-                if (ok || cancel_.load())
+                if (cancel_.load())
                     break;
-                const bool retryable = status == 0 || status == 429 || status == 529 || status >= 500;
+                // A stream that broke off (the connection dropped, or the server was overloaded mid-answer) is asked
+                // again, as a failed request is: nothing of it has gone into the history yet.
+                const std::string& et = builder->errorType();
+                const bool brokeOff = ok && !builder->finished()
+                                   && (builder->error().empty() || et == "overloaded_error" || et == "api_error");
+                if (ok && !brokeOff)
+                    break;
+                const bool retryable = brokeOff || status == 0 || status == 429 || status == 529 || status >= 500;
                 if (!retryable || attempt + 1 == kMaxAttempts)
                     break;
+                if (brokeOff)
+                {
+                    // What the broken attempt showed goes; the next attempt streams the answer again.
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    if (entries_.size() > shown)
+                        entries_.resize(shown);
+                    addEntry(ChatEntry::Kind::note, "The answer broke off; asking again.");
+                }
                 const int wait = retryAfter > 0 ? std::min(retryAfter, 60) : (2 << attempt);
                 for (int s = wait; s > 0 && !cancel_.load(); --s)
                 {
-                    setActivity("RETRYING IN " + std::to_string(s) + " S");
+                    setActivity("Retrying in " + std::to_string(s) + " s");
                     for (int k = 0; k < 10 && !cancel_.load(); ++k)
                         std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 }
@@ -726,7 +923,8 @@ namespace testingplayground
             {
                 juce::Array<juce::var> kept;
                 for (int i = 0; i < blocks.size(); ++i)
-                    if (i > lastFallback || (i < lastFallback && str(blocks[i], "type") == "text"))
+                    if (i > lastFallback
+                        || (i < lastFallback && (str(blocks[i], "type") == "text" || str(blocks[i], "type") == "compaction")))
                         kept.add(blocks[i]);
                 blocks = kept;
             }
@@ -737,8 +935,9 @@ namespace testingplayground
             {
                 const claude::Usage& u = builder->usage();
                 const std::lock_guard<std::mutex> lock(mutex_);
-                usage_ = "LAST REPLY " + thousands(u.input + u.cacheRead + u.cacheWrite) + " IN ("
-                       + thousands(u.cacheRead) + " CACHED)  " + thousands(u.output) + " OUT";
+                usage_ = "Last reply: " + thousands(u.input + u.cacheRead + u.cacheWrite) + " tokens in ("
+                       + thousands(u.cacheRead) + " cached), " + thousands(u.output) + " out"
+                       + (u.compactions > 0 ? "; the conversation was summarized" : "");
                 touch();
             }
 
@@ -747,13 +946,22 @@ namespace testingplayground
                 // The turn ends here. The answer goes back as its text alone (an empty one as a short note), so the
                 // history stays valid and the next message can follow it.
                 juce::Array<juce::var> textOnly;
+                bool hasText = false;
                 for (const auto& b : blocks)
-                    if (str(b, "type") == "text" && !str(b, "text").empty())
+                {
+                    const std::string type = str(b, "type");
+                    if (type == "compaction")
+                        textOnly.add(b);                   // a summary made in this request stays (no second one)
+                    else if (type == "text" && !str(b, "text").empty())
+                    {
                         textOnly.add(b);
-                if (textOnly.isEmpty())
+                        hasText = true;
+                    }
+                }
+                if (!hasText)
                     textOnly.add(text(stopped ? "(stopped by the user)" : "(no answer)"));
                 const std::lock_guard<std::mutex> lock(mutex_);
-                messages_.add(claude::object({ { "role", "assistant" }, { "content", textOnly } }));
+                appendAnswer(textOnly);
                 if (stopped)
                     addEntry(ChatEntry::Kind::note, "Stopped.");
                 else if (stopReason == "refusal")
@@ -771,7 +979,7 @@ namespace testingplayground
                     toolUses.push_back(b);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
-                messages_.add(claude::object({ { "role", "assistant" }, { "content", blocks } }));
+                appendAnswer(blocks);
                 touch();
             }
             if (toolUses.empty())
@@ -893,8 +1101,13 @@ namespace testingplayground
             const int i = findFile(d, file);
             if (i < 0)
                 return fail("There is no file " + file + ". The files: " + names(d));
-            setActivity("READING " + file);
-            return d.files[static_cast<std::size_t>(i)].text;
+            setActivity("Reading " + file);
+            const std::string& t = d.files[static_cast<std::size_t>(i)].text;
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                markSeen(file, t);
+            }
+            return t;
         }
         if (name == "write_file")
         {
@@ -918,8 +1131,12 @@ namespace testingplayground
                 d.files[static_cast<std::size_t>(i)].text = content;
             }
             d.active = i;
-            setActivity("WRITING " + file);
+            setActivity("Writing " + file);
             host_.chatSetDraft(d);
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                markSeen(file, content);
+            }
             const int lines = lineCount(content);
             const std::string count = std::to_string(lines) + (lines == 1 ? " line" : " lines");
             note("wrote " + file + " (" + count + ")");
@@ -959,8 +1176,12 @@ namespace testingplayground
                             + ": include more of the surrounding lines so it occurs once");
             t.replace(at, oldText.size(), newText);
             d.active = i;
-            setActivity("EDITING " + file);
+            setActivity("Editing " + file);
             host_.chatSetDraft(d);
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                markSeen(file, t);
+            }
             note("edited " + file);
             return "Edited " + file + ".";
         }
@@ -979,6 +1200,14 @@ namespace testingplayground
                 return fail("There is a file " + to + " already");
             d.files[static_cast<std::size_t>(i)].name = to;
             host_.chatSetDraft(d);
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                if (const auto it = seen_.find(file); it != seen_.end())
+                {
+                    seen_[to] = it->second;
+                    seen_.erase(file);
+                }
+            }
             note("renamed " + file + " to " + to);
             return "Renamed " + file + " to " + to + ". #include lines naming " + file + " still name it.";
         }
@@ -996,12 +1225,16 @@ namespace testingplayground
             d.files.erase(d.files.begin() + i);
             d.active = std::min(d.active, static_cast<int>(d.files.size()) - 1);
             host_.chatSetDraft(d);
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                seen_.erase(file);
+            }
             note("deleted " + file);
             return "Deleted " + file + ".";
         }
         if (name == "run_program")
         {
-            setActivity("COMPILING");
+            setActivity("Compiling");
             const Draft d = host_.chatDraft();
             const CompileStatus s = host_.chatRun(d.files);
             if (s.ok)
@@ -1012,14 +1245,14 @@ namespace testingplayground
                 note("ran it: compiled in " + number(std::round(s.ms)) + " ms, " + std::to_string(dials) + " dial"
                      + (dials == 1 ? "" : "s"));
                 return "Compiled in " + number(std::round(s.ms)) + " ms; it plays now.\nIts dials:\n"
-                     + dialLines(s.controls, host_) + (s.notes.empty() ? "" : "Notes:\n" + s.notes);
+                     + dialLines(s.controls, host_) + (s.notes.empty() ? "" : "Notes:\n" + capped(s.notes));
             }
             int errors = 0;
             for (std::size_t p = s.errors.find(": error:"); p != std::string::npos; p = s.errors.find(": error:", p + 1))
                 ++errors;
             note("ran it: " + std::to_string(std::max(errors, 1)) + " error" + (errors == 1 ? "" : "s"));
             isError = true;
-            return "It did not compile; the program that played before plays on.\n" + s.errors + s.notes;
+            return "It did not compile; the program that played before plays on.\n" + capped(s.errors + s.notes);
         }
         if (name == "set_dial")
         {
@@ -1046,6 +1279,37 @@ namespace testingplayground
                 if (k.used)
                     have += (have.empty() ? "" : ", ") + std::string(k.name);
             return fail("The running program has no dial " + dial + ". Its dials: " + (have.empty() ? "none" : have));
+        }
+        if (name == "measure_output")
+        {
+            setActivity("Measuring the sound");
+            measure::Request req;
+            const auto numberArg = [&](const char* k, float& out) {
+                const juce::var v = input.getProperty(k, juce::var());
+                if (v.isDouble() || v.isInt() || v.isInt64())
+                    out = static_cast<float>(static_cast<double>(v));
+            };
+            const juce::var notes = input.getProperty("notes", juce::var());
+            if (const auto* arr = notes.getArray())
+                for (const auto& n : *arr)
+                    if (n.isInt() || n.isInt64() || n.isDouble())
+                        req.notes.push_back(static_cast<int>(std::lround(static_cast<double>(n))));
+            numberArg("velocity", req.velocity);
+            numberArg("hold_seconds", req.holdSeconds);
+            numberArg("tail_seconds", req.tailSeconds);
+            const juce::var dials = input.getProperty("dials", juce::var());
+            if (const auto* o = dials.getDynamicObject())
+                for (const auto& kv : o->getProperties())
+                    if (kv.value.isDouble() || kv.value.isInt() || kv.value.isInt64() || kv.value.isBool())
+                        req.dials[kv.name.toString().toStdString()] = static_cast<float>(static_cast<double>(kv.value));
+            const Controls controls = host_.chatDials();
+            for (int c = 0; c < kMaxControls; ++c)
+                if (controls[static_cast<std::size_t>(c)].used)
+                    req.current[controls[static_cast<std::size_t>(c)].name] = host_.chatDialValue(c);
+            const std::string report = measure::run(host_.chatDraft().files, req);
+            note(report.rfind("It did not compile", 0) == 0 ? "measured the sound: it did not compile"
+                                                             : "measured the sound");
+            return report;
         }
         if (name == "get_status")
         {

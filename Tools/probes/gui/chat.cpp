@@ -3,34 +3,42 @@
 // gui.chat: the editor's chat column, its key dialog and the resizable panel, headless (funkgui::HeadlessHost), over a
 // real processor whose chat talks to a scripted API (../plugin/FakeClaude.h): nothing reaches the network, and the key
 // folder is the probe's own. It writes, to <build>/probe-out/:
-//   gui.chat.png          a conversation: the user's message, Claude's thinking, what it did, its answer with code
+//   gui.chat.empty.png    the empty chat: its title, the key button, the suggestions
+//   gui.chat.png          a conversation: a bubble, Claude's thinking (opened), its answer with a code block, the card
+//                         of what it did, the message box grown to three lines
 //   gui.chat.key.png      the key dialog with a key pasted (masked)
+//   gui.chat.markdown.png an answer in markdown: a heading, bold, inline code, numbered and bulleted lists, a quote,
+//                         a rule
 //   gui.chat.paper.png    the conversation in PAPER
 //   gui.chat.small.png    the panel at its least size
 //   gui.chat.large.png    the panel large
 // and checks:
-//   HINT     with no key the conversation says how to start, naming KEY
+//   EMPTY    with no key the empty chat has a key button (which opens the key dialog) and suggestions
 //   KEY      a message sent with no key opens the key dialog and stays in the message box; Escape closes the dialog
 //            (the message stays, unsent); sent again, it waits for the key; while the dialog is open the pointer and
-//            the keys reach nothing else; a key
-//            that is not one is refused (the dialog says why; nothing is stored); Cmd-V pastes a key; nothing the
-//            panel shows or speaks holds the key; SAVE stores it, closes the dialog and sends the waiting message;
-//            KEY opens the dialog; REMOVE (shown once a key is stored) forgets it; Return in the dialog saves one
-//   SEND     Shift-Return breaks the line in the message box, Return sends it (the box empties); the conversation
-//            shows the turn (YOU, CLAUDE, the thinking, what Claude did, its answer) and the activity line the usage;
-//            the files Claude wrote are the editor's tabs and play; Cmd-Z in the program's editor gives back the
-//            text it had before Claude wrote it, as one step
-//   MODEL    the model's button opens a menu of the models, the chosen one ticked; choosing another changes the
-//            model and the thinking levels shown (the model's); a click on a level chooses it
-//   STOP     while Claude works, the activity line says so and SEND is STOP: a click ends the turn
-//   NEW      NEW asks first, then forgets the conversation (the hint is back); Tab leaves the message box
-//   RESIZE   a size below the least is raised to it; at the least size and at a large one every item lies inside the
-//            panel, the chat's column right of the editor; the editor and the transcript grow with the height; the
+//            the keys reach nothing else; a key that is not one is refused (the dialog says why; nothing is stored);
+//            Cmd-V pastes a key; nothing the panel speaks holds the key; SAVE stores it, closes the dialog and sends the
+//            waiting message; KEY opens the dialog; REMOVE (shown once a key is stored) forgets it; Return in the
+//            dialog saves one
+//   SEND     Shift-Return breaks the line in the message box and the box grows with its rows, Return sends it (the box
+//            empties and shrinks); the conversation shows the turn (YOU, CLAUDE, the thinking, what Claude did, its
+//            answer) and the line under the box the usage; the thinking row opens and closes; a code block's Copy puts
+//            its code on the clipboard; the files Claude wrote are the editor's tabs and play; Cmd-Z in the program's
+//            editor gives back the text it had before Claude wrote it, as one step
+//   MODEL    the model's pill opens a menu of the models, the chosen one ticked; choosing another changes it; the
+//            thinking pill's menu has that model's levels, and choosing one sets it
+//   STOP     while Claude works the line under the box says what it is doing and send is stop: a click ends the turn
+//   NEW      NEW asks first, then forgets the conversation; a suggestion goes into the message box, unsent; Tab leaves
+//            the message box
+//   SCROLL   a conversation taller than the view scrolls with the wheel, and the round button jumps back to its end
+//   RESIZE   a size below the least is raised to it; at the least size (with twelve files, their tabs narrowed) and at
+//            a large one every item lies inside the panel, the chat's column right of the editor; the editor and the conversation grow with the height; the
 //            processor keeps the editor's size in the session
 #include "Probe.h"
 
 #include "../plugin/FakeClaude.h"
 
+#include "editor/ChatView.h"
 #include "editor/Panel.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/ChatStore.h"
@@ -171,8 +179,19 @@ PROBE(gui, chat)
     P.eq("open.default_size", panel.width() == tp::ui::kDefaultWidth && panel.height() == tp::ui::kDefaultHeight ? 1 : 0, 1);
     P.eq("open.missing_glyphs", static_cast<int64_t>(host.draw().missingGlyphs), 0);
 
-    // ---- HINT ----------------------------------------------------------------------------------------------------------
-    P.eq("hint.names_key", has(panel.transcript(), "KEY") && has(panel.transcript(), "API key") ? 1 : 0, 1);
+    // ---- EMPTY ---------------------------------------------------------------------------------------------------------
+    {
+        const auto addKey = panel.chatView().centreOfAddKey();
+        P.eq("empty.key_button", addKey.has_value() ? 1 : 0, 1);
+        P.eq("empty.suggestions", panel.chatView().centreOfSuggestion(3).has_value() ? 1 : 0, 1);
+        writePng(P, host, "gui.chat.empty.png");
+        if (addKey)
+            clickAt(host, *addKey);
+        host.settle();
+        P.eq("empty.key_button_opens_dialog", panel.keyDialogOpen() ? 1 : 0, 1);
+        host.keys("escape");
+        host.settle();
+    }
 
     // ---- KEY -----------------------------------------------------------------------------------------------------------
     {
@@ -213,7 +232,6 @@ PROBE(gui, chat)
         host.settle();
         P.eq("key.pasted_clears_why", panel.keyDialogWhy().empty() ? 1 : 0, 1);
         P.eq("key.a11y_never_the_key", a11yHoldsKey(host, key) ? 1 : 0, 0);
-        P.eq("key.transcript_never_the_key", has(panel.transcript(), key.substr(7, 12)) ? 1 : 0, 0);
         writePng(P, host, "gui.chat.key.png");
 
         script->add(fake::Response::ok(fake::Sse().start().text("Hello! What shall we build?").end()));
@@ -262,12 +280,21 @@ PROBE(gui, chat)
                                            .end("tool_use")));
         script->add(fake::Response::ok(fake::Sse().start("claude-opus-5-5", 6100, 5900, 0).text("Done: the level dial is at 1.5.").end()));
         clickInput(host, panel);
+        const float oneRow = panel.chatInput().bounds().h;
         type(host, "a level");
         host.keys("shift+return");
         type(host, "control");
-        P.eq("send.shift_return_breaks", panel.chatInput().text() == "a level\ncontrol" ? 1 : 0, 1);
+        host.keys("shift+return");
+        type(host, "please");
+        host.settle();
+        P.eq("send.shift_return_breaks", panel.chatInput().text() == "a level\ncontrol\nplease" ? 1 : 0, 1);
+        P.near("send.box_grows", static_cast<double>(panel.chatInput().bounds().h - oneRow),
+               2.0 * static_cast<double>(panel.chatInput().rowHeight()), 0.5);
+        host.keys("backspace,backspace,backspace,backspace,backspace,backspace,backspace");   // "\nplease"
         host.keys("return");
+        host.settle();
         P.eq("send.box_emptied", panel.chatInput().text().empty() ? 1 : 0, 1);
+        P.near("send.box_shrinks", static_cast<double>(panel.chatInput().bounds().h), static_cast<double>(oneRow), 0.5);
         settleChat(processor, host);
         const std::string t = panel.transcript();
         P.eq("send.you", has(t, "YOU\na level\ncontrol\n") ? 1 : 0, 1);
@@ -275,13 +302,54 @@ PROBE(gui, chat)
         P.eq("send.tools", has(t, "  > wrote program.fm") && has(t, "  > ran it") && has(t, "  > set level to 1.5") ? 1 : 0, 1);
         P.eq("send.answer", has(t, "Done: the level dial is at 1.5.") ? 1 : 0, 1);
         P.eq("send.code_fence", has(t, "```\nleft[i] *= level[i];\n```") ? 1 : 0, 1);
-        P.eq("send.usage", has(panel.chatActivity(), "LAST REPLY") ? 1 : 0, 1);
+        P.eq("send.usage", has(panel.chatActivity(), "Last reply") ? 1 : 0, 1);
         P.eq("send.tabs", panel.fileCount() == 2 && panel.fileName(1) == "notes.fm" ? 1 : 0, 1);
         P.eq("send.plays", processor.editorPort().running() == processor.editorPort().draft().files ? 1 : 0, 1);
         P.near("send.dial", processor.getParameters()[0]->getValue(), 0.75, 1e-4);
         P.eq("send.dial_shown", panel.centreOfDial(0).has_value() && !panel.centreOfDial(1).has_value() ? 1 : 0, 1);
         std::printf("transcript:\n%s\n", t.c_str());
+        tp::ui::ChatView& view = panel.chatView();
+        view.scrollTo(0.0f);
+        host.settle();
+        const auto think = view.centreOfThinking(0);
+        P.eq("send.thinking_row", think.has_value() ? 1 : 0, 1);
+        if (think)
+            clickAt(host, *think);
+        host.settle();
+        P.eq("send.thinking_opens", view.thinkingOpen(0) ? 1 : 0, 1);
+        P.eq("send.code_copy_shown", view.copies() >= 1 ? 1 : 0, 1);
+        if (const auto copy = view.centreOfCopy(0))
+            clickAt(host, *copy);
+        else
+        {
+            view.scrollTo(view.contentHeight());
+            host.settle();
+            for (int k = 0; k < 40 && !view.centreOfCopy(0); ++k)
+                view.scrollTo(view.scroll() - 30.0f);
+            if (const auto again = view.centreOfCopy(0))
+                clickAt(host, *again);
+        }
+        P.eq("send.code_copied", host.log.lastCopy == "left[i] *= level[i];\n" ? 1 : 0, 1);
+        view.scrollTo(0.0f);
+        host.settle();
+        if (const auto answer = view.centreOfAnswerCopy(0))
+            clickAt(host, *answer);
+        P.eq("send.answer_copied", host.log.lastCopy == "Hello! What shall we build?" ? 1 : 0, 1);
+        clickInput(host, panel);
+        type(host, "more");
+        host.keys("shift+return");
+        type(host, "and more");
+        host.keys("shift+return");
+        type(host, "and more still");
+        view.scrollTo(0.0f);
+        host.settle();
         writePng(P, host, "gui.chat.png");
+        host.keys("cmd+a,backspace");
+        host.settle();
+        if (think)
+            clickAt(host, *think);
+        host.settle();
+        P.eq("send.thinking_closes", view.thinkingOpen(0) ? 1 : 0, 0);
 
         clickAt(host, panel.centreOfTab(0));
         host.settle();
@@ -321,14 +389,14 @@ PROBE(gui, chat)
                 opusTicked = opusTicked || (m.checked && m.label == "Claude Opus 5.5");
             }
         P.eq("model.chosen_ticked", ticked == 1 && opusTicked ? 1 : 0, 1);
-        P.eq("model.five_levels", panel.effortCount(), 5);
         host.chooseMenuItem("Claude Haiku 5.5");
         host.tick(2);
         host.settle();
         P.eq("model.changed", chat(processor).model == "claude-haiku-5-5" ? 1 : 0, 1);
-        P.eq("model.levels_follow", panel.effortCount(), 3);
-        P.eq("model.sixth_level_none", panel.centreOfEffort(3).has_value() ? 1 : 0, 0);
-        clickAt(host, *panel.centreOfEffort(0));
+        clickAt(host, panel.centreOfThinking());
+        const funkgui::MenuRequest* levels = host.pendingMenu();
+        P.eq("model.levels_follow", levels != nullptr && levels->items.size() == 3 ? 1 : 0, 1);
+        host.chooseMenuItem("Low");
         host.tick(2);
         host.settle();
         P.eq("model.level_chosen", chat(processor).effort == "low" ? 1 : 0, 1);
@@ -336,7 +404,9 @@ PROBE(gui, chat)
         host.chooseMenuItem("Claude Opus 5.5");
         host.tick(2);
         host.settle();
-        clickAt(host, *panel.centreOfEffort(1));
+        clickAt(host, panel.centreOfThinking());
+        P.eq("model.five_levels", host.pendingMenu() != nullptr && host.pendingMenu()->items.size() == 5 ? 1 : 0, 1);
+        host.chooseMenuItem("Medium (the default)");
         host.tick(2);
         host.settle();
         P.eq("model.back", chat(processor).model == "claude-opus-5-5" && chat(processor).effort == "medium" ? 1 : 0, 1);
@@ -354,12 +424,30 @@ PROBE(gui, chat)
         while (script->streaming.load() == 0 && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(10))
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         host.tick(4);
-        P.eq("stop.activity", has(panel.chatActivity(), "THINKING") ? 1 : 0, 1);
+        P.eq("stop.activity", has(panel.chatActivity(), "Thinking") ? 1 : 0, 1);
         std::printf("activity: %s\n", panel.chatActivity().c_str());
         clickAt(host, panel.centreOfSend());
         settleChat(processor, host);
         P.eq("stop.ended", chat(processor).busy ? 1 : 0, 0);
         P.eq("stop.note", has(panel.transcript(), "- Stopped.") ? 1 : 0, 1);
+    }
+
+    // ---- MARKDOWN ------------------------------------------------------------------------------------------------------
+    {
+        script->add(fake::Response::ok(fake::Sse().start().text(
+            "### What it does\n\nA **two-oscillator** voice: `osc.fm` makes the waves and `filter.fm` shapes them.\n\n"
+            "1. The envelope opens the filter.\n2. The LFO sweeps it, a little.\n\n"
+            "- **cutoff**: where the filter starts\n- **resonance**: its peak\n  (higher rings more)\n\n"
+            "> Keep the level near -14 dB with sixteen voices.\n\n---\n\nDone.").end()));
+        clickInput(host, panel);
+        type(host, "explain it");
+        host.keys("return");
+        settleChat(processor, host);
+        const std::string t = panel.transcript();
+        P.eq("markdown.answer", has(t, "### What it does") && has(t, "Done.") ? 1 : 0, 1);
+        panel.chatView().scrollTo(panel.chatView().contentHeight());
+        host.settle();
+        writePng(P, host, "gui.chat.markdown.png");
     }
 
     // ---- NEW -----------------------------------------------------------------------------------------------------------
@@ -370,22 +458,67 @@ PROBE(gui, chat)
         host.tick(2);
         host.settle();
         P.eq("new.forgotten", chat(processor).entries.empty() ? 1 : 0, 1);
-        P.eq("new.hint_back", has(panel.transcript(), "YOU") ? 0 : 1, 1);
+        P.eq("new.empty_again", panel.chatView().blocks() == 0 && panel.chatView().centreOfSuggestion(0).has_value() ? 1 : 0,
+             1);
+        const int sent = script->postCount();
+        if (const auto chip = panel.chatView().centreOfSuggestion(1))
+            clickAt(host, *chip);
+        host.settle();
+        P.eq("new.suggestion_in_box", has(panel.chatInput().text(), " ") && panel.chatInput().focused() ? 1 : 0, 1);
+        P.eq("new.suggestion_unsent", script->postCount(), sent);
+        host.keys("cmd+a,backspace");
         clickInput(host, panel);
         host.keys("tab");
         type(host, "z");
         P.eq("new.tab_leaves_box", panel.chatInput().text().empty() && !panel.chatInput().focused() ? 1 : 0, 1);
     }
 
+    // ---- SCROLL --------------------------------------------------------------------------------------------------------
+    {
+        for (int k = 0; k < 6; ++k)
+            script->add(fake::Response::ok(fake::Sse().start().text("A paragraph that takes room in the view, so the "
+                                                                    "conversation grows taller than it.\n\n- one\n- two\n- three").end()));
+        for (int k = 0; k < 6; ++k)
+        {
+            clickInput(host, panel);
+            type(host, "more " + std::to_string(k));
+            host.keys("return");
+            settleChat(processor, host);
+        }
+        tp::ui::ChatView& view = panel.chatView();
+        P.eq("scroll.overflows", view.contentHeight() > view.bounds().h ? 1 : 0, 1);
+        P.eq("scroll.follows_end", view.atEnd() ? 1 : 0, 1);
+        const funkgui::Rect vb = view.bounds();
+        host.wheel(vb.centreX(), vb.centreY(), 2.0f);
+        host.settle();
+        P.eq("scroll.wheel_up", view.atEnd() ? 0 : 1, 1);
+        const auto jump = view.centreOfJump();
+        P.eq("scroll.jump_shown", jump.has_value() ? 1 : 0, 1);
+        if (jump)
+            clickAt(host, *jump);
+        host.settle();
+        P.eq("scroll.jumped_to_end", view.atEnd() ? 1 : 0, 1);
+    }
+
     // ---- RESIZE --------------------------------------------------------------------------------------------------------
     {
         host.resize(500, 300);
         host.settle();
+        // Twelve files: their tabs narrow to fit the bar.
+        while (panel.fileCount() < static_cast<int>(tp::kMaxFiles))
+        {
+            const funkgui::Point plus = panel.centreOfNewTab();
+            clickAt(host, plus);
+            host.keys("escape");
+            host.settle();
+        }
+        P.eq("resize.twelve_files", panel.fileCount(), static_cast<int64_t>(tp::kMaxFiles));
         P.eq("resize.least_w", panel.width(), tp::ui::kMinWidth);
         P.eq("resize.least_h", panel.height(), tp::ui::kMinHeight);
         P.eq("resize.least_inside", allInside(host, panel) ? 1 : 0, 1);
         const float smallEditor = panel.editor().bounds().h;
         const float smallChat = panel.chatInput().bounds().y;
+        const float smallView = panel.chatView().bounds().h;
         P.ge("resize.least_chat_right", static_cast<double>(panel.chatInput().bounds().x),
              static_cast<double>(panel.editor().bounds().right()));
         P.eq("resize.least_glyphs", static_cast<int64_t>(host.draw().missingGlyphs), 0);
@@ -397,6 +530,8 @@ PROBE(gui, chat)
         P.near("resize.editor_grows", static_cast<double>(panel.editor().bounds().h - smallEditor),
                1100.0 - static_cast<double>(tp::ui::kMinHeight), 0.5);
         P.near("resize.chat_follows", static_cast<double>(panel.chatInput().bounds().y - smallChat),
+               1100.0 - static_cast<double>(tp::ui::kMinHeight), 0.5);
+        P.near("resize.conversation_grows", static_cast<double>(panel.chatView().bounds().h - smallView),
                1100.0 - static_cast<double>(tp::ui::kMinHeight), 0.5);
         writePng(P, host, "gui.chat.large.png");
         host.resize(tp::ui::kDefaultWidth, tp::ui::kDefaultHeight);
