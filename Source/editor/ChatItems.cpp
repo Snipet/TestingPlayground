@@ -322,10 +322,15 @@ namespace testingplayground::ui
     {
         funkgui::A11yItem item;
         item.id = id_;
-        item.role = funkgui::A11yRole::button;
+        item.role = spec_.checked ? funkgui::A11yRole::toggleButton : funkgui::A11yRole::button;
         item.bounds = bounds_;
         item.title = spec_.a11yTitle;
-        if (spec_.label)
+        if (spec_.checked)
+        {
+            item.checkable = true;
+            item.checked = spec_.checked();
+        }
+        else if (spec_.label)
             item.value = spec_.label();
         item.enabled = enabled();
         out.push_back(std::move(item));

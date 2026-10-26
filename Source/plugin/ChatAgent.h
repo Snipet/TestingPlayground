@@ -18,6 +18,14 @@
 // blocks before it lose their thinking and tool calls, as the API asks. A refusal, the stop button and an error each
 // end the turn with the history still valid.
 //
+// Fast mode (the fast-mode docs), when chosen, on the models that take it (/v1/models does not say which: the docs
+// list Claude Opus 5.5, and Claude Opus 5 and Opus 4.8 in preview, behind the fast-mode-2026-02-01 beta): the request
+// asks for "speed": "fast", up to 2.5 times the output's speed at twice the price, and goes without "fallbacks" (the
+// docs say nothing of the two together). The footer says "fast" when the response's usage does. When fast capacity
+// stays busy (a 429 or 529 again, after waiting once) the turn goes on at standard speed; when the API refuses fast
+// mode itself (not open to the key, say), the turn goes on at standard speed and fast mode is turned off. A change of
+// speed reads the conversation without the cache once: requests at different speeds share no cached prefix.
+//
 // Large work. A long conversation is compacted server-side (beta compact-2026-01-12, on the models that take it): once
 // a request's input passes kCompactTrigger tokens the API summarizes what came before (with instructions that keep
 // the sound's design and leave out code) and answers from the summary; the compaction block goes into the history, and
@@ -90,6 +98,7 @@ namespace testingplayground
         void forgetKey() override;
         void setModel(const std::string& id) override;
         void setEffort(const std::string& effort) override;
+        void setFast(bool on) override;
         void send(const std::string& text) override;
         void stop() override;
         void newChat() override;
@@ -141,6 +150,8 @@ namespace testingplayground
         bool modelsFetched_ = false;
         std::string model_, effort_;
         std::string turnModel_, turnEffort_;                        // the turn under way's (the worker's)
+        bool fast_ = false;                                         // fast mode chosen
+        bool turnFast_ = false;                                     // the turn under way asks for it
         std::string activity_;
         std::string usage_;
         std::string key_;                                           // loaded on first use

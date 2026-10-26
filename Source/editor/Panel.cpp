@@ -1426,7 +1426,7 @@ namespace testingplayground::ui
             itemOfDisplay_[static_cast<std::size_t>(d)] = add(std::make_unique<DisplayItem>(idFor()));
 
         // The chat: the header's buttons (a new chat, the API key), the conversation, the message box and the buttons in
-        // its bar (the model, the thinking level, send or stop).
+        // its bar (the model, the thinking level, fast mode on a model that takes it, send or stop).
         using B = ButtonItem;
         const auto spec = [](B::Shape shape, std::function<chat::Icon()> icon, std::function<std::string()> label, bool chevron,
                              std::function<B::Look()> look, std::function<bool()> enabled, std::function<void()> act,
@@ -1459,6 +1459,21 @@ namespace testingplayground::ui
             idFor(), spec(B::Shape::pill, {}, [this] { return thinkingLabel(); }, true, [] { return B::Look::ghost; },
                           [this] { return !chatEfforts().empty(); }, [this] { openThinking(); }, "Thinking level",
                           "THINKING   HOW MUCH CLAUDE THINKS BEFORE IT ANSWERS, AND HOW HARD IT WORKS")));
+        {
+            B::Spec fast = spec(B::Shape::pill, [] { return chat::Icon::bolt; }, [] { return std::string("Fast"); }, false,
+                                [this] { return chat_.fast ? B::Look::primary : B::Look::ghost; }, {},
+                                [this] {
+                                    port_.chat().setFast(!chat_.fast);
+                                    chatAt_ = -1.0;
+                                    dirty_ = true;
+                                },
+                                "Fast mode",
+                                "FAST   THE SAME MODEL, ITS ANSWERS WRITTEN UP TO 2.5X FASTER, AT TWICE THE PRICE (THE API'S "
+                                "FAST MODE)");
+            fast.shown = [this] { return chatTakesFast(); };
+            fast.checked = [this] { return chat_.fast; };
+            fastItem_ = add(std::make_unique<B>(idFor(), std::move(fast)));
+        }
         sendItem_ = add(std::make_unique<B>(
             idFor(), spec(B::Shape::circle, [this] { return chat_.busy ? chat::Icon::stop : chat::Icon::arrowUp; }, {},
                           false, [] { return B::Look::primary; },
@@ -1610,17 +1625,22 @@ namespace testingplayground::ui
         dirty_ = true;
     }
 
-    // The pills in the message box's bar: as wide as their labels, the thinking one narrowed first when they do not fit.
+    // The pills in the message box's bar: as wide as their labels (fast mode's after the thinking one, on a model that
+    // takes it), the thinking one narrowed first when they do not fit, then the model's.
     void Panel::placeChatBar()
     {
         const funkgui::Rect bar = inputItem().bar();
         auto& model = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(modelItem_)]);
         auto& thinking = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(thinkingItem_)]);
+        auto& fast = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(fastItem_)]);
         auto& send = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(sendItem_)]);
         const float y = bar.y + std::floor((bar.h - kPillH) * 0.5f) - 3.0f;
         model.setBounds({ bar.x + 6.0f, y, kPillH, kPillH });
         thinking.setBounds({ bar.x + 6.0f, y, kPillH, kPillH });
-        const float room = bar.w - 12.0f - kSendD - 8.0f;
+        fast.setBounds({ bar.x + 6.0f, y, kPillH, kPillH });
+        const bool withFast = chatTakesFast();
+        const float fw = withFast ? fast.preferredWidth() + 4.0f : 0.0f;
+        const float room = bar.w - 12.0f - kSendD - 8.0f - fw;
         float mw = model.preferredWidth(), tw = thinking.preferredWidth();
         if (mw + 4.0f + tw > room)
             tw = std::max(64.0f, room - 4.0f - mw);
@@ -1628,8 +1648,9 @@ namespace testingplayground::ui
             mw = std::max(64.0f, room - 4.0f - tw);
         model.setBounds({ bar.x + 6.0f, y, mw, kPillH });
         thinking.setBounds({ bar.x + 6.0f + mw + 4.0f, y, tw, kPillH });
+        fast.setBounds({ bar.x + 6.0f + mw + 4.0f + tw + 4.0f, y, withFast ? fw - 4.0f : 0.0f, kPillH });
         send.setBounds({ bar.right() - 6.0f - kSendD, bar.y + std::floor((bar.h - kSendD) * 0.5f) - 3.0f, kSendD, kSendD });
-        barLabels_ = modelLabel() + '|' + thinkingLabel();
+        barLabels_ = barLabels();
     }
 
     void Panel::resize(int w, int h)
@@ -1689,6 +1710,12 @@ namespace testingplayground::ui
     funkgui::Point Panel::centreOfNewChat() const { return centreOf(newChatItem_); }
     funkgui::Point Panel::centreOfKey() const { return centreOf(keyItem_); }
     funkgui::Point Panel::centreOfThinking() const { return centreOf(thinkingItem_); }
+    std::optional<funkgui::Point> Panel::centreOfFast() const
+    {
+        if (!items_[static_cast<std::size_t>(fastItem_)]->shown())
+            return std::nullopt;
+        return centreOf(fastItem_);
+    }
     funkgui::Point Panel::centreOfKeyField() const
     {
         const funkgui::Rect r = keyDialog().field;
@@ -1968,6 +1995,20 @@ namespace testingplayground::ui
         return {};
     }
 
+    bool Panel::chatTakesFast() const
+    {
+        for (const ChatModel& m : chat_.models)
+            if (m.id == chat_.model)
+                return m.fast;
+        return false;
+    }
+
+    // What the bar's layout depends on: the pills' labels, and whether fast mode's is there.
+    std::string Panel::barLabels() const
+    {
+        return modelLabel() + '|' + thinkingLabel() + (chatTakesFast() ? "|fast" : "");
+    }
+
     std::string Panel::thinkingLabel() const
     {
         return chat_.effort.empty() || chatEfforts().empty() ? std::string("Thinking") : "Thinking: " + effortName(chat_.effort);
@@ -1995,7 +2036,7 @@ namespace testingplayground::ui
             inputItem().setPlaceholder(chat_.busy ? "Claude is working (the square button stops it)"
                                                   : (product::kIsInstrument ? "Ask Claude for a sound, or about the code"
                                                                             : "Ask Claude for an effect, or about the code"));
-            if (modelLabel() + '|' + thinkingLabel() != barLabels_)
+            if (barLabels() != barLabels_)
                 placeChatBar();
             if (hadKey != chat_.hasKey || changed)
             {

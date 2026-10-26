@@ -26,7 +26,9 @@
 //            its code on the clipboard; the files Claude wrote are the editor's tabs and play; Cmd-Z in the program's
 //            editor gives back the text it had before Claude wrote it, as one step
 //   MODEL    the model's pill opens a menu of the models, the chosen one ticked; choosing another changes it; the
-//            thinking pill's menu has that model's levels, and choosing one sets it
+//            thinking pill's menu has that model's levels, and choosing one sets it; fast mode's pill, after it on
+//            Claude Opus 5.5, switches fast mode on and off (a switch to a screen reader, on or off), and is gone
+//            on a model that takes no fast mode
 //   STOP     while Claude works the line under the box says what it is doing and send is stop: a click ends the turn
 //   NEW      NEW asks first, then forgets the conversation; a suggestion goes into the message box, unsent; Tab leaves
 //            the message box
@@ -55,6 +57,7 @@
 #include <chrono>
 #include <cstdio>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -114,6 +117,22 @@ namespace
                     if (s->find(key.substr(p, 12)) != std::string::npos)
                         return true;
         return false;
+    }
+
+    // The item the panel speaks of by this title, if it does.
+    std::optional<funkgui::A11yItem> a11yTitled(const funkgui::HeadlessHost& host, const std::string& title)
+    {
+        for (const funkgui::A11yItem& item : host.accessibility())
+            if (item.title == title)
+                return item;
+        return std::nullopt;
+    }
+
+    // A switch the panel speaks of, on or off.
+    bool a11ySwitch(const funkgui::HeadlessHost& host, const std::string& title, bool on)
+    {
+        const auto item = a11yTitled(host, title);
+        return item && item->role == funkgui::A11yRole::toggleButton && item->checkable && item->checked == on;
     }
 
     // Every item the panel speaks of lies inside it.
@@ -410,6 +429,32 @@ PROBE(gui, chat)
         host.tick(2);
         host.settle();
         P.eq("model.back", chat(processor).model == "claude-opus-5-5" && chat(processor).effort == "medium" ? 1 : 0, 1);
+
+        // Fast mode's pill: on Claude Opus 5.5, after the thinking one, a switch; gone on a model that takes none.
+        const auto fast = panel.centreOfFast();
+        P.eq("fast.pill_shown", fast.has_value() && fast->x > panel.centreOfThinking().x ? 1 : 0, 1);
+        if (fast)
+            clickAt(host, *fast);
+        host.tick(2);
+        host.settle();
+        P.eq("fast.switched_on", chat(processor).fast ? 1 : 0, 1);
+        P.eq("fast.a11y_on", a11ySwitch(host, "Fast mode", true) ? 1 : 0, 1);
+        if (const auto again = panel.centreOfFast())
+            clickAt(host, *again);
+        host.tick(2);
+        host.settle();
+        P.eq("fast.switched_off", chat(processor).fast ? 1 : 0, 0);
+        P.eq("fast.a11y_off", a11ySwitch(host, "Fast mode", false) ? 1 : 0, 1);
+        clickAt(host, panel.centreOfModel());
+        host.chooseMenuItem("Claude Haiku 5.5");
+        host.tick(2);
+        host.settle();
+        P.eq("fast.gone_on_haiku", panel.centreOfFast().has_value() || a11yTitled(host, "Fast mode") ? 1 : 0, 0);
+        clickAt(host, panel.centreOfModel());
+        host.chooseMenuItem("Claude Opus 5.5");
+        host.tick(2);
+        host.settle();
+        P.eq("fast.back_on_opus", panel.centreOfFast().has_value() && chat(processor).model == "claude-opus-5-5" ? 1 : 0, 1);
     }
 
     // ---- STOP ----------------------------------------------------------------------------------------------------------

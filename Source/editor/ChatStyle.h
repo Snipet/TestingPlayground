@@ -72,7 +72,7 @@ namespace testingplayground::ui::chat
     enum class Icon : uint8_t
     {
         none, plus, key, chevronDown, chevronRight, chevronUp, arrowUp, stop, copy, check, file, play, dial, wave, alert,
-        pencil
+        pencil, bolt
     };
 
     inline void drawIcon(funkgui::Canvas& c, Icon icon, float cx, float cy, float size, funkgui::Col ink)
@@ -133,6 +133,16 @@ namespace testingplayground::ui::chat
             case Icon::stop:
                 c.rrect(cx - s * 0.45f, cy - s * 0.45f, s * 0.9f, s * 0.9f, s * 0.18f, ink);
                 break;
+            case Icon::bolt:
+            {
+                // A lightning bolt's outline: fast mode.
+                const float xs[7] = { cx + s * 0.2f, cx - s * 0.45f, cx - s * 0.02f, cx - s * 0.2f,
+                                      cx + s * 0.45f, cx + s * 0.02f, cx + s * 0.2f };
+                const float ys[7] = { cy - s * 0.9f, cy + s * 0.12f, cy + s * 0.12f, cy + s * 0.9f,
+                                      cy - s * 0.12f, cy - s * 0.12f, cy - s * 0.9f };
+                c.polyline(xs, ys, 7, w, ink);
+                break;
+            }
             case Icon::copy:
                 c.rrect(cx - s * 0.7f, cy - s * 0.7f, s * 1.0f, s * 1.0f, s * 0.18f, ink.withAlpha(0.0f), w, ink);
                 c.rrect(cx - s * 0.3f, cy - s * 0.3f, s * 1.0f, s * 1.0f, s * 0.18f, ink.withAlpha(0.0f), w, ink);

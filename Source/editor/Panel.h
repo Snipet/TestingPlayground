@@ -175,6 +175,7 @@ namespace testingplayground::ui
         funkgui::Point centreOfSend() const;             // send, or stop
         funkgui::Point centreOfModel() const;            // the model's pill (a menu)
         funkgui::Point centreOfThinking() const;         // the thinking level's pill (a menu)
+        std::optional<funkgui::Point> centreOfFast() const;   // fast mode's pill (a switch), on a model that takes it
         funkgui::Point centreOfNewChat() const;
         funkgui::Point centreOfKey() const;
         ChatView& chatView();                            // the conversation (its own probe hooks)
@@ -243,6 +244,8 @@ namespace testingplayground::ui
         std::string modelLabel() const;
         std::string thinkingLabel() const;
         std::vector<std::string> chatEfforts() const;    // the chosen model's thinking levels
+        bool chatTakesFast() const;                      // the chosen model takes fast mode
+        std::string barLabels() const;                   // what the bar's layout depends on
         InputItem& inputItem();
         const InputItem& inputItem() const;
         funkgui::Point centreOf(int item) const;
@@ -272,7 +275,7 @@ namespace testingplayground::ui
             presetsItem_ = -1;
         int themeItem_ = -1, zoomItem_ = -1;
         int newChatItem_ = -1, keyItem_ = -1, chatViewItem_ = -1, inputItem_ = -1;
-        int modelItem_ = -1, thinkingItem_ = -1, sendItem_ = -1;
+        int modelItem_ = -1, thinkingItem_ = -1, fastItem_ = -1, sendItem_ = -1;
         funkgui::CellModel* zoom_ = nullptr;             // the ZOOM cells' model (an item owns it)
         float width_ = 0.0f, height_ = 0.0f;
         uint32_t layoutRevision_ = 0;                    // bumps with each layout()

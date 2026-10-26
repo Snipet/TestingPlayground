@@ -104,9 +104,12 @@ from FunkPluginTemplate.
 - **The API.** Requests follow the Claude API reference (the `claude-api` skill): the `anthropic-version` header
   (`claude::kApiVersion`), adaptive thinking with `output_config.effort`, no sampling parameters, the system prompt
   cached for an hour and the automatic breakpoint, tools with `eager_input_streaming` whose input is parsed strictly
-  here (`INVALID_JSON` results), `"fallbacks": "default"` with its beta on the models that take it, and an append-only
-  history (preserved thinking: nothing sent before is changed, except as the fallback rule says). Check the reference
-  before changing a request; `plugin.chat` checks the shape.
+  here (`INVALID_JSON` results), `"fallbacks": "default"` with its beta on the models that take it, fast mode
+  (`"speed": "fast"`, chosen with the Fast pill, on Claude Opus 5.5 without a beta and on Opus 5 and 4.8 with
+  `fast-mode-2026-02-01`; such a request goes without `fallbacks`, a 429 or 529 twice runs the turn on at standard
+  speed, a refusal about the speed turns it off), and an append-only history (preserved thinking: nothing sent before
+  is changed, except as the fallback rule says). Check the reference before changing a request; `plugin.chat` checks
+  the shape.
 - **Threads.** ChatPort calls run on the message thread; a turn runs on the agent's worker, which reaches the plugin
   only through `ChatHost` (the draft under `programMutex_`, RUN through the Compiler, a dial queued for `poll()`). The
   audio thread never sees the chat.
