@@ -6,6 +6,7 @@
 #include "dsp/Measure.h"
 
 #include "Library.h"
+#include "Product.h"
 
 #include <algorithm>
 #include <chrono>
@@ -85,6 +86,16 @@ namespace testingplaygroundsynth
         std::string str(const juce::var& v, const char* key)
         {
             return v.getProperty(key, "").toString().toStdString();
+        }
+
+        // The credit as the footer says it ("$4.96 credit left").
+        std::string creditText(double usd)
+        {
+            if (!(usd > 0.004))
+                return "No credit left";
+            char buf[48];
+            std::snprintf(buf, sizeof buf, "$%.2f credit left", usd);
+            return buf;
         }
 
         // FNV-1a, 64 bits: how the agent remembers which text of a file Claude has seen.
@@ -346,12 +357,23 @@ namespace testingplaygroundsynth
         model_ = choice.model.empty() ? std::string(kDefaultModel) : choice.model;
         effort_ = choice.effort.empty() ? std::string(kDefaultEffort) : choice.effort;
         fast_ = choice.fast;
+        const chatstore::Account account = chatstore::loadAccount();
+        account_ = account.username;
+        useAccount_ = account.useAccount;
     }
 
     ChatAgent::~ChatAgent()
     {
         cancel_.store(true);
+        authCancel_.store(true);
+        {
+            const std::lock_guard<std::mutex> lock(authMutex_);
+            authStop_ = true;                      // a job still queued is dropped
+        }
+        authCv_.notify_all();
         joinWorker();
+        if (auth_.joinable())
+            auth_.join();
     }
 
     void ChatAgent::setTransport(std::unique_ptr<claude::Transport> transport)
@@ -362,7 +384,50 @@ namespace testingplaygroundsynth
         modelsFetched_ = false;
     }
 
-    void ChatAgent::waitIdle() { joinWorker(); }
+    void ChatAgent::waitIdle()
+    {
+        joinWorker();
+        waitAuth();
+    }
+
+    void ChatAgent::queueAuth(std::function<void()> job)
+    {
+        {
+            const std::lock_guard<std::mutex> lock(authMutex_);
+            if (authStop_)
+                return;
+            authJobs_.push_back(std::move(job));
+            if (!auth_.joinable())
+                auth_ = std::thread([this] { authLoop(); });
+        }
+        authCv_.notify_all();
+    }
+
+    void ChatAgent::authLoop()
+    {
+        std::unique_lock<std::mutex> lock(authMutex_);
+        for (;;)
+        {
+            authCv_.wait(lock, [this] { return authStop_ || !authJobs_.empty(); });
+            if (authStop_)
+                return;
+            std::function<void()> job = std::move(authJobs_.front());
+            authJobs_.pop_front();
+            authRunning_ = true;
+            lock.unlock();
+            job();
+            job = nullptr;                         // what it held (a password) goes now
+            lock.lock();
+            authRunning_ = false;
+            authCv_.notify_all();
+        }
+    }
+
+    void ChatAgent::waitAuth()
+    {
+        std::unique_lock<std::mutex> lock(authMutex_);
+        authCv_.wait(lock, [this] { return authStop_ || (authJobs_.empty() && !authRunning_); });
+    }
 
     std::vector<std::string> ChatAgent::requestsSent() const
     {
@@ -389,6 +454,13 @@ namespace testingplaygroundsynth
         ChatState s;
         s.hasKey = !key_.empty() || chatstore::hasKey();
         s.keyProblem = keyProblem_;
+        s.signedIn = !token_.empty() || chatstore::hasToken();
+        s.account = account_;
+        s.accountProblem = accountProblem_;
+        s.credit = s.signedIn ? credit_ : std::string();
+        s.useAccount = useAccount_;
+        s.signingIn = signingIn_;
+        s.signInError = signInError_;
         s.busy = busy_;
         s.activity = activity_;
         s.entries = entries_;
@@ -406,11 +478,18 @@ namespace testingplaygroundsynth
         if (!chatstore::saveKey(trimmed, &why))
             return false;
         {
+            // The one set up last is the one the chat uses.
             const std::lock_guard<std::mutex> lock(mutex_);
             key_ = trimmed;
             keyProblem_.clear();
             modelsFetched_ = false;
-            addEntry(ChatEntry::Kind::note, "API key saved, encrypted, for both playground plugins on this Mac.");
+            const bool wasAccount = useAccount_;
+            useAccount_ = false;
+            chatstore::saveAccount({ account_, false });
+            addEntry(ChatEntry::Kind::note, std::string("API key saved, encrypted, for both playground plugins on this Mac")
+                                                + (wasAccount && (!token_.empty() || chatstore::hasToken())
+                                                       ? ": the chat uses it now, instead of your account."
+                                                       : "."));
         }
         return true;
     }
@@ -421,7 +500,142 @@ namespace testingplaygroundsynth
         const std::lock_guard<std::mutex> lock(mutex_);
         key_.clear();
         keyProblem_.clear();
-        addEntry(ChatEntry::Kind::note, "API key removed from this Mac.");
+        const bool signedIn = !token_.empty() || chatstore::hasToken();
+        if (!useAccount_ && signedIn)
+        {
+            useAccount_ = true;                    // the account is what is left
+            modelsFetched_ = false;
+            chatstore::saveAccount({ account_, true });
+        }
+        addEntry(ChatEntry::Kind::note, std::string("API key removed from this Mac")
+                                            + (signedIn ? ": the chat goes through your account." : "."));
+    }
+
+    void ChatAgent::useAccount(bool account)
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (useAccount_ == account)
+            return;
+        useAccount_ = account;
+        modelsFetched_ = false;
+        chatstore::saveAccount({ account_, account });
+        addEntry(ChatEntry::Kind::note, account ? "The chat goes through your TestingPlayground account now."
+                                                : "The chat uses your own API key now.");
+    }
+
+    // ---- signing in and out ---------------------------------------------------------------------------------------------
+    void ChatAgent::signIn(const std::string& username, const std::string& password)
+    {
+        const std::string user = juce::String(username).trim().toStdString();
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (signingIn_)
+                return;
+            if (user.empty() || password.empty())
+            {
+                signInError_ = user.empty() ? "Type your username." : "Type your password.";
+                touch();
+                return;
+            }
+            signingIn_ = true;
+            signInError_.clear();
+            touch();
+        }
+        queueAuth([this, user, password]() mutable { runSignIn(user, std::move(password)); });
+    }
+
+    // POST /auth/login. The password goes in its body, once, and is wiped from memory here after.
+    void ChatAgent::runSignIn(const std::string& username, std::string password)
+    {
+        const std::string host = claude::serverHost();
+        claude::Transport* transport = nullptr;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            transport = transport_.get();
+        }
+        std::string body = claude::toJson(claude::object(
+            { { "username", juce::String::fromUTF8(username.c_str()) },
+              { "password", juce::String::fromUTF8(password.c_str()) },
+              { "client", juce::String(std::string(product::kName) + " " + product::kVersion + " (" + product::kKind + ")") } }));
+        std::fill(password.begin(), password.end(), '\0');
+        const claude::HttpResult r =
+            transport->post(host, "/auth/login", body, { { "content-type", "application/json" } }, {}, authCancel_);
+        std::fill(body.begin(), body.end(), '\0');
+
+        const juce::var v = r.status == 200 ? claude::parseJson(r.body) : juce::var();
+        const std::string token = str(v, "token");
+        const juce::var user = v.getProperty("user", juce::var());
+        const std::lock_guard<std::mutex> lock(mutex_);
+        signingIn_ = false;
+        touch();
+        if (r.status != 200)
+        {
+            const std::string message = claude::errorMessage(r.body);
+            signInError_ = r.status == 0 ? (authCancel_.load() ? std::string("Stopped.")
+                                                               : "Cannot reach the server (" + claude::hostName(host)
+                                                                     + "). Check the connection and try again.")
+                         : !message.empty() ? message
+                                            : "The server refused the sign-in (HTTP " + std::to_string(r.status) + ").";
+            return;
+        }
+        std::string why;
+        if (!chatstore::saveToken(token, &why))
+        {
+            signInError_ = "Signed in, but the sign-in cannot be kept: " + why + ".";
+            return;
+        }
+        token_ = token;
+        const std::string named = str(user, "username");
+        account_ = named.empty() ? username : named;
+        accountProblem_.clear();
+        credit_ = user.hasProperty("balance_usd") ? creditText(static_cast<double>(user.getProperty("balance_usd", 0.0)))
+                                                  : std::string();
+        useAccount_ = true;                        // the one set up last
+        modelsFetched_ = false;
+        chatstore::saveAccount({ account_, true });
+        addEntry(ChatEntry::Kind::note, "Signed in as " + account_ + ": the chat goes through the TestingPlayground "
+                                        "server, charged to your account" + (credit_.empty() ? "" : " (" + credit_ + ")")
+                                        + ".");
+    }
+
+    void ChatAgent::signOut()
+    {
+        std::string token;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            token = token_;
+            if (token.empty())
+                token = chatstore::loadToken().value_or("");
+            const bool had = !token.empty() || chatstore::hasToken();
+            chatstore::forgetToken();
+            token_.clear();
+            credit_.clear();
+            accountProblem_.clear();
+            signInError_.clear();
+            const bool key = !key_.empty() || chatstore::hasKey();
+            if (useAccount_ && key)
+            {
+                useAccount_ = false;               // the key is what is left
+                modelsFetched_ = false;
+            }
+            chatstore::saveAccount({ account_, useAccount_ });
+            if (had)
+                addEntry(ChatEntry::Kind::note, std::string("Signed out")
+                                                    + (key && !useAccount_ ? ": the chat uses your API key." : "."));
+            touch();
+        }
+        if (token.empty())
+            return;
+        // The server ends the session too (a token copied elsewhere stops working), in the background.
+        queueAuth([this, token] {
+            claude::Transport* transport = nullptr;
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                transport = transport_.get();
+            }
+            const std::string host = claude::serverHost();
+            transport->post(host, "/auth/logout", "{}", headersFor({ true, host, token }), {}, authCancel_);
+        });
     }
 
     void ChatAgent::setModel(const std::string& id)
@@ -722,12 +936,30 @@ namespace testingplaygroundsynth
         worker_ = std::thread([this] { runTurn(); });
     }
 
-    void ChatAgent::ensureKey()
+    void ChatAgent::ensureAccess()
     {
         const std::lock_guard<std::mutex> lock(mutex_);
+        loadAccess();
+    }
+
+    void ChatAgent::loadAccess()
+    {
+        std::string why;
+        if (useAccount_)
+        {
+            if (!token_.empty())
+                return;
+            if (const auto t = chatstore::loadToken(&why))
+            {
+                token_ = *t;
+                accountProblem_.clear();
+            }
+            else if (chatstore::hasToken())
+                accountProblem_ = why;
+            return;
+        }
         if (!key_.empty())
             return;
-        std::string why;
         if (const auto k = chatstore::loadKey(&why))
         {
             key_ = *k;
@@ -737,6 +969,44 @@ namespace testingplaygroundsynth
         {
             keyProblem_ = why;
         }
+    }
+
+    ChatAgent::Access ChatAgent::access() const
+    {
+        if (useAccount_)
+            return { true, claude::serverHost(), token_ };
+        return { false, claude::kHost, key_ };
+    }
+
+    claude::Headers ChatAgent::headersFor(const Access& a)
+    {
+        if (a.account)
+            return { { "authorization", "Bearer " + a.secret }, { "anthropic-version", claude::kApiVersion } };
+        return { { "x-api-key", a.secret }, { "anthropic-version", claude::kApiVersion } };
+    }
+
+    // A 401: through the server the sign-in is over (expired, signed out elsewhere, or the admin's doing), so its token
+    // goes, unless another sign-in has replaced it since. With the key (from /v1/models), the key is refused: it stays,
+    // and the chat says so until the user replaces or removes it.
+    void ChatAgent::refused(const Access& a, int status, const std::string& why)
+    {
+        if (status != 401)
+            return;
+        if (!a.account)
+        {
+            keyProblem_ = why;
+            touch();
+            return;
+        }
+        if (token_ != a.secret)
+            return;
+        token_.clear();
+        credit_.clear();
+        if (chatstore::loadToken().value_or("") == a.secret)
+            chatstore::forgetToken();
+        accountProblem_ = why;
+        modelsFetched_ = false;
+        touch();
     }
 
     // ---- the plugin's state, for Claude -------------------------------------------------------------------------------
@@ -943,25 +1213,36 @@ namespace testingplaygroundsynth
 
     // ---- the turn -----------------------------------------------------------------------------------------------------
     bool ChatAgent::streamOnce(const std::string& body, const std::string& beta, claude::MessageBuilder& builder,
-                               int& status, std::string& error, int& retryAfter)
+                               int& status, std::string& error, int& retryAfter, bool& viaServer)
     {
-        std::string key;
+        Access a;
         claude::Transport* transport = nullptr;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            key = key_;
+            loadAccess();                          // the other access, when the user switched during the turn
+            a = access();
             transport = transport_.get();
+            viaServer = a.account;
+            if (a.secret.empty())
+            {
+                // Signed out (or the key removed) while the turn ran: nothing to send it with.
+                status = 401;
+                retryAfter = -1;
+                error = a.account ? (accountProblem_.empty() ? std::string("You are signed out. Sign in again.")
+                                                             : accountProblem_)
+                                  : std::string("The API key was removed. Add it again.");
+                return false;
+            }
             requests_.push_back(body);
             if (requests_.size() > 64)
                 requests_.erase(requests_.begin());
         }
-        claude::Headers headers{ { "x-api-key", key },
-                                 { "anthropic-version", claude::kApiVersion },
-                                 { "content-type", "application/json" } };
+        claude::Headers headers = headersFor(a);
+        headers.emplace_back("content-type", "application/json");
         if (!beta.empty())
             headers.emplace_back("anthropic-beta", beta);
         claude::SseParser sse;
-        const claude::HttpResult r = transport->post("/v1/messages", body, headers,
+        const claude::HttpResult r = transport->post(a.host, "/v1/messages", body, headers,
                                                      [&](std::string_view chunk) {
                                                          sse.feed(chunk, [&](const std::string& ev, const std::string& data) {
                                                              builder.event(ev, data);
@@ -973,7 +1254,14 @@ namespace testingplaygroundsynth
         retryAfter = r.retryAfterSeconds;
         if (r.status != 200)
         {
-            error = r.status == 0 ? r.error : claude::apiError(r.status, r.body);
+            error = r.status == 0 ? r.error
+                    : a.account   ? claude::serverError(r.status, r.body)
+                                  : claude::apiError(r.status, r.body);
+            if (r.status == 401 && a.account)
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                refused(a, r.status, error);
+            }
             return false;
         }
         error.clear();
@@ -982,23 +1270,22 @@ namespace testingplaygroundsynth
 
     void ChatAgent::fetchModels()
     {
-        std::string key;
+        Access a;
         claude::Transport* transport = nullptr;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            if (modelsFetched_ || key_.empty())
+            a = access();
+            if (modelsFetched_ || a.secret.empty())
                 return;
             modelsFetched_ = true;
-            key = key_;
             transport = transport_.get();
         }
-        const claude::Headers headers{ { "x-api-key", key }, { "anthropic-version", claude::kApiVersion } };
-        const claude::HttpResult r = transport->get("/v1/models?limit=100", headers, cancel_);
+        // Through the server: only the models it can charge for.
+        const claude::HttpResult r = transport->get(a.host, "/v1/models?limit=100", headersFor(a), cancel_);
         if (r.status == 401)
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            keyProblem_ = claude::apiError(r.status, r.body);
-            touch();
+            refused(a, r.status, a.account ? claude::serverError(r.status, r.body) : claude::apiError(r.status, r.body));
             return;
         }
         if (r.status != 200)
@@ -1045,16 +1332,49 @@ namespace testingplaygroundsynth
         touch();
     }
 
-    void ChatAgent::runTurn()
+    // GET /account: the credit left, for the footer.
+    void ChatAgent::fetchAccount()
     {
-        ensureKey();
+        Access a;
+        claude::Transport* transport = nullptr;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            if (key_.empty())
+            a = access();
+            if (!a.account || a.secret.empty())
+                return;
+            transport = transport_.get();
+        }
+        const claude::HttpResult r = transport->get(a.host, "/account", headersFor(a), cancel_);
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (r.status == 401)
+        {
+            refused(a, r.status, claude::serverError(r.status, r.body));
+            return;
+        }
+        const juce::var v = r.status == 200 ? claude::parseJson(r.body) : juce::var();
+        if (token_ != a.secret || !v.hasProperty("balance_usd"))
+            return;
+        credit_ = creditText(static_cast<double>(v.getProperty("balance_usd", 0.0)));
+        if (const std::string named = str(v, "username"); !named.empty())
+            account_ = named;
+        touch();
+    }
+
+    void ChatAgent::runTurn()
+    {
+        ensureAccess();
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (useAccount_ ? token_.empty() : key_.empty())
             {
-                addEntry(ChatEntry::Kind::error, keyProblem_.empty()
-                                                     ? "Add your Anthropic API key (KEY, above) to chat with Claude."
-                                                     : "The saved API key cannot be used: " + keyProblem_);
+                const bool key = !key_.empty() || chatstore::hasKey();
+                addEntry(ChatEntry::Kind::error,
+                         useAccount_ ? (!accountProblem_.empty()
+                                            ? "Sign in again (KEY, above): " + accountProblem_
+                                            : std::string("Sign in (KEY, above) to chat with Claude")
+                                                  + (key ? ", or switch to your API key there." : ", or add your own Anthropic API key there."))
+                                     : (keyProblem_.empty() ? "Add your Anthropic API key (KEY, above) to chat with Claude."
+                                                            : "The saved API key cannot be used: " + keyProblem_));
                 busy_ = false;
                 activity_.clear();
                 return;
@@ -1131,7 +1451,8 @@ namespace testingplaygroundsynth
                 };
                 builder = std::make_unique<claude::MessageBuilder>(std::move(cb));
                 int status = 0, retryAfter = -1;
-                ok = streamOnce(body, beta, *builder, status, error, retryAfter);
+                bool viaServer = false;
+                ok = streamOnce(body, beta, *builder, status, error, retryAfter, viaServer);
                 if (cancel_.load())
                     break;
                 // A stream that broke off (the connection dropped, or the server was overloaded mid-answer) is asked
@@ -1173,7 +1494,9 @@ namespace testingplaygroundsynth
                     --attempt;                     // the standard request gets attempts of its own
                     continue;
                 }
-                const bool retryable = brokeOff || status == 0 || status == 429 || status == 529 || status >= 500;
+                // The server's own 502 (Anthropic refused its key) does not pass with time.
+                const bool retryable = brokeOff || status == 0 || status == 429 || status == 529
+                                    || (status >= 500 && !(viaServer && status == 502));
                 if (!retryable || attempt + 1 == kMaxAttempts)
                     break;
                 if (brokeOff)
@@ -1358,6 +1681,9 @@ namespace testingplaygroundsynth
                                                     + " requests; send a message to let it carry on.");
             }
         }
+
+        if (!cancel_.load())
+            fetchAccount();                        // the credit left, for the footer (through the account only)
 
         const std::lock_guard<std::mutex> lock(mutex_);
         busy_ = false;

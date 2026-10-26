@@ -9,7 +9,13 @@
 //   TAMPER  one byte changed anywhere (magic, salt, IV, ciphertext, HMAC), or the file cut short: the key does not
 //           load, and loadKey says why
 //   FORGET  forgetKey deletes the file: no key
+//   TOKEN   the server's sign-in token, as the key: plausibleToken takes "tpb_" and 20 to 200 letters, digits, '-' and
+//           '_'; a token that is not one is refused and writes nothing; saved, account-token.bin is "FPK1", salt, IV,
+//           whole AES blocks and an HMAC, holds no 12 characters of the token, is 0600, and loads back the same; one
+//           byte changed, it does not load (with why); forgetToken deletes it, and leaves the key alone
 //   CHOICE  the model, thinking level and fast mode round-trip; a damaged chat.json loads as no choice
+//   ACCOUNT the username and which access the chat uses round-trip; saving the choice keeps them and saving them keeps
+//           the choice; never chosen, the chat uses the account unless only a key is stored
 //   SANDBOX under CTest (<ENV_PREFIX>PREFS_DIR set) the default folder is the sandbox's chat/, never the user's
 #include "Probe.h"
 
@@ -138,6 +144,46 @@ PROBE(plugin, chatstore)
     P.eq("forget.file_gone", keyFile.exists() ? 1 : 0, 0);
     P.eq("forget.has_key", store::hasKey() ? 1 : 0, 0);
 
+    // TOKEN
+    {
+        const juce::File tokenFile = dir.getChildFile("account-token.bin");
+        const std::string token = fake::fakeToken();
+        P.eq("token.shape_fake", store::plausibleToken(token) ? 1 : 0, 1);
+        P.eq("token.shape_prefix_only", store::plausibleToken("tpb_") ? 1 : 0, 0);
+        P.eq("token.shape_short", store::plausibleToken("tpb_abc") ? 1 : 0, 0);
+        P.eq("token.shape_key", store::plausibleToken(key) ? 1 : 0, 0);
+        P.eq("token.shape_slash", store::plausibleToken("tpb_0123456789/abcdefghijklmnop") ? 1 : 0, 0);
+        P.eq("token.shape_longest", store::plausibleToken("tpb_" + std::string(200, 'a')) ? 1 : 0, 1);
+        P.eq("token.shape_long", store::plausibleToken("tpb_" + std::string(201, 'a')) ? 1 : 0, 0);
+        P.eq("token.none", store::hasToken() || store::loadToken().has_value() ? 1 : 0, 0);
+        why.clear();
+        P.eq("token.refuses_non_token", store::saveToken("hello", &why) ? 1 : 0, 0);
+        P.eq("token.refusal_why", why.empty() ? 0 : 1, 1);
+        P.eq("token.refusal_writes_nothing", tokenFile.exists() ? 1 : 0, 0);
+        store::saveKey(key);
+        P.eq("token.saves", store::saveToken(token, &why) ? 1 : 0, 1);
+        const juce::MemoryBlock t = readAll(tokenFile);
+        P.eq("token.magic", t.getSize() >= 4 && std::string(static_cast<const char*>(t.getData()), 4) == "FPK1" ? 1 : 0, 1);
+        const int64_t tc = static_cast<int64_t>(t.getSize()) - 4 - 16 - 16 - 32;
+        P.eq("token.whole_blocks", tc > 0 && tc % 16 == 0 ? 1 : 0, 1);
+        int tokenLeaks = 0;
+        for (std::size_t p = 0; p + 12 <= token.size(); ++p)
+            tokenLeaks += contains(t, token.substr(p, 12)) ? 1 : 0;
+        P.eq("token.no_plaintext", tokenLeaks, 0);
+        P.eq("token.file_0600", mode(tokenFile), 0600);
+        P.eq("token.round_trip", store::loadToken().value_or("") == token ? 1 : 0, 1);
+        juce::MemoryBlock bad = t;
+        static_cast<char*>(bad.getData())[40] ^= 0x20;
+        tokenFile.replaceWithData(bad.getData(), bad.getSize());
+        why.clear();
+        P.eq("token.tamper_refused", store::loadToken(&why).has_value() ? 1 : 0, 0);
+        P.eq("token.tamper_why", why.empty() ? 0 : 1, 1);
+        tokenFile.replaceWithData(t.getData(), t.getSize());
+        P.eq("token.forgets", store::forgetToken() && !tokenFile.exists() && !store::hasToken() ? 1 : 0, 1);
+        P.eq("token.key_left_alone", store::loadKey().value_or("") == key ? 1 : 0, 1);
+        store::forgetKey();
+    }
+
     // CHOICE
     store::saveChoice({ "claude-sonnet-5-5", "high", true });
     const store::Choice c = store::loadChoice();
@@ -149,6 +195,25 @@ PROBE(plugin, chatstore)
     dir.getChildFile("chat.json").replaceWithText("{ not json");
     const store::Choice damaged = store::loadChoice();
     P.eq("choice.damaged_is_none", damaged.model.empty() && damaged.effort.empty() && !damaged.fast ? 1 : 0, 1);
+
+    // ACCOUNT
+    {
+        dir.getChildFile("chat.json").deleteFile();
+        P.eq("account.never_chosen_nothing", store::loadAccount().useAccount ? 1 : 0, 1);
+        store::saveKey(key);
+        P.eq("account.never_chosen_key_only", store::loadAccount().useAccount ? 1 : 0, 0);
+        store::saveToken(fake::fakeToken());
+        P.eq("account.never_chosen_both", store::loadAccount().useAccount ? 1 : 0, 1);
+        store::saveAccount({ "alice", false });
+        P.eq("account.round_trip", store::loadAccount().username == "alice" && !store::loadAccount().useAccount ? 1 : 0, 1);
+        store::saveChoice({ "claude-haiku-5-5", "low", false });
+        P.eq("account.choice_keeps_it", store::loadAccount().username == "alice" && !store::loadAccount().useAccount ? 1 : 0, 1);
+        store::saveAccount({ "bob", true });
+        P.eq("account.keeps_choice", store::loadChoice().model == "claude-haiku-5-5" && store::loadChoice().effort == "low" ? 1 : 0, 1);
+        P.eq("account.chosen", store::loadAccount().username == "bob" && store::loadAccount().useAccount ? 1 : 0, 1);
+        store::forgetKey();
+        store::forgetToken();
+    }
 
     store::setDirectoryForTests(juce::File());
     dir.getParentDirectory().deleteRecursively();

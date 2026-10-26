@@ -1,11 +1,19 @@
 // Source/plugin/ChatPort.h: what the editor's chat reaches (JUCE-free; message thread). The processor's ChatAgent
 // implements it (ChatAgent.h): a conversation with Claude, which can read and write the program's files, run them,
-// set the dials and answer questions, through the Claude API with the user's own key.
+// set the dials and answer questions, through the Claude API: with the user's own key, or through the TestingPlayground
+// server once the user has signed in (the server's key, charged to the account's credit). Both can be stored; the
+// chat uses the one set up last (useAccount).
 //
 //   chatRevision()   bumps whenever anything below changes (a streamed word included)
-//   chatState()      the conversation as the view shows it, the models and the choice, the key's state
-//   saveKey()        stores the key, encrypted (ChatStore.h); false, with why, for one that is not a key
+//   chatState()      the conversation as the view shows it, the models and the choice, the key's and the account's
+//                    state
+//   saveKey()        stores the key, encrypted (ChatStore.h), and uses it; false, with why, for one that is not a key
 //   forgetKey()      deletes the stored key
+//   signIn()         signs in to the server in the background (chatState().signingIn until it answers); then the token
+//                    is stored, encrypted, and the chat uses the account, or signInError says why not. The password
+//                    is sent once and kept nowhere
+//   signOut()        forgets the token (and ends the session on the server); the chat uses the key, if one is stored
+//   useAccount()     which of the two stored the chat uses: true the account, false the key
 //   setModel()       a model of chatState().models; setEffort() a thinking level that model has; setFast() fast mode,
 //                    on the models that take it. All three machine-wide
 //   send()           a message from the user; Claude answers (and works) in the background
@@ -49,6 +57,13 @@ namespace testingplaygroundsynth
     {
         bool hasKey = false;
         std::string keyProblem;               // why the stored key cannot be used ("" when it can)
+        bool signedIn = false;                // a sign-in to the server is stored
+        std::string account;                  // its username (the last one signed in, after signing out)
+        std::string accountProblem;           // why the sign-in no longer works ("" when it does)
+        std::string credit;                   // "$4.96 credit left", once the server has said
+        bool useAccount = true;               // the chat goes through the account (else the key)
+        bool signingIn = false;               // a sign-in is waiting for the server
+        std::string signInError;              // why the last sign-in failed ("" when it did not)
         bool busy = false;                    // Claude is working on a turn
         std::string activity;                 // what it is doing: "THINKING", "WRITING filters.fm", ...
         std::vector<ChatEntry> entries;
@@ -57,6 +72,9 @@ namespace testingplaygroundsynth
         std::string effort;                   // the chosen thinking level
         bool fast = false;                    // fast mode chosen (it applies on a model that takes it)
         std::string usage;                    // the last reply's tokens, for the footer
+
+        // The chat has what it needs to send: the account it uses is signed in, or the key it uses is stored.
+        bool ready() const noexcept { return useAccount ? signedIn : hasKey; }
     };
 
     class ChatPort
@@ -69,6 +87,9 @@ namespace testingplaygroundsynth
 
         virtual bool saveKey(const std::string& key, std::string& why) = 0;
         virtual void forgetKey() = 0;
+        virtual void signIn(const std::string& username, const std::string& password) = 0;
+        virtual void signOut() = 0;
+        virtual void useAccount(bool account) = 0;
         virtual void setModel(const std::string& id) = 0;
         virtual void setEffort(const std::string& effort) = 0;
         virtual void setFast(bool on) = 0;
