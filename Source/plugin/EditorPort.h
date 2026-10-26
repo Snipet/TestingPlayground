@@ -103,6 +103,10 @@ namespace testingplayground
         virtual bool panelView() const = 0;
         virtual void setPanelView(bool on) = 0;
 
+        // Whether the chat's column is open (else folded into a rail at the right), kept in the session.
+        virtual bool chatOpen() const = 0;
+        virtual void setChatOpen(bool open) = 0;
+
         // The pages the panel's interface shows: each tabs element's chosen page (the tabs in the order the .gui has
         // them), by its title. Kept in the session, so a reopened editor and a reloaded session show them again.
         virtual std::vector<std::string> guiPages() const = 0;

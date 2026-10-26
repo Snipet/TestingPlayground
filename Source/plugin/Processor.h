@@ -16,7 +16,7 @@
 //     act on the draft, RUN and the dials through ChatHost, from the agent's thread (the draft under programMutex_,
 //     a dial queued for poll()).
 //   - the editor's size, as the user left it (the editor is resizable), its view and its interface's pages, kept in the
-//     session (<EDITOR w=".." h=".." view="panel"> with a <PAGE title=".."/> a tabs element).
+//     session (<EDITOR w=".." h=".." view="panel" chat="closed"> with a <PAGE title=".."/> a tabs element).
 //
 // What a host may do, and what the Engine sees of it:
 //   - a block larger than prepareToPlay announced: the Engine gets it in parts of at most that size;
@@ -160,6 +160,8 @@ namespace testingplayground
         ChatPort& chat() override { return chat_; }
         bool panelView() const override { return panelView_.load(); }
         void setPanelView(bool on) override { panelView_.store(on); }
+        bool chatOpen() const override { return chatOpen_.load(); }
+        void setChatOpen(bool open) override { chatOpen_.store(open); }
         void playNote(int note, float velocity) override;
         std::vector<std::string> guiPages() const override;
         void setGuiPages(const std::vector<std::string>& titles) override;
@@ -209,6 +211,7 @@ namespace testingplayground
         std::atomic<uint32_t> alerts_{ 0 };
         std::atomic<int> editorW_{ 0 }, editorH_{ 0 };
         std::atomic<bool> panelView_{ false };                       // the editor's PANEL view, in the session
+        std::atomic<bool> chatOpen_{ true };                         // its chat's column open, in the session
         mutable std::mutex pagesMutex_;
         std::vector<std::string> guiPages_;                      // its interface's pages (guiPages), in the session
         double alertsAt_ = 0.0;                                  // when alerts_ last gained a bit (ms)

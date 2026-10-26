@@ -15,6 +15,7 @@
 //   gui.chat.paper.png    the conversation in PAPER
 //   gui.chat.small.png    the panel at its least size
 //   gui.chat.large.png    the panel large
+//   gui.chat.folded.png   the chat folded into its rail, an answer waiting (the dot)
 // and checks:
 //   EMPTY    with neither a sign-in nor a key the empty chat has a Sign in button (which opens the access dialog on its
 //            account tab), an API key button (on its API key tab) and suggestions
@@ -47,6 +48,9 @@
 //   NEW      NEW asks first, then forgets the conversation; a suggestion goes into the message box, unsent; Tab leaves
 //            the message box
 //   SCROLL   a conversation taller than the view scrolls with the wheel, and the round button jumps back to its end
+//   COLLAPSE the header's chevron folds the chat into a rail (the processor keeps it, its state too): the editor takes
+//            the room, the chat's items go (the message box among them); an answer while folded lights the rail's dot;
+//            the rail's button opens the chat again, the dot gone, the answer in it, the editor as wide as before
 //   RESIZE   a size below the least is raised to it; at the least size (with twelve files, their tabs narrowed) and at
 //            a large one every item lies inside the panel, the chat's column right of the editor; the editor and the conversation grow with the height; the
 //            processor keeps the editor's size in the session
@@ -688,6 +692,41 @@ PROBE(gui, chat)
             clickAt(host, *jump);
         host.settle();
         P.eq("scroll.jumped_to_end", view.atEnd() ? 1 : 0, 1);
+    }
+
+    // ---- COLLAPSE ------------------------------------------------------------------------------------------------------
+    {
+        const float editorW = panel.editor().bounds().w;
+        const funkgui::Point fold = panel.centreOfChatToggle();
+        P.eq("collapse.toggle_in_header", fold.x > panel.chatCard().x && fold.y < panel.chatCard().y + 40.0f ? 1 : 0, 1);
+        clickAt(host, fold);
+        host.settle();
+        P.eq("collapse.folded", !panel.chatOpen() && !processor.editorPort().chatOpen() ? 1 : 0, 1);
+        P.le("collapse.rail", static_cast<double>(panel.chatCard().w), 48.0);
+        P.ge("collapse.editor_wider", static_cast<double>(panel.editor().bounds().w - editorW), 250.0);
+        bool input = false;
+        for (const funkgui::A11yItem& a : host.accessibility())
+            input = input || a.title == "Message to Claude";
+        P.eq("collapse.chat_hidden", input ? 0 : 1, 1);
+        P.eq("collapse.toggle_on_rail", panel.chatCard().contains(panel.centreOfChatToggle()) ? 1 : 0, 1);
+        // Claude writes while the chat is folded: the rail's dot.
+        script->add(fake::Response::ok(fake::Sse().start().text("An answer while folded.").end()));
+        processor.chatAgent().send("while folded");
+        settleChat(processor, host);
+        P.eq("collapse.unread", panel.chatUnread() ? 1 : 0, 1);
+        writePng(P, host, "gui.chat.folded.png");
+        {
+            juce::MemoryBlock state;
+            processor.getStateInformation(state);
+            tp::Processor second;
+            second.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+            P.eq("collapse.in_session", second.editorPort().chatOpen() ? 0 : 1, 1);
+        }
+        clickAt(host, panel.centreOfChatToggle());
+        host.settle();
+        P.eq("collapse.opened", panel.chatOpen() && !panel.chatUnread() && panel.chatCard().w > 300.0f ? 1 : 0, 1);
+        P.near("collapse.editor_back", static_cast<double>(panel.editor().bounds().w), static_cast<double>(editorW), 0.5);
+        P.eq("collapse.answer_there", has(panel.transcript(), "An answer while folded.") ? 1 : 0, 1);
     }
 
     // ---- RESIZE --------------------------------------------------------------------------------------------------------

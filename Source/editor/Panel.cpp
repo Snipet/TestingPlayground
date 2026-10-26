@@ -29,6 +29,7 @@
 #include <funkgui/core/TypeScale.h>
 #include <funkgui/gpu/ShaderLibrary.h>
 #include <funkgui/panel/HostServices.h>
+#include <funkgui/prefs/UiPreferences.h>
 #include <funkgui/text/FontService.h>
 #include <funkgui/text/Highlighter.h>
 #include <funkgui/text/LineEdit.h>
@@ -171,25 +172,31 @@ namespace testingplayground::ui
     {
         // ---- layout (logical px) ----------------------------------------------------------------------------------
         constexpr float kMargin = 20.0f;
-        constexpr float kTitleTop = 17.0f;
-        constexpr float kSubtitleGap = 14.0f;
-        constexpr float kThemeW = 128.0f;
-        constexpr float kHeaderRuleY = 46.0f;
-        constexpr float kToolbarY = 56.0f;
-        constexpr float kButtonH = 22.0f;
-        constexpr float kTabsY = 88.0f;                  // the files' tabs, over the editor
-        constexpr float kEditorY = kTabsY + 26.0f;
+        // The top bar: the product, the preset, the view, the load and the theme. Under it two cards: the program's
+        // (its tabs and actions, the editor or the panel, the problems, the dials) and the chat's.
+        constexpr float kTopBarY = 10.0f, kTopBarH = 40.0f;
+        constexpr float kTopButtonH = 28.0f;             // the top bar's pills
+        constexpr float kMainY = kTopBarY + kTopBarH + 10.0f;   // the cards' top
+        constexpr float kInset = 10.0f;                  // inside the program's card
+        constexpr float kActionH = 28.0f;                // its header's first row: the status and the actions
+        constexpr float kActionsY = kMainY + 6.0f;
+        constexpr float kTabsY = kActionsY + kActionH + 4.0f;   // its second: the files' tabs, over the editor
+        constexpr float kEditorY = kTabsY + 26.0f + 6.0f;
+        constexpr float kSegmentW = 84.0f;               // a half of the Code / Panel switch
+        constexpr float kPresetW = 300.0f;               // the preset pill, at most
         constexpr float kProblemRowH = 15.0f;
         constexpr float kPlaceW = 150.0f;                // a problem's file, line and column
         constexpr int   kProblemRows = 4;
-        constexpr float kFooterH = 36.0f;
-        constexpr float kBottomGap = 12.0f;              // over the footer's rule
+        constexpr float kFooterH = 30.0f;
+        constexpr float kBottomGap = 10.0f;              // over the status bar
         // The chat's column, at the right.
         constexpr float kChatShare = 0.32f;              // of the width
         constexpr float kGuiScrollGutter = 8.0f;         // a .gui interface's scroll bar, at its area's right
-        constexpr float kChatMinW = 340.0f;
+        constexpr float kChatMinW = 330.0f;
         constexpr float kChatMaxW = 560.0f;
-        constexpr float kChatGap = 24.0f;                // between the columns (the rule in its middle)
+        constexpr float kChatGap = 12.0f;                // between the two cards
+        constexpr float kChatRailW = 44.0f;              // the chat folded: its rail's width
+        constexpr float kChatRailGap = 12.0f;            // and the gap before it
         constexpr float kCardPad = 10.0f;                // inside the chat's card
         constexpr float kCardRadius = 14.0f;
         constexpr float kIconButton = 28.0f;             // the header's new chat and key
@@ -659,13 +666,13 @@ namespace testingplayground::ui
         // keeps it, Escape cancels), the close box closes it (asking first when it has text). The tab of a file the
         // last run's errors name has a mark before its name. Each file has an editor of its own, so its caret, scroll
         // and undo steps stay with it.
-        constexpr float kTabH = 22.0f;
+        constexpr float kTabH = 26.0f;
         constexpr float kTabPad = 12.0f;                 // before a tab's name, and after it
         constexpr float kTabCloseW = 14.0f;              // a closable tab's close box, after its name
         constexpr float kTabMinW = 64.0f;
         constexpr float kTabNarrowW = 44.0f;             // the least a tab narrows to when many do not fit
         constexpr float kTabMaxW = 150.0f;
-        constexpr float kTabGap = 2.0f;
+        constexpr float kTabGap = 4.0f;
         constexpr float kNewTabW = 24.0f;
         constexpr uint64_t kStructureStep = uint64_t{ 1 } << 40;   // FilesItem::revision: a change of the tabs
     }
@@ -952,60 +959,59 @@ namespace testingplayground::ui
             ed.draw(c, th, ring);
             drawMarks(c, th);
 
+            // The tabs: pills, the shown one raised, a file the last run's errors name marked before its name.
             const funkgui::Canvas::Scope s(c, kTabTag, false);
-            c.hairlineH(bar_.x, bar_.bottom() - 1.0f, bar_.w, th.ink16);
+            const chat::Palette p = chat::palette(th);
+            const funkgui::TextStyle& st = chat::kSmall;
             for (int i = 0; i < count(); ++i)
             {
                 const funkgui::Rect r = tabRect(i);
                 const bool shown = i == active_;
                 const bool hover = r.contains(pointer_);
                 if (shown)
-                {
-                    c.rrect4(r.x, r.y, r.w, r.h, 2.0f, 2.0f, 0.0f, 0.0f, th.ground, 1.0f, th.ink16);
-                    c.rrect(r.x + 1.0f, r.bottom() - 2.0f, r.w - 2.0f, 2.0f, 0.0f, th.ink70);
-                }
-                const float textTop = c.capCentreTop(r.centreY(), type::kMicro);
+                    c.rrect(r.x, r.y, r.w, r.h, 8.0f, p.composer, 1.0f, p.composerEdge);
+                else if (hover)
+                    c.rrect(r.x, r.y, r.w, r.h, 8.0f, p.hover);
+                const float textTop = c.capCentreTop(r.centreY(), st);
                 if (hasErrors(name(i)))
-                    c.disc(r.x + 6.0f, r.centreY(), 2.0f, th.signal);
+                    c.disc(r.x + 6.0f, r.centreY(), 2.5f, p.danger);
                 const float pad = tabPad(i);
                 const float nameW = r.w - 2.0f * pad - (closeShown(i) ? kTabCloseW : 0.0f);
                 if (i == renaming_)
                 {
                     // The name being edited: its text, the selection (all of it, until a key), the caret.
                     const std::string& b = edit_.buffer;
-                    const float w = c.textWidth(b.c_str(), type::kMicro);
+                    const float w = c.textWidth(b.c_str(), st);
                     if (edit_.allSelected && !b.empty())
-                        c.rrect(r.x + pad - 1.0f, r.y + 4.0f, std::min(w, nameW) + 2.0f, r.h - 8.0f, 1.0f,
-                                th.accentDim);
-                    c.text(fitText(c, b, type::kMicro, nameW).c_str(), r.x + pad, textTop, type::kMicro,
-                           why_.empty() ? th.ink100 : th.signal);
+                        c.rrect(r.x + pad - 1.0f, r.y + 5.0f, std::min(w, nameW) + 2.0f, r.h - 10.0f, 2.0f, th.accentDim);
+                    c.text(fitText(c, b, st, nameW).c_str(), r.x + pad, textTop, st, why_.empty() ? p.text : p.danger);
                     const std::string head = b.substr(0, static_cast<std::size_t>(std::clamp(
                                                              edit_.caret, 0, static_cast<int>(b.size()))));
-                    const float cx = r.x + pad + std::min(c.textWidth(head.c_str(), type::kMicro), nameW);
-                    c.rrect(cx, r.y + 4.0f, 1.5f, r.h - 8.0f, 0.0f, th.accent);
+                    const float cx = r.x + pad + std::min(c.textWidth(head.c_str(), st), nameW);
+                    c.rrect(cx, r.y + 5.0f, 1.5f, r.h - 10.0f, 0.0f, p.accent);
                 }
                 else
                 {
-                    const funkgui::Col ink = hover ? th.accent : (shown ? th.ink100 : th.ink52);
+                    const funkgui::Col ink = shown || hover ? p.text : p.soft;
                     // A narrowed tab keeps the name's first letters, without an ellipsis (the footer has it whole).
                     std::string label = name(i);
                     if (narrow(i))
-                        while (label.size() > 1 && c.textWidth(label.c_str(), type::kMicro) > nameW)
+                        while (label.size() > 1 && c.textWidth(label.c_str(), st) > nameW)
                             label.pop_back();
                     else
-                        label = fitText(c, label, type::kMicro, nameW);
-                    c.text(label.c_str(), r.x + pad, textTop, type::kMicro, ink);
+                        label = fitText(c, label, st, nameW);
+                    c.text(label.c_str(), r.x + pad, textTop, st, ink);
                 }
                 if (closeShown(i))
-                    drawCross(c, closeRect(i), 3.0f, closeRect(i).contains(pointer_) ? th.accent : th.ink32);
+                    drawCross(c, closeRect(i), 3.0f, closeRect(i).contains(pointer_) ? p.text : p.faint);
             }
             if (canAdd())
             {
                 const funkgui::Rect n = newTabRect();
-                const funkgui::Col ink = n.contains(pointer_) ? th.accent : th.ink52;
-                const float cx = n.centreX(), cy = n.centreY();
-                c.rrect(cx - 4.0f, cy - 0.6f, 8.0f, 1.2f, 0.0f, ink);
-                c.rrect(cx - 0.6f, cy - 4.0f, 1.2f, 8.0f, 0.0f, ink);
+                const bool hot = n.contains(pointer_);
+                if (hot)
+                    c.rrect(n.x, n.y, n.w, n.h, 8.0f, p.hover);
+                chat::drawIcon(c, chat::Icon::plus, n.centreX(), n.centreY(), 10.0f, hot ? p.text : p.soft);
             }
         }
 
@@ -1251,8 +1257,7 @@ namespace testingplayground::ui
 
         float naturalWidth(int i) const
         {
-            const float w = funkgui::text::width(funkgui::FontService::get().atlas(), name(i).c_str(),
-                                                 funkgui::type::kMicro);
+            const float w = funkgui::text::width(funkgui::FontService::get().atlas(), name(i).c_str(), chat::kSmall);
             // 2 px over the name's width: the canvas measures it a hair wider than the atlas at some sizes.
             return std::clamp(w + 2.0f * kTabPad + (i > 0 ? kTabCloseW : 0.0f) + 2.0f, kTabMinW, kTabMaxW);
         }
@@ -1476,50 +1481,57 @@ namespace testingplayground::ui
     Panel::Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& port) : port_(port)
     {
         title_ = upper(product::kName);
-        subtitle_ = upper(product::kKind) + "  " + product::kVersion + "  FMINUS";
+        subtitle_ = std::string(product::kIsInstrument ? "Instrument" : "Effect") + "  v" + product::kVersion + "  FMinus";
         width_ = static_cast<float>(kDefaultWidth);
         height_ = static_cast<float>(kDefaultHeight);
         const auto idFor = [this] { return kA11yStride * static_cast<uint32_t>(items_.size() + 1); };
-        const auto cells = [](int n) { return std::vector<funkgui::Rect>(static_cast<std::size_t>(n)); };
         const auto add = [this](std::unique_ptr<Item> item) {
             items_.push_back(std::move(item));
             return static_cast<int>(items_.size()) - 1;
         };
 
-        // The toolbar's buttons.
-        runItem_ = add(std::make_unique<CellsItem>(
-            std::make_unique<ButtonModel>("RUN", "Run the program", [this] { runNow(); }), cells(1),
-            funkgui::CellStyle::boxed, idFor(),
-            [](char* out, std::size_t n) { std::snprintf(out, n, "RUN   COMPILE THE PROGRAM AND PLAY IT (CMD-RETURN)"); }));
-        examplesItem_ = add(std::make_unique<CellsItem>(
-            std::make_unique<ButtonModel>("EXAMPLES", "Examples", [this] { openExamples(); }), cells(1),
-            funkgui::CellStyle::boxed, idFor(),
-            [](char* out, std::size_t n) { std::snprintf(out, n, "EXAMPLES   REPLACE THE TEXT WITH ONE, AND RUN IT"); }));
-        libraryItem_ = add(std::make_unique<CellsItem>(
-            std::make_unique<ButtonModel>("LIBRARY", "Library", [this] { openLibrary(); }), cells(1),
-            funkgui::CellStyle::boxed, idFor(),
-            [](char* out, std::size_t n) {
-                std::snprintf(out, n, "LIBRARY   A READY-MADE BUILDING BLOCK AS A TAB OF ITS OWN, #INCLUDED BY THE PROGRAM");
-            }));
-        presetsItem_ = add(std::make_unique<CellsItem>(
-            std::make_unique<ButtonModel>("PRESETS", "Presets", [this] { openPresets(); }), cells(1),
-            funkgui::CellStyle::boxed, idFor(),
-            [](char* out, std::size_t n) {
-                std::snprintf(out, n, "PRESETS   SAVE THE PROGRAM AND ITS DIALS ON THIS MAC, OR LOAD ONE");
-            }));
-        randomItem_ = add(std::make_unique<CellsItem>(
-            std::make_unique<ButtonModel>("RANDOM", "A random program", [this] { makeRandom(nextSeed()); }), cells(1),
-            funkgui::CellStyle::boxed, idFor(),
-            [](char* out, std::size_t n) {
-                std::snprintf(out, n, "RANDOM   A NEW PROGRAM FROM THE LIBRARY'S BUILDING BLOCKS, FOR INSPIRATION");
-            }));
+        // The program's card's actions (Run, Random, Library, Examples) and the top bar's controls (the preset, the
+        // view), as the chat's buttons are (ChatItems.h).
+        using TB = ButtonItem;
+        const auto button = [&](TB::Shape shape, chat::Icon icon, std::function<std::string()> label, bool chevron,
+                                std::function<TB::Look()> look, std::function<void()> act, std::string title,
+                                std::string footer) {
+            TB::Spec sp;
+            sp.shape = shape;
+            sp.icon = [icon] { return icon; };
+            sp.label = std::move(label);
+            sp.chevron = chevron;
+            sp.look = std::move(look);
+            sp.act = std::move(act);
+            sp.a11yTitle = std::move(title);
+            sp.spec = std::move(footer);
+            return add(std::make_unique<TB>(idFor(), std::move(sp)));
+        };
+        runItem_ = button(TB::Shape::pill, chat::Icon::play, [] { return std::string("Run"); }, false,
+                          [] { return TB::Look::primary; }, [this] { runNow(); }, "Run the program",
+                          "RUN   COMPILE THE PROGRAM AND PLAY IT (CMD-RETURN)");
+        examplesItem_ = button(TB::Shape::pill, chat::Icon::book, [] { return std::string("Examples"); }, true,
+                               [] { return TB::Look::ghost; }, [this] { openExamples(); }, "Examples",
+                               "EXAMPLES   REPLACE THE TEXT WITH ONE, AND RUN IT");
+        libraryItem_ = button(TB::Shape::pill, chat::Icon::blocks, [] { return std::string("Library"); }, true,
+                              [] { return TB::Look::ghost; }, [this] { openLibrary(); }, "Library",
+                              "LIBRARY   A READY-MADE BUILDING BLOCK AS A TAB OF ITS OWN, #INCLUDED BY THE PROGRAM");
+        randomItem_ = button(TB::Shape::pill, chat::Icon::dice, [] { return std::string("Random"); }, false,
+                             [] { return TB::Look::ghost; }, [this] { makeRandom(nextSeed()); }, "A random program",
+                             "RANDOM   A NEW PROGRAM FROM THE LIBRARY'S BUILDING BLOCKS, FOR INSPIRATION");
+        presetsItem_ = button(TB::Shape::pill, chat::Icon::list, [this] { return presetLabel(); }, true,
+                              [] { return TB::Look::outlined; }, [this] { openPresets(); }, "Presets",
+                              "PRESETS   SAVE THE PROGRAM AND ITS DIALS ON THIS MAC, OR LOAD ONE");
         panelView_ = port_.panelView();
-        viewItem_ = add(std::make_unique<CellsItem>(
-            std::make_unique<ViewModel>([this] { return panelView_; }, [this](bool on) { setPanelView(on); }), cells(2),
-            funkgui::CellStyle::boxed, idFor(),
-            [](char* out, std::size_t n) {
-                std::snprintf(out, n, "CODE / PANEL   THE EDITOR, OR THE PROGRAM'S PANEL ACROSS THE WHOLE COLUMN");
-            }));
+        chatOpen_ = port_.chatOpen();
+        viewItem_ = button(TB::Shape::pill, chat::Icon::code, [] { return std::string("Code"); }, false,
+                           [this] { return panelView_ ? TB::Look::ghost : TB::Look::raised; },
+                           [this] { setPanelView(false); }, "Code view",
+                           "CODE / PANEL   THE EDITOR, OR THE PROGRAM'S PANEL ACROSS THE WHOLE COLUMN");
+        panelViewItem_ = button(TB::Shape::pill, chat::Icon::dial, [] { return std::string("Panel"); }, false,
+                                [this] { return panelView_ ? TB::Look::raised : TB::Look::ghost; },
+                                [this] { setPanelView(true); }, "Panel view",
+                                "CODE / PANEL   THE EDITOR, OR THE PROGRAM'S PANEL ACROSS THE WHOLE COLUMN");
 
         // The editor, the problems under it, the dials under them.
         editorItem_ = add(std::make_unique<FilesItem>(funkgui::Rect{}, funkgui::Rect{}, idFor(), problems_,
@@ -1581,6 +1593,10 @@ namespace testingplayground::ui
         keyItem_ = add(std::make_unique<B>(
             idFor(), spec(B::Shape::square, [] { return chat::Icon::key; }, {}, false, {}, {}, [this] { openKeyDialog(); },
                           "Account or API key", "ACCESS   SIGN IN, OR USE YOUR OWN ANTHROPIC API KEY")));
+        chatToggleItem_ = add(std::make_unique<B>(
+            idFor(), spec(B::Shape::square, [this] { return chatOpen_ ? chat::Icon::chevronRight : chat::Icon::bubble; }, {},
+                          false, {}, {}, [this] { setChatOpen(!chatOpen_); }, "Fold or open the chat",
+                          "CHAT   FOLD IT AWAY FOR ROOM; THE RAIL AT THE RIGHT OPENS IT AGAIN")));
         {
             B::Spec sp = spec(B::Shape::pill, [] { return chat::Icon::person; }, [this] { return accountLabel(); }, false,
                               [] { return B::Look::ghost; }, {}, [this] { openKeyDialog(DialogTab::account); }, "Your account",
@@ -1629,24 +1645,41 @@ namespace testingplayground::ui
                           },
                           "Send or stop", "SEND   THE MESSAGE TO CLAUDE (RETURN IN THE MESSAGE BOX)   STOP ENDS ITS TURN")));
 
-        // THEME, in the header's right corner.
-        themeItem_ = add(std::make_unique<CellsItem>(
-            std::make_unique<funkgui::ThemeCells>(cells(2), nullptr, funkgui::Point{}, idFor()),
-            [this](char* out, std::size_t n) {
-                std::snprintf(out, n, "THEME   %s", funkgui::Theme::name(host_ != nullptr ? host_->themeIndex() : 0));
-            }));
+        // The theme (the top bar's right corner): one button that switches Graphite and Paper, machine-wide.
+        {
+            TB::Spec sp;
+            sp.shape = TB::Shape::square;
+            sp.icon = [this] { return (host_ != nullptr ? host_->themeIndex() : 0) == 0 ? chat::Icon::moon : chat::Icon::sun; };
+            sp.act = [this] {
+                const int now = host_ != nullptr ? host_->themeIndex() : 0;
+                funkgui::UiPreferences::get().setTheme(now == 0 ? 1 : 0);
+                dirty_ = true;
+            };
+            sp.a11yTitle = "Theme: Graphite or Paper";
+            sp.spec = "THEME   GRAPHITE (DARK) OR PAPER (LIGHT), FOR EVERY PLAYGROUND EDITOR ON THIS MAC";
+            themeItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
+        }
 
-        // ZOOM, in the footer's right corner; shown when the host offers zoom steps (the plugin's editor does).
-        auto zoom = std::make_unique<ZoomModel>();
-        ZoomModel* zoomModel = zoom.get();
-        zoomItem_ = add(std::make_unique<CellsItem>(
-            std::move(zoom), cells(ZoomModel::kMaxSteps), funkgui::CellStyle::text, idFor(),
-            [zoomModel](char* out, std::size_t n) {
-                const int a = zoomModel->active();
-                std::snprintf(out, n, "ZOOM   %s", a >= 0 ? zoomModel->label(a) : "");
-            },
-            [zoomModel] { return zoomModel->count() > 0; }));
-        zoom_ = zoomModel;
+        // The zoom (the status bar's right corner): a pill of the zoom in use, its menu the host's steps; shown when the
+        // host offers zoom steps (the plugin's editor does).
+        zoomModel_ = std::make_unique<ZoomModel>();
+        zoom_ = zoomModel_.get();
+        {
+            TB::Spec sp;
+            sp.shape = TB::Shape::pill;
+            sp.label = [this] {
+                const auto& z = *static_cast<const ZoomModel*>(zoom_);
+                const int a = z.active();
+                return std::string(a >= 0 ? z.label(a) : "Zoom");
+            };
+            sp.chevron = true;
+            sp.look = [] { return TB::Look::ghost; };
+            sp.shown = [this] { return static_cast<const ZoomModel*>(zoom_)->count() > 0; };
+            sp.act = [this] { openZoom(); };
+            sp.a11yTitle = "Zoom";
+            sp.spec = "ZOOM   THE EDITOR'S SIZE ON SCREEN";
+            zoomItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
+        }
 
         layout();
 
@@ -1666,28 +1699,49 @@ namespace testingplayground::ui
         const float footerTop = H - kFooterH;
         const float bottom = footerTop - kBottomGap;     // the dials' and the message box's bottom
 
-        // The columns.
-        chatW_ = std::clamp(std::round(W * kChatShare), kChatMinW, kChatMaxW);
+        // The columns: the chat about a third of the width, or, folded, a rail.
+        chatW_ = chatOpen_ ? std::clamp(std::round(W * kChatShare), kChatMinW, kChatMaxW) : kChatRailW;
         chatX_ = W - kMargin - chatW_;
-        leftW_ = chatX_ - kChatGap - kMargin;
+        leftW_ = chatX_ - (chatOpen_ ? kChatGap : kChatRailGap) - kMargin;
 
-        // The left column: the toolbar, the tabs and the editor, the problems, the dials.
-        static_cast<CellsItem&>(*items_[static_cast<std::size_t>(runItem_)])
-            .setCells({ { kMargin, kToolbarY, 64.0f, kButtonH } });
-        static_cast<CellsItem&>(*items_[static_cast<std::size_t>(examplesItem_)])
-            .setCells({ { kMargin + 72.0f, kToolbarY, 96.0f, kButtonH } });
-        static_cast<CellsItem&>(*items_[static_cast<std::size_t>(libraryItem_)])
-            .setCells({ { kMargin + 176.0f, kToolbarY, 88.0f, kButtonH } });
-        static_cast<CellsItem&>(*items_[static_cast<std::size_t>(randomItem_)])
-            .setCells({ { kMargin + 272.0f, kToolbarY, 80.0f, kButtonH } });
-        static_cast<CellsItem&>(*items_[static_cast<std::size_t>(presetsItem_)])
-            .setCells({ { kMargin + 360.0f, kToolbarY, 88.0f, kButtonH } });
-        static_cast<CellsItem&>(*items_[static_cast<std::size_t>(viewItem_)])
-            .setCells({ { kMargin + 464.0f, kToolbarY, 60.0f, kButtonH }, { kMargin + 526.0f, kToolbarY, 64.0f, kButtonH } });
+        // The top bar: the preset in its middle (clear of the product's name), the view's switch, the load and the
+        // theme at its right.
+        const auto at = [this](int i) -> ButtonItem& { return static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(i)]); };
+        const float barMid = kTopBarY + 0.5f * kTopBarH;
+        const float right = W - kMargin;
+        at(themeItem_).setBounds({ right - 8.0f - kIconButton, barMid - 0.5f * kIconButton, kIconButton, kIconButton });
+        const float segRight = right - 8.0f - kIconButton - 92.0f;        // the load's text between them
+        at(panelViewItem_).setBounds({ segRight - 3.0f - kSegmentW, barMid - 0.5f * (kTopButtonH - 6.0f), kSegmentW, kTopButtonH - 6.0f });
+        at(viewItem_).setBounds({ segRight - 3.0f - 2.0f * kSegmentW, barMid - 0.5f * (kTopButtonH - 6.0f), kSegmentW, kTopButtonH - 6.0f });
+        {
+            const funkgui::FontAtlasSdf& atlas = funkgui::FontService::get().atlas();
+            const float nameRight = kMargin + 50.0f + std::max(funkgui::text::width(atlas, product::kName, chat::kStrong),
+                                                               funkgui::text::width(atlas, subtitle_.c_str(), chat::kSmall));
+            const float segLeft = segRight - 3.0f - 2.0f * kSegmentW - 3.0f;
+            const float w = std::min(kPresetW, std::max(120.0f, segLeft - 24.0f - (nameRight + 24.0f)));
+            const float x = std::clamp(std::round(0.5f * (W - w)), nameRight + 24.0f, std::max(nameRight + 24.0f, segLeft - 24.0f - w));
+            at(presetsItem_).setBounds({ x, barMid - 0.5f * kTopButtonH, w, kTopButtonH });
+        }
+
+        // The program's card's header: the actions at its right (Run last), the tabs from its left.
+        const float inX = kMargin + kInset, inW = leftW_ - 2.0f * kInset;
+        const float ay = kActionsY + 0.5f * (kActionH - 26.0f);
+        float ax = kMargin + leftW_ - kInset;
+        for (const int i : { runItem_, randomItem_, libraryItem_, examplesItem_ })
+        {
+            ButtonItem& b = at(i);
+            b.setBounds({ 0.0f, ay, 10.0f, 26.0f });     // its height first: its width follows its label
+            const float w = b.preferredWidth();
+            ax -= w;
+            b.setBounds({ ax, ay, w, 26.0f });
+            ax -= i == runItem_ ? 10.0f : 4.0f;
+        }
+        actionsX_ = ax;
         // The dials: in plain rows, or in the sections the program's #pragma panel lines ask for (DialLayout.h), as
         // tall as the panel can give them while the editor keeps 120 px.
         const float problemsH = kProblemRowH * static_cast<float>(kProblemRows);
-        const float roomForDials = bottom - kEditorY - 120.0f - 8.0f - problemsH - 16.0f;
+        const float inBottom = bottom - kInset;          // the program's card's inside
+        const float roomForDials = inBottom - kEditorY - 120.0f - 8.0f - problemsH - 16.0f;
         DialMeasure measure;
         measure.label = [this](int slot, bool small) {
             const std::string& label = panelSpec_.labels[static_cast<std::size_t>(slot)];
@@ -1708,17 +1762,17 @@ namespace testingplayground::ui
         // A .gui file's interface (GuiLayout.h) in place of the dials: under the editor as tall as it is (up to the
         // room the editor leaves, scrolling past that), or across the whole column in the PANEL view.
         const bool gui = !panelSpec_.gui.empty();
-        float panelTop = bottom;
+        float panelTop = inBottom;
         if (gui)
         {
             const GuiMeasure gm = [](const std::string& text, const funkgui::TextStyle& st) {
                 return funkgui::text::width(funkgui::FontService::get().atlas(), text.c_str(), st);
             };
             // Under the editor it takes half the column at most (the editor keeps the rest), and scrolls past that.
-            const GuiExtent natural = naturalGuiSize(panelSpec_, controls_, gm, leftW_);   // a row that wraps: as wide
-            const float h = std::max(40.0f, std::min({ natural.h, roomForDials, 0.5f * (bottom - kEditorY) }));
-            funkgui::Rect area = panelView_ ? funkgui::Rect{ kMargin, kTabsY, leftW_, bottom - kTabsY }
-                                            : funkgui::Rect{ kMargin, bottom - h, leftW_, h };
+            const GuiExtent natural = naturalGuiSize(panelSpec_, controls_, gm, inW);   // a row that wraps: as wide
+            const float h = std::max(40.0f, std::min({ natural.h, roomForDials, 0.5f * (inBottom - kEditorY) }));
+            funkgui::Rect area = panelView_ ? funkgui::Rect{ inX, kTabsY, inW, inBottom - kTabsY }
+                                            : funkgui::Rect{ inX, inBottom - h, inW, h };
             guiPages_.resize(panelSpec_.gui.nodes.size(), 0);
             gui_ = layoutGui(panelSpec_, controls_, gm, guiPages_, area, guiScrollX_, guiScrollY_);
             if (gui_.maxScrollY > 0.0f)                  // a gutter for the scroll bar
@@ -1739,11 +1793,11 @@ namespace testingplayground::ui
             if (panelView_)
             {
                 // The PANEL view: the dials from the column's top, as tall as they would be with all its room.
-                const DialsLayout first = layoutDials(panelSpec_, controls_, measure, kMargin, leftW_, bottom, bottom - kTabsY);
-                dials_ = layoutDials(panelSpec_, controls_, measure, kMargin, leftW_, kTabsY + (bottom - first.top), bottom - kTabsY);
+                const DialsLayout first = layoutDials(panelSpec_, controls_, measure, inX, inW, inBottom, inBottom - kTabsY);
+                dials_ = layoutDials(panelSpec_, controls_, measure, inX, inW, kTabsY + (inBottom - first.top), inBottom - kTabsY);
             }
             else
-                dials_ = layoutDials(panelSpec_, controls_, measure, kMargin, leftW_, bottom, roomForDials);
+                dials_ = layoutDials(panelSpec_, controls_, measure, inX, inW, inBottom, roomForDials);
             panelTop = dials_.top;
             for (int d = 0; d < kMaxDisplays; ++d)
             {
@@ -1757,10 +1811,10 @@ namespace testingplayground::ui
         const float problemsY = panelTop - 16.0f - problemsH;
         files().setHidden(panelView_);
         static_cast<ProblemsItem&>(*items_[static_cast<std::size_t>(problemsItem_)]).setHidden(panelView_);
-        files().setGeometry({ kMargin, kTabsY, leftW_, kTabH },
-                            { kMargin, kEditorY, leftW_, std::max(80.0f, problemsY - 8.0f - kEditorY) });
+        files().setGeometry({ inX, kTabsY, inW, kTabH },
+                            { inX, kEditorY, inW, std::max(80.0f, problemsY - 8.0f - kEditorY) });
         static_cast<ProblemsItem&>(*items_[static_cast<std::size_t>(problemsItem_)])
-            .setBounds({ kMargin, problemsY, leftW_, problemsH });
+            .setBounds({ inX, problemsY, inW, problemsH });
         for (int c = 0; c < kMaxControls; ++c)
             if (const int i = itemOfSlot_[static_cast<std::size_t>(c)]; i >= 0)
             {
@@ -1772,18 +1826,17 @@ namespace testingplayground::ui
         layoutGuiItems();
 
         // The chat's card.
-        const float right = W - kMargin;
-        card_ = { chatX_, kToolbarY, chatW_, bottom - kToolbarY };
+        card_ = { chatX_, kMainY, chatW_, bottom - kMainY };
+        programCard_ = { kMargin, kMainY, leftW_, bottom - kMainY };
         layoutChat();
 
-        // THEME, ZOOM.
-        static_cast<CellsItem&>(*items_[static_cast<std::size_t>(themeItem_)])
-            .setCells({ { right - kThemeW, 15.0f, 72.0f, 18.0f }, { right - 54.0f, 15.0f, 54.0f, 18.0f } });
-        std::vector<funkgui::Rect> zoomCells;
-        for (int k = 0; k < ZoomModel::kMaxSteps; ++k)
-            zoomCells.push_back({ right - 44.0f * static_cast<float>(ZoomModel::kMaxSteps - k), H - 28.0f, 42.0f,
-                                  18.0f });
-        static_cast<CellsItem&>(*items_[static_cast<std::size_t>(zoomItem_)]).setCells(std::move(zoomCells));
+        // The zoom, in the status bar's right corner.
+        {
+            ButtonItem& z = at(zoomItem_);
+            z.setBounds({ 0.0f, H - kFooterH + 4.0f, 10.0f, kFooterH - 8.0f });
+            const float w = z.preferredWidth();
+            z.setBounds({ right - w, H - kFooterH + 4.0f, w, kFooterH - 8.0f });
+        }
         ++layoutRevision_;
         dirty_ = true;
     }
@@ -1794,15 +1847,33 @@ namespace testingplayground::ui
     {
         const float inX = card_.x + kCardPad, inW = card_.w - 2.0f * kCardPad;
         const float hy = card_.y + kCardPad;
+        // Folded: every item of the chat hidden but the rail's button, at its top.
+        for (const int i : { newChatItem_, keyItem_, accountItem_, modelItem_, thinkingItem_, fastItem_, sendItem_ })
+            static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(i)]).setHidden(!chatOpen_);
+        chatView().setHidden(!chatOpen_);
+        inputItem().setHidden(!chatOpen_);
+        auto& toggle = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(chatToggleItem_)]);
+        if (!chatOpen_)
+        {
+            toggle.setBounds({ card_.centreX() - 0.5f * kIconButton, card_.y + 8.0f, kIconButton, kIconButton });
+            headerY_ = hy;
+            headerLabel_ = accountLabel();
+            ++layoutRevision_;
+            dirty_ = true;
+            return;
+        }
+        // The header's buttons, right to left: fold, the key, a new chat, and the account pill.
+        const float fx = card_.right() - kCardPad - kIconButton;
+        toggle.setBounds({ fx, hy, kIconButton, kIconButton });
         static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(keyItem_)])
-            .setBounds({ card_.right() - kCardPad - kIconButton, hy, kIconButton, kIconButton });
+            .setBounds({ fx - kIconButton - 4.0f, hy, kIconButton, kIconButton });
         static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(newChatItem_)])
-            .setBounds({ card_.right() - kCardPad - 2.0f * kIconButton - 4.0f, hy, kIconButton, kIconButton });
+            .setBounds({ fx - 2.0f * kIconButton - 8.0f, hy, kIconButton, kIconButton });
         {
             // The account pill, left of them, while signed in (as wide as its label, up to a third of the card).
             auto& pill = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(accountItem_)]);
             const float w = chat_.signedIn ? std::min(pill.preferredWidth(), std::floor(card_.w / 3.0f)) : 0.0f;
-            pill.setBounds({ card_.right() - kCardPad - 2.0f * kIconButton - 4.0f - 6.0f - w, hy, w, kIconButton });
+            pill.setBounds({ fx - 2.0f * kIconButton - 8.0f - 6.0f - w, hy, w, kIconButton });
             headerLabel_ = accountLabel();
         }
         headerY_ = hy;
@@ -1910,6 +1981,29 @@ namespace testingplayground::ui
     funkgui::Point Panel::centreOfModel() const { return centreOf(modelItem_); }
     funkgui::Point Panel::centreOfNewChat() const { return centreOf(newChatItem_); }
     funkgui::Point Panel::centreOfKey() const { return centreOf(keyItem_); }
+
+    funkgui::Point Panel::centreOfChatToggle() const { return centreOf(chatToggleItem_); }
+
+    void Panel::setChatOpen(bool open)
+    {
+        if (open == chatOpen_)
+            return;
+        chatOpen_ = open;
+        port_.setChatOpen(open);
+        if (open)
+            unread_ = false;
+        else
+        {
+            entriesAtFold_ = chat_.entries.size();
+            unread_ = false;
+            // The focus leaves the chat's items with them.
+            const int f = focus_;
+            if (f == inputItem_ || f == modelItem_ || f == thinkingItem_ || f == fastItem_ || f == sendItem_ || f == newChatItem_
+                || f == keyItem_ || f == accountItem_)
+                setFocus(panelView_ ? -1 : editorItem_);
+        }
+        layout();
+    }
 
     std::optional<funkgui::Point> Panel::centreOfAccount() const
     {
@@ -2316,6 +2410,11 @@ namespace testingplayground::ui
                 placeChatBar();
             if (accountLabel() != headerLabel_)          // signed in or out, or the credit came
                 layoutChat();
+            if (!chatOpen_ && !unread_ && chat_.entries.size() > entriesAtFold_)
+            {
+                unread_ = true;                          // the rail's dot
+                dirty_ = true;
+            }
             if (hadKey != chat_.ready() || changed)
             {
                 dirty_ = true;
@@ -2977,7 +3076,7 @@ namespace testingplayground::ui
         int id = 1;
         for (const Example& e : kExamples)
             request.items.push_back({ id++, e.title });
-        request.anchor = static_cast<const CellsItem&>(*items_[static_cast<std::size_t>(examplesItem_)]).bounds();
+        request.anchor = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(examplesItem_)]).bounds();
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
         host_->showMenu(request, [this](int chosen) {
             if (chosen < 1 || chosen > static_cast<int>(std::size(kExamples)))
@@ -3020,7 +3119,7 @@ namespace testingplayground::ui
             const bool have = files().find(f.name) >= 0;
             request.items.push_back({ static_cast<int>(i) + 1, std::string(f.name) + "   " + f.summary, have || room, have });
         }
-        request.anchor = static_cast<const CellsItem&>(*items_[static_cast<std::size_t>(libraryItem_)]).bounds();
+        request.anchor = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(libraryItem_)]).bounds();
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
         host_->showMenu(request, [this](int chosen) {
             if (chosen >= 1 && chosen <= static_cast<int>(std::size(kLibrary)))
@@ -3405,10 +3504,55 @@ namespace testingplayground::ui
         layout();
     }
 
-    funkgui::Point Panel::centreOfView(bool panel) const
+    funkgui::Point Panel::centreOfView(bool panel) const { return centreOf(panel ? panelViewItem_ : viewItem_); }
+
+    std::string Panel::presetLabel() const
     {
-        const float x = panel ? kMargin + 526.0f + 32.0f : kMargin + 464.0f + 30.0f;
-        return { x, kToolbarY + 0.5f * kButtonH };
+        const std::string name = port_.presetName();
+        if (name.empty())
+            return "Presets";
+        return asciiText(name) + (port_.presetEdited() ? "  (edited)" : "");
+    }
+
+    void Panel::openZoom()
+    {
+        const auto* z = static_cast<const ZoomModel*>(zoom_);
+        if (host_ == nullptr || z == nullptr || z->count() == 0)
+            return;
+        funkgui::MenuRequest request;
+        for (int i = 0; i < z->count(); ++i)
+            request.items.push_back({ i + 1, z->label(i), z->enabled(i), i == z->active(), false });
+        request.anchor = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(zoomItem_)]).bounds();
+        request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
+        host_->showMenu(request, [this](int chosen) {
+            auto* m = static_cast<ZoomModel*>(zoom_);
+            if (m != nullptr && chosen >= 1 && chosen <= m->count() && gestures_)
+                m->select(chosen - 1, *gestures_);
+        });
+    }
+
+    // The status, "RUNNING   COMPILED IN 111 MS", as the card's header shows it: "Running · compiled in 111 ms".
+    std::string Panel::statusShown() const
+    {
+        std::string out;
+        bool first = true;
+        for (std::size_t i = 0; i < status_.size(); ++i)
+        {
+            const char ch = status_[i];
+            if (ch == ' ' && i + 2 < status_.size() && status_[i + 1] == ' ' && status_[i + 2] == ' ')
+            {
+                out += " - ";
+                i += 2;
+                while (i + 1 < status_.size() && status_[i + 1] == ' ')
+                    ++i;
+                continue;
+            }
+            const char lower = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            out += first && std::isalpha(static_cast<unsigned char>(ch)) ? ch : lower;
+            if (std::isalpha(static_cast<unsigned char>(ch)))
+                first = false;
+        }
+        return out;
     }
 
     void Panel::setFocus(int item)
@@ -3537,41 +3681,48 @@ namespace testingplayground::ui
     {
         const funkgui::Theme th = productTheme(hostTheme);
         const float contentW = width_ - 2.0f * kMargin;
-        const float leftRight = kMargin + leftW_;
 
-        // Header: the name, the kind and version.
+        const chat::Palette pal = chat::palette(th);
+        // The top bar: the product's mark, its name and kind; the preset, the view's switch, the theme (items); the
+        // load (the CPU's share), red while the output guard acts.
         {
             const funkgui::Canvas::Scope s(c, kHeaderTextTag, false);
-            c.text(title_.c_str(), kMargin, kTitleTop, funkgui::type::kWordmark, th.ink100);
-            const float titleRight = kMargin + c.textWidth(title_.c_str(), funkgui::type::kWordmark);
-            c.text(subtitle_.c_str(), titleRight + kSubtitleGap,
-                   c.sharedBaselineTop(kTitleTop, funkgui::type::kWordmark, funkgui::type::kMicro),
-                   funkgui::type::kMicro, th.ink32);
-            if (!presetText_.empty())
-            {
-                const float px = titleRight + kSubtitleGap + c.textWidth(subtitle_.c_str(), funkgui::type::kMicro) + 32.0f;
-                c.text(fitText(c, presetText_, funkgui::type::kMicro, std::max(0.0f, chatX_ - px)).c_str(), px,
-                       c.sharedBaselineTop(kTitleTop, funkgui::type::kWordmark, funkgui::type::kMicro), funkgui::type::kMicro,
-                       th.ink70);
-            }
-        }
-        {
-            const funkgui::Canvas::Scope s(c, funkgui::tags::none, false);
-            c.hairlineH(kMargin, kHeaderRuleY, contentW, th.ink16);
-            c.hairlineH(kMargin, height_ - kFooterH, contentW, th.ink16);
+            const funkgui::Rect bar{ kMargin, kTopBarY, contentW, kTopBarH };
+            c.rrect(bar.x, bar.y, bar.w, bar.h, 12.0f, pal.card, 1.0f, pal.cardEdge);
+            const float mid = bar.centreY();
+            const float mx = bar.x + 10.0f;
+            c.rrect(mx, mid - 13.0f, 26.0f, 26.0f, 8.0f, pal.accent.withAlpha(0.16f));
+            chat::drawIcon(c, chat::Icon::wave, mx + 13.0f, mid, 12.0f, pal.accent);
+            c.text(product::kName, mx + 36.0f, c.capCentreTop(mid - 7.0f, chat::kStrong), chat::kStrong, pal.text);
+            c.text(subtitle_.c_str(), mx + 36.0f, c.capCentreTop(mid + 8.0f, chat::kSmall), chat::kSmall, pal.faint);
+            // The Code / Panel switch's track, under its two halves.
+            const funkgui::Rect code = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(viewItem_)]).bounds();
+            const funkgui::Rect panel = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(panelViewItem_)]).bounds();
+            c.rrect(code.x - 3.0f, code.y - 3.0f, panel.right() - code.x + 6.0f, code.h + 6.0f, 0.5f * (code.h + 6.0f), pal.raised,
+                    1.0f, pal.cardEdge);
+            const funkgui::Rect theme = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(themeItem_)]).bounds();
+            const bool alarm = port_.alerts() != 0;
+            c.text(meter_.c_str(), theme.x - 10.0f, c.capCentreTop(mid, chat::kSmall), chat::kSmall, alarm ? pal.danger : pal.faint,
+                   funkgui::Align::right);
         }
 
-        // The toolbar's status and meter, over the editor.
+        // The program's card: its header's status (a light, and what the last run did), left of its actions.
         {
             const funkgui::Canvas::Scope s(c, kStatusTag, false);
-            const float statusX = kMargin + 526.0f + 64.0f + 20.0f;
-            const float textTop = c.capCentreTop(kToolbarY + kButtonH * 0.5f, kStatusStyle);
-            const float meterW = c.textWidth(meter_.c_str(), kStatusStyle);
-            const funkgui::Col statusInk = !lastOk_ && !compiling_ ? th.signal : (edited_ ? th.ink70 : th.ink52);
-            c.text(fitText(c, status_, kStatusStyle, std::max(0.0f, leftRight - statusX - meterW - 24.0f)).c_str(),
-                   statusX, textTop, kStatusStyle, statusInk);
-            const bool alarm = port_.alerts() != 0;
-            c.text(meter_.c_str(), leftRight, textTop, kStatusStyle, alarm ? th.signal : th.ink32, funkgui::Align::right);
+            const funkgui::Rect& r = programCard_;
+            c.rrect(r.x, r.y, r.w, r.h, kCardRadius, pal.card, 1.0f, pal.cardEdge);
+            const float mid = kActionsY + 0.5f * kActionH;
+            const bool failed = !lastOk_ && !compiling_;
+            const std::string shown = statusShown();
+            const float tx = r.x + kInset + 14.0f;
+            const std::string text = fitText(c, shown, chat::kSmall, std::max(0.0f, actionsX_ - 12.0f - tx));
+            constexpr funkgui::Col kPlaying{ 0x46, 0xBE, 0x82, 255 };   // the program plays as written
+            const funkgui::Col light = failed ? pal.danger : (compiling_ ? pal.soft : (edited_ ? pal.faint : kPlaying));
+            if (!text.empty())
+            {
+                c.disc(tx - 9.0f, mid, 3.0f, light);
+                c.text(text.c_str(), tx, c.capCentreTop(mid, chat::kSmall), chat::kSmall, failed ? pal.danger : pal.soft);
+            }
         }
 
         // The chat's card (rounded, a shade off the ground: the panel around it is square), its title, and the line under
@@ -3580,6 +3731,21 @@ namespace testingplayground::ui
             const funkgui::Canvas::Scope s(c, kChatTag, false);
             const chat::Palette p = chat::palette(th);
             c.rrect(card_.x, card_.y, card_.w, card_.h, kCardRadius, p.card, 1.0f, p.cardEdge);
+            if (!chatOpen_)
+            {
+                // The rail: its button (drawn as an item), and under it a light while Claude works, or a dot when it
+                // has written since the chat was folded.
+                const float dy = card_.y + 8.0f + kIconButton + 14.0f;
+                if (chat_.busy)
+                    c.disc(card_.centreX(), dy, 4.0f, p.accent);
+                else if (unread_)
+                    c.disc(card_.centreX(), dy, 4.0f, p.accent.withAlpha(0.0f), 1.5f, p.accent);
+            }
+        }
+        if (chatOpen_)
+        {
+            const funkgui::Canvas::Scope s(c, kChatTag, false);
+            const chat::Palette p = chat::palette(th);
             const float ty = headerY_ + kIconButton * 0.5f;
             const float tx = card_.x + kCardPad + 4.0f;
             c.disc(tx + 4.0f, ty, chat_.busy ? 4.0f : 3.5f, chat_.busy ? p.accent : funkgui::mix(p.card, p.accent, 0.75f));
@@ -3587,7 +3753,7 @@ namespace testingplayground::ui
             const float sub = tx + 15.0f + c.textWidth("Claude", chat::kTitle) + 10.0f;
             const float pillW = chat_.signedIn ? static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(accountItem_)]).bounds().w + 6.0f
                                                : 0.0f;
-            const float subRoom = card_.right() - kCardPad - 2.0f * kIconButton - 12.0f - pillW - sub;
+            const float subRoom = card_.right() - kCardPad - 3.0f * kIconButton - 16.0f - pillW - sub;
             const std::string kind = product::kIsInstrument ? "builds and edits your synth" : "builds and edits your effect";
             if (subRoom > 60.0f)
                 c.text(fitText(c, kind, chat::kSmall, subRoom).c_str(), sub, c.capCentreTop(ty, chat::kSmall), chat::kSmall, p.faint);
@@ -3688,11 +3854,12 @@ namespace testingplayground::ui
         }
         if (line[0] != '\0')
         {
-            const float zoomW = items_[static_cast<std::size_t>(zoomItem_)]->shown() ? 44.0f * ZoomModel::kMaxSteps + 12.0f
-                                                                                    : 0.0f;
-            const std::string shown = fitFields(c, line, contentW - zoomW);
+            const ButtonItem& zoom = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(zoomItem_)]);
+            const float zoomW = zoom.shown() ? zoom.bounds().w + 12.0f : 0.0f;
+            const std::string shown = fitFields(c, line, contentW - zoomW - 8.0f);
             const funkgui::Canvas::Scope s(c, funkgui::tags::hint, false);
-            c.text(shown.c_str(), kMargin, height_ - 24.0f, funkgui::type::kMicro, th.ink52);
+            c.text(shown.c_str(), kMargin + 8.0f, c.capCentreTop(height_ - 0.5f * kFooterH, funkgui::type::kMicro),
+                   funkgui::type::kMicro, th.ink52);
         }
 
         if (keyOpen_)
