@@ -24,6 +24,7 @@ namespace testingplayground
         const juce::Identifier kSource{ "source" }, kDraft{ "draft" };   // the version before files
         const juce::Identifier kChatTag{ "CHAT" }, kJson{ "json" };      // the chat with Claude (ChatAgent::saveState)
         const juce::Identifier kEditorTag{ "EDITOR" }, kWidth{ "w" }, kHeight{ "h" };   // the editor's size
+        const juce::Identifier kView{ "view" };                                          // and its view: "panel"
         constexpr int kMaxEditorSide = 16384;
         const juce::Identifier kParamId{ "id" }, kParamValue{ "value" };   // the APVTS's <PARAM id value> children
 
@@ -73,8 +74,7 @@ namespace testingplayground
                 case ControlType::real:    break;
             }
             char buf[32];
-            const double a = std::fabs(static_cast<double>(p));
-            std::snprintf(buf, sizeof buf, a >= 100.0 ? "%.0f" : (a >= 10.0 ? "%.1f" : "%.2f"), static_cast<double>(p));
+            formatValue(c, p, buf, sizeof buf);      // its unit, decimals and scale (a .gui file's)
             return juce::String(buf);
         }
 
@@ -123,7 +123,10 @@ namespace testingplayground
                         return normOf(c, c.min + static_cast<float>(k));
                 if (c.type == ControlType::toggle)
                     return t == "on" || t == "yes" || t == "true" || t.getFloatValue() >= 0.5f ? 1.0f : 0.0f;
-                return normOf(c, t.getFloatValue());
+                if (c.type == ControlType::integer)
+                    return normOf(c, t.getFloatValue());
+                const float plain = parseValue(c, t.toRawUTF8());
+                return std::isfinite(plain) ? normOf(c, plain) : normOf(c, c.def);
             }
 
         private:
@@ -541,11 +544,16 @@ namespace testingplayground
         juce::ValueTree chat{ kChatTag };
         chat.setProperty(kJson, juce::String::fromUTF8(chat_.saveState().c_str()), nullptr);
         state.appendChild(chat, nullptr);
-        if (editorW_.load() > 0 && editorH_.load() > 0)
+        if ((editorW_.load() > 0 && editorH_.load() > 0) || panelView_.load())
         {
             juce::ValueTree editor{ kEditorTag };
-            editor.setProperty(kWidth, editorW_.load(), nullptr);
-            editor.setProperty(kHeight, editorH_.load(), nullptr);
+            if (editorW_.load() > 0 && editorH_.load() > 0)
+            {
+                editor.setProperty(kWidth, editorW_.load(), nullptr);
+                editor.setProperty(kHeight, editorH_.load(), nullptr);
+            }
+            if (panelView_.load())
+                editor.setProperty(kView, "panel", nullptr);
             state.appendChild(editor, nullptr);
         }
         if (const std::unique_ptr<juce::XmlElement> xml = state.createXml())
@@ -585,6 +593,7 @@ namespace testingplayground
             state.removeChild(chat, nullptr);
         }
         const juce::ValueTree editor = state.getChildWithName(kEditorTag);
+        panelView_.store(editor.isValid() && editor.getProperty(kView).toString() == "panel");
         if (editor.isValid())
         {
             setEditorSize(static_cast<int>(editor.getProperty(kWidth, 0)), static_cast<int>(editor.getProperty(kHeight, 0)));

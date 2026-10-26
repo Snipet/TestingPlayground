@@ -280,7 +280,7 @@ namespace testingplayground::ui::looks
     {
         const Rect& r = d.cell;
         label(c, th, r, d.label, false);
-        const Rect screen{ r.x + 1.0f, r.y + 15.0f, r.w - 2.0f, 52.0f };
+        const Rect screen{ r.x + 1.0f, r.y + 15.0f, r.w - 2.0f, std::max(24.0f, r.h - 28.0f) };   // 52 in an 80 cell
         const Col bg{ 0x0B, 0x13, 0x0F };
         const Col trace = d.tinted ? d.color : Col{ 0x6E, 0xEB, 0x83 };
         c.rrect(screen.x, screen.y, screen.w, screen.h, 3.0f, bg, 1.0f, th.ink32);

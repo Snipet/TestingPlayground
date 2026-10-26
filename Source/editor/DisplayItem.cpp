@@ -2,11 +2,14 @@
 #include "editor/DisplayItem.h"
 
 #include "editor/ChatItems.h"
+#include "editor/GuiItems.h"
 #include "editor/Looks.h"
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <cstdio>
+#include <numbers>
 
 namespace testingplayground::ui
 {
@@ -53,13 +56,77 @@ namespace testingplayground::ui
         {
             switch (k)
             {
-                case DisplayKind::meter:  return "METER";
-                case DisplayKind::vu:     return "VU";
-                case DisplayKind::led:    return "LIGHT";
-                case DisplayKind::number: return "READOUT";
-                case DisplayKind::scope:  return "SCOPE";
+                case DisplayKind::meter:    return "METER";
+                case DisplayKind::vu:       return "VU";
+                case DisplayKind::led:      return "LIGHT";
+                case DisplayKind::number:   return "READOUT";
+                case DisplayKind::scope:    return "SCOPE";
+                case DisplayKind::spectrum: return "SPECTRUM";
             }
             return "";
+        }
+
+        // An in-place radix-2 FFT of n (a power of two) complex values.
+        void fft(std::vector<std::complex<float>>& a)
+        {
+            const std::size_t n = a.size();
+            for (std::size_t i = 1, j = 0; i < n; ++i)
+            {
+                std::size_t bit = n >> 1;
+                for (; (j & bit) != 0; bit >>= 1)
+                    j ^= bit;
+                j ^= bit;
+                if (i < j)
+                    std::swap(a[i], a[j]);
+            }
+            for (std::size_t len = 2; len <= n; len <<= 1)
+            {
+                const float ang = -2.0f * std::numbers::pi_v<float> / static_cast<float>(len);
+                const std::complex<float> w(std::cos(ang), std::sin(ang));
+                for (std::size_t i = 0; i < n; i += len)
+                {
+                    std::complex<float> wk(1.0f, 0.0f);
+                    for (std::size_t k = 0; k < len / 2; ++k)
+                    {
+                        const std::complex<float> u = a[i + k], v = a[i + k + len / 2] * wk;
+                        a[i + k] = u + v;
+                        a[i + k + len / 2] = u - v;
+                        wk *= w;
+                    }
+                }
+            }
+        }
+
+        // The last DisplayItem::kScopeSamples samples' levels, dB against a full-scale sine, at `points` frequencies
+        // from 20 Hz to 20 kHz, spaced evenly in octaves: the strongest bin within each point's share of them.
+        std::vector<float> spectrumOf(const float* x, int n, float rate, int points)
+        {
+            std::vector<std::complex<float>> a(static_cast<std::size_t>(n));
+            float windowSum = 0.0f;
+            for (int i = 0; i < n; ++i)
+            {
+                const float w = 0.5f - 0.5f * std::cos(2.0f * std::numbers::pi_v<float> * static_cast<float>(i) / static_cast<float>(n - 1));
+                windowSum += w;
+                a[static_cast<std::size_t>(i)] = { x[i] * w, 0.0f };
+            }
+            fft(a);
+            const float norm = 2.0f / std::max(windowSum, 1.0f);
+            const float binHz = rate / static_cast<float>(n);
+            std::vector<float> out(static_cast<std::size_t>(points), -120.0f);
+            for (int k = 0; k < points; ++k)
+            {
+                const float hz = 20.0f * std::pow(1000.0f, static_cast<float>(k) / static_cast<float>(points - 1));
+                const float half = std::pow(1000.0f, 0.5f / static_cast<float>(points - 1));   // half a point's share
+                const float lo = hz / half, hi = hz * half;
+                int b0 = static_cast<int>(std::floor(lo / binHz)), b1 = static_cast<int>(std::ceil(hi / binHz));
+                b0 = std::clamp(b0, 1, n / 2);
+                b1 = std::clamp(b1, b0, n / 2);
+                float peak = 0.0f;
+                for (int b = b0; b <= b1; ++b)
+                    peak = std::max(peak, std::abs(a[static_cast<std::size_t>(b)]) * norm);
+                out[static_cast<std::size_t>(k)] = dbOf(std::max(peak, 1.0e-6f));
+            }
+            return out;
         }
     }
 
@@ -79,6 +146,7 @@ namespace testingplayground::ui
             readout_.clear();
             trace_.clear();
             history_.clear();
+            spectrum_.clear();
             readoutIn_ = 0.0f;
         }
     }
@@ -86,7 +154,7 @@ namespace testingplayground::ui
     bool DisplayItem::wantsScope(bool& input) const noexcept
     {
         input = display_.source == "in";
-        return shown_ && display_.kind == DisplayKind::scope && display_.audio();
+        return shown_ && (display_.kind == DisplayKind::scope || display_.kind == DisplayKind::spectrum) && display_.audio();
     }
 
     float DisplayItem::fieldPosition(float v) const noexcept
@@ -103,7 +171,8 @@ namespace testingplayground::ui
             case DisplayKind::vu:    return needle_;
             case DisplayKind::led:   return glow_;
             case DisplayKind::number:
-            case DisplayKind::scope: break;
+            case DisplayKind::scope:
+            case DisplayKind::spectrum: break;
         }
         return 0.0f;
     }
@@ -171,6 +240,21 @@ namespace testingplayground::ui
             }
             case DisplayKind::number:
                 break;
+            case DisplayKind::spectrum:
+            {
+                if (scope == nullptr)
+                    break;
+                const std::vector<float> next = spectrumOf(scope, kScopeSamples, m.rate > 0.0f ? m.rate : 48000.0f, kSpectrumPoints);
+                if (spectrum_.size() != next.size())
+                    spectrum_.assign(next.size(), -120.0f);
+                for (std::size_t k = 0; k < next.size(); ++k)
+                {
+                    const float before = spectrum_[k];
+                    spectrum_[k] = next[k] >= before ? next[k] : std::max(next[k], before - 30.0f * step);
+                    moved = moved || std::fabs(spectrum_[k] - before) > 0.01f;
+                }
+                break;
+            }
             case DisplayKind::scope:
             {
                 if (audio && scope != nullptr)
@@ -245,6 +329,10 @@ namespace testingplayground::ui
                     looks::scope(c, th, d, trace_.empty() ? nullptr : trace_.data(), static_cast<int>(trace_.size()));
                 else
                     looks::scope(c, th, d, history_.empty() ? nullptr : history_.data(), static_cast<int>(history_.size()));
+                break;
+            case DisplayKind::spectrum:
+                drawSpectrum(c, th, cell_, label.c_str(), spectrum_.empty() ? nullptr : spectrum_.data(),
+                             static_cast<int>(spectrum_.size()), d.color, d.tinted);
                 break;
         }
     }

@@ -6,6 +6,7 @@
 #include "editor/ChatView.h"
 #include "editor/DialLayout.h"
 #include "editor/DisplayItem.h"
+#include "editor/GuiItems.h"
 #include "editor/Looks.h"
 #include "editor/Items.h"
 
@@ -118,6 +119,7 @@ namespace testingplayground::ui
         constexpr float kBottomGap = 12.0f;              // over the footer's rule
         // The chat's column, at the right.
         constexpr float kChatShare = 0.32f;              // of the width
+        constexpr float kGuiScrollGutter = 8.0f;         // a .gui interface's scroll bar, at its area's right
         constexpr float kChatMinW = 340.0f;
         constexpr float kChatMaxW = 560.0f;
         constexpr float kChatGap = 24.0f;                // between the columns (the rule in its middle)
@@ -240,12 +242,8 @@ namespace testingplayground::ui
                         std::snprintf(v.text.value, sizeof v.text.value, "%s", nameOf(index()).c_str());
                         break;
                     case ControlType::real:
-                    {
-                        const double a = std::fabs(static_cast<double>(p));
-                        std::snprintf(v.text.value, sizeof v.text.value,
-                                      a >= 100.0 ? "%.0f" : (a >= 10.0 ? "%.1f" : "%.2f"), static_cast<double>(p));
+                        formatValue(control_, p, v.text.value, sizeof v.text.value);   // its unit, decimals and scale
                         break;
-                    }
                 }
                 std::snprintf(v.text.spoken, sizeof v.text.spoken, "%s %s", control_.name, v.text.value);
             }
@@ -413,7 +411,8 @@ namespace testingplayground::ui
             {
                 return style_ == DialStyle::knob ? dial_.geom().centre() : funkgui::Point{ cell_.centreX(), cell_.centreY() };
             }
-            bool shown() const override { return model_.control().used; }
+            bool shown() const override { return model_.control().used && !hidden_; }
+            void setHidden(bool hidden) { hidden_ = hidden; }   // a .gui file's interface draws the dials itself
 
             // A button's row under p (buttons), else -1.
             int rowAt(funkgui::Point p) const
@@ -435,6 +434,7 @@ namespace testingplayground::ui
             funkgui::Rect cell_;
             bool hovered_ = false;
             int hoverRow_ = -1;
+            bool hidden_ = false;
         };
 
         // ---- a row of cells: THEME, ZOOM, and the RUN and EXAMPLES buttons ------------------------------------------
@@ -489,6 +489,23 @@ namespace testingplayground::ui
         };
 
         // One cell that acts when chosen: RUN, EXAMPLES.
+        // The toolbar's CODE and PANEL cells: which view the left column shows.
+        class ViewModel final : public funkgui::CellModel
+        {
+        public:
+            ViewModel(std::function<bool()> panel, std::function<void(bool)> set) : panel_(std::move(panel)), set_(std::move(set)) {}
+
+            int count() const override { return 2; }
+            int active() const override { return panel_() ? 1 : 0; }
+            const char* label(int i) const override { return i == 0 ? "CODE" : "PANEL"; }
+            const char* spoken(int i) const override { return i == 0 ? "Code view" : "Panel view"; }
+            void select(int i, funkgui::GestureController&) override { set_(i == 1); }
+
+        private:
+            std::function<bool()> panel_;
+            std::function<void(bool)> set_;
+        };
+
         class ButtonModel final : public funkgui::CellModel
         {
         public:
@@ -690,6 +707,8 @@ namespace testingplayground::ui
                     continue;
                 }
                 Tab t = std::move(old[static_cast<std::size_t>(match[i])]);
+                if (rulesFor(t.name).types != rulesFor(f.name).types)   // renamed to or from a .gui file
+                    t.editor->setHighlighter(std::make_unique<funkgui::text::KeywordHighlighter>(rulesFor(f.name)));
                 t.name = f.name;
                 replaceText(*t.editor, f.text);
                 tabs_.push_back(std::move(t));
@@ -803,7 +822,10 @@ namespace testingplayground::ui
                     why_ = "ANOTHER FILE HAS THAT NAME";
                     return false;
                 }
-                tabs_[static_cast<std::size_t>(renaming_)].name = typed;
+                Tab& tab = tabs_[static_cast<std::size_t>(renaming_)];
+                if (rulesFor(tab.name).types != rulesFor(typed).types)
+                    tab.editor->setHighlighter(std::make_unique<funkgui::text::KeywordHighlighter>(rulesFor(typed)));
+                tab.name = typed;
                 structure_ += kStructureStep;
             }
             renaming_ = -1;
@@ -1126,11 +1148,12 @@ namespace testingplayground::ui
             o.softTabs = true;
             o.tabWidth = 4;
             o.a11yTitle = "File";
-            o.placeholder = tabs_.empty() ? "An FMinus program: EXAMPLES has some to start from"
-                                          : "A file the program can #include by its name";
+            o.placeholder = tabs_.empty()                          ? "An FMinus program: EXAMPLES has some to start from"
+                          : n.size() > 4 && n.substr(n.size() - 4) == ".gui" ? "The program's interface: rows, sections, knobs, displays"
+                                                                             : "A file the program can #include by its name";
             t.editor->setOptions(o);
             t.editor->setBounds(editorBounds_);
-            t.editor->setHighlighter(std::make_unique<funkgui::text::KeywordHighlighter>(fminusRules()));
+            t.editor->setHighlighter(std::make_unique<funkgui::text::KeywordHighlighter>(rulesFor(n)));
             t.editor->setPalette(funkgui::TextEditor::defaultPalette());
             t.editor->setText(text);
             t.editor->attach(host_);
@@ -1255,6 +1278,11 @@ namespace testingplayground::ui
         int renaming_ = -1;                          // the tab whose name is being edited
         funkgui::text::LineEdit edit_;
         std::string why_;                            // why the name typed cannot be the file's
+        bool hidden_ = false;                        // the PANEL view
+
+    public:
+        void setHidden(bool hidden) { hidden_ = hidden; }
+        bool shown() const override { return !hidden_; }
     };
 
     namespace
@@ -1366,6 +1394,11 @@ namespace testingplayground::ui
             const std::vector<Problem>& problems_;       // the Panel's
             Jump jump_;
             funkgui::Point pointer_{ -1.0e4f, -1.0e4f };
+            bool hidden_ = false;                        // the PANEL view
+
+        public:
+            void setHidden(bool hidden) { hidden_ = hidden; }
+            bool shown() const override { return !hidden_; }
         };
     }
 
@@ -1412,6 +1445,13 @@ namespace testingplayground::ui
             [](char* out, std::size_t n) {
                 std::snprintf(out, n, "RANDOM   A NEW PROGRAM FROM THE LIBRARY'S BUILDING BLOCKS, FOR INSPIRATION");
             }));
+        panelView_ = port_.panelView();
+        viewItem_ = add(std::make_unique<CellsItem>(
+            std::make_unique<ViewModel>([this] { return panelView_; }, [this](bool on) { setPanelView(on); }), cells(2),
+            funkgui::CellStyle::boxed, idFor(),
+            [](char* out, std::size_t n) {
+                std::snprintf(out, n, "CODE / PANEL   THE EDITOR, OR THE PROGRAM'S PANEL ACROSS THE WHOLE COLUMN");
+            }));
 
         // The editor, the problems under it, the dials under them.
         editorItem_ = add(std::make_unique<FilesItem>(funkgui::Rect{}, funkgui::Rect{}, idFor(), problems_,
@@ -1426,6 +1466,21 @@ namespace testingplayground::ui
         itemOfDisplay_.assign(static_cast<std::size_t>(kMaxDisplays), -1);
         for (int d = 0; d < kMaxDisplays; ++d)
             itemOfDisplay_[static_cast<std::size_t>(d)] = add(std::make_unique<DisplayItem>(idFor()));
+        // A .gui file's interface (GuiItems.h): its tabs first (their frames under the rest), a control a slot, and
+        // pools of pads and envelopes.
+        constexpr int kGuiPool = 8;
+        for (int k = 0; k < kGuiPool; ++k)
+            guiTabs_.push_back(add(std::make_unique<GuiTabsItem>(idFor(), [this](int node, int page) { chooseGuiPage(node, page); })));
+        itemOfGuiSlot_.assign(static_cast<std::size_t>(kMaxControls), -1);
+        for (int c = 0; c < kMaxControls && c < static_cast<int>(ports.size()); ++c)
+            itemOfGuiSlot_[static_cast<std::size_t>(c)] = add(std::make_unique<GuiControlItem>(
+                *ports[static_cast<std::size_t>(c)], idFor(), [this] {
+                    return productTheme(host_ != nullptr ? funkgui::Theme::byIndex(host_->themeIndex()) : funkgui::Theme::graphite());
+                }));
+        for (int k = 0; k < kGuiPool; ++k)
+            guiPads_.push_back(add(std::make_unique<GuiXyItem>(idFor())));
+        for (int k = 0; k < kGuiPool; ++k)
+            guiEnvelopes_.push_back(add(std::make_unique<GuiEnvelopeItem>(idFor())));
 
         // The chat: the header's buttons (a new chat, the API key), the conversation, the message box and the buttons in
         // its bar (the model, the thinking level, fast mode on a model that takes it, send or stop).
@@ -1545,6 +1600,8 @@ namespace testingplayground::ui
             .setCells({ { kMargin + 272.0f, kToolbarY, 80.0f, kButtonH } });
         static_cast<CellsItem&>(*items_[static_cast<std::size_t>(presetsItem_)])
             .setCells({ { kMargin + 360.0f, kToolbarY, 88.0f, kButtonH } });
+        static_cast<CellsItem&>(*items_[static_cast<std::size_t>(viewItem_)])
+            .setCells({ { kMargin + 464.0f, kToolbarY, 60.0f, kButtonH }, { kMargin + 526.0f, kToolbarY, 64.0f, kButtonH } });
         // The dials: in plain rows, or in the sections the program's #pragma panel lines ask for (DialLayout.h), as
         // tall as the panel can give them while the editor keeps 120 px.
         const float problemsH = kProblemRowH * static_cast<float>(kProblemRows);
@@ -1566,24 +1623,71 @@ namespace testingplayground::ui
         measure.micro = [](const std::string& text) {
             return funkgui::text::width(funkgui::FontService::get().atlas(), upper(asciiText(text)).c_str(), funkgui::type::kMicro);
         };
-        dials_ = layoutDials(panelSpec_, controls_, measure, kMargin, leftW_, bottom, roomForDials);
-        for (int d = 0; d < kMaxDisplays; ++d)
+        // A .gui file's interface (GuiLayout.h) in place of the dials: under the editor as tall as it is (up to the
+        // room the editor leaves, scrolling past that), or across the whole column in the PANEL view.
+        const bool gui = !panelSpec_.gui.empty();
+        float panelTop = bottom;
+        if (gui)
         {
-            auto& item = static_cast<DisplayItem&>(*items_[static_cast<std::size_t>(itemOfDisplay_[static_cast<std::size_t>(d)])]);
-            const bool has = d < static_cast<int>(panelSpec_.displays.size());
-            item.setDisplay(has ? &panelSpec_.displays[static_cast<std::size_t>(d)] : nullptr);
-            item.setCell(dials_.displays[static_cast<std::size_t>(d)]);
+            const GuiMeasure gm = [](const std::string& text, const funkgui::TextStyle& st) {
+                return funkgui::text::width(funkgui::FontService::get().atlas(), text.c_str(), st);
+            };
+            // Under the editor it takes half the column at most (the editor keeps the rest), and scrolls past that.
+            const GuiExtent natural = naturalGuiSize(panelSpec_, controls_, gm);
+            const float h = std::max(40.0f, std::min({ natural.h, roomForDials, 0.5f * (bottom - kEditorY) }));
+            funkgui::Rect area = panelView_ ? funkgui::Rect{ kMargin, kTabsY, leftW_, bottom - kTabsY }
+                                            : funkgui::Rect{ kMargin, bottom - h, leftW_, h };
+            guiPages_.resize(panelSpec_.gui.nodes.size(), 0);
+            gui_ = layoutGui(panelSpec_, controls_, gm, guiPages_, area, guiScrollX_, guiScrollY_);
+            if (gui_.maxScrollY > 0.0f)                  // a gutter for the scroll bar
+            {
+                area.w -= kGuiScrollGutter;
+                gui_ = layoutGui(panelSpec_, controls_, gm, guiPages_, area, guiScrollX_, guiScrollY_);
+            }
+            guiPages_ = gui_.pages;
+            guiScrollX_ = std::clamp(guiScrollX_, 0.0f, gui_.maxScrollX);
+            guiScrollY_ = std::clamp(guiScrollY_, 0.0f, gui_.maxScrollY);
+            dials_ = DialsLayout{};
+            dials_.top = area.y;
+            panelTop = area.y;
         }
-        const float problemsY = dials_.top - 16.0f - problemsH;
+        else
+        {
+            gui_ = GuiLayout{};
+            if (panelView_)
+            {
+                // The PANEL view: the dials from the column's top, as tall as they would be with all its room.
+                const DialsLayout first = layoutDials(panelSpec_, controls_, measure, kMargin, leftW_, bottom, bottom - kTabsY);
+                dials_ = layoutDials(panelSpec_, controls_, measure, kMargin, leftW_, kTabsY + (bottom - first.top), bottom - kTabsY);
+            }
+            else
+                dials_ = layoutDials(panelSpec_, controls_, measure, kMargin, leftW_, bottom, roomForDials);
+            panelTop = dials_.top;
+            for (int d = 0; d < kMaxDisplays; ++d)
+            {
+                auto& item = static_cast<DisplayItem&>(*items_[static_cast<std::size_t>(itemOfDisplay_[static_cast<std::size_t>(d)])]);
+                const bool has = d < static_cast<int>(panelSpec_.displays.size());
+                item.setDisplay(has ? &panelSpec_.displays[static_cast<std::size_t>(d)] : nullptr);
+                item.setCell(dials_.displays[static_cast<std::size_t>(d)]);
+                item.setArea({});
+            }
+        }
+        const float problemsY = panelTop - 16.0f - problemsH;
+        files().setHidden(panelView_);
+        static_cast<ProblemsItem&>(*items_[static_cast<std::size_t>(problemsItem_)]).setHidden(panelView_);
         files().setGeometry({ kMargin, kTabsY, leftW_, kTabH },
                             { kMargin, kEditorY, leftW_, std::max(80.0f, problemsY - 8.0f - kEditorY) });
         static_cast<ProblemsItem&>(*items_[static_cast<std::size_t>(problemsItem_)])
             .setBounds({ kMargin, problemsY, leftW_, problemsH });
         for (int c = 0; c < kMaxControls; ++c)
             if (const int i = itemOfSlot_[static_cast<std::size_t>(c)]; i >= 0)
-                static_cast<DialItem&>(*items_[static_cast<std::size_t>(i)])
-                    .setLook(panelSpec_.styles[static_cast<std::size_t>(c)], panelSpec_.colors[static_cast<std::size_t>(c)],
+            {
+                auto& dial = static_cast<DialItem&>(*items_[static_cast<std::size_t>(i)]);
+                dial.setLook(panelSpec_.styles[static_cast<std::size_t>(c)], panelSpec_.colors[static_cast<std::size_t>(c)],
                              dials_.dials[static_cast<std::size_t>(c)]);
+                dial.setHidden(gui);
+            }
+        layoutGuiItems();
 
         // The chat's card.
         const float right = W - kMargin;
@@ -1888,6 +1992,12 @@ namespace testingplayground::ui
                         .model()
                         .setControl(cs[static_cast<std::size_t>(c)], spec.labels[static_cast<std::size_t>(c)],
                                     spec.options[static_cast<std::size_t>(c)], controlsRevision_);
+            for (int c = 0; c < kMaxControls; ++c)
+                if (const int i = itemOfGuiSlot_[static_cast<std::size_t>(c)]; i >= 0)
+                    static_cast<GuiControlItem&>(*items_[static_cast<std::size_t>(i)])
+                        .value()
+                        .set(cs[static_cast<std::size_t>(c)], spec.labels[static_cast<std::size_t>(c)],
+                             spec.options[static_cast<std::size_t>(c)]);
             // Other dials or another panel: their places again (a second row takes height from the editor).
             bool sameDials = spec == panelSpec_;
             for (int c = 0; c < kMaxControls && sameDials; ++c)
@@ -1897,6 +2007,11 @@ namespace testingplayground::ui
                 sameDials = a.used == b.used && std::strcmp(a.name, b.name) == 0;
             }
             controls_ = cs;
+            if (!(spec.gui == panelSpec_.gui))
+            {
+                guiPages_.clear();                       // another interface: its first pages, from its top
+                guiScrollX_ = guiScrollY_ = 0.0f;
+            }
             panelSpec_ = spec;
             panelProgram_ = s.ok ? s.request : port_.program();
             if (!sameDials)
@@ -2908,6 +3023,157 @@ namespace testingplayground::ui
         });
     }
 
+    // ---- a .gui file's interface ----------------------------------------------------------------------------------------
+    void Panel::layoutGuiItems()
+    {
+        guiItem_.assign(items_.size(), false);
+        const bool gui = !panelSpec_.gui.empty();
+        const std::vector<GuiNode>& nodes = panelSpec_.gui.nodes;
+        const funkgui::Rect area = gui_.area;
+        const GuiMeasure gm = [](const std::string& text, const funkgui::TextStyle& st) {
+            return funkgui::text::width(funkgui::FontService::get().atlas(), text.c_str(), st);
+        };
+        // A node on the pages shown and, at least in part, in the area.
+        const auto seen = [&](std::size_t i) {
+            if (!gui || i >= gui_.rects.size() || !gui_.visible[i])
+                return false;
+            const funkgui::Rect& r = gui_.rects[i];
+            return r.right() > area.x && r.x < area.right() && r.bottom() > area.y && r.y < area.bottom();
+        };
+        const auto control = [this](int slot) -> GuiControlItem& {
+            return static_cast<GuiControlItem&>(*items_[static_cast<std::size_t>(itemOfGuiSlot_[static_cast<std::size_t>(slot)])]);
+        };
+        std::vector<int> nodeOfSlot(static_cast<std::size_t>(kMaxControls), -1), nodeOfDisplay(static_cast<std::size_t>(kMaxDisplays), -1);
+        for (std::size_t i = 0; i < nodes.size(); ++i)
+        {
+            const GuiNode& n = nodes[i];
+            const bool isControl = n.kind == GuiKind::knob || n.kind == GuiKind::slider || n.kind == GuiKind::toggle
+                                || n.kind == GuiKind::buttons || n.kind == GuiKind::menu;
+            if (isControl && n.slot >= 0 && n.slot < kMaxControls)
+                nodeOfSlot[static_cast<std::size_t>(n.slot)] = static_cast<int>(i);
+            if (n.kind == GuiKind::display && n.display >= 0 && n.display < kMaxDisplays)
+                nodeOfDisplay[static_cast<std::size_t>(n.display)] = static_cast<int>(i);
+        }
+        for (int c = 0; c < kMaxControls; ++c)
+        {
+            if (itemOfGuiSlot_[static_cast<std::size_t>(c)] < 0)
+                continue;
+            const int i = nodeOfSlot[static_cast<std::size_t>(c)];
+            if (i >= 0)
+                control(c).place(nodes[static_cast<std::size_t>(i)], gui_.rects[static_cast<std::size_t>(i)], area,
+                                 seen(static_cast<std::size_t>(i)), nodes[static_cast<std::size_t>(i)].color);
+            else
+                control(c).place(GuiNode{}, {}, area, false, "");
+            guiItem_[static_cast<std::size_t>(itemOfGuiSlot_[static_cast<std::size_t>(c)])] = true;
+        }
+        std::size_t pad = 0, env = 0, tab = 0;
+        for (std::size_t i = 0; i < nodes.size() && gui; ++i)
+        {
+            const GuiNode& n = nodes[i];
+            if (n.kind == GuiKind::xy && pad < guiPads_.size() && n.slot >= 0 && n.slot2 >= 0)
+            {
+                auto& item = static_cast<GuiXyItem&>(*items_[static_cast<std::size_t>(guiPads_[pad++])]);
+                item.bind(&control(n.slot).value(), &control(n.slot2).value());
+                item.place(n, gui_.rects[i], area, seen(i), n.color);
+            }
+            else if (n.kind == GuiKind::envelope && env < guiEnvelopes_.size())
+            {
+                auto& item = static_cast<GuiEnvelopeItem&>(*items_[static_cast<std::size_t>(guiEnvelopes_[env++])]);
+                std::array<GuiValue*, 4> adsr{};
+                for (std::size_t k = 0; k < 4; ++k)
+                    adsr[k] = n.env[k] >= 0 ? &control(n.env[k]).value() : nullptr;
+                item.bind(adsr);
+                item.place(n, gui_.rects[i], area, seen(i), n.color);
+            }
+            else if (n.kind == GuiKind::tabs && tab < guiTabs_.size())
+            {
+                auto& item = static_cast<GuiTabsItem&>(*items_[static_cast<std::size_t>(guiTabs_[tab++])]);
+                std::vector<std::string> titles;
+                for (const int child : n.children)
+                    titles.push_back(nodes[static_cast<std::size_t>(child)].text);
+                item.place(static_cast<int>(i), gui_.rects[i], guiTabRects(panelSpec_, static_cast<int>(i), gui_.rects[i], gm),
+                           std::move(titles), gui_.pages[i], area, seen(i), n.color);
+            }
+        }
+        for (; pad < guiPads_.size(); ++pad)
+            static_cast<GuiXyItem&>(*items_[static_cast<std::size_t>(guiPads_[pad])]).place(GuiNode{}, {}, area, false, "");
+        for (; env < guiEnvelopes_.size(); ++env)
+            static_cast<GuiEnvelopeItem&>(*items_[static_cast<std::size_t>(guiEnvelopes_[env])]).place(GuiNode{}, {}, area, false, "");
+        for (; tab < guiTabs_.size(); ++tab)
+            static_cast<GuiTabsItem&>(*items_[static_cast<std::size_t>(guiTabs_[tab])]).place(-1, {}, {}, {}, 0, area, false, "");
+        for (const int i : guiPads_)
+            guiItem_[static_cast<std::size_t>(i)] = true;
+        for (const int i : guiEnvelopes_)
+            guiItem_[static_cast<std::size_t>(i)] = true;
+        for (const int i : guiTabs_)
+            guiItem_[static_cast<std::size_t>(i)] = true;
+        if (!gui)
+            return;
+        // The displays: where the interface puts them, while it shows them.
+        for (int d = 0; d < kMaxDisplays; ++d)
+        {
+            const int idx = itemOfDisplay_[static_cast<std::size_t>(d)];
+            auto& item = static_cast<DisplayItem&>(*items_[static_cast<std::size_t>(idx)]);
+            const int i = nodeOfDisplay[static_cast<std::size_t>(d)];
+            const bool has = d < static_cast<int>(panelSpec_.displays.size()) && i >= 0;
+            item.setDisplay(has && seen(static_cast<std::size_t>(i)) ? &panelSpec_.displays[static_cast<std::size_t>(d)] : nullptr);
+            item.setRect(has ? gui_.rects[static_cast<std::size_t>(i)] : funkgui::Rect{});
+            item.setArea(area);
+            guiItem_[static_cast<std::size_t>(idx)] = true;
+        }
+    }
+
+    void Panel::setPanelView(bool on)
+    {
+        if (on == panelView_)
+            return;
+        panelView_ = on;
+        port_.setPanelView(on);
+        guiScrollX_ = guiScrollY_ = 0.0f;
+        if (on && (focus_ == editorItem_ || focus_ == problemsItem_))
+            setFocus(-1);
+        layout();
+    }
+
+    const GuiControlItem& Panel::guiControl(int slot) const
+    {
+        return static_cast<const GuiControlItem&>(
+            *items_[static_cast<std::size_t>(itemOfGuiSlot_[static_cast<std::size_t>(std::clamp(slot, 0, kMaxControls - 1))])]);
+    }
+
+    const Item& Panel::guiItem(int kind, int k) const
+    {
+        const std::vector<int>& pool = kind == 0 ? guiPads_ : (kind == 1 ? guiEnvelopes_ : guiTabs_);
+        return *items_[static_cast<std::size_t>(pool[static_cast<std::size_t>(std::clamp(k, 0, static_cast<int>(pool.size()) - 1))])];
+    }
+
+    void Panel::chooseGuiPage(int node, int page)
+    {
+        if (node < 0 || static_cast<std::size_t>(node) >= panelSpec_.gui.nodes.size())
+            return;
+        guiPages_.resize(panelSpec_.gui.nodes.size(), 0);
+        if (guiPages_[static_cast<std::size_t>(node)] == page)
+            return;
+        guiPages_[static_cast<std::size_t>(node)] = page;
+        layout();
+    }
+
+    void Panel::scrollGui(float dx, float dy)
+    {
+        const float x = std::clamp(guiScrollX_ + dx, 0.0f, gui_.maxScrollX), y = std::clamp(guiScrollY_ + dy, 0.0f, gui_.maxScrollY);
+        if (x == guiScrollX_ && y == guiScrollY_)
+            return;
+        guiScrollX_ = x;
+        guiScrollY_ = y;
+        layout();
+    }
+
+    funkgui::Point Panel::centreOfView(bool panel) const
+    {
+        const float x = panel ? kMargin + 526.0f + 32.0f : kMargin + 464.0f + 30.0f;
+        return { x, kToolbarY + 0.5f * kButtonH };
+    }
+
     void Panel::setFocus(int item)
     {
         if (focus_ != item && focus_ >= 0)
@@ -3013,7 +3279,7 @@ namespace testingplayground::ui
         // The toolbar's status and meter, over the editor.
         {
             const funkgui::Canvas::Scope s(c, kStatusTag, false);
-            const float statusX = kMargin + 360.0f + 88.0f + 20.0f;
+            const float statusX = kMargin + 526.0f + 64.0f + 20.0f;
             const float textTop = c.capCentreTop(kToolbarY + kButtonH * 0.5f, kStatusStyle);
             const float meterW = c.textWidth(meter_.c_str(), kStatusStyle);
             const funkgui::Col statusInk = !lastOk_ && !compiling_ ? th.signal : (edited_ ? th.ink70 : th.ink52);
@@ -3074,9 +3340,44 @@ namespace testingplayground::ui
             }
         }
 
+        // A .gui file's interface: its ground, frames, labels and dividers, then its items, all in its area, in its
+        // theme (GuiItems.h), and a bar at its edge where it scrolls.
+        const bool gui = !panelSpec_.gui.empty();
+        const funkgui::Theme gth = gui ? guiTheme(th, panelSpec_.gui) : th;
+        if (gui)
+        {
+            const funkgui::Canvas::Scope s(c, kSectionTag, false);
+            const funkgui::Canvas::ClipScope clip(c, gui_.area);
+            drawGuiPanel(c, gth, panelSpec_, gui_);
+        }
         for (std::size_t i = 0; i < items_.size(); ++i)
-            if (items_[i]->shown())
+        {
+            if (!items_[i]->shown())
+                continue;
+            if (gui && i < guiItem_.size() && guiItem_[i])
+            {
+                const funkgui::Canvas::ClipScope clip(c, gui_.area);
+                items_[i]->draw(c, gth, ring_ && focus_ == static_cast<int>(i));
+            }
+            else
                 items_[i]->draw(c, th, ring_ && focus_ == static_cast<int>(i));
+        }
+        if (gui && (gui_.maxScrollY > 0.0f || gui_.maxScrollX > 0.0f))
+        {
+            const funkgui::Rect& a = gui_.area;
+            if (gui_.maxScrollY > 0.0f)
+            {
+                const float h = std::max(24.0f, a.h * a.h / (a.h + gui_.maxScrollY));
+                const float y = a.y + (a.h - h) * guiScrollY_ / gui_.maxScrollY;
+                c.rrect(a.right() + kGuiScrollGutter - 4.0f, y, 3.0f, h, 1.5f, th.ink32);
+            }
+            if (gui_.maxScrollX > 0.0f)
+            {
+                const float w = std::max(24.0f, a.w * a.w / (a.w + gui_.maxScrollX));
+                const float x = a.x + (a.w - w) * guiScrollX_ / gui_.maxScrollX;
+                c.rrect(x, a.bottom() - 4.0f, w, 3.0f, 1.5f, th.ink32);
+            }
+        }
 
         // Footer: the spec line of the control under the hand, else the focused one, else the last one touched; the
         // dialog's own while it is open.
@@ -3231,6 +3532,19 @@ namespace testingplayground::ui
             return true;
         }
         const int i = itemAt({ e.x, e.y });
+        // A .gui interface taller or wider than its area scrolls, but for a control under the pointer (it takes the
+        // wheel itself).
+        if (!panelSpec_.gui.empty() && gui_.area.contains({ e.x, e.y }) && (gui_.maxScrollX > 0.0f || gui_.maxScrollY > 0.0f)
+            && (i < 0 || std::find(itemOfGuiSlot_.begin(), itemOfGuiSlot_.end(), i) == itemOfGuiSlot_.end()))
+        {
+            const float k = e.smooth ? 512.0f : 292.0f;     // px a unit of the wheel (the chat's)
+            const float dy = e.reversed ? -e.dy : e.dy, dx = e.reversed ? -e.dx : e.dx;
+            if (e.mods.shift && dx == 0.0f)
+                scrollGui(-dy * k, 0.0f);
+            else
+                scrollGui(-dx * k, -dy * k);
+            return true;
+        }
         if (i < 0 || !gestures_ || host_ == nullptr)
             return false;
         touched_ = i;
@@ -3435,9 +3749,17 @@ namespace testingplayground::ui
         r ^= (tab_ == DialogTab::account ? 0x6A09E667u : 0u) ^ (chat_.signedIn ? 0xBB67AE85u : 0u)
            ^ (chat_.hasKey ? 0x3C6EF372u : 0u) ^ (chat_.signingIn || awaitingSignIn_ ? 0xA54FF53Au : 0u)
            ^ (chat_.useAccount ? 0x510E527Fu : 0u);
-        for (int d = 0; d < kMaxDisplays; ++d)                // bits 19 to 26
+        static_assert(kMaxDisplays <= 32, "the displays' mask");
+        uint32_t displays = 0;                                // the displays shown, one bit each, mixed in
+        for (int d = 0; d < kMaxDisplays; ++d)
             if (items_[static_cast<std::size_t>(itemOfDisplay_[static_cast<std::size_t>(d)])]->shown())
-                r |= 1u << (19 + d);
+                displays |= 1u << d;
+        r ^= displays * 0x9E3779B9u;
+        uint32_t gui = 0;                                     // a .gui interface's controls shown
+        for (int c = 0; c < kMaxControls; ++c)
+            if (const int i = itemOfGuiSlot_[static_cast<std::size_t>(c)]; i >= 0 && items_[static_cast<std::size_t>(i)]->shown())
+                gui |= 1u << c;
+        r ^= gui * 0x2C1B3C6Du;
         // The counters times odd constants: a change in any one of them changes the revision.
         return r ^ (files().layoutRevision() * 0x85EBCA77u) ^ (layoutRevision_ * 0xC2B2AE3Du) ^ (chatA11y_ * 2654435761u);
     }
