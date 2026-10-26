@@ -9,7 +9,7 @@
 //   TAMPER  one byte changed anywhere (magic, salt, IV, ciphertext, HMAC), or the file cut short: the key does not
 //           load, and loadKey says why
 //   FORGET  forgetKey deletes the file: no key
-//   CHOICE  the model and thinking level round-trip; a damaged chat.json loads as no choice
+//   CHOICE  the model, thinking level and fast mode round-trip; a damaged chat.json loads as no choice
 //   SANDBOX under CTest (<ENV_PREFIX>PREFS_DIR set) the default folder is the sandbox's chat/, never the user's
 #include "Probe.h"
 
@@ -139,13 +139,16 @@ PROBE(plugin, chatstore)
     P.eq("forget.has_key", store::hasKey() ? 1 : 0, 0);
 
     // CHOICE
-    store::saveChoice({ "claude-sonnet-5-5", "high" });
+    store::saveChoice({ "claude-sonnet-5-5", "high", true });
     const store::Choice c = store::loadChoice();
     P.eq("choice.model", c.model == "claude-sonnet-5-5" ? 1 : 0, 1);
     P.eq("choice.effort", c.effort == "high" ? 1 : 0, 1);
+    P.eq("choice.fast", c.fast ? 1 : 0, 1);
+    store::saveChoice({ "claude-opus-5-5", "medium", false });
+    P.eq("choice.fast_off", store::loadChoice().fast ? 1 : 0, 0);
     dir.getChildFile("chat.json").replaceWithText("{ not json");
     const store::Choice damaged = store::loadChoice();
-    P.eq("choice.damaged_is_none", damaged.model.empty() && damaged.effort.empty() ? 1 : 0, 1);
+    P.eq("choice.damaged_is_none", damaged.model.empty() && damaged.effort.empty() && !damaged.fast ? 1 : 0, 1);
 
     store::setDirectoryForTests(juce::File());
     dir.getParentDirectory().deleteRecursively();

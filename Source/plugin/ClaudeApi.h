@@ -70,6 +70,7 @@ namespace testingplaygroundsynth::claude
     {
         int64_t input = 0, output = 0, cacheRead = 0, cacheWrite = 0;
         int compactions = 0;                  // compaction iterations in the request (usage.iterations)
+        std::string speed;                    // the speed it ran at, "fast" or "standard" (usage.speed); "" unsaid
     };
 
     class MessageBuilder

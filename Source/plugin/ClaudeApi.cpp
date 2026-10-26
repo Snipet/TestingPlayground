@@ -207,6 +207,8 @@ namespace testingplaygroundsynth::claude
             usage_.cacheRead = static_cast<int64_t>(u.getProperty("cache_read_input_tokens", 0));
             usage_.cacheWrite = static_cast<int64_t>(u.getProperty("cache_creation_input_tokens", 0));
             usage_.output = static_cast<int64_t>(u.getProperty("output_tokens", 0));
+            if (u.hasProperty("speed"))
+                usage_.speed = u.getProperty("speed", "").toString().toStdString();
         }
         else if (kind == "content_block_start")
         {
@@ -325,6 +327,8 @@ namespace testingplaygroundsynth::claude
                 usage_.cacheRead = static_cast<int64_t>(u.getProperty("cache_read_input_tokens", 0));
             if (u.hasProperty("cache_creation_input_tokens"))
                 usage_.cacheWrite = static_cast<int64_t>(u.getProperty("cache_creation_input_tokens", 0));
+            if (u.hasProperty("speed"))
+                usage_.speed = u.getProperty("speed", "").toString().toStdString();
             // With compaction on, the iterations list every sampling step: the top-level counts leave out a
             // compaction's, so the request's whole cost is their sum.
             const juce::var iterations = u.getProperty("iterations", juce::var());

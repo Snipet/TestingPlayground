@@ -260,6 +260,7 @@ namespace testingplaygroundsynth::chatstore
         {
             c.model = o->getProperty("model").toString().toStdString();
             c.effort = o->getProperty("effort").toString().toStdString();
+            c.fast = static_cast<bool>(o->getProperty("fast"));
         }
         return c;
     }
@@ -271,6 +272,7 @@ namespace testingplaygroundsynth::chatstore
         auto* o = new juce::DynamicObject();
         o->setProperty("model", juce::String(choice.model));
         o->setProperty("effort", juce::String(choice.effort));
+        o->setProperty("fast", choice.fast);
         const std::string text = juce::JSON::toString(juce::var(o), true).toStdString() + "\n";
         writePrivate(choiceFile(), text.data(), text.size(), nullptr);
     }

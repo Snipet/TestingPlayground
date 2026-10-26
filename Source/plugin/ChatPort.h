@@ -6,7 +6,8 @@
 //   chatState()      the conversation as the view shows it, the models and the choice, the key's state
 //   saveKey()        stores the key, encrypted (ChatStore.h); false, with why, for one that is not a key
 //   forgetKey()      deletes the stored key
-//   setModel()       a model of chatState().models; setEffort() a thinking level that model has. Both machine-wide
+//   setModel()       a model of chatState().models; setEffort() a thinking level that model has; setFast() fast mode,
+//                    on the models that take it. All three machine-wide
 //   send()           a message from the user; Claude answers (and works) in the background
 //   stop()           ends Claude's turn as soon as it can; the work done so far stays
 //   newChat()        forgets the conversation
@@ -40,6 +41,8 @@ namespace testingplaygroundsynth
         std::vector<std::string> efforts;     // the thinking levels it takes: "low", "medium", ...
         int maxTokens = 64000;                // its longest answer (thinking included), from /v1/models
         bool compaction = false;              // it takes server-side compaction (long conversations summarized)
+        bool fast = false;                    // it takes fast mode: the same model, its answers written faster, at a
+                                              // higher price (the API's speed "fast")
     };
 
     struct ChatState
@@ -52,6 +55,7 @@ namespace testingplaygroundsynth
         std::vector<ChatModel> models;
         std::string model;                    // the chosen model's id
         std::string effort;                   // the chosen thinking level
+        bool fast = false;                    // fast mode chosen (it applies on a model that takes it)
         std::string usage;                    // the last reply's tokens, for the footer
     };
 
@@ -67,6 +71,7 @@ namespace testingplaygroundsynth
         virtual void forgetKey() = 0;
         virtual void setModel(const std::string& id) = 0;
         virtual void setEffort(const std::string& effort) = 0;
+        virtual void setFast(bool on) = 0;
 
         virtual void send(const std::string& text) = 0;
         virtual void stop() = 0;
