@@ -336,6 +336,7 @@ namespace testingplaygroundsynth
         for (float& t : frame_.taps)
             t = 0.0f;
         frame_.program = current_ != nullptr ? current_->program() : 0;
+        frame_.rate = fs_;
         if (current_ != nullptr && current_->taps() > 0)
         {
             int instance = -1;

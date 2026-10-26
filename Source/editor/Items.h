@@ -70,6 +70,28 @@ namespace testingplaygroundsynth::ui
         return r;
     }
 
+    // A .gui file's words (fminus/GuiSpec.h): its containers and decorations as keywords, its controls and displays as
+    // types, its "texts" as strings; // and /* */ comments.
+    inline funkgui::text::KeywordRules guiRules()
+    {
+        funkgui::text::KeywordRules r;
+        r.keywords = { "box", "column", "divider", "grid", "label", "page", "panel", "row", "section", "spacer", "tabs" };
+        r.types = { "buttons", "envelope", "knob", "led", "menu", "meter", "number", "scope", "slider", "spectrum",
+                    "switch", "vu", "xy" };
+        r.lineComment = "//";
+        r.blockOpen = "/*";
+        r.blockClose = "*/";
+        r.quotes = "\"";
+        r.preprocessor = '\0';
+        return r;
+    }
+
+    // The rules a file's tab highlights with, by its name.
+    inline funkgui::text::KeywordRules rulesFor(std::string_view name)
+    {
+        return name.size() > 4 && name.substr(name.size() - 4) == ".gui" ? guiRules() : fminusRules();
+    }
+
     inline std::string upper(std::string_view s)
     {
         std::string out(s);

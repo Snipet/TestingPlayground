@@ -156,6 +156,8 @@ namespace testingplaygroundsynth
         std::string presetName() const override;
         bool presetEdited() const override;
         ChatPort& chat() override { return chat_; }
+        bool panelView() const override { return panelView_.load(); }
+        void setPanelView(bool on) override { panelView_.store(on); }
 
         // ChatHost: Claude's tools (ChatAgent.h), from the agent's worker thread.
         Draft chatDraft() const override;
@@ -201,6 +203,7 @@ namespace testingplaygroundsynth
         std::atomic<uint64_t> editorRun_{ 0 };                   // the request of the last run (the editor's or Claude's)
         std::atomic<uint32_t> alerts_{ 0 };
         std::atomic<int> editorW_{ 0 }, editorH_{ 0 };
+        std::atomic<bool> panelView_{ false };                       // the editor's PANEL view, in the session
         double alertsAt_ = 0.0;                                  // when alerts_ last gained a bit (ms)
 
         std::array<float, kMaxControls> values_{};               // audio thread: the last good normalised values
