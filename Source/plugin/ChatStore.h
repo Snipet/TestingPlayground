@@ -39,11 +39,12 @@ namespace testingplayground::chatstore
     // Whether `key` looks like an Anthropic API key: "sk-ant-" then 20 to 300 letters, digits, '-' and '_'.
     bool plausibleKey(std::string_view key);
 
-    // The model and thinking level chosen last ("" when none was).
+    // The model, thinking level and fast mode chosen last ("" and off when none was).
     struct Choice
     {
         std::string model;
         std::string effort;
+        bool fast = false;
     };
     Choice loadChoice();
     void saveChoice(const Choice& choice);

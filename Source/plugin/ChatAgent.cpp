@@ -47,10 +47,10 @@ namespace testingplayground
         const std::vector<std::string> kAllEfforts{ "low", "medium", "high", "xhigh", "max" };
 
         // Before /v1/models answers (or without a key): the current models, which all take adaptive thinking and
-        // every effort level.
+        // every effort level; Claude Opus 5.5 takes fast mode too.
         std::vector<ChatModel> builtInModels()
         {
-            return { { "claude-opus-5-5", "Claude Opus 5.5", kAllEfforts, 128000, true },
+            return { { "claude-opus-5-5", "Claude Opus 5.5", kAllEfforts, 128000, true, true },
                      { "claude-fable-5-1", "Claude Fable 5.1", kAllEfforts, 128000, true },
                      { "claude-sonnet-5-5", "Claude Sonnet 5.5", kAllEfforts, 128000, true },
                      { "claude-haiku-5-5", "Claude Haiku 5.5", kAllEfforts, 128000, true } };
@@ -61,6 +61,24 @@ namespace testingplayground
         {
             return id == "claude-fable-5-1" || id == "claude-opus-5-5" || id == "claude-opus-5"
                 || id == "claude-sonnet-5-5";
+        }
+
+        // Fast mode (the fast-mode docs; /v1/models does not list it): Claude Opus 5.5, and in research preview
+        // Claude Opus 5 and Opus 4.8, whose fast requests need the beta header (without it they get a 400).
+        constexpr const char* kFastBeta = "fast-mode-2026-02-01";
+
+        bool takesFast(const std::string& id)
+        {
+            return id == "claude-opus-5-5" || id == "claude-opus-5" || id == "claude-opus-4-8";
+        }
+
+        bool fastNeedsBeta(const std::string& id) { return id == "claude-opus-5" || id == "claude-opus-4-8"; }
+
+        // Whether a refused request's error is about fast mode itself (not open to this key, not on this model).
+        bool aboutSpeed(const std::string& error)
+        {
+            const juce::String e = juce::String(error).toLowerCase();
+            return e.contains("speed") || e.contains("fast mode") || e.contains("fast-mode");
         }
 
         std::string str(const juce::var& v, const char* key)
@@ -307,6 +325,7 @@ namespace testingplayground
         const chatstore::Choice choice = chatstore::loadChoice();
         model_ = choice.model.empty() ? std::string(kDefaultModel) : choice.model;
         effort_ = choice.effort.empty() ? std::string(kDefaultEffort) : choice.effort;
+        fast_ = choice.fast;
     }
 
     ChatAgent::~ChatAgent()
@@ -356,6 +375,7 @@ namespace testingplayground
         s.models = models_;
         s.model = model_;
         s.effort = effort_;
+        s.fast = fast_;
         s.usage = usage_;
         return s;
     }
@@ -396,7 +416,7 @@ namespace testingplayground
             const auto medium = std::find(it->efforts.begin(), it->efforts.end(), std::string(kDefaultEffort));
             effort_ = medium != it->efforts.end() ? *medium : it->efforts.front();
         }
-        chatstore::saveChoice({ model_, effort_ });
+        chatstore::saveChoice({ model_, effort_, fast_ });
         touch();
     }
 
@@ -407,7 +427,15 @@ namespace testingplayground
         if (it != models_.end() && std::find(it->efforts.begin(), it->efforts.end(), effort) == it->efforts.end())
             return;                                // a level this model does not take
         effort_ = effort;
-        chatstore::saveChoice({ model_, effort_ });
+        chatstore::saveChoice({ model_, effort_, fast_ });
+        touch();
+    }
+
+    void ChatAgent::setFast(bool on)
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        fast_ = on;
+        chatstore::saveChoice({ model_, effort_, fast_ });
         touch();
     }
 
@@ -816,7 +844,15 @@ namespace testingplayground
             o->setProperty("output_config", claude::object({ { "effort", juce::String(turnEffort_) } }));
         o->setProperty("cache_control", claude::object({ { "type", "ephemeral" } }));   // the conversation, automatic
         beta.clear();
-        if (takesDefaultFallbacks(turnModel_))
+        if (turnFast_)
+        {
+            // Fast mode goes without "fallbacks": the docs say nothing of the two together, and a fallback model need
+            // not take fast mode.
+            o->setProperty("speed", "fast");
+            if (fastNeedsBeta(turnModel_))
+                beta = kFastBeta;
+        }
+        else if (takesDefaultFallbacks(turnModel_))
         {
             o->setProperty("fallbacks", "default");
             beta = kFallbackBeta;
@@ -916,6 +952,7 @@ namespace testingplayground
                 cm.compaction = static_cast<bool>(caps.getProperty("context_management", juce::var())
                                                       .getProperty("compact_20260112", juce::var())
                                                       .getProperty("supported", false));
+                cm.fast = takesFast(cm.id);        // /v1/models has no capability for it
                 const juce::var effort = caps.getProperty("effort", juce::var());
                 for (const std::string& e : kAllEfforts)
                     if (static_cast<bool>(effort.getProperty(juce::String(e), juce::var()).getProperty("supported", false)))
@@ -958,12 +995,16 @@ namespace testingplayground
             const std::lock_guard<std::mutex> lock(mutex_);
             turnModel_ = model_;
             turnEffort_ = effort_;
+            const auto model = std::find_if(models_.begin(), models_.end(),
+                                            [&](const ChatModel& m) { return m.id == model_; });
+            turnFast_ = fast_ && model != models_.end() && model->fast;
         }
 
         for (int round = 0; round < kMaxRounds && !cancel_.load(); ++round)
         {
             std::string beta;
-            const std::string body = claude::toJson(buildRequest(beta));
+            std::string body = claude::toJson(buildRequest(beta));
+            int fastBusy = 0;                      // the fast requests the API turned away as busy, this round
 
             std::unique_ptr<claude::MessageBuilder> builder;
             bool ok = false;
@@ -1026,6 +1067,38 @@ namespace testingplayground
                                    && (builder->error().empty() || et == "overloaded_error" || et == "api_error");
                 if (ok && !brokeOff)
                     break;
+                // Fast mode turned away: busy again after one wait (its rate limit, or its capacity), or refused
+                // (not open to this key, not on this model). The turn goes on at standard speed (the fast-mode docs'
+                // fallback; the cache starts again, as speeds share no cached prefix), and a refusal turns it off.
+                bool fastNow = false;
+                {
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    fastNow = turnFast_;
+                }
+                const bool fastRefused = fastNow && !ok && status >= 400 && status < 500 && status != 429
+                                      && aboutSpeed(error);
+                const bool fastBusyAgain = fastNow && !ok && (status == 429 || status == 529) && ++fastBusy >= 2;
+                if (fastRefused || fastBusyAgain)
+                {
+                    {
+                        const std::lock_guard<std::mutex> lock(mutex_);
+                        turnFast_ = false;
+                        if (fastRefused)
+                        {
+                            fast_ = false;
+                            chatstore::saveChoice({ model_, effort_, fast_ });
+                            addEntry(ChatEntry::Kind::note, "Fast mode is not open to this request (" + error
+                                                                + "): it is off now, and this turn goes on at "
+                                                                  "standard speed.");
+                        }
+                        else
+                            addEntry(ChatEntry::Kind::note,
+                                     "Fast mode is busy; this turn goes on at standard speed.");
+                    }
+                    body = claude::toJson(buildRequest(beta));
+                    --attempt;                     // the standard request gets attempts of its own
+                    continue;
+                }
                 const bool retryable = brokeOff || status == 0 || status == 429 || status == 529 || status >= 500;
                 if (!retryable || attempt + 1 == kMaxAttempts)
                     break;
@@ -1082,6 +1155,7 @@ namespace testingplayground
                 const std::lock_guard<std::mutex> lock(mutex_);
                 usage_ = "Last reply: " + thousands(u.input + u.cacheRead + u.cacheWrite) + " tokens in ("
                        + thousands(u.cacheRead) + " cached), " + thousands(u.output) + " out"
+                       + (u.speed == "fast" ? ", fast" : "")
                        + (u.compactions > 0 ? "; the conversation was summarized" : "");
                 touch();
             }

@@ -21,6 +21,12 @@
 //   CHOICE   another model and level: the next request has them; a model that takes no fallbacks and no compaction
 //            gets neither (and no beta header), and its own max_tokens; a level the model does not take is refused; a
 //            change during a turn waits for the next
+//   FAST     fast mode: off at first; the models that take it (Claude Opus 5.5 here, not Sonnet 5.5); a standard
+//            request asks for no speed and has "fallbacks"; on, the request asks for "speed": "fast", without
+//            "fallbacks" or their beta (and without fast mode's beta on Opus 5.5), the choice is stored, and the footer
+//            says "fast" when the usage does; busy (a 429, again after one wait) the turn goes on at standard speed with
+//            a note, fast mode still chosen; refused (a 400 about the speed) the turn goes on at standard speed and fast
+//            mode is off; a model that takes no fast mode asks for no speed; Opus 4.8 (in preview) sends fast mode's beta
 //   INVALID  a tool call whose input is not JSON gets an INVALID_JSON error result, runs nothing, and the turn goes on
 //   RETRY    an overloaded API (529, retry-after 1 s) is asked again and the turn completes
 //   ERROR    a key the API refuses (401): the turn ends with the API's message, and the next message joins the
@@ -420,6 +426,95 @@ PROBE(plugin, chat)
         P.eq("choice.fixed_for_turn", m1 == m2 ? 1 : 0, 1);
         agent.setModel("claude-opus-5-5");
         agent.setEffort("medium");
+    }
+
+    // ---- FAST ----------------------------------------------------------------------------------------------------------
+    {
+        const auto lastBody = [&] { return claude::parseJson(script->body(script->postCount() - 1)); };
+        const auto lastBeta = [&] { return script->header(static_cast<int>(script->headers.size()) - 1, "anthropic-beta"); };
+        P.eq("fast.off_at_first", agent.chatState().fast ? 1 : 0, 0);
+        bool opusFast = false, sonnetFast = true;
+        for (const tp::ChatModel& m : agent.chatState().models)
+        {
+            if (m.id == "claude-opus-5-5")
+                opusFast = m.fast;
+            if (m.id == "claude-sonnet-5-5")
+                sonnetFast = m.fast;
+        }
+        P.eq("fast.models", opusFast && !sonnetFast ? 1 : 0, 1);
+
+        script->add(fake::Response::ok(fake::Sse().start().text("Standard.").end()));
+        agent.send("a standard answer");
+        agent.waitIdle();
+        const juce::var plain = lastBody();
+        P.eq("fast.standard_no_speed", !plain.hasProperty("speed") && plain.hasProperty("fallbacks") ? 1 : 0, 1);
+
+        agent.setFast(true);
+        P.eq("fast.chosen", agent.chatState().fast && tp::chatstore::loadChoice().fast ? 1 : 0, 1);
+        script->add(fake::Response::ok(fake::Sse().start().text("Quick.").end("end_turn", 321, "fast")));
+        agent.send("a fast answer");
+        agent.waitIdle();
+        const juce::var quick = lastBody();
+        P.eq("fast.speed_asked", str(quick, "speed") == "fast" ? 1 : 0, 1);
+        P.eq("fast.no_fallbacks", quick.hasProperty("fallbacks") ? 1 : 0, 0);
+        const std::string beta = lastBeta();
+        P.eq("fast.betas", has(beta, "compact-2026-01-12") && !has(beta, "server-side-fallback")
+                               && !has(beta, "fast-mode") ? 1 : 0, 1);
+        P.eq("fast.footer_says_fast", has(agent.chatState().usage, ", fast") ? 1 : 0, 1);
+
+        // Busy: a 429 (its retry-after waited once), then another: the turn goes on at standard speed.
+        script->add(fake::Response::failure(429, "rate_limit_error", "Fast mode rate limit exceeded", 1));
+        script->add(fake::Response::failure(429, "rate_limit_error", "Fast mode rate limit exceeded", 1));
+        script->add(fake::Response::ok(fake::Sse().start().text("At standard speed.").end()));
+        int before = script->postCount();
+        agent.send("busy now");
+        agent.waitIdle();
+        P.eq("fast.busy_requests", script->postCount() - before, 3);
+        const juce::var third = lastBody();
+        P.eq("fast.busy_standard", !third.hasProperty("speed") && third.hasProperty("fallbacks")
+                                       && str(claude::parseJson(script->body(before)), "speed") == "fast" ? 1 : 0, 1);
+        P.eq("fast.busy_note", has(lastText(agent.chatState(), tp::ChatEntry::Kind::note), "Fast mode is busy") ? 1 : 0, 1);
+        P.eq("fast.busy_answered", lastText(agent.chatState(), tp::ChatEntry::Kind::assistant) == "At standard speed." ? 1 : 0, 1);
+        P.eq("fast.busy_still_chosen", agent.chatState().fast ? 1 : 0, 1);
+
+        // Refused: a 400 about the speed. The turn goes on at standard speed, and fast mode is off.
+        script->add(fake::Response::failure(400, "invalid_request_error", "speed 'fast' is not available for this organization"));
+        script->add(fake::Response::ok(fake::Sse().start().text("Fine.").end()));
+        before = script->postCount();
+        agent.send("refused now");
+        agent.waitIdle();
+        P.eq("fast.refused_requests", script->postCount() - before, 2);
+        P.eq("fast.refused_standard", !lastBody().hasProperty("speed") ? 1 : 0, 1);
+        P.eq("fast.refused_off", !agent.chatState().fast && !tp::chatstore::loadChoice().fast ? 1 : 0, 1);
+        P.eq("fast.refused_note", has(lastText(agent.chatState(), tp::ChatEntry::Kind::note), "not open") ? 1 : 0, 1);
+
+        // A model that takes no fast mode asks for no speed, chosen or not.
+        agent.setFast(true);
+        agent.setModel("claude-sonnet-5-5");
+        script->add(fake::Response::ok(fake::Sse().start("claude-sonnet-5-5").text("Sonnet.").end()));
+        agent.send("on sonnet");
+        agent.waitIdle();
+        P.eq("fast.not_on_sonnet", !lastBody().hasProperty("speed") ? 1 : 0, 1);
+
+        // Claude Opus 4.8 takes fast mode in preview: its fast requests send fast mode's beta.
+        script->models = fake::modelsBody({ { "claude-opus-5-5", "Claude Opus 5.5", true, { "low", "medium", "high", "xhigh", "max" } },
+                                            { "claude-sonnet-5-5", "Claude Sonnet 5.5", true, { "low", "medium", "high", "xhigh" } },
+                                            { "claude-haiku-5-5", "Claude Haiku 5.5", true, { "low", "medium", "high" }, 64000, false },
+                                            { "claude-opus-4-8", "Claude Opus 4.8", true, { "low", "medium", "high", "xhigh", "max" } },
+                                            { "claude-old-4", "Claude Old 4", false, {} } });
+        agent.setTransport(std::make_unique<fake::Transport>(script));   // the models are asked for again
+        script->add(fake::Response::ok(fake::Sse().start("claude-sonnet-5-5").text("Listed.").end()));
+        agent.send("list them");
+        agent.waitIdle();
+        agent.setModel("claude-opus-4-8");
+        script->add(fake::Response::ok(fake::Sse().start("claude-opus-4-8").text("Preview.").end("end_turn", 321, "fast")));
+        agent.send("on opus 4.8");
+        agent.waitIdle();
+        P.eq("fast.preview_speed", str(lastBody(), "speed") == "fast" ? 1 : 0, 1);
+        P.eq("fast.preview_beta", has(lastBeta(), "fast-mode-2026-02-01") && !has(lastBeta(), "server-side-fallback") ? 1 : 0, 1);
+
+        agent.setFast(false);
+        agent.setModel("claude-opus-5-5");
     }
 
     // ---- INVALID -------------------------------------------------------------------------------------------------------

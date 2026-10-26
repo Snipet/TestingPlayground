@@ -106,12 +106,16 @@ namespace fake
 
         Sse& ping() { return event("ping", claude::object({ { "type", "ping" } })); }
 
-        Sse& end(const std::string& stopReason = "end_turn", int output = 321)
+        // `speed`, when given, is the usage's ("fast" or "standard"), as a fast-mode request's response says it.
+        Sse& end(const std::string& stopReason = "end_turn", int output = 321, const std::string& speed = "")
         {
+            juce::var usage = claude::object({ { "output_tokens", output } });
+            if (!speed.empty())
+                usage.getDynamicObject()->setProperty("speed", juce::String(speed));
             event("message_delta", claude::object({ { "type", "message_delta" },
                                                     { "delta", claude::object({ { "stop_reason", juce::String(stopReason) },
                                                                                 { "stop_sequence", juce::var() } }) },
-                                                    { "usage", claude::object({ { "output_tokens", output } }) } }));
+                                                    { "usage", usage } }));
             return event("message_stop", claude::object({ { "type", "message_stop" } }));
         }
 
