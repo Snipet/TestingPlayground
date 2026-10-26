@@ -19,6 +19,10 @@
 //             holding no page, a page outside tabs, a label without text, a log taper from 0, decimals out of range;
 //             a second .gui file, and #pragma panel lines beside a .gui file, are notes too
 //   PRAGMAS   without a .gui file the #pragma panel lines still make the panel (no tree)
+//   STYLES    classes and defaults reach their elements (an element's own property beats its class's, which beats
+//             the defaults'); every look and style property lands in its node (tabs, sections, boxes, rows that wrap,
+//             knobs, sliders, labels, dividers, the panel's gradient, an instrument's keyboard); live= taps its field
+//             once for every control that names it; a mistake in them is a note on its line and column
 #include "Probe.h"
 
 #include "fminus/GuiSpec.h"
@@ -26,6 +30,7 @@
 
 #include "Product.h"
 
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -349,6 +354,90 @@ panel background=#1d1b19 accent=orange {
         P.eq("pragmas.no_tree", alone.panel.gui.empty() && !alone.panel.sections.empty() ? 1 : 0, 1);
         P.eq("pragmas.no_note_about_gui", has(alone.notes, ".gui") ? 0 : 1, 1);
         P.eq("pragmas.is_gui_file", tp::isGuiFile("panel.gui") && !tp::isGuiFile("gui") && !tp::isGuiFile("panel.fm") ? 1 : 0, 1);
+    }
+
+    // ---- STYLES --------------------------------------------------------------------------------------------------------
+    {
+        const std::string keys = kInstrument ? "  keyboard from=36 octaves=3 height=80\n" : "  spacer\n";
+        const Compiled c = withGui("class \"big\" size=72 arc=#ffaa00 pointer=dot\n"                                  // 1
+                                   "defaults knob look=ring ticks=11\n"                                                // 2
+                                   "defaults section look=card radius=8\n"                                             // 3
+                                   "panel background=#202020 gradient=#101010 {\n"                                     // 4
+                                   "  tabs look=bar {\n"                                                               // 5
+                                   "    page \"A\" {\n"                                                                // 6
+                                   "      section \"S\" look=plate titlealign=left titlesize=large shadow=false {\n"   // 7
+                                   "        row wrap gap=6 margin=4 {\n"                                               // 8
+                                   "          knob cutoff class=\"big\" look=soft live=env\n"                          // 9
+                                   "          knob resonance bipolar labelpos=bottom value=never sweep=300 thickness=4\n" // 10
+                                   "          slider attack track=none cap=#ffffff live=env\n"                         // 11
+                                   "        }\n"                                                                       // 12
+                                   "      }\n"                                                                         // 13
+                                   "    }\n"                                                                           // 14
+                                   "    page \"B\" { box look=inset fill=none border=red borderwidth=2 { knob level self=end minwidth=80 } }\n"
+                                   "  }\n"                                                                             // 16
+                                   "  label \"BIG\" size=24 align=right\n"                                             // 17
+                                   "  divider thickness=3\n"                                                           // 18
+                                   + keys +                                                                            // 19
+                                   "}\n");
+        int lineNotes = 0;
+        for (std::size_t at = c.notes.find("panel.gui:"); at != std::string::npos; at = c.notes.find("panel.gui:", at + 1))
+            lineNotes += at + 10 < c.notes.size() && std::isdigit(static_cast<unsigned char>(c.notes[at + 10])) ? 1 : 0;
+        if (lineNotes > 0)
+            std::printf("styles notes:\n%s", c.notes.c_str());
+        P.eq("styles.no_line_notes", lineNotes, 0);
+        const tp::GuiTree& t = c.panel.gui;
+        P.eq("styles.gradient", t.gradient == "#101010" && t.background == "#202020" ? 1 : 0, 1);
+        const tp::GuiNode& tabs = at(t, find(t, tp::GuiKind::tabs));
+        P.eq("styles.tabs_bar", tabs.style.look == "bar" ? 1 : 0, 1);
+        const tp::GuiNode& sec = at(t, find(t, tp::GuiKind::section, "S"));
+        P.eq("styles.section_own_look", sec.style.look == "plate" ? 1 : 0, 1);              // its own beats the defaults'
+        P.eq("styles.section_defaults_radius", sec.style.radius == 8.0f ? 1 : 0, 1);         // the defaults' still apply
+        P.eq("styles.section_title", sec.style.titleAlign == 0 && sec.style.titleSize == 2 && sec.style.shadow == 0 ? 1 : 0, 1);
+        const tp::GuiNode& row = at(t, find(t, tp::GuiKind::row));
+        P.eq("styles.row_wrap", row.wrap && row.gap == 6.0f && row.margin == 4.0f ? 1 : 0, 1);
+        const tp::GuiNode& big = at(t, find(t, tp::GuiKind::knob, "", cutoff));
+        P.eq("styles.class", big.style.px == 72.0f && big.style.arc == "#ffaa00" && big.style.pointer == 1 ? 1 : 0, 1);
+        P.eq("styles.own_beats_class", big.style.look == "soft" ? 1 : 0, 1);
+        P.eq("styles.defaults_ticks", big.style.tickCount == 11 ? 1 : 0, 1);
+        P.eq("styles.live", big.live >= 0 && big.live < static_cast<int>(c.panel.displays.size())
+                                && c.panel.displays[static_cast<std::size_t>(big.live)].hidden
+                                && c.panel.displays[static_cast<std::size_t>(big.live)].source == "env" ? 1 : 0, 1);
+        const tp::GuiNode& slider = at(t, find(t, tp::GuiKind::slider, "", attack));
+        P.eq("styles.live_shared_tap", slider.live == big.live ? 1 : 0, 1);                   // one tap for one field
+        P.eq("styles.slider_colours", slider.style.track == "none" && slider.style.cap == "#ffffff" ? 1 : 0, 1);
+        const tp::GuiNode& reso = at(t, find(t, tp::GuiKind::knob, "", resonance));
+        P.eq("styles.knob_props", reso.style.bipolar && reso.style.labelPos == 1 && reso.style.valueShow == 2
+                                      && reso.style.sweep == 300.0f && reso.style.thickness == 4.0f && reso.style.look == "ring" ? 1 : 0, 1);
+        const tp::GuiNode& box = at(t, find(t, tp::GuiKind::box));
+        P.eq("styles.box", box.style.look == "inset" && box.style.fill == "none" && box.style.borderWidth == 2.0f
+                               && !box.style.border.empty() ? 1 : 0, 1);
+        const tp::GuiNode& lvl = at(t, find(t, tp::GuiKind::knob, "", level));
+        P.eq("styles.self_min", lvl.self == 3 && lvl.minW == 80.0f ? 1 : 0, 1);
+        const tp::GuiNode& label = at(t, find(t, tp::GuiKind::label, "BIG"));
+        P.eq("styles.label_px", label.textPx == 24.0f && label.textAlign == 2 ? 1 : 0, 1);
+        P.eq("styles.divider", at(t, find(t, tp::GuiKind::divider)).style.thickness == 3.0f ? 1 : 0, 1);
+        if constexpr (kInstrument)
+        {
+            const tp::GuiNode& kb = at(t, find(t, tp::GuiKind::keyboard));
+            P.eq("styles.keyboard", kb.from == 36 && kb.keys == 37 && kb.height == 80.0f ? 1 : 0, 1);
+        }
+
+        // Mistakes: an unknown class, a look a knob has not, a keyboard on an effect, defaults of no element, a class
+        // without a name; the rest stands.
+        const Compiled m = withGui("defaults widget look=ring\n"            // 1
+                                   "class size=10\n"                        // 2
+                                   "knob cutoff class=\"nope\"\n"           // 3
+                                   "knob resonance look=shiny\n"            // 4
+                                   "tabs look=folder { page \"P\" { knob level } }\n"   // 5
+                                   "keyboard\n");                           // 6
+        P.eq("styles.note_defaults_word", has(m.notes, "panel.gui:1:10: note: defaults takes an element's name") ? 1 : 0, 1);
+        P.eq("styles.note_class_name", has(m.notes, "panel.gui:2:1: note: class takes a \"name\"") ? 1 : 0, 1);
+        P.eq("styles.note_no_class", has(m.notes, "panel.gui:3:13: note: there is no class \"nope\"") ? 1 : 0, 1);
+        P.eq("styles.note_look", has(m.notes, "panel.gui:4:") && has(m.notes, "shiny") ? 1 : 0, 1);
+        P.eq("styles.note_tabs_look", has(m.notes, "panel.gui:5:") && has(m.notes, "folder") ? 1 : 0, 1);
+        P.eq("styles.note_keyboard", has(m.notes, "panel.gui:6:1: note: an effect plays no notes") ? (kInstrument ? 0 : 1) : (kInstrument ? 1 : 0), 1);
+        P.eq("styles.mistakes_rest_stands", find(m.panel.gui, tp::GuiKind::knob, "", cutoff) >= 0
+                                                && find(m.panel.gui, tp::GuiKind::knob, "", resonance) >= 0 ? 1 : 0, 1);
     }
 
     // ---- an instrument has no input ------------------------------------------------------------------------------------

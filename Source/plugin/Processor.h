@@ -15,7 +15,8 @@
 //   - the chat with Claude (ChatAgent.h): its conversation is kept in the session (<CHAT json="..."/>), and its tools
 //     act on the draft, RUN and the dials through ChatHost, from the agent's thread (the draft under programMutex_,
 //     a dial queued for poll()).
-//   - the editor's size, as the user left it (the editor is resizable), kept in the session (<EDITOR w=".." h=".."/>).
+//   - the editor's size, as the user left it (the editor is resizable), its view and its interface's pages, kept in the
+//     session (<EDITOR w=".." h=".." view="panel"> with a <PAGE title=".."/> a tabs element).
 //
 // What a host may do, and what the Engine sees of it:
 //   - a block larger than prepareToPlay announced: the Engine gets it in parts of at most that size;
@@ -23,7 +24,8 @@
 //   - more than kMaxEventsPerBlock events in a block: the block is played in parts, cut at the event that does not
 //     fit, so no event is lost;
 //   - MIDI: note-on (at velocity 0 a note-off), note-off, and the controllers All Sound Off (120) and All Notes Off
-//     (123), both an allNotesOff event; everything else is ignored;
+//     (123), both an allNotesOff event; everything else is ignored. The panel's keyboard's notes (playNote) come
+//     through a lock-free queue and play at the start of the next block, before its MIDI;
 //   - bypass (processBlockBypassed; there is no bypass parameter): each edge is a 20 ms smootherstep crossfade between
 //     the Engine's output and the bypassed sound (an effect's input; an instrument's silence), and the Engine keeps
 //     running through the bypass, unheard (an instrument on the note-offs only), so un-bypassing fades in a state that
@@ -158,6 +160,9 @@ namespace testingplaygroundsynth
         ChatPort& chat() override { return chat_; }
         bool panelView() const override { return panelView_.load(); }
         void setPanelView(bool on) override { panelView_.store(on); }
+        void playNote(int note, float velocity) override;
+        std::vector<std::string> guiPages() const override;
+        void setGuiPages(const std::vector<std::string>& titles) override;
 
         // ChatHost: Claude's tools (ChatAgent.h), from the agent's worker thread.
         Draft chatDraft() const override;
@@ -204,10 +209,17 @@ namespace testingplaygroundsynth
         std::atomic<uint32_t> alerts_{ 0 };
         std::atomic<int> editorW_{ 0 }, editorH_{ 0 };
         std::atomic<bool> panelView_{ false };                       // the editor's PANEL view, in the session
+        mutable std::mutex pagesMutex_;
+        std::vector<std::string> guiPages_;                      // its interface's pages (guiPages), in the session
         double alertsAt_ = 0.0;                                  // when alerts_ last gained a bit (ms)
 
         std::array<float, kMaxControls> values_{};               // audio thread: the last good normalised values
         std::array<Event, kMaxEventsPerBlock> events_{};
+        // The panel's keyboard's notes (playNote): one writer (the message thread), one reader (the audio thread, at
+        // the start of a block). A ring of kUiNotes; the writer drops a note when it is full.
+        static constexpr uint32_t kUiNotes = 64;
+        std::array<Event, kUiNotes> uiNotes_{};
+        std::atomic<uint32_t> uiNoteHead_{ 0 }, uiNoteTail_{ 0 };   // written: head by the writer, tail by the reader
         bool prepared_ = false;
         int maxBlock_ = 1;
         int largestCall_ = 0;

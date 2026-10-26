@@ -4,6 +4,7 @@
 #include "dsp/Engine.h"
 #include "fminus/Patch.h"
 
+#include <algorithm>
 #include <chrono>
 #include <utility>
 
@@ -11,7 +12,27 @@ namespace testingplaygroundsynth
 {
     namespace
     {
-        CompileStatus build(Engine& engine, Sources files, uint64_t id)
+        // The panel's shaders built (their binaries in it), each from its file; a failure appended to `notes`.
+        void buildShaders(PanelSpec& panel, const Sources& files, const ShaderTools& tools, ShaderCache& cache,
+                          std::string& notes)
+        {
+            for (PanelShader& sh : panel.shaders)
+            {
+                const auto f = std::find_if(files.begin(), files.end(), [&](const SourceFile& s) { return s.name == sh.file; });
+                if (f == files.end())
+                    continue;                            // GuiSpec said so
+                const ShaderBuild b = cache.build(sh.file, f->text, sh.inputs, tools);
+                if (b.ok())
+                {
+                    sh.binary = b.binary;
+                    sh.id = shaderId(sh.binary);
+                }
+                else if (notes.find(b.error) == std::string::npos)
+                    notes += b.error;
+            }
+        }
+
+        CompileStatus build(Engine& engine, Sources files, uint64_t id, const ShaderTools& tools, ShaderCache& cache)
         {
             Patch::Result r = Patch::compile(files, engine.rate());
             CompileStatus s;
@@ -25,6 +46,8 @@ namespace testingplaygroundsynth
             {
                 s.controls = r.patch->controls();
                 s.panel = r.patch->panel();
+                if (!s.panel.shaders.empty())
+                    buildShaders(s.panel, s.sources, tools, cache, s.notes);
                 r.patch->setProgram(id);                    // CompileStatus::request: Meters::program names it
                 engine.offer(std::move(r.patch));
             }
@@ -64,7 +87,12 @@ namespace testingplaygroundsynth
             const std::lock_guard<std::mutex> lock(mutex_);
             id = ++nextId_;
         }
-        CompileStatus s = build(engine_, std::move(files), id);
+        ShaderTools tools;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            tools = tools_;
+        }
+        CompileStatus s = build(engine_, std::move(files), id, tools, shaders_);
         finish(s);
         return status();
     }
@@ -75,6 +103,12 @@ namespace testingplaygroundsynth
         s.revision = status_.revision + 1;
         status_ = std::move(s);
         revision_.store(status_.revision, std::memory_order_release);
+    }
+
+    void Compiler::setShaderTools(ShaderTools tools)
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        tools_ = std::move(tools);
     }
 
     CompileStatus Compiler::status() const
@@ -107,10 +141,11 @@ namespace testingplaygroundsynth
             {
                 Sources files = std::move(queued_);
                 const uint64_t id = queuedId_;
+                const ShaderTools tools = tools_;
                 hasQueued_ = false;
                 compiling_ = true;
                 lock.unlock();
-                CompileStatus s = build(engine_, std::move(files), id);
+                CompileStatus s = build(engine_, std::move(files), id, tools, shaders_);
                 finish(std::move(s));
                 lock.lock();
                 compiling_ = false;

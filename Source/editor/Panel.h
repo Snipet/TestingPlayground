@@ -1,7 +1,8 @@
 // Source/editor/Panel.h: the plugin's interface, a funkgui::Panel: an FMinus program's editor and its dials, and the
 // chat with Claude beside them. It is GPU-free: funkgui::EditorHost runs it live in the plugin
 // (Source/editor/gpu/CreateEditorGpu.cpp) and funkgui::HeadlessHost runs it in the probes (gui.dump, gui.chat), drawing
-// the same frames.
+// the same frames. A .gui file's shaders it hands to FunkGui's registry (funkgui/gpu/ShaderLibrary.h, which makes no
+// GPU call until bgfx draws them) and records as Canvas::shader draws: the GPU draws them, SoftRaster a placeholder.
 //
 // It is resizable, in both directions, from kMinWidth x kMinHeight (logical px) up: the chat takes about a third of the
 // width at the right (kChatMinW to kChatMaxW), the editor and the chat's transcript take the height that is left.
@@ -134,6 +135,11 @@ namespace testingplaygroundsynth::ui
     // ("In file included from program.fm:2:") left out.
     std::vector<Problem> parseProblems(const std::string& messages);
 
+    // An interface's pages as EditorPort keeps them: each tabs node's chosen page's title (in the nodes' order), and
+    // back, by node (a title no page has: the first page).
+    std::vector<std::string> guiPageTitles(const GuiTree& gui, const std::vector<int>& pages);
+    std::vector<int> guiPagesOf(const GuiTree& gui, const std::vector<std::string>& titles);
+
     class Panel final : public funkgui::Panel
     {
     public:
@@ -162,8 +168,9 @@ namespace testingplaygroundsynth::ui
         bool panelView() const noexcept { return panelView_; }
         void setPanelView(bool on);
         const GuiLayout& guiLayout() const noexcept { return gui_; }
+        const PanelSpec& panelSpec() const noexcept { return panelSpec_; }      // the program's that the panel shows
         const GuiControlItem& guiControl(int slot) const;
-        const Item& guiItem(int kind, int k) const;                       // kind 0: a pad, 1: an envelope, 2: tabs
+        const Item& guiItem(int kind, int k) const;   // kind 0: a pad, 1: an envelope, 2: tabs, 3: a keyboard, 4: a shader
         void chooseGuiPage(int node, int page);
         void scrollGui(float dx, float dy);
         funkgui::Point centreOfView(bool panel) const;                    // the CODE or the PANEL cell
@@ -348,7 +355,14 @@ namespace testingplaygroundsynth::ui
         bool panelView_ = false;
         int viewItem_ = -1;                              // the CODE and PANEL cells
         std::vector<int> itemOfGuiSlot_;                 // slot -> its GuiControlItem
-        std::vector<int> guiPads_, guiEnvelopes_, guiTabs_;
+        std::vector<int> guiPads_, guiEnvelopes_, guiTabs_, guiKeyboards_, guiShaders_;
+        std::vector<int> shaderNode_;                    // by guiShaders_: the node it shows (-1: none)
+        // The shaders' programs, by PanelSpec::shaders: the id registered with FunkGui (0: none), why not, and whether
+        // its code reads the time (it then moves every frame).
+        std::vector<uint32_t> shaderIds_;
+        std::vector<std::string> shaderWhy_;
+        std::vector<bool> shaderMoves_;
+        void registerShaders(const std::string& notes);   // after panelSpec_ changed (the compile's notes say why not)
         std::vector<bool> guiItem_;                      // by item: drawn in the interface's area, with its theme
         void layoutGuiItems();                           // after layout() found gui_
         float chatX_ = 0.0f, chatW_ = 0.0f;

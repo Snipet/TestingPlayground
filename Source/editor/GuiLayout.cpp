@@ -1,15 +1,20 @@
-// Source/editor/GuiLayout.cpp: a .gui file's elements placed (GuiLayout.h). Two walks: natural sizes from the leaves
-// up, then places from the root down.
+// Source/editor/GuiLayout.cpp: a .gui file's elements placed (GuiLayout.h). Two walks: natural sizes from the root down
+// (each node measured with the width its container offers, which a wrapping row needs) and up (its children's), then
+// places from the root down.
 #include "editor/GuiLayout.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
+#include <limits>
 
 namespace testingplaygroundsynth::ui
 {
     namespace
     {
+        constexpr float kNoLimit = std::numeric_limits<float>::max();
+
         std::string upperText(const std::string& s)
         {
             std::string out;
@@ -31,32 +36,44 @@ namespace testingplaygroundsynth::ui
                 : spec_(spec), nodes_(spec.gui.nodes), controls_(controls), measure_(measure),
                   natural_(nodes_.size()), done_(nodes_.size(), false) {}
 
-            GuiExtent natural(int i)
+            // A node's natural size, margin included, offered `maxW` across (kNoLimit for none).
+            GuiExtent natural(int i, float maxW)
             {
                 if (i < 0 || static_cast<std::size_t>(i) >= nodes_.size())
                     return {};
                 if (done_[static_cast<std::size_t>(i)])
                     return natural_[static_cast<std::size_t>(i)];
                 done_[static_cast<std::size_t>(i)] = true;        // a cycle (none is made) would stop here
-                GuiExtent e = measure(i);
                 const GuiNode& n = nodes_[static_cast<std::size_t>(i)];
+                const float inner = maxW == kNoLimit ? kNoLimit : std::max(0.0f, maxW - 2.0f * n.margin);
+                GuiExtent e = measure(i, inner);
                 if (n.kind != GuiKind::spacer)
                 {
                     e.w = std::max(e.w, n.width);
                     e.h = std::max(e.h, n.height);
                 }
+                e.w = bound(e.w, n.minW, n.maxW);
+                e.h = bound(e.h, n.minH, n.maxH);
+                e.w += 2.0f * n.margin;
+                e.h += 2.0f * n.margin;
                 natural_[static_cast<std::size_t>(i)] = e;
                 return e;
             }
 
+            // A node at its slot `r` (margin included).
             void place(int i, funkgui::Rect r, bool visible, GuiLayout& out)
             {
                 const GuiNode& n = nodes_[static_cast<std::size_t>(i)];
+                r = { r.x + n.margin, r.y + n.margin, std::max(0.0f, r.w - 2.0f * n.margin), std::max(0.0f, r.h - 2.0f * n.margin) };
+                if (n.maxW > 0.0f && r.w > n.maxW)
+                    r.w = n.maxW;
+                if (n.maxH > 0.0f && r.h > n.maxH)
+                    r.h = n.maxH;
                 out.rects[static_cast<std::size_t>(i)] = r;
                 out.visible[static_cast<std::size_t>(i)] = visible;
                 if (!isContainer(n.kind))
                     return;
-                funkgui::Rect in = inside(i, r);
+                const funkgui::Rect in = inside(i, r);
                 if (n.kind == GuiKind::tabs)
                 {
                     const int chosen = std::clamp(out.pages[static_cast<std::size_t>(i)], 0,
@@ -71,24 +88,54 @@ namespace testingplaygroundsynth::ui
                     placeGrid(i, in, visible, out);
                     return;
                 }
-                placeFlex(i, in, visible, out);
+                if (n.wrap && !n.vertical)
+                {
+                    placeWrapped(i, in, visible, out);
+                    return;
+                }
+                placeLine(n, n.children, in, visible, out);
             }
 
-            // A tabs node's tabs, in its strip.
-            std::vector<funkgui::Rect> tabRects(int i, const funkgui::Rect& r)
+            // A tabs node's tabs, for its look, in its rect.
+            std::vector<funkgui::Rect> tabRects(int i, const funkgui::Rect& r) const
             {
+                const GuiNode& n = nodes_[static_cast<std::size_t>(i)];
+                const std::string& look = n.style.look;
                 std::vector<funkgui::Rect> out;
-                float x = r.x;
-                for (const int c : nodes_[static_cast<std::size_t>(i)].children)
+                if (look == "side")
                 {
-                    const float w = std::max(56.0f, measure_(upperText(nodes_[static_cast<std::size_t>(c)].text), kGuiControlLabel) + 24.0f);
-                    out.push_back({ x, r.y, w, kGuiTabsH });
-                    x += w + 2.0f;
+                    const float w = sideWidth(i);
+                    float y = r.y;
+                    for (std::size_t k = 0; k < n.children.size(); ++k)
+                    {
+                        out.push_back({ r.x, y, w, kGuiSideTabH });
+                        y += kGuiSideTabH + 2.0f;
+                    }
+                    return out;
+                }
+                const bool bar = look == "bar", pills = look == "pills";
+                const funkgui::TextStyle st = bar ? kGuiBarText : kGuiControlLabel;
+                float x = r.x + (bar || pills ? 0.0f : 8.0f);
+                for (const int c : n.children)
+                {
+                    const float tw = measure_(upperText(nodes_[static_cast<std::size_t>(c)].text), st);
+                    const float w = bar ? tw + 32.0f : (pills ? std::max(48.0f, tw + 28.0f) : std::max(56.0f, tw + 24.0f));
+                    out.push_back({ x, r.y, w, bar ? kGuiBarH : (pills ? kGuiPillsH : kGuiTabsH) });
+                    x += w + (pills ? 6.0f : 2.0f);
                 }
                 return out;
             }
 
         private:
+            static float bound(float v, float lo, float hi)
+            {
+                if (lo > 0.0f)
+                    v = std::max(v, lo);
+                if (hi > 0.0f)
+                    v = std::min(v, hi);
+                return v;
+            }
+
             std::string labelOf(int slot) const
             {
                 const std::string& l = spec_.labels[static_cast<std::size_t>(slot)];
@@ -117,19 +164,57 @@ namespace testingplaygroundsynth::ui
 
             float labelW(int slot) const { return slot >= 0 ? measure_(labelOf(slot), kGuiControlLabel) + 6.0f : 0.0f; }
 
-            // A node's own size, before width= and height=.
-            GuiExtent measure(int i)
+            float sideWidth(int i) const
+            {
+                float w = 90.0f;
+                for (const int c : nodes_[static_cast<std::size_t>(i)].children)
+                    w = std::max(w, measure_(upperText(nodes_[static_cast<std::size_t>(c)].text), kGuiControlLabel) + 36.0f);
+                return w;
+            }
+
+            // The room a container's frame, title, strip or padding takes: left, top, right, bottom.
+            std::array<float, 4> insets(int i) const
+            {
+                const GuiNode& n = nodes_[static_cast<std::size_t>(i)];
+                float l = n.pad, t = n.pad, rt = n.pad, b = n.pad;
+                if (n.kind == GuiKind::section)
+                {
+                    const bool card = n.style.look == "card" || n.style.look == "inset" || n.style.look == "plate";
+                    l += kGuiSectionSide;
+                    rt += kGuiSectionSide;
+                    t += card ? kGuiSectionTop + 4.0f : kGuiSectionTop;
+                    b += kGuiSectionBottom;
+                }
+                else if (n.kind == GuiKind::tabs)
+                {
+                    const std::string& look = n.style.look;
+                    if (look == "bar")
+                        t += kGuiBarH + 10.0f;
+                    else if (look == "pills")
+                        t += kGuiPillsH + 10.0f;
+                    else if (look == "side")
+                        l += sideWidth(i) + 12.0f;
+                    else
+                    {
+                        l += 8.0f;
+                        rt += 8.0f;
+                        t += kGuiTabsH + 8.0f;
+                        b += 8.0f;
+                    }
+                }
+                return { l, t, rt, b };
+            }
+
+            // A node's own size, before width=, height=, its bounds and its margin, `maxW` across at most.
+            GuiExtent measure(int i, float maxW)
             {
                 const GuiNode& n = nodes_[static_cast<std::size_t>(i)];
                 switch (n.kind)
                 {
                     case GuiKind::knob:
                     {
-                        GuiExtent e = n.size == GuiSize::small ? GuiExtent{ 54.0f, 52.0f }
-                                    : n.size == GuiSize::large ? GuiExtent{ 84.0f, 108.0f }
-                                                               : GuiExtent{ 60.0f, 80.0f };
-                        e.w = std::max(e.w, n.size == GuiSize::small ? measure_(labelOf(n.slot), kGuiSmall) + 6.0f : labelW(n.slot));
-                        return e;
+                        const GuiKnobGeom g = guiKnobGeom(n, labelW(n.slot));
+                        return { g.w, g.h };
                     }
                     case GuiKind::slider:
                         return n.vertical ? GuiExtent{ std::max(44.0f, labelW(n.slot)), 96.0f }
@@ -170,6 +255,10 @@ namespace testingplaygroundsynth::ui
                     }
                     case GuiKind::envelope:
                         return { 150.0f, 80.0f };
+                    case GuiKind::keyboard:
+                        return { std::max(160.0f, 16.0f * static_cast<float>(guiWhiteKeys(n.from, n.keys))), 72.0f };
+                    case GuiKind::shader:
+                        return { 200.0f, 120.0f };
                     case GuiKind::display:
                     {
                         if (n.display < 0 || static_cast<std::size_t>(n.display) >= spec_.displays.size())
@@ -189,7 +278,7 @@ namespace testingplaygroundsynth::ui
                     }
                     case GuiKind::label:
                     {
-                        const funkgui::TextStyle st = guiTextStyle(n.textSize);
+                        const funkgui::TextStyle st = guiLabelStyle(n);
                         return { measure_(upperText(n.text), st) + 2.0f, std::ceil(st.px * 1.5f) };
                     }
                     case GuiKind::spacer:
@@ -197,15 +286,19 @@ namespace testingplaygroundsynth::ui
                     case GuiKind::divider:
                     {
                         const bool across = n.parent >= 0 && nodes_[static_cast<std::size_t>(n.parent)].vertical;
-                        return across ? GuiExtent{ 0.0f, 9.0f } : GuiExtent{ 9.0f, 0.0f };
+                        const float t = std::max(9.0f, n.style.thickness + 8.0f);
+                        return across ? GuiExtent{ 0.0f, t } : GuiExtent{ t, 0.0f };
                     }
                     case GuiKind::grid:
                     {
+                        const std::array<float, 4> ins = insets(i);
                         const int cols = std::max(1, n.cols);
+                        const float cellMax = maxW == kNoLimit ? kNoLimit
+                                            : std::max(0.0f, (maxW - ins[0] - ins[2] - n.gap * static_cast<float>(cols - 1)) / static_cast<float>(cols));
                         std::vector<float> colW(static_cast<std::size_t>(cols), 0.0f), rowH;
                         for (std::size_t k = 0; k < n.children.size(); ++k)
                         {
-                            const GuiExtent c = natural(n.children[k]);
+                            const GuiExtent c = natural(n.children[k], cellMax);
                             const std::size_t col = k % static_cast<std::size_t>(cols), row = k / static_cast<std::size_t>(cols);
                             if (row >= rowH.size())
                                 rowH.push_back(0.0f);
@@ -219,21 +312,28 @@ namespace testingplaygroundsynth::ui
                             h += y;
                         w += n.gap * static_cast<float>(std::max(0, std::min(cols, static_cast<int>(n.children.size())) - 1));
                         h += n.gap * static_cast<float>(std::max<std::size_t>(rowH.size(), 1) - 1);
-                        return { w + 2.0f * n.pad, h + 2.0f * n.pad };
+                        return { w + ins[0] + ins[2], h + ins[1] + ins[3] };
                     }
                     case GuiKind::tabs:
                     {
+                        const std::array<float, 4> ins = insets(i);
+                        const float inner = maxW == kNoLimit ? kNoLimit : std::max(0.0f, maxW - ins[0] - ins[2]);
                         GuiExtent e{ 0.0f, 0.0f };
                         for (const int c : n.children)
                         {
-                            const GuiExtent p = natural(c);
+                            const GuiExtent p = natural(c, inner);
                             e.w = std::max(e.w, p.w);
                             e.h = std::max(e.h, p.h);
                         }
-                        float strip = 0.0f;
+                        float strip = 0.0f, list = 0.0f;
                         for (const funkgui::Rect& t : tabRects(i, {}))
-                            strip = t.right();
-                        return { std::max(e.w + 2.0f * (n.pad + 8.0f), strip), e.h + kGuiTabsH + 2.0f * (n.pad + 8.0f) };
+                        {
+                            strip = std::max(strip, t.right());
+                            list = std::max(list, t.bottom());
+                        }
+                        if (n.style.look == "side")
+                            return { e.w + ins[0] + ins[2], std::max(e.h, list) + ins[1] + ins[3] };
+                        return { std::max(e.w + ins[0] + ins[2], strip), e.h + ins[1] + ins[3] };
                     }
                     case GuiKind::row:
                     case GuiKind::column:
@@ -241,50 +341,62 @@ namespace testingplaygroundsynth::ui
                     case GuiKind::box:
                     case GuiKind::page:
                     {
-                        float main = 0.0f, cross = 0.0f;
-                        for (const int c : n.children)
+                        const std::array<float, 4> ins = insets(i);
+                        const float inner = maxW == kNoLimit ? kNoLimit : std::max(0.0f, maxW - ins[0] - ins[2]);
+                        GuiExtent e;
+                        if (n.wrap && !n.vertical)
                         {
-                            const GuiExtent e = natural(c);
-                            main += n.vertical ? e.h : e.w;
-                            cross = std::max(cross, n.vertical ? e.w : e.h);
+                            // Lines as wide as the room offered: each child on the line it fits, a new line when not.
+                            float lineW = 0.0f, lineH = 0.0f, w = 0.0f, h = 0.0f;
+                            bool first = true, any = false;
+                            for (const int c : n.children)
+                            {
+                                const GuiExtent ce = natural(c, inner);
+                                if (any && lineW + n.gap + ce.w > inner)
+                                {
+                                    w = std::max(w, lineW);
+                                    h += (first ? 0.0f : n.gap) + lineH;
+                                    first = false;
+                                    lineW = lineH = 0.0f;
+                                    any = false;
+                                }
+                                lineW += (any ? n.gap : 0.0f) + ce.w;
+                                lineH = std::max(lineH, ce.h);
+                                any = true;
+                            }
+                            if (any)
+                            {
+                                w = std::max(w, lineW);
+                                h += (first ? 0.0f : n.gap) + lineH;
+                            }
+                            e = { w, h };
                         }
-                        main += n.gap * static_cast<float>(std::max<std::size_t>(n.children.size(), 1) - 1);
-                        GuiExtent e = n.vertical ? GuiExtent{ cross, main } : GuiExtent{ main, cross };
-                        e.w += 2.0f * n.pad;
-                        e.h += 2.0f * n.pad;
-                        if (n.kind == GuiKind::section)
+                        else
                         {
-                            e.w += 2.0f * kGuiSectionSide;
-                            e.h += kGuiSectionTop + kGuiSectionBottom;
-                            if (!n.text.empty())
-                                e.w = std::max(e.w, measure_(upperText(n.text), kGuiSectionTitle) + 36.0f);
+                            float main = 0.0f, cross = 0.0f;
+                            for (const int c : n.children)
+                            {
+                                const GuiExtent ce = natural(c, inner);
+                                main += n.vertical ? ce.h : ce.w;
+                                cross = std::max(cross, n.vertical ? ce.w : ce.h);
+                            }
+                            main += n.gap * static_cast<float>(std::max<std::size_t>(n.children.size(), 1) - 1);
+                            e = n.vertical ? GuiExtent{ cross, main } : GuiExtent{ main, cross };
                         }
+                        e.w += ins[0] + ins[2];
+                        e.h += ins[1] + ins[3];
+                        if (n.kind == GuiKind::section && !n.text.empty())
+                            e.w = std::max(e.w, measure_(upperText(n.text), kGuiSectionTitle) + 36.0f);
                         return e;
                     }
                 }
                 return {};
             }
 
-            // A container's inside: its rect less its padding (and a section's frame, the tabs' strip and frame).
             funkgui::Rect inside(int i, funkgui::Rect r) const
             {
-                const GuiNode& n = nodes_[static_cast<std::size_t>(i)];
-                float l = n.pad, t = n.pad, rt = n.pad, b = n.pad;
-                if (n.kind == GuiKind::section)
-                {
-                    l += kGuiSectionSide;
-                    rt += kGuiSectionSide;
-                    t += kGuiSectionTop;
-                    b += kGuiSectionBottom;
-                }
-                else if (n.kind == GuiKind::tabs)
-                {
-                    l += 8.0f;
-                    rt += 8.0f;
-                    t += kGuiTabsH + 8.0f;
-                    b += 8.0f;
-                }
-                return { r.x + l, r.y + t, std::max(0.0f, r.w - l - rt), std::max(0.0f, r.h - t - b) };
+                const std::array<float, 4> ins = insets(i);
+                return { r.x + ins[0], r.y + ins[1], std::max(0.0f, r.w - ins[0] - ins[2]), std::max(0.0f, r.h - ins[1] - ins[3]) };
             }
 
             // Whether a node takes its container's size across it (align=stretch), rather than its own.
@@ -294,7 +406,7 @@ namespace testingplaygroundsynth::ui
                 if (own > 0.0f && c.kind != GuiKind::spacer)
                     return false;
                 if (isContainer(c.kind) || c.kind == GuiKind::label || c.kind == GuiKind::divider || c.kind == GuiKind::spacer
-                    || c.kind == GuiKind::envelope)
+                    || c.kind == GuiKind::envelope || c.kind == GuiKind::shader || c.kind == GuiKind::keyboard)
                     return true;
                 if (c.kind == GuiKind::display && c.display >= 0 && static_cast<std::size_t>(c.display) < spec_.displays.size())
                 {
@@ -304,25 +416,23 @@ namespace testingplaygroundsynth::ui
                 return false;
             }
 
-            // Whether a node grows to fill its slot along a container's direction, given room there (a container, and
-            // what stretches); a control keeps its cell, centred in the slot.
-            bool fills(const GuiNode& c, bool alongIsWidth) const { return stretches(c, alongIsWidth); }
-
-            // A child's rect in its slot (sx, sy, sw, sh): its own size, or the slot's where it fills it, placed by align.
-            funkgui::Rect inSlot(const GuiNode& parent, int child, float sx, float sy, float sw, float sh) const
+            // A child's slot (margin included) in its share (sx, sy, sw, sh) of a line: its own size, or the share where
+            // it fills it, placed by its align (its self=, else its container's).
+            funkgui::Rect inSlot(const GuiNode& parent, bool vertical, int child, float sx, float sy, float sw, float sh) const
             {
                 const GuiNode& c = nodes_[static_cast<std::size_t>(child)];
                 const GuiExtent e = natural_[static_cast<std::size_t>(child)];
-                const bool vertical = parent.vertical && parent.kind != GuiKind::grid;
                 float w = e.w, h = e.h;
-                // Along: the slot's (it was sized for the child) when the child fills it.
-                if (vertical ? fills(c, false) : fills(c, true))
+                if (vertical ? stretches(c, false) : stretches(c, true))    // along: the share it was given
                     (vertical ? h : w) = vertical ? sh : sw;
-                // Across: align.
-                const GuiAlign a = parent.align;
+                const GuiAlign a = c.self >= 0 ? static_cast<GuiAlign>(c.self) : parent.align;
                 const bool acrossIsWidth = vertical;
                 if (a == GuiAlign::stretch && stretches(c, acrossIsWidth))
                     (acrossIsWidth ? w : h) = acrossIsWidth ? sw : sh;
+                if (c.maxW > 0.0f)
+                    w = std::min(w, c.maxW + 2.0f * c.margin);
+                if (c.maxH > 0.0f)
+                    h = std::min(h, c.maxH + 2.0f * c.margin);
                 w = std::min(w, std::max(sw, e.w));
                 h = std::min(h, std::max(sh, e.h));
                 float x = sx, y = sy;
@@ -339,7 +449,7 @@ namespace testingplaygroundsynth::ui
                 if (acrossIsWidth)
                 {
                     x += across(sw, w);
-                    y += std::floor(0.5f * (sh - h));         // a control in a slot that grew: centred along
+                    y += std::floor(0.5f * (sh - h));         // a control in a share that grew: centred along
                 }
                 else
                 {
@@ -349,15 +459,15 @@ namespace testingplaygroundsynth::ui
                 return { std::round(x), std::round(y), std::round(w), std::round(h) };
             }
 
-            void placeFlex(int i, const funkgui::Rect& in, bool visible, GuiLayout& out)
+            // One line of children along n's direction in `in` (a row's, a column's, or a wrapping row's line).
+            void placeLine(const GuiNode& n, const std::vector<int>& children, const funkgui::Rect& in, bool visible, GuiLayout& out)
             {
-                const GuiNode& n = nodes_[static_cast<std::size_t>(i)];
-                const std::size_t count = n.children.size();
+                const std::size_t count = children.size();
                 if (count == 0)
                     return;
                 const bool vertical = n.vertical;
                 float used = 0.0f, grow = 0.0f;
-                for (const int c : n.children)
+                for (const int c : children)
                 {
                     const GuiExtent e = natural_[static_cast<std::size_t>(c)];
                     used += vertical ? e.h : e.w;
@@ -386,15 +496,43 @@ namespace testingplaygroundsynth::ui
                             break;
                     }
                 }
-                for (const int c : n.children)
+                for (const int c : children)
                 {
                     const GuiExtent e = natural_[static_cast<std::size_t>(c)];
                     float size = vertical ? e.h : e.w;
                     if (room > 0.0f && grow > 0.0f)
                         size += room * nodes_[static_cast<std::size_t>(c)].grow / grow;
                     const funkgui::Rect slot = vertical ? funkgui::Rect{ in.x, at, in.w, size } : funkgui::Rect{ at, in.y, size, in.h };
-                    place(c, inSlot(n, c, slot.x, slot.y, slot.w, slot.h), visible, out);
+                    place(c, inSlot(n, vertical, c, slot.x, slot.y, slot.w, slot.h), visible, out);
                     at += size + gap;
+                }
+            }
+
+            // A wrapping row: its children in lines as wide as `in`, each line a row as tall as its tallest child.
+            void placeWrapped(int i, const funkgui::Rect& in, bool visible, GuiLayout& out)
+            {
+                const GuiNode& n = nodes_[static_cast<std::size_t>(i)];
+                std::vector<std::vector<int>> lines(1);
+                float lineW = 0.0f;
+                for (const int c : n.children)
+                {
+                    const float w = natural_[static_cast<std::size_t>(c)].w;
+                    if (!lines.back().empty() && lineW + n.gap + w > in.w)
+                    {
+                        lines.emplace_back();
+                        lineW = 0.0f;
+                    }
+                    lineW += (lines.back().empty() ? 0.0f : n.gap) + w;
+                    lines.back().push_back(c);
+                }
+                float y = in.y;
+                for (const std::vector<int>& line : lines)
+                {
+                    float h = 0.0f;
+                    for (const int c : line)
+                        h = std::max(h, natural_[static_cast<std::size_t>(c)].h);
+                    placeLine(n, line, { in.x, y, in.w, h }, visible, out);
+                    y += h + n.gap;
                 }
             }
 
@@ -428,9 +566,7 @@ namespace testingplaygroundsynth::ui
                         const std::size_t k = row * static_cast<std::size_t>(cols) + col;
                         if (k >= n.children.size())
                             break;
-                        GuiNode cell = n;                     // a cell centres a control, stretches the rest
-                        cell.vertical = true;
-                        place(n.children[k], inSlot(cell, n.children[k], x, y, colW[col], rowH[row]), visible, out);
+                        place(n.children[k], inSlot(n, true, n.children[k], x, y, colW[col], rowH[row]), visible, out);
                         x += colW[col] + n.gap;
                     }
                     y += rowH[row] + n.gap;
@@ -458,12 +594,58 @@ namespace testingplaygroundsynth::ui
         return { 11.0f, 1.6f, 0.03f, false };
     }
 
-    GuiExtent naturalGuiSize(const PanelSpec& spec, const Controls& controls, const GuiMeasure& measure)
+    funkgui::TextStyle guiLabelStyle(const GuiNode& n)
+    {
+        if (n.textPx > 0.0f)
+            return { n.textPx, std::max(1.0f, 0.18f * n.textPx), n.textPx >= 18.0f ? 0.07f : 0.04f, false };
+        return guiTextStyle(n.textSize);
+    }
+
+    GuiKnobGeom guiKnobGeom(const GuiNode& n, float labelWidth)
+    {
+        GuiKnobGeom g;
+        const bool small = n.style.px == 0.0f && n.size == GuiSize::small;
+        g.d = n.style.px > 0.0f ? n.style.px : (small ? 22.0f : (n.size == GuiSize::large ? 56.0f : 30.0f));
+        const int pos = n.style.labelPos >= 0 ? n.style.labelPos : (small ? 1 : 0);
+        g.labelTop = pos == 0;
+        g.labelBottom = pos == 1;
+        g.value = n.style.valueShow >= 0 ? n.style.valueShow != 2 : !small;
+        const float faceTop = g.labelTop ? 18.0f : 6.0f;
+        g.cy = faceTop + 0.5f * g.d + 1.0f;
+        float y = faceTop + g.d + (g.value ? 12.0f : 10.0f);
+        if (g.value)
+        {
+            g.valueY = y;
+            y += 14.0f;
+        }
+        if (g.labelBottom)
+        {
+            g.labelY = y;
+            y += 14.0f;
+        }
+        g.h = std::round(y + (small ? 0.0f : 6.0f));
+        g.w = std::round(std::max(g.d + 30.0f, labelWidth));
+        g.cx = 0.5f * g.w;
+        return g;
+    }
+
+    int guiWhiteKeys(int from, int keys)
+    {
+        int whites = 0;
+        for (int k = from; k < from + keys; ++k)
+        {
+            const int pc = ((k % 12) + 12) % 12;
+            whites += pc == 1 || pc == 3 || pc == 6 || pc == 8 || pc == 10 ? 0 : 1;
+        }
+        return whites;
+    }
+
+    GuiExtent naturalGuiSize(const PanelSpec& spec, const Controls& controls, const GuiMeasure& measure, float width)
     {
         if (spec.gui.empty())
             return {};
         Layouter l(spec, controls, measure);
-        return l.natural(0);
+        return l.natural(0, width > 0.0f ? width : kNoLimit);
     }
 
     GuiLayout layoutGui(const PanelSpec& spec, const Controls& controls, const GuiMeasure& measure,
@@ -480,9 +662,7 @@ namespace testingplaygroundsynth::ui
         if (n == 0)
             return out;
         Layouter l(spec, controls, measure);
-        for (std::size_t i = 0; i < n; ++i)
-            l.natural(static_cast<int>(i));
-        const GuiExtent root = l.natural(0);
+        const GuiExtent root = l.natural(0, area.w);
         out.contentW = std::max(root.w, area.w);
         out.contentH = std::max(root.h, area.h);
         out.maxScrollX = std::max(0.0f, root.w - area.w);
@@ -499,6 +679,6 @@ namespace testingplaygroundsynth::ui
             return {};
         Controls none{};
         Layouter l(spec, none, measure);
-        return l.tabRects(node, { rect.x + 8.0f, rect.y, rect.w - 16.0f, kGuiTabsH });
+        return l.tabRects(node, rect);
     }
 }

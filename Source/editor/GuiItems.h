@@ -8,7 +8,10 @@
 //                    chooses on a click (Return and Space step them), a menu opens on a click. One gesture each.
 //   GuiXyItem        a pad that moves two parameters at once: x to the right, y up
 //   GuiEnvelopeItem  the ADSR shape four parameters make, drawn (a readout)
-//   GuiTabsItem      the tabs over a tabs element's pages: a click shows that page
+//   GuiKeyboardItem  an instrument's keys: a click plays a note, a drag slides across them
+//   GuiShaderItem    a shader of the program's own, drawn by the GPU
+//   GuiTabsItem      the tabs over a tabs element's pages (a strip, a bar, pills or a side list): a click shows that
+//                    page
 // and drawGuiPanel, which draws what is no item: the panel's ground, the sections' and boxes' frames, the labels and
 // the dividers. Every item is drawn inside the panel's area (the Panel clips it) and takes input only there.
 #pragma once
@@ -73,6 +76,12 @@ namespace testingplaygroundsynth::ui
                    const std::string& color);
         GuiKind kind() const noexcept { return kind_; }
         const funkgui::Rect& cell() const noexcept { return cell_; }
+        // Its live= field (a hidden display's index, -1 for none) and that field's value now, in the parameter's units.
+        int liveDisplay() const noexcept { return liveDisplay_; }
+        void setLive(float plain);
+        float live01() const noexcept { return live01_; }           // -1 for none
+        const GuiStyle& style() const noexcept { return style_; }
+        const GuiKnobGeom& knobGeom() const noexcept { return geom_; }
 
         void tick(float dt, bool hovered, bool focused, funkgui::Point pointer) override;
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override;
@@ -97,6 +106,8 @@ namespace testingplaygroundsynth::ui
 
     private:
         bool clicks() const noexcept { return kind_ == GuiKind::toggle || kind_ == GuiKind::buttons || kind_ == GuiKind::menu; }
+        void drawKnob(funkgui::Canvas& c, const funkgui::Theme& th, bool hot) const;
+        void drawSlider(funkgui::Canvas& c, const funkgui::Theme& th, bool hot) const;
         void openMenu(funkgui::GestureController& g, funkgui::HostServices& h);
         float sliderValueAt(funkgui::Point p) const;
 
@@ -106,6 +117,10 @@ namespace testingplaygroundsynth::ui
         GuiKind kind_ = GuiKind::knob;
         GuiSize size_ = GuiSize::medium;
         bool vertical_ = true, vintage_ = false;
+        GuiStyle style_;
+        GuiKnobGeom geom_;
+        int liveDisplay_ = -1;
+        float live01_ = -1.0f;
         std::string color_;
         funkgui::Rect cell_, area_;
         bool shown_ = false;
@@ -187,6 +202,96 @@ namespace testingplaygroundsynth::ui
         bool shown_ = false, hovered_ = false;
     };
 
+    // A keyboard (an instrument's): its keys, from= for keys=, across its cell. A click plays a note (louder lower on
+    // the key), a drag slides from key to key, letting go releases it; `play` takes (note, velocity 0..1), 0 a release.
+    class GuiKeyboardItem final : public Item
+    {
+    public:
+        GuiKeyboardItem(uint32_t id, std::function<void(int note, float velocity)> play) : id_(id), play_(std::move(play)) {}
+
+        void place(const GuiNode& node, const funkgui::Rect& cell, const funkgui::Rect& area, bool shown,
+                   const std::string& color);
+        int noteAt(funkgui::Point p, float* velocity = nullptr) const;     // -1 off its keys
+        funkgui::Point centreOfNote(int note) const;     // a key's middle, for the probes (its cell's centre if none)
+        int held() const noexcept { return held_; }      // the note held, -1 for none
+        void release();                                  // lets go of it
+
+        void tick(float, bool hovered, bool, funkgui::Point p) override;
+        void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override;
+        bool contains(funkgui::Point p) const override { return shown_ && area_.contains(p) && cell_.contains(p); }
+        funkgui::Cursor cursorAt(funkgui::Point) const override { return funkgui::Cursor::pointingHand; }
+        void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController&, funkgui::HostServices&) override;
+        void pointerDrag(const funkgui::PointerEvent& e, funkgui::GestureController&) override;
+        void pointerUp(const funkgui::PointerEvent&, funkgui::GestureController&) override { release(); }
+        void accessibility(std::vector<funkgui::A11yItem>& out) const override;
+        bool a11yAction(uint32_t, funkgui::A11yAction, double, funkgui::GestureController&) override { return false; }
+        void specLine(char* out, std::size_t n) const override;
+        bool settled() const override { return held_ < 0; }
+        funkgui::Point centre() const override { return { cell_.centreX(), cell_.centreY() }; }
+        bool shown() const override { return shown_; }
+        bool focusable() const override { return false; }
+
+    private:
+        struct Key
+        {
+            funkgui::Rect r;
+            int note = 0;
+            bool black = false;
+        };
+        void press(int note, float velocity);
+
+        uint32_t id_;
+        std::function<void(int, float)> play_;
+        std::vector<Key> keys_;                          // the white keys, then the black (over them)
+        int from_ = 48, count_ = 25;
+        std::string color_;
+        funkgui::Rect cell_, area_;
+        bool shown_ = false;
+        int held_ = -1, hover_ = -1;
+    };
+
+    // A note's name: 60 is C4.
+    std::string noteName(int note);
+
+    // A shader element (fminus/Shaders.h): its program, drawn over its cell by FunkGui (Canvas::shader) with its
+    // inputs as u_params, once the Panel has registered it (funkgui/gpu/ShaderLibrary.h); until then, or when it was
+    // refused, a placeholder that says why. It moves every frame while its code reads u_time, else when an input does.
+    class GuiShaderItem final : public Item
+    {
+    public:
+        explicit GuiShaderItem(uint32_t id) : id_(id) {}
+
+        // Its element, its cell, the panel's area, whether it is shown; its program's id (0: none) and file, and why
+        // it draws nothing ("" when it draws), and whether it animates.
+        void place(const GuiNode& node, const funkgui::Rect& cell, const funkgui::Rect& area, bool shown, uint32_t program,
+                   const std::string& file, const std::string& why, bool animated);
+        void setInputs(const std::array<float, 8>& v);
+        const std::array<float, 8>& inputs() const noexcept { return inputs_; }
+        uint32_t program() const noexcept { return program_; }
+        const std::string& why() const noexcept { return why_; }
+        const funkgui::Rect& cell() const noexcept { return cell_; }
+
+        void tick(float, bool, bool, funkgui::Point) override { changed_ = false; }
+        void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override;
+        bool contains(funkgui::Point p) const override { return shown_ && area_.contains(p) && cell_.contains(p); }
+        void pointerDown(const funkgui::PointerEvent&, funkgui::GestureController&, funkgui::HostServices&) override {}
+        void accessibility(std::vector<funkgui::A11yItem>& out) const override;
+        bool a11yAction(uint32_t, funkgui::A11yAction, double, funkgui::GestureController&) override { return false; }
+        void specLine(char* out, std::size_t n) const override;
+        bool settled() const override { return !shown_ || (!(animated_ && program_ != 0) && !changed_); }
+        funkgui::Point centre() const override { return { cell_.centreX(), cell_.centreY() }; }
+        bool shown() const override { return shown_; }
+        bool focusable() const override { return false; }
+
+    private:
+        uint32_t id_;
+        uint32_t program_ = 0;
+        std::string file_, why_;
+        std::array<float, 8> inputs_{};
+        funkgui::Rect cell_, area_;
+        bool shown_ = false, animated_ = false, changed_ = false;
+    };
+
     class GuiTabsItem final : public Item
     {
     public:
@@ -194,7 +299,7 @@ namespace testingplaygroundsynth::ui
 
         // Its tabs node, its rect, its tabs' rects and titles, the page shown, the panel's area, and its colour.
         void place(int node, const funkgui::Rect& rect, std::vector<funkgui::Rect> tabs, std::vector<std::string> titles,
-                   int page, const funkgui::Rect& area, bool shown, const std::string& color);
+                   int page, const funkgui::Rect& area, bool shown, const std::string& color, const GuiStyle& style);
         int node() const noexcept { return node_; }
         const std::vector<funkgui::Rect>& tabs() const noexcept { return tabs_; }
 
@@ -220,6 +325,7 @@ namespace testingplaygroundsynth::ui
         std::vector<funkgui::Rect> tabs_;
         std::vector<std::string> titles_;
         std::string color_;
+        GuiStyle style_;                         // its look (tabs, bar, pills, side) and colours
         bool shown_ = false;
     };
 
