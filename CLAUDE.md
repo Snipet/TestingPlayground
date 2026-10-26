@@ -112,9 +112,12 @@ from FunkPluginTemplate.
   audio thread never sees the chat.
 - **Large work.** `max_tokens` is the model's own limit (from /v1/models, at most 128K); server-side compaction (beta
   `compact-2026-01-12`, trigger 150K input tokens, instructions that keep the design and leave out code) on the
-  models that take it, the compaction block kept and what came before it dropped; a file's text goes in the
-  plugin's state only when Claude has not seen it (`seen_`); a broken stream is retried with what it showed taken
-  back; 80 requests a turn. `plugin.chat` checks each.
+  models that take it, the compaction block kept and what came before it dropped: the history then starts at the
+  block, in its assistant message (never at the message before it, which mid-turn is tool results the API refuses
+  without their calls; `repairHistory`, also run on a loaded session), and the files go again with whatever follows,
+  a message or the turn's next tool results; a file's text goes in the plugin's state only when Claude has not seen
+  it (`seen_`); a broken stream is retried with what it showed taken back; 80 requests a turn. `plugin.chat` checks
+  each.
 - **measure_output** renders the editor's files offline (`dsp/Measure.h`, a fresh compile in an Engine of its own,
   never the one that plays) and reports in words; `plugin.chatexample` checks its numbers on programs whose answer is
   known.
