@@ -95,6 +95,8 @@ namespace testingplaygroundsynth::ui
             bool chevron = false;                     // a menu opens
             std::function<Look()> look;               // ghost when null
             std::function<bool()> enabled;            // enabled when null
+            std::function<bool()> shown;              // shown when null
+            std::function<bool()> checked;            // a switch, on or off, when set (a plain button when null)
             std::function<void()> act;
             std::string a11yTitle;
             std::string spec;                         // the footer's line
@@ -123,6 +125,7 @@ namespace testingplaygroundsynth::ui
         bool a11yAction(uint32_t id, funkgui::A11yAction, double, funkgui::GestureController&) override;
         void specLine(char* out, std::size_t n) const override;
         funkgui::Point centre() const override { return { bounds_.centreX(), bounds_.centreY() }; }
+        bool shown() const override { return !spec_.shown || spec_.shown(); }
 
     private:
         bool enabled() const { return !spec_.enabled || spec_.enabled(); }
