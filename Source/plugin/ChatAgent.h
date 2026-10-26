@@ -6,7 +6,9 @@
 // results back, up to kMaxRounds requests a turn. Claude's tools act on the plugin through ChatHost: read, write,
 // edit, rename and delete the files (the editor's tabs follow, each change undoable there), run the program (RUN: the
 // compile's outcome comes back), set a dial, render and measure what the program puts out (measure_output,
-// dsp/Measure.h: Claude cannot hear), and read the plugin's status.
+// dsp/Measure.h: Claude cannot hear), look at the panel (view_panel: a PNG the message thread draws headless,
+// ChatHost::chatPicture, sent as an image in the tool's result and left out of the saved session), and read the
+// plugin's status.
 //
 // Requests (ClaudeApi.h; the claude-api reference): stream on; adaptive thinking with summarized display and the chosen
 // effort (the models list comes from /v1/models, filtered to those with adaptive thinking); max_tokens the model's own
@@ -103,6 +105,8 @@ namespace testingplaygroundsynth
         virtual void chatSetDial(int slot, float plain) = 0;        // a host gesture, applied soon on the message thread
         virtual float chatLoad() const = 0;
         virtual uint32_t chatAlerts() const = 0;
+        // A picture of the panel (view_panel), made on the message thread; this thread waits for it (10 s at most).
+        virtual PanelPicture chatPicture(bool window, const std::string& page) = 0;
     };
 
     class ChatAgent final : public ChatPort

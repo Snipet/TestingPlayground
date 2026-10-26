@@ -59,6 +59,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <condition_variable>
 #include <mutex>
 #include <span>
 #include <string>
@@ -110,7 +111,8 @@ namespace testingplaygroundsynth
         Engine& engine() noexcept { return engine_; }
         // The most samples one Engine::process call got since prepareToPlay (never more than it announced).
         int largestEngineCall() const noexcept { return largestCall_; }
-        // The compiler's outcome to the message thread (the timer's call); settle() waits for a run first.
+        // The compiler's outcome to the message thread (the timer's call); settle() waits for a run first. It also makes
+        // the picture Claude's view_panel asks for, there.
         void poll();
         void settle();
 
@@ -177,6 +179,7 @@ namespace testingplaygroundsynth
         void chatSetDial(int slot, float plain) override;
         float chatLoad() const override;
         uint32_t chatAlerts() const override;
+        PanelPicture chatPicture(bool window, const std::string& page) override;
 
         // The program: what plays, the editor's draft, the dials. Message thread, and a host's state calls. Declared
         // before the parameters, whose names and texts read controls_ (control()).
@@ -204,6 +207,12 @@ namespace testingplaygroundsynth
         Compiler compiler_{ engine_ };                           // after engine_: stops before the Engine goes
         // Dial values Claude set (slot, plain), applied by poll() on the message thread as host gestures.
         std::mutex dialMutex_;
+        // Claude's view_panel: a picture asked for (the agent's thread waits), made by poll() on the message thread.
+        std::mutex pictureMutex_;
+        std::condition_variable pictureDone_;
+        bool pictureAsked_ = false, pictureReady_ = false, pictureWindow_ = false;
+        std::string picturePage_;
+        PanelPicture picture_;
         std::vector<std::pair<int, float>> pendingDials_;
 
         uint64_t seen_ = 0;                                      // the compiler's revision poll() last applied

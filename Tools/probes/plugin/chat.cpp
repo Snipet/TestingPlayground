@@ -13,7 +13,7 @@
 //            thinking, each with its levels
 //   REQUEST  each request has the model, max_tokens (the model's own limit, from /v1/models), stream, adaptive
 //            thinking (summarized), the effort, the system prompt cached for an hour, the automatic cache breakpoint,
-//            the ten tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
+//            the eleven tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
 //            and instructions) with their beta headers for a model that takes them, the API version and the key, and
 //            no temperature, top_p or top_k; the first message carries the plugin's state; the history is append-only
 //            (each request's messages begin with the previous request's, unchanged, signatures included) and the
@@ -41,6 +41,8 @@
 //   CONTEXT  the plugin's state names a file Claude has seen (as it wrote it) without its text; a file the user edited
 //            goes with its text; when nothing changed no state goes at all
 //   MEASURE  measure_output through the agent: its result is the render's report, with the dials asked for
+//   VIEW     view_panel through the agent: its result a PNG of the panel (and one of the whole editor) and a line of
+//            what it shows, drawn on the message thread; the user's view stays; the saved session keeps no picture
 //   LIBRARY  add_library_file: the library's file as a tab of the editor, its text in the result (and seen: the next
 //            state names it without its text), a what Claude did entry; a name the library has not is an error
 //            result naming its files; the same file again is there already, not added twice
@@ -375,8 +377,8 @@ PROBE(plugin, chat)
         int eager = 0;
         for (const auto& t : tools)
             eager += static_cast<bool>(t.getProperty("eager_input_streaming", false)) ? 1 : 0;
-        P.eq("request.tools", tools.size(), 10);
-        P.eq("request.tools_eager", eager, 10);
+        P.eq("request.tools", tools.size(), 11);
+        P.eq("request.tools_eager", eager, 11);
         bool libraryEnum = false;
         for (const auto& t : tools)
             if (str(t, "name") == "add_library_file")
@@ -749,6 +751,59 @@ PROBE(plugin, chat)
         P.eq("measure.report", has(report, "Rendered offline") && has(report, "level 0.5") ? 1 : 0, 1);
         P.eq("measure.kind", has(report, tp::product::kIsInstrument ? "Note 60" : "Sine 220 Hz") ? 1 : 0, 1);
         P.eq("measure.entry", lastText(agent.chatState(), tp::ChatEntry::Kind::tool) == "measured the sound" ? 1 : 0, 1);
+    }
+
+    // ---- VIEW ----------------------------------------------------------------------------------------------------------
+    {
+        script->add(fake::Response::ok(fake::Sse().start().tool("toolu_v1", "view_panel", input({})).end("tool_use")));
+        script->add(fake::Response::ok(
+            fake::Sse().start().tool("toolu_v2", "view_panel", input({ { "view", "window" } })).end("tool_use")));
+        script->add(fake::Response::ok(fake::Sse().start().text("It looks tidy.").end()));
+        const bool viewBefore = processor.editorPort().panelView();
+        const int before = script->postCount();
+        agent.send("how does the panel look?");
+        // The picture is drawn on the message thread (poll): here, this one, which polls while the turn runs.
+        for (int k = 0; k < 4000 && (agent.chatState().busy || script->postCount() < before + 3); ++k)
+        {
+            processor.poll();
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        agent.waitIdle();
+        const auto pictureOf = [&](int post, std::string& data, std::string& about) {
+            const juce::Array<juce::var> m = messagesOf(script->body(post));
+            const juce::Array<juce::var> results = arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {}));
+            const juce::Array<juce::var> content = arr(results.isEmpty() ? juce::var() : results[0].getProperty("content", {}));
+            for (const juce::var& b : content)
+            {
+                if (str(b, "type") == "image" && str(b.getProperty("source", {}), "media_type") == "image/png")
+                    data = str(b.getProperty("source", {}), "data");
+                if (str(b, "type") == "text")
+                    about = str(b, "text");
+            }
+        };
+        std::string panelData, panelAbout, windowData, windowAbout;
+        pictureOf(before + 1, panelData, panelAbout);
+        pictureOf(before + 2, windowData, windowAbout);
+        std::printf("view_panel: %s\n           %s\n", panelAbout.c_str(), windowAbout.c_str());
+        // A PNG's first bytes, base64: \x89PNG\r\n\x1a\n.
+        P.eq("view.panel_png", panelData.rfind("iVBORw0KGgo", 0) == 0 && panelData.size() > 2000 ? 1 : 0, 1);
+        P.eq("view.panel_about", has(panelAbout, "The program's panel, in the PANEL view") ? 1 : 0, 1);
+        P.eq("view.window_png", windowData.rfind("iVBORw0KGgo", 0) == 0 && windowData.size() > panelData.size() ? 1 : 0, 1);
+        P.eq("view.window_about", has(windowAbout, "The whole editor") ? 1 : 0, 1);
+        for (const auto& [data, name] : { std::pair<const std::string&, const char*>{ panelData, "plugin.chat.view_panel.png" },
+                                          std::pair<const std::string&, const char*>{ windowData, "plugin.chat.view_window.png" } })
+        {
+            juce::MemoryOutputStream png;
+            if (juce::Base64::convertFromBase64(png, juce::String(data)))
+                juce::File(juce::String(probe::outPath(name))).replaceWithData(png.getData(), png.getDataSize());
+        }
+        P.eq("view.answer", lastText(agent.chatState(), tp::ChatEntry::Kind::assistant) == "It looks tidy." ? 1 : 0, 1);
+        P.eq("view.entry", lastText(agent.chatState(), tp::ChatEntry::Kind::tool) == "Looked at the editor" ? 1 : 0, 1);
+        P.eq("view.user_view_kept", processor.editorPort().panelView() == viewBefore ? 1 : 0, 1);
+        // The session keeps no picture: a line in its place, and the mark that drops the thinking on load.
+        const std::string saved = agent.saveState();
+        P.eq("view.session_no_picture", has(saved, "iVBORw0KGgo") ? 0 : 1, 1);
+        P.eq("view.session_line", has(saved, "A picture of the panel: not kept in the session") && has(saved, "pictures_cut") ? 1 : 0, 1);
     }
 
     // ---- LIBRARY -------------------------------------------------------------------------------------------------------
