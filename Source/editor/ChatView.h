@@ -86,6 +86,8 @@ namespace testingplayground::ui
         bool settled() const override;
         funkgui::Point centre() const override { return { bounds_.centreX(), bounds_.centreY() }; }
         bool focusable() const override { return false; }
+        bool shown() const override { return !hidden_; }
+        void setHidden(bool hidden) { hidden_ = hidden; }   // the chat folded away
 
         // How a piece of text is set (ChatView.cpp resolves the style and the colour).
         enum Role : uint8_t { body, strong, code, h1, h2, h3, dim, small, smallStrong, faint, danger, quote };
@@ -184,5 +186,6 @@ namespace testingplayground::ui
         int copiedBlock_ = -1, copiedAction_ = -1;
         funkgui::Point pointer_{ -1.0e4f, -1.0e4f };
         mutable float advBody_ = 0.0f, advSmall_ = 0.0f, advCode_ = 0.0f, advH1_ = 0.0f, advH2_ = 0.0f;
+        bool hidden_ = false;
     };
 }

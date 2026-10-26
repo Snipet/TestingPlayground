@@ -16,7 +16,7 @@
 //     act on the draft, RUN and the dials through ChatHost, from the agent's thread (the draft under programMutex_,
 //     a dial queued for poll()).
 //   - the editor's size, as the user left it (the editor is resizable), its view and its interface's pages, kept in the
-//     session (<EDITOR w=".." h=".." view="panel"> with a <PAGE title=".."/> a tabs element).
+//     session (<EDITOR w=".." h=".." view="panel" chat="closed"> with a <PAGE title=".."/> a tabs element).
 //
 // What a host may do, and what the Engine sees of it:
 //   - a block larger than prepareToPlay announced: the Engine gets it in parts of at most that size;
@@ -59,6 +59,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <condition_variable>
 #include <mutex>
 #include <span>
 #include <string>
@@ -110,7 +111,8 @@ namespace testingplayground
         Engine& engine() noexcept { return engine_; }
         // The most samples one Engine::process call got since prepareToPlay (never more than it announced).
         int largestEngineCall() const noexcept { return largestCall_; }
-        // The compiler's outcome to the message thread (the timer's call); settle() waits for a run first.
+        // The compiler's outcome to the message thread (the timer's call); settle() waits for a run first. It also makes
+        // the picture Claude's view_panel asks for, there.
         void poll();
         void settle();
 
@@ -160,6 +162,8 @@ namespace testingplayground
         ChatPort& chat() override { return chat_; }
         bool panelView() const override { return panelView_.load(); }
         void setPanelView(bool on) override { panelView_.store(on); }
+        bool chatOpen() const override { return chatOpen_.load(); }
+        void setChatOpen(bool open) override { chatOpen_.store(open); }
         void playNote(int note, float velocity) override;
         std::vector<std::string> guiPages() const override;
         void setGuiPages(const std::vector<std::string>& titles) override;
@@ -175,6 +179,7 @@ namespace testingplayground
         void chatSetDial(int slot, float plain) override;
         float chatLoad() const override;
         uint32_t chatAlerts() const override;
+        PanelPicture chatPicture(bool window, const std::string& page) override;
 
         // The program: what plays, the editor's draft, the dials. Message thread, and a host's state calls. Declared
         // before the parameters, whose names and texts read controls_ (control()).
@@ -202,6 +207,12 @@ namespace testingplayground
         Compiler compiler_{ engine_ };                           // after engine_: stops before the Engine goes
         // Dial values Claude set (slot, plain), applied by poll() on the message thread as host gestures.
         std::mutex dialMutex_;
+        // Claude's view_panel: a picture asked for (the agent's thread waits), made by poll() on the message thread.
+        std::mutex pictureMutex_;
+        std::condition_variable pictureDone_;
+        bool pictureAsked_ = false, pictureReady_ = false, pictureWindow_ = false;
+        std::string picturePage_;
+        PanelPicture picture_;
         std::vector<std::pair<int, float>> pendingDials_;
 
         uint64_t seen_ = 0;                                      // the compiler's revision poll() last applied
@@ -209,6 +220,7 @@ namespace testingplayground
         std::atomic<uint32_t> alerts_{ 0 };
         std::atomic<int> editorW_{ 0 }, editorH_{ 0 };
         std::atomic<bool> panelView_{ false };                       // the editor's PANEL view, in the session
+        std::atomic<bool> chatOpen_{ true };                         // its chat's column open, in the session
         mutable std::mutex pagesMutex_;
         std::vector<std::string> guiPages_;                      // its interface's pages (guiPages), in the session
         double alertsAt_ = 0.0;                                  // when alerts_ last gained a bit (ms)

@@ -72,7 +72,7 @@ namespace testingplayground::ui::chat
     enum class Icon : uint8_t
     {
         none, plus, key, chevronDown, chevronRight, chevronUp, arrowUp, stop, copy, check, file, play, dial, wave, alert,
-        pencil, bolt, person
+        pencil, bolt, person, chevronLeft, bubble, dice, blocks, list, sun, moon, code, book
     };
 
     inline void drawIcon(funkgui::Canvas& c, Icon icon, float cx, float cy, float size, funkgui::Col ink)
@@ -112,6 +112,90 @@ namespace testingplayground::ui::chat
             {
                 const float xs[3] = { cx - s * 0.5f, cx, cx + s * 0.5f };
                 const float ys[3] = { cy + s * 0.22f, cy - s * 0.28f, cy + s * 0.22f };
+                c.polyline(xs, ys, 3, w, ink);
+                break;
+            }
+            case Icon::chevronLeft:
+            {
+                const float xs[3] = { cx + s * 0.22f, cx - s * 0.28f, cx + s * 0.22f };
+                const float ys[3] = { cy - s * 0.5f, cy, cy + s * 0.5f };
+                c.polyline(xs, ys, 3, w, ink);
+                break;
+            }
+            case Icon::dice:
+            {
+                c.rrect(cx - s * 0.7f, cy - s * 0.7f, s * 1.4f, s * 1.4f, s * 0.3f, ink.withAlpha(0.0f), w, ink);
+                c.disc(cx - s * 0.32f, cy - s * 0.32f, w * 0.95f, ink);
+                c.disc(cx, cy, w * 0.95f, ink);
+                c.disc(cx + s * 0.32f, cy + s * 0.32f, w * 0.95f, ink);
+                break;
+            }
+            case Icon::blocks:
+            {
+                // Three blocks: "the library".
+                const float b = s * 0.62f, g = s * 0.14f;
+                c.rrect(cx - b - g * 0.5f, cy + g * 0.5f, b, b, s * 0.12f, ink.withAlpha(0.0f), w, ink);
+                c.rrect(cx + g * 0.5f, cy + g * 0.5f, b, b, s * 0.12f, ink.withAlpha(0.0f), w, ink);
+                c.rrect(cx - b * 0.5f, cy - b - g * 0.5f, b, b, s * 0.12f, ink.withAlpha(0.0f), w, ink);
+                break;
+            }
+            case Icon::list:
+                for (int k = -1; k <= 1; ++k)
+                {
+                    const float y = cy + static_cast<float>(k) * s * 0.45f;
+                    c.disc(cx - s * 0.6f, y, w * 0.9f, ink);
+                    c.segment(cx - s * 0.28f, y, cx + s * 0.7f, y, w, ink);
+                }
+                break;
+            case Icon::sun:
+                c.disc(cx, cy, s * 0.34f, ink.withAlpha(0.0f), w, ink);
+                for (int k = 0; k < 8; ++k)
+                {
+                    const float a = 0.785398163f * static_cast<float>(k);
+                    const float ca = std::cos(a), sa = std::sin(a);
+                    c.segment(cx + ca * s * 0.56f, cy + sa * s * 0.56f, cx + ca * s * 0.78f, cy + sa * s * 0.78f, w, ink);
+                }
+                break;
+            case Icon::moon:
+            {
+                // A crescent: the outer arc, then the inner one back.
+                float xs[25], ys[25];
+                int n = 0;
+                for (int k = 0; k <= 12; ++k, ++n)
+                {
+                    const float a = 0.9f + 4.5f * static_cast<float>(k) / 12.0f;
+                    xs[n] = cx + s * 0.72f * std::cos(a);
+                    ys[n] = cy + s * 0.72f * std::sin(a);
+                }
+                for (int k = 11; k >= 0; --k, ++n)
+                {
+                    const float a = 1.35f + 3.6f * static_cast<float>(k) / 11.0f;
+                    xs[n] = cx + s * 0.38f + s * 0.52f * std::cos(a);
+                    ys[n] = cy - s * 0.2f + s * 0.52f * std::sin(a);
+                }
+                c.polyline(xs, ys, n, w, ink);
+                break;
+            }
+            case Icon::code:
+            {
+                const float lx[3] = { cx - s * 0.3f, cx - s * 0.75f, cx - s * 0.3f };
+                const float rx[3] = { cx + s * 0.3f, cx + s * 0.75f, cx + s * 0.3f };
+                const float ys[3] = { cy - s * 0.42f, cy, cy + s * 0.42f };
+                c.polyline(lx, ys, 3, w, ink);
+                c.polyline(rx, ys, 3, w, ink);
+                c.segment(cx + s * 0.12f, cy - s * 0.55f, cx - s * 0.12f, cy + s * 0.55f, w, ink);
+                break;
+            }
+            case Icon::book:
+                c.rrect(cx - s * 0.78f, cy - s * 0.55f, s * 0.74f, s * 1.1f, s * 0.12f, ink.withAlpha(0.0f), w, ink);
+                c.rrect(cx + s * 0.04f, cy - s * 0.55f, s * 0.74f, s * 1.1f, s * 0.12f, ink.withAlpha(0.0f), w, ink);
+                break;
+            case Icon::bubble:
+            {
+                // A speech bubble: "the chat".
+                c.rrect(cx - s * 0.75f, cy - s * 0.6f, s * 1.5f, s * 1.05f, s * 0.32f, ink.withAlpha(0.0f), w, ink);
+                const float xs[3] = { cx - s * 0.35f, cx - s * 0.45f, cx - s * 0.05f };
+                const float ys[3] = { cy + s * 0.45f, cy + s * 0.85f, cy + s * 0.45f };
                 c.polyline(xs, ys, 3, w, ink);
                 break;
             }

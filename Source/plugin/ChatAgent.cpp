@@ -778,10 +778,60 @@ namespace testingplayground
         juce::Array<juce::var> entries;
         for (const ChatEntry& e : entries_)
             entries.add(claude::object({ { "k", kindName(e.kind) }, { "t", juce::String::fromUTF8(e.text.c_str()) } }));
-        return claude::toJson(claude::object({ { "version", 1 },
-                                               { "prompt", juce::String(promptPrint()) },
-                                               { "messages", messages_ },
-                                               { "entries", entries } }));
+        // The panel's pictures (view_panel's images, hundreds of KB each) stay out of the session: a line in each one's
+        // place, and a mark that the history was changed, so a session that loads it drops its thinking (bound to the
+        // pictures).
+        bool cut = false;
+        juce::Array<juce::var> messages;
+        for (const juce::var& m : messages_)
+        {
+            const juce::Array<juce::var>* content = m.getProperty("content", juce::var()).getArray();
+            bool pictures = false;
+            if (content != nullptr)
+                for (const juce::var& b : *content)
+                    if (str(b, "type") == "tool_result")
+                        if (const auto* inner = b.getProperty("content", juce::var()).getArray())
+                            for (const juce::var& x : *inner)
+                                pictures = pictures || str(x, "type") == "image";
+            if (!pictures)
+            {
+                messages.add(m);
+                continue;
+            }
+            cut = true;
+            juce::Array<juce::var> blocks;
+            for (const juce::var& b : *content)
+            {
+                const auto* inner = b.getProperty("content", juce::var()).getArray();
+                if (str(b, "type") != "tool_result" || inner == nullptr)
+                {
+                    blocks.add(b);
+                    continue;
+                }
+                juce::Array<juce::var> kept;
+                for (const juce::var& x : *inner)
+                    kept.add(str(x, "type") == "image"
+                                 ? claude::object({ { "type", "text" }, { "text", "(A picture of the panel: not kept in the session.)" } })
+                                 : x);
+                juce::var nb = claude::object({});
+                for (const auto& kv : b.getDynamicObject()->getProperties())
+                    nb.getDynamicObject()->setProperty(kv.name, kv.value);
+                nb.getDynamicObject()->setProperty("content", kept);
+                blocks.add(nb);
+            }
+            juce::var nm = claude::object({});
+            for (const auto& kv : m.getDynamicObject()->getProperties())
+                nm.getDynamicObject()->setProperty(kv.name, kv.value);
+            nm.getDynamicObject()->setProperty("content", blocks);
+            messages.add(nm);
+        }
+        juce::var state = claude::object({ { "version", 1 },
+                                           { "prompt", juce::String(promptPrint()) },
+                                           { "messages", messages },
+                                           { "entries", entries } });
+        if (cut)
+            state.getDynamicObject()->setProperty("pictures_cut", true);
+        return claude::toJson(state);
     }
 
     // What a replayed thinking block is bound to besides the messages before it (the preserved-thinking docs): the
@@ -814,7 +864,7 @@ namespace testingplayground
                 entries_.push_back({ kindOf(str(e, "k")), str(e, "t") });
         // Saved with another system prompt or other tools (an earlier version of the plugin): the API would refuse
         // its thinking blocks (bound to a different conversation), so the history goes on without them.
-        if (str(v, "prompt") != promptPrint())
+        if (str(v, "prompt") != promptPrint() || static_cast<bool>(v.getProperty("pictures_cut", false)))
             dropThinking();
         repairHistory();                           // a session saved by a version that cut it at the wrong place
         touch();
@@ -1177,6 +1227,23 @@ namespace testingplayground
                                             { "dials", dials } }),
                            {}));
         }
+        tools.add(tool("view_panel",
+                       "See the plugin's interface: a picture (PNG) of the program's panel as the user sees it in the "
+                       "PANEL view (its panel.gui, or its dials), drawn now from the program that plays. Use it after "
+                       "you write or change panel.gui and run it, to check the layout as a designer would: crowding, "
+                       "overlaps, text cut off, ragged rows, sizes and colours that do not read, a page left empty; "
+                       "then fix what you see. view \"window\" shows the whole editor instead (the code and the "
+                       "chat). page names a tabs element's page to show (the text says which pages there are). "
+                       "Shaders show as a striped placeholder (the GPU draws them) and the displays show the sound "
+                       "playing now. A picture costs about 2,000 input tokens: look once or twice for a new interface, "
+                       "not after every small change.",
+                       claude::object({ { "view", claude::object({ { "type", "string" },
+                                                                   { "enum", juce::Array<juce::var>{ "panel", "window" } },
+                                                                   { "description", "panel (the default): the program's "
+                                                                                    "panel; window: the whole editor" } }) },
+                                        { "page", prop("string", "A page's title to show (a tabs element's), else the "
+                                                                 "pages the user has") } }),
+                       {}));
         tools.add(tool("get_status",
                        "Read the plugin's state now: the files, whether the program that plays matches them, the last "
                        "compile, the dials and their values, the CPU load and the output guard's alerts (NaN or inf "
@@ -1503,6 +1570,7 @@ namespace testingplayground
                     setActivity(name == "write_file" || name == "edit_file" ? std::string("Writing code")
                                 : name == "run_program"                     ? std::string("About to run the program")
                                 : name == "measure_output"                  ? std::string("About to measure the sound")
+                                : name == "view_panel"                      ? std::string("Looking at the panel")
                                                                             : "Using " + name);
                 };
                 cb.toolInput = [this, tool](const std::string& json) {
@@ -1770,6 +1838,32 @@ namespace testingplayground
     {
         const std::string name = str(use, "name");
         const juce::var input = use.getProperty("input", juce::var());
+        if (name == "view_panel")
+        {
+            // A picture of the panel: an image block and a line of what it shows (the tool_result's content).
+            setActivity("Looking at the panel");
+            const std::string view = str(input, "view");
+            const PanelPicture pic = host_.chatPicture(view == "window", str(input, "page"));
+            juce::var block = claude::object({ { "type", "tool_result" }, { "tool_use_id", use.getProperty("id", "") } });
+            if (pic.png.empty())
+            {
+                block.getDynamicObject()->setProperty("content", juce::String::fromUTF8(("No picture: " + pic.why).c_str()));
+                block.getDynamicObject()->setProperty("is_error", true);
+                return block;
+            }
+            juce::Array<juce::var> content;
+            content.add(claude::object({ { "type", "image" },
+                                         { "source", claude::object({ { "type", "base64" },
+                                                                      { "media_type", "image/png" },
+                                                                      { "data", juce::Base64::toBase64(pic.png.data(), pic.png.size()) } }) } }));
+            content.add(claude::object({ { "type", "text" }, { "text", juce::String::fromUTF8(pic.about.c_str()) } }));
+            block.getDynamicObject()->setProperty("content", content);
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                addEntry(ChatEntry::Kind::tool, view == "window" ? "Looked at the editor" : "Looked at the panel");
+            }
+            return block;
+        }
         bool isError = false;
         const std::string result = toolText(name, input, isError);
         juce::var block = claude::object({ { "type", "tool_result" },

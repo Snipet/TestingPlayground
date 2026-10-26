@@ -11,6 +11,7 @@
 #include <funkgui/gpu/ShaderLibrary.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -28,6 +29,7 @@ namespace testingplayground
         const juce::Identifier kChatTag{ "CHAT" }, kJson{ "json" };      // the chat with Claude (ChatAgent::saveState)
         const juce::Identifier kEditorTag{ "EDITOR" }, kWidth{ "w" }, kHeight{ "h" };   // the editor's size
         const juce::Identifier kView{ "view" };                                          // and its view: "panel"
+        const juce::Identifier kChat{ "chat" };                                          // its chat: "closed"
         const juce::Identifier kPageTag{ "PAGE" }, kTitle{ "title" };                    // its interface's pages
         constexpr int kMaxEditorSide = 16384;
 
@@ -530,8 +532,41 @@ namespace testingplayground
         updateHostDisplay(juce::AudioProcessor::ChangeDetails().withParameterInfoChanged(true));
     }
 
+    PanelPicture Processor::chatPicture(bool window, const std::string& page)
+    {
+        std::unique_lock<std::mutex> lock(pictureMutex_);
+        pictureAsked_ = true;
+        pictureReady_ = false;
+        pictureWindow_ = window;
+        picturePage_ = page;
+        if (!pictureDone_.wait_for(lock, std::chrono::seconds(10), [this] { return pictureReady_; }))
+        {
+            pictureAsked_ = false;
+            PanelPicture none;
+            none.why = "the plugin's message thread did not draw the picture in time (the host may be busy); try again";
+            return none;
+        }
+        pictureReady_ = false;
+        return std::move(picture_);
+    }
+
     void Processor::poll()
     {
+        {
+            std::unique_lock<std::mutex> lock(pictureMutex_);
+            if (pictureAsked_)
+            {
+                pictureAsked_ = false;
+                const bool window = pictureWindow_;
+                const std::string page = picturePage_;
+                lock.unlock();
+                PanelPicture p = picturePanel(ports(), editorPort(), editorW_.load(), editorH_.load(), window, page);
+                lock.lock();
+                picture_ = std::move(p);
+                pictureReady_ = true;
+                pictureDone_.notify_all();
+            }
+        }
         if (compiler_.revision() != seen_)
         {
             const CompileStatus s = compiler_.status();
@@ -619,7 +654,7 @@ namespace testingplayground
         chat.setProperty(kJson, juce::String::fromUTF8(chat_.saveState().c_str()), nullptr);
         state.appendChild(chat, nullptr);
         const std::vector<std::string> pages = guiPages();
-        if ((editorW_.load() > 0 && editorH_.load() > 0) || panelView_.load() || !pages.empty())
+        if ((editorW_.load() > 0 && editorH_.load() > 0) || panelView_.load() || !chatOpen_.load() || !pages.empty())
         {
             juce::ValueTree editor{ kEditorTag };
             if (editorW_.load() > 0 && editorH_.load() > 0)
@@ -629,6 +664,8 @@ namespace testingplayground
             }
             if (panelView_.load())
                 editor.setProperty(kView, "panel", nullptr);
+            if (!chatOpen_.load())
+                editor.setProperty(kChat, "closed", nullptr);
             for (const std::string& title : pages)
             {
                 juce::ValueTree page{ kPageTag };
@@ -675,6 +712,7 @@ namespace testingplayground
         }
         const juce::ValueTree editor = state.getChildWithName(kEditorTag);
         panelView_.store(editor.isValid() && editor.getProperty(kView).toString() == "panel");
+        chatOpen_.store(!(editor.isValid() && editor.getProperty(kChat).toString() == "closed"));
         {
             std::vector<std::string> pages;
             for (int k = 0; editor.isValid() && k < editor.getNumChildren() && k < 64; ++k)
