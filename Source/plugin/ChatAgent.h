@@ -20,9 +20,14 @@
 //
 // Large work. A long conversation is compacted server-side (beta compact-2026-01-12, on the models that take it): once
 // a request's input passes kCompactTrigger tokens the API summarizes what came before (with instructions that keep
-// the sound's design and leave out code) and answers from the summary; the compaction block goes into the history and
-// what came before it is dropped. The plugin's state sends a file's text only when Claude has not seen that text (in
-// an earlier block, through read_file, or as it wrote it); after a compaction it sends every file again. A request
+// the sound's design and leave out code) and answers from the summary; the compaction block goes into the history, and
+// what came before it is dropped: the history then starts at the block, in its assistant message, as the API's own
+// examples continue after one. (Not at the user message before it: in the middle of a turn that is the results of
+// tool calls the summary took away, which the API refuses.) A history from a session is repaired the same way when it
+// loads, and before each message (repairHistory). The plugin's state sends a file's text only when Claude has not seen
+// that text (in an earlier block, through read_file, or as it wrote it); after a compaction it sends every file
+// again, with the next message or, when the summary came in the middle of a turn, with the tool results that follow
+// it. A request
 // that fails on the connection, a rate limit, an overload or a server error, or whose stream breaks off before its
 // end, is sent again (kMaxAttempts, retry-after honoured; what the broken stream showed is taken back). While a file
 // streams in, the activity says which and how much has arrived. A tool's long output (a compile's messages) is cut.
@@ -117,6 +122,7 @@ namespace testingplaygroundsynth
         void ensureKey();
         void touch();                                               // revision + 1 (mutex held)
         void appendAnswer(const juce::Array<juce::var>& content);   // an assistant message into the history (mutex held)
+        void repairHistory();                                       // one the API takes (mutex held)
         void markSeen(const std::string& name, const std::string& text);   // Claude knows this text (mutex held)
         void addEntry(ChatEntry::Kind kind, std::string text);     // mutex held
         void appendToLast(ChatEntry::Kind kind, std::string_view text);   // mutex held
@@ -141,6 +147,7 @@ namespace testingplaygroundsynth
         std::string keyProblem_;
         std::map<std::string, uint64_t> seen_;                      // file name -> the text Claude saw (hashText)
         uint64_t lastSignature_ = 0;                                // the plugin's state as Claude last got it
+        bool resendState_ = false;                                  // a summary came: the state goes with what follows
         std::vector<std::string> requests_;                         // bodies sent (probes)
         bool busy_ = false;
 
