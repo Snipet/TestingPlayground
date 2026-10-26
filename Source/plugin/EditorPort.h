@@ -14,7 +14,10 @@
 //   statusRevision()  bumps with each compile that finishes
 //   running()         the files of the program that plays (none before the first compiles)
 //   controls()        the dials of the program that plays
-//   panel()           how its #pragma panel lines lay them out (PanelSpec.h)
+//   panel()           its interface: a .gui file's (GuiSpec.h), or how its #pragma panel lines lay its dials out
+//                     (PanelSpec.h)
+//   panelView()       the editor shows the PANEL view (the interface across the left column) rather than the CODE view;
+//                     kept in the session, set with setPanelView()
 //   program()         the compile it came from (CompileStatus::request): the meters' taps are its fields once
 //                     Meters::program says so (until the audio thread takes it, they are the last program's)
 //   meters()          the last block's levels and the program's taps, for the panel's displays (Engine::Meters); false
@@ -96,5 +99,8 @@ namespace testingplaygroundsynth
         virtual std::string presetName() const = 0;
         virtual bool presetEdited() const = 0;
         virtual ChatPort& chat() = 0;
+
+        virtual bool panelView() const = 0;
+        virtual void setPanelView(bool on) = 0;
     };
 }

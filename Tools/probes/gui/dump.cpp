@@ -53,8 +53,8 @@
 //             edit Cmd-Z takes back in one step), and the program still runs; the processor's draft has it; chosen
 //             again, it is ticked and shown, not added twice; with no room for another tab, the files the program
 //             lacks are greyed
-//   EXAMPLE   that program, its library files added through LIBRARY's path: it runs with no note, its panel's sections
-//             titled, every dial in one
+//   EXAMPLE   that program, its library files added through LIBRARY's path and its panel.gui in a tab of its own: it
+//             runs with no note, its interface's every dial in a titled section
 //   DISPLAYS  a program with every display (meter, vu, led, number, scope; of the audio and of its fields) and every
 //             dial style (vintage, fader, switch, buttons with options), coloured, and audio through the processor:
 //             each item inside its section's frame; the meters show what the Engine measured (the output's peak in
@@ -271,6 +271,31 @@ namespace
         for (const char ch : text)
             spec += (spec.empty() ? "" : ",") + (ch == ' ' ? std::string("space") : std::string(1, ch));
         host.keys(spec.c_str());
+    }
+
+    // Whether every dial has a control in the interface (a .gui file's), each inside a titled section or page.
+    bool everyDialTitled(const tp::PanelSpec& spec, const tp::Controls& controls, int& placed)
+    {
+        placed = 0;
+        bool titled = !spec.gui.empty();
+        for (const tp::GuiNode& n : spec.gui.nodes)
+        {
+            if (n.slot < 0)
+                continue;
+            placed += n.slot2 >= 0 ? 2 : 1;
+            bool inTitled = false;
+            for (int p = n.parent; p >= 0; p = spec.gui.nodes[static_cast<std::size_t>(p)].parent)
+            {
+                const tp::GuiNode& up = spec.gui.nodes[static_cast<std::size_t>(p)];
+                if ((up.kind == tp::GuiKind::section || up.kind == tp::GuiKind::page) && !up.text.empty())
+                    inTitled = true;
+            }
+            titled = titled && inTitled;
+        }
+        int used = 0;
+        for (const tp::Control& c : controls)
+            used += c.used ? 1 : 0;
+        return titled && placed == used;
     }
 
     // Lets a run finish: the compiler, the processor's poll, the panel's next frames.
@@ -948,9 +973,17 @@ PROBE(gui, dump)
         editor.selectAll();
         editor.insert(example.front().text);
         int added = 0;
-        for (std::size_t k = 1; k < example.size(); ++k)
+        for (std::size_t k = 2; k < example.size(); ++k)
             added += panel.addLibraryFile(example[k].name) ? 1 : 0;
-        P.eq("example.library_added", added, static_cast<int64_t>(example.size()) - 1);
+        P.eq("example.library_added", added, static_cast<int64_t>(example.size()) - 2);
+        // Its interface: a tab of its own, panel.gui, named in place and typed in.
+        const funkgui::Point plus = panel.centreOfNewTab();
+        host.click(plus.x, plus.y);
+        host.settle();
+        typeText(host, "panel.gui");
+        host.keys("return");
+        host.settle();
+        panel.editor().insert(example[1].text);
         host.tick(1);                                             // the files go to the processor on a frame
         P.eq("example.program_untouched", port.draft().files[0].text == example.front().text ? 1 : 0, 1);
         const funkgui::Point tab0 = panel.centreOfTab(0);
@@ -962,14 +995,10 @@ PROBE(gui, dump)
         if (!port.status().notes.empty())
             std::printf("%s", port.status().notes.c_str());
         int placed = 0, used = 0;
-        bool titled = !panel.dialsLayout().sections.empty();
-        for (const tp::ui::SectionFrame& f : panel.dialsLayout().sections)
-            titled = titled && !f.title.empty();
-        for (const tp::PanelSection& s : port.panel().sections)
-            for (const tp::PanelItem& it : s.items)
-                placed += it.display ? 0 : 1;
+        const bool titled = everyDialTitled(port.panel(), port.controls(), placed);
         for (const tp::Control& c : port.controls())
             used += c.used ? 1 : 0;
+        P.eq("example.has_interface", panel.hasGui() && port.draft().files.size() == example.size() ? 1 : 0, 1);
         P.eq("example.sections_titled", titled ? 1 : 0, 1);
         P.eq("example.every_dial_placed", placed, used);
         writePng(P, host, "gui.dump.example.png", "example");

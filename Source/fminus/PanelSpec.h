@@ -30,6 +30,9 @@
 // The sections go left to right in the order of their lines, and to another row when one is full. Dials and
 // displays no section names come last, in a section of their own without a title. A line, or a part of one, the
 // plugin cannot use is a note (its file and line); the rest stands.
+//
+// A program with a .gui file (GuiSpec.h) has its interface from that file instead: PanelSpec::gui holds its tree,
+// and the labels, options, styles, colours and displays below are what the tree's controls and displays ask for.
 #pragma once
 
 #include "dsp/Controls.h"
@@ -46,10 +49,10 @@ namespace testingplaygroundsynth
     inline constexpr std::size_t kMaxSectionTitle = 24;   // characters; longer ones are cut
     inline constexpr std::size_t kMaxDialLabel = 14;
     inline constexpr std::size_t kMaxOptionLabel = 10;
-    inline constexpr int kMaxDisplays = 8;                // displays (and so field taps) a program may have
+    inline constexpr int kMaxDisplays = 16;               // displays (and so field taps) a program may have
     inline constexpr int kMaxOptions = 8;                 // values a switch or buttons may name
 
-    enum class DisplayKind : uint8_t { meter, vu, led, number, scope };
+    enum class DisplayKind : uint8_t { meter, vu, led, number, scope, spectrum };   // spectrum: a .gui file's
     enum class DialStyle : uint8_t { knob, vintage, fader, toggle, buttons };   // toggle: #pragma panel style x switch
 
     struct PanelDisplay
@@ -81,8 +84,54 @@ namespace testingplaygroundsynth
         bool operator==(const PanelSection&) const = default;
     };
 
+    // ---- a .gui file's interface (GuiSpec.h) ----------------------------------------------------------------------
+    enum class GuiKind : uint8_t
+    {
+        row, column, grid, section, box, tabs, page, spacer, divider, label,     // layout and decoration
+        knob, slider, toggle, buttons, menu, xy, envelope,                       // controls (a parameter's or more)
+        display                                                                  // a display (PanelSpec::displays)
+    };
+    enum class GuiAlign : uint8_t { stretch, start, center, end };              // across a container's direction
+    enum class GuiJustify : uint8_t { start, center, end, between, around };    // along it, when there is room
+    enum class GuiSize : uint8_t { small, medium, large };
+    enum class GuiText : uint8_t { small, normal, large, title };               // a label's size
+
+    struct GuiNode
+    {
+        GuiKind kind = GuiKind::column;
+        int parent = -1;
+        std::vector<int> children;                          // in order
+        int line = 0;                                       // its line in the .gui file
+        std::string text;                                   // a section's or a page's title, a label's text
+        int slot = -1, slot2 = -1;                          // a control's parameter (an xy pad's x, then y)
+        std::array<int, 4> env{ -1, -1, -1, -1 };           // an envelope's attack, decay, sustain, release
+        int display = -1;                                   // a display's index in PanelSpec::displays
+        bool vertical = true;                               // a container's direction: column (and a page, a box or a
+                                                            // section that says layout=column), a slider's, buttons'
+        float gap = 8.0f, pad = 0.0f, width = 0.0f, height = 0.0f, grow = 0.0f;   // px; 0 width/height: its own
+                                                            // (an xy pad's size= sets both)
+        int cols = 0;                                       // a grid's
+        GuiAlign align = GuiAlign::stretch;
+        GuiJustify justify = GuiJustify::start;
+        GuiSize size = GuiSize::medium;                     // a knob's
+        bool vintage = false;                               // a knob's style
+        GuiText textSize = GuiText::normal;
+        std::string color;                                  // a name (kPanelColors) or #rrggbb, "" for the default
+        bool operator==(const GuiNode&) const = default;
+    };
+
+    struct GuiTree
+    {
+        std::vector<GuiNode> nodes;                         // nodes[0] the root, a column; empty without a .gui file
+        std::string file;                                   // the .gui file's name
+        std::string background, accent;                     // the panel's own colours ("" for the theme's)
+        bool empty() const noexcept { return nodes.empty(); }
+        bool operator==(const GuiTree&) const = default;
+    };
+
     struct PanelSpec
     {
+        GuiTree gui;                                        // a .gui file's interface; empty: the #pragma panel lines'
         std::vector<PanelSection> sections;                 // empty: the dials in plain rows (no section, no display)
         std::vector<PanelDisplay> displays;
         std::array<std::string, kMaxControls> labels{};     // "": the parameter's name

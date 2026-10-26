@@ -9,6 +9,8 @@
 // Program::Options::include, by name: an #include of a name no file has is FMinus's "'name' file not found".
 #include "fminus/Patch.h"
 
+#include "fminus/GuiSpec.h"
+
 #include "Product.h"
 
 #include "fminus/FMinus.h"
@@ -445,7 +447,27 @@ namespace testingplaygroundsynth
         std::vector<PanelField> fields;
         for (const fminus::Program::Module::Field& f : s.module->fields)
             fields.push_back({ f.name, f.type });
-        patch->panel_ = readPanelSpec(compiled, patch->controls_, fields, kInstrument, r.notes);
+        // A .gui file (GuiSpec.h), the first one, makes the interface; else the #pragma panel lines do.
+        const SourceFile* gui = nullptr;
+        for (const SourceFile& f : files)
+            if (isGuiFile(f.name))
+            {
+                if (gui == nullptr)
+                    gui = &f;
+                else
+                    r.notes += f.name + ": note: the interface is " + gui->name + "'s (the first .gui file); this one is "
+                                                                                 "left out\n";
+            }
+        if (gui != nullptr)
+        {
+            std::string ignored;
+            const PanelSpec pragmas = readPanelSpec(compiled, patch->controls_, fields, kInstrument, ignored);
+            if (!pragmas.sections.empty() || !pragmas.displays.empty())
+                r.notes += file + ": note: the interface is " + gui->name + "'s: the #pragma panel lines are left out\n";
+            patch->panel_ = readGuiSpec(*gui, patch->controls_, fields, kInstrument, r.notes);
+        }
+        else
+            patch->panel_ = readPanelSpec(compiled, patch->controls_, fields, kInstrument, r.notes);
         for (const PanelDisplay& d : patch->panel_.displays)
         {
             if (d.tap < 0)

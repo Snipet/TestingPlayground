@@ -59,6 +59,7 @@ namespace testingplaygroundsynth
         float outPeak[2] = {}, outRms[2] = {};        // the output
         float taps[kMaxDisplays] = {};                // the fields the program's displays show (PanelDisplay::tap)
         uint64_t program = 0;                         // the program they are of (Patch::program), 0 while none plays
+        float rate = 48000.0f;                        // the sample rate (a spectrum's frequencies)
     };
 
     class Engine

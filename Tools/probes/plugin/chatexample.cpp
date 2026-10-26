@@ -4,11 +4,12 @@
 // 48 kHz:
 //   PROMPT   the system prompt has the large-program section, the tools' workflow (measure_output, add_library_file),
 //            what the editor's RANDOM button makes and what PRESETS keeps,
-//            THE PANEL with its #pragma lines, THE LIBRARY with every library file's header word for word, and the
-//            program built from the library, word for word; the program's other files are the library's, as it has them
-//   EXAMPLE  that program (ChatAgent::promptExample, this plugin's kind) compiles with no message (its panel lines
-//            too); its dials are named, with ranges and defaults inside them, and every one is in a titled section of
-//            its panel; it plays two seconds finite and audible with no alert (an effect over noise, an instrument a
+//            THE INTERFACE with the .gui file's language, THE LIBRARY with every library file's header word for word, and
+//            the program built from the library and its panel.gui, word for word; the program's other files are the
+//            library's, as it has them
+//   EXAMPLE  that program (ChatAgent::promptExample, this plugin's kind) compiles with no message (its panel.gui
+//            too); its dials are named, with ranges and defaults inside them, every one a control of its interface in
+//            a titled section, with two displays at least; it plays two seconds finite and audible with no alert (an effect over noise, an instrument a
 //            chord released at 1 s); blocks of 64 and 333 give the same bits; an instrument's voices end
 //   MEASURE  measure::run on programs whose answer is known: an instrument's sine voice at 0.25 (peak -12.0 dBFS,
 //            its partial at the note's frequency, the voice ending, a chord's level reported) or an effect's gain of
@@ -61,6 +62,31 @@ namespace
         return out;
     }
 
+    // Whether every dial has a control in the interface (a .gui file's), each inside a titled section or page.
+    bool everyDialTitled(const tp::PanelSpec& spec, const tp::Controls& controls, int& placed)
+    {
+        placed = 0;
+        bool titled = !spec.gui.empty();
+        for (const tp::GuiNode& n : spec.gui.nodes)
+        {
+            if (n.slot < 0)
+                continue;
+            placed += n.slot2 >= 0 ? 2 : 1;
+            bool inTitled = false;
+            for (int p = n.parent; p >= 0; p = spec.gui.nodes[static_cast<std::size_t>(p)].parent)
+            {
+                const tp::GuiNode& up = spec.gui.nodes[static_cast<std::size_t>(p)];
+                if ((up.kind == tp::GuiKind::section || up.kind == tp::GuiKind::page) && !up.text.empty())
+                    inTitled = true;
+            }
+            titled = titled && inTitled;
+        }
+        int used = 0;
+        for (const tp::Control& c : controls)
+            used += c.used ? 1 : 0;
+        return titled && placed == used;
+    }
+
     // The first partial a report lists, in Hz (0 when none).
     [[maybe_unused]] double firstPartial(const std::string& r)
     {
@@ -85,8 +111,10 @@ PROBE(plugin, chatexample)
     P.eq("prompt.fft", has(prompt, "fft_create(n)") && has(prompt, "fft_forward(plan, in, bins)")
                            && has(prompt, "fft_inverse(plan, bins, out)") ? 1 : 0, 1);
     P.eq("prompt.shared", has(prompt, "module Shared") && has(prompt, "Shared*") ? 1 : 0, 1);
-    P.eq("prompt.panel_section", has(prompt, "THE PANEL") && has(prompt, "#pragma panel section") && has(prompt, "#pragma panel row")
-                                     && has(prompt, "#pragma panel label") && has(prompt, "#pragma panel small") ? 1 : 0, 1);
+    P.eq("prompt.interface_section", has(prompt, "THE INTERFACE: panel.gui") && has(prompt, "section \"FILTER\"")
+                                         && has(prompt, "tabs { page") && has(prompt, "knob cutoff size=large taper=log")
+                                         && has(prompt, "spectrum out") && has(prompt, "envelope attack decay sustain release")
+                                         && has(prompt, "#pragma panel lines") ? 1 : 0, 1);
     int headers = 0;
     for (const tp::LibraryFile& f : tp::kLibrary)
         headers += has(prompt, std::string("<library_file name=\"") + f.name + "\" category=\"" + f.category + "\">\n"
@@ -95,13 +123,15 @@ PROBE(plugin, chatexample)
     P.ge("prompt.example_files", static_cast<double>(example.size()), 3.0);
     P.eq("prompt.example_word_for_word",
          !example.empty() && has(prompt, "\">\n" + example[0].text + "</example_program>") ? 1 : 0, 1);
+    P.eq("prompt.example_interface", example.size() > 1 && example[1].name == "panel.gui"
+                                         && has(prompt, "<example_interface name=\"panel.gui\">\n" + example[1].text + "</example_interface>") ? 1 : 0, 1);
     int fromLibrary = 0;
-    for (std::size_t k = 1; k < example.size(); ++k)
+    for (std::size_t k = 2; k < example.size(); ++k)
     {
         const tp::LibraryFile* f = tp::findLibraryFile(example[k].name);
         fromLibrary += f != nullptr && example[k].text == f->source ? 1 : 0;
     }
-    P.eq("prompt.example_uses_library", fromLibrary, static_cast<int64_t>(example.size()) - 1);
+    P.eq("prompt.example_uses_library", fromLibrary, static_cast<int64_t>(example.size()) - 2);
     P.eq("prompt.program_first_in_editor", example.empty() ? 0 : (example[0].name == tp::kProgramName ? 1 : 0), 1);
     P.le("prompt.files_fit_editor", static_cast<double>(example.size()), static_cast<double>(tp::kMaxFiles));
     std::printf("system prompt: %zu characters; the example: %zu files\n", prompt.size(), example.size());
@@ -140,18 +170,14 @@ PROBE(plugin, chatexample)
                      static_cast<double>(ctl.max));
             }
             P.in("example.dials", static_cast<double>(dials), 8.0, static_cast<double>(tp::kMaxControls));
-            // Its panel: every dial in a titled section (none left over for an untitled one).
+            // Its interface (panel.gui): every dial a control in a titled section (none left over for an untitled one).
             int placed = 0;
-            bool titled = !rig.panel().sections.empty();
-            for (const tp::PanelSection& s : rig.panel().sections)
-            {
-                for (const tp::PanelItem& it : s.items)
-                    placed += it.display ? 0 : 1;
-                titled = titled && !s.title.empty();
-            }
-            std::printf("example panel: %zu sections, %d dials placed\n", rig.panel().sections.size(), placed);
-            P.eq("example.panel_titled", titled ? 1 : 0, 1);
-            P.eq("example.panel_has_every_dial", placed, dials);
+            const bool titled = everyDialTitled(rig.panel(), rig.controls(), placed);
+            std::printf("example interface: %zu elements, %zu displays, %d dials placed\n", rig.panel().gui.nodes.size(),
+                        rig.panel().displays.size(), placed);
+            P.eq("example.interface_titled", titled ? 1 : 0, 1);
+            P.eq("example.interface_has_every_dial", placed, dials);
+            P.ge("example.interface_displays", static_cast<double>(rig.panel().displays.size()), 2.0);
             const probe::Stereo out = rig.run(input, 256, chord);
             P.eq("example.finite", probe::allFinite(out.l) && probe::allFinite(out.r) ? 1 : 0, 1);
             const double level = std::max(probe::rmsDb(out.l, 0, static_cast<std::size_t>(kFs)),
