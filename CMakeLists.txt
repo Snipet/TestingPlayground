@@ -268,6 +268,27 @@ foreach(_fmt AU VST3)
   endif()
 endforeach()
 
+# shaderc, the pinned bgfx's, in each bundle's Contents/Resources: the plugin builds a .gui file's shaders with it, on
+# the compiler's thread (fminus/Shaders.h; its licence is bgfx's, which funkgui_add_font puts beside it). A resource
+# of each bundle, as FunkGui's font is, never a copy after the build: that would break the bundle's seal. A shaderc
+# built here (no prebuilt one) is copied before the link instead, once it is built.
+foreach(_fmt AU VST3 Standalone)
+  if(TARGET ${PRODUCT_NAME}_${_fmt})
+    if(FUNKGUI_SHADERC)
+      target_sources(${PRODUCT_NAME}_${_fmt} PRIVATE "${FUNKGUI_SHADERC}")
+      set_source_files_properties("${FUNKGUI_SHADERC}" TARGET_DIRECTORY ${PRODUCT_NAME}_${_fmt}
+                                  PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+    else()
+      add_dependencies(${PRODUCT_NAME}_${_fmt} shaderc)
+      add_custom_command(TARGET ${PRODUCT_NAME}_${_fmt} PRE_LINK
+          COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_CONTENT_DIR:${PRODUCT_NAME}_${_fmt}>/Resources"
+          COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:shaderc>"
+                  "$<TARGET_BUNDLE_CONTENT_DIR:${PRODUCT_NAME}_${_fmt}>/Resources/shaderc"
+          VERBATIM)
+    endif()
+  endif()
+endforeach()
+
 # codesign refuses a bundle with Finder detritus left by an earlier build; Ninja runs PRE_BUILD as PRE_LINK.
 foreach(_fmt AU VST3)
   if(TARGET ${PRODUCT_NAME}_${_fmt})

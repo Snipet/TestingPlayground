@@ -215,7 +215,7 @@ Give every program an interface in a file of its own, panel.gui (a name ending i
 
 The language: a line an element (or several, between ;), its arguments (names, "texts", numbers, #rrggbb colours), then key=value properties, then its children between { and }. // and /* */ are comments.
 
-panel accent=orange {                          optional, around everything: accent= (the controls' highlight), background= (the panel's ground)
+panel accent=orange background=#1d1b19 gradient=#121110 {   optional, around everything: accent= (the controls' highlight), background= (the panel's ground), gradient= (the ground at the bottom, fading from the top's)
     row gap=10 {                               its children left to right (column: top to bottom)
         section "FILTER" color=orange {        a frame, its title in the top edge (layout=column stacks its children)
             knob cutoff size=large taper=log unit="Hz"
@@ -224,32 +224,61 @@ panel accent=orange {                          optional, around everything: acce
     }
 }
 
-Containers. Each takes gap= (px between its children, 8), pad= (px inside it, 0), align= (across its direction: stretch, the default, makes its containers, labels, scopes and spectrums as wide or tall as it is; start, center, end), justify= (along it, when there is room: start, center, end, between, around), grow= (its share of the room its container has left over), width= and height= (px, at least):
+Containers. Each takes gap= (px between its children, 8), pad= (px inside it, 0), align= (across its direction: stretch, the default, makes its containers, labels, scopes and spectrums as wide or tall as it is; start, center, end), justify= (along it, when there is room: start, center, end, between, around), grow= (its share of the room its container has left over), width= and height= (px, at least), and wrap (a row's children onto more lines when it is too narrow: a bank of knobs):
 row { }  column { }  grid cols=4 { }  section "TITLE" { }  box { } (a filled frame without a title; layout=row or column)
-tabs { page "VOICE" { } page "MOD" { } }       pages under their tabs, one shown at a time: the way to fit many controls
-spacer (room: it grows unless width= or height= says)  divider (a line down a row or across a column)  label "TEXT" size=small|normal|large|title
+tabs { page "VOICE" { } page "MOD" { } }       pages, one shown at a time: the way to fit many controls; pages may hold tabs of their own
+spacer (room: it grows unless width= or height= says)  divider (a line down a row or across a column; thickness=)  label "TEXT" size=small|normal|large|title or px (10 to 44), align=left|center|right
+Any element: margin= (px of room around it), self= (its own align=), minwidth= maxwidth= minheight= maxheight= (px).
+
+How containers look:
+section look=frame (the default: its title cut into its edge) | card (a raised, rounded panel, its title inside) | inset (a recessed one) | plate (a metal plate screwed on); box takes the same looks. Both take radius= (px corners), fill= and border= (colours, or none), borderwidth=, shadow=true|false, and a section titlecolor=, titlealign=left|center|right, titlesize=small|normal|large|title. A row or a column takes fill=, border=, radius= too.
+tabs look=tabs (the default: tabs over a framed page) | bar (a header bar across the top, for the top-level pages, as Serum has OSC / FX / MIXER) | pills (rounded buttons: pages inside a section) | side (a list at the left: buses, slots, oscillators). The page the user picks stays picked when the program runs again, and in the session.
 
 Controls, each a parameter's by its name (one control a parameter), with label="..." (14 characters; else the parameter's name) and color=:
-knob cutoff                       size=small (a trim), medium (the default) or large (a main control: a cutoff, a level); style=modern (the default) or vintage (a black knob over a printed scale)
+knob cutoff                       size=small (a trim), medium (the default), large (a main control: a cutoff, a level) or a face in px (24 to 240)
 slider attack                     vertical (length= px), or slider pan horizontal: an envelope's stages, a mix, a level
 switch sync "OFF" "ON"            a bool, or an int of two values; the texts name them
 buttons wave "SAW" "SQR" "TRI"    a lit button a value (an int or a bool of 2 to 8), in a column, or a row with horizontal
 menu mode "POLY" "MONO"           a drop-down of an int's values (up to 32)
 xy cutoff resonance               a pad that moves two floats at once, x then y; size= px (120)
 envelope attack decay sustain release   the shape its four parameters make, drawn (each keeps a control of its own)
+keyboard from=48 keys=25          (an instrument's) keys the user plays with the mouse, as wide as its container; octaves= instead of keys=, height= px (72)
+shader "glow.sc" inputs="cutoff out"   a GPU shader of the program's own, drawn over its cell (it fills its container as a scope does; width=, height=); four at most
 A float's value reads with unit="Hz" (from 1000 Hz up in kHz), decimals= (0 to 4) and scale= (shown times it: scale=100 unit="%" for 0 to 1); taper=log, for a frequency's or a time's range (above 0), gives each octave the same turn of the knob, and the host's automation follows it. An int's or a bool's values take their names from the texts of its switch, buttons or menu.
+
+How a knob looks: look=modern (the default) | vintage (a black knob over a printed scale) | flat | minimal (an arc only) | ring (a ring of dots) | led (a ring of lights) | chicken (a pointer knob) | soft (a raised cap) | dot; arc=, track=, cap= (colours, or none), pointer=line|dot|triangle|none, pointercolor=, thickness= (the arc's px), sweep= (the degrees it turns, 60 to 360; 270), ticks= (marks around it, up to 61), tickcolor=, bipolar (its arc from the middle: a pan, a detune), labelpos=top|bottom|none, value=always|hover|never, valuecolor=, labelcolor=, shadow=true|false, and live=field: a mark on its ring where a field of the program puts the parameter now (the cutoff after its envelope and LFO, in the parameter's units), which makes modulation visible. A slider takes arc=, track=, cap=, thickness=, bipolar, labelpos=, value=, live= too.
+
+Shaders: for what a knob cannot show (a filter's glow that follows its cutoff, a waveform of light, a ground of its own). The file (write_file, beside the program; a name ending in .sc) holds the body of a fragment shader in bgfx's language, which is GLSL (vec2, vec3, vec4, mix, smoothstep, clamp, sin, exp, fract, length, ...): helper functions and a main() that sets gl_FragColor, straight RGBA (its alpha blends it over the panel). It reads v_uv (0..1 across and down), v_px (px from its top left corner), u_size (its size in px, a vec2), u_time (seconds: it moves while the panel is open) and its inputs, in inputs= order, as in0 to in7 or by name as in_<name>: a parameter's value 0..1 (its knob's turn), a field's value as the program writes it, in and out the audio's peak level 0..1. No textures, no uniforms of your own. It compiles with the program (shaderc); one that does not is a note on its own line ("glow.sc:9:1: note: the shader does not compile: ..."), which run_program reports, and it draws nothing until fixed:
+
+// glow.sc: a glow that follows the cutoff and the output's level, breathing slowly.
+float ring(vec2 p, float r, float w)
+{
+    return smoothstep(w, 0.0, abs(length(p) - r));
+}
+
+void main()
+{
+    vec2 p = (v_px - 0.5 * u_size) / u_size.y;          // the middle at 0, 1 the element's height
+    float glow = exp(-length(p) * (14.0 - 10.0 * in_cutoff)) * (0.35 + 0.65 * in_out);
+    glow += 0.25 * ring(p, 0.3 + 0.02 * sin(2.0 * u_time), 0.01);
+    vec3 c = mix(vec3(0.05, 0.02, 0.0), vec3(1.0, 0.55, 0.1), clamp(glow, 0.0, 1.0));
+    gl_FragColor = vec4(c, 1.0);
+}
+
+Classes and defaults, written at the top: class "main" size=large arc=orange, then knob cutoff class="main" (or class="main warm": several, in order); defaults knob look=ring gives every knob that look, defaults section look=card radius=8 every section. An element's own properties beat its classes', which beat the defaults.
 
 Displays, of in (an effect's input), out (the output) or a float, int or bool field of the main module that process writes (once a call is enough: env = level;), with label=, color=, and min= and max= for a field (0 and 1 when unsaid):
 meter out (LED bars)  vu out (an analog VU meter, 0 VU at -18 dBFS RMS)  led gate (a light, its brightness the value; of out a clip light)
 number count (a readout)  scope out (an oscilloscope; of a field its last 2.5 seconds)  spectrum out (an analyser, 20 Hz to 20 kHz)
-scope and spectrum take width= and height=. Sixteen displays at most. An instrument's fields are its newest sounding voice's.
+scope and spectrum take width= and height=. Sixteen displays at most (each live= field counts as one). An instrument's fields are its newest sounding voice's.
 
-- Cells: a medium knob 60 x 80 px, a small one 54 x 52, a large one 84 x 108; a slider 44 x 96; a switch 44 x 80; a vu 112 x 80, a meter 34 x 80; a scope 150 x 80, a spectrum 220 x 80, an envelope 150 x 80, a pad 120 x 136. A section adds 20 at its top and 10 on its other sides.
+- Cells: a medium knob 60 x 80 px, a small one 52 x 52, a large one 86 x 106 (a knob of size=N about N + 50 tall); a slider 44 x 96; a switch 44 x 80; a vu 112 x 80, a meter 34 x 80; a scope 150 x 80, a spectrum 220 x 80, an envelope 150 x 80, a pad 120 x 136; a keyboard 16 px a white key by 72. A section adds 20 at its top and 10 on its other sides; a bar of pages 42 over them.
 - What the plugin cannot use is a note, "panel.gui:12:5: note: ...", which run_program reports with the compile; the rest stands. A parameter no control names comes last, in a section without a title, with a note.
 - Group the controls as a player thinks of the sound, in signal-flow order, left to right: the sources (oscillators, their mix), the filter, the amplifier; then the modulation (an LFO, a modulation envelope), the effects, the output. Two or three rows; past about twenty controls, pages (VOICE, MOD, FX).
 - Short titles ("OSC 1", "FILTER", "AMP ENV") and labels: in a section called LFO, "RATE" and "DEPTH" say more than lforate and lfodepth.
 - Size by importance: large knobs for the two or three controls a player reaches for most, small knobs for trims (a fine tune, a detune); sliders for an envelope's stages with its envelope drawn beside them; buttons for a waveform or a mode, a switch for an on and off, a menu for a longer list, a pad for two controls played together.
-- Give the panel life, as hardware has it: a VU or meters of out in the output section, an effect's in and out meters, a scope or a spectrum of out, a light that blinks with an LFO (a field from 0 to 1), a compressor's gain reduction (a field) on a meter. One or two colours, for the sections that matter most, read better than many.
+- Give the panel life, as hardware has it: a VU or meters of out in the output section, an effect's in and out meters, a scope or a spectrum of out, a light that blinks with an LFO (a field from 0 to 1), a compressor's gain reduction (a field) on a meter, live= on the knobs that are modulated. One or two colours, for the sections that matter most, read better than many.
+- Give it a look of its own, as a product has: one knob look for the whole panel (defaults knob ...), a class for the main knobs, sections as cards or plates on a ground with a gradient, the top-level pages as a bar when there are many controls. An instrument gets a keyboard at the bottom, so it can be played without a controller.
 - Programs from before (some examples, RANDOM's) lay their dials out with #pragma panel lines in the program (section, row, label, small, style, options, color, and the displays meter, vu, led, number, scope). A .gui file replaces them all: when you make an interface for such a program, write its panel.gui and take the #pragma panel lines out.
 )";
 
@@ -313,6 +342,7 @@ module Voice
     float note;
     float velocity;
     float lfolight;     // the LFO's light on the panel, 0 to 1
+    float cutoffnow;    // the cutoff the voice plays (Hz), on the panel's cutoff knob (live=)
 
     void init(float sampleRate)
     {
@@ -351,6 +381,7 @@ module Voice
         const float keytrack = 0.5f * (note - 60) / 12;            // octaves: the cutoff follows the keyboard halfway
         const float gain = velocity * expf(0.115129255f * level[0]);
         const float lfoStep = lforate[0] / rate;
+        float fc = cutoff[0];
         for (int i = 0; i < n; ++i)
         {
             // The sources.
@@ -362,7 +393,8 @@ module Voice
             // The routing, in octaves: filter envelope, LFO, velocity and the keyboard to the cutoff; the LFO to the
             // pitch (vibrato of a few cents).
             const float octaves = envamount[i] * f + 1.5f * lfodepth[i] * l + 0.5f * (velocity - 0.5f) + keytrack;
-            filter.set(cutoff[i] * expf(0.693147181f * octaves), resonance[i], rate);
+            fc = cutoff[i] * expf(0.693147181f * octaves);
+            filter.set(fc, resonance[i], rate);
             const float pitch = expf(0.693147181f * 0.004f * lfodepth[i] * l);
 
             const float s = 0.5f * (osc1.morph(base * pitch, shape[i]) + osc2.morph(base * pitch * spread, shape[i]));
@@ -371,22 +403,27 @@ module Voice
             right[i] += out;
         }
         lfolight = 0.5f * (1 + lfo.triangle(0));
+        cutoffnow = fc;
         return amp.active();
     }
 };
 )FM";
         [[maybe_unused]] const char* const kInstrumentUses[] = { "osc.fm", "svf.fm", "adsr.fm", "lfo.fm" };
 
-        // Its interface (THE INTERFACE): the sound's path in the first row, its envelope and output in the second.
-        [[maybe_unused]] const char* const kInstrumentGui = R"GUI(// The Modular voice's panel: the sound's path in the first row, its envelope and its output in the second.
-panel accent=orange {
+        // Its interface (THE INTERFACE): the sound's path in the first row, its envelope and output in the second, the
+        // keys under them.
+        [[maybe_unused]] const char* const kInstrumentGui = R"GUI(// The Modular voice's panel: the sound's path in the first row, its envelope and its output in the second, the
+// keys under them. The defaults make every section a card; the class makes the main knob.
+defaults section look=card radius=8
+class "main" size=large arc=orange
+panel accent=orange background=#1f1c1a gradient=#131110 {
     row {
         section "OSCILLATORS" {
-            knob shape style=vintage
+            knob shape look=vintage
             knob detune size=small unit="ct" decimals=0
         }
         section "FILTER" color=orange {
-            knob cutoff size=large taper=log unit="Hz"
+            knob cutoff class="main" taper=log unit="Hz" live=cutoffnow
             column {
                 knob resonance label="RESO"
                 knob envamount label="ENV AMOUNT" unit="oct" decimals=1
@@ -412,6 +449,7 @@ panel accent=orange {
             scope out
         }
     }
+    keyboard from=48 keys=37
 }
 )GUI";
 
@@ -486,8 +524,11 @@ module Effect
         [[maybe_unused]] const char* const kEffectUses[] = { "lfo.fm", "delay.fm", "onepole.fm" };
 
         // Its interface (THE INTERFACE): the modulation, the delay and the output in a row, the signal under them.
-        [[maybe_unused]] const char* const kEffectGui = R"GUI(// The Ensemble's panel: the modulation, the delay and the output in a row, the signal under them.
-panel accent=teal {
+        [[maybe_unused]] const char* const kEffectGui = R"GUI(// The Ensemble's panel: the modulation, the delay and the output in a row, the signal under them. The defaults
+// make every section a card; the class makes the main knob.
+defaults section look=card radius=8
+class "main" size=large arc=teal
+panel accent=teal background=#1a1d1e gradient=#101213 {
     row {
         section "MODULATION" color=teal {
             knob speed taper=log unit="Hz"
@@ -496,7 +537,7 @@ panel accent=teal {
             led sweep label="SWEEP"
         }
         section "DELAY" {
-            knob centre size=large unit="ms" decimals=1
+            knob centre class="main" unit="ms" decimals=1
             knob feedback scale=100 unit="%" decimals=0
             knob tone taper=log unit="Hz"
         }
@@ -507,7 +548,7 @@ panel accent=teal {
             meter out label="OUT"
         }
     }
-    section "SIGNAL" {
+    section "SIGNAL" look=inset {
         scope in label="IN"
         spectrum out label="OUT" grow=1
     }

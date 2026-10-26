@@ -14,6 +14,8 @@
 //                    is sent once and kept nowhere
 //   signOut()        forgets the token (and ends the session on the server); the chat uses the key, if one is stored
 //   useAccount()     which of the two stored the chat uses: true the account, false the key
+//   refreshAccount() asks the server for the account again (GET /account), in the background: chatState().details
+//                    has its answer (the credit, this month's use, the sign-in), .refreshing until it comes
 //   setModel()       a model of chatState().models; setEffort() a thinking level that model has; setFast() fast mode,
 //                    on the models that take it. All three machine-wide
 //   send()           a message from the user; Claude answers (and works) in the background
@@ -53,6 +55,20 @@ namespace testingplayground
                                               // higher price (the API's speed "fast")
     };
 
+    // The signed-in account as the server said it last (GET /account), for the account's view.
+    struct ChatAccount
+    {
+        bool known = false;                   // the server has answered since the sign-in
+        double balanceUsd = 0.0;              // the credit left
+        int64_t requests = 0;                 // this month's (UTC) requests through the server, their cost and tokens
+        double costUsd = 0.0;
+        int64_t inputTokens = 0, outputTokens = 0;
+        std::string client;                   // what signed in ("TestingPlayground 0.1.0 (instrument)")
+        std::string since, expires;           // the sign-in's start and end, ISO 8601 (UTC)
+        bool refreshing = false;              // a refresh is waiting for the server
+        std::string error;                    // why the last refresh failed ("" when it did not)
+    };
+
     struct ChatState
     {
         bool hasKey = false;
@@ -61,6 +77,7 @@ namespace testingplayground
         std::string account;                  // its username (the last one signed in, after signing out)
         std::string accountProblem;           // why the sign-in no longer works ("" when it does)
         std::string credit;                   // "$4.96 credit left", once the server has said
+        ChatAccount details;                  // the account's view (signed in only)
         bool useAccount = true;               // the chat goes through the account (else the key)
         bool signingIn = false;               // a sign-in is waiting for the server
         std::string signInError;              // why the last sign-in failed ("" when it did not)
@@ -90,6 +107,7 @@ namespace testingplayground
         virtual void signIn(const std::string& username, const std::string& password) = 0;
         virtual void signOut() = 0;
         virtual void useAccount(bool account) = 0;
+        virtual void refreshAccount() = 0;
         virtual void setModel(const std::string& id) = 0;
         virtual void setEffort(const std::string& effort) = 0;
         virtual void setFast(bool on) = 0;

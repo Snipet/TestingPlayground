@@ -27,6 +27,7 @@
 #include <funkgui/canvas/Tags.h>
 #include <funkgui/core/Theme.h>
 #include <funkgui/core/TypeScale.h>
+#include <funkgui/gpu/ShaderLibrary.h>
 #include <funkgui/panel/HostServices.h>
 #include <funkgui/text/FontService.h>
 #include <funkgui/text/Highlighter.h>
@@ -48,12 +49,78 @@
 #include <chrono>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <sstream>
 #include <string_view>
 #include <utility>
 
 namespace testingplayground::ui
 {
+
+    namespace
+    {
+        // A count as the account's view shows it: 900, 12.3K, 123K, 1.2M.
+        std::string countText(int64_t n)
+        {
+            char buf[32];
+            if (n < 1000)
+                std::snprintf(buf, sizeof buf, "%lld", static_cast<long long>(n));
+            else if (n < 100000)
+                std::snprintf(buf, sizeof buf, "%.1fK", static_cast<double>(n) / 1e3);
+            else if (n < 1000000)
+                std::snprintf(buf, sizeof buf, "%.0fK", static_cast<double>(n) / 1e3);
+            else
+                std::snprintf(buf, sizeof buf, "%.1fM", static_cast<double>(n) / 1e6);
+            return buf;
+        }
+
+        // An ISO 8601 date ("2026-10-26T00:00:00.000Z") as "26 Oct 2026"; anything else as it is.
+        std::string shortDate(const std::string& iso)
+        {
+            static constexpr const char* kMonths[12] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                                         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+            int y = 0, m = 0, d = 0;
+            if (iso.size() < 10 || std::sscanf(iso.c_str(), "%4d-%2d-%2d", &y, &m, &d) != 3 || m < 1 || m > 12)
+                return iso;
+            return std::to_string(d) + " " + kMonths[m - 1] + " " + std::to_string(y);
+        }
+    }
+
+    std::vector<std::string> guiPageTitles(const GuiTree& gui, const std::vector<int>& pages)
+    {
+        std::vector<std::string> titles;
+        for (std::size_t i = 0; i < gui.nodes.size(); ++i)
+        {
+            const GuiNode& n = gui.nodes[i];
+            if (n.kind != GuiKind::tabs || n.children.empty())
+                continue;
+            const int page = i < pages.size() ? pages[i] : 0;
+            const int k = page >= 0 && page < static_cast<int>(n.children.size()) ? page : 0;
+            titles.push_back(gui.nodes[static_cast<std::size_t>(n.children[static_cast<std::size_t>(k)])].text);
+        }
+        return titles;
+    }
+
+    std::vector<int> guiPagesOf(const GuiTree& gui, const std::vector<std::string>& titles)
+    {
+        std::vector<int> pages(gui.nodes.size(), 0);
+        std::size_t t = 0;
+        for (std::size_t i = 0; i < gui.nodes.size(); ++i)
+        {
+            const GuiNode& n = gui.nodes[i];
+            if (n.kind != GuiKind::tabs)
+                continue;
+            if (t < titles.size())
+                for (std::size_t k = 0; k < n.children.size(); ++k)
+                    if (gui.nodes[static_cast<std::size_t>(n.children[k])].text == titles[t])
+                    {
+                        pages[i] = static_cast<int>(k);
+                        break;
+                    }
+            ++t;
+        }
+        return pages;
+    }
 
     std::vector<Problem> parseProblems(const std::string& messages)
     {
@@ -134,6 +201,7 @@ namespace testingplayground::ui
         // The key dialog.
         constexpr float kKeyDialogW = 540.0f;
         constexpr float kKeyDialogH = 296.0f;
+        constexpr float kAccountDialogH = 404.0f;        // the account tab, signed in: this month's use under the card
         constexpr int   kMaxKeyLength = 320;
         constexpr int   kMaxUsernameLength = 64;         // the server's limits
         constexpr int   kMaxPasswordLength = 256;
@@ -1481,6 +1549,13 @@ namespace testingplayground::ui
             guiPads_.push_back(add(std::make_unique<GuiXyItem>(idFor())));
         for (int k = 0; k < kGuiPool; ++k)
             guiEnvelopes_.push_back(add(std::make_unique<GuiEnvelopeItem>(idFor())));
+        for (int k = 0; k < 2; ++k)
+            guiKeyboards_.push_back(add(std::make_unique<GuiKeyboardItem>(idFor(), [this](int note, float velocity) {
+                port_.playNote(note, velocity);
+            })));
+        for (int k = 0; k < 4; ++k)
+            guiShaders_.push_back(add(std::make_unique<GuiShaderItem>(idFor())));
+        shaderNode_.assign(guiShaders_.size(), -1);
 
         // The chat: the header's buttons (a new chat, the API key), the conversation, the message box and the buttons in
         // its bar (the model, the thinking level, fast mode on a model that takes it, send or stop).
@@ -1506,6 +1581,13 @@ namespace testingplayground::ui
         keyItem_ = add(std::make_unique<B>(
             idFor(), spec(B::Shape::square, [] { return chat::Icon::key; }, {}, false, {}, {}, [this] { openKeyDialog(); },
                           "Account or API key", "ACCESS   SIGN IN, OR USE YOUR OWN ANTHROPIC API KEY")));
+        {
+            B::Spec sp = spec(B::Shape::pill, [] { return chat::Icon::person; }, [this] { return accountLabel(); }, false,
+                              [] { return B::Look::ghost; }, {}, [this] { openKeyDialog(DialogTab::account); }, "Your account",
+                              "ACCOUNT   WHO IS SIGNED IN, THE CREDIT LEFT AND THIS MONTH'S USE");
+            sp.shown = [this] { return chat_.signedIn; };
+            accountItem_ = add(std::make_unique<B>(idFor(), std::move(sp)));
+        }
         chatViewItem_ = add(std::make_unique<ChatView>(
             kChatA11yBase, ChatView::Hooks{ [this](const std::string& s) { suggest(s); },
                                             [this] { openKeyDialog(DialogTab::key); },
@@ -1633,7 +1715,7 @@ namespace testingplayground::ui
                 return funkgui::text::width(funkgui::FontService::get().atlas(), text.c_str(), st);
             };
             // Under the editor it takes half the column at most (the editor keeps the rest), and scrolls past that.
-            const GuiExtent natural = naturalGuiSize(panelSpec_, controls_, gm);
+            const GuiExtent natural = naturalGuiSize(panelSpec_, controls_, gm, leftW_);   // a row that wraps: as wide
             const float h = std::max(40.0f, std::min({ natural.h, roomForDials, 0.5f * (bottom - kEditorY) }));
             funkgui::Rect area = panelView_ ? funkgui::Rect{ kMargin, kTabsY, leftW_, bottom - kTabsY }
                                             : funkgui::Rect{ kMargin, bottom - h, leftW_, h };
@@ -1716,6 +1798,13 @@ namespace testingplayground::ui
             .setBounds({ card_.right() - kCardPad - kIconButton, hy, kIconButton, kIconButton });
         static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(newChatItem_)])
             .setBounds({ card_.right() - kCardPad - 2.0f * kIconButton - 4.0f, hy, kIconButton, kIconButton });
+        {
+            // The account pill, left of them, while signed in (as wide as its label, up to a third of the card).
+            auto& pill = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(accountItem_)]);
+            const float w = chat_.signedIn ? std::min(pill.preferredWidth(), std::floor(card_.w / 3.0f)) : 0.0f;
+            pill.setBounds({ card_.right() - kCardPad - 2.0f * kIconButton - 4.0f - 6.0f - w, hy, w, kIconButton });
+            headerLabel_ = accountLabel();
+        }
         headerY_ = hy;
         const float headerBottom = hy + kIconButton;
 
@@ -1773,7 +1862,11 @@ namespace testingplayground::ui
     }
 
     // The host closes the open gestures before it lets go of the Panel; no HostServices call from here.
-    Panel::~Panel() = default;
+    Panel::~Panel()
+    {
+        for (const int i : guiKeyboards_)                // a note held as the editor closes is let go
+            static_cast<GuiKeyboardItem&>(*items_[static_cast<std::size_t>(i)]).release();
+    }
 
     std::optional<funkgui::Point> Panel::centreOfDial(int slot) const
     {
@@ -1817,6 +1910,27 @@ namespace testingplayground::ui
     funkgui::Point Panel::centreOfModel() const { return centreOf(modelItem_); }
     funkgui::Point Panel::centreOfNewChat() const { return centreOf(newChatItem_); }
     funkgui::Point Panel::centreOfKey() const { return centreOf(keyItem_); }
+
+    std::optional<funkgui::Point> Panel::centreOfAccount() const
+    {
+        if (!chat_.signedIn)
+            return std::nullopt;
+        return centreOf(accountItem_);
+    }
+
+    std::string Panel::accountLabel() const
+    {
+        if (!chat_.signedIn)
+            return {};
+        std::string name = asciiText(chat_.account.empty() ? std::string("Account") : chat_.account);
+        if (name.size() > 16)
+            name = name.substr(0, 15) + "~";
+        if (!chat_.details.known)
+            return name;
+        char credit[32];
+        std::snprintf(credit, sizeof credit, "  $%.2f", chat_.details.balanceUsd);
+        return name + credit;
+    }
     funkgui::Point Panel::centreOfThinking() const { return centreOf(thinkingItem_); }
     std::optional<funkgui::Point> Panel::centreOfFast() const
     {
@@ -1872,7 +1986,7 @@ namespace testingplayground::ui
     {
         const DialogButtons b = dialogButtons();
         const bool primary = b.primary == "Use account";
-        if (!primary && b.extra.empty())
+        if (!primary && b.extra != "Use this key")
             return std::nullopt;
         const funkgui::Rect r = primary ? keyDialog().primary : keyDialog().extra;
         return funkgui::Point{ r.centreX(), r.centreY() };
@@ -2007,12 +2121,21 @@ namespace testingplayground::ui
                 sameDials = a.used == b.used && std::strcmp(a.name, b.name) == 0;
             }
             controls_ = cs;
-            if (!(spec.gui == panelSpec_.gui))
-            {
-                guiPages_.clear();                       // another interface: its first pages, from its top
+            const bool otherGui = !(spec.gui == panelSpec_.gui);
+            // Another interface from its top, unless it is this one edited (as many elements); an edited one the
+            // same pages, by their titles (as the session keeps them).
+            if (otherGui && spec.gui.nodes.size() != panelSpec_.gui.nodes.size())
                 guiScrollX_ = guiScrollY_ = 0.0f;
-            }
+            const bool otherShaders = !(spec.shaders == panelSpec_.shaders);
             panelSpec_ = spec;
+            if (otherGui)
+                guiPages_ = guiPagesOf(panelSpec_.gui, port_.guiPages());
+            if (otherShaders || otherGui)
+            {
+                registerShaders(s.notes);
+                if (sameDials)
+                    layoutGuiItems();
+            }
             panelProgram_ = s.ok ? s.request : port_.program();
             if (!sameDials)
                 layout();
@@ -2191,6 +2314,8 @@ namespace testingplayground::ui
                                                                             : "Ask Claude for an effect, or about the code"));
             if (barLabels() != barLabels_)
                 placeChatBar();
+            if (accountLabel() != headerLabel_)          // signed in or out, or the credit came
+                layoutChat();
             if (hadKey != chat_.ready() || changed)
             {
                 dirty_ = true;
@@ -2322,7 +2447,8 @@ namespace testingplayground::ui
     {
         KeyDialog d;
         const float w = std::min(kKeyDialogW, width_ - 2.0f * kMargin);
-        d.box = { std::round((width_ - w) * 0.5f), std::round((height_ - kKeyDialogH) * 0.42f), w, kKeyDialogH };
+        const float h = tab_ == DialogTab::account && chat_.signedIn ? kAccountDialogH : kKeyDialogH;
+        d.box = { std::round((width_ - w) * 0.5f), std::round((height_ - h) * 0.42f), w, h };
         d.keyTab = { d.box.right() - 24.0f - 88.0f, d.box.y + 24.0f, 88.0f, 26.0f };
         d.accountTab = { d.keyTab.x - 88.0f, d.keyTab.y, 88.0f, 26.0f };
         d.field = { d.box.x + 24.0f, d.box.y + 134.0f, w - 48.0f, 34.0f };
@@ -2347,6 +2473,7 @@ namespace testingplayground::ui
             {
                 b.secondary = "Close";
                 b.danger = "Sign out";
+                b.extra = chat_.details.refreshing ? "Refreshing" : "Refresh";
                 if (!chat_.useAccount)
                     b.primary = "Use account";
             }
@@ -2393,6 +2520,8 @@ namespace testingplayground::ui
         keyWhy_.clear();
         if (tab == DialogTab::account && !chat_.signedIn && !chat_.accountProblem.empty())
             keyWhy_ = asciiText(chat_.accountProblem);
+        if (tab == DialogTab::account && chat_.signedIn)
+            port_.chat().refreshAccount();             // the account's view, as the server has it now
         dirty_ = true;
     }
 
@@ -2541,6 +2670,8 @@ namespace testingplayground::ui
             signOutFromDialog();
         else if (label == "Use account" || label == "Use this key")
             useFromDialog();
+        else if (label == "Refresh")
+            port_.chat().refreshAccount();
         dirty_ = true;
     }
 
@@ -2756,6 +2887,43 @@ namespace testingplayground::ui
                     chat_.useAccount ? p.accent.withAlpha(0.0f) : p.composerEdge);
             c.text(state, pill.centreX(), c.capCentreTop(pill.centreY(), chat::kSmall), chat::kSmall,
                    chat_.useAccount ? p.accent : p.dim, funkgui::Align::centre);
+
+            // This month's use, four tiles; under them the sign-in's dates and what made it.
+            const ChatAccount& info = chat_.details;
+            float ty = r.bottom() + 16.0f;
+            c.text("THIS MONTH", x + 2.0f, c.capCentreTop(ty, funkgui::type::kMicro), funkgui::type::kMicro, p.faint);
+            ty += 12.0f;
+            const float gap = 8.0f, tw4 = std::floor((r.w - 3.0f * gap) / 4.0f), th4 = 50.0f;
+            char spent[32];
+            std::snprintf(spent, sizeof spent, "$%.2f", info.costUsd);
+            const std::string values[4] = { info.known ? std::to_string(info.requests) : "-", info.known ? spent : "-",
+                                            info.known ? countText(info.inputTokens) : "-",
+                                            info.known ? countText(info.outputTokens) : "-" };
+            const char* const names[4] = { info.requests == 1 ? "request" : "requests", "spent", "tokens in", "tokens out" };
+            for (int k = 0; k < 4; ++k)
+            {
+                const funkgui::Rect t{ r.x + static_cast<float>(k) * (tw4 + gap), ty, tw4, th4 };
+                c.rrect(t.x, t.y, t.w, t.h, 10.0f, p.raised, 1.0f, p.cardEdge);
+                c.text(fitText(c, values[k], chat::kH2, t.w - 20.0f).c_str(), t.x + 12.0f, c.capCentreTop(t.y + 18.0f, chat::kH2),
+                       chat::kH2, info.known ? p.text : p.faint);
+                c.text(names[k], t.x + 12.0f, c.capCentreTop(t.y + 36.0f, chat::kSmall), chat::kSmall, p.soft);
+            }
+            ty += th4 + 18.0f;
+            std::string line, tone = "soft";
+            if (!info.error.empty())
+            {
+                line = info.error;
+                tone = "danger";
+            }
+            else if (!info.known)
+                line = info.refreshing ? "Asking the server..." : "Refresh asks the server for the account.";
+            else
+            {
+                line = "Signed in " + shortDate(info.since) + (info.client.empty() ? std::string() : " from " + info.client)
+                     + "; it lasts until " + shortDate(info.expires) + ".";
+            }
+            c.text(fitText(c, asciiText(line), chat::kSmall, r.w).c_str(), x + 2.0f, c.capCentreTop(ty, chat::kSmall), chat::kSmall,
+                   tone == "danger" ? p.danger : p.soft);
         }
         else
         {
@@ -2774,7 +2942,7 @@ namespace testingplayground::ui
         const auto button = [&](const funkgui::Rect& r, const std::string& label, int look) {   // 0 primary, 1 outlined, 2 quiet
             if (label.empty())
                 return;
-            const bool waiting = label == "Signing in";
+            const bool waiting = label == "Signing in" || label == "Refreshing";
             const bool hover = hasPointer_ && r.contains(pointer_) && !waiting;
             funkgui::Col fill = p.card.withAlpha(0.0f), edge = p.card.withAlpha(0.0f), ink = p.soft;
             if (look == 0)
@@ -2792,8 +2960,8 @@ namespace testingplayground::ui
             }
             c.rrect(r.x, r.y, r.w, r.h, r.h * 0.5f, fill, look == 1 ? 1.0f : 0.0f, edge);
             const funkgui::TextStyle& st = look == 0 ? chat::kSmallStrong : chat::kSmall;
-            c.text(waiting ? "Signing in..." : label.c_str(), r.centreX(), c.capCentreTop(r.centreY(), st), st, ink,
-                   funkgui::Align::centre);
+            c.text(waiting ? (label + "...").c_str() : label.c_str(), r.centreX(), c.capCentreTop(r.centreY(), st), st,
+                   waiting ? p.faint : ink, funkgui::Align::centre);
         };
         button(d.primary, buttons.primary, 0);
         button(d.secondary, buttons.secondary, buttons.primary.empty() ? 0 : 1);
@@ -3066,11 +3234,23 @@ namespace testingplayground::ui
                 control(c).place(GuiNode{}, {}, area, false, "");
             guiItem_[static_cast<std::size_t>(itemOfGuiSlot_[static_cast<std::size_t>(c)])] = true;
         }
-        std::size_t pad = 0, env = 0, tab = 0;
+        std::size_t pad = 0, env = 0, tab = 0, keys = 0, shade = 0;
         for (std::size_t i = 0; i < nodes.size() && gui; ++i)
         {
             const GuiNode& n = nodes[i];
-            if (n.kind == GuiKind::xy && pad < guiPads_.size() && n.slot >= 0 && n.slot2 >= 0)
+            if (n.kind == GuiKind::shader && shade < guiShaders_.size())
+            {
+                const std::size_t k = n.shader >= 0 ? static_cast<std::size_t>(n.shader) : panelSpec_.shaders.size();
+                const bool known = k < panelSpec_.shaders.size() && k < shaderIds_.size();
+                shaderNode_[shade] = static_cast<int>(i);
+                static_cast<GuiShaderItem&>(*items_[static_cast<std::size_t>(guiShaders_[shade++])])
+                    .place(n, gui_.rects[i], area, seen(i), known ? shaderIds_[k] : 0u, n.file,
+                           known ? shaderWhy_[k] : std::string("not built"), known && shaderMoves_[k]);
+            }
+            else if (n.kind == GuiKind::keyboard && keys < guiKeyboards_.size())
+                static_cast<GuiKeyboardItem&>(*items_[static_cast<std::size_t>(guiKeyboards_[keys++])])
+                    .place(n, gui_.rects[i], area, seen(i), n.color);
+            else if (n.kind == GuiKind::xy && pad < guiPads_.size() && n.slot >= 0 && n.slot2 >= 0)
             {
                 auto& item = static_cast<GuiXyItem&>(*items_[static_cast<std::size_t>(guiPads_[pad++])]);
                 item.bind(&control(n.slot).value(), &control(n.slot2).value());
@@ -3092,7 +3272,7 @@ namespace testingplayground::ui
                 for (const int child : n.children)
                     titles.push_back(nodes[static_cast<std::size_t>(child)].text);
                 item.place(static_cast<int>(i), gui_.rects[i], guiTabRects(panelSpec_, static_cast<int>(i), gui_.rects[i], gm),
-                           std::move(titles), gui_.pages[i], area, seen(i), n.color);
+                           std::move(titles), gui_.pages[i], area, seen(i), n.color, n.style);
             }
         }
         for (; pad < guiPads_.size(); ++pad)
@@ -3100,7 +3280,19 @@ namespace testingplayground::ui
         for (; env < guiEnvelopes_.size(); ++env)
             static_cast<GuiEnvelopeItem&>(*items_[static_cast<std::size_t>(guiEnvelopes_[env])]).place(GuiNode{}, {}, area, false, "");
         for (; tab < guiTabs_.size(); ++tab)
-            static_cast<GuiTabsItem&>(*items_[static_cast<std::size_t>(guiTabs_[tab])]).place(-1, {}, {}, {}, 0, area, false, "");
+            static_cast<GuiTabsItem&>(*items_[static_cast<std::size_t>(guiTabs_[tab])]).place(-1, {}, {}, {}, 0, area, false, "", {});
+        for (; keys < guiKeyboards_.size(); ++keys)
+            static_cast<GuiKeyboardItem&>(*items_[static_cast<std::size_t>(guiKeyboards_[keys])]).place(GuiNode{}, {}, area, false, "");
+        for (const int i : guiKeyboards_)
+            guiItem_[static_cast<std::size_t>(i)] = true;
+        for (; shade < guiShaders_.size(); ++shade)
+        {
+            shaderNode_[shade] = -1;
+            static_cast<GuiShaderItem&>(*items_[static_cast<std::size_t>(guiShaders_[shade])])
+                .place(GuiNode{}, {}, area, false, 0u, "", "", false);
+        }
+        for (const int i : guiShaders_)
+            guiItem_[static_cast<std::size_t>(i)] = true;
         for (const int i : guiPads_)
             guiItem_[static_cast<std::size_t>(i)] = true;
         for (const int i : guiEnvelopes_)
@@ -3120,6 +3312,46 @@ namespace testingplayground::ui
             item.setRect(has ? gui_.rects[static_cast<std::size_t>(i)] : funkgui::Rect{});
             item.setArea(area);
             guiItem_[static_cast<std::size_t>(idx)] = true;
+        }
+    }
+
+    // A shader's program goes to FunkGui's registry (process-wide, keyed by its bytes' hash: the same shader in two
+    // instances is one program) the first time a panel shows it; a program is never removed, since another instance
+    // may draw it too. One that was not built says why from the compile's notes; one FunkGui refuses (Metal's own
+    // compiler, say), from FunkGui.
+    void Panel::registerShaders(const std::string& notes)
+    {
+        const std::size_t n = panelSpec_.shaders.size();
+        shaderIds_.assign(n, 0u);
+        shaderWhy_.assign(n, std::string());
+        shaderMoves_.assign(n, false);
+        for (std::size_t k = 0; k < n; ++k)
+        {
+            const PanelShader& sh = panelSpec_.shaders[k];
+            const auto f = std::find_if(running_.begin(), running_.end(), [&](const SourceFile& x) { return x.name == sh.file; });
+            if (f != running_.end())
+                shaderMoves_[k] = f->text.find("u_time") != std::string::npos || f->text.find("u_viewSize") != std::string::npos;
+            if (sh.binary.empty() || sh.id == 0)
+            {
+                std::string why = f == running_.end() ? "there is no file " + sh.file + " among the program's" : std::string("not built");
+                std::istringstream in(notes);
+                std::string line;
+                while (std::getline(in, line))
+                    if (line.rfind(sh.file + ":", 0) == 0)
+                        if (const std::size_t at = line.find("note: "); at != std::string::npos)
+                        {
+                            why = line.substr(at + 6);
+                            break;
+                        }
+                shaderWhy_[k] = why;
+                continue;
+            }
+            std::string why;
+            if (funkgui::shaders::has(sh.id)
+                || funkgui::shaders::set(sh.id, sh.binary.data(), static_cast<uint32_t>(sh.binary.size()), why))
+                shaderIds_[k] = sh.id;
+            else
+                shaderWhy_[k] = why.empty() ? std::string("the GPU refused it") : why;
         }
     }
 
@@ -3143,7 +3375,11 @@ namespace testingplayground::ui
 
     const Item& Panel::guiItem(int kind, int k) const
     {
-        const std::vector<int>& pool = kind == 0 ? guiPads_ : (kind == 1 ? guiEnvelopes_ : guiTabs_);
+        const std::vector<int>& pool = kind == 0   ? guiPads_
+                                     : kind == 1 ? guiEnvelopes_
+                                     : kind == 2 ? guiTabs_
+                                     : kind == 3 ? guiKeyboards_
+                                                 : guiShaders_;
         return *items_[static_cast<std::size_t>(pool[static_cast<std::size_t>(std::clamp(k, 0, static_cast<int>(pool.size()) - 1))])];
     }
 
@@ -3155,6 +3391,7 @@ namespace testingplayground::ui
         if (guiPages_[static_cast<std::size_t>(node)] == page)
             return;
         guiPages_[static_cast<std::size_t>(node)] = page;
+        port_.setGuiPages(guiPageTitles(panelSpec_.gui, guiPages_));
         layout();
     }
 
@@ -3222,6 +3459,54 @@ namespace testingplayground::ui
                 bool input = false;
                 const bool scope = item.wantsScope(input);
                 item.update(shown, scope ? (input ? scopeIn_.data() : scopeOut_.data()) : nullptr, dt);
+            }
+            // The controls' live= fields: where the program has each parameter now (none until it plays this program).
+            for (const int i : itemOfGuiSlot_)
+            {
+                if (i < 0)
+                    continue;
+                auto& item = static_cast<GuiControlItem&>(*items_[static_cast<std::size_t>(i)]);
+                const int d = item.liveDisplay();
+                if (d < 0 || d >= static_cast<int>(panelSpec_.displays.size()))
+                    continue;
+                const int t = panelSpec_.displays[static_cast<std::size_t>(d)].tap;
+                const bool now = meters_.program == panelProgram_ && t >= 0 && t < kMaxDisplays;
+                item.setLive(now ? meters_.taps[t] : std::numeric_limits<float>::quiet_NaN());
+            }
+            // The shaders' inputs: a parameter's 0..1, a field's value, the audio's level.
+            for (std::size_t k = 0; k < guiShaders_.size(); ++k)
+            {
+                auto& item = static_cast<GuiShaderItem&>(*items_[static_cast<std::size_t>(guiShaders_[k])]);
+                const int node = shaderNode_[k];
+                if (!item.shown() || node < 0 || static_cast<std::size_t>(node) >= panelSpec_.gui.nodes.size())
+                    continue;
+                const GuiNode& n = panelSpec_.gui.nodes[static_cast<std::size_t>(node)];
+                std::array<float, 8> v{};
+                for (std::size_t j = 0; j < v.size(); ++j)
+                {
+                    const std::string& in = n.inputs[j];
+                    if (in == "in")
+                        v[j] = std::max(shown.inPeak[0], shown.inPeak[1]);
+                    else if (in == "out")
+                        v[j] = std::max(shown.outPeak[0], shown.outPeak[1]);
+                    else if (in.rfind("param:", 0) == 0)
+                    {
+                        const int slot = std::atoi(in.c_str() + 6);
+                        if (slot >= 0 && slot < kMaxControls && itemOfGuiSlot_[static_cast<std::size_t>(slot)] >= 0)
+                            v[j] = static_cast<GuiControlItem&>(*items_[static_cast<std::size_t>(itemOfGuiSlot_[static_cast<std::size_t>(slot)])])
+                                       .value()
+                                       .value01();
+                    }
+                    else if (in.rfind("field:", 0) == 0)
+                    {
+                        const int d = std::atoi(in.c_str() + 6);
+                        const int t = d >= 0 && d < static_cast<int>(panelSpec_.displays.size())
+                                        ? panelSpec_.displays[static_cast<std::size_t>(d)].tap
+                                        : -1;
+                        v[j] = t >= 0 && t < kMaxDisplays ? shown.taps[t] : 0.0f;
+                    }
+                }
+                item.setInputs(v);
             }
         }
         const int hovered = hasPointer_ && pressed_ < 0 ? itemAt(pointer_) : pressed_;
@@ -3300,7 +3585,9 @@ namespace testingplayground::ui
             c.disc(tx + 4.0f, ty, chat_.busy ? 4.0f : 3.5f, chat_.busy ? p.accent : funkgui::mix(p.card, p.accent, 0.75f));
             c.text("Claude", tx + 15.0f, c.capCentreTop(ty, chat::kTitle), chat::kTitle, p.text);
             const float sub = tx + 15.0f + c.textWidth("Claude", chat::kTitle) + 10.0f;
-            const float subRoom = card_.right() - kCardPad - 2.0f * kIconButton - 12.0f - sub;
+            const float pillW = chat_.signedIn ? static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(accountItem_)]).bounds().w + 6.0f
+                                               : 0.0f;
+            const float subRoom = card_.right() - kCardPad - 2.0f * kIconButton - 12.0f - pillW - sub;
             const std::string kind = product::kIsInstrument ? "builds and edits your synth" : "builds and edits your effect";
             if (subRoom > 60.0f)
                 c.text(fitText(c, kind, chat::kSmall, subRoom).c_str(), sub, c.capCentreTop(ty, chat::kSmall), chat::kSmall, p.faint);
@@ -3667,6 +3954,16 @@ namespace testingplayground::ui
                                                                + (chat_.credit.empty() ? std::string() : ", " + chat_.credit)
                                                          : std::string("Claude runs on the server, charged to the account's credit"))
                                       : std::string("Stored encrypted on this Mac, for both playground plugins");
+            if (account && chat_.signedIn && chat_.details.known)
+            {
+                const ChatAccount& info = chat_.details;
+                char spent[32];
+                std::snprintf(spent, sizeof spent, "$%.2f", info.costUsd);
+                box.description += ". This month: " + std::to_string(info.requests) + (info.requests == 1 ? " request, " : " requests, ")
+                                 + spent + " spent, " + countText(info.inputTokens) + " tokens in, "
+                                 + countText(info.outputTokens) + " out. Signed in " + shortDate(info.since) + ", until "
+                                 + shortDate(info.expires);
+            }
             out.push_back(box);
             const auto tab = [&](uint32_t id, const funkgui::Rect& r, const char* title, bool chosen) {
                 funkgui::A11yItem t;
@@ -3806,5 +4103,7 @@ namespace testingplayground::ui
     {
         if (gestures_)
             gestures_->closeAll();
+        for (const int i : guiKeyboards_)
+            static_cast<GuiKeyboardItem&>(*items_[static_cast<std::size_t>(i)]).release();
     }
 }
