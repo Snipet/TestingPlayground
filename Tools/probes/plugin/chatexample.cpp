@@ -19,6 +19,11 @@
 //            sine voice; at C7 a naive saw's aliases above -40 dB, a wavetable voice's (wavetable.fm, its table built
 //            once in a module Shared) clean; a saw's own edges are no click, a phase that jumps once is
 //            (the prompt teaches the FFT's builtins and the module Shared too)
+//   THREADS  the prompt has THREADS (parallel for, parallel { }, the races refused, a plan an iteration, the cost) and
+//            this kind's advice; a program written as it says (an effect: a resonator bank of sixteen bands run at
+//            once, a region a part of 256 samples; an instrument: eight wavetables built at once in Shared's init,
+//            each with its own FFT plan) compiles with no message, plays finite and audible, gives what its twin on
+//            one thread (for in place of parallel for) gives, bit for bit, and the same bits in blocks of 64 and 333
 #include "Probe.h"
 
 #include "Audio.h"
@@ -59,6 +64,179 @@ namespace
             at = end + 1;
         }
         return out;
+    }
+
+    // A program that uses a region as the prompt's THREADS says, for this plugin's kind.
+    std::string threadsProgram()
+    {
+        if constexpr (tp::product::kIsInstrument)
+            return R"FM(// Threads: eight band-limited saw tables built at once in Shared's init, each voice reading its note's.
+module Table
+{
+    float data[2048];
+    float2 bins[1025];
+
+    // A saw's first harmonics (512, halved t times), through the FFT with a plan of its own, at a peak of 1.
+    void build(int t)
+    {
+        int top = 512;
+        for (int j = 0; j < t; ++j)
+            top = top / 2;
+        void* plan = fft_create(2048);
+        for (int k = 0; k < 1025; ++k)
+            bins[k] = (float2)(0.0f, 0.0f);
+        for (int k = 1; k <= top; ++k)
+            bins[k] = (float2)(0.0f, -1.0f / k);
+        fft_inverse(plan, bins, data);
+        fft_destroy(plan);
+        float peak = 0.0f;
+        for (int i = 0; i < 2048; ++i)
+            peak = fmaxf(peak, fabsf(data[i]));
+        for (int i = 0; i < 2048; ++i)
+            data[i] = data[i] / peak;
+    }
+};
+
+module Shared
+{
+    Table tables[8];
+
+    void init(float rate)
+    {
+        parallel for (int t = 0; t < 8; ++t)
+            tables[t].build(t);
+    }
+};
+
+module Voice
+{
+    param float level [[fminus::range(0, 1)]] [[fminus::default(0.8)]];
+    Shared* shared;
+    float rate;
+    float phase;
+    float step;
+    float env;
+    int table;
+    bool held;
+
+    void init(float sampleRate) { rate = sampleRate; }
+
+    void start(float note, float velocity)
+    {
+        const float f = 440.0f * expf(0.0577622650f * (note - 69.0f));
+        step = f / rate;
+        int top = 512;
+        table = 0;
+        while (table < 7 && top * f > 0.45f * rate)
+        {
+            top = top / 2;
+            table += 1;
+        }
+        env = velocity;
+        held = true;
+    }
+
+    void stop() { held = false; }
+
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            const float x = phase * 2048.0f;
+            const int k = (int)x;
+            const float a = shared->tables[table].data[k];
+            const float b = shared->tables[table].data[k + 1 < 2048 ? k + 1 : 0];
+            const float out = level[i] * 0.25f * env * (a + (x - k) * (b - a));
+            left[i] += out;
+            right[i] += out;
+            phase += step;
+            if (phase >= 1.0f)
+                phase -= 1.0f;
+            if (!held)
+                env *= 0.9995f;
+        }
+        return held || env > 0.0001f;
+    }
+};
+)FM";
+        else
+            return R"FM(// Threads: a resonator bank, eight band-passes a channel, the sixteen run at once, a region a part of 256 samples.
+module Band
+{
+    float g;
+    float k;
+    float gain;
+    float ic1;
+    float ic2;
+    float out[256];
+
+    void set(float fc, float q, float level, float rate)
+    {
+        const float w = 3.14159265f * fc / rate;
+        g = sinf(w) / cosf(w);
+        k = 1.0f / q;
+        gain = level;
+    }
+
+    // n samples (256 at most) of `in`, band-passed, into out.
+    void run(const float* in, int n)
+    {
+        const float a1 = 1.0f / (1.0f + g * (g + k));
+        const float a2 = g * a1;
+        const float a3 = g * a2;
+        for (int i = 0; i < n; ++i)
+        {
+            const float v3 = in[i] - ic2;
+            const float v1 = a1 * ic1 + a2 * v3;
+            const float v2 = ic2 + a2 * ic1 + a3 * v3;
+            ic1 = 2.0f * v1 - ic1;
+            ic2 = 2.0f * v2 - ic2;
+            out[i] = gain * v1;
+        }
+    }
+};
+
+module Effect
+{
+    param float mix [[fminus::range(0, 1)]] [[fminus::default(0.7)]];
+    Band bands[16];                            // 0 to 7 the left channel's, 8 to 15 the right's
+
+    void init(float rate)
+    {
+        for (int b = 0; b < 16; ++b)
+            bands[b].set(150.0f * expf(0.45f * (b % 8)) * (b < 8 ? 1.0f : 1.012f), 12.0f, 0.6f, rate);
+    }
+
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int at = 0; at < n; at += 256)
+        {
+            const int m = n - at < 256 ? n - at : 256;
+            parallel for (int b = 0; b < 16; ++b)
+                bands[b].run(b < 8 ? left + at : right + at, m);
+            for (int i = 0; i < m; ++i)
+            {
+                float wl = 0.0f;
+                float wr = 0.0f;
+                for (int b = 0; b < 8; ++b)
+                {
+                    wl += bands[b].out[i];
+                    wr += bands[b + 8].out[i];
+                }
+                left[at + i] += mix[at + i] * (wl - left[at + i]);
+                right[at + i] += mix[at + i] * (wr - right[at + i]);
+            }
+        }
+    }
+};
+)FM";
+    }
+
+    std::string replaced(std::string s, const std::string& from, const std::string& to)
+    {
+        for (std::size_t p = s.find(from); p != std::string::npos; p = s.find(from, p + to.size()))
+            s.replace(p, from.size(), to);
+        return s;
     }
 
     // The first partial a report lists, in Hz (0 when none).
@@ -321,5 +499,45 @@ PROBE(plugin, chatexample)
         const std::string h = tp::measure::run(tp::singleFile(hum), {});
         P.eq("measure.self_sound_flagged", has(h, "Note: It makes sound from silence") ? 1 : 0, 1);
     }
+    // ---- THREADS -----------------------------------------------------------------------------------------------------
+    {
+        P.eq("threads.prompt", has(prompt, "THREADS: parallel for AND parallel { }") && has(prompt, "parallel for (int i = first; i < end; ++i)")
+                                   && has(prompt, "There are no reductions") && has(prompt, "two iterations must never use one plan at once")
+                                   && has(prompt, "about 4 microseconds") ? 1 : 0, 1);
+        P.eq("threads.kind_advice", has(prompt, kInstrument ? "never put one there" : "process runs once a host block") ? 1 : 0, 1);
+        const std::string text = threadsProgram();
+        const tp::Sources together{ { tp::kProgramName, text } };
+        const tp::Sources alone{ { tp::kProgramName, replaced(text, "parallel for", "for") } };
+        P.eq("threads.has_region", has(text, "parallel for") && !has(alone[0].text, "parallel") ? 1 : 0, 1);
+        const std::size_t len = static_cast<std::size_t>(1.5 * kFs);
+        const probe::Stereo in = kInstrument ? probe::Stereo(len) : probe::noise(len, 0.25);
+        std::vector<probe::Note> notes;
+        if constexpr (kInstrument)
+        {
+            for (const int note : { 36, 60, 84, 103 })
+                notes.push_back({ 0, tp::EventKind::noteOn, note, 0.8f });
+            for (const int note : { 36, 60, 84, 103 })
+                notes.push_back({ static_cast<std::size_t>(0.75 * kFs), tp::EventKind::noteOff, note, 0.0f });
+        }
+        probe::Rig a(kFs, 1024), b(kFs, 1024), c(kFs, 1024);
+        std::string messages;
+        const bool ok = a.load(together, &messages);
+        if (!messages.empty())
+            std::printf("%s", messages.c_str());
+        P.eq("threads.compiles", ok ? 1 : 0, 1);
+        P.eq("threads.no_messages", messages.empty() ? 1 : 0, 1);
+        if (ok && b.load(alone) && c.load(together))
+        {
+            const probe::Stereo o = a.run(in, 512, notes), serial = b.run(in, 512, notes), odd = c.run(in, 333, notes);
+            P.eq("threads.finite", probe::allFinite(o.l) && probe::allFinite(o.r) ? 1 : 0, 1);
+            const double level = std::max(probe::rmsDb(o.l, 0, len / 2), probe::rmsDb(o.r, 0, len / 2));
+            std::printf("threads program: %.1f dBFS RMS\n", level);
+            P.in("threads.level_db", level, -40.0, -3.0);
+            P.eq("threads.same_as_one_thread", probe::sameBits(o.l, serial.l) && probe::sameBits(o.r, serial.r) ? 1 : 0, 1);
+            P.eq("threads.blocks_same_bits", probe::sameBits(o.l, odd.l) && probe::sameBits(o.r, odd.r) ? 1 : 0, 1);
+            P.eq("threads.no_alerts", static_cast<int64_t>(a.engine().takeAlerts()), 0);
+        }
+    }
+
     return P.finish();
 }

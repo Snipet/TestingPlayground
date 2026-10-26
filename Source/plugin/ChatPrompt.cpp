@@ -154,7 +154,7 @@ FMinus is a subset of C (C's syntax and semantics, clang's error messages) with 
 
 - Types: float (32-bit; an unsuffixed constant like 1.5 is a float), int (32-bit, signed; overflow is undefined), bool, void. Pointers to float, int, float2/float4/float8 and modules, one level deep, const and restrict. Arrays of one dimension (float h[16]; int k[3] = {1, 2, 3};), also of modules (Osc osc[4];). float2, float4, float8 are OpenCL-style vectors: (float4)(a, b, c, d), swizzles v.x v.wzyx, math applied lane by lane.
 - Not in FMinus: double, long, unsigned, char and strings, printf, struct/union/enum (use a module, and int constants), typedef, switch, do-while, goto, the bitwise operators (& | ^ ~ << >>), global variables and global constants (put state in the module's fields, data made once for the whole program in a module Shared (the contract), and constants in const locals or small functions), function pointers, 2-D arrays, pointers to pointers.
-- Statements: blocks, if/else, while, for, break, continue, return, expression statements. Declarations anywhere in a block, block-scoped.
+- Statements: blocks, if/else, while, for, break, continue, return, expression statements. Declarations anywhere in a block, block-scoped. And FMinus's own threads, parallel for and parallel { } (THREADS, below); parallel is a keyword.
 - Operators: C's, with C's precedence: arithmetic (% works on floats too, as fmodf), comparisons, && || ! (short-circuit), ?: (only the taken branch runs), = += -= *= /= %=, ++ --, casts (float)i (int)x (bool)x. Integer division truncates (1 / 2 is 0): write 1.0f / 2 or (float)a / b.
 - Functions: C functions at the top level, callable before their definition. A function may be called from a module's method.
 - Modules (C++ structs with methods, simplified): `module Name { fields; params; methods };`. Fields take no initializer and start at 0 (set them in init or start); fields cannot be const. Methods see the fields by name and may call the module's other methods by name; `this` is the module's address. A module's name is a type after its declaration: a module holds modules declared before it (Svf filter;) and arrays of them. Pass a module to a function by pointer (Osc* o, o->tick()); assigning one module to another copies it. No constructors, inheritance, overloading or access control.
@@ -176,6 +176,22 @@ DSP PRACTICE IN THIS PLUGIN
 - Saturation: tanhf; for gentler curves x / (1 + fabsf(x)) (shaper.fm has these and more).
 - Level: keep peaks near 1 (an instrument's voice near 0.2 to 0.3). Make dial ranges musical, and defaults that sound good at once.
 - Cost: process runs on the audio thread for every sample of every voice. sinf, expf and tanhf per sample are fine in moderation; avoid recomputing per-sample what can be done per call.
+)";
+
+        const char* const kThreads = R"(
+THREADS: parallel for AND parallel { }
+
+- parallel for (int i = first; i < end; ++i) body runs the iterations at once, spread over the machine's cores (the calling thread works too); parallel { a.run(x, n); b.run(y, n); } runs each statement of the block as a task. Either has finished, every iteration or statement, where it ends. The loop counts up by one from an int it declares (i < end or i <= end; ++i, i++ or i += 1), its bounds computed once before it starts.
+- The compiler refuses the races it can see: an iteration that assigns a variable from outside the loop, or its own loop variable, or calls a method that changes a module from outside the loop (filter.run() on one field, or a method of this module: every iteration would change it); two statements of a block of which one changes a variable that the other uses; break or return out of either; a declaration as a block's statement. What an iteration reaches through an index or a pointer (out[i], bands[b].run(in, n)) is yours to keep apart: each iteration its own element, its own module of an array, its own buffer. There are no reductions: each iteration writes its own (a band's own output buffer, a field of its module), and the code after the loop sums them.
+- Without races the output is what one thread gives, bit for bit, at any block size.
+- An FFT plan holds scratch memory of its own: two iterations must never use one plan at once (each its own).
+- A region allocates nothing and takes no lock, so process may have one. But it costs about 4 microseconds (waking the other cores), and their threads are not real-time threads: use one only for work of tens of microseconds a call, cut into a few large, equal parts, never a part a sample. measure_output's CPU line says whether it paid.
+)";
+
+        const char* const kThreadsEffect = R"(- In this plugin, process runs once a host block (64 to 1024 samples, often more), so a heavy effect may split it: parallel { } over two channels' independent heavy chains, or parallel for over a bank (eight combs, a vocoder's sixteen bands, a multiband's bands), each module into its own buffer field, mixed after the loop. A buffer field has a fixed size, so cut the block into parts of it (for (int at = 0; at < n; at += 256), a region a part). A light effect (a filter, a delay, a chorus) is faster without.
+)";
+
+        const char* const kThreadsInstrument = R"(- In this plugin, the plugin itself runs the voices, one after another, and calls each in parts of at most 16 samples, so a region in process, start or stop costs more than the work it splits: never put one there. init (a voice's, or Shared's) runs off the audio thread, once: a region there may split heavy setup, such as building many wavetables, a module of an array each (Table tables[8]; parallel for (int t = 0; t < 8; ++t) tables[t].build(t);), each with its own FFT plan.
 )";
 
         const char* const kLarge = R"(
@@ -454,6 +470,8 @@ module Effect
             s += instrument ? kInstrumentContract : kEffectContract;
             s += kLanguage;
             s += kCraft;
+            s += kThreads;
+            s += instrument ? kThreadsInstrument : kThreadsEffect;
             s += kLarge;
             s += kPanel;
             s += kLibraryIntro;
