@@ -200,6 +200,7 @@ namespace testingplaygroundsynth::ui
         std::optional<funkgui::Point> centreOfFast() const;   // fast mode's pill (a switch), on a model that takes it
         funkgui::Point centreOfNewChat() const;
         funkgui::Point centreOfKey() const;
+        std::optional<funkgui::Point> centreOfAccount() const;        // the header's account pill, while signed in
         ChatView& chatView();                            // the conversation (its own probe hooks)
         const ChatView& chatView() const;
         // The access dialog. Its primary button is Save on the API key tab and Sign in on the account tab.
@@ -320,7 +321,7 @@ namespace testingplaygroundsynth::ui
         int editorItem_ = -1, problemsItem_ = -1, runItem_ = -1, examplesItem_ = -1, libraryItem_ = -1, randomItem_ = -1,
             presetsItem_ = -1;
         int themeItem_ = -1, zoomItem_ = -1;
-        int newChatItem_ = -1, keyItem_ = -1, chatViewItem_ = -1, inputItem_ = -1;
+        int newChatItem_ = -1, keyItem_ = -1, accountItem_ = -1, chatViewItem_ = -1, inputItem_ = -1;
         int modelItem_ = -1, thinkingItem_ = -1, fastItem_ = -1, sendItem_ = -1;
         funkgui::CellModel* zoom_ = nullptr;             // the ZOOM cells' model (an item owns it)
         float width_ = 0.0f, height_ = 0.0f;
@@ -356,6 +357,8 @@ namespace testingplaygroundsynth::ui
         float composerH_ = 0.0f;                         // the message box's height (it follows its text)
         float usageY_ = 0.0f;                            // the line under the message box
         std::string barLabels_;                          // the pills' labels when they were placed
+        std::string headerLabel_;                        // the account pill's when the header was placed
+        std::string accountLabel() const;                // the account pill's: the username, and the credit when known
 
         // The chat, as refresh() last saw it.
         uint64_t seenChat_ = 0;

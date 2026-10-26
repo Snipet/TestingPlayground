@@ -478,6 +478,7 @@ namespace testingplaygroundsynth
         s.account = account_;
         s.accountProblem = accountProblem_;
         s.credit = s.signedIn ? credit_ : std::string();
+        s.details = s.signedIn ? details_ : ChatAccount{};
         s.useAccount = useAccount_;
         s.signingIn = signingIn_;
         s.signInError = signInError_;
@@ -610,6 +611,7 @@ namespace testingplaygroundsynth
         accountProblem_.clear();
         credit_ = user.hasProperty("balance_usd") ? creditText(static_cast<double>(user.getProperty("balance_usd", 0.0)))
                                                   : std::string();
+        details_ = ChatAccount{};                  // the account's view asks the server again (refreshAccount)
         useAccount_ = true;                        // the one set up last
         modelsFetched_ = false;
         chatstore::saveAccount({ account_, true });
@@ -630,6 +632,7 @@ namespace testingplaygroundsynth
             chatstore::forgetToken();
             token_.clear();
             credit_.clear();
+            details_ = ChatAccount{};
             accountProblem_.clear();
             signInError_.clear();
             const bool key = !key_.empty() || chatstore::hasKey();
@@ -1022,6 +1025,7 @@ namespace testingplaygroundsynth
             return;
         token_.clear();
         credit_.clear();
+        details_ = ChatAccount{};
         if (chatstore::loadToken().value_or("") == a.secret)
             chatstore::forgetToken();
         accountProblem_ = why;
@@ -1352,32 +1356,82 @@ namespace testingplaygroundsynth
         touch();
     }
 
-    // GET /account: the credit left, for the footer.
-    void ChatAgent::fetchAccount()
+    // GET /account: the credit left, for the footer, and the rest for the account's view.
+    void ChatAgent::fetchAccount(const std::atomic<bool>& cancel, bool asked)
     {
         Access a;
         claude::Transport* transport = nullptr;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            a = access();
-            if (!a.account || a.secret.empty())
+            if (!asked && !useAccount_)
                 return;
+            if (token_.empty())                    // the view asks while the chat uses the key: the stored sign-in
+                if (const auto t = chatstore::loadToken())
+                    token_ = *t;
+            a = { true, claude::serverHost(), token_ };
+            if (a.secret.empty())
+            {
+                details_.refreshing = false;
+                touch();
+                return;
+            }
             transport = transport_.get();
         }
-        const claude::HttpResult r = transport->get(a.host, "/account", headersFor(a), cancel_);
+        const claude::HttpResult r = transport->get(a.host, "/account", headersFor(a), cancel);
         const std::lock_guard<std::mutex> lock(mutex_);
+        if (asked)
+            details_.refreshing = false;
         if (r.status == 401)
         {
             refused(a, r.status, claude::serverError(r.status, r.body));
+            touch();
             return;
         }
         const juce::var v = r.status == 200 ? claude::parseJson(r.body) : juce::var();
-        if (token_ != a.secret || !v.hasProperty("balance_usd"))
+        if (token_ != a.secret)
+        {
+            touch();
             return;
-        credit_ = creditText(static_cast<double>(v.getProperty("balance_usd", 0.0)));
+        }
+        if (!v.hasProperty("balance_usd"))
+        {
+            if (asked)
+                details_.error = r.status == 0 ? "Cannot reach the server (" + claude::hostName(a.host) + ")."
+                                               : claude::serverError(r.status, r.body);
+            touch();
+            return;
+        }
+        const double balance = static_cast<double>(v.getProperty("balance_usd", 0.0));
+        credit_ = creditText(balance);
         if (const std::string named = str(v, "username"); !named.empty())
             account_ = named;
+        ChatAccount d;
+        d.known = true;
+        d.balanceUsd = balance;
+        const juce::var month = v.getProperty("month", juce::var());
+        d.requests = static_cast<int64_t>(month.getProperty("requests", 0));
+        d.costUsd = static_cast<double>(month.getProperty("cost_usd", 0.0));
+        d.inputTokens = static_cast<int64_t>(month.getProperty("input_tokens", 0));
+        d.outputTokens = static_cast<int64_t>(month.getProperty("output_tokens", 0));
+        const juce::var session = v.getProperty("session", juce::var());
+        d.client = str(session, "client");
+        d.since = str(session, "created_at");
+        d.expires = str(session, "expires_at");
+        details_ = std::move(d);
         touch();
+    }
+
+    void ChatAgent::refreshAccount()
+    {
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (details_.refreshing || (token_.empty() && !chatstore::hasToken()))
+                return;
+            details_.refreshing = true;
+            details_.error.clear();
+            touch();
+        }
+        queueAuth([this] { fetchAccount(authCancel_, true); });
     }
 
     void ChatAgent::runTurn()
@@ -1703,7 +1757,7 @@ namespace testingplaygroundsynth
         }
 
         if (!cancel_.load())
-            fetchAccount();                        // the credit left, for the footer (through the account only)
+            fetchAccount(cancel_, false);          // the credit left, for the footer (through the account only)
 
         const std::lock_guard<std::mutex> lock(mutex_);
         busy_ = false;

@@ -8,7 +8,8 @@
 //                         of what it did, the message box grown to three lines
 //   gui.chat.key.png      the access dialog's API key tab with a key pasted (masked)
 //   gui.chat.signin.png   its account tab: a username typed and a password pasted (masked), after a wrong password
-//   gui.chat.account.png  its account tab signed in: who, the credit left, Sign out
+//   gui.chat.account.png  its account tab signed in: who, the credit left, this month's use, the sign-in's dates, Refresh
+//                         and Sign out
 //   gui.chat.markdown.png an answer in markdown: a heading, bold, inline code, numbered and bulleted lists, a quote,
 //                         a rule
 //   gui.chat.paper.png    the conversation in PAPER
@@ -27,8 +28,10 @@
 //            masked; nothing the panel speaks holds the password; a wrong password keeps the dialog open with the
 //            server's message, the password field emptied; Return signs in: the dialog closes, the token is stored,
 //            the chat goes through the account and the line under the box shows the credit; a message then goes to
-//            the server with the token, and the credit after it is the server's; KEY opens the account tab (in use),
-//            which says who and speaks no token; the API key tab offers Use this key, which switches to the key, and
+//            the server with the token, and the credit after it is the server's; the header's account pill (shown
+//            while signed in) opens the account tab (in use), which asks the server again and says who, the credit,
+//            this month's requests, spending and tokens and the sign-in's dates, and speaks no token; Refresh asks
+//            again; the API key tab offers Use this key, which switches to the key, and
 //            the account tab then Use account, which switches back; Sign out forgets the token, tells the server and
 //            leaves the key in use
 //   SEND     Shift-Return breaks the line in the message box and the box grows with its rows, Return sends it (the box
@@ -352,11 +355,37 @@ PROBE(gui, chat)
         P.eq("account.answer_shown", has(panel.transcript(), "CLAUDE\nHello from the server.") ? 1 : 0, 1);
         P.eq("account.credit_after", has(panel.chatActivity(), "$4.50 credit left") ? 1 : 0, 1);
 
-        clickAt(host, panel.centreOfKey());
-        host.settle();
+        // The header's account pill: who, and the credit once the server has said.
+        const auto pill = panel.centreOfAccount();
+        P.eq("account.pill_shown", pill.has_value() ? 1 : 0, 1);
+        bool pillSays = false;
+        for (const funkgui::A11yItem& a : host.accessibility())
+            pillSays = pillSays || (a.title == "Your account" && a.role == funkgui::A11yRole::button);
+        P.eq("account.pill_a11y", pillSays ? 1 : 0, 1);
+        const int asks = script->count("GET /account");
+        if (pill)
+            clickAt(host, *pill);
+        settleChat(processor, host);
         P.eq("account.button_opens_account", panel.keyDialogOpen() && panel.dialogOnAccount() ? 1 : 0, 1);
+        P.eq("account.view_asks", script->count("GET /account") == asks + 1 ? 1 : 0, 1);
         P.eq("account.signed_in_says_who", a11yTitled(host, "Your TestingPlayground account").has_value()
                                                && has(a11yTitled(host, "Your TestingPlayground account")->description, "alice") ? 1 : 0, 1);
+        {
+            const tp::ChatAccount info = chat(processor).details;
+            P.eq("account.details", info.known && info.requests == 3 && info.inputTokens == 12000 && info.outputTokens == 900
+                                        && info.client == "probe" ? 1 : 0, 1);
+            const auto box = a11yTitled(host, "Your TestingPlayground account");
+            P.eq("account.details_spoken", box.has_value() && has(box->description, "3 requests, $0.50 spent, 12.0K tokens in, 900 out")
+                                               && has(box->description, "Signed in 26 Oct 2026, until 24 Jan 2027") ? 1 : 0, 1);
+        }
+        {
+            const auto refresh = a11yTitled(host, "Refresh");
+            P.eq("account.refresh_offered", refresh.has_value() ? 1 : 0, 1);
+            if (refresh)
+                clickAt(host, { refresh->bounds.centreX(), refresh->bounds.centreY() });
+            settleChat(processor, host);
+            P.eq("account.refresh_asks", script->count("GET /account") == asks + 2 ? 1 : 0, 1);
+        }
         P.eq("account.a11y_never_the_token", a11yHoldsKey(host, token) ? 1 : 0, 0);
         P.eq("account.no_use_while_in_use", panel.centreOfUseThis().has_value() ? 1 : 0, 0);
         writePng(P, host, "gui.chat.account.png");

@@ -55,6 +55,35 @@
 namespace testingplaygroundsynth::ui
 {
 
+    namespace
+    {
+        // A count as the account's view shows it: 900, 12.3K, 123K, 1.2M.
+        std::string countText(int64_t n)
+        {
+            char buf[32];
+            if (n < 1000)
+                std::snprintf(buf, sizeof buf, "%lld", static_cast<long long>(n));
+            else if (n < 100000)
+                std::snprintf(buf, sizeof buf, "%.1fK", static_cast<double>(n) / 1e3);
+            else if (n < 1000000)
+                std::snprintf(buf, sizeof buf, "%.0fK", static_cast<double>(n) / 1e3);
+            else
+                std::snprintf(buf, sizeof buf, "%.1fM", static_cast<double>(n) / 1e6);
+            return buf;
+        }
+
+        // An ISO 8601 date ("2026-10-26T00:00:00.000Z") as "26 Oct 2026"; anything else as it is.
+        std::string shortDate(const std::string& iso)
+        {
+            static constexpr const char* kMonths[12] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                                         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+            int y = 0, m = 0, d = 0;
+            if (iso.size() < 10 || std::sscanf(iso.c_str(), "%4d-%2d-%2d", &y, &m, &d) != 3 || m < 1 || m > 12)
+                return iso;
+            return std::to_string(d) + " " + kMonths[m - 1] + " " + std::to_string(y);
+        }
+    }
+
     std::vector<Problem> parseProblems(const std::string& messages)
     {
         std::vector<Problem> out;
@@ -134,6 +163,7 @@ namespace testingplaygroundsynth::ui
         // The key dialog.
         constexpr float kKeyDialogW = 540.0f;
         constexpr float kKeyDialogH = 296.0f;
+        constexpr float kAccountDialogH = 404.0f;        // the account tab, signed in: this month's use under the card
         constexpr int   kMaxKeyLength = 320;
         constexpr int   kMaxUsernameLength = 64;         // the server's limits
         constexpr int   kMaxPasswordLength = 256;
@@ -1506,6 +1536,13 @@ namespace testingplaygroundsynth::ui
         keyItem_ = add(std::make_unique<B>(
             idFor(), spec(B::Shape::square, [] { return chat::Icon::key; }, {}, false, {}, {}, [this] { openKeyDialog(); },
                           "Account or API key", "ACCESS   SIGN IN, OR USE YOUR OWN ANTHROPIC API KEY")));
+        {
+            B::Spec sp = spec(B::Shape::pill, [] { return chat::Icon::person; }, [this] { return accountLabel(); }, false,
+                              [] { return B::Look::ghost; }, {}, [this] { openKeyDialog(DialogTab::account); }, "Your account",
+                              "ACCOUNT   WHO IS SIGNED IN, THE CREDIT LEFT AND THIS MONTH'S USE");
+            sp.shown = [this] { return chat_.signedIn; };
+            accountItem_ = add(std::make_unique<B>(idFor(), std::move(sp)));
+        }
         chatViewItem_ = add(std::make_unique<ChatView>(
             kChatA11yBase, ChatView::Hooks{ [this](const std::string& s) { suggest(s); },
                                             [this] { openKeyDialog(DialogTab::key); },
@@ -1716,6 +1753,13 @@ namespace testingplaygroundsynth::ui
             .setBounds({ card_.right() - kCardPad - kIconButton, hy, kIconButton, kIconButton });
         static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(newChatItem_)])
             .setBounds({ card_.right() - kCardPad - 2.0f * kIconButton - 4.0f, hy, kIconButton, kIconButton });
+        {
+            // The account pill, left of them, while signed in (as wide as its label, up to a third of the card).
+            auto& pill = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(accountItem_)]);
+            const float w = chat_.signedIn ? std::min(pill.preferredWidth(), std::floor(card_.w / 3.0f)) : 0.0f;
+            pill.setBounds({ card_.right() - kCardPad - 2.0f * kIconButton - 4.0f - 6.0f - w, hy, w, kIconButton });
+            headerLabel_ = accountLabel();
+        }
         headerY_ = hy;
         const float headerBottom = hy + kIconButton;
 
@@ -1817,6 +1861,27 @@ namespace testingplaygroundsynth::ui
     funkgui::Point Panel::centreOfModel() const { return centreOf(modelItem_); }
     funkgui::Point Panel::centreOfNewChat() const { return centreOf(newChatItem_); }
     funkgui::Point Panel::centreOfKey() const { return centreOf(keyItem_); }
+
+    std::optional<funkgui::Point> Panel::centreOfAccount() const
+    {
+        if (!chat_.signedIn)
+            return std::nullopt;
+        return centreOf(accountItem_);
+    }
+
+    std::string Panel::accountLabel() const
+    {
+        if (!chat_.signedIn)
+            return {};
+        std::string name = asciiText(chat_.account.empty() ? std::string("Account") : chat_.account);
+        if (name.size() > 16)
+            name = name.substr(0, 15) + "~";
+        if (!chat_.details.known)
+            return name;
+        char credit[32];
+        std::snprintf(credit, sizeof credit, "  $%.2f", chat_.details.balanceUsd);
+        return name + credit;
+    }
     funkgui::Point Panel::centreOfThinking() const { return centreOf(thinkingItem_); }
     std::optional<funkgui::Point> Panel::centreOfFast() const
     {
@@ -1872,7 +1937,7 @@ namespace testingplaygroundsynth::ui
     {
         const DialogButtons b = dialogButtons();
         const bool primary = b.primary == "Use account";
-        if (!primary && b.extra.empty())
+        if (!primary && b.extra != "Use this key")
             return std::nullopt;
         const funkgui::Rect r = primary ? keyDialog().primary : keyDialog().extra;
         return funkgui::Point{ r.centreX(), r.centreY() };
@@ -2191,6 +2256,8 @@ namespace testingplaygroundsynth::ui
                                                                             : "Ask Claude for an effect, or about the code"));
             if (barLabels() != barLabels_)
                 placeChatBar();
+            if (accountLabel() != headerLabel_)          // signed in or out, or the credit came
+                layoutChat();
             if (hadKey != chat_.ready() || changed)
             {
                 dirty_ = true;
@@ -2322,7 +2389,8 @@ namespace testingplaygroundsynth::ui
     {
         KeyDialog d;
         const float w = std::min(kKeyDialogW, width_ - 2.0f * kMargin);
-        d.box = { std::round((width_ - w) * 0.5f), std::round((height_ - kKeyDialogH) * 0.42f), w, kKeyDialogH };
+        const float h = tab_ == DialogTab::account && chat_.signedIn ? kAccountDialogH : kKeyDialogH;
+        d.box = { std::round((width_ - w) * 0.5f), std::round((height_ - h) * 0.42f), w, h };
         d.keyTab = { d.box.right() - 24.0f - 88.0f, d.box.y + 24.0f, 88.0f, 26.0f };
         d.accountTab = { d.keyTab.x - 88.0f, d.keyTab.y, 88.0f, 26.0f };
         d.field = { d.box.x + 24.0f, d.box.y + 134.0f, w - 48.0f, 34.0f };
@@ -2347,6 +2415,7 @@ namespace testingplaygroundsynth::ui
             {
                 b.secondary = "Close";
                 b.danger = "Sign out";
+                b.extra = chat_.details.refreshing ? "Refreshing" : "Refresh";
                 if (!chat_.useAccount)
                     b.primary = "Use account";
             }
@@ -2393,6 +2462,8 @@ namespace testingplaygroundsynth::ui
         keyWhy_.clear();
         if (tab == DialogTab::account && !chat_.signedIn && !chat_.accountProblem.empty())
             keyWhy_ = asciiText(chat_.accountProblem);
+        if (tab == DialogTab::account && chat_.signedIn)
+            port_.chat().refreshAccount();             // the account's view, as the server has it now
         dirty_ = true;
     }
 
@@ -2541,6 +2612,8 @@ namespace testingplaygroundsynth::ui
             signOutFromDialog();
         else if (label == "Use account" || label == "Use this key")
             useFromDialog();
+        else if (label == "Refresh")
+            port_.chat().refreshAccount();
         dirty_ = true;
     }
 
@@ -2756,6 +2829,43 @@ namespace testingplaygroundsynth::ui
                     chat_.useAccount ? p.accent.withAlpha(0.0f) : p.composerEdge);
             c.text(state, pill.centreX(), c.capCentreTop(pill.centreY(), chat::kSmall), chat::kSmall,
                    chat_.useAccount ? p.accent : p.dim, funkgui::Align::centre);
+
+            // This month's use, four tiles; under them the sign-in's dates and what made it.
+            const ChatAccount& info = chat_.details;
+            float ty = r.bottom() + 16.0f;
+            c.text("THIS MONTH", x + 2.0f, c.capCentreTop(ty, funkgui::type::kMicro), funkgui::type::kMicro, p.faint);
+            ty += 12.0f;
+            const float gap = 8.0f, tw4 = std::floor((r.w - 3.0f * gap) / 4.0f), th4 = 50.0f;
+            char spent[32];
+            std::snprintf(spent, sizeof spent, "$%.2f", info.costUsd);
+            const std::string values[4] = { info.known ? std::to_string(info.requests) : "-", info.known ? spent : "-",
+                                            info.known ? countText(info.inputTokens) : "-",
+                                            info.known ? countText(info.outputTokens) : "-" };
+            const char* const names[4] = { info.requests == 1 ? "request" : "requests", "spent", "tokens in", "tokens out" };
+            for (int k = 0; k < 4; ++k)
+            {
+                const funkgui::Rect t{ r.x + static_cast<float>(k) * (tw4 + gap), ty, tw4, th4 };
+                c.rrect(t.x, t.y, t.w, t.h, 10.0f, p.raised, 1.0f, p.cardEdge);
+                c.text(fitText(c, values[k], chat::kH2, t.w - 20.0f).c_str(), t.x + 12.0f, c.capCentreTop(t.y + 18.0f, chat::kH2),
+                       chat::kH2, info.known ? p.text : p.faint);
+                c.text(names[k], t.x + 12.0f, c.capCentreTop(t.y + 36.0f, chat::kSmall), chat::kSmall, p.soft);
+            }
+            ty += th4 + 18.0f;
+            std::string line, tone = "soft";
+            if (!info.error.empty())
+            {
+                line = info.error;
+                tone = "danger";
+            }
+            else if (!info.known)
+                line = info.refreshing ? "Asking the server..." : "Refresh asks the server for the account.";
+            else
+            {
+                line = "Signed in " + shortDate(info.since) + (info.client.empty() ? std::string() : " from " + info.client)
+                     + "; it lasts until " + shortDate(info.expires) + ".";
+            }
+            c.text(fitText(c, asciiText(line), chat::kSmall, r.w).c_str(), x + 2.0f, c.capCentreTop(ty, chat::kSmall), chat::kSmall,
+                   tone == "danger" ? p.danger : p.soft);
         }
         else
         {
@@ -2774,7 +2884,7 @@ namespace testingplaygroundsynth::ui
         const auto button = [&](const funkgui::Rect& r, const std::string& label, int look) {   // 0 primary, 1 outlined, 2 quiet
             if (label.empty())
                 return;
-            const bool waiting = label == "Signing in";
+            const bool waiting = label == "Signing in" || label == "Refreshing";
             const bool hover = hasPointer_ && r.contains(pointer_) && !waiting;
             funkgui::Col fill = p.card.withAlpha(0.0f), edge = p.card.withAlpha(0.0f), ink = p.soft;
             if (look == 0)
@@ -2792,8 +2902,8 @@ namespace testingplaygroundsynth::ui
             }
             c.rrect(r.x, r.y, r.w, r.h, r.h * 0.5f, fill, look == 1 ? 1.0f : 0.0f, edge);
             const funkgui::TextStyle& st = look == 0 ? chat::kSmallStrong : chat::kSmall;
-            c.text(waiting ? "Signing in..." : label.c_str(), r.centreX(), c.capCentreTop(r.centreY(), st), st, ink,
-                   funkgui::Align::centre);
+            c.text(waiting ? (label + "...").c_str() : label.c_str(), r.centreX(), c.capCentreTop(r.centreY(), st), st,
+                   waiting ? p.faint : ink, funkgui::Align::centre);
         };
         button(d.primary, buttons.primary, 0);
         button(d.secondary, buttons.secondary, buttons.primary.empty() ? 0 : 1);
@@ -3300,7 +3410,9 @@ namespace testingplaygroundsynth::ui
             c.disc(tx + 4.0f, ty, chat_.busy ? 4.0f : 3.5f, chat_.busy ? p.accent : funkgui::mix(p.card, p.accent, 0.75f));
             c.text("Claude", tx + 15.0f, c.capCentreTop(ty, chat::kTitle), chat::kTitle, p.text);
             const float sub = tx + 15.0f + c.textWidth("Claude", chat::kTitle) + 10.0f;
-            const float subRoom = card_.right() - kCardPad - 2.0f * kIconButton - 12.0f - sub;
+            const float pillW = chat_.signedIn ? static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(accountItem_)]).bounds().w + 6.0f
+                                               : 0.0f;
+            const float subRoom = card_.right() - kCardPad - 2.0f * kIconButton - 12.0f - pillW - sub;
             const std::string kind = product::kIsInstrument ? "builds and edits your synth" : "builds and edits your effect";
             if (subRoom > 60.0f)
                 c.text(fitText(c, kind, chat::kSmall, subRoom).c_str(), sub, c.capCentreTop(ty, chat::kSmall), chat::kSmall, p.faint);
@@ -3667,6 +3779,16 @@ namespace testingplaygroundsynth::ui
                                                                + (chat_.credit.empty() ? std::string() : ", " + chat_.credit)
                                                          : std::string("Claude runs on the server, charged to the account's credit"))
                                       : std::string("Stored encrypted on this Mac, for both playground plugins");
+            if (account && chat_.signedIn && chat_.details.known)
+            {
+                const ChatAccount& info = chat_.details;
+                char spent[32];
+                std::snprintf(spent, sizeof spent, "$%.2f", info.costUsd);
+                box.description += ". This month: " + std::to_string(info.requests) + (info.requests == 1 ? " request, " : " requests, ")
+                                 + spent + " spent, " + countText(info.inputTokens) + " tokens in, "
+                                 + countText(info.outputTokens) + " out. Signed in " + shortDate(info.since) + ", until "
+                                 + shortDate(info.expires);
+            }
             out.push_back(box);
             const auto tab = [&](uint32_t id, const funkgui::Rect& r, const char* title, bool chosen) {
                 funkgui::A11yItem t;
