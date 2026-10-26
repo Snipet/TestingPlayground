@@ -5,8 +5,8 @@
 #   scripts/install.sh build-dev                                               a dev build instead
 #
 # A deliberate step, never part of a build (CMakeLists.txt sets COPY_PLUGIN_AFTER_BUILD FALSE). It replaces the
-# installed bundles of this plugin only, clears the immutable flags a codesigned bundle may carry, and restarts the
-# AU registrar so hosts rescan. In an agent session the lead runs it, not an agent.
+# installed bundles of this plugin only (a bundle whose signature does not hold is refused: a host would not load it),
+# clears the immutable flags a codesigned bundle may carry, and restarts the AU registrar so hosts rescan. In an agent session the lead runs it, not an agent.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -33,6 +33,10 @@ for pair in "AU/$NAME.component:$COMPONENTS" "VST3/$NAME.vst3:$VST3"; do
   dst="${pair##*:}/$(basename "$src")"
   if [[ ! -d "$src" ]]; then
     echo "install.sh: $src is missing" >&2
+    exit 1
+  fi
+  if ! codesign --verify --strict "$src" 2>/dev/null; then
+    echo "install.sh: $src: its signature does not hold, and hosts refuse such a bundle (build it again)" >&2
     exit 1
   fi
   if [[ -e "$dst" ]]; then

@@ -289,6 +289,18 @@ foreach(_fmt AU VST3 Standalone)
   endif()
 endforeach()
 
+# Each bundle's signature, last: on a bundle's first build JUCE signs the VST3 before its manifest step writes
+# Contents/Resources/moduleinfo.json, so the seal no longer holds, and hosts refuse such a bundle (Live's scanner: "a
+# sealed resource is missing or invalid"). Signed again, ad hoc, whenever it does not verify; lint.signature checks.
+foreach(_fmt AU VST3 Standalone)
+  if(TARGET ${PRODUCT_NAME}_${_fmt})
+    add_custom_command(TARGET ${PRODUCT_NAME}_${_fmt} POST_BUILD
+        COMMAND /bin/sh -c "codesign --verify --strict \"$1\" 2>/dev/null || codesign --force --sign - \"$1\"" sign
+                "$<TARGET_BUNDLE_DIR:${PRODUCT_NAME}_${_fmt}>"
+        VERBATIM)
+  endif()
+endforeach()
+
 # codesign refuses a bundle with Finder detritus left by an earlier build; Ninja runs PRE_BUILD as PRE_LINK.
 foreach(_fmt AU VST3)
   if(TARGET ${PRODUCT_NAME}_${_fmt})
