@@ -28,6 +28,11 @@
 //            a note, fast mode still chosen; refused (a 400 about the speed) the turn goes on at standard speed and fast
 //            mode is off; a model that takes no fast mode asks for no speed; Opus 4.8 (in preview) sends fast mode's beta
 //   INVALID  a tool call whose input is not JSON gets an INVALID_JSON error result, runs nothing, and the turn goes on
+//   LIMIT    a reply cut off at max_tokens with no tool call: a note, the reply in the history as it came (its thinking
+//            and signature), and the turn goes on with a line that tells Claude; a second cut off in a row ends the
+//            turn with a note, the history still valid, and the next message goes; a tool call cut off twice gets
+//            error results and ends the turn too; at max effort the user's message carries the limit note, at medium
+//            it does not
 //   RETRY    an overloaded API (529, retry-after 1 s) is asked again and the turn completes
 //   ERROR    a key the API refuses (401): the turn ends with the API's message, and the next message joins the
 //            unanswered one (the roles keep alternating)
@@ -47,6 +52,9 @@
 //            result answers a call of the message before it (the API refused a result whose call the summary took:
 //            "unexpected tool_use_id"), and the files go with the results; a session saved with that broken history
 //            is repaired when it loads, and works
+//   PROMPT   the session holds the system prompt's and tools' hash; a session saved without it (or with another)
+//            loses its thinking blocks when it loads (a reply of thinking alone keeps a line), one saved with it keeps
+//            them
 //   STOP     a stalled stream: stop() ends the turn at once; the history ends with Claude's text so far
 //   STATE    the conversation is in the session: a second processor loading the first's state has the same entries
 //            and the same history
@@ -536,6 +544,74 @@ PROBE(plugin, chat)
         P.eq("invalid.turn_went_on", lastText(agent.chatState(), tp::ChatEntry::Kind::assistant) == "Sorry, again." ? 1 : 0, 1);
     }
 
+    // ---- LIMIT ---------------------------------------------------------------------------------------------------------
+    {
+        const auto lastMessages = [&] { return messagesOf(script->body(script->postCount() - 1)); };
+        // Cut off once: the turn goes on.
+        script->add(fake::Response::ok(fake::Sse().start().thinking("Designing every part", "sig-l1").end("max_tokens", 128000)));
+        script->add(fake::Response::ok(fake::Sse().start().text("Writing it now.").end()));
+        int before = script->postCount();
+        agent.send("a big synth");
+        agent.waitIdle();
+        P.eq("limit.carried_on", script->postCount() - before, 2);
+        const juce::Array<juce::var> m = lastMessages();
+        P.eq("limit.told", !m.isEmpty() && says(m[m.size() - 1], "was cut off") && alternates(m) ? 1 : 0, 1);
+        bool signedThinking = false;
+        for (const auto& b : arr(m.size() >= 2 ? m[m.size() - 2].getProperty("content", {}) : juce::var()))
+            signedThinking = signedThinking || (str(b, "type") == "thinking" && str(b, "signature") == "sig-l1");
+        P.eq("limit.reply_kept", signedThinking ? 1 : 0, 1);
+        P.eq("limit.note", has(lastText(agent.chatState(), tp::ChatEntry::Kind::note), "goes on from where it stopped") ? 1 : 0, 1);
+        P.eq("limit.answered", lastText(agent.chatState(), tp::ChatEntry::Kind::assistant) == "Writing it now." ? 1 : 0, 1);
+        P.eq("limit.no_note_at_medium", m.size() >= 3 && says(m[m.size() - 3], "a big synth")
+                                            && !says(m[m.size() - 3], "counts toward one limit") ? 1 : 0, 1);
+
+        // Cut off twice in a row: the turn ends, and the next message goes.
+        script->add(fake::Response::ok(fake::Sse().start().thinking("Still designing", "sig-l2").end("max_tokens", 128000)));
+        script->add(fake::Response::ok(fake::Sse().start().thinking("And more", "sig-l3").end("max_tokens", 128000)));
+        before = script->postCount();
+        agent.send("and the filter");
+        agent.waitIdle();
+        P.eq("limit.twice_requests", script->postCount() - before, 2);
+        P.eq("limit.twice_note", has(lastText(agent.chatState(), tp::ChatEntry::Kind::note), "twice in a row") ? 1 : 0, 1);
+        const juce::Array<juce::var> saved = arr(claude::parseJson(agent.saveState()).getProperty("messages", {}));
+        P.eq("limit.twice_valid", !saved.isEmpty() && str(saved[saved.size() - 1], "role") == "assistant" && alternates(saved) ? 1 : 0, 1);
+        script->add(fake::Response::ok(fake::Sse().start().text("Going on.").end()));
+        agent.send("continue");
+        agent.waitIdle();
+        const juce::Array<juce::var> next = lastMessages();
+        P.eq("limit.continue", alternates(next) && says(next[next.size() - 1], "continue")
+                                   && lastText(agent.chatState(), tp::ChatEntry::Kind::assistant) == "Going on." ? 1 : 0, 1);
+
+        // A tool call cut off twice: error results, and the turn ends with them.
+        script->add(fake::Response::ok(fake::Sse().start().toolUse("toolu_c1", "write_file", "{\"name\": \"big.fm\", \"content\": \"// half")
+                                           .end("max_tokens", 128000)));
+        script->add(fake::Response::ok(fake::Sse().start().toolUse("toolu_c2", "write_file", "{\"name\": \"big.fm\", \"content\": \"// less")
+                                           .end("max_tokens", 128000)));
+        before = script->postCount();
+        agent.send("write big.fm");
+        agent.waitIdle();
+        P.eq("limit.tool_requests", script->postCount() - before, 2);
+        const juce::Array<juce::var> h = arr(claude::parseJson(agent.saveState()).getProperty("messages", {}));
+        const juce::Array<juce::var> r = arr(h.isEmpty() ? juce::var() : h[h.size() - 1].getProperty("content", {}));
+        P.eq("limit.tool_results", r.size() == 1 && str(r[0], "tool_use_id") == "toolu_c2"
+                                       && static_cast<bool>(r[0].getProperty("is_error", false))
+                                       && has(str(r[0], "content"), "cut off") && alternates(h) ? 1 : 0, 1);
+        bool wrote = false;
+        for (const tp::SourceFile& f : processor.editorPort().draft().files)
+            wrote = wrote || f.name == "big.fm";
+        P.eq("limit.tool_ran_nothing", wrote ? 1 : 0, 0);
+
+        // At max effort the user's message says what a reply holds.
+        agent.setEffort("max");
+        script->add(fake::Response::ok(fake::Sse().start().text("Noted.").end()));
+        agent.send("think hard");
+        agent.waitIdle();
+        const juce::Array<juce::var> hard = lastMessages();
+        P.eq("limit.note_at_max", !hard.isEmpty() && says(hard[hard.size() - 1], "counts toward one limit of about 128K tokens")
+                                      && alternates(hard) ? 1 : 0, 1);
+        agent.setEffort("medium");
+    }
+
     // ---- RETRY ---------------------------------------------------------------------------------------------------------
     {
         script->add(fake::Response::failure(529, "overloaded_error", "Overloaded", 1));
@@ -824,6 +900,46 @@ PROBE(plugin, chat)
             for (const auto& b : arr(message.getProperty("content", {})))
                 gone = gone && str(b, "tool_use_id") != "toolu_gone";
         P.eq("repair.orphan_gone", gone ? 1 : 0, 1);
+        agent.loadState(kept);                     // the conversation the sections below go on with
+    }
+
+    // ---- PROMPT --------------------------------------------------------------------------------------------------------
+    {
+        const std::string kept = agent.saveState();
+        const std::string print = str(claude::parseJson(kept), "prompt");
+        P.eq("prompt.saved", print.size() == 16 ? 1 : 0, 1);
+        juce::Array<juce::var> question, reply, thought, again, messages;
+        question.add(input({ { "type", "text" }, { "text", "a pad" } }));
+        reply.add(input({ { "type", "thinking" }, { "thinking", "Slow saws" }, { "signature", "sig-old" } }));
+        reply.add(input({ { "type", "text" }, { "text", "Here it is." } }));
+        thought.add(input({ { "type", "thinking" }, { "thinking", "Cut off" }, { "signature", "sig-cut" } }));
+        again.add(input({ { "type", "text" }, { "text", "more" } }));
+        messages.add(input({ { "role", "user" }, { "content", question } }));
+        messages.add(input({ { "role", "assistant" }, { "content", reply } }));
+        messages.add(input({ { "role", "user" }, { "content", again } }));
+        messages.add(input({ { "role", "assistant" }, { "content", thought } }));
+        const auto thinkingBlocks = [&] {
+            int n = 0;
+            for (const auto& message : arr(claude::parseJson(agent.saveState()).getProperty("messages", {})))
+                for (const auto& b : arr(message.getProperty("content", {})))
+                    n += str(b, "type") == "thinking" ? 1 : 0;
+            return n;
+        };
+        const auto session = [&](const juce::var& prompt) {
+            juce::var o = input({ { "version", 1 }, { "messages", messages }, { "entries", juce::Array<juce::var>() } });
+            if (!prompt.isVoid())
+                o.getDynamicObject()->setProperty("prompt", prompt);
+            return claude::toJson(o);
+        };
+        agent.loadState(session(juce::var()));
+        P.eq("prompt.old_session_no_thinking", thinkingBlocks(), 0);
+        const juce::Array<juce::var> loaded = arr(claude::parseJson(agent.saveState()).getProperty("messages", {}));
+        P.eq("prompt.old_session_valid", loaded.size() == 4 && alternates(loaded) && says(loaded[1], "Here it is.")
+                                             && says(loaded[3], "(no answer)") ? 1 : 0, 1);
+        agent.loadState(session(juce::String("0123456789abcdef")));
+        P.eq("prompt.other_prompt_no_thinking", thinkingBlocks(), 0);
+        agent.loadState(session(juce::String(print)));
+        P.eq("prompt.same_prompt_kept", thinkingBlocks(), 2);
         agent.loadState(kept);                     // the conversation the sections below go on with
     }
 
