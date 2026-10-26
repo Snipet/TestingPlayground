@@ -90,6 +90,17 @@ add_test(NAME lint.exports COMMAND ${CMAKE_COMMAND} "-DFP_BUNDLES=${_fp_bundles}
                                    -P ${PROJECT_SOURCE_DIR}/cmake/LintExports.cmake)
 set_tests_properties(lint.exports PROPERTIES LABELS "lint" TIMEOUT 120)
 
+# ---- the signature lint: each built bundle's signature holds (a host refuses one whose seal does not) -------------
+set(_fp_signed "")
+foreach(_fmt AU VST3 Standalone)
+  if(TARGET ${PRODUCT_NAME}_${_fmt})
+    list(APPEND _fp_signed "$<TARGET_BUNDLE_DIR:${PRODUCT_NAME}_${_fmt}>")
+  endif()
+endforeach()
+add_test(NAME lint.signature COMMAND ${CMAKE_COMMAND} "-DFP_BUNDLES=${_fp_signed}"
+                                     -P ${PROJECT_SOURCE_DIR}/cmake/LintSignature.cmake)
+set_tests_properties(lint.signature PROPERTIES LABELS "lint" TIMEOUT 120)
+
 # ---- the layer lint: Source/dsp and Source/fsdsp are JUCE-free and FunkGui-free ----------------------------------------
 add_test(NAME lint.layers COMMAND ${CMAKE_COMMAND} -DFP_SOURCE_DIR=${PROJECT_SOURCE_DIR}
                                   -P ${PROJECT_SOURCE_DIR}/cmake/LintLayers.cmake)
