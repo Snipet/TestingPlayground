@@ -1,7 +1,10 @@
 // Source/plugin/ClaudeApi.cpp: see ClaudeApi.h.
 #include "plugin/ClaudeApi.h"
 
+#include "Product.h"
+
 #include <chrono>
+#include <cstdlib>
 #include <thread>
 
 namespace testingplayground::claude
@@ -29,13 +32,59 @@ namespace testingplayground::claude
         return juce::var(o);
     }
 
-    std::string apiError(int status, const std::string& body)
+    // ---- the hosts -----------------------------------------------------------------------------------------------------
+    std::string hostName(const std::string& host)
     {
-        std::string message;
+        std::string h = host;
+        if (const std::size_t scheme = h.find("://"); scheme != std::string::npos)
+            h.erase(0, scheme + 3);
+        if (const std::size_t slash = h.find('/'); slash != std::string::npos)
+            h.erase(slash);
+        return h;
+    }
+
+    std::string serverHost()
+    {
+        const std::string var = std::string(product::kEnvPrefix) + "SERVER_URL";
+        const char* raw = std::getenv(var.c_str());
+        std::string url = raw != nullptr ? juce::String::fromUTF8(raw).trim().toStdString() : std::string();
+        while (!url.empty() && url.back() == '/')
+            url.pop_back();
+        const auto startsWith = [&](const char* prefix) { return url.rfind(prefix, 0) == 0; };
+        const std::string name = hostName(url);
+        const std::string bare = name.substr(0, name.rfind(':') == std::string::npos ? name.size() : name.rfind(':'));
+        const bool local = bare == "localhost" || bare == "127.0.0.1" || bare == "[::1]";
+        const bool ok = !name.empty() && url.find_first_of(" \t\r\n") == std::string::npos
+                     && (startsWith("https://") || (startsWith("http://") && local));
+        return ok ? url : std::string(kServerHost);
+    }
+
+    // ---- errors ------------------------------------------------------------------------------------------------------
+    std::string errorMessage(const std::string& body)
+    {
         const juce::var v = parseJson(body);
         if (auto* o = v.getDynamicObject())
             if (auto* e = o->getProperty("error").getDynamicObject())
-                message = e->getProperty("message").toString().toStdString();
+                return e->getProperty("message").toString().toStdString();
+        return {};
+    }
+
+    std::string serverError(int status, const std::string& body)
+    {
+        const std::string message = errorMessage(body);
+        const bool own = status == 400 || status == 401 || status == 402 || status == 403 || status == 502;
+        if (own && !message.empty())
+            return message;
+        if (status == 401)
+            return "Your sign-in is no longer valid. Sign in again.";
+        if (status == 403)
+            return "This account may not do that.";
+        return apiError(status, body);
+    }
+
+    std::string apiError(int status, const std::string& body)
+    {
+        std::string message = errorMessage(body);
         if (message.empty())
             message = body.substr(0, 300);
         switch (status)
@@ -57,25 +106,27 @@ namespace testingplayground::claude
         class HttpsTransport final : public Transport
         {
         public:
-            HttpResult post(const std::string& path, const std::string& body, const Headers& headers,
-                            const std::function<bool(std::string_view)>& onChunk,
+            HttpResult post(const std::string& host, const std::string& path, const std::string& body,
+                            const Headers& headers, const std::function<bool(std::string_view)>& onChunk,
                             const std::atomic<bool>& cancel) override
             {
-                return request(true, path, body, headers, onChunk, cancel);
+                return request(true, host, path, body, headers, onChunk, cancel);
             }
 
-            HttpResult get(const std::string& path, const Headers& headers, const std::atomic<bool>& cancel) override
+            HttpResult get(const std::string& host, const std::string& path, const Headers& headers,
+                           const std::atomic<bool>& cancel) override
             {
-                return request(false, path, {}, headers, {}, cancel);
+                return request(false, host, path, {}, headers, {}, cancel);
             }
 
         private:
-            static HttpResult request(bool post, const std::string& path, const std::string& body,
-                                      const Headers& headers, const std::function<bool(std::string_view)>& onChunk,
+            static HttpResult request(bool post, const std::string& host, const std::string& path,
+                                      const std::string& body, const Headers& headers,
+                                      const std::function<bool(std::string_view)>& onChunk,
                                       const std::atomic<bool>& cancel)
             {
                 HttpResult r;
-                juce::URL url(juce::String(kHost) + juce::String(path));
+                juce::URL url(juce::String(host) + juce::String(path));
                 if (post)
                     url = url.withPOSTData(juce::MemoryBlock(body.data(), body.size()));
                 juce::WebInputStream stream(url, post);
@@ -104,7 +155,7 @@ namespace testingplayground::claude
 
                 if (!stream.connect(nullptr))
                 {
-                    r.error = cancel.load() ? "stopped" : "no connection to api.anthropic.com";
+                    r.error = cancel.load() ? "stopped" : "no connection to " + hostName(host);
                     finish();
                     return r;
                 }

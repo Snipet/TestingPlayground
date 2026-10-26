@@ -27,14 +27,18 @@
 //             processor's ports, and a double-click returns to the parameter's fminus::default. The editor gives up
 //             the height that more rows take
 //   chat      at the right, a rounded card set apart from the square panel (ChatStyle.h): its header (the title, a new
-//             chat (asking first), the API key), the conversation (ChatView.h: bubbles, light markdown, thinking rows,
+//             chat (asking first), access: the account or the API key), the conversation (ChatView.h: bubbles, light markdown, thinking rows,
 //             cards of what Claude did, code blocks with Copy, an empty chat's suggestions), the message box that grows
 //             with its text (Return sends it, Shift-Return breaks the line) with the model and thinking pills (menus)
 //             and the round send-or-stop button in its bar (ChatItems.h), and the line under it (what Claude is doing,
-//             else the last reply's tokens)
-//   key       a dialog over the panel for the Anthropic API key: a masked field (Cmd-V pastes), Save, Cancel and, when a
-//             key is stored, Remove key. It opens from the header's key, the empty chat's button, and when a message
-//             is sent before any key is stored (the message goes once a key is saved)
+//             else the last reply's tokens, and through the account the credit left)
+//   access    a dialog over the panel with two tabs, the one in use marked with a dot. ACCOUNT: signed out, the
+//             username and a masked password (Tab moves between them, Return signs in, Cmd-V pastes) and Sign in,
+//             which waits for the server and then closes, or says why not; signed in, who and the credit left, and
+//             Sign out. API KEY: a masked field for an Anthropic API key (Cmd-V pastes), Save and, when a key is stored,
+//             Remove key. Each tab whose access is stored but not in use offers to use it (Use account, Use this key).
+//             It opens from the header's key, the empty chat's buttons (Sign in, Use an API key), and when a message
+//             is sent before the chat can send it (the message goes once it can)
 //   footer    the spec line of the control under the hand (or focused, or last touched), and the ZOOM cells
 //
 // Keys go to a text field while it has the caret (the editor: Tab indents there; the chat's message box and its
@@ -180,13 +184,19 @@ namespace testingplayground::ui
         funkgui::Point centreOfKey() const;
         ChatView& chatView();                            // the conversation (its own probe hooks)
         const ChatView& chatView() const;
-        // The key dialog.
+        // The access dialog. Its primary button is Save on the API key tab and Sign in on the account tab.
         bool keyDialogOpen() const noexcept { return keyOpen_; }
+        bool dialogOnAccount() const noexcept { return tab_ == DialogTab::account; }
         const std::string& keyDialogWhy() const noexcept { return keyWhy_; }
+        funkgui::Point centreOfDialogTab(bool account) const;
         funkgui::Point centreOfKeyField() const;
         funkgui::Point centreOfKeySave() const;
         funkgui::Point centreOfKeyCancel() const;
-        std::optional<funkgui::Point> centreOfKeyRemove() const;      // nullopt while no key is stored
+        std::optional<funkgui::Point> centreOfKeyRemove() const;      // nullopt while no key is stored (the key tab)
+        funkgui::Point centreOfUsername() const;
+        funkgui::Point centreOfPassword() const;
+        std::optional<funkgui::Point> centreOfSignOut() const;        // the account tab, while signed in
+        std::optional<funkgui::Point> centreOfUseThis() const;        // Use account / Use this key, when offered
 
         // funkgui::Panel
         void  attach(funkgui::HostServices&) override;
@@ -250,16 +260,34 @@ namespace testingplayground::ui
         const InputItem& inputItem() const;
         funkgui::Point centreOf(int item) const;
 
-        // The key dialog.
+        // The access dialog.
+        enum class DialogTab : uint8_t { account, key };
         struct KeyDialog
         {
-            funkgui::Rect box, field, save, cancel, remove;
+            funkgui::Rect box, accountTab, keyTab;
+            funkgui::Rect field;                         // the key tab's
+            funkgui::Rect user, pass;                    // the account tab's
+            funkgui::Rect primary, secondary;            // Save or Sign in; Cancel or Close (at the right)
+            funkgui::Rect danger, extra;                 // Remove key or Sign out; Use this key or Use account (left)
+        };
+        // What the dialog's buttons are now (empty: not shown).
+        struct DialogButtons
+        {
+            std::string primary, secondary, danger, extra;
         };
         KeyDialog keyDialog() const;                     // its places, for the panel's size
-        void openKeyDialog();
+        DialogButtons dialogButtons() const;
+        void openKeyDialog();                            // on the tab of the access in use
+        void openKeyDialog(DialogTab tab);
+        void showTab(DialogTab tab);
         void closeKeyDialog();
         void saveKeyFromDialog();
         void removeKeyFromDialog();
+        void signInFromDialog();
+        void signOutFromDialog();
+        void useFromDialog();                            // Use account / Use this key
+        void dialogAction(const std::string& label);     // a button, by what it says
+        void afterSignIn();                              // the server answered a sign-in
         bool keyDialogKey(const funkgui::KeyEvent&);
         void keyDialogPointerDown(funkgui::Point);
         void drawKeyDialog(funkgui::Canvas&, const funkgui::Theme&) const;
@@ -307,12 +335,16 @@ namespace testingplayground::ui
         ChatState chat_;
         std::string activity_;                           // the line under the message box
         uint32_t chatA11y_ = 0;                          // bumps when the conversation's items change
-        std::string pendingSend_;                        // a message waiting for a key
+        std::string pendingSend_;                        // a message waiting for a key or a sign-in
 
-        // The key dialog.
+        // The access dialog.
         bool keyOpen_ = false;
+        DialogTab tab_ = DialogTab::account;
         funkgui::text::LineEdit keyEdit_;
-        std::string keyWhy_;                             // why the key typed was refused
+        funkgui::text::LineEdit userEdit_, passEdit_;    // the account tab's username and password
+        int accountField_ = 0;                           // the account tab's field with the caret: 0 username, 1 password
+        bool awaitingSignIn_ = false;                    // a sign-in was sent; the server has not answered yet
+        std::string keyWhy_;                             // why the key typed, or the sign-in, was refused
         int focusBeforeKey_ = -1;
 
         funkgui::HostServices* host_ = nullptr;

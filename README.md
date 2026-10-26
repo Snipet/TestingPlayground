@@ -178,15 +178,17 @@ knob). To add one, add a file there whose first line is
 
 ## The chat
 
-The rounded card at the right is a conversation with Claude, through the [Claude API](https://docs.claude.com) with
-your own key. Claude sees the plugin's files, whether they play, the last compile's messages and the dials (sent with
-a message when they changed; a file it has already seen goes as one line, not again in full), and it can act on
-them: read, write, edit, rename and delete the files (the editor's tabs follow, and Cmd-Z in a file undoes its
-change), add the library's building blocks, run the program (RUN; the compile's messages come back to it), set the
-dials, measure what the program puts out, and read the CPU load and the output guard's alerts. Ask it for an effect ("a tape delay with wow and
-flutter"), a change ("make the filter resonate more"), an explanation ("what does this program do?"), or help with
-an error or a click. It knows FMinus, the plugin's contract, the library (each file's header) and how to build a
-large program from it, and it lays the dials out in a panel (its instructions are in `Source/plugin/ChatPrompt.cpp`).
+The rounded card at the right is a conversation with Claude, through the [Claude API](https://docs.claude.com): sign in
+with a TestingPlayground account (Claude then runs on the TestingPlayground server, and what it costs comes out of the
+account's credit), or use your own Anthropic API key (billed to you). Claude sees the plugin's files, whether they play,
+the last compile's messages and the dials (sent with a message when they changed; a file it has already seen goes as one
+line, not again in full), and it can act on them: read, write, edit, rename and delete the files (the editor's tabs
+follow, and Cmd-Z in a file undoes its change), add the library's building blocks, run the program (RUN; the compile's
+messages come back to it), set the dials, measure what the program puts out, and read the CPU load and the output
+guard's alerts. Ask it for an effect ("a tape delay with wow and flutter"), a change ("make the filter resonate more"),
+an explanation ("what does this program do?"), or help with an error or a click. It knows FMinus, the plugin's contract,
+the library (each file's header) and how to build a large program from it, and it lays the dials out in a panel (its
+instructions are in `Source/plugin/ChatPrompt.cpp`).
 
 - **The conversation**: your messages in bubbles at the right; Claude's answers in light markdown (lists, headings,
   **bold**, `code`, and code blocks with a **Copy** of their own); a **Copy** under each finished answer (it shows
@@ -195,17 +197,27 @@ large program from it, and it lays the dials out in a panel (its instructions ar
   doing ("Writing osc.fm (12 KB)"). The wheel scrolls; a round button brings you back to the end. An empty chat
   offers suggestions: a click puts one in the message box, and nothing is sent until you send it.
 - **The message box** grows with its text (up to eight lines). Return sends, Shift-Return breaks the line. In its bar:
-  **the model** (a menu of the models your key can use that think adaptively), **Thinking** (low to max: how much
-  Claude thinks before it answers, and how hard it works) and, on Claude Opus 5.5, **Fast** (the API's fast mode: the
-  same model writing its answers up to 2.5 times as fast, at twice the price), all three machine-wide and shared by
-  the two playground plugins (higher levels and larger models answer better and cost more), and the round **send**
-  button, which turns into **stop** while Claude works (what it did stays). The line under the box says what Claude
-  is doing, then the last reply's tokens: in (and how many were read from the cache) and out, and "fast" when fast
-  mode wrote it. When fast mode stays busy a turn goes on at standard speed; when your key cannot use it, it turns
-  itself off and says why.
-- **The header**: the pencil starts a **new chat** (it asks first); the key opens the **API key** dialog: paste your
-  key (from console.anthropic.com, API keys) with Cmd-V and Save. A message sent before a key is stored opens the
-  same dialog and goes once the key is saved. Remove key forgets it.
+  **the model** (a menu of the models your key or your account can use that think adaptively), **Thinking** (low to max:
+  how much Claude thinks before it answers, and how hard it works) and, on Claude Opus 5.5, **Fast** (the API's fast
+  mode: the same model writing its answers up to 2.5 times as fast, at twice the price), all three machine-wide and
+  shared by the two playground plugins (higher levels and larger models answer better and cost more), and the round
+  **send** button, which turns into **stop** while Claude works (what it did stays). The line under the box says what
+  Claude is doing, then the last reply's tokens: in (and how many were read from the cache) and out, "fast" when fast
+  mode wrote it, and, signed in, the credit left ("$4.50 credit left"). When fast mode stays busy a turn goes on at
+  standard speed; when your key cannot use it, it turns itself off and says why.
+- **The header**: the pencil starts a **new chat** (it asks first); the key opens the **access** dialog, which has two
+  tabs (a dot marks the one the chat uses):
+  - **Account**: your username and password (from the TestingPlayground admin; Tab moves to the password, Cmd-V
+    pastes it) and **Sign in**. Signed in, it shows who you are and the credit left, and **Sign out**. The password is
+    sent once, to the server, and kept nowhere; the server answers with a sign-in that lasts 90 days from its last
+    use. When it ends (it expired, or the admin signed you out) the chat says so and asks you to sign in again; when
+    the credit is used up it says that (ask the admin for more).
+  - **API key**: paste your key (from console.anthropic.com, API keys) with Cmd-V and **Save**. **Remove key**
+    forgets it.
+
+  Both can be stored at once: the chat uses the one you set up last, and the other tab offers to switch back to it
+  (**Use account**, **Use this key**). The empty chat has a **Sign in** and a **Use an API key** button, and a message
+  sent before the chat can send it opens the dialog and goes once you have signed in or saved a key.
 - **Large work**: a complete synthesizer is a few hundred lines in several files (up to twelve tabs). Claude plans,
   takes building blocks from the library, writes its own files together, gives the dials a panel, runs them until
   they compile, then **measures** the result (a render made offline:
@@ -216,19 +228,25 @@ large program from it, and it lays the dials out in a panel (its instructions ar
   answer cut off at its limit goes on by itself, Claude told why; a second one in a row ends the turn (send
   "continue" to go on). At **Thinking: Max** (and XHigh) Claude thinks the longest, so a hard design is more likely
   to reach the limit: **High** leaves it more room to write.
-- **The session** keeps the conversation, so a project reopens with its chat; the key is never in it.
-- **Network**: the chat is the only part of the plugin that uses the network, and only when you send a message: HTTPS
-  to `api.anthropic.com` (the Messages API, streamed, and the models list once per key). Requests are billed to your
-  key. A turn goes on while the editor is closed.
+- **The session** keeps the conversation, so a project reopens with its chat; neither the key nor the sign-in is in
+  it.
+- **Network**: the chat is the only part of the plugin that uses the network, and only when you send a message, sign
+  in or sign out. With your key: HTTPS to `api.anthropic.com` (the Messages API, streamed, and the models list once
+  per key), billed to your key. Signed in: the same requests over HTTPS to the TestingPlayground server, which passes
+  them on to Anthropic unchanged and charges each to your account's credit (it lists only the models it can charge
+  for), and after each turn it is asked for the credit left. A turn goes on while the editor is closed. For a server
+  run locally (`wrangler dev`), start the plugin with `TSTN_SERVER_URL=http://localhost:8787` (only https://
+  addresses, or http:// on this Mac, are taken).
 
 **Where the key is.** `~/Library/Application Support/Funk/Playground/anthropic-key.bin` (the folder 0700, the file
-0600), shared by the effect and the synth playground, in any host and in their Standalones; `chat.json` beside it
-keeps the model and the level. The file holds the key encrypted with AES-256-CBC and authenticated with HMAC-SHA256
-(CommonCrypto), under keys derived with PBKDF2 (100,000 rounds, a fresh salt each save) from this Mac's device ID and
-your account: copied to another Mac or read by another account it is useless, and nothing on disk shows the key in
-clear. A program running as you on this Mac could derive the same keys, as it could read your other files: the
-encryption protects the key at rest (backups, a copied folder, a stray search), not from such a program. To revoke a
-key, delete it at console.anthropic.com.
+0600), shared by the effect and the synth playground, in any host and in their Standalones; the sign-in (the token the
+server gave, never the password) is `account-token.bin` beside it, kept the same way; `chat.json` keeps the model, the
+level, the username and which of the two the chat uses. The file holds the key encrypted with AES-256-CBC and
+authenticated with HMAC-SHA256 (CommonCrypto), under keys derived with PBKDF2 (100,000 rounds, a fresh salt each save)
+from this Mac's device ID and your account: copied to another Mac or read by another account it is useless, and nothing
+on disk shows the key in clear. A program running as you on this Mac could derive the same keys, as it could read your
+other files: the encryption protects the key at rest (backups, a copied folder, a stray search), not from such a
+program. To revoke a key, delete it at console.anthropic.com; Sign out ends the sign-in on the server too.
 
 ## Build and run
 
@@ -276,10 +294,10 @@ build-dev/TestingPlayground_probes --list
 | `plugin.process` | the processor as a host drives it: P1 to P32 named and worded as the program's, host writes reach the program (within 0.05 dB), a host's NaN ignored (its text a dash), a block of 0 samples and a block larger than announced change nothing, the bypass passes the input bit for bit and its edges do not click, a block before prepareToPlay passes the input with NaN and inf as 0 |
 | `plugin.presets` | the presets, in a folder of the probe's own (under CTest the default is the sandbox's): names tidied; a program of two files and its two dials saved, listed with a date, the JSON naming this plugin and its kind; loaded into a fresh processor, its files, tab and dials back, by name in any order (an unknown one ignored); a name in another case replaces it; the session keeps the name; another kind's preset, a damaged file and a missing name refused, the draft untouched; deleted, gone |
 | `plugin.state` | the session round-trips (a program of two files, the draft's three files and its tab, the dials, the output bit for bit); a run moves a renamed parameter's dial to its default and keeps a kept one's; a session whose program does not compile leaves the last one playing; one without a program plays the first example; one saved before files loads as one file; one with too many files or bad names loads tidied; a NaN dial loads as 0.5 |
-| `plugin.chatstore` | the key on disk, in a folder of the probe's own: a key's shape; saved, the file is the format above with no 12 characters of the key in it, 0600 in a 0700 folder, and loads back; saved twice it differs (fresh salt and IV); one byte changed anywhere, or the file cut short, and it does not load; forgotten, it is gone; the model, level and fast mode round-trip, a damaged chat.json loads as none |
-| `plugin.chat` | the chat's agent against a scripted API (no network): the event stream however it is cut, a message rebuilt (thinking and its signature, text, a tool call's streamed input, a compaction block, the usage over its iterations); no key, no request; a turn that writes a program, runs it, sets its dial and answers; each request's shape (model, the model's own max_tokens, adaptive thinking, effort, the cached system prompt, the ten tools, fallbacks and compaction with their betas, the API version) and the history append-only; another model and level; fast mode (`speed` and no fallbacks, the footer's "fast", standard speed when it stays busy, off when the API refuses it, the beta on Opus 4.8, none on Sonnet); a tool input that is not JSON; an answer cut off at its limit (the turn goes on, Claude told; twice in a row it ends; a tool call cut off runs nothing; the limit note at max effort, none at medium); a retry after 529; a 401; a refusal; a fallback; a file Claude has seen named but not resent; measure_output through the agent; add_library_file (the tab, its text in the result and seen after it, an unknown name, the same file twice); a stream cut short asked again and shown once; a compaction (the history starting at the summary, the files sent again), in the middle of a turn too (every tool result with its call, the files with the results), and a session saved with the old cut repaired; a session saved with another system prompt or none loading without its thinking; STOP; the session; NEW |
+| `plugin.chatstore` | the key on disk, in a folder of the probe's own: a key's shape; saved, the file is the format above with no 12 characters of the key in it, 0600 in a 0700 folder, and loads back; saved twice it differs (fresh salt and IV); one byte changed anywhere, or the file cut short, and it does not load; forgotten, it is gone; the sign-in token the same way (its shape, the file, a byte changed, forgotten without the key); the model, level and fast mode round-trip, a damaged chat.json loads as none; the username and the access in use round-trip beside them, and never chosen the chat uses the account unless only a key is stored |
+| `plugin.chat` | the chat's agent against a scripted API (no network): the event stream however it is cut, a message rebuilt (thinking and its signature, text, a tool call's streamed input, a compaction block, the usage over its iterations); no key, no request; a turn that writes a program, runs it, sets its dial and answers; each request's shape (model, the model's own max_tokens, adaptive thinking, effort, the cached system prompt, the ten tools, fallbacks and compaction with their betas, the API version) and the history append-only; another model and level; fast mode (`speed` and no fallbacks, the footer's "fast", standard speed when it stays busy, off when the API refuses it, the beta on Opus 4.8, none on Sonnet); a tool input that is not JSON; an answer cut off at its limit (the turn goes on, Claude told; twice in a row it ends; a tool call cut off runs nothing; the limit note at max effort, none at medium); a retry after 529; a 401; a refusal; a fallback; a file Claude has seen named but not resent; measure_output through the agent; add_library_file (the tab, its text in the result and seen after it, an unknown name, the same file twice); a stream cut short asked again and shown once; a compaction (the history starting at the summary, the files sent again), in the middle of a turn too (every tool result with its call, the files with the results), and a session saved with the old cut repaired; a session saved with another system prompt or none loading without its thinking; STOP; the session; signing in to a scripted server (refusals shown and nothing stored, the token stored, the account in use; a turn sent to the server with the token as a bearer and no key, the models asked of it, the credit after the turn; no token or password in the session or a request body; its 402, 502, 400 and 403 shown and not retried, a 529 retried; a 401 forgetting the token and sending nothing after; the key used again; the one set up last in use; signing out; the server's address from the environment); NEW |
 | `plugin.chatexample` | the system prompt has the large-program section, the panel's lines, every library file's header and the program built from the library, word for word; that program compiles with no message (its panel too), every dial in a titled section, plays finite and audible, the same in blocks of 64 and 333, its voices ending; measure_output's numbers on programs whose answer is known (a level, a pitch, a gain, an impulse), and its notes for a voice that never ends or an effect that makes sound from silence; the prompt's FFT and `Shared` |
-| `gui.chat` | the chat column and resizing, headless, to `gui.chat.png`, `.empty.png`, `.key.png`, `.paper.png`, `.small.png` and `.large.png`: the empty chat (key button, suggestions); the key dialog (opened by a message with no key, Escape, modal, a key refused, pasted, never spoken, Save sends the waiting message, Remove); the message box growing with its rows and shrinking when sent; a turn shown (thinking that opens and closes, what Claude did, the answer, a code block and its Copy, an answer's Copy, the usage), its files as tabs, the program playing, Cmd-Z undoing Claude's change; the model and thinking menus; the Fast switch (on Claude Opus 5.5 only, a switch to a screen reader); stop; new chat; a suggestion into the box, unsent; the wheel and the jump to the end; the least size with twelve narrowed tabs and a large size, every item inside; the session keeps the size |
+| `gui.chat` | the chat column and resizing, headless, to `gui.chat.png`, `.empty.png`, `.key.png`, `.signin.png`, `.account.png`, `.paper.png`, `.small.png` and `.large.png`: the empty chat (Sign in and API key buttons, suggestions); the access dialog's API key tab (opened by a message the chat cannot send yet, Escape, modal, a key refused, pasted, never spoken, Save sends the waiting message, Remove); its account tab (a username typed, a password pasted and never spoken, a wrong password, signed in, a message through the server, the credit, Use this key and Use account, Sign out); the message box growing with its rows and shrinking when sent; a turn shown (thinking that opens and closes, what Claude did, the answer, a code block and its Copy, an answer's Copy, the usage), its files as tabs, the program playing, Cmd-Z undoing Claude's change; the model and thinking menus; the Fast switch (on Claude Opus 5.5 only, a switch to a screen reader); stop; new chat; a suggestion into the box, unsent; the wheel and the jump to the end; the least size with twelve narrowed tabs and a large size, every item inside; the session keeps the size |
 | `gui.dump` | the panel headless to `gui.dump.png`, `.paper.png`, `.error.png`, `.edited.png`, `.files.png`, `.dials.png`, `.dials.small.png`, `.dials.most.png`, `.dials.most.small.png`, `.panel.png`, `.panel.paper.png`, `.panel.small.png`, `.example.png`, `.displays.png`, `.displays.paper.png`, `.random.png` and `.presets.png`: settles, every glyph, the draft in the editor and a dial for each parameter; typing, Cmd-Return, a syntax error (status, problem line, gutter mark, the click that jumps to it), the EXAMPLES menu and its undo; the files' tabs (+, renaming in place, a taken name refused, Escape, typing into a second file, an `#include` of it that runs, its error's problem and marks, the click that shows its file, closing with and without asking); a dial's drag and double-click; sixteen dials in rows (two at the default and the least size, one when wide; in order, evenly spaced, inside the left column, the editor giving up a row's height; 32 in three rows, every knob small at the least size); sixteen dials in five sections (two rows of frames, titles in order, every dial inside its frame, the rows even, the labels and small knobs asked for, at the least size too; a bad panel line noted on its line); the LIBRARY menu (every file under its heading; a file added as a tab and #included after the program's description, undoable, still running; ticked and not added twice; greyed with twelve tabs); the program Claude's instructions build from the library, its files added through the menu's path, running with no note, every dial in a titled section; a program with every display and dial style, coloured, audio through the processor (each item in its frame; a meter at the Engine's peak within 0.3 dB, a field's meter, light, number and trace; a button's click chooses its value, the switch flips, a fader's drag raises its dial, the host says an option's name; another program's light dark until the audio thread plays it); RANDOM (a seed's program in place of the text, its library files as tabs, run with no note, Cmd-Z back in one step; the button's another; with twelve tabs, a notice and nothing changed); PRESETS (the browser opened with the program's title, a name typed and saved: the status and the header say so, EDITED after an edit; listed by name, Load asking over changes and then loading the text back, Save asking before it replaces, Delete asking; Escape); Escape and Tab |
 | `lint.layers`, `lint.exports` | Source/dsp, Source/fsdsp and Source/fminus without JUCE or FunkGui, FMinus through its public header only; each bundle exports its entry points and nothing else |
 
@@ -326,11 +344,11 @@ Source/plugin/           the JUCE AudioProcessor: P1 to P32, the program's files
                          EditorPort.h, what the editor reaches besides the parameters;
                          the chat: ChatAgent (the conversation, its turns and Claude's tools), ChatPrompt.cpp (Claude's
                          instructions: the panel, the library, a program built from it), ClaudeApi (the Messages API
-                         over HTTPS),
-                         ChatStore (the key, encrypted), ChatPort.h (what the editor reaches of it);
+                         over HTTPS, to Anthropic or the TestingPlayground server),
+                         ChatStore (the key and the sign-in, encrypted), ChatPort.h (what the editor reaches of it);
                          PresetStore (the presets on this Mac)
 Source/editor/           the FunkGui panel (Panel.cpp: the toolbar, the files' tabs and TextEditors, the problems, the
-                         dials, the chat's card and the key dialog; its layout follows the window's size),
+                         dials, the chat's card and the access dialog; its layout follows the window's size),
                          DialLayout (the dials' and displays' places: plain rows, or the panel's sections),
                          PresetBrowser (PRESETS' card: the list, the name, Save, Load and Delete),
                          Looks (the dial styles and the displays drawn: vintage knobs, faders, switches, buttons, LED

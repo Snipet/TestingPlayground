@@ -729,10 +729,12 @@ namespace testingplayground::ui
             tmp.spans.push_back(s);
         }
         y += end + 16.0f;
-        if (!hasKey_)
+        if (!ready_)
         {
-            const float bw = 172.0f;
-            empty_.addKey = { std::floor((w - bw) * 0.5f), y, bw, 32.0f };
+            const float sw = 112.0f, kw = 156.0f, gap = 8.0f;
+            const float x0 = std::floor((w - sw - gap - kw) * 0.5f);
+            empty_.signIn = { x0, y, sw, 32.0f };
+            empty_.addKey = { x0 + sw + gap, y, kw, 32.0f };
             y += 32.0f + 20.0f;
         }
         const float cw = std::min(w, 380.0f);
@@ -752,7 +754,7 @@ namespace testingplayground::ui
     {
         const float w = contentWidth();
         const bool wasAtEnd = follow_ || atEnd();
-        hasKey_ = state.hasKey;
+        ready_ = state.ready();
         busy_ = state.busy;
         activity_ = asciiText(state.activity);
         if (state.entries.size() < entryCount_)
@@ -910,7 +912,7 @@ namespace testingplayground::ui
         {
             const Point o{ bounds_.x + kPadX, bounds_.y + std::max(kPadTop, (bounds_.h - empty_.h) * 0.42f) };
             const Point q{ p.x - o.x, p.y - o.y };
-            if (empty_.addKey.contains(q))
+            if (empty_.addKey.contains(q) || empty_.signIn.contains(q))
                 return funkgui::Cursor::pointingHand;
             for (const Rect& r : empty_.chips)
                 if (r.contains(q))
@@ -938,6 +940,12 @@ namespace testingplayground::ui
             {
                 if (hooks_.addKey)
                     hooks_.addKey();
+                return;
+            }
+            if (!empty_.signIn.isEmpty() && empty_.signIn.contains(q))
+            {
+                if (hooks_.signIn)
+                    hooks_.signIn();
                 return;
             }
             for (std::size_t i = 0; i < empty_.chips.size(); ++i)
@@ -978,6 +986,14 @@ namespace testingplayground::ui
             return std::nullopt;
         const Point o{ bounds_.x + kPadX, bounds_.y + std::max(kPadTop, (bounds_.h - empty_.h) * 0.42f) };
         return Point{ o.x + empty_.addKey.centreX(), o.y + empty_.addKey.centreY() };
+    }
+
+    std::optional<Point> ChatView::centreOfSignIn() const
+    {
+        if (!blocks_.empty() || empty_.signIn.isEmpty())
+            return std::nullopt;
+        const Point o{ bounds_.x + kPadX, bounds_.y + std::max(kPadTop, (bounds_.h - empty_.h) * 0.42f) };
+        return Point{ o.x + empty_.signIn.centreX(), o.y + empty_.signIn.centreY() };
     }
 
     std::optional<Point> ChatView::centreOfCopy(int n) const { return centreOfAction(ActionKind::copyCode, n); }
@@ -1044,13 +1060,21 @@ namespace testingplayground::ui
             const float oy = bounds_.y + std::max(kPadTop, (bounds_.h - empty_.h) * 0.42f);
             for (const Span& s : empty_.spans)
                 text(s.text, x0 + s.x, oy + s.y, s.lineH, s.role, colourOf(s.role, p));
+            if (!empty_.signIn.isEmpty())
+            {
+                const Rect r{ x0 + empty_.signIn.x, oy + empty_.signIn.y, empty_.signIn.w, empty_.signIn.h };
+                const bool hover = r.contains(pointer_);
+                c.rrect(r.x, r.y, r.w, r.h, r.h * 0.5f, hover ? funkgui::mix(p.accent, p.text, 0.12f) : p.accent);
+                chat::drawIcon(c, chat::Icon::person, r.x + 22.0f, r.centreY(), 13.0f, p.onAccent);
+                text("Sign in", r.x + 38.0f, r.y, r.h, Role::smallStrong, p.onAccent);
+            }
             if (!empty_.addKey.isEmpty())
             {
                 const Rect r{ x0 + empty_.addKey.x, oy + empty_.addKey.y, empty_.addKey.w, empty_.addKey.h };
                 const bool hover = r.contains(pointer_);
-                c.rrect(r.x, r.y, r.w, r.h, r.h * 0.5f, hover ? funkgui::mix(p.accent, p.text, 0.12f) : p.accent);
-                chat::drawIcon(c, chat::Icon::key, r.x + 22.0f, r.centreY(), 13.0f, p.onAccent);
-                text("Add your API key", r.x + 38.0f, r.y, r.h, Role::smallStrong, p.onAccent);
+                c.rrect(r.x, r.y, r.w, r.h, r.h * 0.5f, hover ? p.hover : p.raised, 1.0f, p.composerEdge);
+                chat::drawIcon(c, chat::Icon::key, r.x + 22.0f, r.centreY(), 13.0f, hover ? p.text : p.soft);
+                text("Use an API key", r.x + 38.0f, r.y, r.h, Role::small, hover ? p.text : p.soft);
             }
             for (std::size_t i = 0; i < empty_.chips.size(); ++i)
             {
@@ -1232,6 +1256,16 @@ namespace testingplayground::ui
             intro.value = emptyText_.body;
             intro.readOnly = true;
             out.push_back(intro);
+            if (!empty_.signIn.isEmpty())
+            {
+                funkgui::A11yItem in;
+                in.id = base_ + 14;
+                in.parent = base_;
+                in.role = funkgui::A11yRole::button;
+                in.bounds = { o.x + empty_.signIn.x, o.y + empty_.signIn.y, empty_.signIn.w, empty_.signIn.h };
+                in.title = "Sign in";
+                out.push_back(in);
+            }
             if (!empty_.addKey.isEmpty())
             {
                 funkgui::A11yItem key;
@@ -1239,7 +1273,7 @@ namespace testingplayground::ui
                 key.parent = base_;
                 key.role = funkgui::A11yRole::button;
                 key.bounds = { o.x + empty_.addKey.x, o.y + empty_.addKey.y, empty_.addKey.w, empty_.addKey.h };
-                key.title = "Add your API key";
+                key.title = "Use your own API key";
                 out.push_back(key);
             }
             for (std::size_t i = 0; i < empty_.chips.size(); ++i)
@@ -1313,6 +1347,8 @@ namespace testingplayground::ui
         {
             if (k == 2 && hooks_.addKey)
                 hooks_.addKey();
+            else if (k == 14 && hooks_.signIn)
+                hooks_.signIn();
             else if (k >= 3 && k - 3 < emptyText_.suggestions.size() && hooks_.suggest)
                 hooks_.suggest(emptyText_.suggestions[k - 3]);
             return true;
