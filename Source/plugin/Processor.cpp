@@ -8,9 +8,12 @@
 
 #include "fsdsp/core/Sanitize.h"
 
+#include <funkgui/gpu/ShaderLibrary.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 namespace testingplayground
 {
@@ -25,7 +28,34 @@ namespace testingplayground
         const juce::Identifier kChatTag{ "CHAT" }, kJson{ "json" };      // the chat with Claude (ChatAgent::saveState)
         const juce::Identifier kEditorTag{ "EDITOR" }, kWidth{ "w" }, kHeight{ "h" };   // the editor's size
         const juce::Identifier kView{ "view" };                                          // and its view: "panel"
+        const juce::Identifier kPageTag{ "PAGE" }, kTitle{ "title" };                    // its interface's pages
         constexpr int kMaxEditorSide = 16384;
+
+        // What building a .gui file's shaders needs (fminus/Shaders.h): shaderc, bundled in the plugin
+        // (Contents/Resources/shaderc: CMakeLists.txt copies the pinned bgfx's there), else where <prefix>SHADERC says
+        // (the probes'); FunkGui's prelude, varyings and bgfx_shader.sh; the renderer's target.
+        ShaderTools shaderTools()
+        {
+            ShaderTools t;
+            const juce::File exe = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+            const juce::File bundled = exe.getParentDirectory().getSiblingFile("Resources").getChildFile("shaderc");
+            const char* env = std::getenv((std::string(product::kEnvPrefix) + "SHADERC").c_str());
+            if (bundled.existsAsFile())
+                t.shaderc = bundled.getFullPathName().toStdString();
+            else if (env != nullptr && *env != '\0')
+                t.shaderc = env;
+            t.prelude = funkgui::shaders::fragmentPrelude();
+            t.varyingDef = funkgui::shaders::varyingDef();
+            t.bgfxShaderSh = funkgui::shaders::bgfxShaderSh();
+#if defined(__APPLE__)
+            t.platform = "osx";
+            t.profile = "metal";
+#else
+            t.platform = "linux";
+            t.profile = "spirv";
+#endif
+            return t;
+        }
         const juce::Identifier kParamId{ "id" }, kParamValue{ "value" };   // the APVTS's <PARAM id value> children
 
         constexpr int kMaxChannels = 8;                          // handed to the Engine (the layouts allow two)
@@ -194,6 +224,7 @@ namespace testingplayground
         // The first example plays from the start (fminus.examples checks it compiles), its dials at their defaults.
         draft_.files = singleFile(kExamples[0].source);
         presetFiles_ = draft_.files;                             // nothing to lose yet: no preset load asks first
+        compiler_.setShaderTools(shaderTools());
         const CompileStatus s = compiler_.compileNow(draft_.files);
         jassert(s.ok);
         seen_ = s.revision;
@@ -281,6 +312,17 @@ namespace testingplayground
 
         if constexpr (product::kIsInstrument)
         {
+            // The panel's keyboard first, at the block's start (at most kUiNotes: events_ holds far more).
+            const uint32_t head = uiNoteHead_.load(std::memory_order_acquire);
+            uint32_t tail = uiNoteTail_.load(std::memory_order_relaxed);
+            for (; tail != head; ++tail)
+            {
+                const Event e = uiNotes_[tail % kUiNotes];
+                if (bypassed && e.kind == EventKind::noteOn)
+                    continue;
+                events_[numEvents++] = e;
+            }
+            uiNoteTail_.store(tail, std::memory_order_release);
             for (const juce::MidiMessageMetadata m : midi)
             {
                 Event e;
@@ -302,6 +344,38 @@ namespace testingplayground
         while (n - done > maxBlock_)
             playTo(done + maxBlock_);
         playTo(n);                                               // also a block of 0 samples: its events apply
+    }
+
+    std::vector<std::string> Processor::guiPages() const
+    {
+        const std::lock_guard<std::mutex> lock(pagesMutex_);
+        return guiPages_;
+    }
+
+    void Processor::setGuiPages(const std::vector<std::string>& titles)
+    {
+        const std::lock_guard<std::mutex> lock(pagesMutex_);
+        guiPages_ = titles;
+    }
+
+    void Processor::playNote(int note, float velocity)
+    {
+        if constexpr (product::kIsInstrument)
+        {
+            if (note < 0 || note > 127 || !std::isfinite(velocity))
+                return;
+            const uint32_t head = uiNoteHead_.load(std::memory_order_relaxed);
+            if (head - uiNoteTail_.load(std::memory_order_acquire) >= kUiNotes)
+                return;                                          // full: dropped
+            Event e;
+            e.note = static_cast<uint8_t>(note);
+            e.velocity = std::clamp(velocity, 0.0f, 1.0f);
+            e.kind = e.velocity > 0.0f ? EventKind::noteOn : EventKind::noteOff;
+            uiNotes_[head % kUiNotes] = e;
+            uiNoteHead_.store(head + 1, std::memory_order_release);
+        }
+        else
+            juce::ignoreUnused(note, velocity);
     }
 
     void Processor::keepDry(float* const* channels, int numChannels, int numSamples) noexcept
@@ -544,7 +618,8 @@ namespace testingplayground
         juce::ValueTree chat{ kChatTag };
         chat.setProperty(kJson, juce::String::fromUTF8(chat_.saveState().c_str()), nullptr);
         state.appendChild(chat, nullptr);
-        if ((editorW_.load() > 0 && editorH_.load() > 0) || panelView_.load())
+        const std::vector<std::string> pages = guiPages();
+        if ((editorW_.load() > 0 && editorH_.load() > 0) || panelView_.load() || !pages.empty())
         {
             juce::ValueTree editor{ kEditorTag };
             if (editorW_.load() > 0 && editorH_.load() > 0)
@@ -554,6 +629,12 @@ namespace testingplayground
             }
             if (panelView_.load())
                 editor.setProperty(kView, "panel", nullptr);
+            for (const std::string& title : pages)
+            {
+                juce::ValueTree page{ kPageTag };
+                page.setProperty(kTitle, juce::String::fromUTF8(title.c_str()), nullptr);
+                editor.appendChild(page, nullptr);
+            }
             state.appendChild(editor, nullptr);
         }
         if (const std::unique_ptr<juce::XmlElement> xml = state.createXml())
@@ -594,6 +675,13 @@ namespace testingplayground
         }
         const juce::ValueTree editor = state.getChildWithName(kEditorTag);
         panelView_.store(editor.isValid() && editor.getProperty(kView).toString() == "panel");
+        {
+            std::vector<std::string> pages;
+            for (int k = 0; editor.isValid() && k < editor.getNumChildren() && k < 64; ++k)
+                if (const juce::ValueTree page = editor.getChild(k); page.hasType(kPageTag))
+                    pages.push_back(page.getProperty(kTitle).toString().substring(0, 200).toStdString());
+            setGuiPages(pages);
+        }
         if (editor.isValid())
         {
             setEditorSize(static_cast<int>(editor.getProperty(kWidth, 0)), static_cast<int>(editor.getProperty(kHeight, 0)));

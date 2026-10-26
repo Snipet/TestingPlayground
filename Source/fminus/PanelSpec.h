@@ -64,6 +64,7 @@ namespace testingplayground
         float lo = 0.0f, hi = 1.0f;                         // a field's range
         int tap = -1;                                       // a field's tap (Patch::taps), in display order; -1: audio
         std::string color;                                  // a colour's name (kPanelColors), "" for the default
+        bool hidden = false;                                // a tap only, for a control's live= (never drawn)
         bool audio() const noexcept { return source == "in" || source == "out"; }
         bool operator==(const PanelDisplay&) const = default;
     };
@@ -89,12 +90,38 @@ namespace testingplayground
     {
         row, column, grid, section, box, tabs, page, spacer, divider, label,     // layout and decoration
         knob, slider, toggle, buttons, menu, xy, envelope,                       // controls (a parameter's or more)
-        display                                                                  // a display (PanelSpec::displays)
+        display,                                                                 // a display (PanelSpec::displays)
+        keyboard,                                                                // an instrument's keys, played
+        shader                                                                   // a program's own fragment shader
     };
     enum class GuiAlign : uint8_t { stretch, start, center, end };              // across a container's direction
     enum class GuiJustify : uint8_t { start, center, end, between, around };    // along it, when there is room
     enum class GuiSize : uint8_t { small, medium, large };
     enum class GuiText : uint8_t { small, normal, large, title };               // a label's size
+
+    // How an element is drawn, past its kind's defaults: what a knob, a slider, a container or tabs may say (GuiSpec.h
+    // lists which takes what). "" and -1 (or 0 for a length) leave the kind's own.
+    struct GuiStyle
+    {
+        std::string look;               // a knob: modern, vintage, flat, minimal, ring, led, chicken, soft, dot; a
+                                        // section or box: frame, card, inset, plate; tabs: tabs, bar, pills, side
+        std::string arc, track, cap, pointerColor, ticks, label, value;   // a knob's or a slider's colours ("none")
+        std::string fill, border, title;                                  // a container's colours ("none" for none)
+        int pointer = -1;               // 0 line, 1 dot, 2 triangle, 3 none
+        float px = 0.0f;                // a knob's face, its diameter in px (else its size=)
+        float thickness = 0.0f;         // a knob's arc, px
+        float sweep = 0.0f;             // a knob's travel, degrees (270)
+        int tickCount = -1;             // a knob's scale, its ticks (0 none)
+        bool bipolar = false;           // a knob's or a slider's arc from its middle
+        int labelPos = -1;              // 0 top, 1 bottom, 2 none
+        int valueShow = -1;             // 0 always, 1 while hovered or dragged, 2 never
+        int shadow = -1;                // 0 none, 1 a soft shadow under it
+        float radius = -1.0f;           // a container's corners, px
+        float borderWidth = -1.0f;      // px
+        int titleAlign = -1;            // 0 left, 1 centre, 2 right
+        int titleSize = -1;             // a GuiText
+        bool operator==(const GuiStyle&) const = default;
+    };
 
     struct GuiNode
     {
@@ -116,7 +143,21 @@ namespace testingplayground
         GuiSize size = GuiSize::medium;                     // a knob's
         bool vintage = false;                               // a knob's style
         GuiText textSize = GuiText::normal;
+        float textPx = 0.0f;                                // a label's size in px, when it gives a number
+        int textAlign = -1;                                 // a label's: 0 left, 1 centre, 2 right
         std::string color;                                  // a name (kPanelColors) or #rrggbb, "" for the default
+        GuiStyle style;
+        // Flex, past gap, pad, align, justify, grow: wrap a row's or a column's children onto more lines; the
+        // element's own alignment across its container (-1: the container's align=); room around it; its bounds.
+        bool wrap = false;
+        int self = -1;                                      // a GuiAlign
+        float margin = 0.0f;
+        float minW = 0.0f, maxW = 0.0f, minH = 0.0f, maxH = 0.0f;   // px; 0: none
+        int live = -1;                                      // a control's live= field: its tap's display (hidden)
+        int from = 48, keys = 25;                           // a keyboard's lowest note and its keys
+        std::string file;                                   // a shader's source file
+        std::array<std::string, 8> inputs{};                // a shader's inputs: parameters, fields, in, out
+        int shader = -1;                                    // a shader's program (PanelSpec::shaders)
         bool operator==(const GuiNode&) const = default;
     };
 
@@ -125,13 +166,25 @@ namespace testingplayground
         std::vector<GuiNode> nodes;                         // nodes[0] the root, a column; empty without a .gui file
         std::string file;                                   // the .gui file's name
         std::string background, accent;                     // the panel's own colours ("" for the theme's)
+        std::string gradient;                               // the background's colour at its bottom (a vertical blend)
         bool empty() const noexcept { return nodes.empty(); }
         bool operator==(const GuiTree&) const = default;
+    };
+
+    // A .gui file's shader element's program (Shaders.h): its file, its inputs' names, and what the compiler built.
+    struct PanelShader
+    {
+        std::string file;
+        std::vector<std::string> inputs;                    // as inputs= names them (the shader's in_<name>)
+        std::vector<uint8_t> binary;                        // shaderc's output; empty: not built (a note says why)
+        uint32_t id = 0;                                    // shaderId(binary), FunkGui's ShaderLibrary's
+        bool operator==(const PanelShader&) const = default;
     };
 
     struct PanelSpec
     {
         GuiTree gui;                                        // a .gui file's interface; empty: the #pragma panel lines'
+        std::vector<PanelShader> shaders;                   // its shaders' programs, by GuiNode::shader
         std::vector<PanelSection> sections;                 // empty: the dials in plain rows (no section, no display)
         std::vector<PanelDisplay> displays;
         std::array<std::string, kMaxControls> labels{};     // "": the parameter's name

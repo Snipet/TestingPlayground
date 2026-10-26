@@ -122,6 +122,7 @@ if(IS_EXECUTABLE "${_sc_dir}/shaderc" AND _sc_stamp STREQUAL "bgfx.cmake ${FP_BG
   set(BGFX_BUILD_TOOLS OFF)                               # normal variables: CMP0077
   set(FUNKGUI_SHADERC "${_sc_dir}/shaderc")
   set(_fp_shaderc "${FUNKGUI_SHADERC}")
+  set(FP_SHADERC "${FUNKGUI_SHADERC}")                    # the one the plugin carries (CMakeLists.txt)
 else()
   set(BGFX_BUILD_TOOLS ON)
   set(BGFX_BUILD_TOOLS_SHADER ON)
@@ -130,6 +131,7 @@ else()
   set(BGFX_BUILD_TOOLS_BIN2C OFF)
   unset(FUNKGUI_SHADERC)
   set(_fp_shaderc "built from bgfx.cmake")
+  set(FP_SHADERC "$<TARGET_FILE:shaderc>")
   message(STATUS "${PROJECT_NAME}: no prebuilt shaderc stamped 'bgfx.cmake ${FP_BGFX_SHA}' in ${_sc_dir}: building "
                  "it from bgfx.cmake (about 2,000 CPU-seconds)")
 endif()

@@ -275,7 +275,7 @@ PROBE(gui, panel)
     {
         funkgui::ParamPort& cut = *processor.ports()[cutoff];
         const tp::ui::GuiControlItem& knob = panel.guiControl(cutoff);
-        P.eq("controls.knob_large", knob.shown() && knob.cell().w >= 84.0f && knob.cell().h >= 108.0f ? 1 : 0, 1);
+        P.eq("controls.knob_large", knob.shown() && knob.cell().w >= 86.0f && knob.cell().h >= 106.0f ? 1 : 0, 1);   // 86 x 106
         const float before = cut.value01();      // 1000 Hz: 0.57 on its log taper
         const funkgui::Point k = knob.centre();
         host.drag(k.x, k.y, k.x, k.y - 50.0f, 10);
