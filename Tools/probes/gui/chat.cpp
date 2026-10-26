@@ -3,23 +3,34 @@
 // gui.chat: the editor's chat column, its key dialog and the resizable panel, headless (funkgui::HeadlessHost), over a
 // real processor whose chat talks to a scripted API (../plugin/FakeClaude.h): nothing reaches the network, and the key
 // folder is the probe's own. It writes, to <build>/probe-out/:
-//   gui.chat.empty.png    the empty chat: its title, the key button, the suggestions
+//   gui.chat.empty.png    the empty chat: its title, the Sign in and API key buttons, the suggestions
 //   gui.chat.png          a conversation: a bubble, Claude's thinking (opened), its answer with a code block, the card
 //                         of what it did, the message box grown to three lines
-//   gui.chat.key.png      the key dialog with a key pasted (masked)
+//   gui.chat.key.png      the access dialog's API key tab with a key pasted (masked)
+//   gui.chat.signin.png   its account tab: a username typed and a password pasted (masked), after a wrong password
+//   gui.chat.account.png  its account tab signed in: who, the credit left, Sign out
 //   gui.chat.markdown.png an answer in markdown: a heading, bold, inline code, numbered and bulleted lists, a quote,
 //                         a rule
 //   gui.chat.paper.png    the conversation in PAPER
 //   gui.chat.small.png    the panel at its least size
 //   gui.chat.large.png    the panel large
 // and checks:
-//   EMPTY    with no key the empty chat has a key button (which opens the key dialog) and suggestions
-//   KEY      a message sent with no key opens the key dialog and stays in the message box; Escape closes the dialog
-//            (the message stays, unsent); sent again, it waits for the key; while the dialog is open the pointer and
-//            the keys reach nothing else; a key that is not one is refused (the dialog says why; nothing is stored);
-//            Cmd-V pastes a key; nothing the panel speaks holds the key; SAVE stores it, closes the dialog and sends the
-//            waiting message; KEY opens the dialog; REMOVE (shown once a key is stored) forgets it; Return in the
-//            dialog saves one
+//   EMPTY    with neither a sign-in nor a key the empty chat has a Sign in button (which opens the access dialog on its
+//            account tab), an API key button (on its API key tab) and suggestions
+//   KEY      a message sent before the chat can send opens the dialog, on the account tab, and stays in the message
+//            box; Escape closes the dialog (the message stays, unsent); sent again, it waits; while the dialog is open
+//            the pointer and the keys reach nothing else; on the API key tab a key that is not one is refused (the
+//            dialog says why; nothing is stored); Cmd-V pastes a key; nothing the panel speaks holds the key; SAVE
+//            stores it, closes the dialog and sends the waiting message; KEY opens the dialog on the API key tab (the
+//            key in use); REMOVE (shown once a key is stored) forgets it; Return in the dialog saves one
+//   ACCOUNT  the account tab (the key in use): typed keys go to the username, Tab to the password, Cmd-V pastes it,
+//            masked; nothing the panel speaks holds the password; a wrong password keeps the dialog open with the
+//            server's message, the password field emptied; Return signs in: the dialog closes, the token is stored,
+//            the chat goes through the account and the line under the box shows the credit; a message then goes to
+//            the server with the token, and the credit after it is the server's; KEY opens the account tab (in use),
+//            which says who and speaks no token; the API key tab offers Use this key, which switches to the key, and
+//            the account tab then Use account, which switches back; Sign out forgets the token, tells the server and
+//            leaves the key in use
 //   SEND     Shift-Return breaks the line in the message box and the box grows with its rows, Return sends it (the box
 //            empties and shrinks); the conversation shows the turn (YOU, CLAUDE, the thinking, what Claude did, its
 //            answer) and the line under the box the usage; the thinking row opens and closes; a code block's Copy puts
@@ -45,6 +56,7 @@
 #include "plugin/ChatAgent.h"
 #include "plugin/ChatStore.h"
 #include "plugin/EditorPort.h"
+#include "plugin/ClaudeApi.h"
 #include "plugin/Processor.h"
 
 #include "Product.h"
@@ -201,13 +213,21 @@ PROBE(gui, chat)
     // ---- EMPTY ---------------------------------------------------------------------------------------------------------
     {
         const auto addKey = panel.chatView().centreOfAddKey();
+        const auto signIn = panel.chatView().centreOfSignIn();
         P.eq("empty.key_button", addKey.has_value() ? 1 : 0, 1);
+        P.eq("empty.signin_button", signIn.has_value() ? 1 : 0, 1);
         P.eq("empty.suggestions", panel.chatView().centreOfSuggestion(3).has_value() ? 1 : 0, 1);
         writePng(P, host, "gui.chat.empty.png");
         if (addKey)
             clickAt(host, *addKey);
         host.settle();
-        P.eq("empty.key_button_opens_dialog", panel.keyDialogOpen() ? 1 : 0, 1);
+        P.eq("empty.key_button_opens_dialog", panel.keyDialogOpen() && !panel.dialogOnAccount() ? 1 : 0, 1);
+        host.keys("escape");
+        host.settle();
+        if (signIn)
+            clickAt(host, *signIn);
+        host.settle();
+        P.eq("empty.signin_button_opens_account", panel.keyDialogOpen() && panel.dialogOnAccount() ? 1 : 0, 1);
         host.keys("escape");
         host.settle();
     }
@@ -230,6 +250,10 @@ PROBE(gui, chat)
         host.keys("return");                            // the message waits again, for a key
         host.settle();
         P.eq("key.return_opens_again", panel.keyDialogOpen() ? 1 : 0, 1);
+        P.eq("key.opens_on_account", panel.dialogOnAccount() ? 1 : 0, 1);
+        clickAt(host, panel.centreOfDialogTab(false));
+        host.settle();
+        P.eq("key.tab_switches", panel.keyDialogOpen() && !panel.dialogOnAccount() ? 1 : 0, 1);
         P.eq("key.no_remove_without_key", panel.centreOfKeyRemove().has_value() ? 1 : 0, 0);
         // Modal: a click on RUN runs nothing; keys go to the field.
         const uint64_t runs = processor.editorPort().statusRevision();
@@ -264,7 +288,7 @@ PROBE(gui, chat)
 
         clickAt(host, panel.centreOfKey());
         host.settle();
-        P.eq("key.button_opens", panel.keyDialogOpen() ? 1 : 0, 1);
+        P.eq("key.button_opens", panel.keyDialogOpen() && !panel.dialogOnAccount() ? 1 : 0, 1);
         const auto remove = panel.centreOfKeyRemove();
         P.eq("key.remove_shown", remove.has_value() ? 1 : 0, 1);
         if (remove)
@@ -279,6 +303,98 @@ PROBE(gui, chat)
         host.tick(2);
         host.settle();
         P.eq("key.return_saves", chat(processor).hasKey && !panel.keyDialogOpen() ? 1 : 0, 1);
+    }
+
+    // ---- ACCOUNT -------------------------------------------------------------------------------------------------------
+    {
+        const std::string before = processor.chatAgent().saveState();
+        const std::string password = fake::fakePassword(), token = fake::fakeToken();
+        clickAt(host, panel.centreOfKey());
+        host.settle();
+        P.eq("account.key_tab_first", panel.keyDialogOpen() && !panel.dialogOnAccount() ? 1 : 0, 1);
+        clickAt(host, panel.centreOfDialogTab(true));
+        host.settle();
+        P.eq("account.tab", panel.dialogOnAccount() ? 1 : 0, 1);
+        type(host, "alice");
+        host.keys("tab");
+        host.setClipboard(password);
+        host.keys("cmd+v");
+        host.settle();
+        P.eq("account.a11y_username", a11yTitled(host, "Username").has_value()
+                                          && a11yTitled(host, "Username")->value == "alice" ? 1 : 0, 1);
+        P.eq("account.a11y_never_the_password", a11yHoldsKey(host, password) ? 1 : 0, 0);
+        script->logins.push_back(fake::Response::failure(401, "authentication_error", "Wrong username or password."));
+        host.keys("return");
+        settleChat(processor, host);
+        P.eq("account.wrong_stays_open", panel.keyDialogOpen() && panel.dialogOnAccount() ? 1 : 0, 1);
+        P.eq("account.wrong_says_why", panel.keyDialogWhy() == "Wrong username or password." ? 1 : 0, 1);
+        P.eq("account.wrong_password_emptied", a11yTitled(host, "Password").has_value()
+                                                   && a11yTitled(host, "Password")->value == "empty" ? 1 : 0, 1);
+        P.eq("account.wrong_not_signed_in", chat(processor).signedIn ? 1 : 0, 0);
+        host.keys("cmd+v");                             // the caret is in the password again
+        host.settle();
+        writePng(P, host, "gui.chat.signin.png");
+        host.keys("return");
+        settleChat(processor, host);
+        tp::ChatState s = chat(processor);
+        P.eq("account.signed_in_closes", panel.keyDialogOpen() ? 1 : 0, 0);
+        P.eq("account.signed_in", s.signedIn && s.useAccount && tp::chatstore::loadToken().value_or("") == token ? 1 : 0, 1);
+        P.eq("account.credit_shown", has(panel.chatActivity(), "$5.00 credit left") ? 1 : 0, 1);
+
+        script->add(fake::Response::ok(fake::Sse().start().text("Hello from the server.").end()));
+        clickInput(host, panel);
+        type(host, "through the account");
+        host.keys("return");
+        settleChat(processor, host);
+        P.eq("account.sent_to_server", script->lastHost("POST /v1/messages") == tp::claude::serverHost()
+                                           && script->lastHeader("POST /v1/messages", "authorization") == "Bearer " + token
+                                           && !script->lastHas("POST /v1/messages", "x-api-key") ? 1 : 0, 1);
+        P.eq("account.answer_shown", has(panel.transcript(), "CLAUDE\nHello from the server.") ? 1 : 0, 1);
+        P.eq("account.credit_after", has(panel.chatActivity(), "$4.50 credit left") ? 1 : 0, 1);
+
+        clickAt(host, panel.centreOfKey());
+        host.settle();
+        P.eq("account.button_opens_account", panel.keyDialogOpen() && panel.dialogOnAccount() ? 1 : 0, 1);
+        P.eq("account.signed_in_says_who", a11yTitled(host, "Your TestingPlayground account").has_value()
+                                               && has(a11yTitled(host, "Your TestingPlayground account")->description, "alice") ? 1 : 0, 1);
+        P.eq("account.a11y_never_the_token", a11yHoldsKey(host, token) ? 1 : 0, 0);
+        P.eq("account.no_use_while_in_use", panel.centreOfUseThis().has_value() ? 1 : 0, 0);
+        writePng(P, host, "gui.chat.account.png");
+        clickAt(host, panel.centreOfDialogTab(false));
+        host.settle();
+        const auto useKey = panel.centreOfUseThis();
+        P.eq("account.use_key_offered", useKey.has_value() ? 1 : 0, 1);
+        if (useKey)
+            clickAt(host, *useKey);
+        host.tick(2);
+        host.settle();
+        P.eq("account.use_key", !chat(processor).useAccount && !panel.keyDialogOpen() ? 1 : 0, 1);
+        clickAt(host, panel.centreOfKey());
+        host.settle();
+        clickAt(host, panel.centreOfDialogTab(true));
+        host.settle();
+        const auto useAccount = panel.centreOfUseThis();
+        P.eq("account.use_account_offered", useAccount.has_value() ? 1 : 0, 1);
+        if (useAccount)
+            clickAt(host, *useAccount);
+        host.tick(2);
+        host.settle();
+        P.eq("account.use_account", chat(processor).useAccount && !panel.keyDialogOpen() ? 1 : 0, 1);
+
+        clickAt(host, panel.centreOfKey());
+        host.settle();
+        const auto signOut = panel.centreOfSignOut();
+        P.eq("account.sign_out_shown", signOut.has_value() ? 1 : 0, 1);
+        const int logouts = script->count("POST /auth/logout");
+        if (signOut)
+            clickAt(host, *signOut);
+        settleChat(processor, host);
+        s = chat(processor);
+        P.eq("account.signed_out", !s.signedIn && !tp::chatstore::hasToken() && !panel.keyDialogOpen() ? 1 : 0, 1);
+        P.eq("account.server_told", script->count("POST /auth/logout") == logouts + 1 ? 1 : 0, 1);
+        P.eq("account.key_in_use_after", !s.useAccount && s.ready() ? 1 : 0, 1);
+        processor.chatAgent().loadState(before);       // the conversation the sections below go on with
+        settleChat(processor, host);
     }
 
     // ---- SEND ----------------------------------------------------------------------------------------------------------

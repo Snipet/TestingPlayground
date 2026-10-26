@@ -1,13 +1,16 @@
-// Tools/probes/plugin/FakeClaude.h: a scripted Claude API for the chat's probes (plugin.chat, gui.chat). Nothing here
-// reaches the network: the agent's transport is replaced by one that plays back responses the probe wrote, streamed
-// in small chunks as the Messages API streams them, and records every request.
+// Tools/probes/plugin/FakeClaude.h: a scripted Claude API, and a scripted TestingPlayground server, for the chat's
+// probes (plugin.chat, gui.chat). Nothing here reaches the network: the agent's transport is replaced by one that plays
+// back responses the probe wrote, streamed in small chunks as the Messages API streams them, and records every request.
 //
 //   fake::Sse        a response's server-sent events: message_start, blocks (thinking with a signature, text,
 //                    tool_use with its input JSON streamed in pieces, a fallback marker), message_delta, message_stop
 //   fake::Response   one POST's answer: a stream (200), or a status with a JSON error body (and a retry-after), or a
 //                    stream that stalls until the agent cancels
-//   fake::Script     what the transport plays and what it saw (the bodies, the headers, the GETs), shared with the
-//                    probe while the agent owns the transport
+//   fake::Script     what the transport plays and what it saw (the bodies, the headers, the hosts, the paths),
+//                    shared with the probe while the agent owns the transport. The server's own endpoints answer from
+//                    it too: POST /auth/login (the `logins` queue, else a sign-in as "alice" with fakeToken()),
+//                    POST /auth/logout, GET /account (accountStatus, accountBody); /v1/messages and /v1/models answer
+//                    the same on either host, which the probe checks in `hosts`
 #pragma once
 
 #include "plugin/ClaudeApi.h"
@@ -202,6 +205,11 @@ namespace fake
         std::vector<std::string> bodies;     // every POST's body
         std::vector<claude::Headers> headers;
         std::vector<std::string> paths;      // every request's path, in order ("POST /v1/messages")
+        std::vector<std::string> hosts;      // and its host, in the same order
+        std::deque<Response> logins;         // POST /auth/login's answers; past the end, a sign-in as "alice"
+        int accountStatus = 200;
+        std::string accountBody;             // GET /account's ("" a default: alice, $4.50 left)
+        std::vector<std::string> loginBodies;   // what each sign-in sent (the probe checks the password went)
         std::atomic<int> streaming{ 0 };     // a stalled stream is waiting
 
         void add(Response r)
@@ -229,23 +237,108 @@ namespace fake
                     return v;
             return {};
         }
+        // The headers of the last request to `path` ("POST /v1/messages"), and its host.
+        std::string lastHeader(const std::string& path, const std::string& name)
+        {
+            const int i = last(path);
+            return i < 0 ? std::string() : header(i, name);
+        }
+        bool lastHas(const std::string& path, const std::string& name)
+        {
+            const std::lock_guard<std::mutex> lock(mutex);
+            const int i = lastLocked(path);
+            if (i < 0)
+                return false;
+            for (const auto& [k, v] : headers[static_cast<std::size_t>(i)])
+                if (k == name)
+                    return true;
+            return false;
+        }
+        std::string lastHost(const std::string& path)
+        {
+            const std::lock_guard<std::mutex> lock(mutex);
+            const int i = lastLocked(path);
+            return i < 0 ? std::string() : hosts[static_cast<std::size_t>(i)];
+        }
+        int count(const std::string& path)
+        {
+            const std::lock_guard<std::mutex> lock(mutex);
+            int n = 0;
+            for (const std::string& p : paths)
+                n += p == path ? 1 : 0;
+            return n;
+        }
+        int last(const std::string& path)
+        {
+            const std::lock_guard<std::mutex> lock(mutex);
+            return lastLocked(path);
+        }
+
+    private:
+        // Requests are numbered in `paths` order; `headers` follows the same order (every request records both).
+        int lastLocked(const std::string& path) const
+        {
+            for (int i = static_cast<int>(paths.size()); --i >= 0;)
+                if (paths[static_cast<std::size_t>(i)] == path)
+                    return i;
+            return -1;
+        }
     };
+
+    // A sign-in token of the server's shape ("tpb_" and 43 base64url characters), which no server issued.
+    inline std::string fakeToken() { return "tpb_probe-NotARealToken_0123456789abcdefghij"; }
+
+    // A password for the probes' sign-ins (sent only to the fake).
+    inline std::string fakePassword() { return "probe-Password-0123456789"; }
+
+    // POST /auth/login's answer, and GET /account's.
+    inline std::string loginBody(const std::string& username, double balance, const std::string& token = fakeToken())
+    {
+        return claude::toJson(claude::object(
+            { { "token", juce::String(token) },
+              { "expires_at", "2027-01-24T00:00:00.000Z" },
+              { "user", claude::object({ { "username", juce::String(username) }, { "balance_usd", balance } }) } }));
+    }
+
+    inline std::string accountBody(const std::string& username, double balance)
+    {
+        return claude::toJson(claude::object(
+            { { "username", juce::String(username) },
+              { "balance_usd", balance },
+              { "month", claude::object({ { "requests", 3 }, { "cost_usd", 0.5 }, { "input_tokens", 12000 },
+                                          { "output_tokens", 900 } }) },
+              { "session", claude::object({ { "client", "probe" },
+                                            { "created_at", "2026-10-26T00:00:00.000Z" },
+                                            { "expires_at", "2027-01-24T00:00:00.000Z" } }) } }));
+    }
 
     class Transport final : public claude::Transport
     {
     public:
         explicit Transport(std::shared_ptr<Script> script) : script_(std::move(script)) {}
 
-        claude::HttpResult post(const std::string& path, const std::string& body, const claude::Headers& headers,
-                                const std::function<bool(std::string_view)>& onChunk,
+        claude::HttpResult post(const std::string& host, const std::string& path, const std::string& body,
+                                const claude::Headers& headers, const std::function<bool(std::string_view)>& onChunk,
                                 const std::atomic<bool>& cancel) override
         {
             Response r;
             {
                 const std::lock_guard<std::mutex> lock(script_->mutex);
-                script_->bodies.push_back(body);
                 script_->headers.push_back(headers);
                 script_->paths.push_back("POST " + path);
+                script_->hosts.push_back(host);
+                if (path == "/auth/login")
+                {
+                    script_->loginBodies.push_back(body);
+                    if (script_->logins.empty())
+                        return { 200, {}, loginBody("alice", 5.0), -1 };
+                    Response login = std::move(script_->logins.front());
+                    script_->logins.pop_front();
+                    return { login.status, {}, login.body, login.retryAfter };
+                }
+                if (path == "/auth/logout")
+                    return { 200, {}, "{\"ok\":true}", -1 };
+                script_->bodies.push_back(body);
                 if (script_->posts.empty())
                     r = Response::ok(Sse().start().text("(nothing scripted)").end());
                 else
@@ -274,11 +367,16 @@ namespace fake
             return { 200, {}, {}, r.retryAfter };   // a stream cut short (no message_stop) may ask for a quick retry
         }
 
-        claude::HttpResult get(const std::string& path, const claude::Headers& headers, const std::atomic<bool>&) override
+        claude::HttpResult get(const std::string& host, const std::string& path, const claude::Headers& headers,
+                               const std::atomic<bool>&) override
         {
             const std::lock_guard<std::mutex> lock(script_->mutex);
             script_->paths.push_back("GET " + path);
             script_->headers.push_back(headers);
+            script_->hosts.push_back(host);
+            if (path == "/account")
+                return { script_->accountStatus, {},
+                         script_->accountBody.empty() ? accountBody("alice", 4.5) : script_->accountBody, -1 };
             return { script_->modelsStatus, {}, script_->models, -1 };
         }
 

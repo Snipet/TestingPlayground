@@ -72,7 +72,7 @@ namespace testingplayground::ui::chat
     enum class Icon : uint8_t
     {
         none, plus, key, chevronDown, chevronRight, chevronUp, arrowUp, stop, copy, check, file, play, dial, wave, alert,
-        pencil, bolt
+        pencil, bolt, person
     };
 
     inline void drawIcon(funkgui::Canvas& c, Icon icon, float cx, float cy, float size, funkgui::Col ink)
@@ -188,6 +188,20 @@ namespace testingplayground::ui::chat
                 c.segment(cx, cy - s * 0.42f, cx, cy + s * 0.1f, w * 1.2f, ink);
                 c.disc(cx, cy + s * 0.38f, w * 0.75f, ink);
                 break;
+            case Icon::person:
+            {
+                // A head over shoulders: "an account".
+                c.disc(cx, cy - s * 0.38f, s * 0.34f, ink.withAlpha(0.0f), w, ink);
+                float xs[9], ys[9];
+                for (int k = 0; k < 9; ++k)
+                {
+                    const float a = 3.14159265f * (1.0f + static_cast<float>(k) / 8.0f);
+                    xs[k] = cx + s * 0.72f * std::cos(a);
+                    ys[k] = cy + s * 0.82f + s * 0.62f * std::sin(a);
+                }
+                c.polyline(xs, ys, 9, w, ink);
+                break;
+            }
         }
     }
 }
