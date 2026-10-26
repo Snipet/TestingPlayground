@@ -58,6 +58,18 @@
 //   STOP     a stalled stream: stop() ends the turn at once; the history ends with Claude's text so far
 //   STATE    the conversation is in the session: a second processor loading the first's state has the same entries
 //            and the same history
+//   ACCOUNT  signing in to the TestingPlayground server (a scripted one): no username sends nothing; a wrong password
+//            and a locked account (429) show the server's message, store nothing and keep the key in use; the sign-in
+//            goes to the server with the username, the password and the client, never a key. Signed in: the token is
+//            stored (encrypted), the account is in use (the one set up last), the credit is the sign-in's. A turn goes
+//            to the server with "Authorization: Bearer <token>", no x-api-key, the API version and the same betas, the
+//            models are asked of the server, and GET /account after it gives the footer's credit; neither the token nor
+//            the password is in the session or a request body. The server's 402, 502, 400 and 403 show its message and
+//            are not retried; a 529 it passes back is. A 401 forgets the token, the chat asks to sign in again, and the
+//            next message sends nothing. Using the key again sends to Anthropic with it; a key saved while signed in
+//            is used, and removed the account is; signing out forgets the token, tells the server (with that token)
+//            and leaves the key in use. <ENV_PREFIX>SERVER_URL moves the server, for https:// or http:// on this Mac
+//            only
 //   NEW      newChat forgets the conversation
 #include "Probe.h"
 
@@ -76,6 +88,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <thread>
@@ -982,6 +995,183 @@ PROBE(plugin, chat)
         P.ge("state.entry_count", static_cast<double>(b.entries.size()), 20.0);
         const auto history = [](tp::ChatAgent& x) { return claude::toJson(claude::parseJson(x.saveState()).getProperty("messages", {})); };
         P.eq("state.history", history(agent) == history(second.chatAgent()) ? 1 : 0, 1);
+    }
+
+    // ---- ACCOUNT -------------------------------------------------------------------------------------------------------
+    {
+        const std::string server = claude::serverHost();
+        const std::string token = fake::fakeToken(), password = fake::fakePassword();
+        const auto lastError = [&] { return lastText(agent.chatState(), tp::ChatEntry::Kind::error); };
+        P.eq("account.server_default", server == claude::kServerHost ? 1 : 0, 1);
+        const std::string betaBefore = script->lastHeader("POST /v1/messages", "anthropic-beta");   // the key's last
+        P.eq("account.key_in_use", !agent.chatState().useAccount && agent.chatState().ready() ? 1 : 0, 1);
+
+        // Refused sign-ins: nothing stored, the key still in use, the server's message shown.
+        agent.signIn("  ", password);
+        P.eq("account.no_username_refused", has(agent.chatState().signInError, "username") ? 1 : 0, 1);
+        P.eq("account.no_username_nothing_sent", script->count("POST /auth/login"), 0);
+        script->logins.push_back(fake::Response::failure(401, "authentication_error", "Wrong username or password."));
+        agent.signIn("alice", password);
+        agent.waitIdle();
+        tp::ChatState s = agent.chatState();
+        P.eq("account.wrong_password_says", s.signInError == "Wrong username or password." ? 1 : 0, 1);
+        P.eq("account.wrong_password_not_signed_in", s.signedIn || tp::chatstore::hasToken() ? 1 : 0, 0);
+        P.eq("account.wrong_password_key_kept", !s.useAccount && s.ready() ? 1 : 0, 1);
+        P.eq("account.login_host", script->lastHost("POST /auth/login") == server ? 1 : 0, 1);
+        P.eq("account.login_no_key", script->lastHas("POST /auth/login", "x-api-key") ? 1 : 0, 0);
+        {
+            const juce::var login = claude::parseJson(script->loginBodies.back());
+            P.eq("account.login_body", str(login, "username") == "alice" && str(login, "password") == password
+                                           && !str(login, "client").empty() ? 1 : 0, 1);
+        }
+        script->logins.push_back(fake::Response::failure(429, "rate_limit_error", "Too many wrong passwords. Try again in 15 minutes.", 900));
+        agent.signIn("alice", password);
+        agent.waitIdle();
+        P.eq("account.locked_says", has(agent.chatState().signInError, "Try again in 15 minutes") ? 1 : 0, 1);
+        P.eq("account.locked_not_retried", script->count("POST /auth/login"), 2);
+
+        // Signed in: the token stored (encrypted), the account in use, the credit from the sign-in's answer.
+        agent.signIn("alice", password);
+        agent.waitIdle();
+        s = agent.chatState();
+        P.eq("account.signed_in", s.signedIn && s.signInError.empty() && !s.signingIn ? 1 : 0, 1);
+        P.eq("account.token_stored", tp::chatstore::loadToken().value_or("") == token ? 1 : 0, 1);
+        P.eq("account.username", s.account == "alice" ? 1 : 0, 1);
+        P.eq("account.in_use", s.useAccount && s.ready() ? 1 : 0, 1);
+        P.eq("account.credit", s.credit == "$5.00 credit left" ? 1 : 0, 1);
+        P.eq("account.note", has(lastText(s, tp::ChatEntry::Kind::note), "Signed in as alice") ? 1 : 0, 1);
+        P.eq("account.choice_stored", tp::chatstore::loadAccount().useAccount && tp::chatstore::loadAccount().username == "alice" ? 1 : 0, 1);
+
+        // A turn through the server: the same request, to the server, with the token as a bearer and no key; the
+        // models asked of the server again; the credit asked for after the turn, for the footer.
+        const int modelsBefore = script->count("GET /v1/models?limit=100");
+        script->add(fake::Response::ok(fake::Sse().start().text("Through the server.").end()));
+        const int before = script->postCount();
+        agent.send("hello through the server");
+        agent.waitIdle();
+        s = agent.chatState();
+        P.eq("account.turn_answered", lastText(s, tp::ChatEntry::Kind::assistant) == "Through the server." ? 1 : 0, 1);
+        P.eq("account.turn_one_request", script->postCount() - before, 1);
+        P.eq("account.turn_host", script->lastHost("POST /v1/messages") == server ? 1 : 0, 1);
+        P.eq("account.turn_bearer", script->lastHeader("POST /v1/messages", "authorization") == "Bearer " + token ? 1 : 0, 1);
+        P.eq("account.turn_no_key", script->lastHas("POST /v1/messages", "x-api-key") ? 1 : 0, 0);
+        P.eq("account.turn_version", script->lastHeader("POST /v1/messages", "anthropic-version") == claude::kApiVersion ? 1 : 0, 1);
+        P.eq("account.turn_beta_kept", !betaBefore.empty()
+                                           && script->lastHeader("POST /v1/messages", "anthropic-beta") == betaBefore ? 1 : 0, 1);
+        P.eq("account.models_from_server", script->count("GET /v1/models?limit=100") == modelsBefore + 1
+                                               && script->lastHost("GET /v1/models?limit=100") == server
+                                               && script->lastHeader("GET /v1/models?limit=100", "authorization") == "Bearer " + token ? 1 : 0, 1);
+        P.eq("account.credit_asked", script->lastHost("GET /account") == server
+                                         && script->lastHeader("GET /account", "authorization") == "Bearer " + token ? 1 : 0, 1);
+        P.eq("account.credit_after_turn", s.credit == "$4.50 credit left" ? 1 : 0, 1);
+        P.eq("account.body_unchanged", claude::parseJson(script->body(script->postCount() - 1)).hasProperty("metadata") ? 1 : 0, 0);
+        const std::string session = agent.saveState();
+        P.eq("account.session_no_token", has(session, token) || has(session, password) ? 1 : 0, 0);
+        bool leaked = false;
+        for (const std::string& b : agent.requestsSent())
+            leaked = leaked || has(b, token) || has(b, password);
+        P.eq("account.requests_no_secrets", leaked ? 1 : 0, 0);
+
+        // The server's own refusals: its message as it is, not asked again.
+        const struct
+        {
+            const char* name;
+            int status;
+            const char* type;
+            const char* message;
+        } refusals[] = { { "credit", 402, "billing_error", "Your credit has run out. Ask the admin for more." },
+                         { "key_refused", 502, "api_error", "The server's Claude API key was refused. Tell the admin." },
+                         { "no_price", 400, "invalid_request_error", "claude-opus-5-5 is not available through this server." },
+                         { "disabled", 403, "permission_error", "This account is disabled." } };
+        for (const auto& r : refusals)
+        {
+            script->add(fake::Response::failure(r.status, r.type, r.message));
+            const int n = script->postCount();
+            agent.send(std::string("refused ") + r.name);
+            agent.waitIdle();
+            P.eq(std::string("account.") + r.name + "_says", lastError() == r.message ? 1 : 0, 1);
+            P.eq(std::string("account.") + r.name + "_not_retried", script->postCount() - n, 1);
+            P.eq(std::string("account.") + r.name + "_still_signed_in", agent.chatState().signedIn ? 1 : 0, 1);
+        }
+        // Anthropic's overload, passed back by the server, is asked again.
+        script->add(fake::Response::failure(529, "overloaded_error", "Overloaded", 1));
+        script->add(fake::Response::ok(fake::Sse().start().text("Back through the server.").end()));
+        {
+            const int n = script->postCount();
+            agent.send("busy?");
+            agent.waitIdle();
+            P.eq("account.overload_retried", script->postCount() - n, 2);
+        }
+
+        // A 401: the sign-in is over. Its token goes, the chat says to sign in again, and the next message sends
+        // nothing until the user does.
+        script->add(fake::Response::failure(401, "authentication_error", "Your sign-in has expired. Sign in again."));
+        agent.send("expired?");
+        agent.waitIdle();
+        s = agent.chatState();
+        P.eq("account.expired_says", lastError() == "Your sign-in has expired. Sign in again." ? 1 : 0, 1);
+        P.eq("account.expired_signed_out", s.signedIn || tp::chatstore::hasToken() ? 1 : 0, 0);
+        P.eq("account.expired_problem", s.accountProblem == "Your sign-in has expired. Sign in again." ? 1 : 0, 1);
+        P.eq("account.expired_not_ready", s.useAccount && !s.ready() ? 1 : 0, 1);
+        {
+            const int n = static_cast<int>(script->paths.size());
+            agent.send("anyone?");
+            agent.waitIdle();
+            P.eq("account.expired_asks_sign_in", has(lastError(), "Sign in again") ? 1 : 0, 1);
+            P.eq("account.expired_nothing_sent", static_cast<int>(script->paths.size()) - n, 0);
+        }
+
+        // Use the key instead (it is still stored), and back: the request goes to Anthropic with the key.
+        agent.useAccount(false);
+        script->add(fake::Response::ok(fake::Sse().start().text("With the key.").end()));
+        const int accountAsks = script->count("GET /account");
+        agent.send("with the key");
+        agent.waitIdle();
+        P.eq("account.key_again_host", script->lastHost("POST /v1/messages") == claude::kHost ? 1 : 0, 1);
+        P.eq("account.key_again_header", script->lastHeader("POST /v1/messages", "x-api-key") == fake::fakeKey()
+                                             && !script->lastHas("POST /v1/messages", "authorization") ? 1 : 0, 1);
+        P.eq("account.key_no_credit_asked", script->count("GET /account") == accountAsks ? 1 : 0, 1);
+
+        // Signed in again (the one set up last is used); a key saved then is used instead; removed, the account is.
+        agent.signIn("alice", password);
+        agent.waitIdle();
+        P.eq("account.again_in_use", agent.chatState().useAccount && agent.chatState().ready() ? 1 : 0, 1);
+        agent.saveKey(fake::fakeKey(), why);
+        P.eq("account.key_saved_wins", !agent.chatState().useAccount ? 1 : 0, 1);
+        agent.forgetKey();
+        P.eq("account.key_removed_account_left", agent.chatState().useAccount && agent.chatState().ready() ? 1 : 0, 1);
+        agent.saveKey(fake::fakeKey(), why);
+
+        // Signing out: the token forgotten here, the server told (with that token), the key in use.
+        agent.useAccount(true);
+        const int logouts = script->count("POST /auth/logout");
+        agent.signOut();
+        agent.waitIdle();
+        s = agent.chatState();
+        P.eq("account.signed_out", s.signedIn || tp::chatstore::hasToken() ? 1 : 0, 0);
+        P.eq("account.logout_sent", script->count("POST /auth/logout") == logouts + 1
+                                        && script->lastHost("POST /auth/logout") == server
+                                        && script->lastHeader("POST /auth/logout", "authorization") == "Bearer " + token ? 1 : 0, 1);
+        P.eq("account.signed_out_key_used", !s.useAccount && s.ready() ? 1 : 0, 1);
+        P.eq("account.username_kept", s.account == "alice" ? 1 : 0, 1);
+
+        // The server's address: <ENV_PREFIX>SERVER_URL, for an https:// address or http:// on this Mac only.
+        const std::string var = std::string(tp::product::kEnvPrefix) + "SERVER_URL";
+        ::setenv(var.c_str(), "http://localhost:8787/", 1);
+        P.eq("account.url_local", claude::serverHost() == "http://localhost:8787" ? 1 : 0, 1);
+        ::setenv(var.c_str(), "https://tp.example.workers.dev", 1);
+        P.eq("account.url_https", claude::serverHost() == "https://tp.example.workers.dev" ? 1 : 0, 1);
+        ::setenv(var.c_str(), "http://tp.example.com", 1);
+        P.eq("account.url_plain_http_ignored", claude::serverHost() == claude::kServerHost ? 1 : 0, 1);
+        ::setenv(var.c_str(), "ftp://localhost", 1);
+        P.eq("account.url_other_ignored", claude::serverHost() == claude::kServerHost ? 1 : 0, 1);
+        ::setenv(var.c_str(), "http://localhost:8787", 1);
+        agent.signIn("alice", password);
+        agent.waitIdle();
+        P.eq("account.url_used", script->lastHost("POST /auth/login") == "http://localhost:8787" ? 1 : 0, 1);
+        agent.signOut();
+        agent.waitIdle();
+        ::unsetenv(var.c_str());
     }
 
     // ---- NEW -----------------------------------------------------------------------------------------------------------

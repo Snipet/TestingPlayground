@@ -1,15 +1,19 @@
 // Source/plugin/ClaudeApi.h: the Claude Messages API over HTTPS (raw HTTP: there is no Anthropic SDK for C++), for the
 // chat (ChatAgent.h).
 //
-//   Transport       POST and GET against https://api.anthropic.com. httpsTransport() is JUCE's WebInputStream; the
-//                   probes give the agent a scripted one. A POST's body streams to a callback as it arrives.
+//   Transport       POST and GET against a host: https://api.anthropic.com with the user's own key, or the
+//                   TestingPlayground server (serverHost()) once the user has signed in, which passes the same requests
+//                   on to Anthropic on its own key and charges them to the user's credit. httpsTransport() is JUCE's
+//                   WebInputStream; the probes give the agent a scripted one. A POST's body streams to a callback as
+//                   it arrives.
 //   SseParser       Server-Sent Events: the stream cut into (event, data) pairs, however the chunks fall.
 //   MessageBuilder  a streamed message (message_start, content_block_start/delta/stop, message_delta, error) put back
 //                   together: its content blocks exactly as the API sent them (thinking blocks with their signatures,
 //                   tool_use blocks with their input parsed from the streamed JSON, a compaction block's summary), the
 //                   stop reason and the usage (summed over the request's iterations when the API lists them), and
 //                   callbacks as text, thinking, tool calls and compactions arrive, for the chat's live view.
-//   apiError        an error response's message ("invalid x-api-key"), from its JSON body.
+//   apiError        an error response's message ("invalid x-api-key"), from its JSON body; serverError the same for a
+//                   response from the server, whose own errors are written for the user ("Your credit has run out").
 //
 // Requests are built by ChatAgent; the API version is kApiVersion (2026-10-21: no temperature, top_p or top_k).
 #pragma once
@@ -30,6 +34,19 @@ namespace testingplaygroundsynth::claude
     inline constexpr const char* kHost = "https://api.anthropic.com";
     inline constexpr const char* kApiVersion = "2026-10-21";
 
+    // The TestingPlayground server (a Cloudflare Worker): sign-in (POST /auth/login, /auth/logout), the account
+    // (GET /account) and the Claude API's /v1/messages and /v1/models, as Anthropic's, with "Authorization: Bearer".
+    // The Worker as deployed (the TestingPlaygroundBackend repo: `npm run deploy`).
+    inline constexpr const char* kServerHost = "https://testingplayground-backend.example.workers.dev";
+
+    // The server the chat signs in to: kServerHost, or <ENV_PREFIX>SERVER_URL when it is set to an https:// address
+    // or to http:// on this Mac (http://localhost:8787 for `wrangler dev`); anything else in it is ignored, so a
+    // sign-in never goes over plain HTTP to another machine. No trailing slash.
+    std::string serverHost();
+
+    // The host part of an address ("api.anthropic.com"), for messages.
+    std::string hostName(const std::string& host);
+
     using Headers = std::vector<std::pair<std::string, std::string>>;
 
     struct HttpResult
@@ -45,12 +62,14 @@ namespace testingplaygroundsynth::claude
     public:
         virtual ~Transport() = default;
 
-        // POST `body` (JSON) to `path`. A 200's body goes to onChunk as it arrives (false from it stops reading);
-        // any other status's body is returned whole. `cancel` set from another thread ends the call soon.
-        virtual HttpResult post(const std::string& path, const std::string& body, const Headers& headers,
-                                const std::function<bool(std::string_view)>& onChunk,
+        // POST `body` (JSON) to `host` + `path` (host: kHost or serverHost()). A 200's body goes to onChunk as it
+        // arrives (false from it stops reading); any other status's body, or a 200's when onChunk is empty, is
+        // returned whole. `cancel` set from another thread ends the call soon.
+        virtual HttpResult post(const std::string& host, const std::string& path, const std::string& body,
+                                const Headers& headers, const std::function<bool(std::string_view)>& onChunk,
                                 const std::atomic<bool>& cancel) = 0;
-        virtual HttpResult get(const std::string& path, const Headers& headers, const std::atomic<bool>& cancel) = 0;
+        virtual HttpResult get(const std::string& host, const std::string& path, const Headers& headers,
+                               const std::atomic<bool>& cancel) = 0;
     };
 
     std::unique_ptr<Transport> httpsTransport();
@@ -120,6 +139,15 @@ namespace testingplaygroundsynth::claude
 
     // The message of an error response ({"type":"error","error":{"type":..,"message":..}}), or the body itself.
     std::string apiError(int status, const std::string& body);
+
+    // The same for a response from the server. Its own refusals are written for the user and shown as they are: 401
+    // (the sign-in is no longer good: sign in again), 402 (the credit is used up), 403 (the account is disabled), 400
+    // (a model it has no price for), 502 (Anthropic refused the server's key). Anthropic's other answers, which it
+    // passes back, read as apiError's.
+    std::string serverError(int status, const std::string& body);
+
+    // Just the message of an error response's body ("" when it has none).
+    std::string errorMessage(const std::string& body);
 
     // JSON helpers on juce::var.
     juce::var parseJson(const std::string& text);

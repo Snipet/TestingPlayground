@@ -50,8 +50,18 @@
 // end, is sent again (kMaxAttempts, retry-after honoured; what the broken stream showed is taken back). While a file
 // streams in, the activity says which and how much has arrived. A tool's long output (a compile's messages) is cut.
 //
+// Access. The requests go to Anthropic with the user's own key (x-api-key), or to the TestingPlayground server with the
+// token it gave when the user signed in ("Authorization: Bearer"); the server passes them on unchanged, on its own key,
+// and charges each to the account's credit. Both can be stored (ChatStore.h); the chat uses the one set up last. The
+// server's /v1/models lists only the models it can charge for. Its 401 always means the sign-in is no longer good: the
+// token is forgotten and the chat asks the user to sign in again. Its 402 (the credit is used up), 403 (the account is
+// disabled), 400 (a model it has no price for) and 502 (Anthropic refused the server's key) carry messages written for
+// the user, shown as they are, and are not retried. After a turn through the account the agent asks the server for
+// the credit left (GET /account), which the footer shows.
+//
 // Threads: the ChatPort calls run on the message thread; a turn runs on the agent's worker thread, which calls
-// ChatHost (whose implementation must be safe from that thread) and the transport.
+// ChatHost (whose implementation must be safe from that thread) and the transport. Signing in and out runs on a thread
+// of its own, so the message thread never waits for the network.
 #pragma once
 
 #include "plugin/ChatPort.h"
@@ -63,7 +73,10 @@
 #include "dsp/Sources.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -106,6 +119,9 @@ namespace testingplaygroundsynth
         ChatState chatState() const override;
         bool saveKey(const std::string& key, std::string& why) override;
         void forgetKey() override;
+        void signIn(const std::string& username, const std::string& password) override;
+        void signOut() override;
+        void useAccount(bool account) override;
         void setModel(const std::string& id) override;
         void setEffort(const std::string& effort) override;
         void setFast(bool on) override;
@@ -118,7 +134,8 @@ namespace testingplaygroundsynth
         std::string saveState() const;
         void loadState(const std::string& json);
 
-        // For probes: the transport (the next turn uses it), waiting for the current turn, the request bodies sent.
+        // For probes: the transport (the next turn uses it), waiting for the current turn (and for a sign-in or
+        // sign-out under way), the Messages API request bodies sent.
         void setTransport(std::unique_ptr<claude::Transport> transport);
         void waitIdle();
         std::vector<std::string> requestsSent() const;
@@ -130,15 +147,32 @@ namespace testingplaygroundsynth
         static juce::var toolDefinitions();
 
     private:
+        // Where a request goes and what it carries: the server and the token, or Anthropic and the key.
+        struct Access
+        {
+            bool account = false;
+            std::string host, secret;
+        };
+        Access access() const;                                      // the one in use (mutex held)
+        static claude::Headers headersFor(const Access& access);    // its credential and the API version
+
         void runTurn();                                             // the worker
         bool streamOnce(const std::string& body, const std::string& beta, claude::MessageBuilder& builder,
-                        int& status, std::string& error, int& retryAfter);
+                        int& status, std::string& error, int& retryAfter, bool& viaServer);
         juce::var buildRequest(std::string& beta) const;
         std::string contextBlock();                                 // the plugin's state, when it changed
         juce::var runTool(const juce::var& toolUse);               // a tool_result block
         std::string toolText(const std::string& name, const juce::var& input, bool& isError);
         void fetchModels();                                         // the worker, before a turn, once a key is known
-        void ensureKey();
+        void fetchAccount();                                        // the worker, after a turn: the credit left
+        void ensureAccess();                                        // the key or the token in use, loaded
+        void loadAccess();                                          // the same (mutex held)
+        void refused(const Access& access, int status, const std::string& why);   // a 401: that sign-in or key is
+                                                                    // no longer good (mutex held)
+        void runSignIn(const std::string& username, std::string password);   // the sign-in thread
+        void queueAuth(std::function<void()> job);                  // a sign-in or sign-out, on the auth thread
+        void authLoop();                                            // the auth thread
+        void waitAuth();                                            // until no job is queued or running
         void touch();                                               // revision + 1 (mutex held)
         void appendAnswer(const juce::Array<juce::var>& content);   // an assistant message into the history (mutex held)
         void repairHistory();                                       // one the API takes (mutex held)
@@ -169,6 +203,13 @@ namespace testingplaygroundsynth
         std::string usage_;
         std::string key_;                                           // loaded on first use
         std::string keyProblem_;
+        std::string token_;                                         // the server's sign-in, loaded on first use
+        std::string account_;                                       // its username (kept after signing out)
+        std::string accountProblem_;                                // why the sign-in no longer works
+        std::string credit_;                                        // "$4.96 credit left", as the server last said
+        bool useAccount_ = true;                                    // the chat goes through the account, else the key
+        bool signingIn_ = false;
+        std::string signInError_;
         std::map<std::string, uint64_t> seen_;                      // file name -> the text Claude saw (hashText)
         uint64_t lastSignature_ = 0;                                // the plugin's state as Claude last got it
         bool resendState_ = false;                                  // a summary came: the state goes with what follows
@@ -177,5 +218,14 @@ namespace testingplaygroundsynth
 
         std::atomic<bool> cancel_{ false };
         std::thread worker_;
+        // Signing in and out: jobs run in order on one thread, started on first use, so the message thread never
+        // waits for the network.
+        std::atomic<bool> authCancel_{ false };                    // the destructor ends a request under way
+        std::mutex authMutex_;
+        std::condition_variable authCv_;
+        std::deque<std::function<void()>> authJobs_;
+        bool authRunning_ = false;                                  // a job is running
+        bool authStop_ = false;
+        std::thread auth_;
     };
 }
