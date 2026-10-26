@@ -168,6 +168,7 @@ namespace testingplayground::ui
         bool panelView() const noexcept { return panelView_; }
         void setPanelView(bool on);
         const GuiLayout& guiLayout() const noexcept { return gui_; }
+        const funkgui::Rect& programCard() const noexcept { return programCard_; }   // the program's card
         const PanelSpec& panelSpec() const noexcept { return panelSpec_; }      // the program's that the panel shows
         const GuiControlItem& guiControl(int slot) const;
         const Item& guiItem(int kind, int k) const;   // kind 0: a pad, 1: an envelope, 2: tabs, 3: a keyboard, 4: a shader
