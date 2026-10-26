@@ -116,13 +116,14 @@ namespace fake
         }
 
         // The end of a request that compacted: its usage lists the iterations (a compaction's, then the answer's).
-        Sse& endCompacted(int compactIn, int compactOut, int in, int out)
+        // "tool_use" for a summary in the middle of a turn, whose answer asks for tools.
+        Sse& endCompacted(int compactIn, int compactOut, int in, int out, const std::string& stopReason = "end_turn")
         {
             juce::Array<juce::var> iterations;
             iterations.add(claude::object({ { "type", "compaction" }, { "input_tokens", compactIn }, { "output_tokens", compactOut } }));
             iterations.add(claude::object({ { "type", "message" }, { "input_tokens", in }, { "output_tokens", out } }));
             event("message_delta", claude::object({ { "type", "message_delta" },
-                                                    { "delta", claude::object({ { "stop_reason", "end_turn" },
+                                                    { "delta", claude::object({ { "stop_reason", juce::String(stopReason) },
                                                                                 { "stop_sequence", juce::var() } }) },
                                                     { "usage", claude::object({ { "input_tokens", in }, { "output_tokens", out },
                                                                                 { "iterations", iterations } }) } }));

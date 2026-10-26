@@ -35,8 +35,12 @@
 //            result naming its files; the same file again is there already, not added twice
 //   BROKEN   a stream cut short (no message_stop) is asked again; what it showed is taken back, and the answer appears
 //            once
-//   COMPACT  a compaction block: a note, the usage counts the compaction; the next request starts at the user message
-//            before it (what came before is dropped), echoes the block, and sends the files' text again
+//   COMPACT  a compaction block: a note, the usage counts the compaction; the next request starts at the block, in its
+//            assistant message (what came before is dropped), and sends the files' text again with the next message;
+//            in the middle of a turn (an answer with tool calls), the next request starts at the block too, every tool
+//            result answers a call of the message before it (the API refused a result whose call the summary took:
+//            "unexpected tool_use_id"), and the files go with the results; a session saved with that broken history
+//            is repaired when it loads, and works
 //   STOP     a stalled stream: stop() ends the turn at once; the history ends with Claude's text so far
 //   STATE    the conversation is in the session: a second processor loading the first's state has the same entries
 //            and the same history
@@ -55,6 +59,7 @@
 
 #include <funkgui/panel/HeadlessGuiScope.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <memory>
@@ -94,13 +99,37 @@ namespace
 
     juce::Array<juce::var> messagesOf(const std::string& body) { return arr(claude::parseJson(body).getProperty("messages", {})); }
 
-    // The roles alternate, from the user's.
+    // A history the API takes: the roles alternate, from the user's, or from an assistant message that starts with a
+    // compaction block (where a history starts after a summary); and every tool result answers a tool call of the
+    // message before it.
     bool alternates(const juce::Array<juce::var>& messages)
     {
+        const juce::Array<juce::var> first = arr(messages.isEmpty() ? juce::var() : messages[0].getProperty("content", {}));
+        const bool summary = !messages.isEmpty() && str(messages[0], "role") == "assistant" && !first.isEmpty()
+                          && str(first[0], "type") == "compaction";
         for (int i = 0; i < messages.size(); ++i)
-            if (str(messages[i], "role") != (i % 2 == 0 ? "user" : "assistant"))
+        {
+            if (str(messages[i], "role") != ((i % 2 == 0) != summary ? "user" : "assistant"))
                 return false;
+            std::vector<std::string> calls;
+            for (const auto& b : arr(i > 0 ? messages[i - 1].getProperty("content", {}) : juce::var()))
+                if (str(b, "type") == "tool_use")
+                    calls.push_back(str(b, "id"));
+            for (const auto& b : arr(messages[i].getProperty("content", {})))
+                if (str(b, "type") == "tool_result"
+                    && std::find(calls.begin(), calls.end(), str(b, "tool_use_id")) == calls.end())
+                    return false;
+        }
         return true;
+    }
+
+    // Whether a message's content has a text block with `part` in it.
+    bool says(const juce::var& message, const std::string& part)
+    {
+        for (const auto& b : arr(message.getProperty("content", {})))
+            if (str(b, "type") == "text" && str(b, "text").find(part) != std::string::npos)
+                return true;
+        return false;
     }
 
     // `later` begins with every message of `earlier`, unchanged.
@@ -626,16 +655,81 @@ PROBE(plugin, chat)
         agent.send("next");
         agent.waitIdle();
         const juce::Array<juce::var> m = messagesOf(script->body(script->postCount() - 1));
-        P.eq("compact.history_pruned", m.size(), 3);
-        const juce::Array<juce::var> answer = arr(m.size() > 1 ? m[1].getProperty("content", {}) : juce::var());
-        P.eq("compact.block_echoed", !answer.isEmpty() && str(answer[0], "type") == "compaction"
-                                         && str(answer[0], "content") == "The user built a level control; the dial is at 1.5."
-                                         ? 1 : 0, 1);
+        P.eq("compact.history_pruned", m.size(), 2);
+        const juce::Array<juce::var> answer = arr(m.isEmpty() ? juce::var() : m[0].getProperty("content", {}));
+        P.eq("compact.starts_at_block", !answer.isEmpty() && str(m[0], "role") == "assistant"
+                                            && str(answer[0], "type") == "compaction"
+                                            && str(answer[0], "content") == "The user built a level control; the dial is at 1.5."
+                                            ? 1 : 0, 1);
         bool filesAgain = false;
-        for (const auto& b : arr(m.size() > 2 ? m[2].getProperty("content", {}) : juce::var()))
+        for (const auto& b : arr(m.size() > 1 ? m[1].getProperty("content", {}) : juce::var()))
             filesAgain = filesAgain || (has(str(b, "text"), "<file name=\"program.fm\">") && has(str(b, "text"), "// a comment"));
         P.eq("compact.files_sent_again", filesAgain ? 1 : 0, 1);
         P.eq("compact.alternates", alternates(m) ? 1 : 0, 1);
+    }
+
+    // ---- COMPACT in the middle of a turn: after a round of tools, the summary's answer asks for another -----------------
+    // The message before that answer is the first round's tool results, whose calls the summary takes away.
+    {
+        script->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .text("Looking at the dials first.")
+                                           .tool("toolu_look", "get_status", input({}))
+                                           .end("tool_use")));
+        script->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .compaction("The user wants the brass preset; the level dial is at 1.5.")
+                                           .text("The dial was moved, so let me put it back:")
+                                           .tool("toolu_back", "set_dial", input({ { "name", "level" }, { "value", 1.5 } }))
+                                           .endCompacted(160000, 2500, 3000, 120, "tool_use")));
+        script->add(fake::Response::ok(fake::Sse().start().text("Back where it was.").end()));
+        const int before = script->postCount();
+        const std::size_t shown = agent.chatState().entries.size();
+        agent.send("put the brass preset back");
+        agent.waitIdle();
+        const tp::ChatState st = agent.chatState();
+        P.eq("midturn.requests", script->postCount() - before, 3);
+        P.eq("midturn.answered", lastText(st, tp::ChatEntry::Kind::assistant) == "Back where it was." ? 1 : 0, 1);
+        int errors = 0;                            // this turn's
+        for (std::size_t i = shown; i < st.entries.size(); ++i)
+            errors += st.entries[i].kind == tp::ChatEntry::Kind::error ? 1 : 0;
+        P.eq("midturn.no_error", errors, 0);
+        const juce::Array<juce::var> m = messagesOf(script->body(script->postCount() - 1));
+        const juce::Array<juce::var> first = arr(m.isEmpty() ? juce::var() : m[0].getProperty("content", {}));
+        P.eq("midturn.starts_at_block", m.size() == 2 && str(m[0], "role") == "assistant" && !first.isEmpty()
+                                            && str(first[0], "type") == "compaction" ? 1 : 0, 1);
+        P.eq("midturn.results_answer_calls", alternates(m) ? 1 : 0, 1);
+        P.eq("midturn.files_with_results", m.size() == 2 && says(m[1], "<file name=\"program.fm\">") ? 1 : 0, 1);
+    }
+
+    // ---- a session saved with the old cut: a tool result whose call the summary took ---------------------------------
+    {
+        const std::string kept = agent.saveState();
+        juce::Array<juce::var> lost, answer, results, messages;
+        lost.add(input({ { "type", "tool_result" }, { "tool_use_id", "toolu_gone" }, { "content", "done" } }));
+        answer.add(input({ { "type", "compaction" }, { "content", "The user asked for a brass sound." } }));
+        answer.add(input({ { "type", "text" }, { "text", "Setting the dial:" } }));
+        answer.add(input({ { "type", "tool_use" }, { "id", "toolu_kept" }, { "name", "set_dial" },
+                           { "input", input({ { "name", "level" }, { "value", 1.0 } }) } }));
+        results.add(input({ { "type", "tool_result" }, { "tool_use_id", "toolu_kept" }, { "content", "level is 1" } }));
+        messages.add(input({ { "role", "user" }, { "content", lost } }));
+        messages.add(input({ { "role", "assistant" }, { "content", answer } }));
+        messages.add(input({ { "role", "user" }, { "content", results } }));
+        agent.loadState(claude::toJson(input({ { "version", 1 }, { "messages", messages }, { "entries", juce::Array<juce::var>() } })));
+        const juce::Array<juce::var> loaded = arr(claude::parseJson(agent.saveState()).getProperty("messages", {}));
+        P.eq("repair.loaded", loaded.size() == 2 && alternates(loaded) ? 1 : 0, 1);
+        script->add(fake::Response::ok(fake::Sse().start().text("Carrying on.").end()));
+        agent.send("go on");
+        agent.waitIdle();
+        const juce::Array<juce::var> m = messagesOf(script->body(script->postCount() - 1));
+        P.eq("repair.request", m.size() == 2 && alternates(m) && says(m[1], "go on") ? 1 : 0, 1);
+        P.eq("repair.answered", lastText(agent.chatState(), tp::ChatEntry::Kind::assistant) == "Carrying on." ? 1 : 0, 1);
+        bool gone = true;
+        for (const auto& message : m)
+            for (const auto& b : arr(message.getProperty("content", {})))
+                gone = gone && str(b, "tool_use_id") != "toolu_gone";
+        P.eq("repair.orphan_gone", gone ? 1 : 0, 1);
+        agent.loadState(kept);                     // the conversation the sections below go on with
     }
 
     // ---- STOP ----------------------------------------------------------------------------------------------------------

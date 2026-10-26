@@ -11,7 +11,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <set>
 #include <sstream>
+#include <utility>
 
 namespace testingplaygroundsynth
 {
@@ -27,7 +29,8 @@ namespace testingplaygroundsynth
 
         // Server-side compaction (the compaction docs): once a request's input reaches the trigger, the API summarizes
         // the conversation before it and answers from the summary; the summary comes back as a compaction block, which
-        // goes back with the rest of the answer, and the API ignores what came before it.
+        // goes back with the rest of the answer, and the API ignores what came before it. The history then starts at
+        // the block (appendAnswer, repairHistory).
         constexpr const char* kCompactBeta = "compact-2026-01-12";
         constexpr int kCompactTrigger = 150000;   // input tokens (the API's default; 50,000 at least)
         constexpr const char* kCompactInstructions =
@@ -445,6 +448,8 @@ namespace testingplaygroundsynth
             {
                 messages_.add(claude::object({ { "role", "user" }, { "content", content } }));
             }
+            repairHistory();
+            resendState_ = false;                  // the state (whole, after a summary) is in this message
             busy_ = true;
             activity_ = "Thinking";
             cancel_.store(false);
@@ -507,6 +512,7 @@ namespace testingplaygroundsynth
         if (const auto* arr = entries.getArray())
             for (const auto& e : *arr)
                 entries_.push_back({ kindOf(str(e, "k")), str(e, "t") });
+        repairHistory();                           // a session saved by a version that cut it at the wrong place
         touch();
     }
 
@@ -520,13 +526,70 @@ namespace testingplaygroundsynth
                                            [](const juce::var& b) { return str(b, "type") == "compaction"; });
         if (!compacted)
             return;
-        // The API ignores everything before a compaction block: keep from the user message before the answer that
-        // carries it (so the history still starts with the user), and forget which files Claude has seen, since the
-        // summary leaves their text out (the next message sends them again).
-        if (messages_.size() > 2)
-            messages_.removeRange(0, messages_.size() - 2);
+        // The API ignores everything before a compaction block: the history starts at it (repairHistory). Claude has
+        // seen no file since, as far as the summary goes (it leaves their text out): the state goes again, whole, with
+        // what comes next, the user's next message or this turn's next tool results.
+        repairHistory();
         seen_.clear();
         lastSignature_ = 0;
+        resendState_ = true;
+    }
+
+    // A history the API takes. After a compaction block, nothing before it: the API ignores it anyway, and a message
+    // kept from before it can be the results of tool calls the summary took away, which the API refuses ("unexpected
+    // tool_use_id found in tool_result blocks"). The history then starts with the assistant message that carries the
+    // block, as the API's examples continue after one. And no tool result without its call in the message before it:
+    // such a result goes (a message left with nothing says so in a line, so the roles still alternate).
+    void ChatAgent::repairHistory()
+    {
+        for (int i = messages_.size(); --i >= 0;)
+        {
+            if (str(messages_[i], "role") != "assistant")
+                continue;
+            const juce::var content = messages_[i].getProperty("content", juce::var());
+            const auto* blocks = content.getArray();
+            int at = -1;
+            for (int j = 0; blocks != nullptr && j < blocks->size(); ++j)
+                if (str((*blocks)[j], "type") == "compaction")
+                    at = j;
+            if (at < 0)
+                continue;
+            if (at > 0)
+            {
+                juce::Array<juce::var> fromBlock;
+                for (int j = at; j < blocks->size(); ++j)
+                    fromBlock.add((*blocks)[j]);
+                if (auto* o = messages_[i].getDynamicObject())
+                    o->setProperty("content", fromBlock);
+            }
+            messages_.removeRange(0, i);
+            break;
+        }
+        for (int i = 0; i < messages_.size(); ++i)
+        {
+            if (str(messages_[i], "role") != "user")
+                continue;
+            std::set<std::string> calls;           // the tool calls of the message before
+            const juce::var before = i > 0 ? messages_[i - 1].getProperty("content", juce::var()) : juce::var();
+            if (const auto* arr = before.getArray())   // the var holds the array: never getArray() on a temporary
+                for (const auto& b : *arr)
+                    if (str(b, "type") == "tool_use")
+                        calls.insert(str(b, "id"));
+            const juce::var content = messages_[i].getProperty("content", juce::var());
+            const auto* blocks = content.getArray();
+            if (blocks == nullptr)
+                continue;
+            juce::Array<juce::var> kept;
+            for (const auto& b : *blocks)
+                if (str(b, "type") != "tool_result" || calls.count(str(b, "tool_use_id")) > 0)
+                    kept.add(b);
+            if (kept.size() == blocks->size())
+                continue;
+            if (kept.isEmpty())
+                kept.add(text("(The results of tool calls that are no longer in this conversation.)"));
+            if (auto* o = messages_[i].getDynamicObject())
+                o->setProperty("content", kept);
+        }
     }
 
     void ChatAgent::markSeen(const std::string& name, const std::string& text) { seen_[name] = hashText(text); }
@@ -1104,6 +1167,16 @@ namespace testingplaygroundsynth
                 }
                 results.add(runTool(use));
             }
+            // A summary in this request left the files out of what Claude has: the state goes with the results, after
+            // them, so that the turn goes on with the code in front of it.
+            bool resend = false;
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                resend = std::exchange(resendState_, false);
+            }
+            if (resend)
+                if (const std::string context = contextBlock(); !context.empty())
+                    results.add(text(context));
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
                 messages_.add(claude::object({ { "role", "user" }, { "content", results } }));
