@@ -102,5 +102,15 @@ namespace testingplaygroundsynth
 
         virtual bool panelView() const = 0;
         virtual void setPanelView(bool on) = 0;
+
+        // The pages the panel's interface shows: each tabs element's chosen page (the tabs in the order the .gui has
+        // them), by its title. Kept in the session, so a reopened editor and a reloaded session show them again.
+        virtual std::vector<std::string> guiPages() const = 0;
+        virtual void setGuiPages(const std::vector<std::string>& titles) = 0;
+
+        // A note from the panel's keyboard (a .gui file's keyboard element): `velocity` 0..1 plays it, 0 releases it.
+        // An instrument plays it at the start of its next block; an effect ignores it. 64 can wait at once; past that
+        // a note is dropped.
+        virtual void playNote(int note, float velocity) = 0;
     };
 }

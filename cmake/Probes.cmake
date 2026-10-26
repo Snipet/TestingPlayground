@@ -29,13 +29,14 @@ target_include_directories(${FP_PROBES} PRIVATE ${FP_SOURCE_ROOT} ${FP_GENERATED
 target_compile_definitions(${FP_PROBES} PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0
                                                PROBE_DEFAULT_OUT_DIR="${CMAKE_BINARY_DIR}/probe-out")
 target_link_libraries(${FP_PROBES} PRIVATE
-    ${PRODUCT_NAME}_dsp fp_flags FunkGui::core FunkGui::harness
+    ${PRODUCT_NAME}_dsp fp_flags FunkGui::core FunkGui::gpu FunkGui::harness
     juce::juce_audio_processors juce::juce_recommended_config_flags)
 if(FP_LTO)
   target_link_options(${FP_PROBES} PRIVATE $<$<CONFIG:Release>:-flto>)    # the DSP library holds bitcode there
 endif()
 funkgui_configure_product(${FP_PROBES} PRODUCT ${PRODUCT_NAME} OBJC_PREFIX ${PRODUCT_OBJC_PREFIX}
                           ENV_PREFIX ${PRODUCT_ENV_PREFIX} PREFS_FOLDER ${PRODUCT_NAME})
+funkgui_compile_shaders(${FP_PROBES})                     # FunkGui::gpu's embedded shaders (the shaders' registry)
 # At the top of the build tree (build-dev/<Name>_probes), not in JUCE's artefacts folder.
 set_target_properties(${FP_PROBES} PROPERTIES EXCLUDE_FROM_ALL TRUE RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
@@ -72,7 +73,7 @@ foreach(_f IN LISTS FP_PROBE_SOURCES)
   set_tests_properties(${_name} PROPERTIES
       LABELS "probe;${_layer}"
       TIMEOUT ${_timeout}
-      ENVIRONMENT "PROBE_OUT_DIR=${CMAKE_BINARY_DIR}/probe-out;${PRODUCT_ENV_PREFIX}PREFS_DIR=${_sb}")
+      ENVIRONMENT "PROBE_OUT_DIR=${CMAKE_BINARY_DIR}/probe-out;${PRODUCT_ENV_PREFIX}PREFS_DIR=${_sb};${PRODUCT_ENV_PREFIX}SHADERC=${FP_SHADERC}")
 endforeach()
 list(LENGTH _fp_names _fp_n)
 message(STATUS "${PRODUCT_NAME}: ${_fp_n} probes: ${_fp_names}")

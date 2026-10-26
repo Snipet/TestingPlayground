@@ -464,7 +464,10 @@ namespace testingplaygroundsynth
             const PanelSpec pragmas = readPanelSpec(compiled, patch->controls_, fields, kInstrument, ignored);
             if (!pragmas.sections.empty() || !pragmas.displays.empty())
                 r.notes += file + ": note: the interface is " + gui->name + "'s: the #pragma panel lines are left out\n";
-            patch->panel_ = readGuiSpec(*gui, patch->controls_, fields, kInstrument, r.notes);
+            std::vector<std::string> fileNames;
+            for (const SourceFile& f : files)
+                fileNames.push_back(f.name);
+            patch->panel_ = readGuiSpec(*gui, patch->controls_, fields, kInstrument, fileNames, r.notes);
         }
         else
             patch->panel_ = readPanelSpec(compiled, patch->controls_, fields, kInstrument, r.notes);

@@ -11,11 +11,16 @@
 // does not leaves the running one playing. Either way the outcome is the status (status(); revision() bumps when one
 // arrives): FMinus's messages, the plugin's, the program's dials, how long it took. The thread also destroys, every
 // tenth of a second, what the audio thread handed back (Engine::collect), so the processor need not.
+//
+// A program that plays and has a .gui file with shaders gets them built too (fminus/Shaders.h: shaderc, with the
+// tools setShaderTools gave; a shader seen before comes from the cache): their binaries go into the status's panel
+// (PanelShader::binary), and a shader that does not compile is a note on its own file's line.
 #pragma once
 
 #include "dsp/Controls.h"
 #include "dsp/Sources.h"
 #include "fminus/PanelSpec.h"
+#include "fminus/Shaders.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -50,6 +55,9 @@ namespace testingplaygroundsynth
         Compiler(const Compiler&) = delete;
         Compiler& operator=(const Compiler&) = delete;
 
+        // What building a .gui file's shaders needs (the plugin's shaderc and FunkGui's texts); none until it is set.
+        void setShaderTools(ShaderTools tools);
+
         uint64_t request(Sources files);
         CompileStatus compileNow(Sources files);
 
@@ -64,6 +72,8 @@ namespace testingplaygroundsynth
 
         Engine& engine_;
         mutable std::mutex mutex_;
+        ShaderTools tools_;                    // mutex_
+        ShaderCache shaders_;
         std::condition_variable wake_, idle_;
         Sources queued_;
         bool hasQueued_ = false;

@@ -5,9 +5,9 @@
 #                         its commit and those of its submodules bgfx, bx and bimg are asserted
 #   shaderc               the prebuilt ${FP_DEPS_DIR}/tools/shaderc-<tag>/shaderc when its stamp names the pinned
 #                         bgfx.cmake commit, else built from bgfx.cmake (slow: about 2,000 CPU-seconds)
-#   FunkGui v0.18.0       FetchContent at the pinned tag from FP_FUNKGUI_REPO: this machine's local repository
+#   FunkGui v0.19.0       FetchContent at the pinned tag from FP_FUNKGUI_REPO: this machine's local repository
 #                         (~/audio/libraries/FunkGui) when it exists, else GitHub; the commit is asserted. v0.17.0
-#                         brought the TextEditor, v0.18.0 resizable Panels
+#                         brought the TextEditor, v0.18.0 resizable Panels, v0.19.0 custom shaders
 #   FMinus                FetchContent at the pinned commit from FP_FMINUS_REPO (~/audio/libraries/FMinus, else
 #                         GitHub): the JIT compiler, its library and runtime only. Its LLVM, Bison and Flex are the
 #                         ones FMinus's own builds put in its deps cache (FP_FMINUS_DEPS_DIR), read, never built here
@@ -30,9 +30,9 @@ set(FP_BGFX_API          153)
 set(FP_BGFX_SUB_SHAS     bgfx=c7684e20da1e385edc439ef39cdb42b8c661016f
                          bx=0b001f5f36579e8aea07efa5af139ca18dad9505
                          bimg=3b4baab0128ac499c5c3bc37202781bf54084049)
-set(FP_FUNKGUI_TAG       v0.18.0)
-set(FP_FUNKGUI_SHA       78d1b745b975d5f6882bc6cd0d9aea7d92e9e63b)
-set(FP_FUNKGUI_VERSION   0.18.0)
+set(FP_FUNKGUI_TAG       v0.19.0)
+set(FP_FUNKGUI_SHA       8f99a219f88176668a177c8aff6f9165b5d3803b)
+set(FP_FUNKGUI_VERSION   0.19.0)
 set(FP_FMINUS_SHA        db0062c9203d6c33833e58d223f327ac7538451c)   # FMinus has no tags: a commit of its main
 set(FP_FMINUS_LLVM       23.1.3)                                     # the LLVM that commit pins (cmake/FMinusPins.cmake)
 
@@ -122,6 +122,7 @@ if(IS_EXECUTABLE "${_sc_dir}/shaderc" AND _sc_stamp STREQUAL "bgfx.cmake ${FP_BG
   set(BGFX_BUILD_TOOLS OFF)                               # normal variables: CMP0077
   set(FUNKGUI_SHADERC "${_sc_dir}/shaderc")
   set(_fp_shaderc "${FUNKGUI_SHADERC}")
+  set(FP_SHADERC "${FUNKGUI_SHADERC}")                    # the one the plugin carries (CMakeLists.txt)
 else()
   set(BGFX_BUILD_TOOLS ON)
   set(BGFX_BUILD_TOOLS_SHADER ON)
@@ -130,6 +131,7 @@ else()
   set(BGFX_BUILD_TOOLS_BIN2C OFF)
   unset(FUNKGUI_SHADERC)
   set(_fp_shaderc "built from bgfx.cmake")
+  set(FP_SHADERC "$<TARGET_FILE:shaderc>")
   message(STATUS "${PROJECT_NAME}: no prebuilt shaderc stamped 'bgfx.cmake ${FP_BGFX_SHA}' in ${_sc_dir}: building "
                  "it from bgfx.cmake (about 2,000 CPU-seconds)")
 endif()

@@ -57,7 +57,8 @@
 // token is forgotten and the chat asks the user to sign in again. Its 402 (the credit is used up), 403 (the account is
 // disabled), 400 (a model it has no price for) and 502 (Anthropic refused the server's key) carry messages written for
 // the user, shown as they are, and are not retried. After a turn through the account the agent asks the server for
-// the credit left (GET /account), which the footer shows.
+// the credit left (GET /account), which the footer shows; the account's view asks for it again (refreshAccount), with
+// this month's use and the sign-in's dates.
 //
 // Threads: the ChatPort calls run on the message thread; a turn runs on the agent's worker thread, which calls
 // ChatHost (whose implementation must be safe from that thread) and the transport. Signing in and out runs on a thread
@@ -122,6 +123,7 @@ namespace testingplaygroundsynth
         void signIn(const std::string& username, const std::string& password) override;
         void signOut() override;
         void useAccount(bool account) override;
+        void refreshAccount() override;
         void setModel(const std::string& id) override;
         void setEffort(const std::string& effort) override;
         void setFast(bool on) override;
@@ -164,7 +166,9 @@ namespace testingplaygroundsynth
         juce::var runTool(const juce::var& toolUse);               // a tool_result block
         std::string toolText(const std::string& name, const juce::var& input, bool& isError);
         void fetchModels();                                         // the worker, before a turn, once a key is known
-        void fetchAccount();                                        // the worker, after a turn: the credit left
+        // GET /account: the credit left and the account's details. The worker's after a turn through the account
+        // (`asked` false); the auth thread's when the account's view asks (true: whichever access the chat uses).
+        void fetchAccount(const std::atomic<bool>& cancel, bool asked);
         void ensureAccess();                                        // the key or the token in use, loaded
         void loadAccess();                                          // the same (mutex held)
         void refused(const Access& access, int status, const std::string& why);   // a 401: that sign-in or key is
@@ -207,6 +211,7 @@ namespace testingplaygroundsynth
         std::string account_;                                       // its username (kept after signing out)
         std::string accountProblem_;                                // why the sign-in no longer works
         std::string credit_;                                        // "$4.96 credit left", as the server last said
+        ChatAccount details_;                                       // the rest of what it said (GET /account)
         bool useAccount_ = true;                                    // the chat goes through the account, else the key
         bool signingIn_ = false;
         std::string signInError_;
