@@ -168,6 +168,7 @@ namespace testingplaygroundsynth::ui
         bool panelView() const noexcept { return panelView_; }
         void setPanelView(bool on);
         const GuiLayout& guiLayout() const noexcept { return gui_; }
+        const funkgui::Rect& programCard() const noexcept { return programCard_; }   // the program's card
         const PanelSpec& panelSpec() const noexcept { return panelSpec_; }      // the program's that the panel shows
         const GuiControlItem& guiControl(int slot) const;
         const Item& guiItem(int kind, int k) const;   // kind 0: a pad, 1: an envelope, 2: tabs, 3: a keyboard, 4: a shader
@@ -207,6 +208,12 @@ namespace testingplaygroundsynth::ui
         std::optional<funkgui::Point> centreOfFast() const;   // fast mode's pill (a switch), on a model that takes it
         funkgui::Point centreOfNewChat() const;
         funkgui::Point centreOfKey() const;
+        // The chat's column: open, or folded into a rail at the right (the editor and the panel take the room). The
+        // header's chevron folds it, the rail's button opens it; the session keeps it (EditorPort::chatOpen).
+        bool chatOpen() const noexcept { return chatOpen_; }
+        void setChatOpen(bool open);
+        funkgui::Point centreOfChatToggle() const;       // the header's chevron, or the rail's button
+        bool chatUnread() const noexcept { return unread_; }   // folded, Claude has written since
         std::optional<funkgui::Point> centreOfAccount() const;        // the header's account pill, while signed in
         ChatView& chatView();                            // the conversation (its own probe hooks)
         const ChatView& chatView() const;
@@ -328,9 +335,20 @@ namespace testingplaygroundsynth::ui
         int editorItem_ = -1, problemsItem_ = -1, runItem_ = -1, examplesItem_ = -1, libraryItem_ = -1, randomItem_ = -1,
             presetsItem_ = -1;
         int themeItem_ = -1, zoomItem_ = -1;
+        int panelViewItem_ = -1;                         // the Code / Panel switch's Panel half (viewItem_ the Code one)
+        float actionsX_ = 0.0f;                          // the program's card's actions start here (at its right)
+        funkgui::Rect programCard_;                      // the program's card (the tabs, the editor or the panel, the dials)
+        std::unique_ptr<funkgui::CellModel> zoomModel_;  // the zoom's steps (zoom_ points at it)
+        std::string presetLabel() const;                 // the top bar's pill: the preset's name, "edited", or Presets
+        void openZoom();                                 // the zoom's menu
+        std::string statusShown() const;                 // the status as the card's header shows it (sentence case)
         int newChatItem_ = -1, keyItem_ = -1, accountItem_ = -1, chatViewItem_ = -1, inputItem_ = -1;
+        int chatToggleItem_ = -1;                        // fold or open the chat
+        bool chatOpen_ = true;
+        bool unread_ = false;                            // folded, and the conversation grew since
+        std::size_t entriesAtFold_ = 0;
         int modelItem_ = -1, thinkingItem_ = -1, fastItem_ = -1, sendItem_ = -1;
-        funkgui::CellModel* zoom_ = nullptr;             // the ZOOM cells' model (an item owns it)
+        funkgui::CellModel* zoom_ = nullptr;             // the zoom's steps (zoomModel_)
         float width_ = 0.0f, height_ = 0.0f;
         uint32_t layoutRevision_ = 0;                    // bumps with each layout()
         std::string title_, subtitle_, status_, meter_;
@@ -353,7 +371,7 @@ namespace testingplaygroundsynth::ui
         std::vector<int> guiPages_;                      // by node
         float guiScrollX_ = 0.0f, guiScrollY_ = 0.0f;
         bool panelView_ = false;
-        int viewItem_ = -1;                              // the CODE and PANEL cells
+        int viewItem_ = -1;                              // the Code / Panel switch's Code half
         std::vector<int> itemOfGuiSlot_;                 // slot -> its GuiControlItem
         std::vector<int> guiPads_, guiEnvelopes_, guiTabs_, guiKeyboards_, guiShaders_;
         std::vector<int> shaderNode_;                    // by guiShaders_: the node it shows (-1: none)

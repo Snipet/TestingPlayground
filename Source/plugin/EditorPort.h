@@ -47,11 +47,33 @@
 #include "dsp/Sources.h"
 
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
+namespace funkgui
+{
+    class ParamPort;
+}
+
 namespace testingplaygroundsynth
 {
+    class EditorPort;
+
+    // A picture of the editor, for the chat's view_panel tool: a Panel of its own over the processor's ports and its
+    // EditorPort, laid out at the editor's size and drawn headless (FunkGui's SoftRaster: a shader as a placeholder),
+    // as PNG bytes. `window`: the whole editor as the user has it; else the program's panel in the PANEL view, cropped
+    // to it. `page`: a tabs element's page to show, by its title ("" for the user's). The view, the chat's fold and
+    // the pages the user has stay as they were. Message thread only. Defined in Source/editor/Picture.cpp.
+    struct PanelPicture
+    {
+        std::string png;                         // the PNG's bytes ("" when it could not be made: `why`)
+        int width = 0, height = 0;               // its pixels
+        std::string about;                       // what it shows (the view, its size, the pages there are)
+        std::string why;
+    };
+    PanelPicture picturePanel(std::span<funkgui::ParamPort* const> ports, EditorPort& port, int width, int height,
+                              bool window, const std::string& page);
     // The editor's files, a tab each (the first the program), and the tab it shows.
     struct Draft
     {
@@ -102,6 +124,10 @@ namespace testingplaygroundsynth
 
         virtual bool panelView() const = 0;
         virtual void setPanelView(bool on) = 0;
+
+        // Whether the chat's column is open (else folded into a rail at the right), kept in the session.
+        virtual bool chatOpen() const = 0;
+        virtual void setChatOpen(bool open) = 0;
 
         // The pages the panel's interface shows: each tabs element's chosen page (the tabs in the order the .gui has
         // them), by its title. Kept in the session, so a reopened editor and a reloaded session show them again.

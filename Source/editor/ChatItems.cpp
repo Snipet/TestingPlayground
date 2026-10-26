@@ -268,6 +268,12 @@ namespace testingplaygroundsynth::ui
             fill = on ? (hovered_ ? funkgui::mix(p.accent, p.text, 0.12f) : p.accent) : p.hover;
             ink = on ? p.onAccent : p.faint;
         }
+        else if (look == Look::raised)
+        {
+            fill = p.composer;
+            edge = p.composerEdge;
+            ink = p.text;
+        }
         else
         {
             if (look == Look::outlined)
@@ -281,7 +287,7 @@ namespace testingplaygroundsynth::ui
         if (spec_.shape == Shape::circle)
             c.disc(r.centreX(), r.centreY(), r.h * 0.5f, fill, look == Look::outlined ? 1.0f : 0.0f, edge);
         else
-            c.rrect(r.x, r.y, r.w, r.h, radius, fill, look == Look::outlined ? 1.0f : 0.0f, edge);
+            c.rrect(r.x, r.y, r.w, r.h, radius, fill, look == Look::outlined || look == Look::raised ? 1.0f : 0.0f, edge);
         if (ring && focused_)
             c.rrect(r.x - 2.0f, r.y - 2.0f, r.w + 4.0f, r.h + 4.0f, radius + 2.0f, p.card.withAlpha(0.0f), 1.5f, p.accent);
 

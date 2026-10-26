@@ -71,6 +71,8 @@ namespace testingplaygroundsynth::ui
         funkgui::Point centre() const override;
         void focusChanged(bool focused) override { editor_.setFocused(focused); }
         bool takesAllKeys() const override { return editor_.focused(); }
+        bool shown() const override { return !hidden_; }
+        void setHidden(bool hidden) { hidden_ = hidden; }   // the chat folded away
 
     private:
         funkgui::Rect editorBounds(funkgui::Rect box, float barH) const;
@@ -80,13 +82,14 @@ namespace testingplaygroundsynth::ui
         std::string placeholder_;
         funkgui::Rect box_;
         float barH_ = 0.0f;
+        bool hidden_ = false;
     };
 
     class ButtonItem final : public Item
     {
     public:
         enum class Shape : uint8_t { square, pill, circle };
-        enum class Look : uint8_t { ghost, outlined, primary };
+        enum class Look : uint8_t { ghost, outlined, primary, raised };   // raised: a switch's chosen half
         struct Spec
         {
             Shape shape = Shape::pill;
@@ -125,7 +128,8 @@ namespace testingplaygroundsynth::ui
         bool a11yAction(uint32_t id, funkgui::A11yAction, double, funkgui::GestureController&) override;
         void specLine(char* out, std::size_t n) const override;
         funkgui::Point centre() const override { return { bounds_.centreX(), bounds_.centreY() }; }
-        bool shown() const override { return !spec_.shown || spec_.shown(); }
+        bool shown() const override { return !hidden_ && (!spec_.shown || spec_.shown()); }
+        void setHidden(bool hidden) { hidden_ = hidden; }   // the chat folded away (spec.shown aside)
 
     private:
         bool enabled() const { return !spec_.enabled || spec_.enabled(); }
@@ -134,5 +138,6 @@ namespace testingplaygroundsynth::ui
         Spec spec_;
         funkgui::Rect bounds_;
         bool hovered_ = false, focused_ = false;
+        bool hidden_ = false;
     };
 }
