@@ -22,6 +22,7 @@ namespace testingplaygroundsynth
         constexpr int kDefaultMaxTokens = 64000;   // a model /v1/models has not described
         constexpr int kMaxTokensCap = 128000;      // the longest answer asked for: a big file is written in one call
         constexpr int kMaxAttempts = 4;            // a request, retried on an overload, a rate limit or a dropped line
+        constexpr int kMaxCutOffs = 2;             // replies cut off at max_tokens in a row before a turn ends
         constexpr std::size_t kMaxToolOutput = 12000;   // a tool result's characters (a compile's messages)
         constexpr const char* kDefaultModel = "claude-opus-5-5";
         constexpr const char* kDefaultEffort = "medium";
@@ -169,6 +170,25 @@ namespace testingplaygroundsynth
             else
                 std::snprintf(buf, sizeof buf, "%lld", static_cast<long long>(n));
             return buf;
+        }
+
+        // What one reply holds, told to Claude with the user's message at xhigh and max effort, where thinking is long:
+        // it may otherwise draft a whole file in its thinking, write it again, and run out of room (the API's advice
+        // for long deliverables at those levels). Once sent it stays in the history as it was.
+        std::string limitNote(int maxTokens)
+        {
+            return "(From the plugin: everything in one reply of yours, your thinking included, counts toward one limit "
+                   "of about " + thousands(maxTokens) + " tokens, and a reply that reaches it is cut off. So don't write "
+                   "a file out in full in your thinking and then again in the reply: in your thinking settle the design "
+                   "and the hard decisions, then write the code once, straight into its files, a few files to a reply.)";
+        }
+
+        // After a reply cut off at max_tokens with no tool call: what the turn goes on with.
+        std::string cutOffNote(int maxTokens)
+        {
+            return "(From the plugin: your reply reached its limit of about " + thousands(maxTokens)
+                 + " tokens, your thinking included, and was cut off. Go on from where it stopped: write what you have "
+                   "worked out into its files now, then do what remains a step at a time.)";
         }
 
         const char* kindName(ChatEntry::Kind k)
@@ -458,6 +478,8 @@ namespace testingplaygroundsynth
             content.add(text(trimmed));
             if (!context.empty())
                 content.add(text(context));
+            if (effort_ == "xhigh" || effort_ == "max")
+                content.add(text(limitNote(maxTokensFor(model_))));
             // A turn that ended without an answer (stopped, or an error) left the user's message last: this one joins
             // it, so the roles keep alternating. Nothing was answered to it, so no thinking block depends on it.
             const int n = messages_.size();
@@ -519,7 +541,20 @@ namespace testingplaygroundsynth
         juce::Array<juce::var> entries;
         for (const ChatEntry& e : entries_)
             entries.add(claude::object({ { "k", kindName(e.kind) }, { "t", juce::String::fromUTF8(e.text.c_str()) } }));
-        return claude::toJson(claude::object({ { "version", 1 }, { "messages", messages_ }, { "entries", entries } }));
+        return claude::toJson(claude::object({ { "version", 1 },
+                                               { "prompt", juce::String(promptPrint()) },
+                                               { "messages", messages_ },
+                                               { "entries", entries } }));
+    }
+
+    // What a replayed thinking block is bound to besides the messages before it (the preserved-thinking docs): the
+    // system prompt and the tools.
+    std::string ChatAgent::promptPrint()
+    {
+        char buf[24];
+        const uint64_t h = hashText(systemPrompt() + '\x1f' + claude::toJson(toolDefinitions()));
+        std::snprintf(buf, sizeof buf, "%016llx", static_cast<unsigned long long>(h));
+        return buf;
     }
 
     void ChatAgent::loadState(const std::string& json)
@@ -540,6 +575,10 @@ namespace testingplaygroundsynth
         if (const auto* arr = entries.getArray())
             for (const auto& e : *arr)
                 entries_.push_back({ kindOf(str(e, "k")), str(e, "t") });
+        // Saved with another system prompt or other tools (an earlier version of the plugin): the API would refuse
+        // its thinking blocks (bound to a different conversation), so the history goes on without them.
+        if (str(v, "prompt") != promptPrint())
+            dropThinking();
         repairHistory();                           // a session saved by a version that cut it at the wrong place
         touch();
     }
@@ -618,6 +657,38 @@ namespace testingplaygroundsynth
             if (auto* o = messages_[i].getDynamicObject())
                 o->setProperty("content", kept);
         }
+    }
+
+    // The history without its thinking: an assistant message keeps its text, tool calls and compaction (one left with
+    // nothing says so in a line, so the roles still alternate).
+    void ChatAgent::dropThinking()
+    {
+        for (const auto& message : messages_)
+        {
+            if (str(message, "role") != "assistant")
+                continue;
+            const juce::var content = message.getProperty("content", juce::var());
+            const auto* blocks = content.getArray();
+            if (blocks == nullptr)
+                continue;
+            juce::Array<juce::var> kept;
+            for (const auto& b : *blocks)
+                if (const std::string type = str(b, "type"); type != "thinking" && type != "redacted_thinking")
+                    kept.add(b);
+            if (kept.size() == blocks->size())
+                continue;
+            if (kept.isEmpty())
+                kept.add(text("(no answer)"));
+            if (auto* o = message.getDynamicObject())
+                o->setProperty("content", kept);
+        }
+    }
+
+    // The max_tokens a request to this model asks for: the model's own limit, at most kMaxTokensCap.
+    int ChatAgent::maxTokensFor(const std::string& id) const
+    {
+        const auto model = std::find_if(models_.begin(), models_.end(), [&](const ChatModel& m) { return m.id == id; });
+        return std::min(kMaxTokensCap, model != models_.end() ? model->maxTokens : kDefaultMaxTokens);
     }
 
     void ChatAgent::markSeen(const std::string& name, const std::string& text) { seen_[name] = hashText(text); }
@@ -829,7 +900,7 @@ namespace testingplaygroundsynth
                                     { "cache_control", claude::object({ { "type", "ephemeral" }, { "ttl", "1h" } }) } }));
         const auto model = std::find_if(models_.begin(), models_.end(),
                                         [&](const ChatModel& m) { return m.id == turnModel_; });
-        const int maxTokens = std::min(kMaxTokensCap, model != models_.end() ? model->maxTokens : kDefaultMaxTokens);
+        const int maxTokens = maxTokensFor(turnModel_);
         juce::var body = claude::object({ { "model", juce::String(turnModel_) },
                                           { "max_tokens", maxTokens },
                                           { "stream", true },
@@ -990,6 +1061,7 @@ namespace testingplaygroundsynth
             }
         }
         fetchModels();
+        int maxTokens = 0;                         // what one reply of this turn's model holds
         {
             // The model and the thinking level for the whole turn: a change while it runs applies to the next one.
             const std::lock_guard<std::mutex> lock(mutex_);
@@ -998,8 +1070,10 @@ namespace testingplaygroundsynth
             const auto model = std::find_if(models_.begin(), models_.end(),
                                             [&](const ChatModel& m) { return m.id == model_; });
             turnFast_ = fast_ && model != models_.end() && model->fast;
+            maxTokens = maxTokensFor(turnModel_);
         }
 
+        int cutOffs = 0;                           // replies cut off at max_tokens in a row, this turn
         for (int round = 0; round < kMaxRounds && !cancel_.load(); ++round)
         {
             std::string beta;
@@ -1201,17 +1275,27 @@ namespace testingplaygroundsynth
                 appendAnswer(blocks);
                 touch();
             }
-            if (toolUses.empty())
+            // A reply cut off at max_tokens (its thinking counts toward it): the turn goes on, Claude told so, unless
+            // the reply before it was cut off too, since a reply that only thinks costs a whole reply each time.
+            const bool cutOff = stopReason == "max_tokens";
+            cutOffs = cutOff ? cutOffs + 1 : 0;
+            const bool endsHere = cutOff && cutOffs >= kMaxCutOffs;
+            if (cutOff)
             {
-                if (stopReason == "max_tokens")
-                {
-                    const std::lock_guard<std::mutex> lock(mutex_);
-                    addEntry(ChatEntry::Kind::note, "The answer reached its length limit.");
-                }
-                break;                             // end_turn
+                const std::string limit = "Claude's reply reached its length limit (" + thousands(maxTokens)
+                                        + " tokens, its thinking included)";
+                const std::lock_guard<std::mutex> lock(mutex_);
+                addEntry(ChatEntry::Kind::note,
+                         endsHere ? limit + " twice in a row, so the turn ends here. Send \"continue\" to let it go "
+                                            "on. A lower thinking level leaves it more room to write: at Max its "
+                                            "thinking has no limit of its own."
+                                  : limit + ", so it goes on from where it stopped.");
             }
+            if (toolUses.empty() && (!cutOff || endsHere))
+                break;                             // end_turn, or cut off again
 
-            // The tools, in order; their results in one user message.
+            // The tools, in order, their results in one user message; after a reply cut off without a tool call, a
+            // line that says so.
             juce::Array<juce::var> results;
             for (const auto& use : toolUses)
             {
@@ -1224,12 +1308,13 @@ namespace testingplaygroundsynth
                         invalid = true;
                         raw = badJson;
                     }
-                if (stopReason == "max_tokens" || invalid || cancel_.load())
+                if (cutOff || invalid || cancel_.load())
                 {
-                    const std::string why = stopReason == "max_tokens"
-                                                ? "Your reply was cut off at its length limit before this call was "
-                                                  "complete. Do the work in smaller steps (edit_file, or several "
-                                                  "files)."
+                    const std::string why = cutOff
+                                                ? "Your reply reached its limit of about " + thousands(maxTokens)
+                                                      + " tokens, your thinking included, and was cut off before this "
+                                                        "call was complete, so it did not run. Do the work in smaller "
+                                                        "steps (edit_file, or several files)."
                                             : invalid ? claude::toJson(claude::object({ { "INVALID_JSON",
                                                                                           juce::String::fromUTF8(raw.c_str()) } }))
                                                       : "Stopped by the user before this ran.";
@@ -1241,6 +1326,8 @@ namespace testingplaygroundsynth
                 }
                 results.add(runTool(use));
             }
+            if (toolUses.empty())
+                results.add(text(cutOffNote(maxTokens)));
             // A summary in this request left the files out of what Claude has: the state goes with the results, after
             // them, so that the turn goes on with the code in front of it.
             bool resend = false;
@@ -1262,6 +1349,8 @@ namespace testingplaygroundsynth
                 addEntry(ChatEntry::Kind::note, "Stopped.");
                 break;
             }
+            if (endsHere)
+                break;                             // the results are in the history; the next message joins them
             if (round + 1 == kMaxRounds)
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
