@@ -119,8 +119,13 @@ from FunkPluginTemplate.
   block, in its assistant message (never at the message before it, which mid-turn is tool results the API refuses
   without their calls; `repairHistory`, also run on a loaded session), and the files go again with whatever follows,
   a message or the turn's next tool results; a file's text goes in the plugin's state only when Claude has not seen
-  it (`seen_`); a broken stream is retried with what it showed taken back; 80 requests a turn. `plugin.chat` checks
-  each.
+  it (`seen_`); a broken stream is retried with what it showed taken back; 80 requests a turn. A reply cut off at
+  `max_tokens` (thinking counts) goes back as it came and the turn goes on with a line that tells Claude; a second
+  in a row ends the turn. The prompt says what a reply holds; at xhigh and max a note with the user's message says it
+  again (`limitNote`, kept in the history as sent). `plugin.chat` checks each.
+- **The system prompt and the tools** bind the thinking blocks of a conversation (preserved thinking): the session
+  saves their hash (`promptPrint`), and a session saved with another loses its thinking when it loads
+  (`dropThinking`). Changing either is fine; editing a message already sent is not.
 - **measure_output** renders the editor's files offline (`dsp/Measure.h`, a fresh compile in an Engine of its own,
   never the one that plays) and reports in words; `plugin.chatexample` checks its numbers on programs whose answer is
   known.

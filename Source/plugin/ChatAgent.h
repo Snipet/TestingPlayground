@@ -35,7 +35,17 @@
 // loads, and before each message (repairHistory). The plugin's state sends a file's text only when Claude has not seen
 // that text (in an earlier block, through read_file, or as it wrote it); after a compaction it sends every file
 // again, with the next message or, when the summary came in the middle of a turn, with the tool results that follow
-// it. A request
+// it.
+//
+// A reply holds max_tokens, thinking included, and at high effort a hard design can think that long. The system prompt
+// says so, and at xhigh and max effort a note with the user's message says it again (the API's advice: at those
+// levels a long deliverable may be drafted in the thinking first). A reply cut off there goes back to the history as
+// it came, and the turn goes on with a line that says so (after a cut-off tool call, its error result); a second reply
+// cut off in a row ends the turn, with a note, since a reply that only thinks costs a whole reply each time. A session
+// saved with another system prompt or other tools (an earlier version) loses its thinking blocks when it loads: the
+// API binds them to the conversation they were made in (preserved thinking) and would refuse them.
+//
+// A request
 // that fails on the connection, a rate limit, an overload or a server error, or whose stream breaks off before its
 // end, is sent again (kMaxAttempts, retry-after honoured; what the broken stream showed is taken back). While a file
 // streams in, the activity says which and how much has arrived. A tool's long output (a compile's messages) is cut.
@@ -132,6 +142,9 @@ namespace testingplayground
         void touch();                                               // revision + 1 (mutex held)
         void appendAnswer(const juce::Array<juce::var>& content);   // an assistant message into the history (mutex held)
         void repairHistory();                                       // one the API takes (mutex held)
+        void dropThinking();                                        // the history without thinking (mutex held)
+        int maxTokensFor(const std::string& id) const;              // a request's max_tokens (mutex held)
+        static std::string promptPrint();                           // the system prompt's and tools' hash
         void markSeen(const std::string& name, const std::string& text);   // Claude knows this text (mutex held)
         void addEntry(ChatEntry::Kind kind, std::string text);     // mutex held
         void appendToLast(ChatEntry::Kind kind, std::string_view text);   // mutex held
