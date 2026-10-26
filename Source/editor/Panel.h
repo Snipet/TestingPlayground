@@ -25,7 +25,12 @@
 //             sections the program's #pragma panel lines ask for, framed as on an analog synth's panel, or else in
 //             order, in as few rows as the column's width holds. A drag, the wheel or the keys write through the
 //             processor's ports, and a double-click returns to the parameter's fminus::default. The editor gives up
-//             the height that more rows take
+//             the height that more rows take. A program with a .gui file (fminus/GuiSpec.h) has its interface instead:
+//             its containers, controls, displays and text placed by GuiLayout.h and made of GuiItems.h, as tall as it
+//             is under the editor (up to the room the editor leaves), and scrolled by the wheel where it is taller or
+//             wider than its area
+//   view      the toolbar's CODE and PANEL cells: PANEL gives the interface the whole left column (the tabs, the editor
+//             and the problems go), CODE brings the editor back; the session keeps the choice (EditorPort::panelView)
 //   chat      at the right, a rounded card set apart from the square panel (ChatStyle.h): its header (the title, a new
 //             chat (asking first), access: the account or the API key), the conversation (ChatView.h: bubbles, light markdown, thinking rows,
 //             cards of what Claude did, code blocks with Copy, an empty chat's suggestions), the message box that grows
@@ -63,6 +68,7 @@
 #include "dsp/Sources.h"
 #include "dsp/Engine.h"
 #include "editor/DialLayout.h"
+#include "editor/GuiLayout.h"
 #include "fminus/PanelSpec.h"
 
 #include "plugin/ChatPort.h"
@@ -98,6 +104,7 @@ namespace testingplayground::ui
     class ChatView;                                      // the chat's conversation (ChatView.h)
     class InputItem;                                     // the chat's message box (ChatItems.h)
     class DisplayItem;                                   // a program's display (DisplayItem.h)
+    class GuiControlItem;                                // a .gui file's control (GuiItems.h)
 
     // The size (logical px): the default, the least.
     inline constexpr int kDefaultWidth = 1360, kDefaultHeight = 760;
@@ -149,6 +156,17 @@ namespace testingplayground::ui
         int dialRows() const noexcept { return dials_.rows; }             // the rows of dials, or of sections
         const DialsLayout& dialsLayout() const noexcept { return dials_; }
         const DisplayItem& displayItem(int d) const;                      // display d of the program's (shown or not)
+        // A .gui file's interface: whether the program has one, the PANEL view, its layout, slot's control, a page
+        // chosen, a scroll (the wheel's, by px).
+        bool hasGui() const noexcept { return !panelSpec_.gui.empty(); }
+        bool panelView() const noexcept { return panelView_; }
+        void setPanelView(bool on);
+        const GuiLayout& guiLayout() const noexcept { return gui_; }
+        const GuiControlItem& guiControl(int slot) const;
+        const Item& guiItem(int kind, int k) const;                       // kind 0: a pad, 1: an envelope, 2: tabs
+        void chooseGuiPage(int node, int page);
+        void scrollGui(float dx, float dy);
+        funkgui::Point centreOfView(bool panel) const;                    // the CODE or the PANEL cell
         funkgui::Point centreOfButton(int slot, int value) const;         // a buttons dial's row for that value
         funkgui::Rect chatCard() const noexcept { return card_; }
         funkgui::Point centreOfRun() const;
@@ -321,6 +339,17 @@ namespace testingplayground::ui
         PanelSpec panelSpec_;                            // its #pragma panel lines
         uint64_t panelProgram_ = 0;                      // the compile they came from (EditorPort::program)
         DialsLayout dials_;                              // their places
+        // A .gui file's interface (when panelSpec_.gui is not empty): its places, its tabs' pages, its scroll, and the
+        // items it is made of (a control a slot, pools of pads, envelopes and tabs).
+        GuiLayout gui_;
+        std::vector<int> guiPages_;                      // by node
+        float guiScrollX_ = 0.0f, guiScrollY_ = 0.0f;
+        bool panelView_ = false;
+        int viewItem_ = -1;                              // the CODE and PANEL cells
+        std::vector<int> itemOfGuiSlot_;                 // slot -> its GuiControlItem
+        std::vector<int> guiPads_, guiEnvelopes_, guiTabs_;
+        std::vector<bool> guiItem_;                      // by item: drawn in the interface's area, with its theme
+        void layoutGuiItems();                           // after layout() found gui_
         float chatX_ = 0.0f, chatW_ = 0.0f;
         funkgui::Rect card_;                             // the chat's card
         float headerY_ = 0.0f;                           // its header row

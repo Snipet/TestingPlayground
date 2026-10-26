@@ -86,7 +86,8 @@ namespace testingplayground::ui
                     case DisplayKind::vu:     return { kVuW, kDialH, false, false };
                     case DisplayKind::led:    return { kLedW, kDialH, false, false };
                     case DisplayKind::number: return { kNumberW, kDialH, false, false };
-                    case DisplayKind::scope:  return { kScopeW, kDialH, false, false };
+                    case DisplayKind::scope:
+                    case DisplayKind::spectrum: return { kScopeW, kDialH, false, false };   // (a .gui file's)
                 }
                 return {};
             }

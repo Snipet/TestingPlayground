@@ -30,7 +30,7 @@ How you work:
 - After a new sound compiles, measure it with measure_output (you cannot hear it) and fix what the report shows: silence, clipping or a level far from the usual, a voice that never ends, clicks, NaN alerts, a heavy CPU cost, a pitch or a brightness that is not what was asked. Then set its dials with set_dial to musical values (the defaults in the code should already be good ones). Give every dial a fminus::range and a fminus::default in useful units (Hz, ms, dB, 0 to 1).
 - A new sound replaces the program, as loading a preset would: that is expected. Keep other work of the user's (files you did not write) unless asked; the user can undo any change of yours in the editor (Cmd-Z in that file's tab).
 - Build from THE LIBRARY, below: ready-made, tested building blocks (filters, a delay line, a reverb, oscillators, noise, envelopes, an LFO, an envelope follower, shapers, conversions). add_library_file puts one in the editor as a tab; #include it and use its modules. Write your own blocks only for what it lacks, each in a file of its own. BUILDING A LARGE PROGRAM, below, says how.
-- Lay the dials out as a hardware synth's panel is printed, with #pragma panel lines (THE PANEL, below): titled sections, in rows, each dial in the style that suits it, and displays (meters, a VU, lights, readouts, a scope) that show what the program does. Give a panel to every program with more than four dials, and a display or two to every new sound.
+- Give every program an interface in a file panel.gui (THE INTERFACE, below): titled sections in rows, each control in the style that suits it, pages when there are many, and displays (meters, a VU, lights, readouts, a scope, a spectrum) that show what the program does, live.
 - Debugging what the user hears: get_status reports the CPU load and the output guard's alerts (NaN or inf replaced, samples beyond +-4 clipped).
 - Reply briefly and plainly: what you built or found, what each dial does, how to play it. The chat renders light markdown: paragraphs, - and 1. lists, **bold**, `inline code`, ### headings and ``` code fences; no tables, images or links. The files are in the editor, so show code only when it explains something. Keep to ASCII characters (write -> and -- rather than arrows and dashes): the chat's font has nothing else.
 )";
@@ -186,41 +186,55 @@ A full synthesizer or a rich effect is a few hundred lines in several files. Wor
 - One reply of yours holds about 128,000 tokens, your thinking included; a reply that reaches that is cut off (the plugin then asks you to go on). So think a block through and write its file, then the next, a few files to a reply, rather than working the whole program out in your thinking before writing any of it, and never write a file out in full in your thinking first.
 - One building block a file. The library's come first (THE LIBRARY); your own, for what it lacks, are modules too (their state as fields, their work as methods that take what they need as arguments) or plain functions. The program's file holds the main module, which holds the blocks as fields (Osc osc1; Svf filter; Osc unison[4];) and wires them. The parameters of a module the main module holds stay at their defaults, so give the blocks arguments instead.
 - Modulation: in the sample loop compute the sources first (envelopes, LFOs, velocity, the note), then each destination from them in musical units (octaves for a frequency, dB for a level) so amounts add: fc = cutoff[i] * expf(0.693147181f * octaves). Keep the routing small and explicit, at the top of the loop, a comment a route. An expensive coefficient (a filter's tan) may be computed every 16 samples from the modulated value when per sample costs too much; measure_output reports the cost.
-- 32 dials at most (the main module's first 32 parameters), and a dozen to twenty read best: give a player the controls they reach for (an oscillator's shape and tuning; a cutoff, a resonance, an envelope amount; an LFO's rate and depth; an envelope's attack, decay, sustain and release; a mix; a level), declared in the order the panel shows them, and make the rest named, commented constants in the code, which you change when asked. A 33rd parameter is ignored, with a note. An int parameter with a few values can choose a mode (a waveform, a routing). Then give them a panel (THE PANEL).
+- 32 dials at most (the main module's first 32 parameters), and a dozen to twenty read best: give a player the controls they reach for (an oscillator's shape and tuning; a cutoff, a resonance, an envelope amount; an LFO's rate and depth; an envelope's attack, decay, sustain and release; a mix; a level), declared in the order the panel shows them, and make the rest named, commented constants in the code, which you change when asked. A 33rd parameter is ignored, with a note. An int parameter with a few values can choose a mode (a waveform, a routing). Then give them an interface (THE INTERFACE).
 - An instrument's main module is one voice: sixteen can sound at once and their sum must not clip, so a voice peaks near 0.2 to 0.3. Reset a voice's state in start only when it was silent, so a note played again while it sounds does not click.
 - Later changes: edit_file for a passage (exactly as it is now), write_file for a rewrite. A file marked unchanged in <plugin_state> is as you last saw it.
 - A long conversation may be summarized to make room: the plugin then sends the current files again, and read_file always shows a file as it is now.
 )";
 
         const char* const kPanel = R"(
-THE PANEL
+THE INTERFACE: panel.gui
 
-The plugin draws the dials under the editor. #pragma panel lines lay them out as an analog synthesizer's panel is printed (titled sections, each framed, in rows), choose how each dial looks, and add displays that show what the program does, live. FMinus ignores every #pragma; the plugin reads these from the program and the files it includes.
+Give every program an interface in a file of its own, panel.gui (a name ending in .gui), beside the program, with write_file. FMinus never reads it: the plugin lays it out and draws it, under the editor (half the column at most, scrolling past that), or across the whole left column when the user picks PANEL in the toolbar (about 860 x 620 px at the default size; the window is resizable). Make it as an analog synthesizer's front panel is printed: titled sections in rows, each control in the style that suits it, and displays that show what the program does, live.
 
-#pragma panel section "OSCILLATORS" shape detune     a section: its title (capitals on the panel), then its dials and displays, in order
-#pragma panel section "FILTER" cutoff resonance envamount
-#pragma panel row                                    the sections after it start a new row
-#pragma panel section "OUTPUT" level out
-#pragma panel label envamount "AMOUNT"               a dial's label when its parameter's name says too little (14 characters at most)
-#pragma panel small detune                           a small knob, its label under it and no value: a trim, a secondary control
-#pragma panel style attack decay sustain fader       how dials look, the style last: knob (the default), vintage (a black knob over a printed scale), fader (a slider), switch (a toggle: a bool, or an int of two values), buttons (a lit button a value: an int or a bool, up to eight values)
-#pragma panel options wave "SAW" "SQUARE" "TRI"      names for an int's values from its range's low end (a bool's: off, on), on its buttons and its knob and to the host
-#pragma panel color "FILTER" orange                  a section's colour (by its title) or a dial's or a display's: red, orange, yellow, green, teal, blue, violet, pink, cream, grey
+The language: a line an element (or several, between ;), its arguments (names, "texts", numbers, #rrggbb colours), then key=value properties, then its children between { and }. // and /* */ are comments.
 
-Displays, each named in a section like a dial:
-#pragma panel meter out "OUT"                        LED bars
-#pragma panel vu out "OUTPUT"                        an analog VU meter, its needle (0 VU at -18 dBFS RMS)
-#pragma panel led lfolight "LFO"                     a light: its brightness the value (of out: a clip light)
-#pragma panel number gr "GR"                         a readout of the value (of in or out: the peak in dBFS)
-#pragma panel scope out "SCOPE"                      an oscilloscope (of a field: its trace over the last 2.5 seconds)
-- A display's source is in (an effect's input), out (the output; both stereo, in dBFS), or a float, int or bool field of the main module that process writes (once a call is enough: env = level; gr = reduction;). A field is shown across a range given after it, 0 to 1 unless you say: #pragma panel meter gr 0 24 "GR". An instrument's fields come from its newest sounding voice.
-- A section lists a display by its name: its source's, or the one `as` gives, which a second display of one source needs: #pragma panel scope out as wave "SCOPE". Eight displays at most.
+panel accent=orange {                          optional, around everything: accent= (the controls' highlight), background= (the panel's ground)
+    row gap=10 {                               its children left to right (column: top to bottom)
+        section "FILTER" color=orange {        a frame, its title in the top edge (layout=column stacks its children)
+            knob cutoff size=large taper=log unit="Hz"
+            knob resonance label="RESO"
+        }
+    }
+}
 
-- Group the dials as a player thinks of the sound, in signal-flow order, left to right: the sources (oscillators, their mix), the filter, the amplifier, then the modulation (an LFO, a modulation envelope), the effects, the output. Two rows usually: the sound's path in the first, its modulation and the rest in the second. A row that is too wide for the window wraps on its own.
-- Short titles, one or two words ("OSC 1", "FILTER", "AMP ENV", "LFO"), and short labels: in a section called LFO, "RATE" and "DEPTH" say more than lforate and lfodepth. Two to five items a section reads best; one alone is fine.
-- Give the panel life, as hardware has it: a VU or meters of out in the output section; an effect's in and out meters; a compressor's gain reduction (a field) on a meter or a VU; a light that blinks with an LFO (a field from 0 to 1); a scope of out by the oscillators, or of an envelope (a field). Faders suit an envelope's stages (as on a Juno), buttons a waveform or a mode (with options naming them), a switch an on and off. One or two colours, for the sections that matter most, read better than many.
-- Every dial belongs in a section: one left out comes last, untitled, with a note. A line the plugin cannot use (a name that is no dial, a dial in two sections, a field that is not there) is a note, which run_program reports; the rest of the panel stands.
-- Put the panel's lines at the top of the program file, before the main module, so that a reader sees the layout first. A program without them gets its dials in plain rows.
+Containers. Each takes gap= (px between its children, 8), pad= (px inside it, 0), align= (across its direction: stretch, the default, makes its containers, labels, scopes and spectrums as wide or tall as it is; start, center, end), justify= (along it, when there is room: start, center, end, between, around), grow= (its share of the room its container has left over), width= and height= (px, at least):
+row { }  column { }  grid cols=4 { }  section "TITLE" { }  box { } (a filled frame without a title; layout=row or column)
+tabs { page "VOICE" { } page "MOD" { } }       pages under their tabs, one shown at a time: the way to fit many controls
+spacer (room: it grows unless width= or height= says)  divider (a line down a row or across a column)  label "TEXT" size=small|normal|large|title
+
+Controls, each a parameter's by its name (one control a parameter), with label="..." (14 characters; else the parameter's name) and color=:
+knob cutoff                       size=small (a trim), medium (the default) or large (a main control: a cutoff, a level); style=modern (the default) or vintage (a black knob over a printed scale)
+slider attack                     vertical (length= px), or slider pan horizontal: an envelope's stages, a mix, a level
+switch sync "OFF" "ON"            a bool, or an int of two values; the texts name them
+buttons wave "SAW" "SQR" "TRI"    a lit button a value (an int or a bool of 2 to 8), in a column, or a row with horizontal
+menu mode "POLY" "MONO"           a drop-down of an int's values (up to 32)
+xy cutoff resonance               a pad that moves two floats at once, x then y; size= px (120)
+envelope attack decay sustain release   the shape its four parameters make, drawn (each keeps a control of its own)
+A float's value reads with unit="Hz" (from 1000 Hz up in kHz), decimals= (0 to 4) and scale= (shown times it: scale=100 unit="%" for 0 to 1); taper=log, for a frequency's or a time's range (above 0), gives each octave the same turn of the knob, and the host's automation follows it. An int's or a bool's values take their names from the texts of its switch, buttons or menu.
+
+Displays, of in (an effect's input), out (the output) or a float, int or bool field of the main module that process writes (once a call is enough: env = level;), with label=, color=, and min= and max= for a field (0 and 1 when unsaid):
+meter out (LED bars)  vu out (an analog VU meter, 0 VU at -18 dBFS RMS)  led gate (a light, its brightness the value; of out a clip light)
+number count (a readout)  scope out (an oscilloscope; of a field its last 2.5 seconds)  spectrum out (an analyser, 20 Hz to 20 kHz)
+scope and spectrum take width= and height=. Sixteen displays at most. An instrument's fields are its newest sounding voice's.
+
+- Cells: a medium knob 60 x 80 px, a small one 54 x 52, a large one 84 x 108; a slider 44 x 96; a switch 44 x 80; a vu 112 x 80, a meter 34 x 80; a scope 150 x 80, a spectrum 220 x 80, an envelope 150 x 80, a pad 120 x 136. A section adds 20 at its top and 10 on its other sides.
+- What the plugin cannot use is a note, "panel.gui:12:5: note: ...", which run_program reports with the compile; the rest stands. A parameter no control names comes last, in a section without a title, with a note.
+- Group the controls as a player thinks of the sound, in signal-flow order, left to right: the sources (oscillators, their mix), the filter, the amplifier; then the modulation (an LFO, a modulation envelope), the effects, the output. Two or three rows; past about twenty controls, pages (VOICE, MOD, FX).
+- Short titles ("OSC 1", "FILTER", "AMP ENV") and labels: in a section called LFO, "RATE" and "DEPTH" say more than lforate and lfodepth.
+- Size by importance: large knobs for the two or three controls a player reaches for most, small knobs for trims (a fine tune, a detune); sliders for an envelope's stages with its envelope drawn beside them; buttons for a waveform or a mode, a switch for an on and off, a menu for a longer list, a pad for two controls played together.
+- Give the panel life, as hardware has it: a VU or meters of out in the output section, an effect's in and out meters, a scope or a spectrum of out, a light that blinks with an LFO (a field from 0 to 1), a compressor's gain reduction (a field) on a meter. One or two colours, for the sections that matter most, read better than many.
+- Programs from before (some examples, RANDOM's) lay their dials out with #pragma panel lines in the program (section, row, label, small, style, options, color, and the displays meter, vu, led, number, scope). A .gui file replaces them all: when you make an interface for such a program, write its panel.gui and take the #pragma panel lines out.
 )";
 
         const char* const kLibraryIntro = R"(
@@ -250,20 +264,8 @@ The plugin carries ready-made building blocks, tested and tuned: band-limited, s
         // A program built from the library, for each kind (ChatAgent::promptExample), and the library files it includes
         // in their order: plugin.chatexample compiles and plays it.
         [[maybe_unused]] const char* const kInstrumentProgram = R"FM(// Modular voice: two detuned oscillators, a resonant low-pass, an amplitude envelope, a filter envelope and an
-// LFO, wired by the routing at the top of the sample loop. Its building blocks are the library's.
-#pragma panel section "OSCILLATORS" shape detune
-#pragma panel section "FILTER" cutoff resonance envamount
-#pragma panel section "LFO" lforate lfodepth lfolight
-#pragma panel row
-#pragma panel section "ENVELOPE" attack decay sustain release
-#pragma panel section "OUTPUT" level out
-#pragma panel label envamount "ENV AMOUNT"
-#pragma panel label lforate "RATE"
-#pragma panel label lfodepth "DEPTH"
-#pragma panel style attack decay sustain release fader
-#pragma panel led lfolight "LFO"
-#pragma panel vu out "OUTPUT"
-#pragma panel color "FILTER" orange
+// LFO, wired by the routing at the top of the sample loop. Its building blocks are the library's; its interface is
+// panel.gui's.
 #include "osc.fm"
 #include "svf.fm"
 #include "adsr.fm"
@@ -359,16 +361,46 @@ module Voice
 )FM";
         [[maybe_unused]] const char* const kInstrumentUses[] = { "osc.fm", "svf.fm", "adsr.fm", "lfo.fm" };
 
+        // Its interface (THE INTERFACE): the sound's path in the first row, its envelope and output in the second.
+        [[maybe_unused]] const char* const kInstrumentGui = R"GUI(// The Modular voice's panel: the sound's path in the first row, its envelope and its output in the second.
+panel accent=orange {
+    row {
+        section "OSCILLATORS" {
+            knob shape style=vintage
+            knob detune size=small unit="ct" decimals=0
+        }
+        section "FILTER" color=orange {
+            knob cutoff size=large taper=log unit="Hz"
+            column {
+                knob resonance label="RESO"
+                knob envamount label="ENV AMOUNT" unit="oct" decimals=1
+            }
+        }
+        section "LFO" {
+            knob lforate label="RATE" taper=log unit="Hz"
+            knob lfodepth label="DEPTH"
+            led lfolight label="LFO"
+        }
+    }
+    row {
+        section "ENVELOPE" {
+            slider attack taper=log unit="ms" decimals=0
+            slider decay taper=log unit="ms" decimals=0
+            slider sustain scale=100 unit="%" decimals=0
+            slider release taper=log unit="ms" decimals=0
+            envelope attack decay sustain release label="AMP"
+        }
+        section "OUTPUT" {
+            knob level unit="dB" decimals=1
+            vu out label="OUTPUT"
+            scope out
+        }
+    }
+}
+)GUI";
+
         [[maybe_unused]] const char* const kEffectProgram = R"FM(// Ensemble: a stereo chorus. Two delay lines whose times one LFO sweeps, the right one shifted in phase, with
-// feedback through a tone filter. Its building blocks are the library's.
-#pragma panel section "MODULATION" speed depth spread sweep
-#pragma panel section "DELAY" centre feedback tone
-#pragma panel section "OUTPUT" width mix in out
-#pragma panel led sweep "SWEEP"
-#pragma panel meter in "IN"
-#pragma panel meter out "OUT"
-#pragma panel style mix fader
-#pragma panel color "MODULATION" teal
+// feedback through a tone filter. Its building blocks are the library's; its interface is panel.gui's.
 #include "lfo.fm"
 #include "delay.fm"
 #include "onepole.fm"
@@ -437,6 +469,35 @@ module Effect
 )FM";
         [[maybe_unused]] const char* const kEffectUses[] = { "lfo.fm", "delay.fm", "onepole.fm" };
 
+        // Its interface (THE INTERFACE): the modulation, the delay and the output in a row, the signal under them.
+        [[maybe_unused]] const char* const kEffectGui = R"GUI(// The Ensemble's panel: the modulation, the delay and the output in a row, the signal under them.
+panel accent=teal {
+    row {
+        section "MODULATION" color=teal {
+            knob speed taper=log unit="Hz"
+            knob depth unit="ms" decimals=1
+            knob spread size=small scale=360 unit="deg" decimals=0
+            led sweep label="SWEEP"
+        }
+        section "DELAY" {
+            knob centre size=large unit="ms" decimals=1
+            knob feedback scale=100 unit="%" decimals=0
+            knob tone taper=log unit="Hz"
+        }
+        section "OUTPUT" {
+            knob width scale=100 unit="%" decimals=0
+            slider mix scale=100 unit="%" decimals=0
+            meter in label="IN"
+            meter out label="OUT"
+        }
+    }
+    section "SIGNAL" {
+        scope in label="IN"
+        spectrum out label="OUT" grow=1
+    }
+}
+)GUI";
+
         std::string replaceAll(std::string s, const std::string& from, const std::string& to)
         {
             for (std::size_t p = s.find(from); p != std::string::npos; p = s.find(from, p + to.size()))
@@ -460,14 +521,16 @@ module Effect
             for (const LibraryFile& f : kLibrary)
                 s += std::string("<library_file name=\"") + f.name + "\" category=\"" + f.category + "\">\n" + headerOf(f.source)
                    + "</library_file>\n";
-            const Sources example = ChatAgent::promptExample();      // the program first, then its library files
+            const Sources example = ChatAgent::promptExample();      // the program, its panel.gui, its library files
             std::string uses;
-            for (std::size_t k = 1; k < example.size(); ++k)
-                uses += (k == 1 ? "" : " ") + example[k].name;
+            for (std::size_t k = 2; k < example.size(); ++k)
+                uses += (k == 2 ? "" : " ") + example[k].name;
             s += "\nA PROGRAM BUILT FROM THE LIBRARY (it compiles and plays as it is, with the library's " + uses
                  + " added by add_library_file)\n\n<example_program title=\"";
             s += instrument ? "Modular voice" : "Ensemble";
             s += "\" uses=\"" + uses + "\">\n" + example.front().text + "</example_program>\n";
+            s += "\nIts interface, beside it in the editor:\n\n<example_interface name=\"panel.gui\">\n" + example[1].text
+                 + "</example_interface>\n";
             s += "\nTHIS PLUGIN'S EXAMPLES (the editor's EXAMPLES menu; the first is the program a new instance plays)\n";
             for (const Example& e : kExamples)
                 s += std::string("\n<example title=\"") + e.title + "\">\n" + e.source
@@ -484,7 +547,8 @@ module Effect
 
     Sources ChatAgent::promptExample()
     {
-        Sources out{ { kProgramName, product::kIsInstrument ? kInstrumentProgram : kEffectProgram } };
+        Sources out{ { kProgramName, product::kIsInstrument ? kInstrumentProgram : kEffectProgram },
+                     { "panel.gui", product::kIsInstrument ? kInstrumentGui : kEffectGui } };
         const auto add = [&out](const auto& names) {
             for (const char* name : names)
                 if (const LibraryFile* f = findLibraryFile(name))

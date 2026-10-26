@@ -257,6 +257,25 @@ namespace testingplayground
         std::string panelLine(const PanelSpec& p, const Controls& controls)
         {
             const auto dialName = [&](int c) { return std::string(controls[static_cast<std::size_t>(c)].name); };
+            // A .gui file's interface: what is in it, in a line (the file itself is with the others).
+            if (!p.gui.empty())
+            {
+                int shownControls = 0, pages = 0, sections = 0;
+                std::string titles;
+                for (const GuiNode& n : p.gui.nodes)
+                {
+                    shownControls += n.slot >= 0 ? (n.slot2 >= 0 ? 2 : 1) : 0;
+                    sections += n.kind == GuiKind::section ? 1 : 0;
+                    if (n.kind == GuiKind::page)
+                    {
+                        ++pages;
+                        titles += (titles.empty() ? "" : ", ") + n.text;
+                    }
+                }
+                return "Its interface is " + p.gui.file + "'s: " + std::to_string(shownControls) + " controls, "
+                       + std::to_string(p.displays.size()) + " displays, " + std::to_string(sections) + " sections"
+                       + (pages > 0 ? ", pages " + titles : std::string()) + "\n";
+            }
             const auto kindOf = [](DisplayKind k) {
                 switch (k)
                 {
@@ -265,6 +284,7 @@ namespace testingplayground
                     case DisplayKind::led:    return "led";
                     case DisplayKind::number: return "number";
                     case DisplayKind::scope:  return "scope";
+                    case DisplayKind::spectrum: return "spectrum";
                 }
                 return "";
             };
