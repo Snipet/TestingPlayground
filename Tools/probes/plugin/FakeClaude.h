@@ -3,7 +3,8 @@
 // back responses the probe wrote, streamed in small chunks as the Messages API streams them, and records every request.
 //
 //   fake::Sse        a response's server-sent events: message_start, blocks (thinking with a signature, text,
-//                    tool_use with its input JSON streamed in pieces, a fallback marker), message_delta, message_stop
+//                    tool_use with its input JSON streamed in pieces, a fallback marker; the API's own tools: a
+//                    server_tool_use, a result block whole, text with citations), message_delta, message_stop
 //   fake::Response   one POST's answer: a stream (200), or a status with a JSON error body (and a retry-after), or a
 //                    stream that stalls until the agent cancels
 //   fake::Script     what the transport plays and what it saw (the bodies, the headers, the hosts, the paths),
@@ -89,6 +90,45 @@ namespace fake
             return toolUse(id, name, claude::toJson(input));
         }
 
+        // A server tool's call (web_search, web_fetch), its input streamed as a tool_use's.
+        Sse& serverTool(const std::string& id, const std::string& name, const juce::var& input)
+        {
+            const int i = blocks_++;
+            blockStart(i, claude::object({ { "type", "server_tool_use" }, { "id", juce::String(id) }, { "name", juce::String(name) } }));
+            for (const std::string& piece : pieces(claude::toJson(input), 6))
+                delta(i, claude::object({ { "type", "input_json_delta" },
+                                          { "partial_json", juce::String::fromUTF8(piece.c_str()) } }));
+            return blockStop(i);
+        }
+
+        // A block that arrives whole in its content_block_start (a web_search_tool_result, ...).
+        Sse& whole(const juce::var& block)
+        {
+            const int i = blocks_++;
+            blockStart(i, block);
+            return blockStop(i);
+        }
+
+        // A text block and its citations, each a citations_delta after the text.
+        Sse& cited(const std::string& t, const juce::Array<juce::var>& citations)
+        {
+            const int i = blocks_++;
+            blockStart(i, claude::object({ { "type", "text" }, { "text", "" } }));
+            for (const std::string& piece : pieces(t, 7))
+                delta(i, claude::object({ { "type", "text_delta" }, { "text", juce::String::fromUTF8(piece.c_str()) } }));
+            for (const juce::var& c : citations)
+                delta(i, claude::object({ { "type", "citations_delta" }, { "citation", c } }));
+            return blockStop(i);
+        }
+
+        // The usage's server_tool_use, for the next end().
+        Sse& serverUse(int searches, int fetches)
+        {
+            searches_ = searches;
+            fetches_ = fetches;
+            return *this;
+        }
+
         Sse& fallback(const std::string& from, const std::string& to)
         {
             const int i = blocks_++;
@@ -115,6 +155,9 @@ namespace fake
             juce::var usage = claude::object({ { "output_tokens", output } });
             if (!speed.empty())
                 usage.getDynamicObject()->setProperty("speed", juce::String(speed));
+            if (searches_ > 0 || fetches_ > 0)
+                usage.getDynamicObject()->setProperty("server_tool_use", claude::object({ { "web_search_requests", searches_ },
+                                                                                          { "web_fetch_requests", fetches_ } }));
             event("message_delta", claude::object({ { "type", "message_delta" },
                                                     { "delta", claude::object({ { "stop_reason", juce::String(stopReason) },
                                                                                 { "stop_sequence", juce::var() } }) },
@@ -175,6 +218,7 @@ namespace fake
 
         std::string text_;
         int blocks_ = 0;
+        int searches_ = 0, fetches_ = 0;
     };
 
     struct Response

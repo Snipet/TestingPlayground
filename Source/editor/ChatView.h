@@ -1,6 +1,6 @@
 // Source/editor/ChatView.h: the chat's conversation (the chat column, Panel.h), drawn the way a chat app draws one
 // (ChatStyle.h has the look):
-//   the user's messages   right-aligned, in rounded bubbles
+//   the user's messages   right-aligned, in rounded bubbles; the pictures it had above it, as thumbnails
 //   Claude's answers      full width, in light markdown: paragraphs, - and 1. lists, # headings, **bold**, `code`,
 //                         > quotes, --- rules, and ``` code blocks (rounded cards, highlighted as FMinus, each with a
 //                         Copy); under the last answer of a turn a Copy for the whole answer, shown under the pointer
@@ -8,6 +8,9 @@
 //   what Claude did       a rounded card, a row and an icon an action (a file written, a run, a dial set, a sound
 //                         measured); a run that failed in the danger colour
 //   errors and notes      an error in a tinted card; the chat's own notes small and centred
+//   Claude's questions    a card (ask_user): each question, its options as buttons (a ring for one choice, a box for
+//                         several); one question of one choice is answered by its click, more by Send answers; once
+//                         answered, the choices stay marked
 //   while Claude works    three pulsing dots and what it is doing ("Writing osc.fm (12 KB)")
 //   an empty chat         a title, a line, while the chat cannot send yet two buttons (Sign in, Use an API key), and
 //                         suggestions to start from (a click puts one in the message box: nothing is sent until the
@@ -40,6 +43,7 @@ namespace testingplaygroundsynth::ui
             std::function<void(const std::string&)> suggest;   // a suggestion: its text into the message box
             std::function<void()> addKey;                      // the empty chat's API key button
             std::function<void()> signIn;                      // its Sign in button
+            std::function<void(const std::vector<std::string>&)> answer;   // Claude's question answered (ask_user)
         };
         struct Empty
         {
@@ -58,6 +62,7 @@ namespace testingplaygroundsynth::ui
 
         // For probes.
         int blocks() const noexcept { return static_cast<int>(blocks_.size()); }
+        int tiles() const;                                            // the pictures shown in the conversation
         std::optional<funkgui::Point> centreOfSuggestion(int i) const;
         std::optional<funkgui::Point> centreOfAddKey() const;
         std::optional<funkgui::Point> centreOfSignIn() const;
@@ -65,6 +70,10 @@ namespace testingplaygroundsynth::ui
         std::optional<funkgui::Point> centreOfAnswerCopy(int n) const;   // the n-th answer's Copy, while in view
         std::optional<funkgui::Point> centreOfThinking(int n) const;  // the n-th thinking row, while it is in view
         std::optional<funkgui::Point> centreOfJump() const;           // while the view is not at the end
+        // The open question's option o of question q, and its Send answers (while in view).
+        std::optional<funkgui::Point> centreOfOption(int q, int o) const;
+        std::optional<funkgui::Point> centreOfSubmit() const;
+        bool optionPicked(int q, int o) const;                        // marked in the open question
         bool thinkingOpen(int n) const;
         int copies() const;                                           // the code blocks' Copy actions
         bool atEnd() const noexcept;
@@ -90,7 +99,7 @@ namespace testingplaygroundsynth::ui
         void setHidden(bool hidden) { hidden_ = hidden; }   // the chat folded away
 
         // How a piece of text is set (ChatView.cpp resolves the style and the colour).
-        enum Role : uint8_t { body, strong, code, h1, h2, h3, dim, small, smallStrong, faint, danger, quote };
+        enum Role : uint8_t { body, strong, code, h1, h2, h3, dim, small, smallStrong, faint, danger, quote, accent };
 
     private:
         struct Span
@@ -99,11 +108,13 @@ namespace testingplaygroundsynth::ui
             std::string text;
             Role role = body;
         };
-        enum class ShapeKind : uint8_t { bubble, inlineCode, codeCard, bullet, quoteBar, rule, toolCard, errorCard };
+        enum class ShapeKind : uint8_t { bubble, inlineCode, codeCard, bullet, quoteBar, rule, toolCard, errorCard,
+                                         questionCard, option };
         struct Shape
         {
             funkgui::Rect r;
             ShapeKind kind = ShapeKind::bubble;
+            int q = -1, o = -1;                       // an option's question and its place
         };
         struct CodeLine
         {
@@ -111,12 +122,19 @@ namespace testingplaygroundsynth::ui
             std::string text;
             std::vector<funkgui::text::Span> spans;
         };
-        enum class ActionKind : uint8_t { copyMessage, copyCode, toggleThinking };
+        enum class ActionKind : uint8_t { copyMessage, copyCode, toggleThinking, option, submit };
         struct Action
         {
             funkgui::Rect r;
             ActionKind kind = ActionKind::copyMessage;
             std::string payload;                      // what Copy copies
+            int q = -1, o = -1;                       // an option's question and its place
+        };
+        struct Tile
+        {
+            funkgui::Rect r;
+            uint32_t id = 0;                          // the picture's (ChatPicture::id), drawn from FunkGui's registry
+            funkgui::Rect uv{ 0.0f, 0.0f, 1.0f, 1.0f };
         };
         struct IconAt
         {
@@ -135,8 +153,13 @@ namespace testingplaygroundsynth::ui
             std::vector<CodeLine> code;
             std::vector<Action> actions;
             std::vector<IconAt> icons;
+            std::vector<Tile> tiles;
             std::string label;                        // the accessibility title
             std::string value;                        // the accessibility value (its text)
+            // A question's (ask_user).
+            std::vector<ChatQuestion> questions;
+            std::vector<std::string> answers;
+            bool open = false;
         };
         struct EmptyLayout
         {
@@ -160,6 +183,10 @@ namespace testingplaygroundsynth::ui
         bool live(const Block& b) const;          // the block still streaming
         void hit(funkgui::Point p, int& block, int& action) const;
         void act(int block, int action);
+        bool picked(const Block& b, int q, int o) const;   // an option marked: chosen, or picked in an open question
+        bool complete(const Block& b) const;               // every question of the open one has a pick
+        static bool needsSubmit(const Block& b);           // more than one question, or one of several choices
+        int openQuestion() const;                          // the open question's block, -1 for none
         std::vector<std::pair<int, int>> actionsOf(ActionKind kind) const;
         std::optional<funkgui::Point> centreOfAction(ActionKind kind, int n) const;
 
@@ -169,6 +196,7 @@ namespace testingplaygroundsynth::ui
         funkgui::Rect bounds_;
         std::vector<Block> blocks_;
         std::map<int, bool> open_;                    // thinking blocks opened, by their entry
+        std::map<int, std::vector<std::vector<bool>>> picks_;   // an open question's picks, by its entry
         EmptyLayout empty_;
         Empty emptyText_;
         bool ready_ = false;                          // the chat can send (no sign-in or key buttons)

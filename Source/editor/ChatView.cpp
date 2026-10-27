@@ -37,6 +37,15 @@ namespace testingplaygroundsynth::ui
         constexpr float kJump = 28.0f;
         constexpr float kWheelSmooth = 512.0f;       // px a unit of a trackpad's wheel (TextEditor's)
         constexpr float kWheelNotched = 292.0f;      // px a unit of a notched wheel: three lines a notch
+        constexpr float kTileH = 112.0f;             // a sent picture's thumbnail, above its bubble
+        constexpr float kTileMinW = 64.0f, kTileMaxW = 220.0f;
+        constexpr float kTileGap = 6.0f;
+        constexpr float kCardPad = 12.0f;            // a question card's inset
+        constexpr float kOptionPadY = 7.0f;          // an option's, above and below its text
+        constexpr float kOptionGap = 6.0f;
+        constexpr float kOptionText = 34.0f;         // its text's inset (the ring or the box before it)
+        constexpr float kSubmitW = 132.0f, kSubmitH = 30.0f;
+        constexpr uint32_t kA11yStride = 64;         // accessibility ids a block (its item, then its actions)
 
         const funkgui::TextStyle& styleOf(ChatView::Role r)
         {
@@ -50,7 +59,8 @@ namespace testingplaygroundsynth::ui
                 case R::small:
                 case R::faint:
                 case R::quote: return chat::kSmall;
-                case R::smallStrong: return chat::kSmallStrong;
+                case R::smallStrong:
+                case R::accent: return chat::kSmallStrong;
                 case R::body:
                 case R::code:
                 case R::dim:
@@ -69,6 +79,7 @@ namespace testingplaygroundsynth::ui
                 case R::quote: return p.dim;
                 case R::faint: return p.faint;
                 case R::danger: return p.danger;
+                case R::accent: return p.accent;
                 case R::body:
                 case R::strong:
                 case R::code:
@@ -172,7 +183,8 @@ namespace testingplaygroundsynth::ui
                 case R::quote: return R::smallStrong;
                 case R::h1:
                 case R::h2:
-                case R::h3: return base;
+                case R::h3:
+                case R::accent: return base;
                 case R::body:
                 case R::strong:
                 case R::code:
@@ -260,6 +272,7 @@ namespace testingplaygroundsynth::ui
             case Role::smallStrong:
             case Role::faint:
             case Role::quote:
+            case Role::accent:
                 if (advSmall_ <= 0.0f)
                     advSmall_ = measure(chat::kSmall);
                 return advSmall_;
@@ -576,6 +589,7 @@ namespace testingplaygroundsynth::ui
         b.code.clear();
         b.actions.clear();
         b.icons.clear();
+        b.tiles.clear();
         b.value.clear();
         float y = 0.0f;
         const ChatEntry& e = entries[static_cast<std::size_t>(b.entry)];
@@ -586,6 +600,58 @@ namespace testingplaygroundsynth::ui
             {
                 b.label = "You";
                 b.value = t;
+                // The pictures, above the bubble at its right: rows of thumbnails kTileH high (each as wide as its
+                // proportions ask, within limits, cropped to fill when a limit cuts it).
+                float top = 0.0f;
+                if (!e.pictures.empty())
+                {
+                    const float rowW = std::floor(w * kBubbleShare);
+                    std::vector<Tile> row;
+                    float rowWidth = 0.0f, y0 = 0.0f;
+                    const auto flush = [&] {
+                        float x = w - rowWidth;
+                        for (Tile tl : row)
+                        {
+                            tl.r.x = x;
+                            tl.r.y = y0;
+                            x += tl.r.w + kTileGap;
+                            b.tiles.push_back(tl);
+                        }
+                        row.clear();
+                        rowWidth = 0.0f;
+                        y0 += kTileH + kTileGap;
+                    };
+                    std::string names;
+                    for (const ChatPicturePtr& pic : e.pictures)
+                    {
+                        const float aspect = pic->height > 0 ? static_cast<float>(pic->width) / static_cast<float>(pic->height) : 1.0f;
+                        const float tw = std::clamp(std::round(kTileH * aspect), kTileMinW, std::min(kTileMaxW, rowW));
+                        Tile tl;
+                        tl.id = pic->id;
+                        tl.r = { 0.0f, 0.0f, tw, kTileH };
+                        // Cropped to the tile's proportions, about the middle.
+                        const float want = tw / kTileH;
+                        if (aspect > want)
+                            tl.uv = { 0.5f * (1.0f - want / aspect), 0.0f, want / aspect, 1.0f };
+                        else if (aspect < want)
+                            tl.uv = { 0.0f, 0.5f * (1.0f - aspect / want), 1.0f, aspect / want };
+                        if (!row.empty() && rowWidth + kTileGap + tw > rowW)
+                            flush();
+                        rowWidth += (row.empty() ? 0.0f : kTileGap) + tw;
+                        row.push_back(tl);
+                        names += (names.empty() ? "" : ", ") + asciiText(pic->name);
+                    }
+                    flush();
+                    top = y0 - kTileGap;
+                    b.value = std::to_string(e.pictures.size()) + (e.pictures.size() == 1 ? " picture (" : " pictures (") + names
+                            + ")" + (t.empty() ? std::string() : ". " + t);
+                    if (t.empty())
+                    {
+                        y = top;
+                        break;
+                    }
+                    top += 6.0f;
+                }
                 const float maxInner = std::floor(w * kBubbleShare) - 2.0f * kBubblePadX;
                 const float a = adv(Role::body);
                 const auto cols = static_cast<std::size_t>(std::max(4.0f, std::floor(maxInner / a)));
@@ -613,10 +679,11 @@ namespace testingplaygroundsynth::ui
                 for (Span s : tmp.spans)
                 {
                     s.x += x0 + kBubblePadX;
+                    s.y += top;
                     b.spans.push_back(s);
                 }
-                y = ty + kBubblePadY;
-                b.shapes.insert(b.shapes.begin(), Shape{ { x0, 0.0f, bw, y }, ShapeKind::bubble });
+                y = top + ty + kBubblePadY;
+                b.shapes.insert(b.shapes.begin(), Shape{ { x0, top, bw, y - top }, ShapeKind::bubble });
                 break;
             }
             case ChatEntry::Kind::assistant:
@@ -678,6 +745,74 @@ namespace testingplaygroundsynth::ui
                 b.icons.push_back({ 16.0f, y + chat::kBodyLine * 0.5f, chat::Icon::alert, Role::danger });
                 y = flow(b, t, Role::body, 32.0f, w - 44.0f, y, chat::kBodyLine) + 8.0f;
                 b.shapes.push_back({ { 0.0f, 0.0f, w, y }, ShapeKind::errorCard });
+                break;
+            }
+            case ChatEntry::Kind::question:
+            {
+                b.label = "Claude asks";
+                b.value = t;
+                b.questions = e.questions;
+                b.answers = e.answers;
+                b.open = e.open;
+                const float inner = w - 2.0f * kCardPad;
+                y = 10.0f;
+                b.icons.push_back({ kCardPad + 6.0f, y + chat::kSmallLine * 0.5f, chat::Icon::question, Role::accent });
+                const std::string title = b.questions.size() > 1
+                                              ? "Claude asks " + std::to_string(b.questions.size()) + " questions"
+                                              : std::string("Claude asks");
+                b.spans.push_back({ kCardPad + 18.0f, y, chat::kSmallLine, title, Role::smallStrong });
+                y += chat::kSmallLine + 8.0f;
+                for (int qi = 0; qi < static_cast<int>(b.questions.size()); ++qi)
+                {
+                    const ChatQuestion& q = b.questions[static_cast<std::size_t>(qi)];
+                    if (qi > 0)
+                        y += 6.0f;
+                    if (!q.header.empty())
+                    {
+                        std::string tag = asciiText(q.header);
+                        for (char& ch : tag)
+                            ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+                        b.spans.push_back({ kCardPad, y, chat::kSmallLine, tag, Role::accent });
+                        y += chat::kSmallLine + 2.0f;
+                    }
+                    y = flow(b, asciiText(q.question) + (q.multi ? " (choose any)" : ""), Role::strong, kCardPad, inner, y,
+                             chat::kBodyLine) + 6.0f;
+                    for (int oi = 0; oi < static_cast<int>(q.options.size()); ++oi)
+                    {
+                        const ChatOption& o = q.options[static_cast<std::size_t>(oi)];
+                        const bool chosen = picked(b, qi, oi);
+                        const bool muted = !b.open && !chosen;
+                        const float top = y;
+                        float ty = flow(b, asciiText(o.label), muted ? Role::dim : Role::body, kCardPad + kOptionText,
+                                        inner - kOptionText - 12.0f, top + kOptionPadY, chat::kBodyLine);
+                        if (!o.description.empty())
+                            ty = flow(b, asciiText(o.description), muted ? Role::faint : Role::small, kCardPad + kOptionText,
+                                      inner - kOptionText - 12.0f, ty, chat::kSmallLine + 1.0f);
+                        const Rect r{ kCardPad, top, inner, ty + kOptionPadY - top };
+                        b.shapes.push_back({ r, ShapeKind::option, qi, oi });
+                        if (b.open)
+                            b.actions.push_back({ r, ActionKind::option, {}, qi, oi });
+                        y = r.bottom() + kOptionGap;
+                    }
+                }
+                if (b.open && needsSubmit(b))
+                {
+                    y += 2.0f;
+                    b.actions.push_back({ { w - kCardPad - kSubmitW, y, kSubmitW, kSubmitH }, ActionKind::submit, {} });
+                    y += kSubmitH + 8.0f;
+                }
+                const std::string hint = b.open ? std::string("Or write your own answer below.")
+                                       : e.typed ? std::string("Answered in your message.")
+                                       : std::all_of(b.answers.begin(), b.answers.end(), [](const std::string& a) { return a.empty(); })
+                                           ? std::string("Not answered.")
+                                           : std::string();
+                if (!hint.empty())
+                {
+                    b.spans.push_back({ kCardPad, y, chat::kSmallLine, hint, Role::faint });
+                    y += chat::kSmallLine;
+                }
+                y += 10.0f;
+                b.shapes.insert(b.shapes.begin(), Shape{ { 0.0f, 0.0f, w, y }, ShapeKind::questionCard });
                 break;
             }
             case ChatEntry::Kind::note:
@@ -758,7 +893,10 @@ namespace testingplaygroundsynth::ui
         busy_ = state.busy;
         activity_ = asciiText(state.activity);
         if (state.entries.size() < entryCount_)
+        {
             open_.clear();                           // a new chat
+            picks_.clear();
+        }
         entryCount_ = state.entries.size();
         text_ = state.entries.empty() ? std::string() : transcriptText(state.entries);
 
@@ -800,6 +938,15 @@ namespace testingplaygroundsynth::ui
                             + (desc.kind == ChatEntry::Kind::thinking && open_[desc.entry] ? '1' : '0') + '|';
             for (int k = 0; k < desc.count; ++k)
                 key += state.entries[static_cast<std::size_t>(desc.entry + k)].text + '\x1f';
+            for (const ChatPicturePtr& pic : state.entries[static_cast<std::size_t>(desc.entry)].pictures)
+                key += 'p' + std::to_string(pic->id);
+            if (desc.kind == ChatEntry::Kind::question)
+            {
+                const ChatEntry& q = state.entries[static_cast<std::size_t>(desc.entry)];
+                key += std::string(q.open ? "o" : "c") + (q.typed ? "y" : "n");
+                for (const std::string& a : q.answers)
+                    key += '\x1e' + a;
+            }
             b.kind = desc.kind;
             b.entry = desc.entry;
             if (key != b.key)
@@ -881,6 +1028,39 @@ namespace testingplaygroundsynth::ui
         {
             open_[b.entry] = !open_[b.entry];
             b.key.clear();                           // lays out again at the next show()
+            return;
+        }
+        if (a.kind == ActionKind::option || a.kind == ActionKind::submit)
+        {
+            if (!b.open)
+                return;
+            std::vector<std::vector<bool>>& pk = picks_[b.entry];
+            pk.resize(b.questions.size());
+            for (std::size_t q = 0; q < b.questions.size(); ++q)
+                pk[q].resize(b.questions[q].options.size(), false);
+            if (a.kind == ActionKind::option)
+            {
+                std::vector<bool>& row = pk[static_cast<std::size_t>(a.q)];
+                const bool was = row[static_cast<std::size_t>(a.o)];
+                if (!b.questions[static_cast<std::size_t>(a.q)].multi)
+                    std::fill(row.begin(), row.end(), false);
+                row[static_cast<std::size_t>(a.o)] = !was || !b.questions[static_cast<std::size_t>(a.q)].multi;
+                if (needsSubmit(b))
+                    return;                          // Send answers sends them
+            }
+            if (!complete(b))
+                return;
+            std::vector<std::string> answers;
+            for (std::size_t q = 0; q < b.questions.size(); ++q)
+            {
+                std::string chosen;
+                for (std::size_t o = 0; o < b.questions[q].options.size(); ++o)
+                    if (pk[q][o])
+                        chosen += (chosen.empty() ? "" : ", ") + b.questions[q].options[o].label;
+                answers.push_back(chosen);
+            }
+            if (hooks_.answer)
+                hooks_.answer(answers);
             return;
         }
         if (host_ != nullptr)
@@ -997,6 +1177,102 @@ namespace testingplaygroundsynth::ui
     }
 
     std::optional<Point> ChatView::centreOfCopy(int n) const { return centreOfAction(ActionKind::copyCode, n); }
+
+    int ChatView::tiles() const
+    {
+        int n = 0;
+        for (const Block& b : blocks_)
+            n += static_cast<int>(b.tiles.size());
+        return n;
+    }
+
+    // ---- questions --------------------------------------------------------------------------------------------------
+    bool ChatView::needsSubmit(const Block& b)
+    {
+        return b.questions.size() > 1 || (b.questions.size() == 1 && b.questions[0].multi);
+    }
+
+    bool ChatView::picked(const Block& b, int q, int o) const
+    {
+        if (q < 0 || q >= static_cast<int>(b.questions.size()) || o < 0
+            || o >= static_cast<int>(b.questions[static_cast<std::size_t>(q)].options.size()))
+            return false;
+        if (b.open)
+        {
+            const auto it = picks_.find(b.entry);
+            return it != picks_.end() && q < static_cast<int>(it->second.size())
+                && o < static_cast<int>(it->second[static_cast<std::size_t>(q)].size())
+                && it->second[static_cast<std::size_t>(q)][static_cast<std::size_t>(o)];
+        }
+        if (q >= static_cast<int>(b.answers.size()))
+            return false;
+        // The answer: the labels chosen, ", " between them.
+        const std::string& a = b.answers[static_cast<std::size_t>(q)];
+        const std::string& l = b.questions[static_cast<std::size_t>(q)].options[static_cast<std::size_t>(o)].label;
+        return a == l || a.rfind(l + ", ", 0) == 0 || a.find(", " + l + ", ") != std::string::npos
+            || (a.size() > l.size() + 2 && a.compare(a.size() - l.size() - 2, std::string::npos, ", " + l) == 0);
+    }
+
+    bool ChatView::complete(const Block& b) const
+    {
+        for (int q = 0; q < static_cast<int>(b.questions.size()); ++q)
+        {
+            bool any = false;
+            for (int o = 0; o < static_cast<int>(b.questions[static_cast<std::size_t>(q)].options.size()); ++o)
+                any = any || picked(b, q, o);
+            if (!any)
+                return false;
+        }
+        return !b.questions.empty();
+    }
+
+    int ChatView::openQuestion() const
+    {
+        for (int i = static_cast<int>(blocks_.size()); --i >= 0;)
+            if (blocks_[static_cast<std::size_t>(i)].kind == ChatEntry::Kind::question && blocks_[static_cast<std::size_t>(i)].open)
+                return i;
+        return -1;
+    }
+
+    std::optional<Point> ChatView::centreOfOption(int q, int o) const
+    {
+        const int bi = openQuestion();
+        if (bi < 0)
+            return std::nullopt;
+        const Block& b = blocks_[static_cast<std::size_t>(bi)];
+        for (const Action& a : b.actions)
+            if (a.kind == ActionKind::option && a.q == q && a.o == o)
+            {
+                const Rect r = onScreen(b, a.r);
+                if (r.y < bounds_.y || r.bottom() > bounds_.bottom())
+                    return std::nullopt;
+                return Point{ r.centreX(), r.centreY() };
+            }
+        return std::nullopt;
+    }
+
+    std::optional<Point> ChatView::centreOfSubmit() const
+    {
+        const int bi = openQuestion();
+        if (bi < 0)
+            return std::nullopt;
+        const Block& b = blocks_[static_cast<std::size_t>(bi)];
+        for (const Action& a : b.actions)
+            if (a.kind == ActionKind::submit)
+            {
+                const Rect r = onScreen(b, a.r);
+                if (r.y < bounds_.y || r.bottom() > bounds_.bottom())
+                    return std::nullopt;
+                return Point{ r.centreX(), r.centreY() };
+            }
+        return std::nullopt;
+    }
+
+    bool ChatView::optionPicked(int q, int o) const
+    {
+        const int bi = openQuestion();
+        return bi >= 0 && picked(blocks_[static_cast<std::size_t>(bi)], q, o);
+    }
     std::optional<Point> ChatView::centreOfAnswerCopy(int n) const { return centreOfAction(ActionKind::copyMessage, n); }
 
     std::optional<Point> ChatView::centreOfAction(ActionKind kind, int n) const
@@ -1127,7 +1403,41 @@ namespace testingplaygroundsynth::ui
                     case ShapeKind::errorCard:
                         c.rrect(r.x, r.y, r.w, r.h, 10.0f, p.danger.withAlpha(0.10f), 1.0f, p.danger.withAlpha(0.5f));
                         break;
+                    case ShapeKind::questionCard:
+                        c.rrect(r.x, r.y, r.w, r.h, 12.0f, p.raised, 1.0f, b.open ? p.accent.withAlpha(0.45f) : p.cardEdge);
+                        break;
+                    case ShapeKind::option:
+                    {
+                        const bool on = picked(b, s.q, s.o);
+                        const bool hover = b.open && r.contains(pointer_);
+                        const funkgui::Col fill = on ? funkgui::mix(p.raised, p.accent, 0.16f) : hover ? p.hover : p.card;
+                        c.rrect(r.x, r.y, r.w, r.h, 9.0f, fill, 1.0f, on ? p.accent : p.cardEdge);
+                        const float ix = r.x + 17.0f, iy = r.y + kOptionPadY + chat::kBodyLine * 0.5f;
+                        const bool multi = s.q >= 0 && s.q < static_cast<int>(b.questions.size())
+                                        && b.questions[static_cast<std::size_t>(s.q)].multi;
+                        const funkgui::Col ring = on ? p.accent : (b.open ? p.dim : p.faint);
+                        if (multi)
+                        {
+                            c.rrect(ix - 6.5f, iy - 6.5f, 13.0f, 13.0f, 3.5f, on ? p.accent : ring.withAlpha(0.0f), 1.3f, ring);
+                            if (on)
+                                chat::drawIcon(c, chat::Icon::check, ix, iy, 9.0f, p.onAccent);
+                        }
+                        else
+                        {
+                            c.disc(ix, iy, 6.5f, ring.withAlpha(0.0f), 1.3f, ring);
+                            if (on)
+                                c.disc(ix, iy, 3.5f, p.accent);
+                        }
+                        break;
+                    }
                 }
+            }
+            for (const Tile& tl : b.tiles)
+            {
+                const Rect r = onScreen(b, tl.r);
+                c.rrect(r.x, r.y, r.w, r.h, 12.0f, p.raised);
+                c.image(tl.id, r, 12.0f, 1.0f, tl.uv);
+                c.rrect(r.x, r.y, r.w, r.h, 12.0f, p.card.withAlpha(0.0f), 1.0f, p.cardEdge);
             }
             for (const Span& s : b.spans)
                 text(s.text, x0 + s.x, top + s.y, s.lineH, s.role, colourOf(s.role, p));
@@ -1169,6 +1479,20 @@ namespace testingplaygroundsynth::ui
                 const Action& a = b.actions[static_cast<std::size_t>(ai)];
                 const Rect r = onScreen(b, a.r);
                 const bool hover = bi == hb && ai == ha;
+                if (a.kind == ActionKind::option)
+                    continue;                        // drawn as its shape
+                if (a.kind == ActionKind::submit)
+                {
+                    const bool ready = complete(b);
+                    if (ready)
+                        c.rrect(r.x, r.y, r.w, r.h, r.h * 0.5f, hover ? funkgui::mix(p.accent, p.text, 0.12f) : p.accent);
+                    else
+                        c.rrect(r.x, r.y, r.w, r.h, r.h * 0.5f, p.card, 1.0f, p.cardEdge);
+                    const std::string label = "Send answers";
+                    const float lw = static_cast<float>(label.size()) * adv(Role::smallStrong);
+                    text(label, r.centreX() - lw * 0.5f, r.y, r.h, Role::smallStrong, ready ? p.onAccent : p.faint);
+                    continue;
+                }
                 if (a.kind == ActionKind::toggleThinking)
                 {
                     const bool open = open_.count(b.entry) != 0 && open_.at(b.entry);
@@ -1296,7 +1620,7 @@ namespace testingplaygroundsynth::ui
             if (y1 <= y0)
                 continue;                            // out of view
             funkgui::A11yItem item;
-            item.id = base_ + 16 + static_cast<uint32_t>(bi) * 16;
+            item.id = base_ + 16 + static_cast<uint32_t>(bi) * kA11yStride;
             item.parent = base_;
             item.role = funkgui::A11yRole::listItem;
             item.bounds = { whole.x, y0, whole.w, y1 - y0 };
@@ -1304,14 +1628,14 @@ namespace testingplaygroundsynth::ui
             item.value = b.value;
             item.readOnly = true;
             out.push_back(std::move(item));
-            for (int ai = 0; ai < static_cast<int>(b.actions.size()) && ai < 15; ++ai)
+            for (int ai = 0; ai < static_cast<int>(b.actions.size()) && ai < static_cast<int>(kA11yStride) - 1; ++ai)
             {
                 const Action& a = b.actions[static_cast<std::size_t>(ai)];
                 const Rect r = onScreen(b, a.r);
                 if (r.y < bounds_.y || r.bottom() > bounds_.bottom())
                     continue;
                 funkgui::A11yItem act;
-                act.id = base_ + 16 + static_cast<uint32_t>(bi) * 16 + 1 + static_cast<uint32_t>(ai);
+                act.id = base_ + 16 + static_cast<uint32_t>(bi) * kA11yStride + 1 + static_cast<uint32_t>(ai);
                 act.parent = base_;
                 act.role = a.kind == ActionKind::toggleThinking ? funkgui::A11yRole::toggleButton : funkgui::A11yRole::button;
                 act.bounds = r;
@@ -1320,6 +1644,22 @@ namespace testingplaygroundsynth::ui
                     act.title = "Show Claude's thinking";
                     act.checkable = true;
                     act.checked = open_.count(b.entry) != 0 && open_.at(b.entry);
+                }
+                else if (a.kind == ActionKind::option)
+                {
+                    const ChatQuestion& q = b.questions[static_cast<std::size_t>(a.q)];
+                    const ChatOption& o = q.options[static_cast<std::size_t>(a.o)];
+                    act.role = q.multi ? funkgui::A11yRole::toggleButton : funkgui::A11yRole::radioButton;
+                    act.title = asciiText(o.label);
+                    act.description = asciiText(o.description);
+                    act.help = asciiText(q.question);
+                    act.checkable = true;
+                    act.checked = picked(b, a.q, a.o);
+                }
+                else if (a.kind == ActionKind::submit)
+                {
+                    act.title = "Send the answers";
+                    act.enabled = complete(b);
                 }
                 else
                     act.title = a.kind == ActionKind::copyCode ? "Copy the code" : "Copy the answer";
@@ -1359,8 +1699,8 @@ namespace testingplaygroundsynth::ui
             follow_ = true;
             return true;
         }
-        if (k >= 16 && (k - 16) % 16 != 0)
-            act(static_cast<int>((k - 16) / 16), static_cast<int>((k - 16) % 16) - 1);
+        if (k >= 16 && (k - 16) % kA11yStride != 0)
+            act(static_cast<int>((k - 16) / kA11yStride), static_cast<int>((k - 16) % kA11yStride) - 1);
         return true;
     }
 
@@ -1373,6 +1713,8 @@ namespace testingplaygroundsynth::ui
             const ActionKind k = blocks_[static_cast<std::size_t>(b)].actions[static_cast<std::size_t>(a)].kind;
             std::snprintf(out, n, "%s", k == ActionKind::toggleThinking ? "THINKING   SHOW OR HIDE WHAT CLAUDE THOUGHT"
                                         : k == ActionKind::copyCode     ? "COPY   THE CODE BLOCK TO THE CLIPBOARD"
+                                        : k == ActionKind::option       ? "ANSWER   CHOOSE THIS FOR CLAUDE'S QUESTION"
+                                        : k == ActionKind::submit       ? "SEND ANSWERS   CLAUDE GOES ON WITH THEM"
                                                                         : "COPY   CLAUDE'S ANSWER TO THE CLIPBOARD");
             return;
         }

@@ -200,12 +200,17 @@ namespace testingplaygroundsynth::ui
         void runNow();                                   // RUN
         // The chat.
         funkgui::TextEditor& chatInput() noexcept;       // the message box
+        const std::string& chatPlaceholder() const;      // what it says while empty
         const std::string& transcript() const;           // the conversation as shown (or the hint)
         const std::string& chatActivity() const noexcept { return activity_; }
         funkgui::Point centreOfSend() const;             // send, or stop
         funkgui::Point centreOfModel() const;            // the model's pill (a menu)
         funkgui::Point centreOfThinking() const;         // the thinking level's pill (a menu)
         std::optional<funkgui::Point> centreOfFast() const;   // fast mode's pill (a switch), on a model that takes it
+        std::optional<funkgui::Point> centreOfWeb() const;    // web search's pill (a switch), on a model that takes it
+        funkgui::Point centreOfAttach() const;                 // the message box's button that adds pictures
+        const InputItem& chatInputItem() const;                // the message box (its pictures)
+        bool dropShown() const noexcept { return dropActive_; }
         funkgui::Point centreOfNewChat() const;
         funkgui::Point centreOfKey() const;
         // The chat's column: open, or folded into a rail at the right (the editor and the panel take the room). The
@@ -256,6 +261,13 @@ namespace testingplaygroundsynth::ui
         uint32_t a11yRevision() const override;
         void  a11yAction(uint32_t id, funkgui::A11yAction, double value = 0) override;
         void  closeGestures() override;
+        // Pictures dropped on the chat's card go to the next message (ChatPort::attach); while a drag of pictures is
+        // over the editor the card says so.
+        bool  filesInterest(const std::vector<std::string>& paths) const override;
+        void  filesDragEnter(const std::vector<std::string>& paths, float x, float y) override;
+        void  filesDragMove(float x, float y) override;
+        void  filesDragExit() override;
+        void  filesDropped(const std::vector<std::string>& paths) override;
 
     private:
         int  itemAt(funkgui::Point) const;               // the item under p, -1 for none
@@ -288,6 +300,7 @@ namespace testingplaygroundsynth::ui
         std::string thinkingLabel() const;
         std::vector<std::string> chatEfforts() const;    // the chosen model's thinking levels
         bool chatTakesFast() const;                      // the chosen model takes fast mode
+        bool chatTakesWeb() const;                       // ... and web search
         std::string barLabels() const;                   // what the bar's layout depends on
         InputItem& inputItem();
         const InputItem& inputItem() const;
@@ -346,8 +359,16 @@ namespace testingplaygroundsynth::ui
         int chatToggleItem_ = -1;                        // fold or open the chat
         bool chatOpen_ = true;
         bool unread_ = false;                            // folded, and the conversation grew since
+        // Pictures: the ids this Panel has in FunkGui's registry (images::set, counted across Panels: Picture.cpp
+        // makes one too), and a drag of pictures over the editor (over the chat's card).
+        std::vector<uint32_t> pictures_;
+        bool dropActive_ = false, dropHover_ = false;
+        int attachItem_ = -1;
+        void syncPictures();                             // the registry follows chat_ (the attached and the sent)
+        void releasePictures();
+        void openPictures();                             // the attach button's file chooser
         std::size_t entriesAtFold_ = 0;
-        int modelItem_ = -1, thinkingItem_ = -1, fastItem_ = -1, sendItem_ = -1;
+        int modelItem_ = -1, thinkingItem_ = -1, fastItem_ = -1, webItem_ = -1, sendItem_ = -1;
         funkgui::CellModel* zoom_ = nullptr;             // the zoom's steps (zoomModel_)
         float width_ = 0.0f, height_ = 0.0f;
         uint32_t layoutRevision_ = 0;                    // bumps with each layout()

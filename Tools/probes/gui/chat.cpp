@@ -16,6 +16,11 @@
 //   gui.chat.small.png    the panel at its least size
 //   gui.chat.large.png    the panel large
 //   gui.chat.folded.png   the chat folded into its rail, an answer waiting (the dot)
+//   gui.chat.ask.png      Claude's question of two parts: one choice (a ring) and several (boxes), some picked, and
+//                         Send answers
+//   gui.chat.answered.png the question answered: the choices marked, the rest muted
+//   gui.chat.pictures.png two pictures in the message box, each with its remove button
+//   gui.chat.sent.png     a message sent with two pictures: their thumbnails above its bubble
 // and checks:
 //   EMPTY    with neither a sign-in nor a key the empty chat has a Sign in button (which opens the access dialog on its
 //            account tab), an API key button (on its API key tab) and suggestions
@@ -44,7 +49,18 @@
 //            thinking pill's menu has that model's levels, and choosing one sets it; fast mode's pill, after it on
 //            Claude Opus 5.5, switches fast mode on and off (a switch to a screen reader, on or off), and is gone
 //            on a model that takes no fast mode
+//   WEB      web search's pill, after fast mode's: a switch (to a screen reader too), on and off
 //   STOP     while Claude works the line under the box says what it is doing and send is stop: a click ends the turn
+//   ASK      Claude's question (ask_user) as a card: the turn waits and the message box says so; each option a button
+//            (to a screen reader a radio button, or a toggle for several); a click marks it (another of one choice
+//            replaces it, several stay); Send answers waits until each question has a pick, then sends the labels and
+//            the turn goes on; the card then has no buttons and the transcript the answers; a question of one choice
+//            has no Send answers, and its click answers
+//   PICTURES the message box's picture button asks the host for files (several, pictures); the files chosen show as
+//            thumbnails in the box (drawn, none missing) and their remove buttons take one back; pictures dropped on
+//            the chat's card come too (the card says so while the drag is over the editor), not on the editor, and a
+//            text file is no drop the chat takes; sent, the pictures go before the words and show above the message;
+//            FunkGui holds each thumbnail while the chat does, and a new chat lets them go
 //   NEW      NEW asks first, then forgets the conversation; a suggestion goes into the message box, unsent; Tab leaves
 //            the message box
 //   SCROLL   a conversation taller than the view scrolls with the wheel, and the round button jumps back to its end
@@ -58,6 +74,7 @@
 
 #include "../plugin/FakeClaude.h"
 
+#include "editor/ChatItems.h"
 #include "editor/ChatView.h"
 #include "editor/Panel.h"
 #include "plugin/ChatAgent.h"
@@ -68,6 +85,7 @@
 
 #include "Product.h"
 
+#include <funkgui/canvas/Images.h>
 #include <funkgui/panel/HeadlessGuiScope.h>
 #include <funkgui/panel/HeadlessHost.h>
 #include <funkgui/prefs/UiPreferences.h>
@@ -80,6 +98,8 @@
 #include <string>
 #include <string_view>
 #include <thread>
+
+#include <juce_graphics/juce_graphics.h>
 
 namespace tp = testingplaygroundsynth;
 
@@ -604,6 +624,22 @@ PROBE(gui, chat)
         host.tick(2);
         host.settle();
         P.eq("fast.back_on_opus", panel.centreOfFast().has_value() && chat(processor).model == "claude-opus-5-5" ? 1 : 0, 1);
+
+        // Web search's pill: after fast mode's, a switch (the key in use).
+        const auto web = panel.centreOfWeb();
+        const auto fastNow = panel.centreOfFast();
+        P.eq("web.pill_shown", web && fastNow && web->x > fastNow->x ? 1 : 0, 1);
+        if (web)
+            clickAt(host, *web);
+        host.tick(2);
+        host.settle();
+        P.eq("web.switched_on", chat(processor).web ? 1 : 0, 1);
+        P.eq("web.a11y_on", a11ySwitch(host, "Web search", true) ? 1 : 0, 1);
+        if (const auto again = panel.centreOfWeb())
+            clickAt(host, *again);
+        host.tick(2);
+        host.settle();
+        P.eq("web.switched_off", chat(processor).web ? 1 : 0, 0);
     }
 
     // ---- STOP ----------------------------------------------------------------------------------------------------------
@@ -644,6 +680,187 @@ PROBE(gui, chat)
         writePng(P, host, "gui.chat.markdown.png");
     }
 
+    // ---- ASK -----------------------------------------------------------------------------------------------------------
+    {
+        const auto option = [](const char* label, const char* description) {
+            return input({ { "label", label }, { "description", description } });
+        };
+        const juce::var two = input(
+            { { "questions",
+                juce::Array<juce::var>{
+                    input({ { "header", "Sound" },
+                            { "question", "What should it sound like?" },
+                            { "options", juce::Array<juce::var>{ option("Warm (Recommended)", "Analog and round, a soft low-pass"),
+                                                                 option("Bright", "Glassy and digital") } } }),
+                    input({ { "header", "Panel" },
+                            { "question", "What should the panel show?" },
+                            { "multi_select", true },
+                            { "options", juce::Array<juce::var>{ option("Knobs", ""), option("Meters", "Levels, live"),
+                                                                 option("A scope", "The wave as it plays") } } }) } } });
+        const juce::var one = input(
+            { { "questions", juce::Array<juce::var>{ input({ { "question", "Mono or poly?" },
+                                                             { "options", juce::Array<juce::var>{ option("Poly", "Chords"),
+                                                                                                  option("Mono", "One note, with glide") } } }) } } });
+        tp::ui::ChatView& view = panel.chatView();
+        script->add(fake::Response::ok(fake::Sse().start().text("Two questions first.").tool("toolu_q1", "ask_user", two).end("tool_use")));
+        clickInput(host, panel);
+        type(host, "make me a synth");
+        host.keys("return");
+        settleChat(processor, host);
+        view.scrollTo(view.contentHeight());
+        host.settle();
+        P.eq("ask.waits", chat(processor).asking && !chat(processor).busy ? 1 : 0, 1);
+        P.eq("ask.box_says", has(panel.chatPlaceholder(), "Answer above") ? 1 : 0, 1);
+        const auto warm = view.centreOfOption(0, 0), meters = view.centreOfOption(1, 1), scope = view.centreOfOption(1, 2);
+        P.eq("ask.options_shown", warm && meters && scope && view.centreOfSubmit() ? 1 : 0, 1);
+        const auto radio = a11yTitled(host, "Warm (Recommended)");
+        const auto box = a11yTitled(host, "Meters");
+        P.eq("ask.a11y", radio && radio->role == funkgui::A11yRole::radioButton && radio->checkable && !radio->checked
+                             && box && box->role == funkgui::A11yRole::toggleButton ? 1 : 0, 1);
+        const int sent = script->postCount();
+        if (warm)
+            clickAt(host, *warm);
+        host.settle();
+        P.eq("ask.picked", view.optionPicked(0, 0) ? 1 : 0, 1);
+        if (const auto s = view.centreOfSubmit())
+            clickAt(host, *s);
+        host.settle();
+        P.eq("ask.submit_waits_for_each", script->postCount() == sent && chat(processor).asking ? 1 : 0, 1);
+        if (const auto bright = view.centreOfOption(0, 1))
+            clickAt(host, *bright);
+        if (meters)
+            clickAt(host, *meters);
+        if (scope)
+            clickAt(host, *scope);
+        host.settle();
+        P.eq("ask.one_replaces", view.optionPicked(0, 1) && !view.optionPicked(0, 0) ? 1 : 0, 1);
+        P.eq("ask.several_stay", view.optionPicked(1, 1) && view.optionPicked(1, 2) && !view.optionPicked(1, 0) ? 1 : 0, 1);
+        if (warm)
+            clickAt(host, *warm);
+        host.settle();
+        const auto checked = a11yTitled(host, "Warm (Recommended)");
+        P.eq("ask.a11y_checked", checked && checked->checked ? 1 : 0, 1);
+        writePng(P, host, "gui.chat.ask.png");
+        script->add(fake::Response::ok(fake::Sse().start().text("A warm synth with meters and a scope.").end()));
+        if (const auto s = view.centreOfSubmit())
+            clickAt(host, *s);
+        settleChat(processor, host);
+        P.eq("ask.sent", script->postCount() == sent + 1 && has(script->body(sent), "Warm (Recommended)")
+                             && has(script->body(sent), "Meters, A scope") ? 1 : 0, 1);
+        P.eq("ask.answered", !chat(processor).asking && !view.centreOfOption(0, 0) && !view.centreOfSubmit() ? 1 : 0, 1);
+        P.eq("ask.transcript", has(panel.transcript(), "= Warm (Recommended) | Meters, A scope")
+                                   && has(panel.transcript(), "A warm synth with meters and a scope.") ? 1 : 0, 1);
+        view.scrollTo(view.contentHeight());
+        host.settle();
+        writePng(P, host, "gui.chat.answered.png");
+        // One question of one choice: no Send answers; a click answers.
+        script->add(fake::Response::ok(fake::Sse().start().tool("toolu_q2", "ask_user", one).end("tool_use")));
+        clickInput(host, panel);
+        type(host, "now a bass");
+        host.keys("return");
+        settleChat(processor, host);
+        view.scrollTo(view.contentHeight());
+        host.settle();
+        P.eq("ask.single_no_submit", view.centreOfOption(0, 1) && !view.centreOfSubmit() ? 1 : 0, 1);
+        script->add(fake::Response::ok(fake::Sse().start().text("Mono it is.").end()));
+        const int at = script->postCount();
+        if (const auto mono = view.centreOfOption(0, 1))
+            clickAt(host, *mono);
+        settleChat(processor, host);
+        P.eq("ask.click_answers", script->postCount() == at + 1 && has(script->body(at), "Mono or poly? Mono")
+                                      && !chat(processor).asking ? 1 : 0, 1);
+    }
+
+    // ---- PICTURES ------------------------------------------------------------------------------------------------------
+    std::vector<uint32_t> pictureIds;                        // the sent pictures', which NEW lets go
+    {
+        const juce::File dir(juce::String(probe::outPath("gui-chat-pictures")));
+        dir.deleteRecursively();
+        dir.createDirectory();
+        const auto picture = [&](const char* name, int w, int h, juce::Colour a, juce::Colour b) {
+            juce::Image img(juce::Image::RGB, w, h, true);
+            {
+                juce::Graphics g(img);
+                g.setGradientFill(juce::ColourGradient(a, 0.0f, 0.0f, b, static_cast<float>(w), static_cast<float>(h), false));
+                g.fillAll();
+                g.setColour(juce::Colours::white);
+                g.fillEllipse(static_cast<float>(w) * 0.3f, static_cast<float>(h) * 0.3f, static_cast<float>(w) * 0.4f,
+                              static_cast<float>(h) * 0.4f);
+            }
+            const juce::File f = dir.getChildFile(name);
+            juce::FileOutputStream out(f);
+            juce::PNGImageFormat().writeImageToStream(img, out);
+            out.flush();
+            return f.getFullPathName().toStdString();
+        };
+        const std::string wide = picture("panel.png", 600, 300, juce::Colours::darkslategrey, juce::Colours::orange);
+        const std::string tall = picture("knob.png", 240, 400, juce::Colours::navy, juce::Colours::hotpink);
+        const std::string third = picture("sketch.png", 320, 320, juce::Colours::darkgreen, juce::Colours::yellow);
+        const juce::File notes = dir.getChildFile("notes.txt");
+        notes.replaceWithText("not a picture");
+        const auto settlePictures = [&] {
+            processor.chatAgent().waitIdle();
+            host.tick(4);
+            host.settle();
+        };
+        const tp::ui::InputItem& box = panel.chatInputItem();
+        clickAt(host, panel.centreOfAttach());
+        const funkgui::FileRequest* asked = host.pendingFiles();
+        P.eq("pictures.chooser", asked != nullptr && asked->mode == funkgui::FileRequest::Mode::openMany
+                                     && has(asked->pattern, "*.png") && has(asked->pattern, "*.webp") ? 1 : 0, 1);
+        host.returnFiles({ wide, tall });
+        settlePictures();
+        P.eq("pictures.in_box", box.pictureCount(), 2);
+        P.ge("pictures.drawn", static_cast<double>(host.draw().images.size()), 2.0);
+        P.eq("pictures.none_missing", static_cast<int64_t>(host.draw().missingImages), 0);
+        writePng(P, host, "gui.chat.pictures.png");
+        if (const auto x = box.centreOfRemove(1))
+            clickAt(host, *x);
+        settlePictures();
+        P.eq("pictures.removed", box.pictureCount(), 1);
+        // A drop: on the chat's card it comes; on the editor it does not; a text file is no drop the chat takes.
+        const funkgui::Point onChat = panel.centreOfSend();
+        P.eq("pictures.text_refused", host.dropFiles({ notes.getFullPathName().toStdString() }, onChat.x, onChat.y) ? 0 : 1, 1);
+        P.eq("pictures.drop_taken", host.dropFiles({ tall }, onChat.x - 120.0f, onChat.y - 160.0f) ? 1 : 0, 1);
+        settlePictures();
+        P.eq("pictures.dropped_in", box.pictureCount(), 2);
+        host.dropFiles({ third }, 40.0f, 200.0f);
+        settlePictures();
+        P.eq("pictures.not_on_the_editor", box.pictureCount(), 2);
+        P.eq("pictures.drag_shown_done", panel.dropShown() ? 0 : 1, 1);
+        // Sent: before the words, and above the message.
+        script->add(fake::Response::ok(fake::Sse().start().text("I see a panel and a knob.").end()));
+        const int at = script->postCount();
+        clickInput(host, panel);
+        type(host, "a panel like these");
+        host.keys("return");
+        settleChat(processor, host);
+        tp::ui::ChatView& view = panel.chatView();
+        view.scrollTo(view.contentHeight());
+        host.settle();
+        {
+            const juce::var body = tp::claude::parseJson(script->body(at));
+            const juce::Array<juce::var>* m = body.getProperty("messages", {}).getArray();
+            int images = 0;
+            if (m != nullptr && !m->isEmpty())
+                if (const auto* c = (*m)[m->size() - 1].getProperty("content", {}).getArray())
+                    for (const juce::var& b : *c)
+                        images += b.getProperty("type", "").toString() == "image" ? 1 : 0;
+            P.eq("pictures.sent", images, 2);
+        }
+        P.eq("pictures.box_empty", box.pictureCount() == 0 && box.stripHeight() == 0.0f ? 1 : 0, 1);
+        P.eq("pictures.above_the_message", view.tiles(), 2);
+        P.eq("pictures.drawn_sent", host.draw().missingImages == 0 && host.draw().images.size() >= 2 ? 1 : 0, 1);
+        writePng(P, host, "gui.chat.sent.png");
+        for (const tp::ChatEntry& e : chat(processor).entries)
+            for (const tp::ChatPicturePtr& pic : e.pictures)
+                pictureIds.push_back(pic->id);
+        bool held = !pictureIds.empty();
+        for (const uint32_t id : pictureIds)
+            held = held && funkgui::images::has(id);
+        P.eq("pictures.registered", held ? 1 : 0, 1);
+    }
+
     // ---- NEW -----------------------------------------------------------------------------------------------------------
     {
         clickAt(host, panel.centreOfNewChat());
@@ -652,6 +869,10 @@ PROBE(gui, chat)
         host.tick(2);
         host.settle();
         P.eq("new.forgotten", chat(processor).entries.empty() ? 1 : 0, 1);
+        bool gone = !pictureIds.empty();
+        for (const uint32_t id : pictureIds)
+            gone = gone && !funkgui::images::has(id);
+        P.eq("new.pictures_let_go", gone ? 1 : 0, 1);
         P.eq("new.empty_again", panel.chatView().blocks() == 0 && panel.chatView().centreOfSuggestion(0).has_value() ? 1 : 0,
              1);
         const int sent = script->postCount();

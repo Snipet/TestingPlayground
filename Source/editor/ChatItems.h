@@ -22,6 +22,7 @@
 #include <funkgui/widgets/TextEditor.h>
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -36,7 +37,15 @@ namespace testingplaygroundsynth::ui
     public:
         static constexpr int kMaxRows = 8;
 
-        InputItem(uint32_t id, std::function<void()> send);
+        InputItem(uint32_t id, std::function<void()> send, std::function<void(uint32_t)> detach = {});
+
+        // The pictures attached to the next message, shown in a row above the text (a remove button each), and the
+        // files still being read (a placeholder each). The Panel lays the box out again when the row comes or goes.
+        void setPictures(std::vector<ChatPicturePtr> pictures, int pending);
+        int pictureCount() const noexcept { return static_cast<int>(pictures_.size()); }
+        float stripHeight() const noexcept;
+        std::optional<funkgui::Point> centreOfRemove(int i) const;   // for probes
+        funkgui::Rect pictureRect(int i) const;                     // the i-th tile (attached, then pending)
 
         // The box, and the height of its bottom bar (which the Panel's buttons sit in).
         void setBounds(funkgui::Rect box, float barH);
@@ -45,28 +54,27 @@ namespace testingplaygroundsynth::ui
         // The box's height for its text at `width`: one row to kMaxRows.
         float desiredHeight(float width, float barH) const;
         void setPlaceholder(const std::string& text);
+        const std::string& placeholder() const noexcept { return placeholder_; }
         funkgui::TextEditor& editor() noexcept { return editor_; }
         const funkgui::TextEditor& editor() const noexcept { return editor_; }
         void attach(funkgui::HostServices* host) { editor_.attach(host); }
 
-        void tick(float dt, bool, bool, funkgui::Point) override { editor_.tick(dt); }
+        void tick(float dt, bool, bool, funkgui::Point p) override
+        {
+            editor_.tick(dt);
+            pointer_ = p;
+        }
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override;
         bool contains(funkgui::Point p) const override;
-        funkgui::Cursor cursorAt(funkgui::Point p) const override { return editor_.cursorAt(p); }
-        void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController&, funkgui::HostServices&) override
-        {
-            editor_.pointerDown(e);
-        }
+        funkgui::Cursor cursorAt(funkgui::Point p) const override;
+        void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController&, funkgui::HostServices&) override;
         void pointerDrag(const funkgui::PointerEvent& e, funkgui::GestureController&) override { editor_.pointerDrag(e); }
         void pointerUp(const funkgui::PointerEvent& e, funkgui::GestureController&) override { editor_.pointerUp(e); }
         void doubleClick(const funkgui::PointerEvent& e, funkgui::GestureController&) override { editor_.doubleClick(e); }
         bool wheel(const funkgui::WheelEvent& e, funkgui::GestureController&, double) override { return editor_.wheel(e); }
         bool key(const funkgui::KeyEvent& e, funkgui::GestureController&) override;
         void accessibility(std::vector<funkgui::A11yItem>& out) const override;
-        bool a11yAction(uint32_t id, funkgui::A11yAction, double, funkgui::GestureController&) override
-        {
-            return id == editor_.a11yId();
-        }
+        bool a11yAction(uint32_t id, funkgui::A11yAction, double, funkgui::GestureController&) override;
         void specLine(char* out, std::size_t n) const override;
         funkgui::Point centre() const override;
         void focusChanged(bool focused) override { editor_.setFocused(focused); }
@@ -77,8 +85,15 @@ namespace testingplaygroundsynth::ui
     private:
         funkgui::Rect editorBounds(funkgui::Rect box, float barH) const;
 
+        int removeAt(funkgui::Point p) const;            // the remove button under p, -1 for none
+
+        uint32_t id_;
         funkgui::TextEditor editor_;
         std::function<void()> send_;
+        std::function<void(uint32_t)> detach_;
+        std::vector<ChatPicturePtr> pictures_;
+        int pending_ = 0;
+        funkgui::Point pointer_{ -1.0e4f, -1.0e4f };
         std::string placeholder_;
         funkgui::Rect box_;
         float barH_ = 0.0f;

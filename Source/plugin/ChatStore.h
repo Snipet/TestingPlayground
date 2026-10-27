@@ -56,6 +56,7 @@ namespace testingplaygroundsynth::chatstore
         std::string model;
         std::string effort;
         bool fast = false;
+        bool web = false;                            // web search and fetch (ChatAgent.h)
     };
     Choice loadChoice();
     void saveChoice(const Choice& choice);           // the account's fields stay as they are

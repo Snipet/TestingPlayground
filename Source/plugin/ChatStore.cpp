@@ -338,6 +338,7 @@ namespace testingplaygroundsynth::chatstore
             c.model = o->getProperty("model").toString().toStdString();
             c.effort = o->getProperty("effort").toString().toStdString();
             c.fast = static_cast<bool>(o->getProperty("fast"));
+            c.web = static_cast<bool>(o->getProperty("web"));
         }
         return c;
     }
@@ -348,6 +349,7 @@ namespace testingplaygroundsynth::chatstore
             o.setProperty("model", juce::String(choice.model));
             o.setProperty("effort", juce::String(choice.effort));
             o.setProperty("fast", choice.fast);
+            o.setProperty("web", choice.web);
         });
     }
 

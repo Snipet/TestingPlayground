@@ -17,18 +17,73 @@
 //   refreshAccount() asks the server for the account again (GET /account), in the background: chatState().details
 //                    has its answer (the credit, this month's use, the sign-in), .refreshing until it comes
 //   setModel()       a model of chatState().models; setEffort() a thinking level that model has; setFast() fast mode,
-//                    on the models that take it. All three machine-wide
-//   send()           a message from the user; Claude answers (and works) in the background
+//                    on the models that take it; setWeb() web search (Claude searches the web and reads pages and
+//                    PDFs, the API's server tools), with the user's own key on the models that take it. All four
+//                    machine-wide
+//   attach()         pictures (files) for the next message: read in the background (ChatImages.h), then in
+//                    chatState().attached; one that cannot be read gets a note. detach() takes one back
+//   send()           a message from the user (and the pictures attached, which it takes; a message of pictures alone
+//                    goes too); Claude answers (and works) in the background. While Claude's question
+//                    waits (asking), the message answers it in the user's own words
+//   answer()         the user's answer to Claude's question (ask_user), one per question: the chosen options' labels;
+//                    Claude's turn goes on with it
 //   stop()           ends Claude's turn as soon as it can; the work done so far stays
 //   newChat()        forgets the conversation
 #pragma once
 
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace testingplaygroundsynth
 {
+    // A question of Claude's (its ask_user tool), answered with a click.
+    struct ChatOption
+    {
+        std::string label;                    // a few words ("Warm and analog")
+        std::string description;              // a line of what it means ("" for none)
+    };
+
+    struct ChatQuestion
+    {
+        std::string header;                   // a short tag ("Sound"), "" for none
+        std::string question;
+        std::vector<ChatOption> options;      // 2 to 6
+        bool multi = false;                   // several may be chosen
+    };
+
+    // A picture the user added to a message (attach): what the chat shows of it. The picture itself, as sent, is the
+    // agent's.
+    struct ChatPicture
+    {
+        uint32_t id = 0;                      // unique in the process: the editor draws its thumbnail by it
+        std::string name;                     // the file's
+        int width = 0, height = 0;            // as sent
+        int thumbWidth = 0, thumbHeight = 0;
+        std::vector<uint8_t> thumb;           // straight RGBA8, row by row
+        std::vector<uint8_t> thumbData;       // the thumbnail encoded (the session keeps it)
+        std::string thumbType;                // image/png or image/jpeg
+    };
+    using ChatPicturePtr = std::shared_ptr<const ChatPicture>;
+
+    // A file's name a picture's: what attach() reads and the chat takes from a drop.
+    inline bool isPictureName(std::string_view path)
+    {
+        const std::size_t dot = path.rfind('.');
+        if (dot == std::string_view::npos)
+            return false;
+        std::string ext(path.substr(dot + 1));
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        for (const char* e : { "png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "tif", "tiff", "bmp" })
+            if (ext == e)
+                return true;
+        return false;
+    }
+
     struct ChatEntry
     {
         enum class Kind : uint8_t
@@ -39,9 +94,16 @@ namespace testingplaygroundsynth
             tool,        // something Claude did: wrote a file, ran the program, set a dial
             error,       // something went wrong: the key, the network, the API
             note,        // the chat's own remarks
+            question,    // Claude asks (ask_user): its questions, answered with a click; the turn waits for them
         };
         Kind kind = Kind::note;
-        std::string text;
+        std::string text;                     // a question's: the questions and their options, as plain text
+        std::vector<ChatQuestion> questions;  // a question's
+        std::vector<std::string> answers;     // a question's answer, one per question: the labels chosen (", "
+                                              // between several), "" for none
+        bool open = false;                    // a question still waiting for its answer
+        bool typed = false;                   // a question answered by a message instead
+        std::vector<ChatPicturePtr> pictures; // a user message's
     };
 
     struct ChatModel
@@ -53,6 +115,7 @@ namespace testingplaygroundsynth
         bool compaction = false;              // it takes server-side compaction (long conversations summarized)
         bool fast = false;                    // it takes fast mode: the same model, its answers written faster, at a
                                               // higher price (the API's speed "fast")
+        bool web = true;                      // it takes web search (/v1/models' server_tools.web_search)
     };
 
     // The signed-in account as the server said it last (GET /account), for the account's view.
@@ -82,12 +145,17 @@ namespace testingplaygroundsynth
         bool signingIn = false;               // a sign-in is waiting for the server
         std::string signInError;              // why the last sign-in failed ("" when it did not)
         bool busy = false;                    // Claude is working on a turn
+        bool asking = false;                  // Claude's question (the last question entry) waits for the answer
+        std::vector<ChatPicturePtr> attached; // pictures for the next message
+        int attaching = 0;                    // files still being read
         std::string activity;                 // what it is doing: "THINKING", "WRITING filters.fm", ...
         std::vector<ChatEntry> entries;
         std::vector<ChatModel> models;
         std::string model;                    // the chosen model's id
         std::string effort;                   // the chosen thinking level
         bool fast = false;                    // fast mode chosen (it applies on a model that takes it)
+        bool web = false;                     // web search chosen
+        std::string webBlocked;               // why it cannot apply now ("" when it can): the account in use
         std::string usage;                    // the last reply's tokens, for the footer
 
         // The chat has what it needs to send: the account it uses is signed in, or the key it uses is stored.
@@ -111,8 +179,12 @@ namespace testingplaygroundsynth
         virtual void setModel(const std::string& id) = 0;
         virtual void setEffort(const std::string& effort) = 0;
         virtual void setFast(bool on) = 0;
+        virtual void setWeb(bool on) = 0;
 
+        virtual void attach(const std::vector<std::string>& paths) = 0;
+        virtual void detach(uint32_t id) = 0;
         virtual void send(const std::string& text) = 0;
+        virtual void answer(const std::vector<std::string>& answers) = 0;
         virtual void stop() = 0;
         virtual void newChat() = 0;
     };
