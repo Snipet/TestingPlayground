@@ -45,6 +45,12 @@ namespace testingplayground
     // ---- life ---------------------------------------------------------------------------------------------------------
     Engine::~Engine()
     {
+        delete frozen_;
+        for (Patch::Frozen* f : frozenHold_)
+            delete f;
+        for (auto& slot : frozenRetired_)
+            delete slot.exchange(nullptr);
+        delete frozenPending_.exchange(nullptr);
         delete current_;
         if (old_ != current_)
             delete old_;
@@ -85,6 +91,22 @@ namespace testingplayground
         delete hold_;
         hold_ = nullptr;
         delete retired_.exchange(nullptr, std::memory_order_acquire);
+        // The frozen copies go too: the dials count from now.
+        if (current_ != nullptr)
+            current_->useFrozen(nullptr);
+        delete frozen_;
+        frozen_ = nullptr;
+        for (Patch::Frozen*& f : frozenHold_)
+        {
+            delete f;
+            f = nullptr;
+        }
+        for (auto& slot : frozenRetired_)
+            delete slot.exchange(nullptr);
+        delete frozenPending_.exchange(nullptr);
+        frozenNow_.store(false, std::memory_order_relaxed);
+        samples_ = lastMove_ = 0;
+        stillOf_ = nullptr;
         xfading_ = false;
         xfade_.lin.cur = 1.0f;
         xfade_.setTarget(1.0f);
@@ -107,10 +129,22 @@ namespace testingplayground
         delete retired_.exchange(nullptr, std::memory_order_acquire);
     }
 
+    void Engine::offerFrozen(std::unique_ptr<Patch::Frozen> frozen)
+    {
+        if (!frozen)
+            return;
+        const std::lock_guard<std::mutex> lock(mutex_);
+        delete frozenPending_.exchange(frozen.release(), std::memory_order_acq_rel);   // one never taken
+        for (auto& slot : frozenRetired_)
+            delete slot.exchange(nullptr, std::memory_order_acquire);
+    }
+
     void Engine::collect()
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         delete retired_.exchange(nullptr, std::memory_order_acquire);
+        for (auto& slot : frozenRetired_)
+            delete slot.exchange(nullptr, std::memory_order_acquire);
     }
 
     int Engine::activeVoices() const noexcept
@@ -165,6 +199,97 @@ namespace testingplayground
         }
     }
 
+    // ---- the audio thread: frozen dials ---------------------------------------------------------------------------------
+    bool Engine::fits(const Patch::Frozen& f) const noexcept
+    {
+        if (current_ == nullptr || old_ != nullptr || xfading_ || f.program() != current_->program())
+            return false;
+        const Controls& cs = current_->controls();
+        for (int c = 0; c < kMaxControls; ++c)
+        {
+            const Glide& g = glide_[static_cast<std::size_t>(c)];
+            if (cs[static_cast<std::size_t>(c)].used && (g.moving() || g.cur != f.values()[static_cast<std::size_t>(c)]))
+                return false;
+        }
+        return true;
+    }
+
+    bool Engine::holdFrozen(Patch::Frozen* f) noexcept
+    {
+        for (Patch::Frozen*& slot : frozenHold_)
+            if (slot == nullptr)
+            {
+                slot = f;
+                return true;
+            }
+        return false;
+    }
+
+    void Engine::retireFrozen() noexcept
+    {
+        for (Patch::Frozen*& f : frozenHold_)
+            for (auto& slot : frozenRetired_)
+            {
+                if (f == nullptr)
+                    break;
+                Patch::Frozen* expected = nullptr;
+                if (slot.compare_exchange_strong(expected, f, std::memory_order_release, std::memory_order_relaxed))
+                    f = nullptr;
+            }
+    }
+
+    void Engine::updateFrozen() noexcept
+    {
+        retireFrozen();
+        if (current_ != stillOf_)
+        {
+            stillOf_ = current_;
+            lastMove_ = samples_;
+        }
+        if (moved_)
+            lastMove_ = samples_;
+        // The copy stops playing the block a dial moves, another program comes or a swap runs, and goes back once a
+        // slot is free (until then it is kept, unused).
+        if (frozen_ != nullptr && (moved_ || current_ == nullptr || frozen_->program() != current_->program()
+                                   || old_ != nullptr || xfading_ || !current_->frozen()))
+        {
+            if (current_ != nullptr)
+                current_->useFrozen(nullptr);
+            if (old_ != nullptr)
+                old_->useFrozen(nullptr);
+            if (holdFrozen(frozen_))
+                frozen_ = nullptr;
+        }
+        // A copy offered: it plays if it fits, else it goes back.
+        if (frozenPending_.load(std::memory_order_acquire) != nullptr
+            && std::find(frozenHold_.begin(), frozenHold_.end(), nullptr) != frozenHold_.end())
+            if (Patch::Frozen* f = frozenPending_.exchange(nullptr, std::memory_order_acq_rel); f != nullptr)
+            {
+                if (fits(*f))
+                {
+                    if (frozen_ != nullptr && !holdFrozen(frozen_))
+                        holdFrozen(f);               // no room to let the old one go: this one waits to go instead
+                    else
+                    {
+                        frozen_ = f;
+                        current_->useFrozen(f);
+                    }
+                }
+                else
+                    holdFrozen(f);
+            }
+        const bool playing = current_ != nullptr && current_->frozen();
+        frozenNow_.store(playing, std::memory_order_relaxed);
+        dialState_.program = current_ != nullptr ? current_->program() : 0;
+        dialState_.stillSeconds = static_cast<double>(samples_ - lastMove_) / static_cast<double>(fs_);
+        dialState_.frozen = playing;
+        const Controls* cs = current_ != nullptr ? &current_->controls() : nullptr;
+        for (int c = 0; c < kMaxControls; ++c)
+            dialState_.plain[static_cast<std::size_t>(c)] =
+                cs != nullptr && (*cs)[static_cast<std::size_t>(c)].used ? glide_[static_cast<std::size_t>(c)].cur : 0.0f;
+        dials_.publish(dialState_);
+    }
+
     // ---- the audio thread: the dials -------------------------------------------------------------------------------------
     void Engine::setControls(const std::array<float, kMaxControls>& normalised) noexcept
     {
@@ -179,6 +304,7 @@ namespace testingplayground
         const Controls& cs = current_->controls();
         const bool snap = fedPatch_ != current_;
         fedPatch_ = current_;
+        moved_ = false;
         for (int c = 0; c < kMaxControls; ++c)
         {
             const Control& info = cs[static_cast<std::size_t>(c)];
@@ -189,6 +315,7 @@ namespace testingplayground
             const float target = normSet_ ? plainOf(info, norm_[static_cast<std::size_t>(c)]) : info.def;
             if (snap || info.type != ControlType::real)
             {
+                moved_ = moved_ || g.cur != target || g.moving();
                 g.cur = g.tgt = target;
                 g.left = 0;
                 continue;
@@ -196,6 +323,7 @@ namespace testingplayground
             g.set(target, swapFade_);
             if (!g.moving())
                 continue;
+            moved_ = true;
             float* buf = streamBuf_.data() + static_cast<std::size_t>(c) * static_cast<std::size_t>(maxBlock_);
             for (int i = 0; i < n; ++i)
                 buf[i] = g.tick();
@@ -259,12 +387,14 @@ namespace testingplayground
         const auto t0 = std::chrono::steady_clock::now();
         takePending();
         glideControls(n);
+        updateFrozen();
         measureIn(channels, numChannels, n);
         if constexpr (kInstrument)
             processInstrument(channels, numChannels, n, events);
         else
             processEffect(channels, numChannels, n);
         publish(channels, numChannels, n);
+        samples_ += static_cast<uint64_t>(n);
         if (running_)                                // the song's position at the next call's first sample
             beat_ += static_cast<double>(n) * bpm_ / (60.0 * static_cast<double>(fs_));
 

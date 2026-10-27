@@ -856,6 +856,7 @@ namespace testingplayground
     }
 
     float Processor::load() const { return engine_.load(); }
+    bool Processor::frozen() const { return engine_.frozen(); }
     uint32_t Processor::alerts() const { return alerts_.load(); }
 
     // ---- presets ---------------------------------------------------------------------------------------------------------
