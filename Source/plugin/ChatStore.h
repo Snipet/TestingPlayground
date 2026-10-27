@@ -57,6 +57,7 @@ namespace testingplayground::chatstore
         std::string effort;
         bool fast = false;
         bool web = false;                            // web search and fetch (ChatAgent.h)
+        std::string planner = {};                    // the planning model ("" for none)
     };
     Choice loadChoice();
     void saveChoice(const Choice& choice);           // the account's fields stay as they are

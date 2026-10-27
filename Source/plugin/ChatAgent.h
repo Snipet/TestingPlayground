@@ -23,6 +23,16 @@
 // offline (up to 400 renders, the activity counting them, the stop button ending the search with the best so far) and
 // sets the best values as set_dial does.
 //
+// A planner (setPlanner, chat.json "planner"): a second model plans each of the user's requests before the chosen one
+// builds it (Claude Fable 5.1 planning the DSP and the architecture, Claude Sonnet 5.5 writing, running and testing).
+// planTurn sends the conversation to the planner as another model sees it (forAnotherModel: no thinking, which is bound
+// to the builder's model; no compaction or web blocks, which go back only to their own requests; the tools defined
+// and tool_choice "none", so the history's calls stay valid and it calls none) with a brief after the user's message;
+// its plan streams into a plan entry (ChatEntry::Kind::plan) and joins the user's message, which the builder has not
+// seen yet, so the history stays append-only. The builder's ask_planner asks it again mid-turn (kMaxPlannerAsks a
+// turn): the history up to the reply that asks, the question after it, the answer as the tool's result. A planner the
+// access does not offer, or one that fails, leaves the request to the builder, with a note.
+//
 // Web search (setWeb; the API's server tools web_search and web_fetch, version 20260209, five of each a request, a
 // fetch at most kWebFetchTokens of text, its citations on): Claude searches the web and reads pages and PDFs (a
 // part's data sheet, a paper). It is on only with the user's own key (the TestingPlayground server does not charge for
@@ -166,6 +176,7 @@ namespace testingplayground
         void useAccount(bool account) override;
         void refreshAccount() override;
         void setModel(const std::string& id) override;
+        void setPlanner(const std::string& id) override;
         void setEffort(const std::string& effort) override;
         void setFast(bool on) override;
         void setWeb(bool on) override;
@@ -214,6 +225,13 @@ namespace testingplayground
         // The checks measured on the editor's files and the plugin's dials: their entry brought up to date, and the
         // results in words for Claude ("" with no checks). The worker's.
         std::string evaluateChecks();
+        // The planner (setPlanner). planTurn: before a request's first reply, its plan, joined to the user's message.
+        // consultPlanner: one request to the planning model with `history` (another model's view of it: no thinking,
+        // no server tools' blocks) and `brief` after its last user message, no tool it may call, streamed into a plan
+        // entry; its text, or "" with why. The worker's.
+        void planTurn();
+        std::string consultPlanner(const juce::Array<juce::var>& history, const std::string& brief, bool answer,
+                                   std::string& why);
         std::map<std::string, float> currentDials() const;          // the running program's, by name
         void fetchModels();                                         // the worker, before a turn, once a key is known
         // GET /account: the credit left and the account's details. The worker's after a turn through the account
@@ -282,6 +300,10 @@ namespace testingplayground
         bool busy_ = false;
         std::string asking_;                                        // the open question's tool_use id ("" for none)
         std::vector<measure::Check> checks_;                        // Claude's checks (set_checks), in the session
+        std::string planner_;                                       // the planning model ("" for none), machine-wide
+        bool planNext_ = false;                                     // the next turn starts with a plan (a message)
+        int plannerAsks_ = 0;                                       // ask_planner's calls this turn
+        std::string turnPlanUsage_;                                 // the planner's tokens this turn, for the footer
         bool checksFailing_ = false;                                // one failed when they were last measured
         struct Attached
         {
