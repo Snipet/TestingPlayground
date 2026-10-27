@@ -75,6 +75,13 @@ from FunkPluginTemplate.
 - Nothing steps: a program swap crossfades (effect) or fades voices (instrument) over 20 ms, a steal over 2 ms, a real
   dial glides over 20 ms as a stream, the bypass crossfades over 20 ms. The output does not depend on how the host
   splits its blocks (the examples are checked at 64 and 333), except where a dial moves (once a block).
+- Frozen dials (Patch.h, Engine.h, Compiler.h): the Compiler's freezer thread compiles the playing program again with
+  its dials as FMinus frozen constants once `Engine::dials` says they have held still for 3 s (from the recipe the
+  compile kept, `Patch::Recipe`), and offers it (`Engine::offerFrozen`); the audio thread plays it only if it is of
+  the program that plays at exactly the dials' values, through the same instances (`Patch::useFrozen`), and drops it
+  the block a dial moves; copies go back through four retired slots for `collect`. The copy keeps FMinus's
+  Math::Vector, so it computes the same bits: never compile it in Math::Fast (faster, but its last bits differ and the
+  output would depend on the host's blocks while frozen). `dsp.freeze` and plugin.process FREEZE check it.
 - The displays read what the audio thread publishes, without a lock: after each block the Engine measures the
   input and the output and reads the displays' fields (`Patch::tap`, a field of instance 0, or of an instrument's
   newest sounding voice) into `Engine::Meters`, through an `fsdsp::Seqlock`, and writes the scope's two rings of

@@ -54,6 +54,7 @@ namespace probe
             controls_ = r.patch->controls();
             panel_ = r.patch->panel();
             r.patch->setProgram(++loaded_);                     // as the Compiler names them
+            recipe_ = r.patch->recipe();
             engine_.offer(std::move(r.patch));
             engine_.prepare(fs_, maxBlock_);
             norm_ = defaults();
@@ -109,6 +110,24 @@ namespace probe
         }
 
         testingplayground::Engine& engine() noexcept { return engine_; }
+        // The frozen copy of the program that plays (Patch::freeze), at the dials as the last block left them, offered
+        // to the Engine: false, with why, when it does not compile.
+        bool freeze(std::string* why = nullptr)
+        {
+            testingplayground::DialState d;
+            if (!engine_.dials(d))
+                return false;
+            std::string w;
+            std::unique_ptr<testingplayground::Patch::Frozen> f = testingplayground::Patch::freeze(recipe_, d.plain, w);
+            if (why != nullptr)
+                *why = w;
+            if (!f)
+                return false;
+            engine_.offerFrozen(std::move(f));
+            return true;
+        }
+        const testingplayground::Patch::Recipe& recipe() const noexcept { return recipe_; }
+
         const testingplayground::Controls& controls() const noexcept { return controls_; }
         const testingplayground::PanelSpec& panel() const noexcept { return panel_; }      // its #pragma panel lines
         std::array<float, testingplayground::kMaxControls>& norm() noexcept { return norm_; }
@@ -122,6 +141,7 @@ namespace probe
         testingplayground::PanelSpec panel_;
         std::array<float, testingplayground::kMaxControls> norm_{};
         uint64_t loaded_ = 0;
+        testingplayground::Patch::Recipe recipe_;
     };
 
     // Stereo noise at `amp` (a fixed seed: the same every run), `n` samples.

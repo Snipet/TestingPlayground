@@ -252,6 +252,9 @@ module Host
 
     Patch::Patch() : s_(std::make_unique<Compiled>()) {}
 
+    Patch::Frozen::Frozen() : code_(std::make_unique<Compiled>()) {}
+    Patch::Frozen::~Frozen() = default;
+
     Patch::~Patch()
     {
         freeInstances();
@@ -447,6 +450,20 @@ module Host
         patch->params_.assign(static_cast<std::size_t>(kMaxControls), nullptr);
         for (std::size_t k = 0; k < names.size(); ++k)
             patch->params_[k] = program.parameter(names[k]);
+        {
+            Recipe& rc = patch->recipe_;
+            rc.files = files;
+            rc.source = full;
+            for (std::size_t k = 0; k < names.size() && k < rc.names.size(); ++k)
+                rc.names[k] = names[k];
+            rc.controls = patch->controls_;
+            rc.size = s.module->size;
+            rc.alignment = s.module->alignment;
+            rc.start = s.start != nullptr;
+            rc.stop = s.stop != nullptr;
+            rc.render = s.render != nullptr;
+            rc.process = s.process != nullptr;
+        }
 
         // The instances: aligned, zeroed, their parameters at their defaults, init run.
         patch->instanceAlign_ = std::max<std::size_t>(s.module->alignment, alignof(std::max_align_t));
@@ -708,27 +725,110 @@ module Host
 
     void Patch::process(float* left, float* right, int n) noexcept
     {
-        if (s_->process != nullptr && !instances_.empty())
-            s_->process(instances_[0], left, right, n);
+        const Compiled& c = code();
+        if (c.process != nullptr && !instances_.empty())
+            c.process(instances_[0], left, right, n);
     }
 
     void Patch::start(int i, float note, float velocity) noexcept
     {
-        if (s_->start != nullptr && i >= 0 && i < static_cast<int>(instances_.size()))
-            s_->start(instances_[static_cast<std::size_t>(i)], note, velocity);
+        const Compiled& c = code();
+        if (c.start != nullptr && i >= 0 && i < static_cast<int>(instances_.size()))
+            c.start(instances_[static_cast<std::size_t>(i)], note, velocity);
     }
 
     void Patch::stop(int i) noexcept
     {
-        if (s_->stop != nullptr && i >= 0 && i < static_cast<int>(instances_.size()))
-            s_->stop(instances_[static_cast<std::size_t>(i)]);
+        const Compiled& c = code();
+        if (c.stop != nullptr && i >= 0 && i < static_cast<int>(instances_.size()))
+            c.stop(instances_[static_cast<std::size_t>(i)]);
     }
 
     bool Patch::render(int i, float* left, float* right, int n) noexcept
     {
-        if (s_->render == nullptr || i < 0 || i >= static_cast<int>(instances_.size()))
+        const Compiled& c = code();
+        if (c.render == nullptr || i < 0 || i >= static_cast<int>(instances_.size()))
             return false;
-        return s_->render(instances_[static_cast<std::size_t>(i)], left, right, n);
+        return c.render(instances_[static_cast<std::size_t>(i)], left, right, n);
+    }
+
+    // ---- frozen dials ---------------------------------------------------------------------------------------------------
+    Patch::Recipe Patch::recipe() const
+    {
+        Recipe r = recipe_;
+        r.program = program_;
+        return r;
+    }
+
+    void Patch::useFrozen(const Frozen* f) noexcept
+    {
+        active_ = f != nullptr && f->program_ == program_ ? f->code_.get() : nullptr;
+    }
+
+    std::unique_ptr<Patch::Frozen> Patch::freeze(const Recipe& r, const std::array<float, kMaxControls>& plain,
+                                                 std::string& why)
+    {
+        const auto t0 = std::chrono::steady_clock::now();
+        if (r.files.empty() || r.source.empty())
+        {
+            why = "no program";
+            return nullptr;
+        }
+        const Sources& files = r.files;
+        fminus::Program::Options build;
+        build.fileName = files.front().name;
+        build.include = [&files](std::string_view name, std::string_view) -> std::optional<fminus::Program::IncludedFile> {
+            if (const SourceFile* f = findFile(files, name))
+                return fminus::Program::IncludedFile{ f->name, f->text };
+            if (name == kHostFileName)
+                return fminus::Program::IncludedFile{ kHostFileName, kHostFile };
+            return std::nullopt;
+        };
+        build.denormals = fminus::Program::Denormals::Flush;     // as compile()'s
+        for (std::size_t k = 0; k < r.names.size(); ++k)
+            if (!r.names[k].empty() && r.controls[k].used)
+                build.parameters[r.names[k]] = fminus::Program::Binding::frozen(static_cast<double>(plain[k]));
+        auto f = std::unique_ptr<Frozen>(new Frozen());
+        std::string errors;
+        f->code_->program = fminus::Program::compile(r.source, errors, build);
+        if (!f->code_->program)
+        {
+            why = errors.empty() ? std::string("it did not compile") : errors;
+            return nullptr;
+        }
+        fminus::Program& program = *f->code_->program;
+        Compiled& s = *f->code_;
+        s.module = program.module(kModule);
+        if (s.module == nullptr || s.module->size != r.size || s.module->alignment != r.alignment)
+        {
+            why = "its layout is not the program's";
+            return nullptr;
+        }
+        std::string missing;
+        const auto look = [&](bool has, const char* method, auto*& fn) {
+            if (has)
+                fn = program.function<std::remove_pointer_t<std::remove_reference_t<decltype(fn)>>>(
+                    std::string("playground_") + method, missing);
+        };
+        if constexpr (kInstrument)
+        {
+            look(r.start, "start", s.start);
+            look(r.render, "process", s.render);
+            look(r.stop, "stop", s.stop);
+        }
+        else
+        {
+            look(r.process, "process", s.process);
+        }
+        if (!missing.empty())
+        {
+            why = missing;
+            return nullptr;
+        }
+        f->program_ = r.program;
+        f->values_ = plain;
+        f->ms_ = msSince(t0);
+        return f;
     }
 
     float Patch::tap(int t, int i) const noexcept

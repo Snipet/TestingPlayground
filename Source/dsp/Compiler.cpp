@@ -32,7 +32,8 @@ namespace testingplayground
             }
         }
 
-        CompileStatus build(Engine& engine, Sources files, uint64_t id, const ShaderTools& tools, ShaderCache& cache)
+        CompileStatus build(Engine& engine, Sources files, uint64_t id, const ShaderTools& tools, ShaderCache& cache,
+                            Patch::Recipe& recipe)
         {
             Patch::Result r = Patch::compile(files, engine.rate());
             CompileStatus s;
@@ -49,13 +50,17 @@ namespace testingplayground
                 if (!s.panel.shaders.empty())
                     buildShaders(s.panel, s.sources, tools, cache, s.notes);
                 r.patch->setProgram(id);                    // CompileStatus::request: Meters::program names it
+                recipe = r.patch->recipe();                 // the freezer's
                 engine.offer(std::move(r.patch));
             }
             return s;
         }
     }
 
-    Compiler::Compiler(Engine& engine) : engine_(engine), thread_([this] { run(); }) {}
+    Compiler::Compiler(Engine& engine)
+        : engine_(engine), thread_([this] { run(); }), freezer_([this] { freezer(); })
+    {
+    }
 
     Compiler::~Compiler()
     {
@@ -64,7 +69,70 @@ namespace testingplayground
             stop_ = true;
         }
         wake_.notify_all();
+        freezerWake_.notify_all();
         thread_.join();
+        freezer_.join();
+    }
+
+    void Compiler::setFreezing(bool on, double afterSeconds)
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        freezing_ = on;
+        freezeAfter_ = std::max(0.0, afterSeconds);
+    }
+
+    bool Compiler::freeze(const DialState& d)
+    {
+        const std::lock_guard<std::mutex> one(freezeMutex_);
+        Patch::Recipe recipe;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (recipe_.program == 0 || recipe_.program != d.program)
+                return false;
+            recipe = recipe_;
+        }
+        std::string why;
+        std::unique_ptr<Patch::Frozen> f = Patch::freeze(recipe, d.plain, why);
+        if (!f)
+            return false;
+        engine_.offerFrozen(std::move(f));
+        freezes_.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+
+    bool Compiler::freezeNow()
+    {
+        DialState d;
+        for (int k = 0; k < 100 && !engine_.dials(d); ++k)
+            std::this_thread::yield();
+        return d.program != 0 && freeze(d);
+    }
+
+    void Compiler::freezer()
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        while (!stop_)
+        {
+            freezerWake_.wait_for(lock, std::chrono::milliseconds(100), [this] { return stop_; });
+            if (stop_)
+                break;
+            const bool on = freezing_;
+            const double after = freezeAfter_;
+            lock.unlock();
+            DialState d;
+            if (on && engine_.dials(d) && d.program != 0)
+            {
+                if (d.stillSeconds < after)
+                    triedProgram_ = 0;                 // a dial moved: any values may be tried again
+                else if (!d.frozen && !(triedProgram_ == d.program && tried_ == d.plain))
+                {
+                    triedProgram_ = d.program;
+                    tried_ = d.plain;
+                    freeze(d);
+                }
+            }
+            lock.lock();
+        }
     }
 
     uint64_t Compiler::request(Sources files)
@@ -92,7 +160,13 @@ namespace testingplayground
             const std::lock_guard<std::mutex> lock(mutex_);
             tools = tools_;
         }
-        CompileStatus s = build(engine_, std::move(files), id, tools, shaders_);
+        Patch::Recipe recipe;
+        CompileStatus s = build(engine_, std::move(files), id, tools, shaders_, recipe);
+        if (s.ok)
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            recipe_ = std::move(recipe);
+        }
         finish(s);
         return status();
     }
@@ -145,9 +219,13 @@ namespace testingplayground
                 hasQueued_ = false;
                 compiling_ = true;
                 lock.unlock();
-                CompileStatus s = build(engine_, std::move(files), id, tools, shaders_);
+                Patch::Recipe recipe;
+                CompileStatus s = build(engine_, std::move(files), id, tools, shaders_, recipe);
+                const bool ok = s.ok;
                 finish(std::move(s));
                 lock.lock();
+                if (ok)
+                    recipe_ = std::move(recipe);
                 compiling_ = false;
                 if (!hasQueued_)
                     idle_.notify_all();

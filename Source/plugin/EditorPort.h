@@ -111,6 +111,7 @@ namespace testingplayground
 
         virtual float load() const = 0;
         virtual uint32_t alerts() const = 0;
+        virtual bool frozen() const = 0;                 // the dials are frozen into the code (Patch.h)
 
         virtual std::vector<PresetEntry> presets() const = 0;
         virtual std::string presetFolder() const = 0;
