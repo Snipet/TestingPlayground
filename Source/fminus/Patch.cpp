@@ -785,6 +785,7 @@ module Host
             return std::nullopt;
         };
         build.denormals = fminus::Program::Denormals::Flush;     // as compile()'s
+        build.math = fminus::Program::Math::Fast;                // the copy's math (Patch.h, "Frozen dials")
         for (std::size_t k = 0; k < r.names.size(); ++k)
             if (!r.names[k].empty() && r.controls[k].used)
                 build.parameters[r.names[k]] = fminus::Program::Binding::frozen(static_cast<double>(plain[k]));
