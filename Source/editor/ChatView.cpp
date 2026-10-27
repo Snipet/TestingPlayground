@@ -37,6 +37,9 @@ namespace testingplayground::ui
         constexpr float kJump = 28.0f;
         constexpr float kWheelSmooth = 512.0f;       // px a unit of a trackpad's wheel (TextEditor's)
         constexpr float kWheelNotched = 292.0f;      // px a unit of a notched wheel: three lines a notch
+        constexpr float kTileH = 112.0f;             // a sent picture's thumbnail, above its bubble
+        constexpr float kTileMinW = 64.0f, kTileMaxW = 220.0f;
+        constexpr float kTileGap = 6.0f;
         constexpr float kCardPad = 12.0f;            // a question card's inset
         constexpr float kOptionPadY = 7.0f;          // an option's, above and below its text
         constexpr float kOptionGap = 6.0f;
@@ -586,6 +589,7 @@ namespace testingplayground::ui
         b.code.clear();
         b.actions.clear();
         b.icons.clear();
+        b.tiles.clear();
         b.value.clear();
         float y = 0.0f;
         const ChatEntry& e = entries[static_cast<std::size_t>(b.entry)];
@@ -596,6 +600,58 @@ namespace testingplayground::ui
             {
                 b.label = "You";
                 b.value = t;
+                // The pictures, above the bubble at its right: rows of thumbnails kTileH high (each as wide as its
+                // proportions ask, within limits, cropped to fill when a limit cuts it).
+                float top = 0.0f;
+                if (!e.pictures.empty())
+                {
+                    const float rowW = std::floor(w * kBubbleShare);
+                    std::vector<Tile> row;
+                    float rowWidth = 0.0f, y0 = 0.0f;
+                    const auto flush = [&] {
+                        float x = w - rowWidth;
+                        for (Tile tl : row)
+                        {
+                            tl.r.x = x;
+                            tl.r.y = y0;
+                            x += tl.r.w + kTileGap;
+                            b.tiles.push_back(tl);
+                        }
+                        row.clear();
+                        rowWidth = 0.0f;
+                        y0 += kTileH + kTileGap;
+                    };
+                    std::string names;
+                    for (const ChatPicturePtr& pic : e.pictures)
+                    {
+                        const float aspect = pic->height > 0 ? static_cast<float>(pic->width) / static_cast<float>(pic->height) : 1.0f;
+                        const float tw = std::clamp(std::round(kTileH * aspect), kTileMinW, std::min(kTileMaxW, rowW));
+                        Tile tl;
+                        tl.id = pic->id;
+                        tl.r = { 0.0f, 0.0f, tw, kTileH };
+                        // Cropped to the tile's proportions, about the middle.
+                        const float want = tw / kTileH;
+                        if (aspect > want)
+                            tl.uv = { 0.5f * (1.0f - want / aspect), 0.0f, want / aspect, 1.0f };
+                        else if (aspect < want)
+                            tl.uv = { 0.0f, 0.5f * (1.0f - aspect / want), 1.0f, aspect / want };
+                        if (!row.empty() && rowWidth + kTileGap + tw > rowW)
+                            flush();
+                        rowWidth += (row.empty() ? 0.0f : kTileGap) + tw;
+                        row.push_back(tl);
+                        names += (names.empty() ? "" : ", ") + asciiText(pic->name);
+                    }
+                    flush();
+                    top = y0 - kTileGap;
+                    b.value = std::to_string(e.pictures.size()) + (e.pictures.size() == 1 ? " picture (" : " pictures (") + names
+                            + ")" + (t.empty() ? std::string() : ". " + t);
+                    if (t.empty())
+                    {
+                        y = top;
+                        break;
+                    }
+                    top += 6.0f;
+                }
                 const float maxInner = std::floor(w * kBubbleShare) - 2.0f * kBubblePadX;
                 const float a = adv(Role::body);
                 const auto cols = static_cast<std::size_t>(std::max(4.0f, std::floor(maxInner / a)));
@@ -623,10 +679,11 @@ namespace testingplayground::ui
                 for (Span s : tmp.spans)
                 {
                     s.x += x0 + kBubblePadX;
+                    s.y += top;
                     b.spans.push_back(s);
                 }
-                y = ty + kBubblePadY;
-                b.shapes.insert(b.shapes.begin(), Shape{ { x0, 0.0f, bw, y }, ShapeKind::bubble });
+                y = top + ty + kBubblePadY;
+                b.shapes.insert(b.shapes.begin(), Shape{ { x0, top, bw, y - top }, ShapeKind::bubble });
                 break;
             }
             case ChatEntry::Kind::assistant:
@@ -881,6 +938,8 @@ namespace testingplayground::ui
                             + (desc.kind == ChatEntry::Kind::thinking && open_[desc.entry] ? '1' : '0') + '|';
             for (int k = 0; k < desc.count; ++k)
                 key += state.entries[static_cast<std::size_t>(desc.entry + k)].text + '\x1f';
+            for (const ChatPicturePtr& pic : state.entries[static_cast<std::size_t>(desc.entry)].pictures)
+                key += 'p' + std::to_string(pic->id);
             if (desc.kind == ChatEntry::Kind::question)
             {
                 const ChatEntry& q = state.entries[static_cast<std::size_t>(desc.entry)];
@@ -1118,6 +1177,14 @@ namespace testingplayground::ui
     }
 
     std::optional<Point> ChatView::centreOfCopy(int n) const { return centreOfAction(ActionKind::copyCode, n); }
+
+    int ChatView::tiles() const
+    {
+        int n = 0;
+        for (const Block& b : blocks_)
+            n += static_cast<int>(b.tiles.size());
+        return n;
+    }
 
     // ---- questions --------------------------------------------------------------------------------------------------
     bool ChatView::needsSubmit(const Block& b)
@@ -1364,6 +1431,13 @@ namespace testingplayground::ui
                         break;
                     }
                 }
+            }
+            for (const Tile& tl : b.tiles)
+            {
+                const Rect r = onScreen(b, tl.r);
+                c.rrect(r.x, r.y, r.w, r.h, 12.0f, p.raised);
+                c.image(tl.id, r, 12.0f, 1.0f, tl.uv);
+                c.rrect(r.x, r.y, r.w, r.h, 12.0f, p.card.withAlpha(0.0f), 1.0f, p.cardEdge);
             }
             for (const Span& s : b.spans)
                 text(s.text, x0 + s.x, top + s.y, s.lineH, s.role, colourOf(s.role, p));
