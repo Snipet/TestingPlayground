@@ -157,6 +157,12 @@ from FunkPluginTemplate.
   `panel.gui` and the library files it includes), which `plugin.chatexample` compiles and plays: a change to the contract (Patch.h), the
   panel's lines, the language's rules, a library file's header or the examples changes it too, and the example must
   keep compiling with no note.
+- **ask_user** pauses the turn: the reply's other tools run and their results wait in the history; the question's
+  entry stays open (`ChatState::asking`) until `ChatPort::answer` (the labels clicked) or `send` (the user's own words,
+  after a result that says so), and either starts the next turn with the question's result first in the user
+  message (`missingResults`, `deliver`: tool results before any text, as the API asks). One ask a reply; the session
+  keeps an open question ("asking"). The view draws it as a card (`ChatView`: ShapeKind::option, ActionKind::option and
+  submit).
 - **add_library_file** puts a library file in the editor as a tab (never over a file of that name) and returns its
   whole text, so Claude has seen it (`seen_`); the program's `#include` is Claude's to write.
 

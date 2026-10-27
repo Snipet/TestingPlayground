@@ -1607,7 +1607,8 @@ namespace testingplayground::ui
         chatViewItem_ = add(std::make_unique<ChatView>(
             kChatA11yBase, ChatView::Hooks{ [this](const std::string& s) { suggest(s); },
                                             [this] { openKeyDialog(DialogTab::key); },
-                                            [this] { openKeyDialog(DialogTab::account); } }));
+                                            [this] { openKeyDialog(DialogTab::account); },
+                                            [this](const std::vector<std::string>& a) { port_.chat().answer(a); } }));
         inputItem_ = add(std::make_unique<InputItem>(idFor(), [this] { sendChat(); }));
         modelItem_ = add(std::make_unique<B>(
             idFor(), spec(B::Shape::pill, {}, [this] { return modelLabel(); }, true, [] { return B::Look::ghost; }, {},
@@ -2097,6 +2098,7 @@ namespace testingplayground::ui
         return static_cast<const InputItem&>(*items_[static_cast<std::size_t>(inputItem_)]);
     }
     funkgui::TextEditor& Panel::chatInput() noexcept { return inputItem().editor(); }
+    const std::string& Panel::chatPlaceholder() const { return inputItem().placeholder(); }
     const std::string& Panel::transcript() const { return chatView().text(); }
 
     void Panel::attach(funkgui::HostServices& host)
@@ -2403,9 +2405,10 @@ namespace testingplayground::ui
             if (chat_.busy && !wasBusy)
                 busySince_ = nowSec;
             chatView().show(chat_, emptyChat(chat_));
-            inputItem().setPlaceholder(chat_.busy ? "Claude is working (the square button stops it)"
-                                                  : (product::kIsInstrument ? "Ask Claude for a sound, or about the code"
-                                                                            : "Ask Claude for an effect, or about the code"));
+            inputItem().setPlaceholder(chat_.busy     ? "Claude is working (the square button stops it)"
+                                       : chat_.asking ? "Answer above, or write your own answer"
+                                       : (product::kIsInstrument ? "Ask Claude for a sound, or about the code"
+                                                                 : "Ask Claude for an effect, or about the code"));
             if (barLabels() != barLabels_)
                 placeChatBar();
             if (accountLabel() != headerLabel_)          // signed in or out, or the credit came

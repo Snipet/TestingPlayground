@@ -92,7 +92,7 @@ namespace testingplayground::ui
         {
             const std::string text = asciiText(e.text);
             const bool fromClaude = e.kind == ChatEntry::Kind::assistant || e.kind == ChatEntry::Kind::thinking
-                                 || e.kind == ChatEntry::Kind::tool;
+                                 || e.kind == ChatEntry::Kind::tool || e.kind == ChatEntry::Kind::question;
             const bool tight = !first && e.kind == ChatEntry::Kind::tool && previous == ChatEntry::Kind::tool;
             if (!first)
                 out += tight ? "" : "\n";
@@ -112,7 +112,10 @@ namespace testingplayground::ui
                 std::string body = text;
                 while (!body.empty() && body.back() == '\n')
                     body.pop_back();
-                const char* prefix = e.kind == ChatEntry::Kind::thinking ? "  ~ " : e.kind == ChatEntry::Kind::tool ? "  > " : "";
+                const char* prefix = e.kind == ChatEntry::Kind::thinking ? "  ~ "
+                                   : e.kind == ChatEntry::Kind::tool     ? "  > "
+                                   : e.kind == ChatEntry::Kind::question ? "  ? "
+                                                                         : "";
                 std::size_t start = 0;
                 while (start <= body.size())
                 {
@@ -121,6 +124,13 @@ namespace testingplayground::ui
                     if (end == std::string::npos)
                         break;
                     start = end + 1;
+                }
+                if (e.kind == ChatEntry::Kind::question && !e.open)
+                {
+                    std::string answers;
+                    for (const std::string& ans : e.answers)
+                        answers += (answers.empty() ? "" : " | ") + asciiText(ans);
+                    out += "  = " + (e.typed ? std::string("(answered in a message)") : answers.empty() ? std::string("(not answered)") : answers) + "\n";
                 }
             }
             else

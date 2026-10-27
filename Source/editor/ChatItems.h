@@ -45,6 +45,7 @@ namespace testingplayground::ui
         // The box's height for its text at `width`: one row to kMaxRows.
         float desiredHeight(float width, float barH) const;
         void setPlaceholder(const std::string& text);
+        const std::string& placeholder() const noexcept { return placeholder_; }
         funkgui::TextEditor& editor() noexcept { return editor_; }
         const funkgui::TextEditor& editor() const noexcept { return editor_; }
         void attach(funkgui::HostServices* host) { editor_.attach(host); }

@@ -7,8 +7,14 @@
 // edit, rename and delete the files (the editor's tabs follow, each change undoable there), run the program (RUN: the
 // compile's outcome comes back), set a dial, render and measure what the program puts out (measure_output,
 // dsp/Measure.h: Claude cannot hear), look at the panel (view_panel: a PNG the message thread draws headless,
-// ChatHost::chatPicture, sent as an image in the tool's result and left out of the saved session), and read the
-// plugin's status.
+// ChatHost::chatPicture, sent as an image in the tool's result and left out of the saved session), read the
+// plugin's status, and ask the user (ask_user: questions with options, which the chat shows as cards to click).
+//
+// A question (ask_user) pauses the turn: the reply's other tools run, their results wait in the history, and the
+// question's entry stays open (ChatState::asking) until the user answers, with a click (answer(): its result is the
+// labels chosen) or with a message (send(): its result says the user's own words follow, and they do, in the same
+// message). Either starts the next turn. A turn's reply may ask once; a second ask_user in it is refused in its
+// result. The session keeps an open question, so a project saved while one waits opens with it still waiting.
 //
 // Requests (ClaudeApi.h; the claude-api reference): stream on; adaptive thinking with summarized display and the chosen
 // effort (the models list comes from /v1/models, filtered to those with adaptive thinking); max_tokens the model's own
@@ -132,6 +138,7 @@ namespace testingplayground
         void setEffort(const std::string& effort) override;
         void setFast(bool on) override;
         void send(const std::string& text) override;
+        void answer(const std::vector<std::string>& answers) override;
         void stop() override;
         void newChat() override;
 
@@ -183,6 +190,11 @@ namespace testingplayground
         void waitAuth();                                            // until no job is queued or running
         void touch();                                               // revision + 1 (mutex held)
         void appendAnswer(const juce::Array<juce::var>& content);   // an assistant message into the history (mutex held)
+        // The results the last reply's tool calls still lack (an open question's says `instead`), for the next
+        // user message; the open question closes (mutex held).
+        juce::Array<juce::var> missingResults(const std::string& instead);
+        void deliver(juce::Array<juce::var> content);               // a user message's blocks into the history, and
+                                                                    // a turn (mutex held; the caller starts it)
         void repairHistory();                                       // one the API takes (mutex held)
         void dropThinking();                                        // the history without thinking (mutex held)
         int maxTokensFor(const std::string& id) const;              // a request's max_tokens (mutex held)
@@ -224,6 +236,7 @@ namespace testingplayground
         bool resendState_ = false;                                  // a summary came: the state goes with what follows
         std::vector<std::string> requests_;                         // bodies sent (probes)
         bool busy_ = false;
+        std::string asking_;                                        // the open question's tool_use id ("" for none)
 
         std::atomic<bool> cancel_{ false };
         std::thread worker_;
