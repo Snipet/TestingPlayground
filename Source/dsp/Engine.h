@@ -34,6 +34,13 @@
 // effect's instance, an instrument's newest sounding voice), and publishes them (Meters) through a seqlock, which the
 // editor reads at its frame rate.
 //
+// Frozen dials (Patch.h). While the dials hold still, the program's frozen copy may play: offerFrozen() leaves one in a
+// slot, and the audio thread takes it at a block's start only when it is of the program that plays, no swap runs, and
+// each dial stands exactly at the value the copy holds; it plays the same instances, so nothing changes but the
+// cost. The block a dial moves (or another program comes) the program's own code plays again, and the copy goes back
+// for collect() to destroy. dials() says what the freezer needs: the program, its dials' values, how long they have
+// held still (a new program counts from its arrival), and whether the copy plays.
+//
 // Threads. prepare() while the audio thread is stopped (it allocates); setControls() and process() on the audio
 // thread (no allocation, no lock, no I/O); offer() and collect() off it (Compiler.h), under a mutex prepare() shares.
 // A program crosses by an atomic pointer each way: offer() leaves it in `pending_`, the audio thread takes it at the
@@ -69,6 +76,15 @@ namespace testingplaygroundsynth
         float rate = 48000.0f;                        // the sample rate (a spectrum's frequencies)
     };
 
+    // The dials as the freezer reads them (Engine::dials).
+    struct DialState
+    {
+        uint64_t program = 0;                         // the program that plays (Patch::program), 0 for none
+        double stillSeconds = 0.0;                    // since a dial last moved, or the program came
+        bool frozen = false;                          // its frozen copy plays
+        std::array<float, kMaxControls> plain{};      // each dial's value, plain (0 for an unused control)
+    };
+
     class Engine
     {
     public:
@@ -99,7 +115,8 @@ namespace testingplaygroundsynth
 
         // ---- off the audio thread --------------------------------------------------------------------------------
         void offer(std::unique_ptr<Patch> patch);     // plays from the next block, as above
-        void collect();                               // destroys the programs the audio thread handed back
+        void offerFrozen(std::unique_ptr<Patch::Frozen> frozen);   // taken at a block's start if it fits (above)
+        void collect();                               // destroys the programs (and copies) the audio thread handed back
 
         // ---- any thread ------------------------------------------------------------------------------------------
         float rate() const noexcept { return rate_.load(std::memory_order_relaxed); }
@@ -107,6 +124,9 @@ namespace testingplaygroundsynth
         // The busiest recent block's processing time over the block's own length (1 = a whole core), decaying.
         float load() const noexcept { return load_.load(std::memory_order_relaxed); }
         uint32_t takeAlerts() noexcept { return alerts_.exchange(0, std::memory_order_relaxed); }
+        // The dials as of the last block; false while the audio thread publishes (read again).
+        bool dials(DialState& out) const noexcept { return dials_.read(out); }
+        bool frozen() const noexcept { return frozenNow_.load(std::memory_order_relaxed); }   // the copy plays
         // The last block's meters; false while the audio thread publishes (keep the frame before).
         bool meters(Meters& out) const noexcept { return meters_.read(out); }
         // The last n samples (at most kScopeLength) of the input or the output, mono, oldest first.
@@ -146,6 +166,10 @@ namespace testingplaygroundsynth
 
         void takePending() noexcept;
         void retire(Patch*& p) noexcept;              // hands p back (or keeps it until the slot is empty)
+        void updateFrozen() noexcept;                 // takes, keeps or drops the frozen copy; publishes dials()
+        bool fits(const Patch::Frozen& f) const noexcept;
+        bool holdFrozen(Patch::Frozen* f) noexcept;   // to be handed back; false when every slot is taken
+        void retireFrozen() noexcept;                 // the held copies into the slots collect() empties
         void glideControls(int n) noexcept;           // the ramps over the block: streamBuf_, streaming_
         void feed(Patch& p, int offset, int instance) noexcept;   // the dials into p: streams from `offset`
         void processEffect(float* const* channels, int numChannels, int n) noexcept;
@@ -162,6 +186,18 @@ namespace testingplaygroundsynth
         // The block's levels and samples (before and after the program), the program's taps, published.
         void measureIn(float* const* channels, int numChannels, int n) noexcept;
         void publish(float* const* channels, int numChannels, int n) noexcept;
+
+        std::atomic<Patch::Frozen*> frozenPending_{ nullptr };
+        std::array<std::atomic<Patch::Frozen*>, 4> frozenRetired_{};
+        Patch::Frozen* frozen_ = nullptr;             // the copy of current_ that may play (the audio thread's)
+        std::array<Patch::Frozen*, 4> frozenHold_{};  // copies done with, waiting for a retired slot
+        std::atomic<bool> frozenNow_{ false };
+        bool moved_ = false;                          // a dial moved in this block (glideControls)
+        uint64_t samples_ = 0;                        // processed since prepare()
+        uint64_t lastMove_ = 0;                       // samples_ when a dial last moved or the program came
+        const Patch* stillOf_ = nullptr;              // the program lastMove_ counts for
+        DialState dialState_{};
+        fsdsp::Seqlock<DialState> dials_;
 
         std::mutex mutex_;                            // offer, collect, prepare; never the audio thread
         std::atomic<Patch*> pending_{ nullptr };

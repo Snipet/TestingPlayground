@@ -111,6 +111,7 @@ namespace testingplaygroundsynth
         int editorHeight() const noexcept { return editorH_.load(); }
         void setEditorSize(int w, int h) noexcept;
         Engine& engine() noexcept { return engine_; }
+        Compiler& compiler() noexcept { return compiler_; }   // for the probes
         // The most samples one Engine::process call got since prepareToPlay (never more than it announced).
         int largestEngineCall() const noexcept { return largestCall_; }
         // The compiler's outcome to the message thread (the timer's call); settle() waits for a run first. It also makes
@@ -152,6 +153,7 @@ namespace testingplaygroundsynth
         bool meters(Meters& out) const override;
         void scope(bool input, float* out, int n) const override;
         float load() const override;
+        bool frozen() const override;
         uint32_t alerts() const override;
         std::vector<PresetEntry> presets() const override;
         std::string presetFolder() const override;

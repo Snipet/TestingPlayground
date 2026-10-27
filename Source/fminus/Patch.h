@@ -47,7 +47,15 @@
 // while it holds still), an int and a bool as knobs. Parameters past kMaxControls, and those of the modules the main
 // module holds, keep their fminus::default (they are set, in every instance, before init runs).
 //
-// Threads: compile() and reset() run off the audio thread (or while it is stopped), the calls marked noexcept on it.
+// Frozen dials. Once the dials hold still, the plugin compiles the program again with each dial bound as a constant at
+// its value (FMinus's Program::Binding::frozen; freeze() below): the optimiser folds what the dials compute, a filter's
+// coefficients, a level's expf, a branch on a switch, which an instrument's voices otherwise compute in every call.
+// FMinus gives a parameter the same slot in an instance whatever its binding, so the frozen copy runs this Patch's own
+// instances: the Engine switches between the two at a block's start (useFrozen) without a seam, and they compute the
+// same, bit for bit (FMinus's Math::Vector folds a frozen value's sinf or expf as it computes a knob's).
+//
+// Threads: compile(), freeze() and reset() run off the audio thread (or while it is stopped), the calls marked
+// noexcept on it.
 // The audio thread never destroys a Patch; the Engine hands it back (Engine.h).
 #pragma once
 
@@ -56,6 +64,7 @@
 #include "fminus/PanelSpec.h"
 #include "dsp/Sources.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -113,7 +122,31 @@ namespace testingplaygroundsynth
         uint64_t program() const noexcept { return program_; }
         void setProgram(uint64_t id) noexcept { program_ = id; }
 
+        // ---- frozen dials (above) ------------------------------------------------------------------------------------
+        class Frozen;
+        // What compiling the frozen copy needs, kept from the compile: copyable, for another thread.
+        struct Recipe
+        {
+            Sources files;
+            std::string source;                        // the program with the plugin's calls appended
+            std::array<std::string, kMaxControls> names{};   // each control's parameter, qualified ("" for none)
+            Controls controls{};
+            uint64_t program = 0;                      // Patch::program
+            std::size_t size = 0, alignment = 0;       // the main module's, which the copy must keep
+            bool start = false, stop = false, render = false, process = false;   // the calls the program has
+        };
+        Recipe recipe() const;
+        // The frozen copy of the recipe's program at the dials' plain values (each used control's, Controls.h): off
+        // the audio thread. Null, with why, when it does not compile or its main module's layout is not the program's.
+        static std::unique_ptr<Frozen> freeze(const Recipe& recipe, const std::array<float, kMaxControls>& plain,
+                                              std::string& why);
+
         // ---- the audio thread ------------------------------------------------------------------------------------
+        // The frozen copy's code for the calls that follow (null: the program's own). It must be of this program
+        // (Frozen::program) and outlive its use.
+        void useFrozen(const Frozen* f) noexcept;
+        bool frozen() const noexcept { return active_ != nullptr; }
+
         // Control c's value (its plain value, Controls.h) in instance i, or in every instance (i < 0): what a stream
         // reads while its buffer is null, and what a knob reads.
         void setValue(int c, float plain, int i = -1) noexcept;
@@ -145,7 +178,11 @@ namespace testingplaygroundsynth
         void freeInstances() noexcept;
         void setDefaults(void* instance, std::string_view moduleName, int depth) const;
 
+        const Compiled& code() const noexcept { return active_ != nullptr ? *active_ : *s_; }
+
         std::unique_ptr<Compiled> s_;
+        const Compiled* active_ = nullptr;             // the frozen copy's code in use, or null
+        Recipe recipe_;
         std::vector<void*> instances_;
         std::vector<bool> initialised_;
         std::size_t instanceSize_ = 0, instanceAlign_ = 16;
@@ -178,5 +215,26 @@ namespace testingplaygroundsynth
         std::size_t hostSize_ = 0, hostAlign_ = 16;
         std::vector<std::size_t> hostFields_, sharedHostFields_;
         HostLayout hostLayout_;
+    };
+
+    // A frozen copy of a program's code (Patch::freeze): the Engine owns it while it plays, and hands it back as it
+    // does a Patch.
+    class Patch::Frozen
+    {
+    public:
+        ~Frozen();
+        Frozen(const Frozen&) = delete;
+        Frozen& operator=(const Frozen&) = delete;
+        uint64_t program() const noexcept { return program_; }
+        const std::array<float, kMaxControls>& values() const noexcept { return values_; }   // plain, a control each
+        double compileMs() const noexcept { return ms_; }
+
+    private:
+        friend class Patch;
+        Frozen();
+        std::unique_ptr<Compiled> code_;
+        uint64_t program_ = 0;
+        std::array<float, kMaxControls> values_{};
+        double ms_ = 0.0;
     };
 }

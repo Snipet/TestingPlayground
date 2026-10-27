@@ -2281,9 +2281,11 @@ namespace testingplaygroundsynth::ui
             meterAt_ = nowSec;
             char meter[64];
             const uint32_t a = port_.alerts();
-            std::snprintf(meter, sizeof meter, "%s%sCPU %.1f%%",
+            std::snprintf(meter, sizeof meter, "%s%s%sCPU %.1f%%",
                           (a & Engine::nonFinite) != 0 ? "NAN REPLACED   " : "",
-                          (a & Engine::clipped) != 0 ? "CLIPPED   " : "", static_cast<double>(port_.load()) * 100.0);
+                          (a & Engine::clipped) != 0 ? "CLIPPED   " : "",
+                          port_.frozen() ? "FROZEN   " : "",       // the dials compiled in, while they hold still
+                          static_cast<double>(port_.load()) * 100.0);
             if (meter_ != meter)
             {
                 meter_ = meter;

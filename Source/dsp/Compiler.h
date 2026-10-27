@@ -12,16 +12,25 @@
 // arrives): FMinus's messages, the plugin's, the program's dials, how long it took. The thread also destroys, every
 // tenth of a second, what the audio thread handed back (Engine::collect), so the processor need not.
 //
+// Frozen dials (Patch.h). A thread of its own, the freezer, watches the dials (Engine::dials) ten times a second: once
+// they have held still for freezeAfter seconds (3 by default) on the program that plays, it compiles that program's
+// frozen copy at their values (Patch::freeze, from the recipe the program's compile kept) and offers it to the Engine,
+// which plays it if the dials still stand there. Values it has tried are not tried again until a dial moves. It runs
+// beside the compiles: a RUN never waits for it.
+//
 // A program that plays and has a .gui file with shaders gets them built too (fminus/Shaders.h: shaderc, with the
 // tools setShaderTools gave; a shader seen before comes from the cache): their binaries go into the status's panel
 // (PanelShader::binary), and a shader that does not compile is a note on its own file's line.
 #pragma once
 
 #include "dsp/Controls.h"
+#include "dsp/Engine.h"
 #include "dsp/Sources.h"
+#include "fminus/Patch.h"
 #include "fminus/PanelSpec.h"
 #include "fminus/Shaders.h"
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -66,8 +75,18 @@ namespace testingplaygroundsynth
         bool busy() const;                     // a request waits or compiles
         void wait();                           // until none does
 
+        // Frozen dials (above): on or off, and after how long still. freezeNow() compiles the copy for the dials as they
+        // stand now on the calling thread, still or not, and offers it (false when there is nothing to freeze or it
+        // does not compile); freezes() counts the copies offered.
+        void setFreezing(bool on, double afterSeconds = kFreezeAfterSeconds);
+        bool freezeNow();
+        int freezes() const noexcept { return freezes_.load(std::memory_order_relaxed); }
+        static constexpr double kFreezeAfterSeconds = 3.0;
+
     private:
         void run();
+        void freezer();                        // the freezer's thread
+        bool freeze(const DialState& d);       // compiles and offers the copy (the recipe under mutex_)
         void finish(CompileStatus s);
 
         Engine& engine_;
@@ -82,6 +101,17 @@ namespace testingplaygroundsynth
         uint64_t queuedId_ = 0, nextId_ = 0;
         CompileStatus status_;
         std::atomic<uint64_t> revision_{ 0 };
+        // The freezer's: the recipe of the program last offered, whether to freeze and after how long, the values
+        // tried for which program.
+        Patch::Recipe recipe_;                 // mutex_
+        bool freezing_ = true;                 // mutex_
+        double freezeAfter_ = kFreezeAfterSeconds;
+        uint64_t triedProgram_ = 0;
+        std::array<float, kMaxControls> tried_{};
+        std::atomic<int> freezes_{ 0 };
+        std::mutex freezeMutex_;               // one freeze at a time (the freezer's, freezeNow's)
+        std::condition_variable freezerWake_;
         std::thread thread_;                   // last: started once everything above is
+        std::thread freezer_;
     };
 }
