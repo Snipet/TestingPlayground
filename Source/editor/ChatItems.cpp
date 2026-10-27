@@ -93,7 +93,7 @@ namespace testingplaygroundsynth::ui
             const std::string text = asciiText(e.text);
             const bool fromClaude = e.kind == ChatEntry::Kind::assistant || e.kind == ChatEntry::Kind::thinking
                                  || e.kind == ChatEntry::Kind::tool || e.kind == ChatEntry::Kind::question
-                                 || e.kind == ChatEntry::Kind::checks;
+                                 || e.kind == ChatEntry::Kind::checks || e.kind == ChatEntry::Kind::plan;
             const bool tight = !first && e.kind == ChatEntry::Kind::tool && previous == ChatEntry::Kind::tool;
             if (!first)
                 out += tight ? "" : "\n";
@@ -117,6 +117,7 @@ namespace testingplaygroundsynth::ui
                                    : e.kind == ChatEntry::Kind::tool     ? "  > "
                                    : e.kind == ChatEntry::Kind::question ? "  ? "
                                    : e.kind == ChatEntry::Kind::checks   ? "  # "
+                                   : e.kind == ChatEntry::Kind::plan     ? "  % "
                                                                          : "";
                 std::size_t start = 0;
                 while (start <= body.size())
