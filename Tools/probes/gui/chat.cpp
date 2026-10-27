@@ -21,6 +21,7 @@
 //   gui.chat.answered.png the question answered: the choices marked, the rest muted
 //   gui.chat.pictures.png two pictures in the message box, each with its remove button
 //   gui.chat.sent.png     a message sent with two pictures: their thumbnails above its bubble
+//   gui.chat.plan.png     a planning model's plan as a card above the builder's answer
 //   gui.chat.checks.png   Claude's checks card, every check passing, and the picture of the sound it looked at
 //   gui.chat.checks-fail.png  a check that fails, after the turn went on twice
 //   gui.chat.view_sound.png   the picture view_sound gave Claude there (an instrument's saw at A2; an effect's sweep)
@@ -48,7 +49,10 @@
 //            answer) and the line under the box the usage; the thinking row opens and closes; a code block's Copy puts
 //            its code on the clipboard; the files Claude wrote are the editor's tabs and play; Cmd-Z in the program's
 //            editor gives back the text it had before Claude wrote it, as one step
-//   MODEL    the model's pill opens a menu of the models, the chosen one ticked; choosing another changes it; the
+//   PLANNER  the model menu's PLAN WITH: a planning model chosen, the pill says both ("Opus 5.5 > Sonnet 5.5"); a
+//            message: the plan as a card (a screen reader's toggle) above the builder's answer; No planner again
+//   MODEL    the model's pill opens a menu (BUILD WITH: the models, the chosen one ticked; PLAN WITH: No planner,
+//            ticked, and the models); choosing another changes it; the
 //            thinking pill's menu has that model's levels, and choosing one sets it; fast mode's pill, after it on
 //            Claude Opus 5.5, switches fast mode on and off (a switch to a screen reader, on or off), and is gone
 //            on a model that takes no fast mode
@@ -622,16 +626,18 @@ PROBE(gui, chat)
     {
         clickAt(host, panel.centreOfModel());
         const funkgui::MenuRequest* menu = host.pendingMenu();
-        P.eq("model.menu", menu != nullptr && menu->items.size() == 3 ? 1 : 0, 1);
+        // BUILD WITH and its three models, a rule, PLAN WITH, No planner and the three again.
+        P.eq("model.menu", menu != nullptr && menu->items.size() == 10 ? 1 : 0, 1);
         int ticked = 0;
-        bool opusTicked = false;
+        bool opusTicked = false, noPlanner = false;
         if (menu != nullptr)
             for (const funkgui::MenuItem& m : menu->items)
             {
                 ticked += m.checked ? 1 : 0;
                 opusTicked = opusTicked || (m.checked && m.label == "Claude Opus 5.5");
+                noPlanner = noPlanner || (m.checked && m.label == "No planner");
             }
-        P.eq("model.chosen_ticked", ticked == 1 && opusTicked ? 1 : 0, 1);
+        P.eq("model.chosen_ticked", ticked == 2 && opusTicked && noPlanner ? 1 : 0, 1);
         host.chooseMenuItem("Claude Haiku 5.5");
         host.tick(2);
         host.settle();
@@ -695,6 +701,47 @@ PROBE(gui, chat)
         host.tick(2);
         host.settle();
         P.eq("web.switched_off", chat(processor).web ? 1 : 0, 0);
+    }
+
+    // ---- PLANNER -------------------------------------------------------------------------------------------------------
+    {
+        // Sonnet builds, Opus plans (the menu's PLAN WITH ids start at 1001, in the models' order).
+        clickAt(host, panel.centreOfModel());
+        host.chooseMenuItem("Claude Sonnet 5.5");
+        host.tick(2);
+        host.settle();
+        clickAt(host, panel.centreOfModel());
+        host.chooseMenuItem(1001);
+        host.tick(2);
+        host.settle();
+        P.eq("planner.chosen", chat(processor).planner == "claude-opus-5-5" && chat(processor).model == "claude-sonnet-5-5" ? 1 : 0, 1);
+        const auto pill = a11yTitled(host, "Model");
+        std::printf("planner: the pill says \"%s\"\n", pill ? pill->value.c_str() : "");
+        P.eq("planner.pill_says_both", pill && has(pill->value, "Opus 5.5 > Sonnet 5.5") ? 1 : 0, 1);
+        script->add(fake::Response::ok(fake::Sse().start().text(
+            "### Plan\n1. **Oscillators**: two saws, detuned 7 cents (osc.fm).\n2. **Filter**: ladder.fm, its cutoff on "
+            "an envelope.\n3. Checks: `centroid_hz` at least 2000, `alerts` at most 0.").end()));
+        script->add(fake::Response::ok(fake::Sse().start().text("Built it from the plan.").end()));
+        clickInput(host, panel);
+        type(host, "a bright lead");
+        host.keys("return");
+        settleChat(processor, host);
+        tp::ui::ChatView& view = panel.chatView();
+        view.scrollTo(view.contentHeight());
+        host.settle();
+        P.eq("planner.card", has(panel.transcript(), "  % ### Plan") && has(panel.transcript(), "Built it from the plan.") ? 1 : 0, 1);
+        P.eq("planner.card_a11y", a11yTitled(host, "Show the plan").has_value() ? 1 : 0, 1);
+        writePng(P, host, "gui.chat.plan.png");
+        // Back to Opus alone, as the rest expects.
+        clickAt(host, panel.centreOfModel());
+        host.chooseMenuItem("No planner");
+        host.tick(2);
+        host.settle();
+        clickAt(host, panel.centreOfModel());
+        host.chooseMenuItem("Claude Opus 5.5");
+        host.tick(2);
+        host.settle();
+        P.eq("planner.off", chat(processor).planner.empty() && chat(processor).model == "claude-opus-5-5" ? 1 : 0, 1);
     }
 
     // ---- STOP ----------------------------------------------------------------------------------------------------------
@@ -1117,12 +1164,20 @@ PROBE(gui, chat)
         host.resize(500, 300);
         host.settle();
         // Twelve files: their tabs narrow to fit the bar.
-        while (panel.fileCount() < static_cast<int>(tp::kMaxFiles))
+        for (int k = 0; k < 2 * static_cast<int>(tp::kMaxFiles) && panel.fileCount() < static_cast<int>(tp::kMaxFiles); ++k)
         {
             const funkgui::Point plus = panel.centreOfNewTab();
+            const int had = panel.fileCount();
             clickAt(host, plus);
             host.keys("escape");
             host.settle();
+            if (panel.fileCount() == had)
+                std::printf("INFO     resize: + at %.1f %.1f added nothing (%d files; the program's card %.1f to %.1f; "
+                            "explorer %.1f wide, open %d shown %d; width %d)\n",
+                            static_cast<double>(plus.x), static_cast<double>(plus.y), had,
+                            static_cast<double>(panel.programCard().x), static_cast<double>(panel.programCard().right()),
+                            static_cast<double>(panel.explorerCard().w), panel.explorerOpen() ? 1 : 0,
+                            panel.explorerShown() ? 1 : 0, panel.width());
         }
         P.eq("resize.twelve_files", panel.fileCount(), static_cast<int64_t>(tp::kMaxFiles));
         P.eq("resize.least_w", panel.width(), tp::ui::kMinWidth);

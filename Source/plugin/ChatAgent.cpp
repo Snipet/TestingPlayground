@@ -34,6 +34,7 @@ namespace testingplayground
         constexpr std::size_t kMaxToolOutput = 12000;   // a tool result's characters (a compile's messages)
         constexpr int kMaxChecks = 12;             // set_checks's checks
         constexpr int kMaxCheckNudges = 2;         // times a turn goes on because its checks fail (ChatAgent.h)
+        constexpr int kMaxPlannerAsks = 4;         // ask_planner's calls a turn
         // The tools that change the program, the dials or the checks: a turn that used none is never sent on by them.
         constexpr const char* kChangingTools[] = { "write_file", "edit_file", "rename_file", "delete_file", "add_library_file",
                                                    "run_program", "set_dial", "tune_dials", "set_checks" };
@@ -51,7 +52,7 @@ namespace testingplayground
         constexpr const char* kCompactInstructions =
             "Summarize the conversation so far between a user and Claude, who builds and changes FMinus DSP programs "
             "inside an audio plugin through tools (read_file, write_file, edit_file, run_program, set_dial, "
-            "measure_output, view_sound, set_checks, tune_dials, get_status). The summary replaces that part of the "
+            "measure_output, view_sound, set_checks, tune_dials, ask_planner, get_status). The summary replaces that part of the "
             "conversation, so keep everything "
             "needed to carry on: what the user asked for, and their preferences about the sound and the code; what "
             "was built: each file and what it holds, the signal flow and the modulation routing, what each dial does "
@@ -229,6 +230,7 @@ namespace testingplayground
                 case ChatEntry::Kind::note: return "note";
                 case ChatEntry::Kind::question: return "question";
                 case ChatEntry::Kind::checks: return "checks";
+                case ChatEntry::Kind::plan: return "plan";
             }
             return "note";
         }
@@ -237,7 +239,7 @@ namespace testingplayground
         {
             for (const auto k : { ChatEntry::Kind::user, ChatEntry::Kind::assistant, ChatEntry::Kind::thinking,
                                   ChatEntry::Kind::tool, ChatEntry::Kind::error, ChatEntry::Kind::note,
-                                  ChatEntry::Kind::question, ChatEntry::Kind::checks })
+                                  ChatEntry::Kind::question, ChatEntry::Kind::checks, ChatEntry::Kind::plan })
                 if (s == kindName(k))
                     return k;
             return ChatEntry::Kind::note;
@@ -478,6 +480,63 @@ namespace testingplayground
             return why.empty();
         }
 
+        // The history as another model may read it (the planner's view, ChatAgent.h): no thinking (bound to the model,
+        // the prompt and the conversation that made it), a compaction block as its summary in words, no server tools'
+        // blocks (their results go back only to their own requests), text without citations (which point at them). A
+        // message left empty says so, and a history that starts at a summary gets a user message before it.
+        juce::Array<juce::var> forAnotherModel(const juce::Array<juce::var>& messages)
+        {
+            juce::Array<juce::var> out;
+            for (const juce::var& m : messages)
+            {
+                const std::string role = str(m, "role");
+                const juce::var content = m.getProperty("content", juce::var());
+                const auto* blocks = content.getArray();
+                if (blocks == nullptr)
+                {
+                    out.add(claude::object({ { "role", juce::String(role) }, { "content", content } }));
+                    continue;
+                }
+                juce::Array<juce::var> kept;
+                for (const juce::var& b : *blocks)
+                {
+                    const std::string type = str(b, "type");
+                    const bool serverResult = type != "tool_result" && type.size() > 12
+                                           && type.compare(type.size() - 12, 12, "_tool_result") == 0;
+                    if (type == "thinking" || type == "redacted_thinking" || type == "server_tool_use" || serverResult
+                        || type == "fallback")
+                        continue;
+                    if (type == "compaction")
+                        kept.add(text("(A summary of the conversation before this point:)\n" + str(b, "content")));
+                    else if (type == "text" && b.hasProperty("citations"))
+                        kept.add(text(str(b, "text")));
+                    else
+                        kept.add(b);
+                }
+                if (kept.isEmpty())
+                    kept.add(text(role == "assistant" ? "(no reply)" : "(nothing)"));
+                out.add(claude::object({ { "role", juce::String(role) }, { "content", kept } }));
+            }
+            if (!out.isEmpty() && str(out[0], "role") == "assistant")
+                out.insert(0, claude::object({ { "role", "user" },
+                                               { "content", juce::Array<juce::var>{ text("(The conversation so far.)") } } }));
+            return out;
+        }
+
+        // What the planner is asked before a request's first reply (planTurn).
+        std::string plannerBrief(const std::string& builder)
+        {
+            return "(From the plugin: you are the planner for this request. Another model, " + builder
+                 + ", does the work in the plugin with the tools your instructions describe (you call none of them "
+                   "now) and follows the plan you write here. Write that plan: what to build (the modules and the "
+                   "signal flow, each dial with its range, default and unit, the files and what each holds, the library "
+                   "files to use, the panel's sections), the hard decisions (the DSP's methods: a filter's topology, how "
+                   "the oscillators avoid aliasing, the envelopes' curves, what must be smoothed), what to measure and "
+                   "the checks to set (set_checks), and the order to do it in. Plan only: do not write the files out "
+                   "(a short formula or snippet where it must be exact). A small request (a value changed, a question) "
+                   "needs a line or two, or none: say so. The user reads your plan.)";
+        }
+
         // A goal's properties in a schema.
         juce::var goalProps(bool weight)
         {
@@ -654,6 +713,7 @@ namespace testingplayground
         effort_ = choice.effort.empty() ? std::string(kDefaultEffort) : choice.effort;
         fast_ = choice.fast;
         web_ = choice.web;
+        planner_ = choice.planner;
         const chatstore::Account account = chatstore::loadAccount();
         account_ = account.username;
         useAccount_ = account.useAccount;
@@ -762,6 +822,7 @@ namespace testingplayground
         s.busy = busy_;
         s.asking = !asking_.empty();
         s.checks = !checks_.empty();
+        s.planner = planner_;
         for (const Attached& a : attached_)
             s.attached.push_back(a.picture);
         s.attaching = attaching_;
@@ -958,7 +1019,17 @@ namespace testingplayground
             const auto medium = std::find(it->efforts.begin(), it->efforts.end(), std::string(kDefaultEffort));
             effort_ = medium != it->efforts.end() ? *medium : it->efforts.front();
         }
-        chatstore::saveChoice({ model_, effort_, fast_, web_ });
+        chatstore::saveChoice({ model_, effort_, fast_, web_, planner_ });
+        touch();
+    }
+
+    void ChatAgent::setPlanner(const std::string& id)
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (!id.empty() && std::none_of(models_.begin(), models_.end(), [&](const ChatModel& m) { return m.id == id; }))
+            return;
+        planner_ = id;
+        chatstore::saveChoice({ model_, effort_, fast_, web_, planner_ });
         touch();
     }
 
@@ -969,7 +1040,7 @@ namespace testingplayground
         if (it != models_.end() && std::find(it->efforts.begin(), it->efforts.end(), effort) == it->efforts.end())
             return;                                // a level this model does not take
         effort_ = effort;
-        chatstore::saveChoice({ model_, effort_, fast_, web_ });
+        chatstore::saveChoice({ model_, effort_, fast_, web_, planner_ });
         touch();
     }
 
@@ -977,7 +1048,7 @@ namespace testingplayground
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         fast_ = on;
-        chatstore::saveChoice({ model_, effort_, fast_, web_ });
+        chatstore::saveChoice({ model_, effort_, fast_, web_, planner_ });
         touch();
     }
 
@@ -985,7 +1056,7 @@ namespace testingplayground
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         web_ = on;
-        chatstore::saveChoice({ model_, effort_, fast_, web_ });
+        chatstore::saveChoice({ model_, effort_, fast_, web_, planner_ });
         touch();
     }
 
@@ -1097,6 +1168,7 @@ namespace testingplayground
                 content.add(text(context));
             if (effort_ == "xhigh" || effort_ == "max")
                 content.add(text(limitNote(maxTokensFor(model_))));
+            planNext_ = !planner_.empty();
             deliver(std::move(content));
         }
         startWorker();
@@ -1259,6 +1331,11 @@ namespace testingplayground
                 o->setProperty("a", answers);
                 o->setProperty("o", e.open);
                 o->setProperty("y", e.typed);
+            }
+            if (e.kind == ChatEntry::Kind::plan)
+            {
+                entry.getDynamicObject()->setProperty("f", juce::String::fromUTF8(e.from.c_str()));
+                entry.getDynamicObject()->setProperty("n", e.answer);
             }
             if (e.kind == ChatEntry::Kind::checks)
             {
@@ -1428,6 +1505,8 @@ namespace testingplayground
                 ChatEntry entry;
                 entry.kind = kindOf(str(e, "k"));
                 entry.text = str(e, "t");
+                entry.from = str(e, "f");
+                entry.answer = static_cast<bool>(e.getProperty("n", false));
                 if (const auto* rows = e.getProperty("c", juce::var()).getArray())
                     for (const auto& r : *rows)
                         entry.checks.push_back({ str(r, "l"), str(r, "d"), static_cast<bool>(r.getProperty("m", false)),
@@ -2027,6 +2106,17 @@ namespace testingplayground
                                                                             { "items", question } }) } }),
                            { "questions" }));
         }
+        tools.add(tool("ask_planner",
+                       "Ask the planning model the user chose (the model menu's Plan with; each of the user's requests "
+                       "then comes with its plan, in <plan>) a design question: an architecture, a DSP method, a "
+                       "trade-off, or what to do when a measurement or a check shows the plan does not work. It sees "
+                       "the conversation as it stood before your current reply, not your thinking: say in context what "
+                       "you found and tried. Four times a turn at most; without a planner it is refused (then decide "
+                       "yourself).",
+                       claude::object({ { "question", prop("string", "The question, on its own") },
+                                        { "context", prop("string", "What you found or tried that bears on it "
+                                                                    "(measurements, errors, what you changed)") } }),
+                       { "question" }));
         tools.add(tool("get_status",
                        "Read the plugin's state now: the files, whether the program that plays matches them, the last "
                        "compile, the dials and their values, the CPU load and the output guard's alerts (NaN or inf "
@@ -2326,7 +2416,16 @@ namespace testingplayground
                 historyWeb_ = turnWeb_;
             }
             maxTokens = maxTokensFor(turnModel_);
+            plannerAsks_ = 0;
+            turnPlanUsage_.clear();
         }
+        bool plan = false;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            plan = std::exchange(planNext_, false) && !planner_.empty();
+        }
+        if (plan && !cancel_.load())
+            planTurn();
 
         int cutOffs = 0;                           // replies cut off at max_tokens in a row, this turn
         int checkNudges = 0;                       // times this turn went on because a check failed
@@ -2378,6 +2477,7 @@ namespace testingplayground
                                 : name == "view_sound"                      ? std::string("About to look at the sound")
                                 : name == "set_checks"                      ? std::string("Writing checks")
                                 : name == "tune_dials"                      ? std::string("About to tune the dials")
+                                : name == "ask_planner"                     ? std::string("Writing to the planner")
                                 : name == "ask_user"                        ? std::string("Writing a question for you")
                                                                             : "Using " + name);
                 };
@@ -2471,7 +2571,7 @@ namespace testingplayground
                         {
                             turnWeb_ = false;
                             web_ = false;
-                            chatstore::saveChoice({ model_, effort_, fast_, web_ });
+                            chatstore::saveChoice({ model_, effort_, fast_, web_, planner_ });
                             dropThinking();
                             historyWeb_ = false;
                             addEntry(ChatEntry::Kind::note, "Web search is not open to this request (" + error
@@ -2490,7 +2590,7 @@ namespace testingplayground
                         if (fastRefused)
                         {
                             fast_ = false;
-                            chatstore::saveChoice({ model_, effort_, fast_, web_ });
+                            chatstore::saveChoice({ model_, effort_, fast_, web_, planner_ });
                             addEntry(ChatEntry::Kind::note, "Fast mode is not open to this request (" + error
                                                                 + "): it is off now, and this turn goes on at "
                                                                   "standard speed.");
@@ -2564,7 +2664,8 @@ namespace testingplayground
                        + (u.speed == "fast" ? ", fast" : "")
                        + (u.webSearches > 0 ? ", " + std::to_string(u.webSearches) + (u.webSearches == 1 ? " search" : " searches")
                                             : std::string())
-                       + (u.compactions > 0 ? "; the conversation was summarized" : "");
+                       + (u.compactions > 0 ? "; the conversation was summarized" : "")
+                       + (turnPlanUsage_.empty() ? std::string() : "; " + turnPlanUsage_);
                 touch();
             }
 
@@ -2804,6 +2905,179 @@ namespace testingplayground
         const std::lock_guard<std::mutex> lock(mutex_);
         busy_ = false;
         activity_.clear();
+        touch();
+    }
+
+    // ---- the planner (setPlanner) -------------------------------------------------------------------------------------
+    std::string ChatAgent::consultPlanner(const juce::Array<juce::var>& history, const std::string& brief, bool answer,
+                                          std::string& why)
+    {
+        std::string planner, name, effort;
+        int maxTokens = 0;
+        std::size_t at = 0;                        // its entry
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            planner = planner_;
+            const auto m = std::find_if(models_.begin(), models_.end(), [&](const ChatModel& x) { return x.id == planner; });
+            if (m == models_.end())
+            {
+                why = "the planning model (" + planner + ") is not one this access offers";
+                return {};
+            }
+            name = m->name;
+            const auto takes = [&](const std::string& e) { return std::find(m->efforts.begin(), m->efforts.end(), e) != m->efforts.end(); };
+            effort = takes(turnEffort_) ? turnEffort_ : takes("high") ? std::string("high") : m->efforts.empty() ? std::string() : m->efforts.front();
+            maxTokens = maxTokensFor(planner);
+            ChatEntry e;
+            e.kind = ChatEntry::Kind::plan;
+            e.from = name;
+            e.answer = answer;
+            at = entries_.size();
+            entries_.push_back(std::move(e));
+            touch();
+        }
+        juce::Array<juce::var> messages = forAnotherModel(history);
+        if (messages.isEmpty() || str(messages.getLast(), "role") != "user")
+            messages.add(claude::object({ { "role", "user" }, { "content", juce::Array<juce::var>{ text(brief) } } }));
+        else
+        {
+            const juce::var last = messages.getLast();
+            juce::Array<juce::var> content;
+            if (const auto* arr = last.getProperty("content", juce::var()).getArray())
+                content = *arr;
+            else
+                content.add(text(last.getProperty("content", "").toString().toStdString()));
+            content.add(text(brief));
+            last.getDynamicObject()->setProperty("content", content);   // forAnotherModel's own object
+        }
+        juce::Array<juce::var> system;
+        system.add(claude::object({ { "type", "text" },
+                                    { "text", juce::String::fromUTF8(systemPrompt().c_str()) },
+                                    { "cache_control", claude::object({ { "type", "ephemeral" }, { "ttl", "1h" } }) } }));
+        juce::var body = claude::object({ { "model", juce::String(planner) },
+                                          { "max_tokens", maxTokens },
+                                          { "stream", true },
+                                          { "system", system },
+                                          { "tools", toolDefinitions() },
+                                          { "tool_choice", claude::object({ { "type", "none" } }) },
+                                          { "messages", messages },
+                                          { "thinking", claude::object({ { "type", "adaptive" }, { "display", "summarized" } }) } });
+        if (!effort.empty())
+            body.getDynamicObject()->setProperty("output_config", claude::object({ { "effort", juce::String(effort) } }));
+        body.getDynamicObject()->setProperty("cache_control", claude::object({ { "type", "ephemeral" } }));
+        const std::string json = claude::toJson(body);
+
+        std::string out;
+        for (int attempt = 0; attempt < kMaxAttempts && !cancel_.load(); ++attempt)
+        {
+            setActivity(answer ? "Asking the planner (" + name + ")" : "Planning (" + name + ")");
+            claude::MessageBuilder::Callbacks cb;
+            cb.text = [this, at](std::string_view t) {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                if (at < entries_.size())
+                    entries_[at].text += std::string(t);
+                touch();
+            };
+            cb.thinking = [this, name](std::string_view) { setActivity("Planning: " + name + " thinks"); };
+            claude::MessageBuilder b(std::move(cb));
+            int status = 0, retryAfter = -1;
+            bool viaServer = false;
+            std::string error;
+            const bool ok = streamOnce(json, std::string(), b, status, error, retryAfter, viaServer);
+            if (cancel_.load())
+                break;
+            const std::string& et = b.errorType();
+            const bool brokeOff = ok && !b.finished() && (b.error().empty() || et == "overloaded_error" || et == "api_error");
+            if (ok && !brokeOff)
+            {
+                const juce::var content = b.content();   // held: never getArray() on a temporary
+                if (const auto* blocks = content.getArray())
+                    for (const juce::var& x : *blocks)
+                        if (str(x, "type") == "text")
+                            out += str(x, "text");
+                const claude::Usage& u = b.usage();
+                const std::lock_guard<std::mutex> lock(mutex_);
+                turnPlanUsage_ += (turnPlanUsage_.empty() ? "planner " : ", ") + thousands(u.input + u.cacheRead + u.cacheWrite)
+                                + " in, " + thousands(u.output) + " out";
+                if (b.stopReason() == "refusal")
+                {
+                    why = name + " declined to plan this";
+                    out.clear();
+                }
+                break;
+            }
+            const bool retryable = brokeOff || status == 0 || status == 429 || status == 529
+                                || (status >= 500 && !(viaServer && status == 502));
+            if (!retryable || attempt + 1 == kMaxAttempts)
+            {
+                why = error.empty() ? std::string("the request failed") : error;
+                break;
+            }
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                if (at < entries_.size())
+                    entries_[at].text.clear();     // what the broken attempt showed goes
+                touch();
+            }
+            const int wait = retryAfter > 0 ? std::min(retryAfter, 60) : (2 << attempt);
+            for (int s = wait; s > 0 && !cancel_.load(); --s)
+            {
+                setActivity("Retrying the planner in " + std::to_string(s) + " s");
+                for (int k = 0; k < 10 && !cancel_.load(); ++k)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        }
+        if (cancel_.load() && why.empty())
+            why = "stopped by the user";
+        if (out.find_first_not_of(" \t\n") == std::string::npos)
+        {
+            out.clear();
+            if (why.empty())
+                why = "it wrote nothing";
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (at < entries_.size() && entries_[at].kind == ChatEntry::Kind::plan)
+                entries_.erase(entries_.begin() + static_cast<std::ptrdiff_t>(at));   // no empty card
+            touch();
+        }
+        return out;
+    }
+
+    void ChatAgent::planTurn()
+    {
+        juce::Array<juce::var> history;
+        std::string builder;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            history = messages_;
+            const auto m = std::find_if(models_.begin(), models_.end(), [&](const ChatModel& x) { return x.id == turnModel_; });
+            builder = m != models_.end() ? m->name : turnModel_;
+        }
+        std::string why;
+        const std::string plan = consultPlanner(history, plannerBrief(builder), false, why);
+        const std::lock_guard<std::mutex> lock(mutex_);
+        std::string from = planner_;
+        for (const ChatModel& m : models_)
+            if (m.id == planner_)
+                from = m.name;
+        if (plan.empty())
+        {
+            if (!cancel_.load())
+                addEntry(ChatEntry::Kind::note, "The planner did not plan this (" + why + "): " + builder
+                                                    + " goes on without a plan.");
+            return;
+        }
+        // The plan joins the user's message, which the builder has not seen yet: the history stays append-only.
+        if (!messages_.isEmpty() && str(messages_.getLast(), "role") == "user")
+            if (auto* o = messages_.getLast().getDynamicObject())
+            {
+                juce::Array<juce::var> content;
+                if (const auto* arr = o->getProperty("content").getArray())
+                    content = *arr;
+                content.add(text("<plan from=\"" + from + "\">\n" + plan + "\n</plan>\n(From the plugin: the user chose " + from
+                                 + " to plan and you to build. Build this plan; where the code or a measurement shows it "
+                                   "is wrong, change it and say why. ask_planner asks the planner again.)"));
+                o->setProperty("content", content);
+            }
         touch();
     }
 
@@ -3341,6 +3615,40 @@ namespace testingplayground
             note("tuned " + tuned + ": " + std::to_string(met) + " of " + std::to_string(t.bestMet.size()) + " goals met in "
                  + std::to_string(t.renders) + " renders");
             return out;
+        }
+        if (name == "ask_planner")
+        {
+            std::string question, context;
+            stringArg("question", question);
+            stringArg("context", context);
+            if (question.empty())
+                return fail("ask_planner needs a question");
+            juce::Array<juce::var> history;
+            std::string builder;
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                if (planner_.empty())
+                    return fail("No planning model is chosen (the model menu's Plan with): decide yourself.");
+                if (plannerAsks_ >= kMaxPlannerAsks)
+                    return fail("The planner was asked " + std::to_string(kMaxPlannerAsks)
+                                + " times this turn: decide yourself.");
+                ++plannerAsks_;
+                // The history up to the reply that asks (the last message, whose tool calls have no results yet).
+                history = messages_;
+                if (!history.isEmpty() && str(history.getLast(), "role") == "assistant")
+                    history.removeLast();
+                const auto m = std::find_if(models_.begin(), models_.end(), [&](const ChatModel& x) { return x.id == turnModel_; });
+                builder = m != models_.end() ? m->name : turnModel_;
+            }
+            const std::string brief = "(From the plugin: " + builder + ", which builds this with the tools, asks you, its "
+                                      "planner: " + question
+                                    + (context.empty() ? std::string() : "\nWhat it says of where it is: " + context)
+                                    + "\nAnswer as the planner: the decision, briefly, and why.)";
+            std::string why;
+            const std::string answer = consultPlanner(history, brief, true, why);
+            if (answer.empty())
+                return fail("The planner did not answer: " + why + ". Decide yourself.");
+            return "The planner answers:\n" + answer;
         }
         if (name == "get_status")
         {

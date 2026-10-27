@@ -5,8 +5,15 @@
 // GPU call until bgfx draws them) and records as Canvas::shader draws: the GPU draws them, SoftRaster a placeholder.
 //
 // It is resizable, in both directions, from kMinWidth x kMinHeight (logical px) up: the chat takes about a third of the
-// width at the right (kChatMinW to kChatMaxW), the editor and the chat's transcript take the height that is left.
+// width at the right (kChatMinW to kChatMaxW), the explorer about a sixth at the left, the editor and the chat's
+// transcript take the height that is left.
 //
+//   explorer  at the left, a card like the chat's (Explorer.h): the program's files (a click shows one, a double click
+//             renames it, its cross closes it, the header's + makes one), the library (a click adds a file as a tab,
+//             #included, or shows it), the examples (a click loads one, undoably) and the presets on this Mac (a click
+//             loads one, asking first when the editor has changes no preset holds; the header's + opens PRESETS); its
+//             sections fold, and the whole card folds away (its chevron; the button at the left of the program's card's
+//             header opens it; EditorPort::explorerOpen); in the PANEL view, or a window too narrow for it, it is away
 //   header    the product name, its kind and version, and the THEME cells (GRAPHITE, PAPER)
 //   toolbar   RUN (Cmd-Return in the editor too), EXAMPLES (a menu: the example replaces the text, undoably, and
 //             runs), LIBRARY (a menu of ready-made building blocks, Library.h: one becomes a tab and the program
@@ -55,6 +62,7 @@
 // Message thread only. The ports and the EditorPort belong to the processor and outlive the Panel.
 #pragma once
 
+#include "editor/Explorer.h"
 #include "editor/PresetBrowser.h"
 
 #include <funkgui/a11y/A11yItem.h>
@@ -121,6 +129,7 @@ namespace testingplayground::ui
     inline constexpr funkgui::Tag kKeyDialogTag = funkgui::tags::firstProduct + 6;    // the key dialog
     inline constexpr funkgui::Tag kPresetsTag = funkgui::tags::firstProduct + 8;      // the preset browser
     inline constexpr funkgui::Tag kSectionTag = funkgui::tags::firstProduct + 7;      // the dials' sections
+    inline constexpr funkgui::Tag kExplorerTag = funkgui::tags::firstProduct + 9;     // the explorer's card
 
     // One message of the last run, as the problems list shows it.
     struct Problem
@@ -213,6 +222,20 @@ namespace testingplayground::ui
         bool dropShown() const noexcept { return dropActive_; }
         funkgui::Point centreOfNewChat() const;
         funkgui::Point centreOfKey() const;
+        // The explorer at the left (Explorer.h): open, or folded away (the program's card takes the room); its header's
+        // chevron folds it, the button at the left of the program's card's header opens it; the session keeps it
+        // (EditorPort::explorerOpen).
+        bool explorerOpen() const noexcept { return explorerOpen_; }
+        // Open, in the CODE view and given its room (the program's card keeping kProgramMinW): else nothing at the left
+        // but its button in the program's card's header, which opens it (folding the chat when there is no room).
+        bool explorerShown() const noexcept { return explorerShown_; }
+        void setExplorerOpen(bool open);
+        funkgui::Point centreOfExplorerToggle() const;
+        ExplorerItem& explorer();
+        const ExplorerItem& explorer() const;
+        funkgui::Rect explorerCard() const noexcept { return explorerCard_; }
+        // EXAMPLES' choice (Examples.h): its text in place of the program's (one edit Cmd-Z takes back), run.
+        void loadExample(int i);
         // The chat's column: open, or folded into a rail at the right (the editor and the panel take the room). The
         // header's chevron folds it, the rail's button opens it; the session keeps it (EditorPort::chatOpen).
         bool chatOpen() const noexcept { return chatOpen_; }
@@ -358,6 +381,21 @@ namespace testingplayground::ui
         int newChatItem_ = -1, keyItem_ = -1, accountItem_ = -1, chatViewItem_ = -1, inputItem_ = -1;
         int chatToggleItem_ = -1;                        // fold or open the chat
         bool chatOpen_ = true;
+        // The explorer (Explorer.h): its item, its fold button, its card; the presets it lists (read again every few
+        // seconds while it is open); what its rows were made from (syncExplorer rebuilds them when it changes).
+        int explorerItem_ = -1, explorerToggleItem_ = -1;
+        bool explorerOpen_ = true;
+        bool explorerShown_ = true;                      // open, in the CODE view, and the window has room for it
+        void toggleExplorer();
+        funkgui::Rect explorerCard_;
+        float leftX_ = 0.0f;                             // the program's card's left edge (after the explorer)
+        std::vector<PresetEntry> presetList_;
+        double presetsAt_ = -100.0;
+        std::string explorerKey_;
+        void syncExplorer();
+        void layoutExplorer();
+        void openFromExplorer(ExplorerItem::Section section, const ExplorerItem::Row& row);
+        void loadPresetNamed(const std::string& name);
         bool unread_ = false;                            // folded, and the conversation grew since
         // Pictures: the ids this Panel has in FunkGui's registry (images::set, counted across Panels: Picture.cpp
         // makes one too), and a drag of pictures over the editor (over the chat's card).

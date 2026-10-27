@@ -16,6 +16,8 @@
 //   useAccount()     which of the two stored the chat uses: true the account, false the key
 //   refreshAccount() asks the server for the account again (GET /account), in the background: chatState().details
 //                    has its answer (the credit, this month's use, the sign-in), .refreshing until it comes
+//   setPlanner()     the model that plans each request before the chosen model builds it ("" for none): it writes a
+//                    plan, which the chat shows and the builder follows, and answers the builder's ask_planner
 //   setModel()       a model of chatState().models; setEffort() a thinking level that model has; setFast() fast mode,
 //                    on the models that take it; setWeb() web search (Claude searches the web and reads pages and
 //                    PDFs, the API's server tools), with the user's own key on the models that take it. All four
@@ -109,6 +111,8 @@ namespace testingplayground
             question,    // Claude asks (ask_user): its questions, answered with a click; the turn waits for them
             checks,      // Claude's checks (set_checks), each with its last result; one entry, brought up to date in
                          // place after each run
+            plan,        // the planning model's plan for a request, or its answer to the builder's ask_planner (streams
+                         // in); `from` names the model
         };
         Kind kind = Kind::note;
         std::string text;                     // a question's: the questions and their options, as plain text
@@ -119,6 +123,8 @@ namespace testingplayground
         bool typed = false;                   // a question answered by a message instead
         std::vector<ChatPicturePtr> pictures; // a user message's, or what a tool showed Claude (view_sound's picture)
         std::vector<ChatCheck> checks;        // a checks entry's
+        std::string from;                     // a plan's: the model that wrote it ("Claude Fable 5.1")
+        bool answer = false;                  // a plan entry that answers ask_planner (else a request's plan)
     };
 
     struct ChatModel
@@ -167,7 +173,8 @@ namespace testingplayground
         std::string activity;                 // what it is doing: "THINKING", "WRITING filters.fm", ...
         std::vector<ChatEntry> entries;
         std::vector<ChatModel> models;
-        std::string model;                    // the chosen model's id
+        std::string model;                    // the chosen model's id (the builder's)
+        std::string planner;                  // the planning model's id ("" for none)
         std::string effort;                   // the chosen thinking level
         bool fast = false;                    // fast mode chosen (it applies on a model that takes it)
         bool web = false;                     // web search chosen
@@ -193,6 +200,7 @@ namespace testingplayground
         virtual void useAccount(bool account) = 0;
         virtual void refreshAccount() = 0;
         virtual void setModel(const std::string& id) = 0;
+        virtual void setPlanner(const std::string& id) = 0;
         virtual void setEffort(const std::string& effort) = 0;
         virtual void setFast(bool on) = 0;
         virtual void setWeb(bool on) = 0;

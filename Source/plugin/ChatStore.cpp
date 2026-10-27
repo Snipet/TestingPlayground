@@ -339,6 +339,7 @@ namespace testingplayground::chatstore
             c.effort = o->getProperty("effort").toString().toStdString();
             c.fast = static_cast<bool>(o->getProperty("fast"));
             c.web = static_cast<bool>(o->getProperty("web"));
+            c.planner = o->getProperty("planner").toString().toStdString();
         }
         return c;
     }
@@ -350,6 +351,7 @@ namespace testingplayground::chatstore
             o.setProperty("effort", juce::String(choice.effort));
             o.setProperty("fast", choice.fast);
             o.setProperty("web", choice.web);
+            o.setProperty("planner", juce::String(choice.planner));
         });
     }
 

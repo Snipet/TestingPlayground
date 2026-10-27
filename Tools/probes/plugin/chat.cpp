@@ -13,7 +13,7 @@
 //            thinking, each with its levels
 //   REQUEST  each request has the model, max_tokens (the model's own limit, from /v1/models), stream, adaptive
 //            thinking (summarized), the effort, the system prompt cached for an hour, the automatic cache breakpoint,
-//            the fifteen tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
+//            the sixteen tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
 //            and instructions) with their beta headers for a model that takes them, the API version and the key, and
 //            no temperature, top_p or top_k; the first message carries the plugin's state; the history is append-only
 //            (each request's messages begin with the previous request's, unchanged, signatures included) and the
@@ -55,6 +55,14 @@
 //            and a turn after it goes on no more
 //   TUNE     tune_dials: a level for an RMS (an instrument) or a gain for a gain (an effect): the goal met, the dial
 //            set (measured afterwards, it gives the goal); an unknown dial an error result
+//   PLANNER  a planning model (setPlanner): none at first, one the models do not list refused; chosen, a message's
+//            first request goes to it (its model, tool_choice none, the tools defined, no thinking block in its
+//            history, the brief after the user's words), its plan streams into a plan entry, and the builder's first
+//            request (its own model) has the plan after the user's words, the history valid; the builder's ask_planner
+//            goes to the planner (the question and its context after the history before the reply that asks) and its
+//            answer is the tool's result (a second plan entry, an answer); the footer counts the planner's tokens; the
+//            session keeps the plan entries; a planner that fails (a 400) leaves the turn to the builder with a note;
+//            with no planner, ask_planner is refused
 //   ASK      ask_user: a reply with text, get_status, a question of two parts (one choice, several) and a second
 //            ask_user: the turn waits (asking, not busy) with the question's entry open, the other calls' results in
 //            the history and the second ask refused; the session saved meanwhile opens with it still waiting. The
@@ -518,8 +526,8 @@ PROBE(plugin, chat)
         int eager = 0;
         for (const auto& t : tools)
             eager += static_cast<bool>(t.getProperty("eager_input_streaming", false)) ? 1 : 0;
-        P.eq("request.tools", tools.size(), 15);
-        P.eq("request.tools_eager", eager, 15);
+        P.eq("request.tools", tools.size(), 16);
+        P.eq("request.tools_eager", eager, 16);
         bool libraryEnum = false;
         for (const auto& t : tools)
             if (str(t, "name") == "add_library_file")
@@ -1186,6 +1194,98 @@ PROBE(plugin, chat)
         }
     }
 
+    // ---- PLANNER -------------------------------------------------------------------------------------------------------
+    {
+        const std::string modelBefore = agent.chatState().model;
+        P.eq("planner.none_at_first", agent.chatState().planner.empty() ? 1 : 0, 1);
+        agent.setPlanner("claude-not-a-model");
+        P.eq("planner.unknown_refused", agent.chatState().planner.empty() ? 1 : 0, 1);
+        agent.setModel("claude-sonnet-5-5");
+        agent.setPlanner("claude-opus-5-5");
+        P.eq("planner.chosen", agent.chatState().planner == "claude-opus-5-5" ? 1 : 0, 1);
+        script->add(fake::Response::ok(fake::Sse().start().thinking("The design.", "sig-plan").text("1. A sine.\n2. A level dial.").end()));
+        script->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .tool("toolu_ap", "ask_planner",
+                                                 input({ { "question", "Sine or saw?" }, { "context", "The user said bright." } }))
+                                           .end("tool_use")));
+        script->add(fake::Response::ok(fake::Sse().start().text("A saw: it is brighter.").end()));
+        script->add(fake::Response::ok(fake::Sse().start().text("Built it, as planned.").end()));
+        const int before = script->postCount();
+        agent.send("a bright lead");
+        agent.waitIdle();
+        P.eq("planner.posts", script->postCount() - before, 4);
+        const juce::var plan = claude::parseJson(script->body(before));
+        P.eq("planner.model", str(plan, "model") == "claude-opus-5-5" ? 1 : 0, 1);
+        P.eq("planner.tool_choice_none", str(plan.getProperty("tool_choice", {}), "type") == "none" && !arr(plan.getProperty("tools", {})).isEmpty() ? 1 : 0, 1);
+        int thinking = 0, historyThinking = 0;
+        for (const auto& m : arr(plan.getProperty("messages", {})))
+            for (const auto& b : arr(m.getProperty("content", {})))
+                thinking += str(b, "type") == "thinking" ? 1 : 0;
+        for (const auto& m : messagesOf(script->body(before + 1)))
+            for (const auto& b : arr(m.getProperty("content", {})))
+                historyThinking += str(b, "type") == "thinking" ? 1 : 0;
+        std::printf("planner: thinking blocks in its history %d, in the builder's %d\n", thinking, historyThinking);
+        P.eq("planner.no_thinking_sent", thinking, 0);
+        P.ge("planner.builder_keeps_thinking", historyThinking, 1);
+        const juce::Array<juce::var> planMessages = arr(plan.getProperty("messages", {}));
+        const juce::var planLast = planMessages.isEmpty() ? juce::var() : planMessages[planMessages.size() - 1];
+        P.eq("planner.brief", says(planLast, "a bright lead") && says(planLast, "you are the planner for this request") ? 1 : 0, 1);
+        P.eq("planner.history_valid", alternates(planMessages) ? 1 : 0, 1);
+        const juce::var build = claude::parseJson(script->body(before + 1));
+        P.eq("planner.builder_model", str(build, "model") == "claude-sonnet-5-5" ? 1 : 0, 1);
+        const juce::Array<juce::var> buildMessages = messagesOf(script->body(before + 1));
+        const juce::var buildLast = buildMessages.isEmpty() ? juce::var() : buildMessages[buildMessages.size() - 1];
+        P.eq("planner.plan_in_message", says(buildLast, "<plan from=\"Claude Opus 5.5\">") && says(buildLast, "1. A sine.")
+                                            && !says(buildLast, "you are the planner") ? 1 : 0, 1);
+        P.eq("planner.builder_history_valid", alternates(buildMessages) ? 1 : 0, 1);
+        const juce::var ask = claude::parseJson(script->body(before + 2));
+        const juce::Array<juce::var> askMessages = arr(ask.getProperty("messages", {}));
+        const juce::var askLast = askMessages.isEmpty() ? juce::var() : askMessages[askMessages.size() - 1];
+        P.eq("planner.ask_model", str(ask, "model") == "claude-opus-5-5" ? 1 : 0, 1);
+        P.eq("planner.ask_question", says(askLast, "Sine or saw?") && says(askLast, "The user said bright.") ? 1 : 0, 1);
+        P.eq("planner.ask_history_valid", alternates(askMessages) ? 1 : 0, 1);
+        const juce::Array<juce::var> results = arr(messagesOf(script->body(before + 3)).getLast().getProperty("content", {}));
+        const std::string answer = results.isEmpty() ? std::string() : str(results[0], "content");
+        P.eq("planner.answer_is_result", has(answer, "The planner answers:") && has(answer, "A saw: it is brighter.") ? 1 : 0, 1);
+        const tp::ChatState st = agent.chatState();
+        int plans = 0, answers = 0;
+        for (const tp::ChatEntry& e : st.entries)
+            if (e.kind == tp::ChatEntry::Kind::plan)
+            {
+                ++(e.answer ? answers : plans);
+                if (!e.answer)
+                    P.eq("planner.entry", e.from == "Claude Opus 5.5" && has(e.text, "2. A level dial.") ? 1 : 0, 1);
+            }
+        P.eq("planner.entries", plans * 10 + answers, 11);
+        P.eq("planner.footer", has(st.usage, "planner ") ? 1 : 0, 1);
+        const std::string saved = agent.saveState();
+        P.eq("planner.session", has(saved, "\"plan\"") && has(saved, "Claude Opus 5.5") ? 1 : 0, 1);
+
+        // A planner that fails: the builder goes on without a plan, with a note.
+        script->add(fake::Response::failure(400, "invalid_request_error", "the planner was refused"));
+        script->add(fake::Response::ok(fake::Sse().start().text("Built it without a plan.").end()));
+        const int b2 = script->postCount();
+        agent.send("again");
+        agent.waitIdle();
+        P.eq("planner.fails_posts", script->postCount() - b2, 2);
+        P.eq("planner.fails_note", has(lastText(agent.chatState(), tp::ChatEntry::Kind::note), "goes on without a plan") ? 1 : 0, 1);
+        P.eq("planner.fails_builder", lastText(agent.chatState(), tp::ChatEntry::Kind::assistant) == "Built it without a plan." ? 1 : 0, 1);
+
+        // No planner: ask_planner is refused, and a message goes straight to the builder.
+        agent.setPlanner({});
+        script->add(fake::Response::ok(fake::Sse().start().tool("toolu_ap2", "ask_planner", input({ { "question", "Which?" } })).end("tool_use")));
+        script->add(fake::Response::ok(fake::Sse().start().text("I decided.").end()));
+        const int b3 = script->postCount();
+        agent.send("decide");
+        agent.waitIdle();
+        P.eq("planner.off_posts", script->postCount() - b3, 2);
+        const juce::Array<juce::var> r3 = arr(messagesOf(script->body(b3 + 1)).getLast().getProperty("content", {}));
+        P.eq("planner.off_refused", !r3.isEmpty() && static_cast<bool>(r3[0].getProperty("is_error", false))
+                                        && has(str(r3[0], "content"), "No planning model is chosen") ? 1 : 0, 1);
+        agent.setModel(modelBefore);
+    }
+
     // ---- ASK -----------------------------------------------------------------------------------------------------------
     {
         const auto option = [](const char* label, const char* description) {
@@ -1510,7 +1610,7 @@ PROBE(plugin, chat)
         int at = script->postCount();
         agent.send("hello");
         agent.waitIdle();
-        P.eq("web.off_no_tools", toolsOf(at).size() == 15 && webTool(at, "web_search").isVoid() ? 1 : 0, 1);
+        P.eq("web.off_no_tools", toolsOf(at).size() == 16 && webTool(at, "web_search").isVoid() ? 1 : 0, 1);
         agent.setWeb(true);
         P.eq("web.on", agent.chatState().web && agent.chatState().webBlocked.empty() ? 1 : 0, 1);
         const juce::var result = input({ { "type", "web_search_tool_result" },
@@ -1549,7 +1649,7 @@ PROBE(plugin, chat)
         agent.waitIdle();
         {
             const juce::var search = webTool(at, "web_search"), fetch = webTool(at, "web_fetch");
-            P.eq("web.tools", toolsOf(at).size() == 17 && str(search, "type") == "web_search_20260209"
+            P.eq("web.tools", toolsOf(at).size() == 18 && str(search, "type") == "web_search_20260209"
                                   && static_cast<int>(search.getProperty("max_uses", 0)) == 5
                                   && str(fetch, "type") == "web_fetch_20260209"
                                   && static_cast<int>(fetch.getProperty("max_content_tokens", 0)) > 0
