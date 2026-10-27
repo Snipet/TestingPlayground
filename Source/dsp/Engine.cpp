@@ -118,6 +118,14 @@ namespace testingplaygroundsynth
         load_.store(0.0f, std::memory_order_relaxed);
     }
 
+    void Engine::restart()
+    {
+        prepare(fs_, maxBlock_);
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (current_ != nullptr)
+            current_->reset(fs_);
+    }
+
     void Engine::offer(std::unique_ptr<Patch> patch)
     {
         if (!patch)

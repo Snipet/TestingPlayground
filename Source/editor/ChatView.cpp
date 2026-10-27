@@ -44,6 +44,8 @@ namespace testingplaygroundsynth::ui
         constexpr float kOptionPadY = 7.0f;          // an option's, above and below its text
         constexpr float kOptionGap = 6.0f;
         constexpr float kOptionText = 34.0f;         // its text's inset (the ring or the box before it)
+        constexpr float kToolPictureMaxW = 420.0f;   // a tool's picture (view_sound's) under its row
+        constexpr float kCheckRow = 20.0f;           // a check's label line; its detail under it
         constexpr float kSubmitW = 132.0f, kSubmitH = 30.0f;
         constexpr uint32_t kA11yStride = 64;         // accessibility ids a block (its item, then its actions)
 
@@ -582,7 +584,7 @@ namespace testingplaygroundsynth::ui
         flushPara();
     }
 
-    void ChatView::layoutBlock(Block& b, const std::vector<ChatEntry>& entries, int count, bool copyAfter, float w)
+    void ChatView::layoutBlock(Block& b, const std::vector<ChatEntry>& entries, int count, bool copyAfter, float w, bool live)
     {
         b.spans.clear();
         b.shapes.clear();
@@ -732,6 +734,17 @@ namespace testingplaygroundsynth::ui
                                         bad ? Role::danger : Role::dim });
                     b.spans.push_back({ 34.0f, y, kToolRow, line, bad ? Role::danger : Role::small });
                     y += kToolRow;
+                    // What the tool showed Claude (view_sound's picture), under its row, as wide as fits.
+                    for (const ChatPicturePtr& pic : entries[static_cast<std::size_t>(b.entry + k)].pictures)
+                    {
+                        const float aspect = pic->height > 0 ? static_cast<float>(pic->width) / static_cast<float>(pic->height) : 1.4f;
+                        const float tw = std::floor(std::min(kToolPictureMaxW, w - 34.0f - 12.0f));
+                        Tile tl;
+                        tl.id = pic->id;
+                        tl.r = { 34.0f, y + 2.0f, tw, std::floor(tw / aspect) };
+                        b.tiles.push_back(tl);
+                        y += tl.r.h + 8.0f;
+                    }
                 }
                 y += 4.0f;
                 b.shapes.push_back({ { 0.0f, 0.0f, w, y }, ShapeKind::toolCard });
@@ -812,6 +825,40 @@ namespace testingplaygroundsynth::ui
                     y += chat::kSmallLine;
                 }
                 y += 10.0f;
+                b.shapes.insert(b.shapes.begin(), Shape{ { 0.0f, 0.0f, w, y }, ShapeKind::questionCard });
+                break;
+            }
+            case ChatEntry::Kind::checks:
+            {
+                b.checks = e.checks;
+                int pass = 0;
+                for (const ChatCheck& ck : b.checks)
+                    pass += ck.measured && ck.pass ? 1 : 0;
+                const int all = static_cast<int>(b.checks.size());
+                b.label = "Claude's checks";
+                b.value = t;
+                const float inner = w - 2.0f * kCardPad;
+                y = 10.0f;
+                b.icons.push_back({ kCardPad + 6.0f, y + chat::kSmallLine * 0.5f, chat::Icon::list,
+                                    pass == all ? Role::accent : Role::danger });
+                b.spans.push_back({ kCardPad + 18.0f, y, chat::kSmallLine,
+                                    "Checks: " + std::to_string(pass) + " of " + std::to_string(all) + " pass",
+                                    Role::smallStrong });
+                if (live)
+                    b.actions.push_back({ { w - kCardPad - 48.0f, y - 2.0f, 48.0f, chat::kSmallLine + 4.0f },
+                                          ActionKind::clearChecks, {} });
+                y += chat::kSmallLine + 8.0f;
+                for (const ChatCheck& ck : b.checks)
+                {
+                    const bool ok = ck.measured && ck.pass;
+                    b.icons.push_back({ kCardPad + 6.0f, y + kCheckRow * 0.5f,
+                                        !ck.measured ? chat::Icon::alert : ok ? chat::Icon::check : chat::Icon::cross,
+                                        ok ? Role::accent : ck.measured ? Role::danger : Role::dim });
+                    y = flow(b, asciiText(ck.label), ok ? Role::body : Role::strong, kCardPad + 20.0f, inner - 20.0f, y, kCheckRow);
+                    y = flow(b, asciiText(ck.detail), ok ? Role::faint : Role::small, kCardPad + 20.0f, inner - 20.0f, y,
+                             chat::kSmallLine + 1.0f) + 5.0f;
+                }
+                y += 6.0f;
                 b.shapes.insert(b.shapes.begin(), Shape{ { 0.0f, 0.0f, w, y }, ShapeKind::questionCard });
                 break;
             }
@@ -916,6 +963,13 @@ namespace testingplaygroundsynth::ui
                 descs.push_back({ k, i, 1 });
         }
         blocks_.resize(descs.size());
+        std::size_t liveChecks = descs.size();               // the last checks card, while the checks are set
+        for (std::size_t d = descs.size(); state.checks && d-- > 0;)
+            if (descs[d].kind == ChatEntry::Kind::checks)
+            {
+                liveChecks = d;
+                break;
+            }
         float y = kPadTop;
         for (std::size_t d = 0; d < descs.size(); ++d)
         {
@@ -938,8 +992,11 @@ namespace testingplaygroundsynth::ui
                             + (desc.kind == ChatEntry::Kind::thinking && open_[desc.entry] ? '1' : '0') + '|';
             for (int k = 0; k < desc.count; ++k)
                 key += state.entries[static_cast<std::size_t>(desc.entry + k)].text + '\x1f';
-            for (const ChatPicturePtr& pic : state.entries[static_cast<std::size_t>(desc.entry)].pictures)
-                key += 'p' + std::to_string(pic->id);
+            for (int k = 0; k < desc.count; ++k)
+                for (const ChatPicturePtr& pic : state.entries[static_cast<std::size_t>(desc.entry + k)].pictures)
+                    key += 'p' + std::to_string(pic->id);
+            if (desc.kind == ChatEntry::Kind::checks)
+                key += d == liveChecks ? "L" : "l";
             if (desc.kind == ChatEntry::Kind::question)
             {
                 const ChatEntry& q = state.entries[static_cast<std::size_t>(desc.entry)];
@@ -952,7 +1009,7 @@ namespace testingplaygroundsynth::ui
             if (key != b.key)
             {
                 b.key = std::move(key);
-                layoutBlock(b, state.entries, desc.count, endsTurn, w);
+                layoutBlock(b, state.entries, desc.count, endsTurn, w, d == liveChecks);
             }
             const bool user = b.kind == ChatEntry::Kind::user;
             const bool afterUser = d > 0 && blocks_[d - 1].kind == ChatEntry::Kind::user;
@@ -1028,6 +1085,12 @@ namespace testingplaygroundsynth::ui
         {
             open_[b.entry] = !open_[b.entry];
             b.key.clear();                           // lays out again at the next show()
+            return;
+        }
+        if (a.kind == ActionKind::clearChecks)
+        {
+            if (hooks_.clearChecks)
+                hooks_.clearChecks();
             return;
         }
         if (a.kind == ActionKind::option || a.kind == ActionKind::submit)
@@ -1249,6 +1312,26 @@ namespace testingplaygroundsynth::ui
                 return Point{ r.centreX(), r.centreY() };
             }
         return std::nullopt;
+    }
+
+    std::optional<Point> ChatView::centreOfClearChecks() const
+    {
+        const std::vector<std::pair<int, int>> all = actionsOf(ActionKind::clearChecks);
+        if (all.empty())
+            return std::nullopt;
+        const Block& b = blocks_[static_cast<std::size_t>(all.back().first)];
+        const Rect r = onScreen(b, b.actions[static_cast<std::size_t>(all.back().second)].r);
+        if (r.y < bounds_.y || r.bottom() > bounds_.bottom())
+            return std::nullopt;
+        return Point{ r.centreX(), r.centreY() };
+    }
+
+    int ChatView::checkRows() const
+    {
+        int n = 0;
+        for (const Block& b : blocks_)
+            n += b.kind == ChatEntry::Kind::checks ? static_cast<int>(b.checks.size()) : 0;
+        return n;
     }
 
     std::optional<Point> ChatView::centreOfSubmit() const
@@ -1481,6 +1564,15 @@ namespace testingplaygroundsynth::ui
                 const bool hover = bi == hb && ai == ha;
                 if (a.kind == ActionKind::option)
                     continue;                        // drawn as its shape
+                if (a.kind == ActionKind::clearChecks)
+                {
+                    if (hover)
+                        c.rrect(r.x, r.y, r.w, r.h, 6.0f, p.hover);
+                    const std::string label = "Clear";
+                    const float lw = static_cast<float>(label.size()) * adv(Role::small);
+                    text(label, r.centreX() - lw * 0.5f, r.y, r.h, Role::small, hover ? p.text : p.dim);
+                    continue;
+                }
                 if (a.kind == ActionKind::submit)
                 {
                     const bool ready = complete(b);
@@ -1661,6 +1753,11 @@ namespace testingplaygroundsynth::ui
                     act.title = "Send the answers";
                     act.enabled = complete(b);
                 }
+                else if (a.kind == ActionKind::clearChecks)
+                {
+                    act.title = "Clear the checks";
+                    act.help = "The plugin stops measuring Claude's checks after each run";
+                }
                 else
                     act.title = a.kind == ActionKind::copyCode ? "Copy the code" : "Copy the answer";
                 out.push_back(std::move(act));
@@ -1715,6 +1812,7 @@ namespace testingplaygroundsynth::ui
                                         : k == ActionKind::copyCode     ? "COPY   THE CODE BLOCK TO THE CLIPBOARD"
                                         : k == ActionKind::option       ? "ANSWER   CHOOSE THIS FOR CLAUDE'S QUESTION"
                                         : k == ActionKind::submit       ? "SEND ANSWERS   CLAUDE GOES ON WITH THEM"
+                                        : k == ActionKind::clearChecks  ? "CLEAR   THE PLUGIN STOPS MEASURING CLAUDE'S CHECKS"
                                                                         : "COPY   CLAUDE'S ANSWER TO THE CLIPBOARD");
             return;
         }

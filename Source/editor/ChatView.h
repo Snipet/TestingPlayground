@@ -44,6 +44,7 @@ namespace testingplaygroundsynth::ui
             std::function<void()> addKey;                      // the empty chat's API key button
             std::function<void()> signIn;                      // its Sign in button
             std::function<void(const std::vector<std::string>&)> answer;   // Claude's question answered (ask_user)
+            std::function<void()> clearChecks;                 // the checks card's Clear (set_checks)
         };
         struct Empty
         {
@@ -73,6 +74,8 @@ namespace testingplaygroundsynth::ui
         // The open question's option o of question q, and its Send answers (while in view).
         std::optional<funkgui::Point> centreOfOption(int q, int o) const;
         std::optional<funkgui::Point> centreOfSubmit() const;
+        std::optional<funkgui::Point> centreOfClearChecks() const;   // the live checks card's Clear, while in view
+        int checkRows() const;                                        // the rows of the checks cards shown
         bool optionPicked(int q, int o) const;                        // marked in the open question
         bool thinkingOpen(int n) const;
         int copies() const;                                           // the code blocks' Copy actions
@@ -122,7 +125,7 @@ namespace testingplaygroundsynth::ui
             std::string text;
             std::vector<funkgui::text::Span> spans;
         };
-        enum class ActionKind : uint8_t { copyMessage, copyCode, toggleThinking, option, submit };
+        enum class ActionKind : uint8_t { copyMessage, copyCode, toggleThinking, option, submit, clearChecks };
         struct Action
         {
             funkgui::Rect r;
@@ -160,6 +163,8 @@ namespace testingplaygroundsynth::ui
             std::vector<ChatQuestion> questions;
             std::vector<std::string> answers;
             bool open = false;
+            // The checks' (set_checks).
+            std::vector<ChatCheck> checks;
         };
         struct EmptyLayout
         {
@@ -174,7 +179,7 @@ namespace testingplaygroundsynth::ui
         float viewHeight() const noexcept;
         float maxScroll() const noexcept;
         float adv(Role r) const;
-        void layoutBlock(Block& b, const std::vector<ChatEntry>& entries, int count, bool copyAfter, float w);
+        void layoutBlock(Block& b, const std::vector<ChatEntry>& entries, int count, bool copyAfter, float w, bool live);
         void layoutMarkdown(Block& b, const std::string& text, float w, float& y) const;
         float flow(Block& b, const std::string& paragraph, Role base, float x0, float w, float y, float lineH) const;
         void layoutCode(Block& b, const std::string& lang, const std::vector<std::string>& lines, float w, float& y) const;
