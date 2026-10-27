@@ -212,6 +212,7 @@ namespace testingplaygroundsynth
                 case ChatEntry::Kind::tool: return "tool";
                 case ChatEntry::Kind::error: return "error";
                 case ChatEntry::Kind::note: return "note";
+                case ChatEntry::Kind::question: return "question";
             }
             return "note";
         }
@@ -219,7 +220,8 @@ namespace testingplaygroundsynth
         ChatEntry::Kind kindOf(const std::string& s)
         {
             for (const auto k : { ChatEntry::Kind::user, ChatEntry::Kind::assistant, ChatEntry::Kind::thinking,
-                                  ChatEntry::Kind::tool, ChatEntry::Kind::error, ChatEntry::Kind::note })
+                                  ChatEntry::Kind::tool, ChatEntry::Kind::error, ChatEntry::Kind::note,
+                                  ChatEntry::Kind::question })
                 if (s == kindName(k))
                     return k;
             return ChatEntry::Kind::note;
@@ -366,6 +368,123 @@ namespace testingplaygroundsynth
         {
             return claude::object({ { "type", type }, { "description", description } });
         }
+
+        // ask_user's limits.
+        constexpr int kAskMaxQuestions = 4, kAskMinOptions = 2, kAskMaxOptions = 6;
+        constexpr std::size_t kAskMaxQuestionText = 400, kAskMaxLabel = 60, kAskMaxDescription = 200, kAskMaxHeader = 16;
+
+        // ask_user's input, checked: false, with why, for one the chat cannot show.
+        bool parseQuestions(const juce::var& input, std::vector<ChatQuestion>& out, std::string& why)
+        {
+            out.clear();
+            const auto* qs = input.getProperty("questions", juce::var()).getArray();
+            if (qs == nullptr || qs->isEmpty() || qs->size() > kAskMaxQuestions)
+            {
+                why = "questions must be an array of 1 to " + std::to_string(kAskMaxQuestions) + " questions.";
+                return false;
+            }
+            for (const juce::var& q : *qs)
+            {
+                ChatQuestion cq;
+                cq.question = juce::String(str(q, "question")).trim().toStdString();
+                cq.header = juce::String(str(q, "header")).trim().toStdString();
+                cq.multi = static_cast<bool>(q.getProperty("multi_select", false));
+                if (cq.question.empty() || cq.question.size() > kAskMaxQuestionText)
+                {
+                    why = "Each question needs its text (at most " + std::to_string(kAskMaxQuestionText) + " characters).";
+                    return false;
+                }
+                if (cq.header.size() > kAskMaxHeader)
+                    cq.header = cq.header.substr(0, kAskMaxHeader);
+                const auto* os = q.getProperty("options", juce::var()).getArray();
+                if (os == nullptr || os->size() < kAskMinOptions || os->size() > kAskMaxOptions)
+                {
+                    why = "\"" + cq.question + "\" needs " + std::to_string(kAskMinOptions) + " to " + std::to_string(kAskMaxOptions)
+                        + " options (the user can always type an answer of their own, so leave out \"Other\").";
+                    return false;
+                }
+                for (const juce::var& o : *os)
+                {
+                    ChatOption co;
+                    co.label = juce::String(str(o, "label")).trim().toStdString();
+                    co.description = juce::String(str(o, "description")).trim().toStdString();
+                    if (co.label.empty() || co.label.size() > kAskMaxLabel)
+                    {
+                        why = "Each option needs a label of a few words (at most " + std::to_string(kAskMaxLabel) + " characters).";
+                        return false;
+                    }
+                    for (const ChatOption& other : cq.options)
+                        if (other.label == co.label)
+                        {
+                            why = "Two options of \"" + cq.question + "\" have the label \"" + co.label + "\".";
+                            return false;
+                        }
+                    if (co.description.size() > kAskMaxDescription)
+                        co.description = co.description.substr(0, kAskMaxDescription);
+                    cq.options.push_back(std::move(co));
+                }
+                out.push_back(std::move(cq));
+            }
+            return true;
+        }
+
+        // The questions as plain text: the entry's text (the transcript, a screen reader).
+        std::string questionsText(const std::vector<ChatQuestion>& qs)
+        {
+            std::string t;
+            for (const ChatQuestion& q : qs)
+            {
+                t += (t.empty() ? "" : "\n") + (q.header.empty() ? std::string() : q.header + ": ") + q.question
+                   + (q.multi ? " (choose any)" : "");
+                for (const ChatOption& o : q.options)
+                    t += "\n- " + o.label + (o.description.empty() ? std::string() : " -- " + o.description);
+            }
+            return t;
+        }
+
+        juce::var questionsVar(const std::vector<ChatQuestion>& qs)
+        {
+            juce::Array<juce::var> out;
+            for (const ChatQuestion& q : qs)
+            {
+                juce::Array<juce::var> options;
+                for (const ChatOption& o : q.options)
+                    options.add(claude::object({ { "l", juce::String::fromUTF8(o.label.c_str()) },
+                                                 { "d", juce::String::fromUTF8(o.description.c_str()) } }));
+                out.add(claude::object({ { "h", juce::String::fromUTF8(q.header.c_str()) },
+                                         { "q", juce::String::fromUTF8(q.question.c_str()) },
+                                         { "m", q.multi },
+                                         { "o", options } }));
+            }
+            return out;
+        }
+
+        std::vector<ChatQuestion> questionsOf(const juce::var& v)
+        {
+            std::vector<ChatQuestion> out;
+            if (const auto* arr = v.getArray())
+                for (const juce::var& q : *arr)
+                {
+                    ChatQuestion cq{ str(q, "h"), str(q, "q"), {}, static_cast<bool>(q.getProperty("m", false)) };
+                    if (const auto* os = q.getProperty("o", juce::var()).getArray())
+                        for (const juce::var& o : *os)
+                            cq.options.push_back({ str(o, "l"), str(o, "d") });
+                    out.push_back(std::move(cq));
+                }
+            return out;
+        }
+
+        // The answer as the tool's result.
+        std::string answerText(const std::vector<ChatQuestion>& qs, const std::vector<std::string>& answers)
+        {
+            std::string t = "The user answered:";
+            for (std::size_t i = 0; i < qs.size(); ++i)
+            {
+                const std::string a = i < answers.size() ? answers[i] : std::string();
+                t += "\n- " + qs[i].question + " " + (a.empty() ? std::string("(no answer)") : a);
+            }
+            return t;
+        }
     }
 
     // ---- construction -----------------------------------------------------------------------------------------------
@@ -483,6 +602,7 @@ namespace testingplaygroundsynth
         s.signingIn = signingIn_;
         s.signInError = signInError_;
         s.busy = busy_;
+        s.asking = !asking_.empty();
         s.activity = activity_;
         s.entries = entries_;
         s.models = models_;
@@ -710,39 +830,132 @@ namespace testingplaygroundsynth
         const std::string context = contextBlock();
         {
             const std::lock_guard<std::mutex> lock(mutex_);
+            // An open question is answered in the user's own words: its result says so, and they follow.
+            for (auto it = entries_.rbegin(); it != entries_.rend(); ++it)
+                if (it->kind == ChatEntry::Kind::question && it->open)
+                {
+                    it->typed = true;
+                    break;
+                }
+            juce::Array<juce::var> content =
+                missingResults("The user did not choose from the options: their own words follow in this message.");
             addEntry(ChatEntry::Kind::user, trimmed);
-            juce::Array<juce::var> content;
             content.add(text(trimmed));
             if (!context.empty())
                 content.add(text(context));
             if (effort_ == "xhigh" || effort_ == "max")
                 content.add(text(limitNote(maxTokensFor(model_))));
-            // A turn that ended without an answer (stopped, or an error) left the user's message last: this one joins
-            // it, so the roles keep alternating. Nothing was answered to it, so no thinking block depends on it.
-            const int n = messages_.size();
-            if (n > 0 && str(messages_[n - 1], "role") == "user")
-            {
-                const juce::var last = messages_[n - 1];
-                const juce::var before = last.getProperty("content", juce::var());
-                juce::Array<juce::var> merged;
-                if (const auto* arr = before.getArray())
-                    merged = *arr;
-                merged.addArray(content);
-                if (auto* o = last.getDynamicObject())
-                    o->setProperty("content", merged);
-            }
-            else
-            {
-                messages_.add(claude::object({ { "role", "user" }, { "content", content } }));
-            }
-            repairHistory();
-            resendState_ = false;                  // the state (whole, after a summary) is in this message
-            busy_ = true;
-            activity_ = "Thinking";
-            cancel_.store(false);
-            touch();
+            deliver(std::move(content));
         }
         startWorker();
+    }
+
+    void ChatAgent::answer(const std::vector<std::string>& answers)
+    {
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (busy_ || asking_.empty())
+                return;
+        }
+        joinWorker();
+        const std::string context = contextBlock();
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (busy_ || asking_.empty())
+                return;
+            std::vector<ChatQuestion> qs;
+            std::vector<std::string> given;
+            for (auto it = entries_.rbegin(); it != entries_.rend(); ++it)
+                if (it->kind == ChatEntry::Kind::question && it->open)
+                {
+                    qs = it->questions;
+                    given = answers;
+                    given.resize(qs.size());
+                    for (std::string& a : given)
+                        a = juce::String(a).trim().toStdString();
+                    it->answers = given;
+                    break;
+                }
+            juce::Array<juce::var> content = missingResults(answerText(qs, given));
+            if (!context.empty())
+                content.add(text(context));
+            if (effort_ == "xhigh" || effort_ == "max")
+                content.add(text(limitNote(maxTokensFor(model_))));
+            deliver(std::move(content));
+        }
+        startWorker();
+    }
+
+    // The tool calls of the last reply without their results (the history's last assistant message, and the user
+    // message after it, if any): an open question's, and any a turn left behind. Each gets one; the open question's
+    // says `instead`. The question closes.
+    juce::Array<juce::var> ChatAgent::missingResults(const std::string& instead)
+    {
+        juce::Array<juce::var> out;
+        int at = messages_.size() - 1;
+        while (at >= 0 && str(messages_[at], "role") != "assistant")
+            --at;
+        if (at >= 0 && at >= messages_.size() - 2)
+        {
+            std::set<std::string> answered;
+            if (at + 1 < messages_.size())
+                if (const auto* arr = messages_[at + 1].getProperty("content", juce::var()).getArray())
+                    for (const auto& b : *arr)
+                        if (str(b, "type") == "tool_result")
+                            answered.insert(str(b, "tool_use_id"));
+            if (const auto* arr = messages_[at].getProperty("content", juce::var()).getArray())
+                for (const auto& b : *arr)
+                {
+                    const std::string id = str(b, "id");
+                    if (str(b, "type") != "tool_use" || answered.count(id) > 0)
+                        continue;
+                    const bool question = id == asking_;
+                    juce::var r = claude::object({ { "type", "tool_result" },
+                                                   { "tool_use_id", juce::String(id) },
+                                                   { "content", juce::String::fromUTF8((question ? instead
+                                                                                         : std::string("(The turn ended before this ran.)")).c_str()) } });
+                    if (!question)
+                        r.getDynamicObject()->setProperty("is_error", true);
+                    out.add(r);
+                }
+        }
+        for (ChatEntry& e : entries_)
+            e.open = false;
+        asking_.clear();
+        return out;
+    }
+
+    // A user message's blocks into the history, and the turn under way. A turn that ended without an answer (stopped,
+    // or an error), or one that waits for a question's answer, left a user message last: this one joins it, so the
+    // roles keep alternating (nothing was answered to it, so no thinking block depends on it), its tool results
+    // first, as the API asks.
+    void ChatAgent::deliver(juce::Array<juce::var> content)
+    {
+        const int n = messages_.size();
+        if (n > 0 && str(messages_[n - 1], "role") == "user")
+        {
+            const juce::var last = messages_[n - 1];
+            const juce::var before = last.getProperty("content", juce::var());
+            juce::Array<juce::var> all, results, rest;
+            if (const auto* arr = before.getArray())
+                all = *arr;
+            all.addArray(content);
+            for (const auto& b : all)
+                (str(b, "type") == "tool_result" ? results : rest).add(b);
+            results.addArray(rest);
+            if (auto* o = last.getDynamicObject())
+                o->setProperty("content", results);
+        }
+        else
+        {
+            messages_.add(claude::object({ { "role", "user" }, { "content", content } }));
+        }
+        repairHistory();
+        resendState_ = false;                      // the state (whole, after a summary) is in this message
+        busy_ = true;
+        activity_ = "Thinking";
+        cancel_.store(false);
+        touch();
     }
 
     void ChatAgent::stop()
@@ -768,6 +981,7 @@ namespace testingplaygroundsynth
         usage_.clear();
         activity_.clear();
         busy_ = false;
+        asking_.clear();
         touch();
     }
 
@@ -777,7 +991,21 @@ namespace testingplaygroundsynth
         const std::lock_guard<std::mutex> lock(mutex_);
         juce::Array<juce::var> entries;
         for (const ChatEntry& e : entries_)
-            entries.add(claude::object({ { "k", kindName(e.kind) }, { "t", juce::String::fromUTF8(e.text.c_str()) } }));
+        {
+            juce::var entry = claude::object({ { "k", kindName(e.kind) }, { "t", juce::String::fromUTF8(e.text.c_str()) } });
+            if (e.kind == ChatEntry::Kind::question)
+            {
+                juce::Array<juce::var> answers;
+                for (const std::string& a : e.answers)
+                    answers.add(juce::String::fromUTF8(a.c_str()));
+                auto* o = entry.getDynamicObject();
+                o->setProperty("q", questionsVar(e.questions));
+                o->setProperty("a", answers);
+                o->setProperty("o", e.open);
+                o->setProperty("y", e.typed);
+            }
+            entries.add(entry);
+        }
         // The panel's pictures (view_panel's images, hundreds of KB each) stay out of the session: a line in each one's
         // place, and a mark that the history was changed, so a session that loads it drops its thinking (bound to the
         // pictures).
@@ -831,6 +1059,8 @@ namespace testingplaygroundsynth
                                            { "entries", entries } });
         if (cut)
             state.getDynamicObject()->setProperty("pictures_cut", true);
+        if (!asking_.empty())
+            state.getDynamicObject()->setProperty("asking", juce::String(asking_));
         return claude::toJson(state);
     }
 
@@ -855,18 +1085,53 @@ namespace testingplaygroundsynth
         seen_.clear();
         lastSignature_ = 0;                        // the next message sends the files again
         busy_ = false;
+        asking_.clear();
         activity_.clear();
         const juce::var messages = v.getProperty("messages", juce::var()), entries = v.getProperty("entries", juce::var());
         if (const auto* arr = messages.getArray())
             messages_ = *arr;
         if (const auto* arr = entries.getArray())
             for (const auto& e : *arr)
-                entries_.push_back({ kindOf(str(e, "k")), str(e, "t") });
+            {
+                ChatEntry entry{ kindOf(str(e, "k")), str(e, "t"), {}, {}, false, false };
+                if (entry.kind == ChatEntry::Kind::question)
+                {
+                    entry.questions = questionsOf(e.getProperty("q", juce::var()));
+                    if (const auto* as = e.getProperty("a", juce::var()).getArray())
+                        for (const auto& a : *as)
+                            entry.answers.push_back(a.toString().toStdString());
+                    entry.answers.resize(entry.questions.size());
+                    entry.open = static_cast<bool>(e.getProperty("o", false));
+                    entry.typed = static_cast<bool>(e.getProperty("y", false));
+                }
+                entries_.push_back(std::move(entry));
+            }
         // Saved with another system prompt or other tools (an earlier version of the plugin): the API would refuse
         // its thinking blocks (bound to a different conversation), so the history goes on without them.
         if (str(v, "prompt") != promptPrint() || static_cast<bool>(v.getProperty("pictures_cut", false)))
             dropThinking();
         repairHistory();                           // a session saved by a version that cut it at the wrong place
+        // A question that waited when the session was saved waits again, if its call is still the last reply's.
+        const std::string asking = str(v, "asking");
+        bool waiting = false;
+        if (!asking.empty() && !messages_.isEmpty())
+        {
+            const int last = messages_.size() - 1;
+            const int reply = str(messages_[last], "role") == "assistant" ? last : last - 1;
+            if (reply >= 0)
+                if (const auto* arr = messages_[reply].getProperty("content", juce::var()).getArray())
+                    for (const auto& b : *arr)
+                        waiting = waiting || (str(b, "type") == "tool_use" && str(b, "id") == asking);
+        }
+        bool reopened = false;
+        for (auto it = entries_.rbegin(); it != entries_.rend(); ++it)
+        {
+            const bool open = waiting && !reopened && it->kind == ChatEntry::Kind::question && it->open;
+            reopened = reopened || open;
+            it->open = open;
+        }
+        if (reopened)
+            asking_ = asking;
         touch();
     }
 
@@ -982,14 +1247,21 @@ namespace testingplaygroundsynth
 
     void ChatAgent::addEntry(ChatEntry::Kind kind, std::string t)
     {
-        entries_.push_back({ kind, std::move(t) });
+        ChatEntry e;
+        e.kind = kind;
+        e.text = std::move(t);
+        entries_.push_back(std::move(e));
         touch();
     }
 
     void ChatAgent::appendToLast(ChatEntry::Kind kind, std::string_view t)
     {
         if (entries_.empty() || entries_.back().kind != kind)
-            entries_.push_back({ kind, {} });
+        {
+            ChatEntry e;
+            e.kind = kind;
+            entries_.push_back(std::move(e));
+        }
         entries_.back().text += t;
         touch();
     }
@@ -1251,6 +1523,48 @@ namespace testingplaygroundsynth
                                         { "page", prop("string", "A page's title to show (a tabs element's), else the "
                                                                  "pages the user has") } }),
                        {}));
+        {
+            juce::var option = claude::object(
+                { { "type", "object" },
+                  { "properties", claude::object({ { "label", prop("string", "The choice in a few words (at most 60 "
+                                                                             "characters), such as Warm and analog") },
+                                                   { "description", prop("string", "A line of what it means or does "
+                                                                                   "(optional)") } }) },
+                  { "required", juce::Array<juce::var>{ "label" } } });
+            juce::var options = claude::object({ { "type", "array" },
+                                                 { "minItems", kAskMinOptions },
+                                                 { "maxItems", kAskMaxOptions },
+                                                 { "items", option },
+                                                 { "description", "2 to 6 choices. The user can always type an answer "
+                                                                  "of their own instead, so leave out \"Other\"" } });
+            juce::var question = claude::object(
+                { { "type", "object" },
+                  { "properties", claude::object({ { "question", prop("string", "The question: one sentence, ending "
+                                                                                "in a question mark") },
+                                                   { "header", prop("string", "A tag of a word or two above it (at "
+                                                                              "most 16 characters), such as Sound or "
+                                                                              "Panel") },
+                                                   { "options", options },
+                                                   { "multi_select", prop("boolean", "true when several options may "
+                                                                                     "be chosen together (default "
+                                                                                     "false: one)") } }) },
+                  { "required", juce::Array<juce::var>{ "question", "options" } } });
+            tools.add(tool("ask_user",
+                           "Ask the user one to four questions they answer with a click: the chat shows each question "
+                           "with its options as buttons, and your turn waits until they answer. The result is what "
+                           "they chose (the options' labels), or a note that they wrote a message instead, which "
+                           "follows it. Use it when a request leaves choices only the user can make, above all a new "
+                           "user's open request (\"make me something cool\") and before large work that depends on the "
+                           "answer: the sound's character or style, what it is for, how many controls, the panel's "
+                           "look. Do not ask what you can decide, measure or see yourself, nor for permission to do "
+                           "ordinary work. Put the option you recommend first, its label ending in \"(Recommended)\". "
+                           "Call it once in a reply, last.",
+                           claude::object({ { "questions", claude::object({ { "type", "array" },
+                                                                            { "minItems", 1 },
+                                                                            { "maxItems", kAskMaxQuestions },
+                                                                            { "items", question } }) } }),
+                           { "questions" }));
+        }
         tools.add(tool("get_status",
                        "Read the plugin's state now: the files, whether the program that plays matches them, the last "
                        "compile, the dials and their values, the CPU load and the output guard's alerts (NaN or inf "
@@ -1578,6 +1892,7 @@ namespace testingplaygroundsynth
                                 : name == "run_program"                     ? std::string("About to run the program")
                                 : name == "measure_output"                  ? std::string("About to measure the sound")
                                 : name == "view_panel"                      ? std::string("Looking at the panel")
+                                : name == "ask_user"                        ? std::string("Writing a question for you")
                                                                             : "Using " + name);
                 };
                 cb.toolInput = [this, tool](const std::string& json) {
@@ -1767,8 +2082,10 @@ namespace testingplaygroundsynth
                 break;                             // end_turn, or cut off again
 
             // The tools, in order, their results in one user message; after a reply cut off without a tool call, a
-            // line that says so.
+            // line that says so. A question (ask_user) waits for the user: the turn ends with its entry open.
             juce::Array<juce::var> results;
+            std::string askId;
+            std::vector<ChatQuestion> askQuestions;
             for (const auto& use : toolUses)
             {
                 const std::string id = str(use, "id");
@@ -1796,6 +2113,26 @@ namespace testingplaygroundsynth
                                                  { "content", juce::String::fromUTF8(why.c_str()) } }));
                     continue;
                 }
+                if (str(use, "name") == "ask_user")
+                {
+                    // A question: its result is the user's answer, which ends the wait (answer(), or send()).
+                    std::vector<ChatQuestion> qs;
+                    std::string why;
+                    if (!askId.empty())
+                        why = "Only one ask_user call is taken in a reply: put every question (up to "
+                            + std::to_string(kAskMaxQuestions) + ") in one call.";
+                    else if (parseQuestions(use.getProperty("input", juce::var()), qs, why))
+                    {
+                        askId = id;
+                        askQuestions = std::move(qs);
+                        continue;
+                    }
+                    results.add(claude::object({ { "type", "tool_result" },
+                                                 { "tool_use_id", juce::String(id) },
+                                                 { "is_error", true },
+                                                 { "content", juce::String::fromUTF8(why.c_str()) } }));
+                    continue;
+                }
                 results.add(runTool(use));
             }
             if (toolUses.empty())
@@ -1810,6 +2147,23 @@ namespace testingplaygroundsynth
             if (resend)
                 if (const std::string context = contextBlock(); !context.empty())
                     results.add(text(context));
+            if (!askId.empty())
+            {
+                // The other results wait in the history; the answer joins them (deliver).
+                const std::lock_guard<std::mutex> lock(mutex_);
+                if (!results.isEmpty())
+                    messages_.add(claude::object({ { "role", "user" }, { "content", results } }));
+                ChatEntry q;
+                q.kind = ChatEntry::Kind::question;
+                q.text = questionsText(askQuestions);
+                q.questions = std::move(askQuestions);
+                q.answers.assign(q.questions.size(), std::string());
+                q.open = true;
+                entries_.push_back(std::move(q));
+                asking_ = askId;
+                touch();
+                break;
+            }
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
                 messages_.add(claude::object({ { "role", "user" }, { "content", results } }));

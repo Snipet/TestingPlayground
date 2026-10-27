@@ -200,6 +200,7 @@ namespace testingplaygroundsynth::ui
         void runNow();                                   // RUN
         // The chat.
         funkgui::TextEditor& chatInput() noexcept;       // the message box
+        const std::string& chatPlaceholder() const;      // what it says while empty
         const std::string& transcript() const;           // the conversation as shown (or the hint)
         const std::string& chatActivity() const noexcept { return activity_; }
         funkgui::Point centreOfSend() const;             // send, or stop

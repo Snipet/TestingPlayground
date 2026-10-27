@@ -72,7 +72,7 @@ namespace testingplaygroundsynth::ui::chat
     enum class Icon : uint8_t
     {
         none, plus, key, chevronDown, chevronRight, chevronUp, arrowUp, stop, copy, check, file, play, dial, wave, alert,
-        pencil, bolt, person, chevronLeft, bubble, dice, blocks, list, sun, moon, code, book
+        pencil, bolt, person, chevronLeft, bubble, dice, blocks, list, sun, moon, code, book, question
     };
 
     inline void drawIcon(funkgui::Canvas& c, Icon icon, float cx, float cy, float size, funkgui::Col ink)
@@ -190,6 +190,17 @@ namespace testingplaygroundsynth::ui::chat
                 c.rrect(cx - s * 0.78f, cy - s * 0.55f, s * 0.74f, s * 1.1f, s * 0.12f, ink.withAlpha(0.0f), w, ink);
                 c.rrect(cx + s * 0.04f, cy - s * 0.55f, s * 0.74f, s * 1.1f, s * 0.12f, ink.withAlpha(0.0f), w, ink);
                 break;
+            case Icon::question:
+            {
+                // A question mark in a ring: Claude asks.
+                c.disc(cx, cy, s * 0.95f, ink.withAlpha(0.0f), w, ink);
+                const float r = s * 0.3f, hy = cy - s * 0.2f;
+                const float xs[6] = { cx - r, cx - r * 0.7f, cx, cx + r * 0.7f, cx + r, cx };
+                const float ys[6] = { hy, hy - r * 0.7f, hy - r, hy - r * 0.7f, hy, cy + s * 0.18f };
+                c.polyline(xs, ys, 6, w, ink);
+                c.disc(cx, cy + s * 0.5f, w * 0.75f, ink);
+                break;
+            }
             case Icon::bubble:
             {
                 // A speech bubble: "the chat".

@@ -16,6 +16,9 @@
 //   gui.chat.small.png    the panel at its least size
 //   gui.chat.large.png    the panel large
 //   gui.chat.folded.png   the chat folded into its rail, an answer waiting (the dot)
+//   gui.chat.ask.png      Claude's question of two parts: one choice (a ring) and several (boxes), some picked, and
+//                         Send answers
+//   gui.chat.answered.png the question answered: the choices marked, the rest muted
 // and checks:
 //   EMPTY    with neither a sign-in nor a key the empty chat has a Sign in button (which opens the access dialog on its
 //            account tab), an API key button (on its API key tab) and suggestions
@@ -45,6 +48,11 @@
 //            Claude Opus 5.5, switches fast mode on and off (a switch to a screen reader, on or off), and is gone
 //            on a model that takes no fast mode
 //   STOP     while Claude works the line under the box says what it is doing and send is stop: a click ends the turn
+//   ASK      Claude's question (ask_user) as a card: the turn waits and the message box says so; each option a button
+//            (to a screen reader a radio button, or a toggle for several); a click marks it (another of one choice
+//            replaces it, several stay); Send answers waits until each question has a pick, then sends the labels and
+//            the turn goes on; the card then has no buttons and the transcript the answers; a question of one choice
+//            has no Send answers, and its click answers
 //   NEW      NEW asks first, then forgets the conversation; a suggestion goes into the message box, unsent; Tab leaves
 //            the message box
 //   SCROLL   a conversation taller than the view scrolls with the wheel, and the round button jumps back to its end
@@ -642,6 +650,97 @@ PROBE(gui, chat)
         panel.chatView().scrollTo(panel.chatView().contentHeight());
         host.settle();
         writePng(P, host, "gui.chat.markdown.png");
+    }
+
+    // ---- ASK -----------------------------------------------------------------------------------------------------------
+    {
+        const auto option = [](const char* label, const char* description) {
+            return input({ { "label", label }, { "description", description } });
+        };
+        const juce::var two = input(
+            { { "questions",
+                juce::Array<juce::var>{
+                    input({ { "header", "Sound" },
+                            { "question", "What should it sound like?" },
+                            { "options", juce::Array<juce::var>{ option("Warm (Recommended)", "Analog and round, a soft low-pass"),
+                                                                 option("Bright", "Glassy and digital") } } }),
+                    input({ { "header", "Panel" },
+                            { "question", "What should the panel show?" },
+                            { "multi_select", true },
+                            { "options", juce::Array<juce::var>{ option("Knobs", ""), option("Meters", "Levels, live"),
+                                                                 option("A scope", "The wave as it plays") } } }) } } });
+        const juce::var one = input(
+            { { "questions", juce::Array<juce::var>{ input({ { "question", "Mono or poly?" },
+                                                             { "options", juce::Array<juce::var>{ option("Poly", "Chords"),
+                                                                                                  option("Mono", "One note, with glide") } } }) } } });
+        tp::ui::ChatView& view = panel.chatView();
+        script->add(fake::Response::ok(fake::Sse().start().text("Two questions first.").tool("toolu_q1", "ask_user", two).end("tool_use")));
+        clickInput(host, panel);
+        type(host, "make me a synth");
+        host.keys("return");
+        settleChat(processor, host);
+        view.scrollTo(view.contentHeight());
+        host.settle();
+        P.eq("ask.waits", chat(processor).asking && !chat(processor).busy ? 1 : 0, 1);
+        P.eq("ask.box_says", has(panel.chatPlaceholder(), "Answer above") ? 1 : 0, 1);
+        const auto warm = view.centreOfOption(0, 0), meters = view.centreOfOption(1, 1), scope = view.centreOfOption(1, 2);
+        P.eq("ask.options_shown", warm && meters && scope && view.centreOfSubmit() ? 1 : 0, 1);
+        const auto radio = a11yTitled(host, "Warm (Recommended)");
+        const auto box = a11yTitled(host, "Meters");
+        P.eq("ask.a11y", radio && radio->role == funkgui::A11yRole::radioButton && radio->checkable && !radio->checked
+                             && box && box->role == funkgui::A11yRole::toggleButton ? 1 : 0, 1);
+        const int sent = script->postCount();
+        if (warm)
+            clickAt(host, *warm);
+        host.settle();
+        P.eq("ask.picked", view.optionPicked(0, 0) ? 1 : 0, 1);
+        if (const auto s = view.centreOfSubmit())
+            clickAt(host, *s);
+        host.settle();
+        P.eq("ask.submit_waits_for_each", script->postCount() == sent && chat(processor).asking ? 1 : 0, 1);
+        if (const auto bright = view.centreOfOption(0, 1))
+            clickAt(host, *bright);
+        if (meters)
+            clickAt(host, *meters);
+        if (scope)
+            clickAt(host, *scope);
+        host.settle();
+        P.eq("ask.one_replaces", view.optionPicked(0, 1) && !view.optionPicked(0, 0) ? 1 : 0, 1);
+        P.eq("ask.several_stay", view.optionPicked(1, 1) && view.optionPicked(1, 2) && !view.optionPicked(1, 0) ? 1 : 0, 1);
+        if (warm)
+            clickAt(host, *warm);
+        host.settle();
+        const auto checked = a11yTitled(host, "Warm (Recommended)");
+        P.eq("ask.a11y_checked", checked && checked->checked ? 1 : 0, 1);
+        writePng(P, host, "gui.chat.ask.png");
+        script->add(fake::Response::ok(fake::Sse().start().text("A warm synth with meters and a scope.").end()));
+        if (const auto s = view.centreOfSubmit())
+            clickAt(host, *s);
+        settleChat(processor, host);
+        P.eq("ask.sent", script->postCount() == sent + 1 && has(script->body(sent), "Warm (Recommended)")
+                             && has(script->body(sent), "Meters, A scope") ? 1 : 0, 1);
+        P.eq("ask.answered", !chat(processor).asking && !view.centreOfOption(0, 0) && !view.centreOfSubmit() ? 1 : 0, 1);
+        P.eq("ask.transcript", has(panel.transcript(), "= Warm (Recommended) | Meters, A scope")
+                                   && has(panel.transcript(), "A warm synth with meters and a scope.") ? 1 : 0, 1);
+        view.scrollTo(view.contentHeight());
+        host.settle();
+        writePng(P, host, "gui.chat.answered.png");
+        // One question of one choice: no Send answers; a click answers.
+        script->add(fake::Response::ok(fake::Sse().start().tool("toolu_q2", "ask_user", one).end("tool_use")));
+        clickInput(host, panel);
+        type(host, "now a bass");
+        host.keys("return");
+        settleChat(processor, host);
+        view.scrollTo(view.contentHeight());
+        host.settle();
+        P.eq("ask.single_no_submit", view.centreOfOption(0, 1) && !view.centreOfSubmit() ? 1 : 0, 1);
+        script->add(fake::Response::ok(fake::Sse().start().text("Mono it is.").end()));
+        const int at = script->postCount();
+        if (const auto mono = view.centreOfOption(0, 1))
+            clickAt(host, *mono);
+        settleChat(processor, host);
+        P.eq("ask.click_answers", script->postCount() == at + 1 && has(script->body(at), "Mono or poly? Mono")
+                                      && !chat(processor).asking ? 1 : 0, 1);
     }
 
     // ---- NEW -----------------------------------------------------------------------------------------------------------

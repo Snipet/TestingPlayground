@@ -13,7 +13,7 @@
 //            thinking, each with its levels
 //   REQUEST  each request has the model, max_tokens (the model's own limit, from /v1/models), stream, adaptive
 //            thinking (summarized), the effort, the system prompt cached for an hour, the automatic cache breakpoint,
-//            the eleven tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
+//            the twelve tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
 //            and instructions) with their beta headers for a model that takes them, the API version and the key, and
 //            no temperature, top_p or top_k; the first message carries the plugin's state; the history is append-only
 //            (each request's messages begin with the previous request's, unchanged, signatures included) and the
@@ -43,6 +43,12 @@
 //   MEASURE  measure_output through the agent: its result is the render's report, with the dials asked for
 //   VIEW     view_panel through the agent: its result a PNG of the panel (and one of the whole editor) and a line of
 //            what it shows, drawn on the message thread; the user's view stays; the saved session keeps no picture
+//   ASK      ask_user: a reply with text, get_status, a question of two parts (one choice, several) and a second
+//            ask_user: the turn waits (asking, not busy) with the question's entry open, the other calls' results in
+//            the history and the second ask refused; the session saved meanwhile opens with it still waiting. The
+//            answer (labels) goes in the next request after the other results, as its tool result, and the turn goes
+//            on; the entry keeps the answers. A question answered by a message instead: its result says so and the
+//            words follow in the same message. A question of one option is refused in its result and asks nothing
 //   LIBRARY  add_library_file: the library's file as a tab of the editor, its text in the result (and seen: the next
 //            state names it without its text), a what Claude did entry; a name the library has not is an error
 //            result naming its files; the same file again is there already, not added twice
@@ -377,8 +383,8 @@ PROBE(plugin, chat)
         int eager = 0;
         for (const auto& t : tools)
             eager += static_cast<bool>(t.getProperty("eager_input_streaming", false)) ? 1 : 0;
-        P.eq("request.tools", tools.size(), 11);
-        P.eq("request.tools_eager", eager, 11);
+        P.eq("request.tools", tools.size(), 12);
+        P.eq("request.tools_eager", eager, 12);
         bool libraryEnum = false;
         for (const auto& t : tools)
             if (str(t, "name") == "add_library_file")
@@ -804,6 +810,145 @@ PROBE(plugin, chat)
         const std::string saved = agent.saveState();
         P.eq("view.session_no_picture", has(saved, "iVBORw0KGgo") ? 0 : 1, 1);
         P.eq("view.session_line", has(saved, "A picture of the panel: not kept in the session") && has(saved, "pictures_cut") ? 1 : 0, 1);
+    }
+
+    // ---- ASK -----------------------------------------------------------------------------------------------------------
+    {
+        const auto option = [](const char* label, const char* description) {
+            return input({ { "label", label }, { "description", description } });
+        };
+        const juce::var two = input(
+            { { "questions",
+                juce::Array<juce::var>{
+                    input({ { "header", "Sound" },
+                            { "question", "What should it sound like?" },
+                            { "options", juce::Array<juce::var>{ option("Warm (Recommended)", "Analog and round"),
+                                                                 option("Bright", "Glassy and digital") } } }),
+                    input({ { "header", "Panel" },
+                            { "question", "What should the panel show?" },
+                            { "multi_select", true },
+                            { "options", juce::Array<juce::var>{ option("Knobs", ""), option("Meters", "Levels, live"),
+                                                                 option("A scope", "") } } }) } } });
+        const juce::var one = input(
+            { { "questions",
+                juce::Array<juce::var>{ input({ { "question", "Mono or poly?" },
+                                                { "options", juce::Array<juce::var>{ option("Poly", ""), option("Mono", "") } } }) } } });
+        script->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .text("A few questions first.")
+                                           .tool("toolu_a1", "get_status", input({}))
+                                           .tool("toolu_a2", "ask_user", two)
+                                           .tool("toolu_a3", "ask_user", one)
+                                           .end("tool_use")));
+        const int before = script->postCount();
+        agent.send("make me a synth");
+        agent.waitIdle();
+        const auto lastQuestion = [](const tp::ChatState& st) -> const tp::ChatEntry* {
+            for (auto it = st.entries.rbegin(); it != st.entries.rend(); ++it)
+                if (it->kind == tp::ChatEntry::Kind::question)
+                    return &*it;
+            return nullptr;
+        };
+        {
+            const tp::ChatState st = agent.chatState();
+            const tp::ChatEntry* q = lastQuestion(st);
+            P.eq("ask.waits", st.asking && !st.busy ? 1 : 0, 1);
+            P.eq("ask.one_request", script->postCount() - before, 1);
+            P.eq("ask.entry_open", q != nullptr && q->open && q->questions.size() == 2 ? 1 : 0, 1);
+            P.eq("ask.entry_options", q != nullptr && q->questions.size() == 2 && q->questions[0].options.size() == 2
+                                              && q->questions[1].multi && q->questions[1].options[1].description == "Levels, live"
+                                              && q->questions[0].header == "Sound" ? 1 : 0, 1);
+            P.eq("ask.entry_text", q != nullptr && has(q->text, "What should it sound like?") && has(q->text, "- Bright") ? 1 : 0, 1);
+            P.eq("ask.last_entry", !st.entries.empty() && st.entries.back().kind == tp::ChatEntry::Kind::question ? 1 : 0, 1);
+        }
+        // Saved while it waits: another processor's chat opens with the question still open.
+        {
+            const std::string saved = agent.saveState();
+            tp::Processor other;
+            other.chatAgent().loadState(saved);
+            const tp::ChatState st = other.chatAgent().chatState();
+            const tp::ChatEntry* q = lastQuestion(st);
+            P.eq("ask.session_waits", st.asking && q != nullptr && q->open && q->questions.size() == 2
+                                          && q->questions[1].options.size() == 3 ? 1 : 0, 1);
+        }
+        script->add(fake::Response::ok(fake::Sse().start().text("A warm pad, then.").end()));
+        agent.answer({ "Warm (Recommended)", "Knobs, Meters" });
+        agent.waitIdle();
+        {
+            const juce::Array<juce::var> m = messagesOf(script->body(before + 1));
+            const juce::Array<juce::var> c = arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {}));
+            std::vector<std::string> ids;
+            bool resultsFirst = true, seenText = false;
+            std::string answer, second;
+            for (const juce::var& b : c)
+            {
+                if (str(b, "type") == "tool_result")
+                {
+                    resultsFirst = resultsFirst && !seenText;
+                    ids.push_back(str(b, "tool_use_id"));
+                    if (str(b, "tool_use_id") == "toolu_a2")
+                        answer = str(b, "content");
+                    if (str(b, "tool_use_id") == "toolu_a3")
+                        second = str(b, "content") + (static_cast<bool>(b.getProperty("is_error", false)) ? " [error]" : "");
+                }
+                else
+                    seenText = true;
+            }
+            std::printf("ask: the answer's result: %s\n", answer.c_str());
+            P.eq("ask.results_all", ids.size() == 3 && ids[0] == "toolu_a1" ? 1 : 0, 1);
+            P.eq("ask.results_first", resultsFirst ? 1 : 0, 1);
+            P.eq("ask.answer_result", has(answer, "The user answered:") && has(answer, "What should it sound like? Warm (Recommended)")
+                                          && has(answer, "What should the panel show? Knobs, Meters") ? 1 : 0, 1);
+            P.eq("ask.second_refused", has(second, "Only one ask_user call") && has(second, "[error]") ? 1 : 0, 1);
+            const tp::ChatState st = agent.chatState();
+            const tp::ChatEntry* q = lastQuestion(st);
+            P.eq("ask.answered", !st.asking && q != nullptr && !q->open && q->answers.size() == 2 && q->answers[1] == "Knobs, Meters" ? 1 : 0, 1);
+            P.eq("ask.turn_went_on", lastText(st, tp::ChatEntry::Kind::assistant) == "A warm pad, then." ? 1 : 0, 1);
+        }
+        // Answered by a message instead.
+        script->add(fake::Response::ok(fake::Sse().start().tool("toolu_a4", "ask_user", one).end("tool_use")));
+        agent.send("now a bass");
+        agent.waitIdle();
+        P.eq("ask.waits_again", agent.chatState().asking ? 1 : 0, 1);
+        script->add(fake::Response::ok(fake::Sse().start().text("Mono, then.").end()));
+        const int typedAt = script->postCount();
+        agent.send("a mono one, please");
+        agent.waitIdle();
+        {
+            const juce::Array<juce::var> m = messagesOf(script->body(typedAt));
+            const juce::Array<juce::var> c = arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {}));
+            P.eq("ask.typed_result", c.size() >= 2 && str(c[0], "type") == "tool_result" && str(c[0], "tool_use_id") == "toolu_a4"
+                                         && has(str(c[0], "content"), "did not choose from the options")
+                                         && str(c[1], "text") == "a mono one, please" ? 1 : 0, 1);
+            const tp::ChatState st = agent.chatState();
+            const tp::ChatEntry* q = lastQuestion(st);
+            P.eq("ask.typed_entry", !st.asking && q != nullptr && !q->open && q->typed ? 1 : 0, 1);
+        }
+        // A question of one option: refused in its result; nothing waits.
+        const juce::var bad = input(
+            { { "questions", juce::Array<juce::var>{ input({ { "question", "Sure?" },
+                                                             { "options", juce::Array<juce::var>{ option("Yes", "") } } }) } } });
+        script->add(fake::Response::ok(fake::Sse().start().tool("toolu_a5", "ask_user", bad).end("tool_use")));
+        script->add(fake::Response::ok(fake::Sse().start().text("Building it.").end()));
+        const int badAt = script->postCount();
+        const std::size_t questionsBefore = [&] {
+            std::size_t n = 0;
+            for (const tp::ChatEntry& e : agent.chatState().entries)
+                n += e.kind == tp::ChatEntry::Kind::question ? 1 : 0;
+            return n;
+        }();
+        agent.send("go on");
+        agent.waitIdle();
+        {
+            const juce::Array<juce::var> m = messagesOf(script->body(badAt + 1));
+            const juce::Array<juce::var> c = arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {}));
+            P.eq("ask.bad_refused", !c.isEmpty() && static_cast<bool>(c[0].getProperty("is_error", false))
+                                        && has(str(c[0], "content"), "needs 2 to 6 options") ? 1 : 0, 1);
+            std::size_t n = 0;
+            for (const tp::ChatEntry& e : agent.chatState().entries)
+                n += e.kind == tp::ChatEntry::Kind::question ? 1 : 0;
+            P.eq("ask.bad_asks_nothing", n == questionsBefore && !agent.chatState().asking ? 1 : 0, 1);
+        }
     }
 
     // ---- LIBRARY -------------------------------------------------------------------------------------------------------

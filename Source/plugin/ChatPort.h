@@ -18,7 +18,10 @@
 //                    has its answer (the credit, this month's use, the sign-in), .refreshing until it comes
 //   setModel()       a model of chatState().models; setEffort() a thinking level that model has; setFast() fast mode,
 //                    on the models that take it. All three machine-wide
-//   send()           a message from the user; Claude answers (and works) in the background
+//   send()           a message from the user; Claude answers (and works) in the background. While Claude's question
+//                    waits (asking), the message answers it in the user's own words
+//   answer()         the user's answer to Claude's question (ask_user), one per question: the chosen options' labels;
+//                    Claude's turn goes on with it
 //   stop()           ends Claude's turn as soon as it can; the work done so far stays
 //   newChat()        forgets the conversation
 #pragma once
@@ -29,6 +32,21 @@
 
 namespace testingplaygroundsynth
 {
+    // A question of Claude's (its ask_user tool), answered with a click.
+    struct ChatOption
+    {
+        std::string label;                    // a few words ("Warm and analog")
+        std::string description;              // a line of what it means ("" for none)
+    };
+
+    struct ChatQuestion
+    {
+        std::string header;                   // a short tag ("Sound"), "" for none
+        std::string question;
+        std::vector<ChatOption> options;      // 2 to 6
+        bool multi = false;                   // several may be chosen
+    };
+
     struct ChatEntry
     {
         enum class Kind : uint8_t
@@ -39,9 +57,15 @@ namespace testingplaygroundsynth
             tool,        // something Claude did: wrote a file, ran the program, set a dial
             error,       // something went wrong: the key, the network, the API
             note,        // the chat's own remarks
+            question,    // Claude asks (ask_user): its questions, answered with a click; the turn waits for them
         };
         Kind kind = Kind::note;
-        std::string text;
+        std::string text;                     // a question's: the questions and their options, as plain text
+        std::vector<ChatQuestion> questions;  // a question's
+        std::vector<std::string> answers;     // a question's answer, one per question: the labels chosen (", "
+                                              // between several), "" for none
+        bool open = false;                    // a question still waiting for its answer
+        bool typed = false;                   // a question answered by a message instead
     };
 
     struct ChatModel
@@ -82,6 +106,7 @@ namespace testingplaygroundsynth
         bool signingIn = false;               // a sign-in is waiting for the server
         std::string signInError;              // why the last sign-in failed ("" when it did not)
         bool busy = false;                    // Claude is working on a turn
+        bool asking = false;                  // Claude's question (the last question entry) waits for the answer
         std::string activity;                 // what it is doing: "THINKING", "WRITING filters.fm", ...
         std::vector<ChatEntry> entries;
         std::vector<ChatModel> models;
@@ -113,6 +138,7 @@ namespace testingplaygroundsynth
         virtual void setFast(bool on) = 0;
 
         virtual void send(const std::string& text) = 0;
+        virtual void answer(const std::vector<std::string>& answers) = 0;
         virtual void stop() = 0;
         virtual void newChat() = 0;
     };
