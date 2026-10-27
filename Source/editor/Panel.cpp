@@ -199,6 +199,10 @@ namespace testingplaygroundsynth::ui
         constexpr float kChatGap = 12.0f;                // between the two cards
         constexpr float kChatRailW = 44.0f;              // the chat folded: its rail's width
         constexpr float kChatRailGap = 12.0f;            // and the gap before it
+        constexpr float kExplorerShare = 0.16f;          // the explorer, open: of the width
+        constexpr float kExplorerMinW = 180.0f;
+        constexpr float kExplorerMaxW = 250.0f;
+        constexpr float kExplorerGap = 12.0f;            // between it and the program's card (folded, the rail's too)
         constexpr float kCardPad = 10.0f;                // inside the chat's card
         constexpr float kCardRadius = 14.0f;
         constexpr float kIconButton = 28.0f;             // the header's new chat and key
@@ -207,6 +211,7 @@ namespace testingplaygroundsynth::ui
         constexpr float kSendD = 28.0f;
         constexpr float kUsageH = 16.0f;                 // the last reply's tokens, under the message box
         constexpr uint32_t kChatA11yBase = 0x20000000u;  // the conversation's accessibility ids (ChatView)
+        constexpr uint32_t kExplorerA11yBase = 0x30000000u;   // the explorer's (Explorer.h)
         // The key dialog.
         constexpr float kKeyDialogW = 540.0f;
         constexpr float kKeyDialogH = 296.0f;
@@ -1526,6 +1531,7 @@ namespace testingplaygroundsynth::ui
                               "PRESETS   SAVE THE PROGRAM AND ITS DIALS ON THIS MAC, OR LOAD ONE");
         panelView_ = port_.panelView();
         chatOpen_ = port_.chatOpen();
+        explorerOpen_ = port_.explorerOpen();
         viewItem_ = button(TB::Shape::pill, chat::Icon::code, [] { return std::string("Code"); }, false,
                            [this] { return panelView_ ? TB::Look::ghost : TB::Look::raised; },
                            [this] { setPanelView(false); }, "Code view",
@@ -1599,6 +1605,38 @@ namespace testingplaygroundsynth::ui
             idFor(), spec(B::Shape::square, [this] { return chatOpen_ ? chat::Icon::chevronRight : chat::Icon::bubble; }, {},
                           false, {}, {}, [this] { setChatOpen(!chatOpen_); }, "Fold or open the chat",
                           "CHAT   FOLD IT AWAY FOR ROOM; THE RAIL AT THE RIGHT OPENS IT AGAIN")));
+        // The explorer (Explorer.h): its rows act as the tabs, LIBRARY, EXAMPLES and PRESETS do.
+        {
+            ExplorerItem::Hooks hooks;
+            hooks.open = [this](ExplorerItem::Section s, const ExplorerItem::Row& r) { openFromExplorer(s, r); };
+            hooks.rename = [this](ExplorerItem::Section s, const ExplorerItem::Row& r) {
+                if (s != ExplorerItem::Section::files || r.index < 0 || r.index >= files().count())
+                    return;
+                files().select(r.index);
+                files().beginRename(r.index);
+                setFocus(editorItem_);
+                dirty_ = true;
+            };
+            hooks.close = [this](ExplorerItem::Section s, const ExplorerItem::Row& r) {
+                if (s == ExplorerItem::Section::files)
+                    closeFile(r.index);
+            };
+            hooks.action = [this](ExplorerItem::Section s) {
+                if (s == ExplorerItem::Section::files)
+                {
+                    if (files().add())
+                        setFocus(editorItem_);         // its name is being typed in its tab
+                    dirty_ = true;
+                }
+                else if (s == ExplorerItem::Section::presets)
+                    openPresets();
+            };
+            explorerItem_ = add(std::make_unique<ExplorerItem>(kExplorerA11yBase, std::move(hooks)));
+        }
+        explorerToggleItem_ = add(std::make_unique<B>(
+            idFor(), spec(B::Shape::square, [this] { return explorerOpen_ ? chat::Icon::chevronLeft : chat::Icon::list; }, {},
+                          false, {}, {}, [this] { setExplorerOpen(!explorerOpen_); }, "Fold or open the explorer",
+                          "EXPLORER   FOLD IT AWAY FOR ROOM; THE RAIL AT THE LEFT OPENS IT AGAIN")));
         {
             B::Spec sp = spec(B::Shape::pill, [] { return chat::Icon::person; }, [this] { return accountLabel(); }, false,
                               [] { return B::Look::ghost; }, {}, [this] { openKeyDialog(DialogTab::account); }, "Your account",
@@ -1730,7 +1768,12 @@ namespace testingplaygroundsynth::ui
         // The columns: the chat about a third of the width, or, folded, a rail.
         chatW_ = chatOpen_ ? std::clamp(std::round(W * kChatShare), kChatMinW, kChatMaxW) : kChatRailW;
         chatX_ = W - kMargin - chatW_;
-        leftW_ = chatX_ - (chatOpen_ ? kChatGap : kChatRailGap) - kMargin;
+        // The explorer at the left, about a sixth of the width, or, folded, a rail; the program's card after it.
+        const float explorerW = explorerOpen_ ? std::clamp(std::round(W * kExplorerShare), kExplorerMinW, kExplorerMaxW)
+                                              : kChatRailW;
+        explorerCard_ = { kMargin, kMainY, explorerW, bottom - kMainY };
+        leftX_ = kMargin + explorerW + kExplorerGap;
+        leftW_ = chatX_ - (chatOpen_ ? kChatGap : kChatRailGap) - leftX_;
 
         // The top bar: the preset in its middle (clear of the product's name), the view's switch, the load and the
         // theme at its right.
@@ -1752,9 +1795,9 @@ namespace testingplaygroundsynth::ui
         }
 
         // The program's card's header: the actions at its right (Run last), the tabs from its left.
-        const float inX = kMargin + kInset, inW = leftW_ - 2.0f * kInset;
+        const float inX = leftX_ + kInset, inW = leftW_ - 2.0f * kInset;
         const float ay = kActionsY + 0.5f * (kActionH - 26.0f);
-        float ax = kMargin + leftW_ - kInset;
+        float ax = leftX_ + leftW_ - kInset;
         for (const int i : { runItem_, randomItem_, libraryItem_, examplesItem_ })
         {
             ButtonItem& b = at(i);
@@ -1855,8 +1898,9 @@ namespace testingplaygroundsynth::ui
 
         // The chat's card.
         card_ = { chatX_, kMainY, chatW_, bottom - kMainY };
-        programCard_ = { kMargin, kMainY, leftW_, bottom - kMainY };
+        programCard_ = { leftX_, kMainY, leftW_, bottom - kMainY };
         layoutChat();
+        layoutExplorer();
 
         // The zoom, in the status bar's right corner.
         {
@@ -2147,6 +2191,223 @@ namespace testingplaygroundsynth::ui
     funkgui::Point Panel::centreOfKey() const { return centreOf(keyItem_); }
 
     funkgui::Point Panel::centreOfChatToggle() const { return centreOf(chatToggleItem_); }
+
+    // ---- the explorer (Explorer.h) ---------------------------------------------------------------------------------
+    funkgui::Point Panel::centreOfExplorerToggle() const { return centreOf(explorerToggleItem_); }
+
+    ExplorerItem& Panel::explorer() { return static_cast<ExplorerItem&>(*items_[static_cast<std::size_t>(explorerItem_)]); }
+
+    const ExplorerItem& Panel::explorer() const
+    {
+        return static_cast<const ExplorerItem&>(*items_[static_cast<std::size_t>(explorerItem_)]);
+    }
+
+    void Panel::setExplorerOpen(bool open)
+    {
+        if (open == explorerOpen_)
+            return;
+        explorerOpen_ = open;
+        port_.setExplorerOpen(open);
+        if (open)
+        {
+            presetsAt_ = -100.0;                         // the presets read again at once
+            explorerKey_.clear();
+        }
+        layout();
+        dirty_ = true;
+    }
+
+    // The card's header (its title, drawn by draw(), and the chevron at its right) and the list under it; folded, the
+    // rail's button at its top and nothing else.
+    void Panel::layoutExplorer()
+    {
+        auto& toggle = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(explorerToggleItem_)]);
+        ExplorerItem& ex = explorer();
+        ex.setHidden(!explorerOpen_);
+        const funkgui::Rect& r = explorerCard_;
+        if (!explorerOpen_)
+        {
+            toggle.setBounds({ r.centreX() - 0.5f * kIconButton, r.y + 8.0f, kIconButton, kIconButton });
+            ex.setBounds({});
+            return;
+        }
+        const float hy = r.y + kCardPad;
+        toggle.setBounds({ r.right() - kCardPad - kIconButton, hy, kIconButton, kIconButton });
+        const float top = hy + kIconButton + 6.0f;
+        ex.setBounds({ r.x + 2.0f, top, r.w - 4.0f, std::max(0.0f, r.bottom() - 6.0f - top) });
+    }
+
+    // The explorer's rows from what they show (the tabs, the errors, the library files the program has, the presets),
+    // rebuilt only when that changes. The presets are read again every three seconds while it is open (a preset saved
+    // by the other playground, or by PRESETS, appears).
+    void Panel::syncExplorer()
+    {
+        if (!explorerOpen_ || explorerItem_ < 0)
+            return;
+        const double now = host_ != nullptr ? host_->nowSeconds() : 0.0;
+        if (presetsAt_ < 0.0 || now - presetsAt_ > 3.0)
+        {
+            presetList_ = port_.presets();
+            std::sort(presetList_.begin(), presetList_.end(),
+                      [](const PresetEntry& a, const PresetEntry& b) { return a.when != b.when ? a.when > b.when : a.name < b.name; });
+            presetsAt_ = now;
+        }
+        const auto erred = [this](const std::string& file) {
+            return std::any_of(problems_.begin(), problems_.end(), [&](const Problem& p) { return p.error && p.file == file; });
+        };
+        std::string key;
+        for (int i = 0; i < files().count(); ++i)
+            key += files().name(i) + (i == files().active() ? "*" : "") + (erred(files().name(i)) ? "!" : "") + '\x1f';
+        key += files().count() < static_cast<int>(kMaxFiles) ? "+" : "-";
+        for (const PresetEntry& e : presetList_)
+            key += '\x1e' + e.name + '\x1d' + e.when;
+        if (key == explorerKey_)
+            return;
+        explorerKey_ = std::move(key);
+
+        using S = ExplorerItem::Section;
+        std::vector<ExplorerItem::Group> groups;
+        {
+            ExplorerItem::Group g;
+            g.section = S::files;
+            g.title = "FILES";
+            for (int i = 0; i < files().count(); ++i)
+            {
+                ExplorerItem::Row r;
+                r.label = files().name(i);
+                const bool gui = r.label.size() > 4 && r.label.substr(r.label.size() - 4) == ".gui";
+                r.icon = i == 0 ? chat::Icon::code : gui ? chat::Icon::dial : chat::Icon::file;
+                r.active = i == files().active();
+                r.error = erred(r.label);
+                r.closable = i > 0;
+                r.index = i;
+                g.rows.push_back(std::move(r));
+            }
+            if (files().count() < static_cast<int>(kMaxFiles))
+            {
+                g.action = chat::Icon::plus;
+                g.actionTitle = "New file";
+            }
+            groups.push_back(std::move(g));
+        }
+        {
+            ExplorerItem::Group g;
+            g.section = S::library;
+            g.title = "LIBRARY";
+            std::string category;
+            for (std::size_t i = 0; i < std::size(kLibrary); ++i)
+            {
+                const LibraryFile& f = kLibrary[i];
+                if (category != f.category)
+                {
+                    category = f.category;
+                    ExplorerItem::Row h;
+                    h.label = upper(category);
+                    h.heading = true;
+                    g.rows.push_back(std::move(h));
+                }
+                ExplorerItem::Row r;
+                r.label = f.name;
+                r.icon = chat::Icon::blocks;
+                r.marked = files().find(f.name) >= 0;
+                r.index = static_cast<int>(i);
+                g.rows.push_back(std::move(r));
+            }
+            groups.push_back(std::move(g));
+        }
+        {
+            ExplorerItem::Group g;
+            g.section = S::examples;
+            g.title = "EXAMPLES";
+            for (std::size_t i = 0; i < std::size(kExamples); ++i)
+            {
+                ExplorerItem::Row r;
+                r.label = kExamples[i].title;
+                r.icon = chat::Icon::play;
+                r.index = static_cast<int>(i);
+                g.rows.push_back(std::move(r));
+            }
+            groups.push_back(std::move(g));
+        }
+        {
+            ExplorerItem::Group g;
+            g.section = S::presets;
+            g.title = "PRESETS";
+            g.action = chat::Icon::plus;
+            g.actionTitle = "Save a preset";
+            g.empty = "None yet: + saves this one";
+            for (const PresetEntry& e : presetList_)
+            {
+                ExplorerItem::Row r;
+                r.label = e.name;
+                r.detail = e.when.size() >= 10 ? e.when.substr(5, 5) : e.when;   // "10-27"
+                r.icon = chat::Icon::list;
+                r.key = e.name;
+                g.rows.push_back(std::move(r));
+            }
+            groups.push_back(std::move(g));
+        }
+        explorer().setContent(std::move(groups));
+        dirty_ = true;
+    }
+
+    void Panel::openFromExplorer(ExplorerItem::Section section, const ExplorerItem::Row& row)
+    {
+        using S = ExplorerItem::Section;
+        switch (section)
+        {
+            case S::files:
+                if (row.index >= 0 && row.index < files().count())
+                {
+                    files().endRename();
+                    files().select(row.index);
+                    setFocus(editorItem_);
+                }
+                break;
+            case S::library:
+                if (row.index >= 0 && row.index < static_cast<int>(std::size(kLibrary))
+                    && !addLibraryFile(kLibrary[static_cast<std::size_t>(row.index)].name))
+                    notice("NO ROOM FOR ANOTHER TAB: CLOSE ONE FIRST");
+                break;
+            case S::examples:
+                loadExample(row.index);
+                break;
+            case S::presets:
+                loadPresetNamed(row.key);
+                break;
+        }
+        explorerKey_.clear();                            // what it shows may have changed (a tab, a tick)
+        dirty_ = true;
+    }
+
+    // A preset from the explorer: as PRESETS' Load, asking first (a menu at the pointer) when the editor's files have
+    // changes no preset holds.
+    void Panel::loadPresetNamed(const std::string& name)
+    {
+        const auto load = [this, name] {
+            std::string why;
+            if (port_.loadPreset(name, why))
+                notice("PRESET: " + upper(name));
+            else
+                notice("NOT LOADED: " + upper(why));
+            dirty_ = true;
+        };
+        files().endRename();
+        port_.setDraft(files().draft());                 // what "edited" means is what the tabs show
+        if (!port_.presetEdited() || host_ == nullptr)
+        {
+            load();
+            return;
+        }
+        funkgui::MenuRequest request;
+        request.items.push_back({ 1, "Load " + name + " (the editor's changes are lost)" });
+        request.anchor = { pointer_.x, pointer_.y, 1.0f, 1.0f };
+        request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
+        host_->showMenu(request, [load](int chosen) {
+            if (chosen == 1)
+                load();
+        });
+    }
 
     void Panel::setChatOpen(bool open)
     {
@@ -3268,21 +3529,24 @@ namespace testingplaygroundsynth::ui
             request.items.push_back({ id++, e.title });
         request.anchor = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(examplesItem_)]).bounds();
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
-        host_->showMenu(request, [this](int chosen) {
-            if (chosen < 1 || chosen > static_cast<int>(std::size(kExamples)))
-                return;
-            // The example replaces the program's text as one edit (Cmd-Z brings the text back), and runs; the other
-            // files stay.
-            files().endRename();
-            files().select(0);
-            funkgui::TextEditor& program = files().editor();
-            program.selectAll();
-            program.insert(kExamples[static_cast<std::size_t>(chosen - 1)].source);
-            program.setCaret({ 0, 0 });
-            program.setScroll(0.0f, 0.0f);
-            setFocus(editorItem_);
-            runNow();
-        });
+        host_->showMenu(request, [this](int chosen) { loadExample(chosen - 1); });
+    }
+
+    void Panel::loadExample(int i)
+    {
+        if (i < 0 || i >= static_cast<int>(std::size(kExamples)))
+            return;
+        // The example replaces the program's text as one edit (Cmd-Z brings the text back), and runs; the other files
+        // stay.
+        files().endRename();
+        files().select(0);
+        funkgui::TextEditor& program = files().editor();
+        program.selectAll();
+        program.insert(kExamples[static_cast<std::size_t>(i)].source);
+        program.setCaret({ 0, 0 });
+        program.setScroll(0.0f, 0.0f);
+        setFocus(editorItem_);
+        runNow();
     }
 
     // LIBRARY: the library's files by category, a tick on those the program has. One the program lacks becomes a tab
@@ -3761,6 +4025,7 @@ namespace testingplaygroundsynth::ui
     void Panel::tick(float dt)
     {
         refresh(host_ != nullptr ? host_->nowSeconds() : 0.0);
+        syncExplorer();
         // The message box follows its text, one row to eight: the conversation gives it the room.
         if (std::fabs(inputItem().desiredHeight(inputItem().box().w, kBarH) - composerH_) > 0.5f)
             layoutChat();
@@ -3912,6 +4177,19 @@ namespace testingplaygroundsynth::ui
             {
                 c.disc(tx - 9.0f, mid, 3.0f, light);
                 c.text(text.c_str(), tx, c.capCentreTop(mid, chat::kSmall), chat::kSmall, failed ? pal.danger : pal.soft);
+            }
+        }
+
+        // The explorer's card, as the chat's: its title in the header (its chevron is an item, its rows another); folded,
+        // a rail with the button that opens it.
+        {
+            const funkgui::Canvas::Scope s(c, kExplorerTag, false);
+            const funkgui::Rect& r = explorerCard_;
+            c.rrect(r.x, r.y, r.w, r.h, kCardRadius, pal.card, 1.0f, pal.cardEdge);
+            if (explorerOpen_)
+            {
+                const float ty = r.y + kCardPad + 0.5f * kIconButton;
+                c.text("Explorer", r.x + kCardPad + 4.0f, c.capCentreTop(ty, chat::kTitle), chat::kTitle, pal.text);
             }
         }
 
@@ -4428,7 +4706,8 @@ namespace testingplaygroundsynth::ui
                 gui |= 1u << c;
         r ^= gui * 0x2C1B3C6Du;
         // The counters times odd constants: a change in any one of them changes the revision.
-        return r ^ (files().layoutRevision() * 0x85EBCA77u) ^ (layoutRevision_ * 0xC2B2AE3Du) ^ (chatA11y_ * 2654435761u);
+        return r ^ (files().layoutRevision() * 0x85EBCA77u) ^ (layoutRevision_ * 0xC2B2AE3Du) ^ (chatA11y_ * 2654435761u)
+             ^ (explorer().revision() * 0x27220A95u) ^ (explorerOpen_ ? 0x1B873593u : 0u);
     }
 
     void Panel::a11yAction(uint32_t id, funkgui::A11yAction a, double value)

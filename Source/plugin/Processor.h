@@ -168,6 +168,8 @@ namespace testingplaygroundsynth
         void setPanelView(bool on) override { panelView_.store(on); }
         bool chatOpen() const override { return chatOpen_.load(); }
         void setChatOpen(bool open) override { chatOpen_.store(open); }
+        bool explorerOpen() const override { return explorerOpen_.load(); }
+        void setExplorerOpen(bool open) override { explorerOpen_.store(open); }
         void playNote(int note, float velocity) override;
         void playWheel(bool pitch, float value) override;
         std::vector<std::string> guiPages() const override;
@@ -226,6 +228,7 @@ namespace testingplaygroundsynth
         std::atomic<int> editorW_{ 0 }, editorH_{ 0 };
         std::atomic<bool> panelView_{ false };                       // the editor's PANEL view, in the session
         std::atomic<bool> chatOpen_{ true };                         // its chat's column open, in the session
+        std::atomic<bool> explorerOpen_{ true };                     // its explorer open, in the session
         mutable std::mutex pagesMutex_;
         std::vector<std::string> guiPages_;                      // its interface's pages (guiPages), in the session
         double alertsAt_ = 0.0;                                  // when alerts_ last gained a bit (ms)
