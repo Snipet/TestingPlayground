@@ -19,6 +19,8 @@
 //             program run again with an edited interface keeps it; pills and a side list switch their pages too
 //   KEYBOARD  (an instrument) a press on a key plays its note: the output sounds, at the key's pitch; letting go
 //             releases it (silent); a drag slides to the next key
+//   WHEELS    (an instrument) the keyboard's wheels: the pitch wheel dragged up bends +1 and reaches the Engine's Host
+//             block (host.fm); let go, it springs back to 0; the mod wheel stays where it is left
 //   LIVE      a knob's live= follows its field: the field's value as a share of the parameter's range
 #include "Probe.h"
 
@@ -83,7 +85,7 @@ namespace
 
     std::string gui(const std::string& title)
     {
-        const std::string keyboard = kInstrument ? "            keyboard from=48 keys=25\n" : "";
+        const std::string keyboard = kInstrument ? "            keyboard from=48 keys=25 wheels\n" : "";
         return R"GUI(// The styles probe's interface.
 class "big" size=72 arc=yellow
 defaults knob look=ring
@@ -337,6 +339,30 @@ PROBE(gui, styles)
         for (const funkgui::A11yItem& item : host.accessibility())
             a11y = a11y || item.title == "Keyboard";
         P.eq("keyboard.a11y", a11y ? 1 : 0, 1);
+
+        // ---- WHEELS ----------------------------------------------------------------------------------------------------
+        const funkgui::Rect pw = keys->pitchWheel(), mw = keys->modWheel();
+        P.eq("wheels.shown", keys->wheels() && pw.w > 0.0f && mw.w > 0.0f && pw.right() <= mw.x ? 1 : 0, 1);
+        P.eq("wheels.keys_after", keys->noteAt({ mw.centreX(), mw.centreY() }) < 0 ? 1 : 0, 1);
+        host.press(pw.centreX(), pw.centreY());
+        host.moveTo(pw.centreX(), pw.y + 1.0f, 4);
+        host.tick(1);
+        P.near("wheels.pitch_up", static_cast<double>(keys->pitch()), 1.0, 1e-6);
+        listen(processor, host, 1);
+        P.near("wheels.pitch_reaches_host", static_cast<double>(processor.engine().host().pitchbend), 1.0, 1e-6);
+        host.release();
+        host.tick(1);
+        P.eq("wheels.pitch_springs_back", keys->pitch() == 0.0f ? 1 : 0, 1);
+        listen(processor, host, 1);
+        P.eq("wheels.pitch_rest_reaches_host", processor.engine().host().pitchbend == 0.0f ? 1 : 0, 1);
+        host.press(mw.centreX(), mw.centreY());
+        host.moveTo(mw.centreX(), mw.y + 6.0f + 0.25f * (mw.h - 12.0f), 4);
+        host.release();
+        host.tick(1);
+        P.near("wheels.mod_stays", static_cast<double>(keys->mod()), 0.75, 1e-3);
+        listen(processor, host, 1);
+        P.near("wheels.mod_reaches_host", static_cast<double>(processor.engine().host().modwheel), 0.75, 1e-3);
+        P.eq("wheels.settled", keys->settled() ? 1 : 0, 1);
     }
     else
     {

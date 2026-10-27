@@ -19,7 +19,9 @@
 //            the example's own report is not silent and has no alert; an instrument's Inharmonic line: clean for the
 //            sine voice; at C7 a naive saw's aliases above -40 dB, a wavetable voice's (wavetable.fm, its table built
 //            once in a module Shared) clean; a saw's own edges are no click, a phase that jumps once is
-//            (the prompt teaches the FFT's builtins and the module Shared too)
+//            (the prompt teaches the FFT's builtins and the module Shared too); the Host block (host.fm) as asked:
+//            its line in the report, an instrument's pitch wheel up 2 semitones, an effect's delay of a beat at 90 BPM
+//            (the prompt has THE HOST and host.fm word for word)
 //   THREADS  the prompt has THREADS (parallel for, parallel { }, the races refused, a plan an iteration, the cost) and
 //            this kind's advice; a program written as it says (an effect: a resonator bank of sixteen bands run at
 //            once, a region a part of 256 samples; an instrument: eight wavetables built at once in Shared's init,
@@ -289,6 +291,9 @@ PROBE(plugin, chatexample)
     P.eq("prompt.fft", has(prompt, "fft_create(n)") && has(prompt, "fft_forward(plan, in, bins)")
                            && has(prompt, "fft_inverse(plan, bins, out)") ? 1 : 0, 1);
     P.eq("prompt.shared", has(prompt, "module Shared") && has(prompt, "Shared*") ? 1 : 0, 1);
+    P.eq("prompt.host", has(prompt, "THE HOST: TEMPO") && has(prompt, "Host* host;") && has(prompt, "lfo.follow(")
+                            && has(prompt, "<host_file name=\"host.fm\">\n" + std::string(tp::Patch::hostSource()) + "</host_file>")
+                            ? 1 : 0, 1);
     P.eq("prompt.interface_section", has(prompt, "THE INTERFACE: panel.gui") && has(prompt, "section \"FILTER\"")
                                          && has(prompt, "tabs { page") && has(prompt, "knob cutoff size=large taper=log")
                                          && has(prompt, "spectrum out") && has(prompt, "envelope attack decay sustain release")
@@ -427,6 +432,23 @@ PROBE(plugin, chatexample)
         P.eq("measure.chord", has(r, "A chord (57 61 64 69)") ? 1 : 0, 1);
         P.eq("measure.unknown_dial", has(r, "No dial is named 'volume'") ? 1 : 0, 1);
         P.eq("measure.sine_nothing_inharmonic", has(r, "Inharmonic: nothing below 20 kHz") ? 1 : 0, 1);
+        // The Host block (host.fm) as measure_output is asked: the pitch wheel up bends it 2 semitones.
+        {
+            std::string bent = "#include \"host.fm\"\n" + voice;
+            bent.replace(bent.find("    float rate;"), 0, "    Host* host;\n");
+            bent.replace(bent.find("phase += step;"), 14, "phase += step * expf(0.0577622650f * 2 * host->pitchbend);");
+            tp::measure::Request wheels;
+            wheels.notes = { 57 };
+            wheels.bpm = 90.0f;
+            wheels.modwheel = 0.5f;
+            wheels.pitchbend = 1.0f;
+            const std::string w = tp::measure::run(tp::singleFile(bent), wheels);
+            if (!has(w, "Host: "))
+                std::printf("a sine voice on the pitch wheel:\n%s", w.c_str());
+            P.eq("measure.host_line", has(w, "Host: playing from the song's start at 90 BPM, mod wheel 0.50, pitch bend 1.00.") ? 1 : 0, 1);
+            P.near("measure.host_bent_hz", firstPartial(w), 220.0 * std::pow(2.0, 2.0 / 12.0), 0.3);
+            P.eq("measure.host_none_without", has(r, "Host: ") ? 0 : 1, 1);
+        }
         // Aliasing at C7 (2093 Hz): a naive saw's shows; a wavetable's, its table built once in Shared, does not.
         {
             const auto inharmonicDb = [](const std::string& report) {
@@ -524,6 +546,30 @@ PROBE(plugin, chatexample)
             "    }\n};\n";
         const std::string h = tp::measure::run(tp::singleFile(hum), {});
         P.eq("measure.self_sound_flagged", has(h, "Note: It makes sound from silence") ? 1 : 0, 1);
+        // A delay of one beat (host.fm) at the tempo measure_output is asked for: 90 BPM, 666.7 ms.
+        const std::string beat =
+            "#include \"host.fm\"\n"
+            "module Effect\n{\n"
+            "    Host* host;\n    float buf[65536];\n    int w;\n"
+            "    void process(float* restrict left, float* restrict right, int n)\n"
+            "    {\n"
+            "        const int d = (int)(48000 * 60 / host->bpm);\n"
+            "        for (int i = 0; i < n; ++i)\n"
+            "        {\n"
+            "            buf[w] = left[i];\n"
+            "            int at = w - d;\n"
+            "            if (at < 0) at += 65536;\n"
+            "            left[i] = buf[at];\n            right[i] = left[i];\n"
+            "            w += 1;\n            if (w >= 65536) w = 0;\n"
+            "        }\n"
+            "    }\n};\n";
+        tp::measure::Request synced;
+        synced.bpm = 90.0f;
+        const std::string b = tp::measure::run(tp::singleFile(beat), synced);
+        if (!has(b, "after 666.7 ms"))
+            std::printf("a delay of one beat at 90 BPM:\n%s", b.c_str());
+        P.eq("measure.host_line", has(b, "Host: playing from the song's start at 90 BPM.") ? 1 : 0, 1);
+        P.eq("measure.host_beat_delay", has(b, "the response peaks at -6.0 dBFS after 666.7 ms") ? 1 : 0, 1);
     }
     // ---- THREADS -----------------------------------------------------------------------------------------------------
     {

@@ -1,10 +1,17 @@
 // Tremolo: an LFO on the level. init runs before the first block, and again when the sample rate changes: here it
-// keeps the rate's period, which the LFO steps by.
+// keeps the rate's period, which the LFO steps by. SYNC locks it to the host's tempo (host.fm, a file the plugin
+// provides): a cycle each 1/16, 1/8, 1/4 or 1/2 note, its phase taken from the song's position, so it stays in time
+// with the bar wherever the song starts; OFF, RATE sets it.
+#include "host.fm"
+#pragma panel options sync "OFF" "1/16" "1/8" "1/4" "1/2"
+
 module Effect
 {
     param float rate [[fminus::range(0.1, 20)]] [[fminus::default(5)]];     // Hz
     param float depth [[fminus::range(0, 1)]] [[fminus::default(0.5)]];
     param bool stereo [[fminus::default(1)]];                               // the right side half a cycle behind
+    param int sync [[fminus::range(0, 4)]] [[fminus::default(0)]];          // OFF, or a cycle each 1/16 to 1/2 note
+    Host* host;                                                             // the plugin's: the tempo, the position
     float phase;                                                            // 0 to 1
     float period;                                                           // 1 / the sample rate
 
@@ -15,8 +22,16 @@ module Effect
 
     void process(float* restrict left, float* restrict right, int n)
     {
+        const int s = sync[0];
+        const float beats = s == 1 ? 0.25f : s == 2 ? 0.5f : s == 3 ? 1.0f : 2.0f;   // quarter notes a cycle
+        const float perSample = host->bpm / 60 * period;                              // quarter notes a sample
         for (int i = 0; i < n; ++i)
         {
+            if (s > 0)
+            {
+                const float p = (host->beat + i * perSample) / beats;                 // the song's position
+                phase = p - floorf(p);
+            }
             const float l = 0.5f + 0.5f * cosf(6.28318531f * phase);   // 1 down to 0 and back
             const float r = stereo[i] ? 1 - l : l;
             left[i] *= 1 - depth[i] * l;

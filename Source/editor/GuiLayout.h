@@ -26,7 +26,7 @@
 //   menu            its longest name + 26 (width= sets it) x 40
 //   xy              120 square (size=), and 16 for its label
 //   envelope        150 x 80          scope 150 x 80          spectrum 220 x 80          shader 200 x 120
-//   keyboard        16 a white key x 72
+//   keyboard        16 a white key x 72, and 56 for its wheels
 //   meter 34 x 80 (a field's 22)   vu 112 x 80   led 40 x 80   number 76 x 80
 // and each as wide as its label needs.
 #pragma once
@@ -76,6 +76,7 @@ namespace testingplayground::ui
     inline constexpr float kGuiSectionTop = 20.0f, kGuiSectionSide = 10.0f, kGuiSectionBottom = 10.0f;
     inline constexpr float kGuiSectionEdge = 6.0f;         // a section's frame's top edge, under its top (its title on it)
     inline constexpr float kGuiLabelH = 16.0f;             // a control's label, over its cell
+    inline constexpr float kGuiWheelsW = 56.0f;            // a keyboard's pitch and mod wheels, left of its keys
 
     // A knob's places in its cell (relative to its top left): its face (`d` across, its centre at cx, cy), its label's
     // and its value's tops when it has them, and the cell's size. small, medium and large are faces of 22, 30 and 56 px.

@@ -1460,11 +1460,16 @@ namespace testingplayground
                     note(e.name, "an effect plays no notes: a keyboard is an instrument's");
                     return;
                 }
-                for (const Token& a : e.args)
-                    note(a, "keyboard takes from=, keys= or octaves=, and color=: '" + a.value + "' is left out");
                 GuiNode n;
                 n.kind = GuiKind::keyboard;
                 n.line = e.name.line;
+                for (const Token& a : e.args)
+                {
+                    if (a.is(Token::Kind::name) && a.value == "wheels")
+                        n.wheels = true;
+                    else
+                        note(a, "keyboard takes wheels, from=, keys= or octaves=, and color=: '" + a.value + "' is left out");
+                }
                 for (const Prop& p : e.props)
                 {
                     if (layoutProp(n, p, false))
@@ -1477,8 +1482,10 @@ namespace testingplayground
                         n.keys = 12 * static_cast<int>(number(p, 1.0f, 7.0f, 2.0f)) + 1;
                     else if (p.key == "color")
                         n.color = color(p.value);
+                    else if (p.key == "wheels")
+                        n.wheels = flag(p);
                     else
-                        unknown(p, "keyboard", "from=, keys=, octaves=, color=, width=, height=, grow=, margin=, self=");
+                        unknown(p, "keyboard", "wheels, from=, keys=, octaves=, color=, width=, height=, grow=, margin=, self=");
                 }
                 if (n.from + n.keys > 128)
                     n.keys = 128 - n.from;

@@ -9,6 +9,10 @@
 //   y = lfo.triangle(offset);  y = lfo.saw(offset);  y = lfo.square(offset);
 //   y = lfo.random();              a new value each cycle, held (offset does not apply)
 //   lfo.reset(phase);              0 to 1 (a key's retrigger)
+//   lfo.follow(position, beats);   in step with the song (host.fm): the phase from its position in quarter notes
+//                                  (host->beat + i * host->bpm / (60 * rate)), a cycle each `beats` of them (1 a
+//                                  quarter note, 4 a bar of 4/4), instead of advance; a tempo-synced rate without
+//                                  following the song: lfo.advance(host->bpm / 60 / beats / rate)
 //   lfo.phase                      0 to 1
 module Lfo
 {
@@ -31,6 +35,15 @@ module Lfo
         if (state <= 0)
             state += 2147483647;
         held = 2 * ((float)state / 2147483647.0f) - 1;
+    }
+
+    void follow(float position, float beats)
+    {
+        const float p = position / beats;
+        const float next = p - floorf(p);
+        if (next < phase)                      // a new cycle: the random shape's next value
+            draw();
+        phase = next;
     }
 
     void advance(float step)
