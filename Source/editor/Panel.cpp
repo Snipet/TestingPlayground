@@ -24,6 +24,7 @@
 #include "Product.h"
 
 #include <funkgui/canvas/Canvas.h>
+#include <funkgui/canvas/Images.h>
 #include <funkgui/canvas/Tags.h>
 #include <funkgui/core/Theme.h>
 #include <funkgui/core/TypeScale.h>
@@ -41,6 +42,7 @@
 #include <funkgui/widgets/ValueModel.h>
 
 #include <algorithm>
+#include <map>
 #include <array>
 #include <bit>
 #include <cctype>
@@ -1607,8 +1609,17 @@ namespace testingplayground::ui
         chatViewItem_ = add(std::make_unique<ChatView>(
             kChatA11yBase, ChatView::Hooks{ [this](const std::string& s) { suggest(s); },
                                             [this] { openKeyDialog(DialogTab::key); },
-                                            [this] { openKeyDialog(DialogTab::account); } }));
-        inputItem_ = add(std::make_unique<InputItem>(idFor(), [this] { sendChat(); }));
+                                            [this] { openKeyDialog(DialogTab::account); },
+                                            [this](const std::vector<std::string>& a) { port_.chat().answer(a); } }));
+        inputItem_ = add(std::make_unique<InputItem>(idFor(), [this] { sendChat(); }, [this](uint32_t id) {
+            port_.chat().detach(id);
+            chatAt_ = -1.0;
+            dirty_ = true;
+        }));
+        attachItem_ = add(std::make_unique<B>(
+            idFor(), spec(B::Shape::circle, [] { return chat::Icon::image; }, {}, false, [] { return B::Look::ghost; },
+                          [this] { return !chat_.busy; }, [this] { openPictures(); }, "Add pictures",
+                          "PICTURES   ADD PICTURES FOR CLAUDE (A PANEL TO TAKE AFTER, A SKETCH), OR DROP THEM ON THE CHAT")));
         modelItem_ = add(std::make_unique<B>(
             idFor(), spec(B::Shape::pill, {}, [this] { return modelLabel(); }, true, [] { return B::Look::ghost; }, {},
                           [this] { openModels(); }, "Model", "MODEL   THE CLAUDE MODEL THE CHAT TALKS TO")));
@@ -1630,6 +1641,22 @@ namespace testingplayground::ui
             fast.shown = [this] { return chatTakesFast(); };
             fast.checked = [this] { return chat_.fast; };
             fastItem_ = add(std::make_unique<B>(idFor(), std::move(fast)));
+        }
+        {
+            B::Spec web = spec(B::Shape::pill, [] { return chat::Icon::globe; }, [] { return std::string("Web"); }, false,
+                               [this] { return chat_.web && chat_.webBlocked.empty() ? B::Look::primary : B::Look::ghost; },
+                               [this] { return chat_.webBlocked.empty(); },
+                               [this] {
+                                   port_.chat().setWeb(!chat_.web);
+                                   chatAt_ = -1.0;
+                                   dirty_ = true;
+                               },
+                               "Web search",
+                               "WEB   CLAUDE SEARCHES THE WEB AND READS PAGES AND PDFS (DATA SHEETS, PAPERS): $10 A THOUSAND "
+                               "SEARCHES, WITH YOUR OWN API KEY");
+            web.shown = [this] { return chatTakesWeb(); };
+            web.checked = [this] { return chat_.web && chat_.webBlocked.empty(); };
+            webItem_ = add(std::make_unique<B>(idFor(), std::move(web)));
         }
         sendItem_ = add(std::make_unique<B>(
             idFor(), spec(B::Shape::circle, [this] { return chat_.busy ? chat::Icon::stop : chat::Icon::arrowUp; }, {},
@@ -1848,7 +1875,8 @@ namespace testingplayground::ui
         const float inX = card_.x + kCardPad, inW = card_.w - 2.0f * kCardPad;
         const float hy = card_.y + kCardPad;
         // Folded: every item of the chat hidden but the rail's button, at its top.
-        for (const int i : { newChatItem_, keyItem_, accountItem_, modelItem_, thinkingItem_, fastItem_, sendItem_ })
+        for (const int i : { newChatItem_, keyItem_, accountItem_, modelItem_, thinkingItem_, fastItem_, webItem_, attachItem_,
+                             sendItem_ })
             static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(i)]).setHidden(!chatOpen_);
         chatView().setHidden(!chatOpen_);
         inputItem().setHidden(!chatOpen_);
@@ -1901,22 +1929,30 @@ namespace testingplayground::ui
         auto& model = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(modelItem_)]);
         auto& thinking = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(thinkingItem_)]);
         auto& fast = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(fastItem_)]);
+        auto& web = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(webItem_)]);
         auto& send = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(sendItem_)]);
+        auto& attach = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(attachItem_)]);
         const float y = bar.y + std::floor((bar.h - kPillH) * 0.5f) - 3.0f;
-        model.setBounds({ bar.x + 6.0f, y, kPillH, kPillH });
-        thinking.setBounds({ bar.x + 6.0f, y, kPillH, kPillH });
-        fast.setBounds({ bar.x + 6.0f, y, kPillH, kPillH });
-        const bool withFast = chatTakesFast();
+        // The pictures' button first, then the pills.
+        attach.setBounds({ bar.x + 6.0f, y, kPillH, kPillH });
+        const float x0 = bar.x + 6.0f + kPillH + 4.0f;
+        model.setBounds({ x0, y, kPillH, kPillH });
+        thinking.setBounds({ x0, y, kPillH, kPillH });
+        fast.setBounds({ x0, y, kPillH, kPillH });
+        web.setBounds({ x0, y, kPillH, kPillH });
+        const bool withFast = chatTakesFast(), withWeb = chatTakesWeb();
         const float fw = withFast ? fast.preferredWidth() + 4.0f : 0.0f;
-        const float room = bar.w - 12.0f - kSendD - 8.0f - fw;
+        const float ww = withWeb ? web.preferredWidth() + 4.0f : 0.0f;
+        const float room = bar.right() - 6.0f - kSendD - 8.0f - fw - ww - x0;
         float mw = model.preferredWidth(), tw = thinking.preferredWidth();
         if (mw + 4.0f + tw > room)
             tw = std::max(64.0f, room - 4.0f - mw);
         if (mw + 4.0f + tw > room)
             mw = std::max(64.0f, room - 4.0f - tw);
-        model.setBounds({ bar.x + 6.0f, y, mw, kPillH });
-        thinking.setBounds({ bar.x + 6.0f + mw + 4.0f, y, tw, kPillH });
-        fast.setBounds({ bar.x + 6.0f + mw + 4.0f + tw + 4.0f, y, withFast ? fw - 4.0f : 0.0f, kPillH });
+        model.setBounds({ x0, y, mw, kPillH });
+        thinking.setBounds({ x0 + mw + 4.0f, y, tw, kPillH });
+        fast.setBounds({ x0 + mw + 4.0f + tw + 4.0f, y, withFast ? fw - 4.0f : 0.0f, kPillH });
+        web.setBounds({ x0 + mw + 4.0f + tw + 4.0f + fw, y, withWeb ? ww - 4.0f : 0.0f, kPillH });
         send.setBounds({ bar.right() - 6.0f - kSendD, bar.y + std::floor((bar.h - kSendD) * 0.5f) - 3.0f, kSendD, kSendD });
         barLabels_ = barLabels();
     }
@@ -1937,7 +1973,134 @@ namespace testingplayground::ui
     {
         for (const int i : guiKeyboards_)                // a note held as the editor closes is let go
             static_cast<GuiKeyboardItem&>(*items_[static_cast<std::size_t>(i)]).release();
+        releasePictures();
     }
+
+    // ---- pictures ------------------------------------------------------------------------------------------------------
+    namespace
+    {
+        // How many Panels hold each picture in FunkGui's registry (the message thread's): the last to let go removes it.
+        std::map<uint32_t, int>& pictureUse()
+        {
+            static std::map<uint32_t, int> use;
+            return use;
+        }
+    }
+
+    void Panel::syncPictures()
+    {
+        std::vector<const ChatPicture*> want;
+        for (const ChatPicturePtr& p : chat_.attached)
+            want.push_back(p.get());
+        for (const ChatEntry& e : chat_.entries)
+            for (const ChatPicturePtr& p : e.pictures)
+                want.push_back(p.get());
+        std::vector<uint32_t> now;
+        for (const ChatPicture* p : want)
+        {
+            if (p->thumb.empty() || std::find(now.begin(), now.end(), p->id) != now.end())
+                continue;
+            now.push_back(p->id);
+            if (std::find(pictures_.begin(), pictures_.end(), p->id) != pictures_.end())
+                continue;
+            if (pictureUse()[p->id]++ == 0)
+                funkgui::images::set(p->id, p->thumbWidth, p->thumbHeight, p->thumb.data());
+            pictures_.push_back(p->id);
+        }
+        for (auto it = pictures_.begin(); it != pictures_.end();)
+        {
+            if (std::find(now.begin(), now.end(), *it) != now.end())
+            {
+                ++it;
+                continue;
+            }
+            if (--pictureUse()[*it] <= 0)
+            {
+                pictureUse().erase(*it);
+                funkgui::images::remove(*it);
+            }
+            it = pictures_.erase(it);
+        }
+    }
+
+    void Panel::releasePictures()
+    {
+        for (const uint32_t id : pictures_)
+            if (--pictureUse()[id] <= 0)
+            {
+                pictureUse().erase(id);
+                funkgui::images::remove(id);
+            }
+        pictures_.clear();
+    }
+
+    void Panel::openPictures()
+    {
+        if (host_ == nullptr)
+            return;
+        funkgui::FileRequest request;
+        request.mode = funkgui::FileRequest::Mode::openMany;
+        request.title = "Add pictures for Claude";
+        request.pattern = "*.png;*.jpg;*.jpeg;*.gif;*.webp;*.heic;*.heif;*.tif;*.tiff;*.bmp";
+        host_->chooseFiles(request, [this](const std::vector<std::string>& paths) {
+            if (paths.empty())
+                return;
+            port_.chat().attach(paths);
+            chatAt_ = -1.0;
+            dirty_ = true;
+        });
+    }
+
+    bool Panel::filesInterest(const std::vector<std::string>& paths) const
+    {
+        if (!chatOpen_ || keyOpen_ || presets_.isOpen())
+            return false;
+        return std::any_of(paths.begin(), paths.end(), [](const std::string& p) { return isPictureName(p); });
+    }
+
+    void Panel::filesDragEnter(const std::vector<std::string>&, float x, float y)
+    {
+        dropActive_ = true;
+        dropHover_ = card_.contains({ x, y });
+        dirty_ = true;
+    }
+
+    void Panel::filesDragMove(float x, float y)
+    {
+        const bool over = card_.contains({ x, y });
+        if (over != dropHover_)
+        {
+            dropHover_ = over;
+            dirty_ = true;
+        }
+    }
+
+    void Panel::filesDragExit()
+    {
+        dropActive_ = dropHover_ = false;
+        dirty_ = true;
+    }
+
+    void Panel::filesDropped(const std::vector<std::string>& paths)
+    {
+        const bool onChat = dropHover_;
+        dropActive_ = dropHover_ = false;
+        dirty_ = true;
+        if (!onChat)
+            return;
+        std::vector<std::string> pictures;
+        for (const std::string& p : paths)
+            if (isPictureName(p))
+                pictures.push_back(p);
+        if (!pictures.empty())
+        {
+            port_.chat().attach(pictures);
+            chatAt_ = -1.0;
+        }
+    }
+
+    funkgui::Point Panel::centreOfAttach() const { return centreOf(attachItem_); }
+    const InputItem& Panel::chatInputItem() const { return inputItem(); }
 
     std::optional<funkgui::Point> Panel::centreOfDial(int slot) const
     {
@@ -1998,7 +2161,8 @@ namespace testingplayground::ui
             unread_ = false;
             // The focus leaves the chat's items with them.
             const int f = focus_;
-            if (f == inputItem_ || f == modelItem_ || f == thinkingItem_ || f == fastItem_ || f == sendItem_ || f == newChatItem_
+            if (f == inputItem_ || f == modelItem_ || f == thinkingItem_ || f == fastItem_ || f == webItem_ || f == sendItem_
+                || f == attachItem_ || f == newChatItem_
                 || f == keyItem_ || f == accountItem_)
                 setFocus(panelView_ ? -1 : editorItem_);
         }
@@ -2031,6 +2195,12 @@ namespace testingplayground::ui
         if (!items_[static_cast<std::size_t>(fastItem_)]->shown())
             return std::nullopt;
         return centreOf(fastItem_);
+    }
+    std::optional<funkgui::Point> Panel::centreOfWeb() const
+    {
+        if (!items_[static_cast<std::size_t>(webItem_)]->shown())
+            return std::nullopt;
+        return centreOf(webItem_);
     }
     funkgui::Point Panel::centreOfDialogTab(bool account) const
     {
@@ -2097,6 +2267,7 @@ namespace testingplayground::ui
         return static_cast<const InputItem&>(*items_[static_cast<std::size_t>(inputItem_)]);
     }
     funkgui::TextEditor& Panel::chatInput() noexcept { return inputItem().editor(); }
+    const std::string& Panel::chatPlaceholder() const { return inputItem().placeholder(); }
     const std::string& Panel::transcript() const { return chatView().text(); }
 
     void Panel::attach(funkgui::HostServices& host)
@@ -2375,10 +2546,18 @@ namespace testingplayground::ui
         return false;
     }
 
+    bool Panel::chatTakesWeb() const
+    {
+        for (const ChatModel& m : chat_.models)
+            if (m.id == chat_.model)
+                return m.web;
+        return false;
+    }
+
     // What the bar's layout depends on: the pills' labels, and whether fast mode's is there.
     std::string Panel::barLabels() const
     {
-        return modelLabel() + '|' + thinkingLabel() + (chatTakesFast() ? "|fast" : "");
+        return modelLabel() + '|' + thinkingLabel() + (chatTakesFast() ? "|fast" : "") + (chatTakesWeb() ? "|web" : "");
     }
 
     std::string Panel::thinkingLabel() const
@@ -2404,10 +2583,18 @@ namespace testingplayground::ui
             chat_ = chat.chatState();
             if (chat_.busy && !wasBusy)
                 busySince_ = nowSec;
+            syncPictures();
+            {
+                const float strip = inputItem().stripHeight();
+                inputItem().setPictures(chat_.attached, chat_.attaching);
+                if (inputItem().stripHeight() != strip)
+                    layoutChat();                        // the row of pictures came or went: the box grows or shrinks
+            }
             chatView().show(chat_, emptyChat(chat_));
-            inputItem().setPlaceholder(chat_.busy ? "Claude is working (the square button stops it)"
-                                                  : (product::kIsInstrument ? "Ask Claude for a sound, or about the code"
-                                                                            : "Ask Claude for an effect, or about the code"));
+            inputItem().setPlaceholder(chat_.busy     ? "Claude is working (the square button stops it)"
+                                       : chat_.asking ? "Answer above, or write your own answer"
+                                       : (product::kIsInstrument ? "Ask Claude for a sound, or about the code"
+                                                                 : "Ask Claude for an effect, or about the code"));
             if (barLabels() != barLabels_)
                 placeChatBar();
             if (accountLabel() != headerLabel_)          // signed in or out, or the credit came
@@ -2479,7 +2666,7 @@ namespace testingplayground::ui
     {
         funkgui::TextEditor& in = inputItem().editor();
         const std::string text = in.text();
-        if (text.find_first_not_of(" \t\n") == std::string::npos || chat_.busy)
+        if ((text.find_first_not_of(" \t\n") == std::string::npos && chat_.attached.empty()) || chat_.busy)
             return;
         if (!chat_.ready())
         {
@@ -3864,6 +4051,19 @@ namespace testingplayground::ui
                    funkgui::type::kMicro, th.ink52);
         }
 
+        if (dropActive_ && chatOpen_)
+        {
+            // A drag of pictures over the editor: the chat's card takes them.
+            const funkgui::Canvas::Scope s(c, kChatTag, false);
+            const chat::Palette p = chat::palette(th);
+            const funkgui::Rect r{ card_.x + 6.0f, card_.y + 6.0f, card_.w - 12.0f, card_.h - 12.0f };
+            c.rrect(r.x, r.y, r.w, r.h, kCardRadius - 4.0f, dropHover_ ? p.accent.withAlpha(0.14f) : p.card.withAlpha(0.6f),
+                    dropHover_ ? 2.0f : 1.0f, dropHover_ ? p.accent : p.composerEdge);
+            chat::drawIcon(c, chat::Icon::image, r.centreX(), r.centreY() - 18.0f, 26.0f, dropHover_ ? p.accent : p.soft);
+            c.text(dropHover_ ? "Drop to add for Claude" : "Drop pictures here for Claude", r.centreX(),
+                   c.capCentreTop(r.centreY() + 14.0f, chat::kStrong), chat::kStrong, dropHover_ ? p.text : p.soft,
+                   funkgui::Align::centre);
+        }
         if (keyOpen_)
             drawKeyDialog(c, th);
         if (presets_.isOpen())

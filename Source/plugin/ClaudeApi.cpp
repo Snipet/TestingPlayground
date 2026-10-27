@@ -279,6 +279,10 @@ namespace testingplayground::claude
                 b.summary = b.object.getProperty("content", "").toString().toStdString();
             else if (b.type == "tool_use" && cb_.toolStart)
                 cb_.toolStart(b.object.getProperty("name", "").toString().toStdString());
+            else if (b.type == "server_tool_use" && cb_.serverTool)
+                cb_.serverTool(b.object.getProperty("name", "").toString().toStdString());
+            else if (b.type.size() > 12 && b.type.compare(b.type.size() - 12, 12, "_tool_result") == 0 && cb_.serverResult)
+                cb_.serverResult(b.object);          // web_search_tool_result, web_fetch_tool_result, ...: whole
             else if (b.type == "fallback" && cb_.fallback)
                 cb_.fallback(b.object.getProperty("from", juce::var()).getProperty("model", "").toString().toStdString(),
                              b.object.getProperty("to", juce::var()).getProperty("model", "").toString().toStdString());
@@ -317,6 +321,13 @@ namespace testingplayground::claude
                 if (cb_.toolInput)
                     cb_.toolInput(b.json);
             }
+            else if (dt == "citations_delta")
+            {
+                const juce::var c = d.getProperty("citation", juce::var());
+                b.citations.add(c);
+                if (cb_.citation)
+                    cb_.citation(c);
+            }
             else if (dt == "compaction_delta")
             {
                 // The summary arrives whole, in one delta (the compaction docs).
@@ -333,12 +344,27 @@ namespace testingplayground::claude
             if (bo == nullptr)
                 return;
             if (b.type == "text")
+            {
                 bo->setProperty("text", juce::String::fromUTF8(b.text.c_str()));
+                if (!b.citations.isEmpty())
+                    bo->setProperty("citations", b.citations);
+            }
             else if (b.type == "thinking")
             {
                 bo->setProperty("thinking", juce::String::fromUTF8(b.thinking.c_str()));
                 if (!b.signature.empty())
                     bo->setProperty("signature", juce::String(b.signature));
+            }
+            else if (b.type == "server_tool_use")
+            {
+                // The API's own call: its input as it streamed (valid; kept as the API wrote it).
+                juce::var input;
+                if (b.json.empty() || !juce::JSON::parse(juce::String::fromUTF8(b.json.c_str()), input).wasOk()
+                    || input.getDynamicObject() == nullptr)
+                    input = b.object.getProperty("input", juce::var(new juce::DynamicObject()));
+                bo->setProperty("input", input);
+                if (cb_.serverInput)
+                    cb_.serverInput(b.object.getProperty("name", "").toString().toStdString(), input);
             }
             else if (b.type == "compaction")
             {
@@ -380,6 +406,12 @@ namespace testingplayground::claude
                 usage_.cacheWrite = static_cast<int64_t>(u.getProperty("cache_creation_input_tokens", 0));
             if (u.hasProperty("speed"))
                 usage_.speed = u.getProperty("speed", "").toString().toStdString();
+            const juce::var server = u.getProperty("server_tool_use", juce::var());
+            if (server.isObject())
+            {
+                usage_.webSearches = static_cast<int>(server.getProperty("web_search_requests", 0));
+                usage_.webFetches = static_cast<int>(server.getProperty("web_fetch_requests", 0));
+            }
             // With compaction on, the iterations list every sampling step: the top-level counts leave out a
             // compaction's, so the request's whole cost is their sum.
             const juce::var iterations = u.getProperty("iterations", juce::var());
@@ -423,7 +455,11 @@ namespace testingplayground::claude
             {
                 // A block the stream broke off in (no content_block_stop) has what arrived of it.
                 if (b.type == "text")
+                {
                     o->setProperty("text", juce::String::fromUTF8(b.text.c_str()));
+                    if (!b.citations.isEmpty())
+                        o->setProperty("citations", b.citations);
+                }
                 else if (b.type == "thinking")
                     o->setProperty("thinking", juce::String::fromUTF8(b.thinking.c_str()));
                 else if (b.type == "compaction" && !b.summary.empty())

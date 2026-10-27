@@ -92,7 +92,7 @@ namespace testingplayground::ui
         {
             const std::string text = asciiText(e.text);
             const bool fromClaude = e.kind == ChatEntry::Kind::assistant || e.kind == ChatEntry::Kind::thinking
-                                 || e.kind == ChatEntry::Kind::tool;
+                                 || e.kind == ChatEntry::Kind::tool || e.kind == ChatEntry::Kind::question;
             const bool tight = !first && e.kind == ChatEntry::Kind::tool && previous == ChatEntry::Kind::tool;
             if (!first)
                 out += tight ? "" : "\n";
@@ -112,7 +112,10 @@ namespace testingplayground::ui
                 std::string body = text;
                 while (!body.empty() && body.back() == '\n')
                     body.pop_back();
-                const char* prefix = e.kind == ChatEntry::Kind::thinking ? "  ~ " : e.kind == ChatEntry::Kind::tool ? "  > " : "";
+                const char* prefix = e.kind == ChatEntry::Kind::thinking ? "  ~ "
+                                   : e.kind == ChatEntry::Kind::tool     ? "  > "
+                                   : e.kind == ChatEntry::Kind::question ? "  ? "
+                                                                         : "";
                 std::size_t start = 0;
                 while (start <= body.size())
                 {
@@ -121,6 +124,13 @@ namespace testingplayground::ui
                     if (end == std::string::npos)
                         break;
                     start = end + 1;
+                }
+                if (e.kind == ChatEntry::Kind::question && !e.open)
+                {
+                    std::string answers;
+                    for (const std::string& ans : e.answers)
+                        answers += (answers.empty() ? "" : " | ") + asciiText(ans);
+                    out += "  = " + (e.typed ? std::string("(answered in a message)") : answers.empty() ? std::string("(not answered)") : answers) + "\n";
                 }
             }
             else
@@ -138,9 +148,28 @@ namespace testingplayground::ui
         constexpr float kBoxPad = 6.0f;              // the editor's inset from the box (its frame is clipped away)
         constexpr float kEditorPadding = 4.0f;       // TextEditorOptions::padding
         constexpr float kBoxRadius = 14.0f;
+        constexpr float kTile = 56.0f;               // an attached picture's square, above the text
+        constexpr float kTileGap = 8.0f;
+        constexpr float kStrip = kTile + 10.0f;      // the row of them, with its gap to the text
+        constexpr float kRemoveR = 9.0f;             // a tile's remove button (its corner)
+
+        // The middle square of a w x h picture (in 0..1 of it): a tile shows the picture cropped to fill it.
+        funkgui::Rect squareUv(int w, int h)
+        {
+            if (w <= 0 || h <= 0 || w == h)
+                return { 0.0f, 0.0f, 1.0f, 1.0f };
+            if (w > h)
+            {
+                const float u = static_cast<float>(h) / static_cast<float>(w);
+                return { 0.5f * (1.0f - u), 0.0f, u, 1.0f };
+            }
+            const float v = static_cast<float>(w) / static_cast<float>(h);
+            return { 0.0f, 0.5f * (1.0f - v), 1.0f, v };
+        }
     }
 
-    InputItem::InputItem(uint32_t id, std::function<void()> send) : editor_(id), send_(std::move(send))
+    InputItem::InputItem(uint32_t id, std::function<void()> send, std::function<void(uint32_t)> detach)
+        : id_(id), editor_(id), send_(std::move(send)), detach_(std::move(detach))
     {
         funkgui::TextEditorOptions o;
         o.style = chat::kBody;
@@ -156,7 +185,72 @@ namespace testingplayground::ui
 
     funkgui::Rect InputItem::editorBounds(funkgui::Rect box, float barH) const
     {
-        return { box.x + kBoxPad, box.y + kBoxPad, box.w - 2.0f * kBoxPad, std::max(10.0f, box.h - barH - 2.0f * kBoxPad) };
+        const float strip = stripHeight();
+        return { box.x + kBoxPad, box.y + kBoxPad + strip, box.w - 2.0f * kBoxPad,
+                 std::max(10.0f, box.h - barH - 2.0f * kBoxPad - strip) };
+    }
+
+    float InputItem::stripHeight() const noexcept { return pictures_.empty() && pending_ == 0 ? 0.0f : kStrip; }
+
+    void InputItem::setPictures(std::vector<ChatPicturePtr> pictures, int pending)
+    {
+        pictures_ = std::move(pictures);
+        pending_ = std::max(0, pending);
+        editor_.setBounds(editorBounds(box_, barH_));
+    }
+
+    funkgui::Rect InputItem::pictureRect(int i) const
+    {
+        return { box_.x + 10.0f + static_cast<float>(i) * (kTile + kTileGap), box_.y + 9.0f, kTile, kTile };
+    }
+
+    std::optional<funkgui::Point> InputItem::centreOfRemove(int i) const
+    {
+        if (i < 0 || i >= static_cast<int>(pictures_.size()))
+            return std::nullopt;
+        const funkgui::Rect r = pictureRect(i);
+        return funkgui::Point{ r.right() - 5.0f, r.y + 5.0f };
+    }
+
+    int InputItem::removeAt(funkgui::Point p) const
+    {
+        for (int i = 0; i < static_cast<int>(pictures_.size()); ++i)
+            if (const auto c = centreOfRemove(i); c && std::hypot(p.x - c->x, p.y - c->y) <= kRemoveR + 2.0f)
+                return i;
+        return -1;
+    }
+
+    funkgui::Cursor InputItem::cursorAt(funkgui::Point p) const
+    {
+        if (removeAt(p) >= 0)
+            return funkgui::Cursor::pointingHand;
+        return editor_.cursorAt(p);
+    }
+
+    void InputItem::pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController&, funkgui::HostServices&)
+    {
+        if (const int i = removeAt({ e.x, e.y }); i >= 0)
+        {
+            if (detach_)
+                detach_(pictures_[static_cast<std::size_t>(i)]->id);
+            return;
+        }
+        if (e.y < box_.y + kBoxPad + stripHeight())
+            return;                                      // the row of pictures
+        editor_.pointerDown(e);
+    }
+
+    bool InputItem::a11yAction(uint32_t id, funkgui::A11yAction, double, funkgui::GestureController&)
+    {
+        // The remove buttons: id_ + 2 + 2 i.
+        for (int i = 0; i < static_cast<int>(pictures_.size()); ++i)
+            if (id == id_ + 2u + 2u * static_cast<uint32_t>(i))
+            {
+                if (detach_)
+                    detach_(pictures_[static_cast<std::size_t>(i)]->id);
+                return true;
+            }
+        return id == editor_.a11yId();
     }
 
     void InputItem::setBounds(funkgui::Rect box, float barH)
@@ -173,7 +267,8 @@ namespace testingplayground::ui
         // The rows the text takes at that width: the editor wraps at its own width, so measure there.
         const int rows = std::clamp(editor_.rowCount(), 1, kMaxRows);
         (void)width;
-        return 2.0f * kBoxPad + static_cast<float>(rows) * editor_.rowHeight() + 2.0f * kEditorPadding + 2.0f + barH;
+        return 2.0f * kBoxPad + static_cast<float>(rows) * editor_.rowHeight() + 2.0f * kEditorPadding + 2.0f + barH
+             + stripHeight();
     }
 
     void InputItem::setPlaceholder(const std::string& text)
@@ -203,6 +298,30 @@ namespace testingplayground::ui
         c.pushClip({ e.x + 1.5f, e.y + 1.5f, e.w - 3.0f, e.h - 3.0f });
         editor_.draw(c, th, false);
         c.popClip();
+        // The pictures for the next message: thumbnails cropped to their squares, a remove button each; then a
+        // placeholder for each file still being read.
+        const int count = static_cast<int>(pictures_.size());
+        for (int i = 0; i < count + pending_; ++i)
+        {
+            const funkgui::Rect r = pictureRect(i);
+            if (r.right() > box_.right() - 6.0f)
+                break;                                   // no room (a message takes six)
+            if (i >= count)
+            {
+                c.rrect(r.x, r.y, r.w, r.h, 10.0f, p.raised, 1.0f, p.cardEdge);
+                for (int k = 0; k < 3; ++k)
+                    c.disc(r.centreX() - 8.0f + 8.0f * static_cast<float>(k), r.centreY(), 2.2f, p.faint);
+                continue;
+            }
+            const ChatPicture& pic = *pictures_[static_cast<std::size_t>(i)];
+            c.rrect(r.x, r.y, r.w, r.h, 10.0f, p.raised);
+            c.image(pic.id, r, 10.0f, 1.0f, squareUv(pic.thumbWidth, pic.thumbHeight));
+            c.rrect(r.x, r.y, r.w, r.h, 10.0f, p.card.withAlpha(0.0f), 1.0f, p.cardEdge);
+            const funkgui::Point x{ r.right() - 5.0f, r.y + 5.0f };
+            const bool hover = std::hypot(pointer_.x - x.x, pointer_.y - x.y) <= kRemoveR + 2.0f;
+            c.disc(x.x, x.y, kRemoveR, hover ? p.text : p.composer, 1.0f, p.composerEdge);
+            chat::drawIcon(c, chat::Icon::cross, x.x, x.y, 8.0f, hover ? p.composer : p.soft);
+        }
     }
 
     bool InputItem::key(const funkgui::KeyEvent& e, funkgui::GestureController&)
@@ -228,6 +347,25 @@ namespace testingplayground::ui
         funkgui::A11yItem item;
         editor_.accessibility(item);
         out.push_back(std::move(item));
+        for (int i = 0; i < static_cast<int>(pictures_.size()) && i < 24; ++i)
+        {
+            const ChatPicture& pic = *pictures_[static_cast<std::size_t>(i)];
+            funkgui::A11yItem tile;
+            tile.id = id_ + 1u + 2u * static_cast<uint32_t>(i);
+            tile.role = funkgui::A11yRole::image;
+            tile.bounds = pictureRect(i);
+            tile.title = "Picture: " + asciiText(pic.name);
+            tile.value = std::to_string(pic.width) + " x " + std::to_string(pic.height);
+            tile.readOnly = true;
+            out.push_back(std::move(tile));
+            funkgui::A11yItem remove;
+            remove.id = id_ + 2u + 2u * static_cast<uint32_t>(i);
+            remove.role = funkgui::A11yRole::button;
+            const funkgui::Point x = *centreOfRemove(i);
+            remove.bounds = { x.x - kRemoveR, x.y - kRemoveR, 2.0f * kRemoveR, 2.0f * kRemoveR };
+            remove.title = "Remove " + asciiText(pic.name);
+            out.push_back(std::move(remove));
+        }
     }
 
     void InputItem::specLine(char* out, std::size_t n) const

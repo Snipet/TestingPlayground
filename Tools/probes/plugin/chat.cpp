@@ -13,7 +13,7 @@
 //            thinking, each with its levels
 //   REQUEST  each request has the model, max_tokens (the model's own limit, from /v1/models), stream, adaptive
 //            thinking (summarized), the effort, the system prompt cached for an hour, the automatic cache breakpoint,
-//            the eleven tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
+//            the twelve tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
 //            and instructions) with their beta headers for a model that takes them, the API version and the key, and
 //            no temperature, top_p or top_k; the first message carries the plugin's state; the history is append-only
 //            (each request's messages begin with the previous request's, unchanged, signatures included) and the
@@ -43,6 +43,26 @@
 //   MEASURE  measure_output through the agent: its result is the render's report, with the dials asked for
 //   VIEW     view_panel through the agent: its result a PNG of the panel (and one of the whole editor) and a line of
 //            what it shows, drawn on the message thread; the user's view stays; the saved session keeps no picture
+//   ASK      ask_user: a reply with text, get_status, a question of two parts (one choice, several) and a second
+//            ask_user: the turn waits (asking, not busy) with the question's entry open, the other calls' results in
+//            the history and the second ask refused; the session saved meanwhile opens with it still waiting. The
+//            answer (labels) goes in the next request after the other results, as its tool result, and the turn goes
+//            on; the entry keeps the answers. A question answered by a message instead: its result says so and the
+//            words follow in the same message. A question of one option is refused in its result and asks nothing
+//   PICTURES pictures for a message (attach): a PNG with transparency goes as its own bytes, a JPEG of 2400 x 1200 is
+//            scaled to 1568 x 784, each with a thumbnail (at most 320 px); a text file and a file that is not a picture
+//            are refused with a note; on macOS a TIFF reads (ImageIO) and a photo stored on its side reads upright;
+//            detach takes one back; the message's pictures go before its words as base64
+//            image blocks, the entry shows them and the box empties; a message of pictures alone goes; a message takes
+//            six; a new chat drops the attached; the session keeps each picture's thumbnail, which loads back
+//   WEB      web search: off at first, no web tools; on (with the key), the request has web_search and web_fetch
+//            (20260209, five uses each, a fetch's text capped, its citations on) and the history's thinking goes (the
+//            tools changed); a reply that searches and fetches: what Claude searched and read as rows, the answer with
+//            its sources under it, the footer's search count, and the API's blocks back in the history as they came
+//            (the query, the encrypted results, the citations); a reply paused (pause_turn) goes back as it is, with
+//            no message after it, and the turn goes on; a 400 that names allowed_callers: the tools again, called
+//            directly; a 400 for an organisation without web search: the turn goes on without it, a note, the switch
+//            off; through the account it does not apply (and says why)
 //   LIBRARY  add_library_file: the library's file as a tab of the editor, its text in the result (and seen: the next
 //            state names it without its text), a what Claude did entry; a name the library has not is an error
 //            result naming its files; the same file again is there already, not added twice
@@ -78,6 +98,7 @@
 #include "FakeClaude.h"
 
 #include "plugin/ChatAgent.h"
+#include "plugin/ChatImages.h"
 #include "plugin/ChatStore.h"
 #include "plugin/ClaudeApi.h"
 #include "plugin/Processor.h"
@@ -86,6 +107,14 @@
 #include "Product.h"
 
 #include <funkgui/panel/HeadlessGuiScope.h>
+
+#include <juce_graphics/juce_graphics.h>
+
+#if defined(__APPLE__)
+    #include <CoreFoundation/CoreFoundation.h>
+    #include <CoreGraphics/CoreGraphics.h>
+    #include <ImageIO/ImageIO.h>
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -125,6 +154,56 @@ namespace
             return *a;
         return {};
     }
+
+#if defined(__APPLE__)
+    // A w x h picture written by ImageIO as `uti` ("public.tiff", "public.jpeg"), with an EXIF orientation (1 upright).
+    bool writeSystemPicture(const std::string& path, const char* uti, int w, int h, int orientation)
+    {
+        std::vector<uint8_t> px(static_cast<std::size_t>(w * h * 4));
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+            {
+                uint8_t* p = px.data() + (static_cast<std::size_t>(y) * static_cast<std::size_t>(w) + static_cast<std::size_t>(x)) * 4u;
+                p[0] = static_cast<uint8_t>(x * 255 / w);
+                p[1] = static_cast<uint8_t>(y * 255 / h);
+                p[2] = 128;
+                p[3] = 255;
+            }
+        CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        CGContextRef ctx = CGBitmapContextCreate(px.data(), static_cast<size_t>(w), static_cast<size_t>(h), 8,
+                                                 static_cast<size_t>(w * 4), cs, static_cast<uint32_t>(kCGImageAlphaNoneSkipLast));
+        CGColorSpaceRelease(cs);
+        if (ctx == nullptr)
+            return false;
+        CGImageRef img = CGBitmapContextCreateImage(ctx);
+        CGContextRelease(ctx);
+        CFStringRef p = CFStringCreateWithCString(nullptr, path.c_str(), kCFStringEncodingUTF8);
+        CFURLRef url = CFURLCreateWithFileSystemPath(nullptr, p, kCFURLPOSIXPathStyle, false);
+        CFRelease(p);
+        CFStringRef type = CFStringCreateWithCString(nullptr, uti, kCFStringEncodingUTF8);
+        CGImageDestinationRef dst = CGImageDestinationCreateWithURL(url, type, 1, nullptr);
+        CFRelease(type);
+        CFRelease(url);
+        bool ok = false;
+        if (dst != nullptr && img != nullptr)
+        {
+            CFNumberRef o = CFNumberCreate(nullptr, kCFNumberIntType, &orientation);
+            const void* keys[] = { kCGImagePropertyOrientation };
+            const void* values[] = { o };
+            CFDictionaryRef props = CFDictionaryCreate(nullptr, keys, values, 1, &kCFTypeDictionaryKeyCallBacks,
+                                                       &kCFTypeDictionaryValueCallBacks);
+            CGImageDestinationAddImage(dst, img, props);
+            ok = CGImageDestinationFinalize(dst);
+            CFRelease(props);
+            CFRelease(o);
+        }
+        if (dst != nullptr)
+            CFRelease(dst);
+        if (img != nullptr)
+            CGImageRelease(img);
+        return ok;
+    }
+#endif
 
     juce::Array<juce::var> messagesOf(const std::string& body) { return arr(claude::parseJson(body).getProperty("messages", {})); }
 
@@ -377,8 +456,8 @@ PROBE(plugin, chat)
         int eager = 0;
         for (const auto& t : tools)
             eager += static_cast<bool>(t.getProperty("eager_input_streaming", false)) ? 1 : 0;
-        P.eq("request.tools", tools.size(), 11);
-        P.eq("request.tools_eager", eager, 11);
+        P.eq("request.tools", tools.size(), 12);
+        P.eq("request.tools_eager", eager, 12);
         bool libraryEnum = false;
         for (const auto& t : tools)
             if (str(t, "name") == "add_library_file")
@@ -804,6 +883,448 @@ PROBE(plugin, chat)
         const std::string saved = agent.saveState();
         P.eq("view.session_no_picture", has(saved, "iVBORw0KGgo") ? 0 : 1, 1);
         P.eq("view.session_line", has(saved, "A picture of the panel: not kept in the session") && has(saved, "pictures_cut") ? 1 : 0, 1);
+    }
+
+    // ---- ASK -----------------------------------------------------------------------------------------------------------
+    {
+        const auto option = [](const char* label, const char* description) {
+            return input({ { "label", label }, { "description", description } });
+        };
+        const juce::var two = input(
+            { { "questions",
+                juce::Array<juce::var>{
+                    input({ { "header", "Sound" },
+                            { "question", "What should it sound like?" },
+                            { "options", juce::Array<juce::var>{ option("Warm (Recommended)", "Analog and round"),
+                                                                 option("Bright", "Glassy and digital") } } }),
+                    input({ { "header", "Panel" },
+                            { "question", "What should the panel show?" },
+                            { "multi_select", true },
+                            { "options", juce::Array<juce::var>{ option("Knobs", ""), option("Meters", "Levels, live"),
+                                                                 option("A scope", "") } } }) } } });
+        const juce::var one = input(
+            { { "questions",
+                juce::Array<juce::var>{ input({ { "question", "Mono or poly?" },
+                                                { "options", juce::Array<juce::var>{ option("Poly", ""), option("Mono", "") } } }) } } });
+        script->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .text("A few questions first.")
+                                           .tool("toolu_a1", "get_status", input({}))
+                                           .tool("toolu_a2", "ask_user", two)
+                                           .tool("toolu_a3", "ask_user", one)
+                                           .end("tool_use")));
+        const int before = script->postCount();
+        agent.send("make me a synth");
+        agent.waitIdle();
+        const auto lastQuestion = [](const tp::ChatState& st) -> const tp::ChatEntry* {
+            for (auto it = st.entries.rbegin(); it != st.entries.rend(); ++it)
+                if (it->kind == tp::ChatEntry::Kind::question)
+                    return &*it;
+            return nullptr;
+        };
+        {
+            const tp::ChatState st = agent.chatState();
+            const tp::ChatEntry* q = lastQuestion(st);
+            P.eq("ask.waits", st.asking && !st.busy ? 1 : 0, 1);
+            P.eq("ask.one_request", script->postCount() - before, 1);
+            P.eq("ask.entry_open", q != nullptr && q->open && q->questions.size() == 2 ? 1 : 0, 1);
+            P.eq("ask.entry_options", q != nullptr && q->questions.size() == 2 && q->questions[0].options.size() == 2
+                                              && q->questions[1].multi && q->questions[1].options[1].description == "Levels, live"
+                                              && q->questions[0].header == "Sound" ? 1 : 0, 1);
+            P.eq("ask.entry_text", q != nullptr && has(q->text, "What should it sound like?") && has(q->text, "- Bright") ? 1 : 0, 1);
+            P.eq("ask.last_entry", !st.entries.empty() && st.entries.back().kind == tp::ChatEntry::Kind::question ? 1 : 0, 1);
+        }
+        // Saved while it waits: another processor's chat opens with the question still open.
+        {
+            const std::string saved = agent.saveState();
+            tp::Processor other;
+            other.chatAgent().loadState(saved);
+            const tp::ChatState st = other.chatAgent().chatState();
+            const tp::ChatEntry* q = lastQuestion(st);
+            P.eq("ask.session_waits", st.asking && q != nullptr && q->open && q->questions.size() == 2
+                                          && q->questions[1].options.size() == 3 ? 1 : 0, 1);
+        }
+        script->add(fake::Response::ok(fake::Sse().start().text("A warm pad, then.").end()));
+        agent.answer({ "Warm (Recommended)", "Knobs, Meters" });
+        agent.waitIdle();
+        {
+            const juce::Array<juce::var> m = messagesOf(script->body(before + 1));
+            const juce::Array<juce::var> c = arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {}));
+            std::vector<std::string> ids;
+            bool resultsFirst = true, seenText = false;
+            std::string answer, second;
+            for (const juce::var& b : c)
+            {
+                if (str(b, "type") == "tool_result")
+                {
+                    resultsFirst = resultsFirst && !seenText;
+                    ids.push_back(str(b, "tool_use_id"));
+                    if (str(b, "tool_use_id") == "toolu_a2")
+                        answer = str(b, "content");
+                    if (str(b, "tool_use_id") == "toolu_a3")
+                        second = str(b, "content") + (static_cast<bool>(b.getProperty("is_error", false)) ? " [error]" : "");
+                }
+                else
+                    seenText = true;
+            }
+            std::printf("ask: the answer's result: %s\n", answer.c_str());
+            P.eq("ask.results_all", ids.size() == 3 && ids[0] == "toolu_a1" ? 1 : 0, 1);
+            P.eq("ask.results_first", resultsFirst ? 1 : 0, 1);
+            P.eq("ask.answer_result", has(answer, "The user answered:") && has(answer, "What should it sound like? Warm (Recommended)")
+                                          && has(answer, "What should the panel show? Knobs, Meters") ? 1 : 0, 1);
+            P.eq("ask.second_refused", has(second, "Only one ask_user call") && has(second, "[error]") ? 1 : 0, 1);
+            const tp::ChatState st = agent.chatState();
+            const tp::ChatEntry* q = lastQuestion(st);
+            P.eq("ask.answered", !st.asking && q != nullptr && !q->open && q->answers.size() == 2 && q->answers[1] == "Knobs, Meters" ? 1 : 0, 1);
+            P.eq("ask.turn_went_on", lastText(st, tp::ChatEntry::Kind::assistant) == "A warm pad, then." ? 1 : 0, 1);
+        }
+        // Answered by a message instead.
+        script->add(fake::Response::ok(fake::Sse().start().tool("toolu_a4", "ask_user", one).end("tool_use")));
+        agent.send("now a bass");
+        agent.waitIdle();
+        P.eq("ask.waits_again", agent.chatState().asking ? 1 : 0, 1);
+        script->add(fake::Response::ok(fake::Sse().start().text("Mono, then.").end()));
+        const int typedAt = script->postCount();
+        agent.send("a mono one, please");
+        agent.waitIdle();
+        {
+            const juce::Array<juce::var> m = messagesOf(script->body(typedAt));
+            const juce::Array<juce::var> c = arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {}));
+            P.eq("ask.typed_result", c.size() >= 2 && str(c[0], "type") == "tool_result" && str(c[0], "tool_use_id") == "toolu_a4"
+                                         && has(str(c[0], "content"), "did not choose from the options")
+                                         && str(c[1], "text") == "a mono one, please" ? 1 : 0, 1);
+            const tp::ChatState st = agent.chatState();
+            const tp::ChatEntry* q = lastQuestion(st);
+            P.eq("ask.typed_entry", !st.asking && q != nullptr && !q->open && q->typed ? 1 : 0, 1);
+        }
+        // A question of one option: refused in its result; nothing waits.
+        const juce::var bad = input(
+            { { "questions", juce::Array<juce::var>{ input({ { "question", "Sure?" },
+                                                             { "options", juce::Array<juce::var>{ option("Yes", "") } } }) } } });
+        script->add(fake::Response::ok(fake::Sse().start().tool("toolu_a5", "ask_user", bad).end("tool_use")));
+        script->add(fake::Response::ok(fake::Sse().start().text("Building it.").end()));
+        const int badAt = script->postCount();
+        const std::size_t questionsBefore = [&] {
+            std::size_t n = 0;
+            for (const tp::ChatEntry& e : agent.chatState().entries)
+                n += e.kind == tp::ChatEntry::Kind::question ? 1 : 0;
+            return n;
+        }();
+        agent.send("go on");
+        agent.waitIdle();
+        {
+            const juce::Array<juce::var> m = messagesOf(script->body(badAt + 1));
+            const juce::Array<juce::var> c = arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {}));
+            P.eq("ask.bad_refused", !c.isEmpty() && static_cast<bool>(c[0].getProperty("is_error", false))
+                                        && has(str(c[0], "content"), "needs 2 to 6 options") ? 1 : 0, 1);
+            std::size_t n = 0;
+            for (const tp::ChatEntry& e : agent.chatState().entries)
+                n += e.kind == tp::ChatEntry::Kind::question ? 1 : 0;
+            P.eq("ask.bad_asks_nothing", n == questionsBefore && !agent.chatState().asking ? 1 : 0, 1);
+        }
+    }
+
+    // ---- PICTURES ------------------------------------------------------------------------------------------------------
+    {
+        const juce::File dir(juce::String(probe::outPath("chat-pictures")));
+        dir.deleteRecursively();
+        dir.createDirectory();
+        const auto save = [&](const juce::Image& img, const char* name, bool png) {
+            const juce::File f = dir.getChildFile(name);
+            juce::FileOutputStream out(f);
+            if (png)
+                juce::PNGImageFormat().writeImageToStream(img, out);
+            else
+                juce::JPEGImageFormat().writeImageToStream(img, out);
+            out.flush();
+            return f.getFullPathName().toStdString();
+        };
+        juce::Image clear(juce::Image::ARGB, 64, 48, true);
+        {
+            juce::Graphics g(clear);
+            g.setColour(juce::Colour(0x80ff6020));
+            g.fillEllipse(4.0f, 4.0f, 56.0f, 40.0f);
+        }
+        juce::Image wide(juce::Image::RGB, 2400, 1200, true);
+        {
+            juce::Graphics g(wide);
+            g.setGradientFill(juce::ColourGradient(juce::Colours::darkslategrey, 0.0f, 0.0f, juce::Colours::orange, 2400.0f, 1200.0f, false));
+            g.fillAll();
+        }
+        const std::string png = save(clear, "knob.png", true), jpeg = save(wide, "panel.jpg", false);
+        const juce::File txt = dir.getChildFile("notes.txt"), broken = dir.getChildFile("broken.png");
+        txt.replaceWithText("not a picture");
+        broken.replaceWithText("not a PNG either");
+        const auto notes = [&] {
+            std::string all;
+            for (const tp::ChatEntry& e : agent.chatState().entries)
+                if (e.kind == tp::ChatEntry::Kind::note)
+                    all += e.text + "\n";
+            return all;
+        };
+        agent.attach({ png, jpeg, txt.getFullPathName().toStdString(), broken.getFullPathName().toStdString() });
+        agent.waitIdle();
+        {
+            const tp::ChatState st = agent.chatState();
+            P.eq("pictures.attached", static_cast<int64_t>(st.attached.size()), 2);
+            P.eq("pictures.read", st.attaching, 0);
+            P.eq("pictures.text_refused", has(notes(), "notes.txt is not a picture") ? 1 : 0, 1);
+            P.eq("pictures.broken_refused", has(notes(), "broken.png is not a picture this plugin can read") ? 1 : 0, 1);
+            const tp::ChatPicturePtr* kn = nullptr;
+            const tp::ChatPicturePtr* pn = nullptr;
+            for (const tp::ChatPicturePtr& p : st.attached)
+                (p->name == "knob.png" ? kn : pn) = &p;
+            P.eq("pictures.png_size", kn != nullptr && (*kn)->width == 64 && (*kn)->height == 48 && (*kn)->thumbWidth == 64
+                                          && (*kn)->thumb.size() == 64u * 48u * 4u ? 1 : 0, 1);
+            P.eq("pictures.jpeg_scaled", pn != nullptr && (*pn)->width == 1568 && (*pn)->height == 784 ? 1 : 0, 1);
+            P.eq("pictures.jpeg_thumb", pn != nullptr && (*pn)->thumbWidth == 320 && (*pn)->thumbHeight == 160
+                                            && (*pn)->thumb.size() == 320u * 160u * 4u && !(*pn)->thumbData.empty() ? 1 : 0, 1);
+            P.eq("pictures.ids", st.attached.size() == 2 && st.attached[0]->id != st.attached[1]->id && st.attached[0]->id != 0 ? 1 : 0, 1);
+            // detach: taken back; attached again, it is last.
+            agent.detach(st.attached[0]->id);
+            P.eq("pictures.detach", static_cast<int64_t>(agent.chatState().attached.size()), 1);
+            agent.attach({ st.attached[0]->name == "knob.png" ? png : jpeg });
+            agent.waitIdle();
+        }
+        script->add(fake::Response::ok(fake::Sse().start().text("A panel like those, then.").end()));
+        const int at = script->postCount();
+        agent.send("a panel like these");
+        agent.waitIdle();
+        {
+            const juce::Array<juce::var> m = messagesOf(script->body(at));
+            const juce::Array<juce::var> c = arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {}));
+            int images = 0, textAt = -1, lastImage = -1;
+            std::string jpegData;
+            for (int i = 0; i < c.size(); ++i)
+            {
+                if (str(c[i], "type") == "image")
+                {
+                    ++images;
+                    lastImage = i;
+                    const juce::var src = c[i].getProperty("source", {});
+                    if (str(src, "media_type") == "image/jpeg" && str(src, "type") == "base64")
+                        jpegData = str(src, "data");
+                }
+                if (str(c[i], "type") == "text" && str(c[i], "text") == "a panel like these" && textAt < 0)
+                    textAt = i;
+            }
+            P.eq("pictures.blocks", images, 2);
+            P.eq("pictures.before_words", textAt > lastImage && lastImage >= 0 ? 1 : 0, 1);
+            juce::MemoryOutputStream bytes;
+            juce::Image sent;
+            if (juce::Base64::convertFromBase64(bytes, juce::String(jpegData)))
+            {
+                juce::MemoryInputStream in(bytes.getData(), bytes.getDataSize(), false);
+                sent = juce::ImageFileFormat::loadFrom(in);
+            }
+            P.eq("pictures.jpeg_sent", sent.isValid() && sent.getWidth() == 1568 && sent.getHeight() == 784 ? 1 : 0, 1);
+            const tp::ChatState st = agent.chatState();
+            const tp::ChatEntry* user = nullptr;
+            for (const tp::ChatEntry& e : st.entries)
+                if (e.kind == tp::ChatEntry::Kind::user)
+                    user = &e;
+            P.eq("pictures.entry", user != nullptr && user->pictures.size() == 2 && user->text == "a panel like these" ? 1 : 0, 1);
+            P.eq("pictures.box_empty", st.attached.empty() ? 1 : 0, 1);
+        }
+#if defined(__APPLE__)
+        // What JUCE cannot read (a TIFF), and a photo stored on its side (EXIF orientation 6): ImageIO reads both,
+        // the photo upright, and its bytes do not go as they are.
+        {
+            const std::string tiff = dir.getChildFile("scan.tiff").getFullPathName().toStdString();
+            const std::string side = dir.getChildFile("side.jpg").getFullPathName().toStdString();
+            P.eq("pictures.system_written", writeSystemPicture(tiff, "public.tiff", 120, 80, 1)
+                                                && writeSystemPicture(side, "public.jpeg", 200, 100, 6) ? 1 : 0, 1);
+            agent.attach({ tiff, side });
+            agent.waitIdle();
+            const tp::ChatState st = agent.chatState();
+            const tp::ChatPicturePtr* t = nullptr;
+            const tp::ChatPicturePtr* s = nullptr;
+            for (const tp::ChatPicturePtr& p : st.attached)
+                (p->name == "scan.tiff" ? t : s) = &p;
+            P.eq("pictures.tiff", t != nullptr && (*t)->width == 120 && (*t)->height == 80 ? 1 : 0, 1);
+            P.eq("pictures.upright", s != nullptr && (*s)->width == 100 && (*s)->height == 200 && (*s)->thumbHeight > (*s)->thumbWidth ? 1 : 0, 1);
+            for (const tp::ChatPicturePtr& p : st.attached)
+                agent.detach(p->id);
+        }
+#endif
+        // Pictures alone.
+        agent.attach({ png });
+        agent.waitIdle();
+        script->add(fake::Response::ok(fake::Sse().start().text("A knob.").end()));
+        const int alone = script->postCount();
+        agent.send("");
+        agent.waitIdle();
+        {
+            const juce::Array<juce::var> m = messagesOf(script->body(alone));
+            const juce::Array<juce::var> c = arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {}));
+            bool image = false, emptyText = false;
+            for (const juce::var& b : c)
+            {
+                image = image || str(b, "type") == "image";
+                emptyText = emptyText || (str(b, "type") == "text" && str(b, "text").empty());
+            }
+            P.eq("pictures.alone", script->postCount() == alone + 1 && image && !emptyText ? 1 : 0, 1);
+        }
+        // Six a message.
+        agent.attach({ png, png, png, png, png, png, png });
+        agent.waitIdle();
+        P.eq("pictures.six", static_cast<int64_t>(agent.chatState().attached.size()), 6);
+        P.eq("pictures.six_note", has(notes(), "A message takes 6 pictures at most") ? 1 : 0, 1);
+        // The session keeps the thumbnails.
+        {
+            const std::string saved = agent.saveState();
+            tp::Processor other;
+            other.chatAgent().loadState(saved);
+            const tp::ChatState st = other.chatAgent().chatState();
+            const tp::ChatEntry* user = nullptr;
+            for (const tp::ChatEntry& e : st.entries)
+                if (e.kind == tp::ChatEntry::Kind::user && e.pictures.size() == 2)
+                    user = &e;
+            bool thumbs = user != nullptr;
+            if (user != nullptr)
+                for (const tp::ChatPicturePtr& p : user->pictures)
+                    thumbs = thumbs && p->thumbWidth > 0 && p->thumb.size() == static_cast<std::size_t>(p->thumbWidth * p->thumbHeight * 4)
+                          && (p->name == "knob.png" || p->name == "panel.jpg");
+            P.eq("pictures.session_thumbs", thumbs ? 1 : 0, 1);
+            P.eq("pictures.session_unsent_dropped", st.attached.empty() ? 1 : 0, 1);
+        }
+        agent.newChat();
+        P.eq("pictures.new_chat_drops", agent.chatState().attached.empty() ? 1 : 0, 1);
+    }
+
+    // ---- WEB -----------------------------------------------------------------------------------------------------------
+    {
+        agent.setModel("claude-opus-5-5");
+        agent.setFast(false);
+        const auto toolsOf = [&](int post) { return arr(claude::parseJson(script->body(post)).getProperty("tools", {})); };
+        const auto webTool = [&](int post, const char* name) -> juce::var {
+            for (const juce::var& t : toolsOf(post))
+                if (str(t, "name") == name && str(t, "type").rfind(name, 0) == 0)
+                    return t;
+            return {};
+        };
+        P.eq("web.off_at_first", agent.chatState().web ? 0 : 1, 1);
+        // A turn with thinking, without the web tools.
+        script->add(fake::Response::ok(fake::Sse().start().thinking("Plain.", "sig-web").text("Hi.").end()));
+        int at = script->postCount();
+        agent.send("hello");
+        agent.waitIdle();
+        P.eq("web.off_no_tools", toolsOf(at).size() == 12 && webTool(at, "web_search").isVoid() ? 1 : 0, 1);
+        agent.setWeb(true);
+        P.eq("web.on", agent.chatState().web && agent.chatState().webBlocked.empty() ? 1 : 0, 1);
+        const juce::var result = input({ { "type", "web_search_tool_result" },
+                                         { "tool_use_id", "srvtoolu_w1" },
+                                         { "content", juce::Array<juce::var>{ input({ { "type", "web_search_result" },
+                                                                                      { "url", "https://www.ti.com/lit/ds/symlink/lm13700.pdf" },
+                                                                                      { "title", "LM13700 Dual OTA" },
+                                                                                      { "encrypted_content", "ENC-RESULT-1" },
+                                                                                      { "page_age", "2024" } }) } } });
+        const juce::var fetched = input({ { "type", "web_fetch_tool_result" },
+                                          { "tool_use_id", "srvtoolu_w2" },
+                                          { "content", input({ { "type", "web_fetch_result" },
+                                                               { "url", "https://www.ti.com/lit/ds/symlink/lm13700.pdf" },
+                                                               { "content", input({ { "type", "document" },
+                                                                                    { "source", input({ { "type", "text" },
+                                                                                                        { "media_type", "text/plain" },
+                                                                                                        { "data", "The LM13700 ..." } }) } }) },
+                                                               { "retrieved_at", "2026-10-26T10:00:00Z" } }) } });
+        const juce::Array<juce::var> citations{ input({ { "type", "web_search_result_location" },
+                                                        { "url", "https://www.ti.com/lit/ds/symlink/lm13700.pdf" },
+                                                        { "title", "LM13700 Dual OTA" },
+                                                        { "encrypted_index", "ENC-INDEX-1" },
+                                                        { "cited_text", "transconductance amplifiers" } }) };
+        script->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .text("Looking it up.")
+                                           .serverTool("srvtoolu_w1", "web_search", input({ { "query", "LM13700 datasheet" } }))
+                                           .whole(result)
+                                           .serverTool("srvtoolu_w2", "web_fetch", input({ { "url", "https://www.ti.com/lit/ds/symlink/lm13700.pdf" } }))
+                                           .whole(fetched)
+                                           .cited("Its gm is set by the bias current.", citations)
+                                           .serverUse(1, 1)
+                                           .end()));
+        at = script->postCount();
+        agent.send("what does the LM13700 data sheet say?");
+        agent.waitIdle();
+        {
+            const juce::var search = webTool(at, "web_search"), fetch = webTool(at, "web_fetch");
+            P.eq("web.tools", toolsOf(at).size() == 14 && str(search, "type") == "web_search_20260209"
+                                  && static_cast<int>(search.getProperty("max_uses", 0)) == 5
+                                  && str(fetch, "type") == "web_fetch_20260209"
+                                  && static_cast<int>(fetch.getProperty("max_content_tokens", 0)) > 0
+                                  && static_cast<bool>(fetch.getProperty("citations", {}).getProperty("enabled", false))
+                                  && search.getProperty("allowed_callers", {}).isVoid() ? 1 : 0, 1);
+            P.eq("web.thinking_dropped", has(script->body(at), "sig-web") ? 0 : 1, 1);
+            const tp::ChatState st = agent.chatState();
+            bool searched = false, read = false;
+            for (const tp::ChatEntry& e : st.entries)
+            {
+                searched = searched || (e.kind == tp::ChatEntry::Kind::tool && e.text == "Searched the web: LM13700 datasheet");
+                read = read || (e.kind == tp::ChatEntry::Kind::tool && e.text == "Read https://www.ti.com/lit/ds/symlink/lm13700.pdf");
+            }
+            P.eq("web.rows", searched && read ? 1 : 0, 1);
+            const std::string answer = lastText(st, tp::ChatEntry::Kind::assistant);
+            P.eq("web.sources", has(answer, "Its gm is set by the bias current.")
+                                    && has(answer, "**Sources**\n1. LM13700 Dual OTA -- https://www.ti.com/lit/ds/symlink/lm13700.pdf") ? 1 : 0, 1);
+            P.eq("web.footer", has(st.usage, "1 search") ? 1 : 0, 1);
+        }
+        // The blocks go back as they came.
+        script->add(fake::Response::ok(fake::Sse().start().text("Yes.").end()));
+        at = script->postCount();
+        agent.send("thanks");
+        agent.waitIdle();
+        {
+            const juce::Array<juce::var> m = messagesOf(script->body(at));
+            juce::var reply;
+            for (const juce::var& msg : m)
+                if (str(msg, "role") == "assistant" && has(claude::toJson(msg), "srvtoolu_w1"))
+                    reply = msg;
+            const std::string json = claude::toJson(reply);
+            P.eq("web.history_blocks", has(json, "\"server_tool_use\"") && has(json, "\"web_search_tool_result\"")
+                                           && has(json, "\"web_fetch_tool_result\"") && has(json, "LM13700 datasheet") ? 1 : 0, 1);
+            P.eq("web.history_encrypted", has(json, "ENC-RESULT-1") && has(json, "ENC-INDEX-1") ? 1 : 0, 1);
+        }
+        // pause_turn: the reply goes back as it is, with nothing after it.
+        script->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .serverTool("srvtoolu_w3", "web_search", input({ { "query", "OTA filter" } }))
+                                           .end("pause_turn")));
+        script->add(fake::Response::ok(fake::Sse().start().text("Done searching.").end()));
+        at = script->postCount();
+        agent.send("search more");
+        agent.waitIdle();
+        {
+            const juce::Array<juce::var> m = messagesOf(script->body(at + 1));
+            P.eq("web.pause_goes_on", script->postCount() == at + 2 && !m.isEmpty() && str(m[m.size() - 1], "role") == "assistant"
+                                          && has(claude::toJson(m[m.size() - 1]), "srvtoolu_w3") ? 1 : 0, 1);
+            P.eq("web.pause_answer", lastText(agent.chatState(), tp::ChatEntry::Kind::assistant) == "Done searching." ? 1 : 0, 1);
+        }
+        // A model that cannot filter: the tools again, called directly.
+        script->add(fake::Response::failure(400, "invalid_request_error",
+                                            "This model does not support programmatic tool calling: set allowed_callers to [\"direct\"]"));
+        script->add(fake::Response::ok(fake::Sse().start().text("Direct.").end()));
+        at = script->postCount();
+        agent.send("again");
+        agent.waitIdle();
+        {
+            const juce::var search = webTool(at + 1, "web_search");
+            const juce::Array<juce::var> callers = arr(search.getProperty("allowed_callers", {}));
+            P.eq("web.direct", script->postCount() == at + 2 && callers.size() == 1 && callers[0].toString() == "direct" ? 1 : 0, 1);
+        }
+        // An organisation without web search: the turn goes on without it, and the switch is off.
+        script->add(fake::Response::failure(400, "invalid_request_error", "Web search is not enabled for this organization"));
+        script->add(fake::Response::ok(fake::Sse().start().text("Without it.").end()));
+        at = script->postCount();
+        agent.send("once more");
+        agent.waitIdle();
+        {
+            bool note = false;
+            for (const tp::ChatEntry& e : agent.chatState().entries)
+                note = note || (e.kind == tp::ChatEntry::Kind::note && has(e.text, "Web search is not open to this request"));
+            P.eq("web.disabled", script->postCount() == at + 2 && webTool(at + 1, "web_search").isVoid() && note
+                                     && !agent.chatState().web ? 1 : 0, 1);
+        }
+        agent.newChat();
     }
 
     // ---- LIBRARY -------------------------------------------------------------------------------------------------------

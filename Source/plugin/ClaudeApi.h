@@ -89,6 +89,7 @@ namespace testingplayground::claude
     {
         int64_t input = 0, output = 0, cacheRead = 0, cacheWrite = 0;
         int compactions = 0;                  // compaction iterations in the request (usage.iterations)
+        int webSearches = 0, webFetches = 0;  // usage.server_tool_use: searches cost $10 a thousand
         std::string speed;                    // the speed it ran at, "fast" or "standard" (usage.speed); "" unsaid
     };
 
@@ -101,6 +102,12 @@ namespace testingplayground::claude
             std::function<void(std::string_view text)> thinking;       // a thinking (summary) delta
             std::function<void(const std::string& name)> toolStart;    // a tool_use block begins
             std::function<void(const std::string& json)> toolInput;    // its input so far (partial JSON)
+            // A server tool's call (web_search, web_fetch, code_execution) begins, and its input once complete; a
+            // server tool's result block (web_search_tool_result, ...) as it came; a citation of a text block.
+            std::function<void(const std::string& name)> serverTool;
+            std::function<void(const std::string& name, const juce::var& input)> serverInput;
+            std::function<void(const juce::var& block)> serverResult;
+            std::function<void(const juce::var& citation)> citation;
             std::function<void(const std::string& from, const std::string& to)> fallback;   // a fallback block
             std::function<void(std::size_t chars)> compaction;         // a compaction block (the summary's size)
         };
@@ -127,6 +134,7 @@ namespace testingplayground::claude
             juce::var object;                 // the block as it stands
             std::string text, thinking, signature, json, summary;
             std::string type;
+            juce::Array<juce::var> citations;   // a text block's, as they streamed
         };
 
         Callbacks cb_;
