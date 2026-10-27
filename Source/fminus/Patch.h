@@ -51,8 +51,11 @@
 // its value (FMinus's Program::Binding::frozen; freeze() below): the optimiser folds what the dials compute, a filter's
 // coefficients, a level's expf, a branch on a switch, which an instrument's voices otherwise compute in every call.
 // FMinus gives a parameter the same slot in an instance whatever its binding, so the frozen copy runs this Patch's own
-// instances: the Engine switches between the two at a block's start (useFrozen) without a seam, and they compute the
-// same, bit for bit (FMinus's Math::Vector folds a frozen value's sinf or expf as it computes a knob's).
+// instances: the Engine switches between the two at a block's start (useFrozen) without a seam. The copy compiles in
+// FMinus's Math::Fast (LLVM's own sinf, cosf, expf, tanhf and logf, vectorised where its loops vectorise, a constant's
+// folded with this machine's functions): faster than the program's Math::Vector, and the same sound, though not the
+// same bits; a result may move in its last bits (a few ulp), and while the copy plays it may depend on where the
+// host's blocks end. No fast-math flags: no reassociation, NaN and infinity kept as IEEE has them.
 //
 // Threads: compile(), freeze() and reset() run off the audio thread (or while it is stopped), the calls marked
 // noexcept on it.
