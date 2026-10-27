@@ -343,6 +343,8 @@ PROBE(gui, dump)
     tp::ui::Panel panel(processor.ports(), port);
     funkgui::HeadlessHost host(panel, 0, 2.0f);
     host.setZoom({ 100, 125, 150, 200 }, 100);
+    panel.setExplorerOpen(false);                    // the rows and sections below measure the program's card as wide as
+                                                     // the explorer folded leaves it; gui.explorer covers it open
     host.settle();
     funkgui::TextEditor& editor = panel.editor();
 

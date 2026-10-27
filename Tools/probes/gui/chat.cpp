@@ -1164,12 +1164,20 @@ PROBE(gui, chat)
         host.resize(500, 300);
         host.settle();
         // Twelve files: their tabs narrow to fit the bar.
-        while (panel.fileCount() < static_cast<int>(tp::kMaxFiles))
+        for (int k = 0; k < 2 * static_cast<int>(tp::kMaxFiles) && panel.fileCount() < static_cast<int>(tp::kMaxFiles); ++k)
         {
             const funkgui::Point plus = panel.centreOfNewTab();
+            const int had = panel.fileCount();
             clickAt(host, plus);
             host.keys("escape");
             host.settle();
+            if (panel.fileCount() == had)
+                std::printf("INFO     resize: + at %.1f %.1f added nothing (%d files; the program's card %.1f to %.1f; "
+                            "explorer %.1f wide, open %d shown %d; width %d)\n",
+                            static_cast<double>(plus.x), static_cast<double>(plus.y), had,
+                            static_cast<double>(panel.programCard().x), static_cast<double>(panel.programCard().right()),
+                            static_cast<double>(panel.explorerCard().w), panel.explorerOpen() ? 1 : 0,
+                            panel.explorerShown() ? 1 : 0, panel.width());
         }
         P.eq("resize.twelve_files", panel.fileCount(), static_cast<int64_t>(tp::kMaxFiles));
         P.eq("resize.least_w", panel.width(), tp::ui::kMinWidth);

@@ -11,7 +11,7 @@
 //
 // The Panel builds the sections (setContent) whenever what they show changes, and does what a row asks (Hooks), as
 // the tabs, the LIBRARY and EXAMPLES menus and the presets' card do. The card itself, its title and its fold button
-// are the Panel's; folded, the explorer is a rail (EditorPort::explorerOpen, in the session). The list scrolls with
+// are the Panel's; folded, the explorer is away (EditorPort::explorerOpen, in the session). The list scrolls with
 // the wheel; every row is a button to a screen reader, every section header a toggle.
 #pragma once
 

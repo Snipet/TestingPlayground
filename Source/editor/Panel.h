@@ -12,7 +12,8 @@
 //             renames it, its cross closes it, the header's + makes one), the library (a click adds a file as a tab,
 //             #included, or shows it), the examples (a click loads one, undoably) and the presets on this Mac (a click
 //             loads one, asking first when the editor has changes no preset holds; the header's + opens PRESETS); its
-//             sections fold, and the whole card folds into a rail (its chevron, EditorPort::explorerOpen)
+//             sections fold, and the whole card folds away (its chevron; the button at the left of the program's card's
+//             header opens it; EditorPort::explorerOpen); in the PANEL view, or a window too narrow for it, it is away
 //   header    the product name, its kind and version, and the THEME cells (GRAPHITE, PAPER)
 //   toolbar   RUN (Cmd-Return in the editor too), EXAMPLES (a menu: the example replaces the text, undoably, and
 //             runs), LIBRARY (a menu of ready-made building blocks, Library.h: one becomes a tab and the program
@@ -221,9 +222,13 @@ namespace testingplaygroundsynth::ui
         bool dropShown() const noexcept { return dropActive_; }
         funkgui::Point centreOfNewChat() const;
         funkgui::Point centreOfKey() const;
-        // The explorer at the left (Explorer.h): open, or folded into a rail (the editor takes the room); its header's
-        // chevron folds it, the rail's button opens it; the session keeps it (EditorPort::explorerOpen).
+        // The explorer at the left (Explorer.h): open, or folded away (the program's card takes the room); its header's
+        // chevron folds it, the button at the left of the program's card's header opens it; the session keeps it
+        // (EditorPort::explorerOpen).
         bool explorerOpen() const noexcept { return explorerOpen_; }
+        // Open, in the CODE view and given its room (the program's card keeping kProgramMinW): else nothing at the left
+        // but its button in the program's card's header, which opens it (folding the chat when there is no room).
+        bool explorerShown() const noexcept { return explorerShown_; }
         void setExplorerOpen(bool open);
         funkgui::Point centreOfExplorerToggle() const;
         ExplorerItem& explorer();
@@ -380,6 +385,8 @@ namespace testingplaygroundsynth::ui
         // seconds while it is open); what its rows were made from (syncExplorer rebuilds them when it changes).
         int explorerItem_ = -1, explorerToggleItem_ = -1;
         bool explorerOpen_ = true;
+        bool explorerShown_ = true;                      // open, in the CODE view, and the window has room for it
+        void toggleExplorer();
         funkgui::Rect explorerCard_;
         float leftX_ = 0.0f;                             // the program's card's left edge (after the explorer)
         std::vector<PresetEntry> presetList_;

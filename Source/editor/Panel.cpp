@@ -202,7 +202,8 @@ namespace testingplaygroundsynth::ui
         constexpr float kExplorerShare = 0.16f;          // the explorer, open: of the width
         constexpr float kExplorerMinW = 180.0f;
         constexpr float kExplorerMaxW = 250.0f;
-        constexpr float kExplorerGap = 12.0f;            // between it and the program's card (folded, the rail's too)
+        constexpr float kExplorerGap = 12.0f;            // between it and the program's card
+        constexpr float kProgramMinW = 600.0f;           // the program's card keeps this much beside an open explorer
         constexpr float kCardPad = 10.0f;                // inside the chat's card
         constexpr float kCardRadius = 14.0f;
         constexpr float kIconButton = 28.0f;             // the header's new chat and key
@@ -677,7 +678,8 @@ namespace testingplaygroundsynth::ui
         constexpr float kTabPad = 12.0f;                 // before a tab's name, and after it
         constexpr float kTabCloseW = 14.0f;              // a closable tab's close box, after its name
         constexpr float kTabMinW = 64.0f;
-        constexpr float kTabNarrowW = 44.0f;             // the least a tab narrows to when many do not fit
+        constexpr float kTabNarrowW = 36.0f;             // the least a tab narrows to when many do not fit (twelve fit
+                                                         // a program's card of kProgramMinW)
         constexpr float kTabMaxW = 150.0f;
         constexpr float kTabGap = 4.0f;
         constexpr float kNewTabW = 24.0f;
@@ -1633,10 +1635,13 @@ namespace testingplaygroundsynth::ui
             };
             explorerItem_ = add(std::make_unique<ExplorerItem>(kExplorerA11yBase, std::move(hooks)));
         }
-        explorerToggleItem_ = add(std::make_unique<B>(
-            idFor(), spec(B::Shape::square, [this] { return explorerOpen_ ? chat::Icon::chevronLeft : chat::Icon::list; }, {},
-                          false, {}, {}, [this] { setExplorerOpen(!explorerOpen_); }, "Fold or open the explorer",
-                          "EXPLORER   FOLD IT AWAY FOR ROOM; THE RAIL AT THE LEFT OPENS IT AGAIN")));
+        {
+            B::Spec sp = spec(B::Shape::square, [this] { return explorerShown_ ? chat::Icon::chevronLeft : chat::Icon::list; }, {},
+                              false, {}, {}, [this] { toggleExplorer(); }, "Fold or open the explorer",
+                              "EXPLORER   THE PROGRAM'S FILES, THE LIBRARY, THE EXAMPLES AND THE PRESETS; FOLD IT AWAY FOR ROOM");
+            sp.shown = [this] { return !panelView_; };   // the PANEL view is the plugin's face: no explorer
+            explorerToggleItem_ = add(std::make_unique<B>(idFor(), std::move(sp)));
+        }
         {
             B::Spec sp = spec(B::Shape::pill, [] { return chat::Icon::person; }, [this] { return accountLabel(); }, false,
                               [] { return B::Look::ghost; }, {}, [this] { openKeyDialog(DialogTab::account); }, "Your account",
@@ -1768,11 +1773,20 @@ namespace testingplaygroundsynth::ui
         // The columns: the chat about a third of the width, or, folded, a rail.
         chatW_ = chatOpen_ ? std::clamp(std::round(W * kChatShare), kChatMinW, kChatMaxW) : kChatRailW;
         chatX_ = W - kMargin - chatW_;
-        // The explorer at the left, about a sixth of the width, or, folded, a rail; the program's card after it.
-        const float explorerW = explorerOpen_ ? std::clamp(std::round(W * kExplorerShare), kExplorerMinW, kExplorerMaxW)
-                                              : kChatRailW;
-        explorerCard_ = { kMargin, kMainY, explorerW, bottom - kMainY };
-        leftX_ = kMargin + explorerW + kExplorerGap;
+        // The explorer at the left, about a sixth of the width, as far as the program's card keeps kProgramMinW, in the
+        // CODE view only; folded, too narrow a window or the PANEL view: nothing (its button at the left of the program's
+        // card's header). The program's card after it.
+        float explorerW = 0.0f;
+        if (explorerOpen_ && !panelView_)
+        {
+            const float room = chatX_ - (chatOpen_ ? kChatGap : kChatRailGap) - kMargin - kExplorerGap - kProgramMinW;
+            const float want = std::clamp(std::round(W * kExplorerShare), kExplorerMinW, kExplorerMaxW);
+            if (room >= kExplorerMinW)
+                explorerW = std::min(want, std::floor(room));
+        }
+        explorerShown_ = explorerW > 0.0f;
+        explorerCard_ = explorerShown_ ? funkgui::Rect{ kMargin, kMainY, explorerW, bottom - kMainY } : funkgui::Rect{};
+        leftX_ = kMargin + (explorerShown_ ? explorerW + kExplorerGap : 0.0f);
         leftW_ = chatX_ - (chatOpen_ ? kChatGap : kChatRailGap) - leftX_;
 
         // The top bar: the preset in its middle (clear of the product's name), the view's switch, the load and the
@@ -2202,6 +2216,20 @@ namespace testingplaygroundsynth::ui
         return static_cast<const ExplorerItem&>(*items_[static_cast<std::size_t>(explorerItem_)]);
     }
 
+    // The chevron folds it; the button in the program's card's header opens it, folding the chat when the window has no
+    // room for both.
+    void Panel::toggleExplorer()
+    {
+        if (explorerShown_)
+        {
+            setExplorerOpen(false);
+            return;
+        }
+        setExplorerOpen(true);
+        if (!explorerShown_ && chatOpen_)
+            setChatOpen(false);
+    }
+
     void Panel::setExplorerOpen(bool open)
     {
         if (open == explorerOpen_)
@@ -2217,17 +2245,17 @@ namespace testingplaygroundsynth::ui
         dirty_ = true;
     }
 
-    // The card's header (its title, drawn by draw(), and the chevron at its right) and the list under it; folded, the
-    // rail's button at its top and nothing else.
+    // The card's header (its title, drawn by draw(), and the chevron at its right) and the list under it; not shown, the
+    // button at the left of the program's card's header, the status after it.
     void Panel::layoutExplorer()
     {
         auto& toggle = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(explorerToggleItem_)]);
         ExplorerItem& ex = explorer();
-        ex.setHidden(!explorerOpen_);
+        ex.setHidden(!explorerShown_);
         const funkgui::Rect& r = explorerCard_;
-        if (!explorerOpen_)
+        if (!explorerShown_)
         {
-            toggle.setBounds({ r.centreX() - 0.5f * kIconButton, r.y + 8.0f, kIconButton, kIconButton });
+            toggle.setBounds({ leftX_ + kInset - 4.0f, kActionsY + 0.5f * (kActionH - 26.0f), 26.0f, 26.0f });
             ex.setBounds({});
             return;
         }
@@ -2242,7 +2270,7 @@ namespace testingplaygroundsynth::ui
     // by the other playground, or by PRESETS, appears).
     void Panel::syncExplorer()
     {
-        if (!explorerOpen_ || explorerItem_ < 0)
+        if (!explorerShown_ || explorerItem_ < 0)
             return;
         const double now = host_ != nullptr ? host_->nowSeconds() : 0.0;
         if (presetsAt_ < 0.0 || now - presetsAt_ > 3.0)
@@ -4202,7 +4230,7 @@ namespace testingplaygroundsynth::ui
             const float mid = kActionsY + 0.5f * kActionH;
             const bool failed = !lastOk_ && !compiling_;
             const std::string shown = statusShown();
-            const float tx = r.x + kInset + 14.0f;
+            const float tx = r.x + kInset + 14.0f + (explorerShown_ || panelView_ ? 0.0f : 30.0f);   // after the explorer's button
             const std::string text = fitText(c, shown, chat::kSmall, std::max(0.0f, actionsX_ - 12.0f - tx));
             constexpr funkgui::Col kPlaying{ 0x46, 0xBE, 0x82, 255 };   // the program plays as written
             const funkgui::Col light = failed ? pal.danger : (compiling_ ? pal.soft : (edited_ ? pal.faint : kPlaying));
@@ -4213,17 +4241,14 @@ namespace testingplaygroundsynth::ui
             }
         }
 
-        // The explorer's card, as the chat's: its title in the header (its chevron is an item, its rows another); folded,
-        // a rail with the button that opens it.
+        // The explorer's card, as the chat's: its title in the header (its chevron is an item, its rows another).
+        if (explorerShown_)
         {
             const funkgui::Canvas::Scope s(c, kExplorerTag, false);
             const funkgui::Rect& r = explorerCard_;
             c.rrect(r.x, r.y, r.w, r.h, kCardRadius, pal.card, 1.0f, pal.cardEdge);
-            if (explorerOpen_)
-            {
-                const float ty = r.y + kCardPad + 0.5f * kIconButton;
-                c.text("Explorer", r.x + kCardPad + 4.0f, c.capCentreTop(ty, chat::kTitle), chat::kTitle, pal.text);
-            }
+            const float ty = r.y + kCardPad + 0.5f * kIconButton;
+            c.text("Explorer", r.x + kCardPad + 4.0f, c.capCentreTop(ty, chat::kTitle), chat::kTitle, pal.text);
         }
 
         // The chat's card (rounded, a shade off the ground: the panel around it is square), its title, and the line under
@@ -4740,7 +4765,7 @@ namespace testingplaygroundsynth::ui
         r ^= gui * 0x2C1B3C6Du;
         // The counters times odd constants: a change in any one of them changes the revision.
         return r ^ (files().layoutRevision() * 0x85EBCA77u) ^ (layoutRevision_ * 0xC2B2AE3Du) ^ (chatA11y_ * 2654435761u)
-             ^ (explorer().revision() * 0x27220A95u) ^ (explorerOpen_ ? 0x1B873593u : 0u);
+             ^ (explorer().revision() * 0x27220A95u) ^ (explorerShown_ ? 0x1B873593u : 0u);
     }
 
     void Panel::a11yAction(uint32_t id, funkgui::A11yAction a, double value)

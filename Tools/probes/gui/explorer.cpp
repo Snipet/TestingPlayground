@@ -4,9 +4,9 @@
 // <build>/probe-out/:
 //   gui.explorer.png         the default size: a program of two files (the second's errors marked), a library file
 //                            added, two presets
-//   gui.explorer.folded.png  folded into its rail, the program's card wider
+//   gui.explorer.folded.png  folded away, the program's card wider, the button that opens it in its header
 //   gui.explorer.paper.png   in PAPER
-//   gui.explorer.small.png   the least size, scrolled to the presets
+//   gui.explorer.small.png   the least size with the chat folded, scrolled to the presets
 // and checks:
 //   OPEN      open at first: its card at the left, the program's card after it and the chat's at the right, none
 //             overlapping; the sections FILES, LIBRARY, EXAMPLES and PRESETS; a row a tab, the shown one marked
@@ -19,12 +19,18 @@
 //   PRESETS   the presets saved, the newest first, each with its date; a click loads one (its files in the editor);
 //             with the editor's files edited it asks first (a menu), and loads on the menu's choice only; the header's
 //             + opens PRESETS
-//   FOLD      a section's header folds it (its rows gone) and opens it again; the chevron folds the explorer into a
-//             rail (its rows gone, the program's card wider by the explorer's width less the rail's), the rail's
-//             button opens it; the processor keeps it folded, and its state carries that to another processor
+//   FOLD      a section's header folds it (its rows gone) and opens it again; the chevron folds the explorer away (its
+//             rows gone, the program's card wider by the explorer and its gap, the program's card's header holding the
+//             button that opens it); the processor keeps it folded, and its state carries that to another processor;
+//             the button opens it
+//   PANEL     the PANEL view has no explorer and no button for it (the program's card from the left margin), the
+//             session still keeping it open; the CODE view shows it again
 //   A11Y      the explorer speaks as a list, its rows as buttons and its headers as toggles; a row pressed through
 //             accessibility does what its click does
-//   SCROLL    at the least size the list is taller than its card: the wheel scrolls it
+//   NARROW    at the least size with the chat open there is no room for it: it is away (still open in the session),
+//             the program's card keeps kProgramMinW; its button folds the chat and shows it; the chat opened again,
+//             away again; at the default size it shows
+//   SCROLL    at the least size (the chat folded) the list is taller than its card: the wheel scrolls it
 #include "Probe.h"
 
 #include "editor/Explorer.h"
@@ -256,7 +262,13 @@ PROBE(gui, explorer)
     host.settle();
     P.eq("fold.folded", panel.explorerOpen() ? 0 : 1, 1);
     P.eq("fold.rows_gone", ex.shown() ? 0 : 1, 1);
-    P.near("fold.program_wider", panel.programCard().w - wideBefore, explorerW - panel.explorerCard().w, 0.5);
+    P.near("fold.program_wider", panel.programCard().w - wideBefore, explorerW + 12.0f, 0.5);
+    P.eq("fold.card_gone", panel.explorerCard().w == 0.0f ? 1 : 0, 1);
+    {
+        const funkgui::Point b = panel.centreOfExplorerToggle();
+        const funkgui::Rect pc = panel.programCard();
+        P.eq("fold.button_in_header", pc.contains(b) && b.y < pc.y + 40.0f && b.x < pc.x + 40.0f ? 1 : 0, 1);
+    }
     P.eq("fold.port_keeps", port.explorerOpen() ? 0 : 1, 1);
     writePng(P, host, "gui.explorer.folded.png");
     {
@@ -269,7 +281,26 @@ PROBE(gui, explorer)
     const funkgui::Point rail = panel.centreOfExplorerToggle();
     host.click(rail.x, rail.y);
     host.settle();
-    P.eq("fold.rail_opens", panel.explorerOpen() && ex.shown() ? 1 : 0, 1);
+    P.eq("fold.button_opens", panel.explorerOpen() && ex.shown() ? 1 : 0, 1);
+
+    // ---- PANEL ---------------------------------------------------------------------------------------------------------
+    {
+        const funkgui::Point to = panel.centreOfView(true);
+        host.click(to.x, to.y);
+        host.settle();
+        P.eq("panel.view", panel.panelView() ? 1 : 0, 1);
+        P.eq("panel.away", !panel.explorerShown() && !ex.shown() ? 1 : 0, 1);
+        P.le("panel.card_from_margin", panel.programCard().x, 24.0f);
+        int buttons = 0;
+        for (const funkgui::A11yItem& it : host.accessibility())
+            buttons += it.title == "Fold or open the explorer" ? 1 : 0;
+        P.eq("panel.no_button", buttons, 0);
+        P.eq("panel.still_open", port.explorerOpen() ? 1 : 0, 1);
+        const funkgui::Point back = panel.centreOfView(false);
+        host.click(back.x, back.y);
+        host.settle();
+        P.eq("panel.code_shows", !panel.panelView() && panel.explorerShown() && ex.shown() ? 1 : 0, 1);
+    }
 
     // ---- A11Y ----------------------------------------------------------------------------------------------------------
     {
@@ -306,10 +337,33 @@ PROBE(gui, explorer)
         funkgui::UiPreferences::get().setTheme(0);
     }
 
+    // ---- NARROW --------------------------------------------------------------------------------------------------------
+    {
+        P.eq("narrow.least_size", host.resize(tp::ui::kMinWidth, tp::ui::kMinHeight) ? 1 : 0, 1);
+        host.settle();
+        P.eq("narrow.chat_open", panel.chatOpen() ? 1 : 0, 1);
+        P.eq("narrow.still_open", panel.explorerOpen() ? 1 : 0, 1);
+        P.eq("narrow.away", !panel.explorerShown() && !ex.shown() && panel.explorerCard().w == 0.0f ? 1 : 0, 1);
+        P.ge("narrow.program_room", panel.programCard().w, 600.0f);
+        const funkgui::Point r = panel.centreOfExplorerToggle();
+        host.click(r.x, r.y);
+        host.settle();
+        P.eq("narrow.button_folds_chat", !panel.chatOpen() && panel.explorerShown() && ex.shown() ? 1 : 0, 1);
+        P.ge("narrow.program_room_after", panel.programCard().w, 600.0f);
+        panel.setChatOpen(true);
+        host.settle();
+        P.eq("narrow.chat_back_away", panel.explorerOpen() && !panel.explorerShown() ? 1 : 0, 1);
+        const bool back = host.resize(tp::ui::kDefaultWidth, tp::ui::kDefaultHeight);
+        host.settle();
+        P.eq("narrow.default_shows", back && panel.explorerShown() ? 1 : 0, 1);
+    }
+
     // ---- SCROLL --------------------------------------------------------------------------------------------------------
     {
         P.eq("scroll.least_size", host.resize(tp::ui::kMinWidth, tp::ui::kMinHeight) ? 1 : 0, 1);
+        panel.setChatOpen(false);                    // the least width has room for the explorer beside the chat's rail
         host.settle();
+        P.eq("scroll.shown", panel.explorerShown() ? 1 : 0, 1);
         P.ge("scroll.taller", ex.contentHeight(), ex.bounds().h + 1.0f);
         const float s0 = ex.scroll();
         host.wheel(ex.bounds().centreX(), ex.bounds().centreY(), -3.0f);
