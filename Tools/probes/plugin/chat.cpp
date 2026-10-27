@@ -13,7 +13,7 @@
 //            thinking, each with its levels
 //   REQUEST  each request has the model, max_tokens (the model's own limit, from /v1/models), stream, adaptive
 //            thinking (summarized), the effort, the system prompt cached for an hour, the automatic cache breakpoint,
-//            the twelve tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
+//            the fifteen tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
 //            and instructions) with their beta headers for a model that takes them, the API version and the key, and
 //            no temperature, top_p or top_k; the first message carries the plugin's state; the history is append-only
 //            (each request's messages begin with the previous request's, unchanged, signatures included) and the
@@ -43,6 +43,18 @@
 //   MEASURE  measure_output through the agent: its result is the render's report, with the dials asked for
 //   VIEW     view_panel through the agent: its result a PNG of the panel (and one of the whole editor) and a line of
 //            what it shows, drawn on the message thread; the user's view stays; the saved session keeps no picture
+//   SOUND    view_sound through the agent (a program that sounds): its result a PNG of 1120 x 800 and what it shows,
+//            the tool's entry with the picture's thumbnail (480 px), the session without the PNG but with the thumbnail;
+//            a program that does not compile draws nothing and says why
+//   CHECKS   set_checks: its result measures them at once (one passes, one fails); "Done." while one fails: the next
+//            request carries the results as the user's line and the turn goes on, the history valid; a dial set and a
+//            run: the run's result ends with the checks, all passing, and the turn ends; one card a turn with its rows,
+//            a note that Claude went on; checks that cannot pass: twice, then the turn ends ("will not ask again"); a
+//            metric that is none refused; a turn that only talks is not sent on; the session keeps them (and loads
+//            them); clearChecks forgets them (a note),
+//            and a turn after it goes on no more
+//   TUNE     tune_dials: a level for an RMS (an instrument) or a gain for a gain (an effect): the goal met, the dial
+//            set (measured afterwards, it gives the goal); an unknown dial an error result
 //   ASK      ask_user: a reply with text, get_status, a question of two parts (one choice, several) and a second
 //            ask_user: the turn waits (asking, not busy) with the question's entry open, the other calls' results in
 //            the history and the second ask refused; the session saved meanwhile opens with it still waiting. The
@@ -103,6 +115,8 @@
 #include "plugin/ClaudeApi.h"
 #include "plugin/Processor.h"
 
+#include "dsp/Measure.h"
+
 #include "Library.h"
 #include "Product.h"
 
@@ -144,6 +158,54 @@ namespace
                    "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
                    "        for (int i = 0; i < n; ++i)\n        {\n"
                    "            left[i] *= level[i];\n            right[i] *= level[i];\n        }\n    }\n};\n";
+    }
+
+    // A program that sounds, with a dial to fix: an instrument's sine with its level (dB) and a release (s, 60 dB); an
+    // effect's gain (dB).
+    std::string soundProgram()
+    {
+        if constexpr (tp::product::kIsInstrument)
+            return R"(module Voice
+{
+    param float level [[fminus::range(-40, 0)]] [[fminus::default(-20)]];
+    param float release [[fminus::range(0.01, 3)]] [[fminus::default(0.5)]];
+    float rate, ph, step, env;
+    bool held;
+    void init(float r) { rate = r; }
+    void start(float note, float v) { step = 440 * expf(0.0577622650f * (note - 69)) / rate; held = true; env = 1; }
+    void stop() { held = false; }
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        const float g = expf(0.115129255f * level[0]);
+        const float fall = expf(-6.90775528f / (release[0] * rate));
+        for (int i = 0; i < n; ++i)
+        {
+            if (!held) env *= fall;
+            const float out = g * env * sinf(6.28318531f * ph);
+            ph += step;
+            if (ph >= 1) ph -= 1;
+            left[i] += out;
+            right[i] += out;
+        }
+        return held || env > 0.00001f;
+    }
+};
+)";
+        else
+            return R"(module Effect
+{
+    param float gain [[fminus::range(-24, 24)]] [[fminus::default(0)]];
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        const float g = expf(0.115129255f * gain[0]);
+        for (int i = 0; i < n; ++i)
+        {
+            left[i] *= g;
+            right[i] *= g;
+        }
+    }
+};
+)";
     }
 
     std::string str(const juce::var& v, const char* key) { return v.getProperty(key, "").toString().toStdString(); }
@@ -264,7 +326,7 @@ namespace
     // The conversation, a line an entry, for the log.
     void print(const char* what, const tp::ChatState& s)
     {
-        static const char* const names[] = { "user", "assistant", "thinking", "tool", "error", "note" };
+        static const char* const names[] = { "user", "assistant", "thinking", "tool", "error", "note", "question", "checks" };
         std::printf("%s:\n", what);
         for (const tp::ChatEntry& e : s.entries)
             std::printf("  %-9s %s\n", names[static_cast<int>(e.kind)], e.text.substr(0, 110).c_str());
@@ -456,8 +518,8 @@ PROBE(plugin, chat)
         int eager = 0;
         for (const auto& t : tools)
             eager += static_cast<bool>(t.getProperty("eager_input_streaming", false)) ? 1 : 0;
-        P.eq("request.tools", tools.size(), 12);
-        P.eq("request.tools_eager", eager, 12);
+        P.eq("request.tools", tools.size(), 15);
+        P.eq("request.tools_eager", eager, 15);
         bool libraryEnum = false;
         for (const auto& t : tools)
             if (str(t, "name") == "add_library_file")
@@ -882,7 +944,246 @@ PROBE(plugin, chat)
         // The session keeps no picture: a line in its place, and the mark that drops the thinking on load.
         const std::string saved = agent.saveState();
         P.eq("view.session_no_picture", has(saved, "iVBORw0KGgo") ? 0 : 1, 1);
-        P.eq("view.session_line", has(saved, "A picture of the panel: not kept in the session") && has(saved, "pictures_cut") ? 1 : 0, 1);
+        P.eq("view.session_line", has(saved, "A picture of the panel or the sound: not kept in the session") && has(saved, "pictures_cut") ? 1 : 0, 1);
+    }
+
+    // ---- SOUND, CHECKS, TUNE: a processor of their own, playing a program that sounds --------------------------------------------------------------------
+    {
+        tp::Processor sp;                                     // its program and its dials stay out of the rest
+        tp::ChatAgent& sa = sp.chatAgent();
+        auto ss = std::make_shared<fake::Script>();
+        ss->models = script->models;
+        sa.setTransport(std::make_unique<fake::Transport>(ss));
+        // A turn that polls the message thread while it runs (a set_dial is applied there), until `posts` more requests went.
+        const auto turn = [&](const std::string& message, int posts) {
+            const int before = ss->postCount();
+            sa.send(message);
+            for (int k = 0; k < 6000 && (sa.chatState().busy || ss->postCount() < before + posts); ++k)
+            {
+                sp.poll();
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            sa.waitIdle();
+            sp.poll();
+            return before;
+        };
+        const auto lastUser = [&](int post) {
+            const juce::Array<juce::var> m = messagesOf(ss->body(post));
+            return m.isEmpty() ? juce::var() : m[m.size() - 1];
+        };
+        const auto resultText = [&](int post, int which = 0) {
+            const juce::Array<juce::var> results = arr(lastUser(post).getProperty("content", {}));
+            if (which >= results.size())
+                return std::string();
+            const juce::var c = results[which].getProperty("content", {});
+            if (c.isString())
+                return c.toString().toStdString();
+            std::string out;
+            for (const juce::var& b : arr(c))
+                if (str(b, "type") == "text")
+                    out += str(b, "text");
+            return out;
+        };
+        const int dialSlot = 0;
+        const char* const levelDial = tp::product::kIsInstrument ? "level" : "gain";
+        {
+            tp::Draft d;
+            d.files = tp::singleFile(soundProgram());
+            sp.editorPort().setDraft(d);
+            sp.editorPort().run(d.files);
+            sp.settle();
+            P.eq("sound.program_plays", sp.editorPort().running() == d.files ? 1 : 0, 1);
+            // The dials at the program's defaults (a run keeps a dial's value when the program before had one of its
+            // name: the first example has a release).
+            for (int c = 0; c < 2; ++c)
+                if (sp.control(c).used)
+                    sp.getParameters()[c]->setValueNotifyingHost(tp::normOf(sp.control(c), sp.control(c).def));
+            sp.poll();
+        }
+
+        // ---- SOUND ---------------------------------------------------------------------------------------------------------
+        {
+            juce::var in = tp::product::kIsInstrument ? input({ { "notes", juce::Array<juce::var>{ 57 } } }) : input({ { "input", "sine" } });
+            ss->add(fake::Response::ok(fake::Sse().start().tool("toolu_s1", "view_sound", in).end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("It rings cleanly.").end()));
+            const int before = turn("show me the sound", 2);
+            std::string data, about;
+            const juce::Array<juce::var> results = arr(lastUser(before + 1).getProperty("content", {}));
+            for (const juce::var& b : arr(results.isEmpty() ? juce::var() : results[0].getProperty("content", {})))
+            {
+                if (str(b, "type") == "image" && str(b.getProperty("source", {}), "media_type") == "image/png")
+                    data = str(b.getProperty("source", {}), "data");
+                if (str(b, "type") == "text")
+                    about = str(b, "text");
+            }
+            std::printf("view_sound: %s\n", about.c_str());
+            P.eq("sound.png", data.rfind("iVBORw0KGgo", 0) == 0 && data.size() > 20000 ? 1 : 0, 1);
+            P.eq("sound.about", has(about, "A picture of the program's sound") && has(about, "spectrogram")
+                                    && has(about, tp::product::kIsInstrument ? "Note 57" : "A sine of 220") ? 1 : 0, 1);
+            {
+                juce::MemoryOutputStream png;
+                if (juce::Base64::convertFromBase64(png, juce::String(data)))
+                    juce::File(juce::String(probe::outPath("plugin.chat.view_sound.png"))).replaceWithData(png.getData(), png.getDataSize());
+                const juce::Image img = juce::ImageFileFormat::loadFrom(png.getData(), png.getDataSize());
+                P.eq("sound.size", img.getWidth() == 1120 && img.getHeight() == 800 ? 1 : 0, 1);
+            }
+            const tp::ChatState st = sa.chatState();
+            const tp::ChatEntry* entry = nullptr;
+            for (const tp::ChatEntry& e : st.entries)
+                if (e.kind == tp::ChatEntry::Kind::tool && e.text == "looked at the sound")
+                    entry = &e;
+            P.eq("sound.entry_picture", entry != nullptr && entry->pictures.size() == 1 && entry->pictures[0]->thumbWidth == 480
+                                            && !entry->pictures[0]->thumb.empty() ? 1 : 0, 1);
+            const std::string saved = sa.saveState();
+            P.eq("sound.session_no_png", has(saved, "iVBORw0KGgo") ? 0 : 1, 1);
+            P.eq("sound.session_thumbnail", has(saved, "sound.png") ? 1 : 0, 1);
+            // A program that does not compile draws nothing, and says why.
+            tp::Draft broken = sp.editorPort().draft();
+            const tp::Draft good = broken;
+            broken.files[0].text += "this is not FMinus\n";
+            sp.editorPort().setDraft(broken);
+            ss->add(fake::Response::ok(fake::Sse().start().tool("toolu_s2", "view_sound", input({})).end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("It does not compile.").end()));
+            const int at = turn("and now?", 2);
+            P.eq("sound.no_compile", has(resultText(at + 1), "It did not compile, so nothing was drawn") ? 1 : 0, 1);
+            sp.editorPort().setDraft(good);
+        }
+
+        // ---- CHECKS --------------------------------------------------------------------------------------------------------
+        {
+            // One check that passes and one that fails until a dial moves.
+            juce::Array<juce::var> checks;
+            if constexpr (tp::product::kIsInstrument)
+            {
+                checks.add(input({ { "label", "A sensible level" }, { "metric", "rms_db" }, { "min", -40.0 }, { "max", -10.0 },
+                                   { "notes", juce::Array<juce::var>{ 57 } } }));
+                checks.add(input({ { "label", "Dies away quickly" }, { "metric", "release_s" }, { "max", 0.2 },
+                                   { "notes", juce::Array<juce::var>{ 57 } } }));
+            }
+            else
+            {
+                checks.add(input({ { "label", "No boost" }, { "metric", "sine_gain_db" }, { "max", 1.0 } }));
+                checks.add(input({ { "label", "Quieter by 6 dB" }, { "metric", "sine_gain_db" }, { "max", -6.0 } }));
+            }
+            const char* fixDial = tp::product::kIsInstrument ? "release" : "gain";
+            const double fixValue = tp::product::kIsInstrument ? 0.1 : -8.0;
+            ss->add(fake::Response::ok(fake::Sse().start().tool("toolu_c1", "set_checks", input({ { "checks", checks } })).end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("Done.").end()));
+            ss->add(fake::Response::ok(fake::Sse()
+                                               .start()
+                                               .tool("toolu_c2", "set_dial", input({ { "name", fixDial }, { "value", fixValue } }))
+                                               .end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().tool("toolu_c3", "run_program", input({})).end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("Fixed.").end()));
+            const int before = turn("make it right", 5);
+            const std::string setResult = resultText(before + 1);
+            std::printf("set_checks: %s\n", setResult.c_str());
+            P.eq("checks.set_result", has(setResult, "Set 2 checks") && has(setResult, "Checks: 1 of 2 pass")
+                                          && has(setResult, "- FAIL ") ? 1 : 0, 1);
+            // "Done." ended the turn while one failed: the next request carries the results as the user's line.
+            const juce::var nudge = lastUser(before + 2);
+            P.eq("checks.nudged", str(nudge, "role") == "user" && says(nudge, "(From the plugin: your checks") && says(nudge, "- FAIL ") ? 1 : 0, 1);
+            P.eq("checks.history_valid", alternates(messagesOf(ss->body(before + 4))) ? 1 : 0, 1);
+            const std::string runResult = resultText(before + 4);
+            P.eq("checks.after_run", has(runResult, "Compiled in") && has(runResult, "Checks: 2 of 2 pass") ? 1 : 0, 1);
+            P.eq("checks.turn_ended", ss->postCount() == before + 5 && !sa.chatState().busy ? 1 : 0, 1);
+            const tp::ChatState st = sa.chatState();
+            int cards = 0;
+            const tp::ChatEntry* card = nullptr;
+            for (const tp::ChatEntry& e : st.entries)
+                if (e.kind == tp::ChatEntry::Kind::checks)
+                {
+                    ++cards;
+                    card = &e;
+                }
+            P.eq("checks.one_card_a_turn", cards, 1);
+            P.eq("checks.card_rows", card != nullptr && card->checks.size() == 2 && card->checks[0].pass && card->checks[1].pass
+                                         && card->checks[1].label == (tp::product::kIsInstrument ? "Dies away quickly" : "Quieter by 6 dB") ? 1 : 0, 1);
+            int notes = 0;
+            for (const tp::ChatEntry& e : st.entries)
+                notes += e.kind == tp::ChatEntry::Kind::note && has(e.text, "Claude goes on") ? 1 : 0;
+            P.eq("checks.note", notes, 1);
+            P.eq("checks.state", st.checks ? 1 : 0, 1);
+
+            // Checks that cannot pass: the turn goes on twice, then ends.
+            juce::Array<juce::var> impossible;
+            impossible.add(input({ { "label", "Impossibly loud" }, { "metric", tp::product::kIsInstrument ? "rms_db" : "sine_rms_db" },
+                                   { "min", 30.0 } }));
+            ss->add(fake::Response::ok(fake::Sse().start().tool("toolu_c4", "set_checks", input({ { "checks", impossible } })).end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("Done.").end()));
+            ss->add(fake::Response::ok(fake::Sse().start().text("Still done.").end()));
+            ss->add(fake::Response::ok(fake::Sse().start().text("It cannot pass: +30 dBFS is beyond the output.").end()));
+            const int b2 = turn("louder", 4);
+            P.eq("checks.limit_posts", ss->postCount() - b2, 4);
+            P.eq("checks.limit_last_says", says(lastUser(b2 + 3), "will not ask again") ? 1 : 0, 1);
+            P.eq("checks.limit_answer", lastText(sa.chatState(), tp::ChatEntry::Kind::assistant)
+                                            == "It cannot pass: +30 dBFS is beyond the output." ? 1 : 0, 1);
+
+            // A check that cannot be: refused, nothing set.
+            juce::Array<juce::var> bad;
+            bad.add(input({ { "label", "Loudness" }, { "metric", "loudness" }, { "max", 1.0 } }));
+            ss->add(fake::Response::ok(fake::Sse().start().tool("toolu_c5", "set_checks", input({ { "checks", bad } })).end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("Oops.").end()));
+            const int b3 = turn("check loudness", 2);
+            const juce::Array<juce::var> r3 = arr(lastUser(b3 + 1).getProperty("content", {}));
+            P.eq("checks.bad_refused", !r3.isEmpty() && static_cast<bool>(r3[0].getProperty("is_error", false))
+                                           && has(resultText(b3 + 1), "no metric 'loudness'") ? 1 : 0, 1);
+
+            // A turn that only talks is never sent on, though a check fails.
+            ss->add(fake::Response::ok(fake::Sse().start().text("The level is set by the first dial.").end()));
+            const int bq = turn("what does the first dial do?", 1);
+            P.eq("checks.talk_no_nudge", ss->postCount() - bq, 1);
+
+            // The session keeps the checks; Clear forgets them.
+            const std::string saved = sa.saveState();
+            P.eq("checks.session", has(saved, "\"checks\"") && has(saved, "Impossibly loud") ? 1 : 0, 1);
+            sa.loadState(saved);
+            P.eq("checks.session_loads", sa.chatState().checks ? 1 : 0, 1);
+            sa.clearChecks();
+            P.eq("checks.cleared", sa.chatState().checks ? 0 : 1, 1);
+            P.eq("checks.cleared_note", lastText(sa.chatState(), tp::ChatEntry::Kind::note) == "The checks are cleared: the plugin no longer measures them." ? 1 : 0, 1);
+            ss->add(fake::Response::ok(fake::Sse().start().text("Done.").end()));
+            const int b4 = turn("thanks", 1);
+            P.eq("checks.cleared_no_nudge", ss->postCount() - b4, 1);
+        }
+
+        // ---- TUNE ----------------------------------------------------------------------------------------------------------
+        {
+            const char* metric = tp::product::kIsInstrument ? "rms_db" : "sine_gain_db";
+            const double goal = tp::product::kIsInstrument ? -30.0 : -6.0;
+            juce::var in = input({ { "tune", juce::Array<juce::var>{ juce::var(levelDial) } },
+                                   { "goals", juce::Array<juce::var>{ input({ { "metric", metric }, { "target", goal }, { "tolerance", 0.2 } }) } } });
+            if constexpr (tp::product::kIsInstrument)
+                in.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+            ss->add(fake::Response::ok(fake::Sse().start().tool("toolu_t1", "tune_dials", in).end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("Tuned.").end()));
+            const int before = turn("set the level", 2);
+            const std::string result = resultText(before + 1);
+            std::printf("tune_dials:\n%s\n", result.c_str());
+            P.eq("tune.result", has(result, "1 of 1 goals met") && has(result, "The dials are set") ? 1 : 0, 1);
+            P.eq("tune.entry", has(lastText(sa.chatState(), tp::ChatEntry::Kind::tool), "tuned " + std::string(levelDial)) ? 1 : 0, 1);
+            // The dial as set measures as the goal asked.
+            tp::measure::Session session(sp.editorPort().draft().files);
+            tp::measure::Request r;
+            if constexpr (tp::product::kIsInstrument)
+                r.notes = { 57 };
+            const float plain = tp::plainOf(sp.control(dialSlot), sp.getParameters()[dialSlot]->getValue());
+            r.dials[levelDial] = plain;
+            r.want = { metric };
+            const double got = session.measure(r).values[metric];
+            std::printf("tune_dials: %s %.2f, %s %.2f\n", levelDial, static_cast<double>(plain), metric, got);
+            P.near("tune.dial_measures", got, goal, 0.25);
+            // An int or an unknown dial: an error result.
+            ss->add(fake::Response::ok(fake::Sse()
+                                               .start()
+                                               .tool("toolu_t2", "tune_dials",
+                                                     input({ { "tune", juce::Array<juce::var>{ "nothing" } },
+                                                             { "goals", juce::Array<juce::var>{ input({ { "metric", metric }, { "max", 0.0 } }) } } }))
+                                               .end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("Hm.").end()));
+            const int b2 = turn("tune nothing", 2);
+            P.eq("tune.unknown_dial", has(resultText(b2 + 1), "no dial 'nothing'") ? 1 : 0, 1);
+        }
     }
 
     // ---- ASK -----------------------------------------------------------------------------------------------------------
@@ -1209,7 +1510,7 @@ PROBE(plugin, chat)
         int at = script->postCount();
         agent.send("hello");
         agent.waitIdle();
-        P.eq("web.off_no_tools", toolsOf(at).size() == 12 && webTool(at, "web_search").isVoid() ? 1 : 0, 1);
+        P.eq("web.off_no_tools", toolsOf(at).size() == 15 && webTool(at, "web_search").isVoid() ? 1 : 0, 1);
         agent.setWeb(true);
         P.eq("web.on", agent.chatState().web && agent.chatState().webBlocked.empty() ? 1 : 0, 1);
         const juce::var result = input({ { "type", "web_search_tool_result" },
@@ -1248,7 +1549,7 @@ PROBE(plugin, chat)
         agent.waitIdle();
         {
             const juce::var search = webTool(at, "web_search"), fetch = webTool(at, "web_fetch");
-            P.eq("web.tools", toolsOf(at).size() == 14 && str(search, "type") == "web_search_20260209"
+            P.eq("web.tools", toolsOf(at).size() == 17 && str(search, "type") == "web_search_20260209"
                                   && static_cast<int>(search.getProperty("max_uses", 0)) == 5
                                   && str(fetch, "type") == "web_fetch_20260209"
                                   && static_cast<int>(fetch.getProperty("max_content_tokens", 0)) > 0

@@ -103,6 +103,11 @@ namespace testingplayground
         // While the audio thread is stopped. A program waiting is taken at once, without a fade, and the one playing
         // starts again at the new rate (its instances as new).
         void prepare(double sampleRate, int maxBlockSize);
+        // Offline only (the audio thread stopped, as for prepare()): everything as new, the program that plays too
+        // (Patch::reset: its instances and its module Shared's, end and init run), at the same rate and block. A
+        // render after it is the same as one from a fresh Engine and a fresh compile (measure::Session renders one
+        // compile many times so).
+        void restart();
 
         // ---- the audio thread ------------------------------------------------------------------------------------
         void setControls(const std::array<float, kMaxControls>& normalised) noexcept;

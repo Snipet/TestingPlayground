@@ -10,6 +10,19 @@
 // ChatHost::chatPicture, sent as an image in the tool's result and left out of the saved session), read the
 // plugin's status, and ask the user (ask_user: questions with options, which the chat shows as cards to click).
 //
+// Checking its own work. view_sound renders the editor's files offline and draws the sound (dsp/SoundView.h,
+// SoundPicture.h: the waveform and level, a spectrogram, the spectrum and a close-up) as a PNG in the result, which the
+// chat shows too (the tool entry's picture; the session keeps its thumbnail, not the PNG). set_checks sets what the work
+// must pass: metrics (dsp/Measure.h's metrics()) with bounds or targets (dsp/Goals.h), each in a render of its own; the
+// agent measures them (evaluateChecks: one compile, one render for checks that share one) after each run_program that
+// compiles, its results after the run's, and the chat shows them as one card a turn (ChatEntry::Kind::checks, brought
+// up to date in place). A reply that ends a turn in which a tool changed something (the files, a run, a dial, the
+// checks) while a check fails gets the results back as the user's line and the turn goes on, kMaxCheckNudges times a
+// turn at most (a turn that only talks is never sent on); clearChecks (the card's Clear) and an empty set_checks stop
+// it. The session keeps the checks. tune_dials (dsp/Tune.h) searches up to eight float dials for goals by rendering
+// offline (up to 400 renders, the activity counting them, the stop button ending the search with the best so far) and
+// sets the best values as set_dial does.
+//
 // Web search (setWeb; the API's server tools web_search and web_fetch, version 20260209, five of each a request, a
 // fetch at most kWebFetchTokens of text, its citations on): Claude searches the web and reads pages and PDFs (a
 // part's data sheet, a paper). It is on only with the user's own key (the TestingPlayground server does not charge for
@@ -95,6 +108,7 @@
 
 #include "dsp/Compiler.h"
 #include "dsp/Controls.h"
+#include "dsp/Goals.h"
 #include "dsp/Sources.h"
 
 #include <atomic>
@@ -159,6 +173,7 @@ namespace testingplayground
         void detach(uint32_t id) override;
         void send(const std::string& text) override;
         void answer(const std::vector<std::string>& answers) override;
+        void clearChecks() override;
         void stop() override;
         void newChat() override;
 
@@ -196,6 +211,10 @@ namespace testingplayground
         std::string contextBlock();                                 // the plugin's state, when it changed
         juce::var runTool(const juce::var& toolUse);               // a tool_result block
         std::string toolText(const std::string& name, const juce::var& input, bool& isError);
+        // The checks measured on the editor's files and the plugin's dials: their entry brought up to date, and the
+        // results in words for Claude ("" with no checks). The worker's.
+        std::string evaluateChecks();
+        std::map<std::string, float> currentDials() const;          // the running program's, by name
         void fetchModels();                                         // the worker, before a turn, once a key is known
         // GET /account: the credit left and the account's details. The worker's after a turn through the account
         // (`asked` false); the auth thread's when the account's view asks (true: whichever access the chat uses).
@@ -262,6 +281,8 @@ namespace testingplayground
         std::vector<std::string> requests_;                         // bodies sent (probes)
         bool busy_ = false;
         std::string asking_;                                        // the open question's tool_use id ("" for none)
+        std::vector<measure::Check> checks_;                        // Claude's checks (set_checks), in the session
+        bool checksFailing_ = false;                                // one failed when they were last measured
         struct Attached
         {
             ChatPicturePtr picture;

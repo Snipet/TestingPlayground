@@ -12,6 +12,8 @@
 #include "Library.h"
 #include "Product.h"
 
+#include "dsp/Measure.h"
+
 #include <algorithm>
 #include <string>
 
@@ -30,6 +32,7 @@ How you work:
 - Each user message may carry a <plugin_state> block: the files as they are in the editor (a tab each; the first is the program), whether what plays matches them, the last compile and the dials of the program that plays. It is the truth at that moment; the user may type in the editor between messages, so read_file shows a file as it is now.
 - Change files with write_file (a new file or a whole rewrite) or edit_file (one exact passage). Then always call run_program. If it reports errors, fix them and run again until it compiles: never leave the user with a program that does not compile because of you.
 - After a new sound compiles, measure it with measure_output (you cannot hear it) and fix what the report shows: silence, clipping or a level far from the usual, a voice that never ends, clicks, NaN alerts, a heavy CPU cost, a pitch or a brightness that is not what was asked. Then set its dials with set_dial to musical values (the defaults in the code should already be good ones). Give every dial a fminus::range and a fminus::default in useful units (Hz, ms, dB, 0 to 1).
+- Check your work against the request (CHECKING YOUR WORK, below): view_sound shows you the sound as a picture, set_checks holds the work to what was asked in numbers the plugin measures after every run, and tune_dials finds dial values for a target instead of guessing.
 - A new sound replaces the program, as loading a preset would: that is expected. Keep other work of the user's (files you did not write) unless asked; the user can undo any change of yours in the editor (Cmd-Z in that file's tab).
 - Build from THE LIBRARY, below: ready-made, tested building blocks (filters, a delay line, a reverb, oscillators, noise, envelopes, an LFO, an envelope follower, shapers, conversions). add_library_file puts one in the editor as a tab; #include it and use its modules. Write your own blocks only for what it lacks, each in a file of its own. BUILDING A LARGE PROGRAM, below, says how.
 - Give every program an interface in a file panel.gui (THE INTERFACE, below): titled sections in rows, each control in the style that suits it, pages when there are many, and displays (meters, a VU, lights, readouts, a scope, a spectrum) that show what the program does, live.
@@ -208,6 +211,18 @@ DSP PRACTICE IN THIS PLUGIN
 - Saturation: tanhf; for gentler curves x / (1 + fabsf(x)) (shaper.fm has these and more).
 - Level: keep peaks near 1 (an instrument's voice near 0.2 to 0.3). Make dial ranges musical, and defaults that sound good at once.
 - Cost: process runs on the audio thread for every sample of every voice. sinf, expf and tanhf per sample are fine in moderation; avoid recomputing per-sample what can be done per call.
+)";
+
+        const char* const kChecking = R"(
+CHECKING YOUR WORK
+
+You cannot hear the plugin, but three tools check what you build against what was asked, so you need not trust it:
+- view_sound draws the sound: the waveform and the level over time, a spectrogram (frequency against time), the average spectrum and a close-up of a few cycles. Look when the shape matters: an envelope, a sweep, a filter's slope, aliasing (lines folding back down the spectrogram), a click (a spike, a thin vertical line), a wave's shape, a tail, a modulation's motion. The user sees the picture too. About 1,200 input tokens a picture: once for a new sound, and again after a change you need to see.
+- set_checks states what the work must pass, as numbers the plugin measures: a metric with min, max or a target, each in a render of its own (measure_output's settings: %RENDER%; the defaults when left out). Write them from the request, before you build, for what a number can show: %EXAMPLES%. A few checks that matter beat many. The plugin measures them after every run_program (the results follow its own) and when you end a turn in which you changed something (the files, the dials or the checks); while one fails, that turn goes on with the results (twice at most): fix the program, or change a check that asks for the wrong thing, or say why it cannot pass. The user sees them as a checklist, and can clear them.
+- tune_dials finds dial values for goals by rendering many times (tens to a few hundred renders, a few seconds), instead of guessing and measuring by hand: once the program does the right thing and only its settings are off (%TUNING%). Name the float dials it may move (up to eight) and the goals; it sets the best values on the dials, and says how close each goal came. It cannot make a program do what it cannot: a goal that stays unmet means the program needs changing, or another dial matters.
+
+The metrics, the names checks and goals use (a value that never comes, as a release that does not end within the tail, is infinity, which only "at least" meets):
+%METRICS%A target's tolerance is the metric's own unless one is given (1 dB for levels, 5 % of a frequency, 10 % of a time).
 )";
 
         const char* const kThreads = R"(
@@ -610,6 +625,31 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
             s += replaceAll(instrument ? kHostInstrument : kHostEffect, "%HOST%", std::string(Patch::hostSource()));
             s += kLanguage;
             s += kCraft;
+            {
+                std::string metrics;
+                for (const measure::MetricInfo& m : measure::metrics())
+                    metrics += std::string("- ") + m.name + (std::string(m.unit).empty() ? std::string() : std::string(" (") + m.unit + ")")
+                             + ": " + m.what + "\n";
+                std::string c = replaceAll(kChecking, "%METRICS%", metrics);
+                c = replaceAll(c, "%RENDER%",
+                               instrument ? "notes, velocity, hold_seconds, tail_seconds, dials, the host and the wheels"
+                                          : "hold_seconds, tail_seconds, dials and the host");
+                c = replaceAll(c, "%EXAMPLES%",
+                               instrument ? "\"a short pluck\": decay_s at most 1; \"bright\": centroid_hz at least 2000; "
+                                            "\"no aliasing\": inharmonic_db at most -70 at note 96; \"no clicks\": click at "
+                                            "most 0; \"in tune\": pitch_cents near 0; \"a slow pad\": attack_s at least 0.5; "
+                                            "and for every sound alerts at most 0, and peak_db at most -6 with a chord"
+                                          : "\"clean until pushed\": thd_db at most -60, and at least -20 with the drive "
+                                            "up; \"unity gain\": sine_gain_db near 0; \"a dark tone\": centroid_out_hz "
+                                            "at most 3000; \"a long tail\": impulse_decay_s at least 2; \"quiet when idle\": "
+                                            "silence_db at most -90; and for every effect alerts at most 0");
+                c = replaceAll(c, "%TUNING%",
+                               instrument ? "\"the release at 1.2 s\", \"the level at -18 dBFS RMS\", \"the centroid at "
+                                            "1500 Hz\""
+                                          : "\"the THD+N at -30 dB\", \"unity gain\", \"the noise's centroid at 4 kHz "
+                                            "out\"");
+                s += c;
+            }
             s += kThreads;
             s += instrument ? kThreadsInstrument : kThreadsEffect;
             s += kLarge;

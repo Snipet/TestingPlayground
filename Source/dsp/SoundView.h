@@ -1,0 +1,73 @@
+// Source/dsp/SoundView.h: what the chat's view_sound shows Claude (JUCE-free; plugin/SoundPicture.cpp draws it): the
+// program rendered offline (measure::Session, Measure.h) and analysed for a picture, since Claude cannot hear but can
+// see. An instrument plays the notes held and released; an effect plays one input (a sweep from 20 Hz to 20 kHz, noise,
+// an impulse, a sine or silence) for holdSeconds, then silence for tailSeconds.
+//
+//   the waveform   each column's least and greatest sample, left and right (the right drawn too where it differs), and
+//                  the level (RMS over 10 ms, dBFS) at each column
+//   spectrogram    `rows` rows on a log frequency axis from 20 Hz to 20 kHz (or the Nyquist frequency) by `columns`
+//                  columns in time (a 4096-point Blackman-Harris window about each), in dB under the loudest cell,
+//                  down to -120
+//   the spectrum   the held part's average (Welch: 8192-point Blackman-Harris windows, half overlapped), on the same
+//                  axis, in dB under its loudest; with one note, its harmonics' frequencies, to mark
+//   a close-up     a few cycles of the held sound (four of the lowest note; an effect's: of its sine, or 10 ms), or the
+//                  stretch from..to that the request asks for
+//
+// Off the audio thread only. Deterministic.
+#pragma once
+
+#include "dsp/Measure.h"
+
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace testingplayground::measure
+{
+    enum class ViewInput : uint8_t { sweep, noise, impulse, sine, silence };   // an effect's
+
+    struct ViewRequest
+    {
+        Request render;                           // the notes, the velocity, the times, the dials, the host
+        ViewInput input = ViewInput::sweep;
+        float frequency = 220.0f;                 // the sine's, Hz
+        float from = -1.0f, to = -1.0f;           // the close-up, in seconds from the start (-1: a few cycles)
+        int columns = 1000;                       // the waveform's and the spectrogram's
+        int rows = 300;                           // the spectrogram's
+        int spectrumColumns = 520;                // the average spectrum's
+    };
+
+    struct View
+    {
+        bool compiled = false;
+        std::string errors;                       // the compiler's messages when it did not
+        double rate = 48000.0;
+        std::size_t length = 0;                   // samples rendered
+        double heldUntil = -1.0;                  // seconds: the note-off (an effect's input's end; -1 for none)
+        std::string title;                        // what played ("Note 48 (C3) at velocity 0.80, held 1.00 s, ...")
+        std::string dials;                        // "cutoff 1200, resonance 0.3"
+        uint32_t alerts = 0;
+        double peakDb = -240.0, rmsDb = -240.0;   // the whole render's peak, and the held part's RMS
+
+        std::vector<float> minL, maxL, minR, maxR;   // the waveform: per column
+        bool stereo = false;                      // left and right differ
+        std::vector<float> levelDb;               // per column, dBFS
+
+        int rows = 0, columns = 0;
+        double loHz = 20.0, hiHz = 20000.0;       // the frequency axis (log)
+        std::vector<float> cells;                 // rows x columns, row 0 the lowest: dB under the loudest cell, >= -120
+
+        std::vector<float> spectrum;              // the held part's average, per spectrum column: dB under its loudest
+        std::vector<double> harmonics;            // one note: its harmonics' Hz below hiHz (at most 40)
+
+        std::size_t zoomFrom = 0, zoomTo = 0;     // the close-up's samples
+        std::vector<float> zoomL, zoomR;
+    };
+
+    // The row (0 at loHz) of a frequency on a View's axis of `rows`, and back.
+    double rowOf(const View& v, double hz);
+    double hzOfRow(const View& v, double row);
+
+    View view(const Sources& files, const ViewRequest& request);
+}
