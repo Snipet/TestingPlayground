@@ -1,32 +1,46 @@
 // PROBE name=dsp.freeze timeout=180
 //
-// dsp.freeze: frozen dials (Patch.h, Engine.h): the program compiled again with its dials as constants, which runs the
-// same instances. Two Engines play the same program (a filter whose coefficients a voice computes each call, a level,
-// an int's choice of wave and a bool), one of them frozen, at 48 kHz in blocks of 256:
+// dsp.freeze: frozen dials (Patch.h, Engine.h): the program compiled again with its dials as constants, in FMinus's
+// Math::Fast, which runs the same instances. Two Engines play the same program (a filter whose coefficients a voice
+// computes each call, a level, an int's choice of wave and a bool), one of them frozen, at 48 kHz in blocks of 256.
+// The frozen copy's math is not the program's (Math::Vector), so its output is compared with the unfrozen Engine's,
+// both finite, as "the same samples" (the difference's energy kSameDb under the signal's) or, where a voice's pitch
+// comes from a math function that moved an ulp (its phase then drifts: an FM sound's samples part by -60 dB in ten
+// seconds), as "the same spectrum" (each octave band's level, 63 Hz to 16 kHz, every half second, within kBandDb):
 //   STILL    dials() says the program, how long the dials have held still (from the program's arrival to the last
-//            block's start), their values, and that nothing is frozen yet
-//   FROZEN   the copy offered at the dials as they stand plays from the next block; the output is the same, bit for
-//            bit, as the unfrozen Engine's; dials() says frozen
-//   MOVE     a dial moved (in both): the copy stops playing in that block, the output still the same bits; the dials
-//            count as still again from the end of its 20 ms glide (the start of the last block it moved in)
-//   AGAIN    a copy at the new values plays, the same bits
+//            block's start), their values, and that nothing is frozen yet; the same bits while nothing is
+//   FROZEN   the copy offered at the dials as they stand plays from the next block; the same samples as the unfrozen
+//            Engine's; dials() says frozen
+//   MOVE     a dial moved (in both): the copy stops playing in that block, the same samples still; the dials count as
+//            still again from the end of its 20 ms glide (the start of the last block it moved in)
+//   AGAIN    a copy at the new values plays, the same samples
 //   REFUSED  a copy at other values than the dials' is not taken; nor a copy of another program
+//   BLOCKS   the frozen copy in blocks of 64 and of 333: the same samples as each other and as the unfrozen program
 //   SPEED    sixteen voices for two seconds, live and frozen: the time each takes (printed)
-//   EXAMPLES each example, frozen at its defaults (an instrument's with eight voices): it plays, the same bits as
-//            unfrozen; the time each takes (printed)
+//   EXAMPLES each example, frozen at its defaults (an instrument's with eight voices): it plays, the same spectrum as
+//            unfrozen; the time each takes (the best of five) and both differences (printed)
+//   LONG     no copy runs away: each example and RANDOM's programs of seeds 1 to kLongSeeds, ten seconds (an
+//            instrument's chord held six and released; an effect's noise and a sine), the frozen copy in blocks of
+//            irregular sizes against the unfrozen program in blocks of 256: finite; every half second's level within
+//            0.1 dB of the unfrozen one's (where it is above -80 dBFS); the peak within 0.1 dB; the same spectrum
+//            (the worst of each printed); and the time the frozen copy takes against the program's (printed)
 #include "Probe.h"
 
 #include "Rig.h"
 
 #include "fminus/Patch.h"
 
+#include "fminus/Random.h"
+
 #include "Examples.h"
+#include "Library.h"
 #include "Product.h"
 
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -91,6 +105,98 @@ namespace
 
     bool same(const probe::Stereo& a, const probe::Stereo& b) { return probe::sameBits(a.l, b.l) && probe::sameBits(a.r, b.r); }
 
+    // The frozen copy's output against the program's: their difference's energy against the signal's, in dB, over
+    // [from, from + count) of both channels (-300 when they are the same bits; +300 when only the difference sounds).
+    constexpr double kSameDb = -80.0;
+    constexpr double kBandDb = 0.1;
+    constexpr int kLongSeeds = 64;
+
+    double differenceDb(const probe::Stereo& a, const probe::Stereo& b, std::size_t from = 0, std::size_t count = ~std::size_t{ 0 })
+    {
+        double signal = 0.0, diff = 0.0;
+        const std::size_t end = std::min({ a.size(), b.size(), count == ~std::size_t{ 0 } ? a.size() : from + count });
+        for (std::size_t i = from; i < end; ++i)
+            for (const auto* ch : { &a.l, &a.r })
+            {
+                const std::vector<float>& other = ch == &a.l ? b.l : b.r;
+                const double x = static_cast<double>((*ch)[i]), y = static_cast<double>(other[i]);
+                signal += x * x;
+                diff += (x - y) * (x - y);
+            }
+        if (diff == 0.0)
+            return -300.0;
+        if (signal == 0.0)
+            return 300.0;
+        return 10.0 * std::log10(diff / signal);
+    }
+
+    bool finite(const probe::Stereo& s) { return probe::allFinite(s.l) && probe::allFinite(s.r); }
+
+    bool sameSamples(const probe::Stereo& a, const probe::Stereo& b)
+    {
+        return finite(a) && finite(b) && differenceDb(a, b) <= kSameDb;
+    }
+
+    // The largest difference, in dB, between a's and b's level in an octave band (63 Hz to 16 kHz) over a half
+    // second, of each channel, where a's is above -80 dBFS in that band.
+    double bandsDb(const probe::Stereo& a, const probe::Stereo& b)
+    {
+        const std::size_t window = static_cast<std::size_t>(kFs / 2.0);
+        double worst = 0.0;
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            const std::vector<float>& fa = ch == 0 ? a.l : a.r;
+            const std::vector<float>& fb = ch == 0 ? b.l : b.r;
+            const std::vector<double> da(fa.begin(), fa.end()), db(fb.begin(), fb.end());
+            for (double hz = 62.5; hz < 17000.0; hz *= 2.0)
+            {
+                const std::vector<double> ba = probe::bandPass(da, hz, 1.41, kFs), bb = probe::bandPass(db, hz, 1.41, kFs);
+                for (std::size_t w = 0; w + window <= ba.size(); w += window)
+                {
+                    double ea = 0.0, eb = 0.0;
+                    for (std::size_t i = w; i < w + window; ++i)
+                    {
+                        ea += ba[i] * ba[i];
+                        eb += bb[i] * bb[i];
+                    }
+                    ea /= static_cast<double>(window);
+                    eb /= static_cast<double>(window);
+                    if (ea > 1e-8)                           // -80 dBFS
+                        worst = std::max(worst, std::fabs(10.0 * std::log10(std::max(eb, 1e-30) / ea)));
+                }
+            }
+        }
+        return worst;
+    }
+
+    bool sameSpectrum(const probe::Stereo& a, const probe::Stereo& b)
+    {
+        return finite(a) && finite(b) && bandsDb(a, b) <= kBandDb;
+    }
+
+    double stereoRmsDb(const probe::Stereo& s, std::size_t from, std::size_t count)
+    {
+        double e = 0.0;
+        const std::size_t end = std::min(s.size(), from + count);
+        for (std::size_t i = from; i < end; ++i)
+            e += static_cast<double>(s.l[i]) * s.l[i] + static_cast<double>(s.r[i]) * s.r[i];
+        return probe::dbFromLin(std::sqrt(e / static_cast<double>(2 * std::max<std::size_t>(end - from, 1))));
+    }
+
+    double peakDb(const probe::Stereo& s)
+    {
+        return probe::dbFromLin(std::max(static_cast<double>(probe::peak(s.l)), static_cast<double>(probe::peak(s.r))));
+    }
+
+    tp::Sources filesOf(const tp::random::Program& p)
+    {
+        tp::Sources s{ { tp::kProgramName, p.text } };
+        for (const std::string& name : p.library)
+            if (const tp::LibraryFile* f = tp::findLibraryFile(name))
+                s.push_back({ name, f->source });
+        return s;
+    }
+
     probe::Stereo input(std::size_t n, uint32_t seed)
     {
         if constexpr (kInstrument)
@@ -106,6 +212,24 @@ namespace
             for (int k = 0; k < voices; ++k)
                 notes.push_back({ 0, tp::EventKind::noteOn, 40 + 3 * k, 0.8f });
         return notes;
+    }
+
+    // The time a and b each take to play `in` in blocks of 256, the best of `tries` (taken in turn); an instrument's
+    // notes struck again at the start of each.
+    std::pair<double, double> timeBoth(probe::Rig& a, probe::Rig& b, const probe::Stereo& in,
+                                       const std::vector<probe::Note>& notes, int tries)
+    {
+        double ta = 1e9, tb = 1e9;
+        for (int k = 0; k < tries; ++k)
+            for (probe::Rig* r : { &a, &b })
+            {
+                const auto t0 = std::chrono::steady_clock::now();
+                r->run(in, 256, notes);
+                const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                double& best = r == &a ? ta : tb;
+                best = std::min(best, ms);
+            }
+        return { ta, tb };
     }
 }
 
@@ -138,7 +262,8 @@ PROBE(dsp, freeze)
     P.eq("frozen.plays", frozen.engine().frozen() ? 1 : 0, 1);
     frozen.engine().dials(d);
     P.eq("frozen.dials_say", d.frozen ? 1 : 0, 1);
-    P.eq("frozen.same_bits", same(a2, b2) ? 1 : 0, 1);
+    std::printf("frozen: the difference %.1f dB\n", differenceDb(a2, b2));
+    P.eq("frozen.same_samples", sameSamples(a2, b2) ? 1 : 0, 1);
     P.ge("frozen.audible", probe::rmsDb(b2.l, 0, second), -60.0);
 
     // ---- MOVE ----------------------------------------------------------------------------------------------------------
@@ -149,7 +274,8 @@ PROBE(dsp, freeze)
     }
     const probe::Stereo a3 = live.run(input(second / 2, 3), 256), b3 = frozen.run(input(second / 2, 3), 256);
     P.eq("move.dropped", frozen.engine().frozen() ? 0 : 1, 1);
-    P.eq("move.same_bits", same(a3, b3) ? 1 : 0, 1);
+    std::printf("move: the difference %.1f dB\n", differenceDb(a3, b3));
+    P.eq("move.same_samples", sameSamples(a3, b3) ? 1 : 0, 1);
     frozen.engine().dials(d);
     // 24000 samples: the last block (192) starts at 23808; the glide's 960 samples end in the fourth block (at 768).
     P.near("move.still_from_the_glide", d.stillSeconds, (23808.0 - 768.0) / kFs, 1e-6);
@@ -158,7 +284,8 @@ PROBE(dsp, freeze)
     P.eq("again.compiles", frozen.freeze() ? 1 : 0, 1);
     const probe::Stereo a4 = live.run(input(second / 2, 4), 256), b4 = frozen.run(input(second / 2, 4), 256);
     P.eq("again.plays", frozen.engine().frozen() ? 1 : 0, 1);
-    P.eq("again.same_bits", same(a4, b4) ? 1 : 0, 1);
+    std::printf("again: the difference %.1f dB\n", differenceDb(a4, b4));
+    P.eq("again.same_samples", sameSamples(a4, b4) ? 1 : 0, 1);
 
     // ---- REFUSED -------------------------------------------------------------------------------------------------------
     {
@@ -184,6 +311,24 @@ PROBE(dsp, freeze)
         frozen.run(input(1024, 8), 256);
         P.eq("refused.other_program", frozen.engine().frozen() ? 0 : 1, 1);
         frozen.engine().collect();
+    }
+
+    // ---- BLOCKS --------------------------------------------------------------------------------------------------------
+    {
+        probe::Rig plain(kFs, 512), f64(kFs, 512), f333(kFs, 512);
+        for (probe::Rig* r : { &plain, &f64, &f333 })
+        {
+            r->load(program());
+            r->run(input(4096, 14), 256, chord(4));
+        }
+        P.eq("blocks.frozen", f64.freeze() && f333.freeze() ? 1 : 0, 1);
+        const probe::Stereo in = input(second, 15);
+        const probe::Stereo o = plain.run(in, 256), o64 = f64.run(in, 64), o333 = f333.run(in, 333);
+        P.eq("blocks.plays", f64.engine().frozen() && f333.engine().frozen() ? 1 : 0, 1);
+        std::printf("blocks: 64 against 333 %.1f dB, 64 against unfrozen %.1f dB, 333 against unfrozen %.1f dB\n",
+                    differenceDb(o64, o333), differenceDb(o, o64), differenceDb(o, o333));
+        P.eq("blocks.64_333_same_samples", sameSamples(o64, o333) ? 1 : 0, 1);
+        P.eq("blocks.same_samples_as_unfrozen", sameSamples(o, o64) && sameSamples(o, o333) ? 1 : 0, 1);
     }
 
     // ---- SPEED ---------------------------------------------------------------------------------------------------------
@@ -223,20 +368,129 @@ PROBE(dsp, freeze)
         b.run(input(4096, 12), 256, chord(voices));
         b.freeze();
         const probe::Stereo in = input(2 * second, 13);
-        const auto t0 = std::chrono::steady_clock::now();
-        const probe::Stereo oa = a.run(in, 256);
-        const auto t1 = std::chrono::steady_clock::now();
-        const probe::Stereo ob = b.run(in, 256);
-        const auto t2 = std::chrono::steady_clock::now();
-        const double la = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        const double lb = std::chrono::duration<double, std::milli>(t2 - t1).count();
-        std::printf("example %-16s live %7.2f ms, frozen %7.2f ms (%3.0f%%)%s\n", e.title, la, lb, 100.0 * lb / std::max(la, 1e-9),
-                    same(oa, ob) ? "" : "  BITS DIFFER");
+        const probe::Stereo oa = a.run(in, 256), ob = b.run(in, 256);
+        const auto [la, lb] = timeBoth(a, b, in, chord(voices), 5);
+        std::printf("example %-16s live %7.2f ms, frozen %7.2f ms (%3.0f%%), the difference %.1f dB, bands %.4f dB\n",
+                    e.title, la, lb, 100.0 * lb / std::max(la, 1e-9), differenceDb(oa, ob), bandsDb(oa, ob));
         std::string key = std::string("examples.") + e.title;
         for (char& ch : key)
             ch = ch == ' ' ? '_' : static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
         P.eq(key + "_frozen", b.engine().frozen() ? 1 : 0, 1);
-        P.eq(key + "_same_bits", same(oa, ob) ? 1 : 0, 1);
+        P.eq(key + "_same_spectrum", sameSpectrum(oa, ob) ? 1 : 0, 1);
+    }
+
+    // ---- LONG ----------------------------------------------------------------------------------------------------------
+    {
+        struct Case
+        {
+            std::string name;
+            tp::Sources files;
+        };
+        std::vector<Case> cases;
+        for (const tp::Example& e : tp::kExamples)
+            cases.push_back({ e.title, tp::singleFile(e.source) });
+        for (uint32_t seed = 1; seed <= static_cast<uint32_t>(kLongSeeds); ++seed)
+        {
+            const tp::random::Program p = tp::random::make(seed);
+            cases.push_back({ "random " + std::to_string(seed) + " " + p.title, filesOf(p) });
+        }
+        const std::size_t length = 10 * second, window = second / 2;
+        int loaded = 0, frozenCount = 0, finiteCount = 0, levelCount = 0, peakCount = 0, soundCount = 0;
+        double logRatio = 0.0, slowest = 0.0, fastest = 1e9;
+        int timed = 0, slower = 0;
+        double worst = -300.0, worstLevel = 0.0, worstPeak = 0.0, worstBands = 0.0;
+        std::string worstName, worstBandsName;
+        for (const Case& c : cases)
+        {
+            probe::Rig a(kFs, 512), b(kFs, 512);
+            if (!a.load(c.files) || !b.load(c.files))
+            {
+                std::printf("long: %s does not compile\n", c.name.c_str());
+                continue;
+            }
+            ++loaded;
+            std::vector<probe::Note> on, off;
+            if constexpr (kInstrument)
+                for (const int n : { 48, 55, 60, 64 })
+                {
+                    on.push_back({ 0, tp::EventKind::noteOn, n, 0.8f });
+                    off.push_back({ 6 * second, tp::EventKind::noteOff, n, 0.0f });
+                }
+            probe::Stereo in(length);
+            if constexpr (!kInstrument)
+            {
+                in = probe::noise(length, 0.2, 16);
+                const std::vector<float> sine = probe::sine(220.0, 0.25, kFs, length);
+                for (std::size_t i = 0; i < length; ++i)
+                {
+                    in.l[i] += sine[i];
+                    in.r[i] += sine[i];
+                }
+            }
+            a.run(probe::Stereo(1024), 256, on);
+            b.run(probe::Stereo(1024), 256, on);
+            if (!b.freeze())
+            {
+                std::printf("long: %s does not freeze\n", c.name.c_str());
+                continue;
+            }
+            const probe::Stereo oa = a.run(in, 256, off), ob = b.run(in, 256, off, { 333, 64, 512, 97, 256, 1 });
+            frozenCount += b.engine().frozen() ? 1 : 0;
+            const bool fin = finite(oa) && finite(ob);
+            finiteCount += fin ? 1 : 0;
+            double level = 0.0;
+            for (std::size_t w = 0; w + window <= length; w += window)
+            {
+                const double la = stereoRmsDb(oa, w, window), lb = stereoRmsDb(ob, w, window);
+                if (la > -80.0)
+                    level = std::max(level, std::fabs(la - lb));
+            }
+            {
+                probe::Stereo slice(2 * second);             // the input's first two seconds
+                std::copy_n(in.l.begin(), slice.size(), slice.l.begin());
+                std::copy_n(in.r.begin(), slice.size(), slice.r.begin());
+                const auto [ta, tb] = timeBoth(a, b, slice, on, 3);
+                const double ratio = tb / std::max(ta, 1e-9);
+                logRatio += std::log(ratio);
+                slowest = std::max(slowest, ratio);
+                fastest = std::min(fastest, ratio);
+                slower += ratio > 1.05 ? 1 : 0;
+                ++timed;
+            }
+            const double pk = std::fabs(peakDb(oa) - peakDb(ob));
+            const double diff = differenceDb(oa, ob), bands = fin ? bandsDb(oa, ob) : 1e9;
+            levelCount += fin && level <= 0.1 ? 1 : 0;
+            peakCount += fin && pk <= 0.1 ? 1 : 0;
+            soundCount += fin && bands <= kBandDb ? 1 : 0;
+            worstLevel = std::max(worstLevel, level);
+            worstPeak = std::max(worstPeak, pk);
+            if (diff > worst)
+            {
+                worst = diff;
+                worstName = c.name;
+            }
+            if (bands > worstBands)
+            {
+                worstBands = bands;
+                worstBandsName = c.name;
+            }
+            if (!fin || level > 0.1 || pk > 0.1 || bands > kBandDb || diff > kSameDb)
+                std::printf("long: %s: finite %d, level %.3f dB, peak %.3f dB, bands %.4f dB, the difference %.1f dB\n",
+                            c.name.c_str(), fin ? 1 : 0, level, pk, bands, diff);
+        }
+        std::printf("long: %d programs, the worst: bands %.4f dB (%s), the difference %.1f dB (%s), level %.4f dB, "
+                    "peak %.4f dB\n", loaded, worstBands, worstBandsName.c_str(), worst, worstName.c_str(), worstLevel,
+                    worstPeak);
+        std::printf("long: the time frozen against live (two seconds, the best of three): %.0f%% (the geometric mean), "
+                    "%.0f%% to %.0f%%, %d of %d more than 5%% slower\n", 100.0 * std::exp(logRatio / std::max(timed, 1)),
+                    100.0 * fastest, 100.0 * slowest, slower, timed);
+        const auto all = static_cast<int64_t>(cases.size());
+        P.eq("long.compile", loaded, all);
+        P.eq("long.frozen", frozenCount, all);
+        P.eq("long.finite", finiteCount, all);
+        P.eq("long.level_within_0.1_db", levelCount, all);
+        P.eq("long.peak_within_0.1_db", peakCount, all);
+        P.eq("long.same_spectrum", soundCount, all);
     }
     return P.finish();
 }
