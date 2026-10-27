@@ -1,9 +1,12 @@
 // Echo: a stereo delay with feedback, ping-pong or straight. Its two lines come from calloc in init and go back with
 // free in end, both off the audio thread: process may not allocate, and FMinus refuses one that could. The #pragma
-// panel lines lay the dials out in titled sections, as a hardware unit's panel.
-#pragma panel section "ECHO" time feedback pingpong
+// panel lines lay the dials out in titled sections, as a hardware unit's panel. SYNC sets the time in notes at the
+// host's tempo instead (host.fm, a file the plugin provides): 1/16 to 1/2, dotted too.
+#include "host.fm"
+#pragma panel section "ECHO" time sync feedback pingpong
 #pragma panel section "OUTPUT" mix out
 #pragma panel label pingpong "PING-PONG"
+#pragma panel options sync "OFF" "1/16" "1/8" "1/8 D" "1/4" "1/4 D" "1/2"
 #pragma panel style pingpong switch
 #pragma panel vu out "LEVEL"
 module Effect
@@ -12,16 +15,19 @@ module Effect
     param float feedback [[fminus::range(0, 0.95)]] [[fminus::default(0.4)]];
     param float mix [[fminus::range(0, 1)]] [[fminus::default(0.35)]];
     param bool pingpong [[fminus::default(1)]];
+    param int sync [[fminus::range(0, 6)]] [[fminus::default(0)]];   // OFF (TIME), or the time in notes at the tempo
+    Host* host;     // the plugin's (host.fm): the tempo
+    float glide;    // the delay in samples, gliding to a new tempo or note
     float* lineL;
     float* lineR;
-    int length;     // samples a line holds: a second and a little
+    int length;     // samples a line holds: two seconds and a little (a synced 1/2 note down to 60 BPM)
     int at;         // where the next sample goes
     float rate;
 
     void init(float sampleRate)
     {
         rate = sampleRate;
-        length = (int)sampleRate + 4;
+        length = 2 * (int)sampleRate + 4;
         lineL = calloc(length, sizeof(float));
         lineR = calloc(length, sizeof(float));
         if (!lineL || !lineR)
@@ -32,10 +38,22 @@ module Effect
     {
         if (length == 0)
             return;
+        const int s = sync[0];
+        const float beats = s == 1 ? 0.25f : s == 2 ? 0.5f : s == 3 ? 0.75f : s == 4 ? 1.0f : s == 5 ? 1.5f : 2.0f;
+        const float synced = beats * 60 / host->bpm * rate;                  // samples
         for (int i = 0; i < n; ++i)
         {
-            // The delay in samples, between two of them: a moving TIME bends the pitch instead of clicking.
-            const float d = fminf(fmaxf(time[i] * 0.001f * rate, 1), (float)(length - 2));
+            // The delay in samples, between two of them: a moving TIME bends the pitch instead of clicking, and so
+            // does a new tempo or note when synced (the delay glides to it over some 20 ms).
+            float want = time[i] * 0.001f * rate;
+            if (s > 0)
+            {
+                glide = glide == 0 ? synced : glide + 0.001f * (synced - glide);
+                want = glide;
+            }
+            else
+                glide = want;
+            const float d = fminf(fmaxf(want, 1), (float)(length - 2));
             float pos = (float)at - d;
             if (pos < 0)
                 pos += (float)length;

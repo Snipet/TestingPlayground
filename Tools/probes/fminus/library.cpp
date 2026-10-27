@@ -29,7 +29,8 @@
 //             outweighs the top more from white to pink to brown; two seeds differ
 //   ADSR      the attack reaches 1 in its time (within 0.1 ms), the decay settles on the sustain, the release ends
 //             within 1.4 times its time; a gate while it sounds rises from where it is, without a step
-//   LFO       every shape stays in -1..1; the square flips twice a cycle; the random step changes once a cycle
+//   LFO       every shape stays in -1..1; the square flips twice a cycle; the random step changes once a cycle;
+//             follow() takes its phase from the song's position (120 BPM from beat 3, a cycle a half note)
 //   FOLLOWER  63 % of a step in the attack time, 37 % left after the release time; the compressor's gain curve: 0 under
 //             the threshold, -(1 - 1/ratio) of the excess over it, the soft knee's middle
 //   SHAPER    drive and fold keep -1..1 (drive maps 1 to 1); soft clipping stays under 1; the crusher's steps
@@ -376,6 +377,17 @@ void lfoRun(float* y, int n, float step, int shape, float offset)
         else
             y[i] = lfo.random();
         lfo.advance(step);
+    }
+}
+
+// The saw of an LFO that follows the song from `from` quarter notes, `perSample` of them a sample, a cycle each `beats`.
+void lfoFollow(float* y, int n, float from, float perSample, float beats)
+{
+    Lfo lfo;
+    for (int i = 0; i < n; ++i)
+    {
+        lfo.follow(from + i * perSample, beats);
+        y[i] = lfo.saw(0);
     }
 }
 
@@ -816,6 +828,7 @@ PROBE(fminus, library)
             std::printf("%s", errors.c_str());
         auto* adsr = function<void(float*, int, float, float, float, float, int, int)>(p.get(), "adsrRun");
         auto* lfo = function<void(float*, int, float, int, float)>(p.get(), "lfoRun");
+        auto* lfoFollow = function<void(float*, int, float, float, float)>(p.get(), "lfoFollow");
         auto* follower = function<void(float*, float*, int, float, float, int)>(p.get(), "followerRun");
         auto* compressor = function<float(float, float, float, float)>(p.get(), "compressor");
         std::vector<float> y(n * 3);
@@ -858,6 +871,23 @@ PROBE(fminus, library)
             for (std::size_t i = 1; i < n; ++i)
                 changes += s[i] != s[i - 1] ? 1 : 0;
             P.near("lfo.random_steps_a_cycle", static_cast<double>(changes), 2.0, 1.0);
+        }
+        if (lfoFollow != nullptr)
+        {
+            // 120 BPM from beat 3, a cycle a half note: the phase from the song's position, a new cycle at beat 4.
+            std::vector<float> s(n);
+            lfoFollow(s.data(), N, 3.0f, 2.0f / kRate, 2.0f);
+            P.near("lfo.follow_from_position", static_cast<double>(s[0]), 0.0, 1e-5);
+            P.near("lfo.follow_quarter_on", static_cast<double>(s[n / 4]), 0.5, 1e-3);
+            int wraps = 0, at = -1;
+            for (std::size_t i = 1; i < n; ++i)
+                if (s[i] < s[i - 1])
+                {
+                    ++wraps;
+                    at = static_cast<int>(i);
+                }
+            P.eq("lfo.follow_one_cycle", wraps, 1);
+            P.near("lfo.follow_cycle_on_the_beat", static_cast<double>(at), kRate / 2.0, 1.0);
         }
         if (follower != nullptr)
         {

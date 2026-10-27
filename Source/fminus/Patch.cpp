@@ -48,6 +48,47 @@ namespace testingplayground
 
         // The module Shared's, when the program has one (Patch.h).
         constexpr const char* kSharedModule = "Shared";
+
+        // The module Host (Patch.h): host.fm, the plugin's own, read when a program #includes it and has no file of
+        // that name.
+        constexpr const char* kHostModule = "Host";
+        constexpr const char* kHostFileName = "host.fm";
+        constexpr const char* kHostFile = R"FM(// host.fm: what the host and the player are doing, for a program to read. The plugin provides this file: #include it.
+//
+// Declare a field `Host* host;` in the main module (each Voice, or the Effect; Shared may have one too) and the plugin
+// points it at the one Host, which it fills before every call of start, stop and process. Read it; never write it.
+//
+//   host->bpm          the tempo, beats a minute (the host's; 120 when it says none)
+//   host->beat         the song position at this call's first sample, in quarter notes; sample i of the call is at
+//                      host->beat + i * host->bpm / (60 * rate). It moves while the host plays (when the host says
+//                      nothing, as the Standalone, it runs on at 120 BPM from when the program started)
+//   host->barStart     where the bar the song is in began, in quarter notes (host->beat - host->barStart: the beats
+//                      into it)
+//   host->beatsPerBar, host->beatUnit   the time signature (4 and 4)
+//   host->playing      the host's transport runs
+//   host->modwheel     the mod wheel (MIDI CC 1), 0 to 1
+//   host->pitchbend    the pitch wheel, -1 to 1 (0 at rest): the program chooses its range (2 semitones is usual)
+//   host->aftertouch   channel pressure, 0 to 1
+//   host->sustain      the sustain pedal is down (the plugin holds the notes itself: a key let go while it is down
+//                      gets its stop when the pedal comes up)
+//
+// A synced LFO: its rate host->bpm / 60 / beats (beats a cycle: 1 a quarter note, 4 a bar of 4/4, 0.5 an eighth), or,
+// to follow the song (the same phase at the same place, whenever it is played), its phase from the position:
+// phase = fract((host->beat + i * host->bpm / (60 * rate)) / beats).
+module Host
+{
+    float bpm;
+    float beat;
+    float barStart;
+    int beatsPerBar;
+    int beatUnit;
+    bool playing;
+    float modwheel;
+    float pitchbend;
+    float aftertouch;
+    bool sustain;
+};
+)FM";
         constexpr Call kSharedCalls[] = {
             { "init", false, "void init(float rate)",
               "void playground_shared_init(Shared* self, float rate) { self->init(rate); }", kSharedModule },
@@ -238,6 +279,8 @@ namespace testingplayground
         initialised_.clear();
         std::free(shared_);
         shared_ = nullptr;
+        std::free(host_);
+        host_ = nullptr;
     }
 
     Patch::Result Patch::compile(std::string_view source, float sampleRate, std::string_view fileName)
@@ -267,6 +310,8 @@ namespace testingplayground
                     compiled.push_back(f);
                 return fminus::Program::IncludedFile{ f->name, f->text };
             }
+            if (name == kHostFileName)
+                return fminus::Program::IncludedFile{ kHostFileName, kHostFile };
             return std::nullopt;
         };
 
@@ -442,6 +487,55 @@ namespace testingplayground
                 r.notes += file + ": note: the plugin makes one module Shared for the program, but no field of " + kModule
                          + " points at it (`Shared* shared;`), so nothing reaches it\n";
         }
+        // The module Host's one instance (host.fm), the fields that point at it (the main module's and Shared's), and
+        // where its fields are.
+        if (const fminus::Program::Module* m = program.module(kHostModule))
+        {
+            patch->hostAlign_ = std::max<std::size_t>(m->alignment, alignof(std::max_align_t));
+            patch->hostSize_ = (std::max<std::size_t>(m->size, 1) + patch->hostAlign_ - 1) / patch->hostAlign_ * patch->hostAlign_;
+            patch->host_ = std::aligned_alloc(patch->hostAlign_, patch->hostSize_);
+            if (patch->host_ == nullptr)
+            {
+                r.errors = file + ": error: no memory for the module Host\n";
+                r.compileMs = msSince(t0);
+                return r;
+            }
+            std::memset(patch->host_, 0, patch->hostSize_);
+            const std::string pointer = std::string(kHostModule) + "*";
+            for (const fminus::Program::Module::Field& f : s.module->fields)
+                if (squeezed(f.type) == pointer && f.size == sizeof(void*))
+                    patch->hostFields_.push_back(f.offset);
+            if (const fminus::Program::Module* sh = program.module(kSharedModule))
+                for (const fminus::Program::Module::Field& f : sh->fields)
+                    if (squeezed(f.type) == pointer && f.size == sizeof(void*))
+                        patch->sharedHostFields_.push_back(f.offset);
+            const auto at = [&](const char* name, const char* type, std::size_t& out) {
+                for (const fminus::Program::Module::Field& f : m->fields)
+                    if (f.name == name && squeezed(f.type) == type)
+                    {
+                        out = f.offset;
+                        return;
+                    }
+            };
+            HostLayout& l = patch->hostLayout_;
+            at("bpm", "float", l.bpm);
+            at("beat", "float", l.beat);
+            at("barStart", "float", l.barStart);
+            at("beatsPerBar", "int", l.beatsPerBar);
+            at("beatUnit", "int", l.beatUnit);
+            at("playing", "bool", l.playing);
+            at("modwheel", "float", l.modwheel);
+            at("pitchbend", "float", l.pitchbend);
+            at("aftertouch", "float", l.aftertouch);
+            at("sustain", "bool", l.sustain);
+            for (const fminus::Program::Module::Field& f : m->fields)
+                if (f.name == "playing" || f.name == "sustain")
+                    l.boolSize = f.size;
+            if (patch->hostFields_.empty() && patch->sharedHostFields_.empty())
+                r.notes += file + ": note: the program has a module Host, but no field points at it (`Host* host;` in "
+                         + kModule + "), so the plugin's tempo, position and wheels reach nothing\n";
+            patch->setHost(HostBlock{});
+        }
         patch->sources_ = files;
         // The panel, and a tap (where it sits in an instance) for each display of one of the main module's fields.
         std::vector<PanelField> fields;
@@ -518,6 +612,8 @@ namespace testingplayground
         {
             std::memset(shared_, 0, sharedSize_);
             setDefaults(shared_, kSharedModule, 0);
+            for (const std::size_t at : sharedHostFields_)
+                std::memcpy(static_cast<char*>(shared_) + at, &host_, sizeof host_);
             if (s_->sharedInit != nullptr)
                 s_->sharedInit(shared_, rate_);
             sharedInitialised_ = true;
@@ -533,11 +629,51 @@ namespace testingplayground
                                               static_cast<double>(controls_[c].def));
             for (const std::size_t at : sharedFields_)
                 std::memcpy(static_cast<char*>(p) + at, &shared_, sizeof shared_);
+            for (const std::size_t at : hostFields_)
+                std::memcpy(static_cast<char*>(p) + at, &host_, sizeof host_);
             if (s_->init != nullptr)
                 s_->init(p, rate_);
             initialised_[i] = true;
         }
     }
+
+    void Patch::setHost(const HostBlock& h) noexcept
+    {
+        if (host_ == nullptr)
+            return;
+        char* base = static_cast<char*>(host_);
+        const HostLayout& l = hostLayout_;
+        const auto put = [base](std::size_t at, const auto& v) {
+            if (at != HostLayout::kNone)
+                std::memcpy(base + at, &v, sizeof v);
+        };
+        const auto flag = [&](std::size_t at, bool v) {
+            if (at == HostLayout::kNone)
+                return;
+            if (l.boolSize == 1)
+            {
+                const uint8_t b = v ? 1 : 0;
+                std::memcpy(base + at, &b, 1);
+            }
+            else
+            {
+                const int32_t b = v ? 1 : 0;
+                std::memcpy(base + at, &b, sizeof b);
+            }
+        };
+        put(l.bpm, h.bpm);
+        put(l.beat, h.beat);
+        put(l.barStart, h.barStart);
+        put(l.beatsPerBar, static_cast<int32_t>(h.beatsPerBar));
+        put(l.beatUnit, static_cast<int32_t>(h.beatUnit));
+        flag(l.playing, h.playing);
+        put(l.modwheel, h.modwheel);
+        put(l.pitchbend, h.pitchbend);
+        put(l.aftertouch, h.aftertouch);
+        flag(l.sustain, h.sustain);
+    }
+
+    std::string_view Patch::hostSource() noexcept { return kHostFile; }
 
     void Patch::setValue(int c, float plain, int i) noexcept
     {

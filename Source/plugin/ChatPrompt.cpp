@@ -6,6 +6,8 @@
 // Patch.h, PanelSpec.h, the README's "Writing a program" and FMinus's README: what it says is what Claude writes.
 #include "plugin/ChatAgent.h"
 
+#include "fminus/Patch.h"
+
 #include "Examples.h"
 #include "Library.h"
 #include "Product.h"
@@ -121,7 +123,7 @@ module Voice
 };
 
 - start begins a note on a voice that may have played another before: set everything the note needs (fields keep their values between notes). stop releases it. process adds the voice's next n samples into both channels (they arrive at 0, so writing works too) and returns false once the voice is silent for good, which frees it. A voice that never returns false holds its slot forever: always let the release end.
-- The signatures must be exactly these. Sixteen voices sound at once; a seventeenth note steals the oldest released voice (else the oldest), with a 2 ms fade. A key pressed again while its note sounds stops that voice first. Sustain pedal and pitch bend are not passed on.
+- The signatures must be exactly these. Sixteen voices sound at once; a seventeenth note steals the oldest released voice (else the oldest), with a 2 ms fade. A key pressed again while its note sounds stops that voice first. The sustain pedal is the plugin's: a key let go while it is down gets its stop when the pedal comes up. The pitch and mod wheels, aftertouch and the host's tempo and position reach a program through host.fm (THE HOST, below).
 - The module's fields are its state: they start at 0 when the program runs; init sets the rate-dependent ones. Keep state per sample, so the output does not depend on the host's block size (the plugin calls voices in parts that end on multiples of 16 samples).
 - Dials: the module's first 32 parameters, in declaration order, are the dials and the host's P1 to P32, the same values in every voice. A float parameter is read sample by sample, cutoff[i], and glides over 20 ms when its dial turns (cutoff[0] reads it once a call). An int or bool parameter is read once a call. fminus::range sets the dial's span and fminus::default its starting value.
 - The audio thread: start, stop and process may not allocate (FMinus refuses a program whose methods could reach calloc, malloc or free from them). Allocate in init (each voice's own, calloc: zeroed) and free in end, or use a fixed array field.
@@ -146,6 +148,32 @@ module Voice
 
   A table a voice built in its own init would be built for every voice instance, many times over: build it in Shared. The voices only read it (the audio thread), and never free it.
 - Aliasing: you cannot hear it, so measure it. measure_output with one note reports an Inharmonic line, the strongest component that is no harmonic of the note; test an oscillator at a high note (96 and up) with its detune and noise at 0. Under about -80 dB is clean (wavetable.fm reaches the measurement's floor, -90 dB); a naive saw's aliases are near -20 dB.
+)";
+
+        const char* const kHostInstrument = R"(
+THE HOST: TEMPO, POSITION, WHEELS (host.fm)
+
+The plugin tells a program what the host and the player are doing through one module, Host, in host.fm: a file the plugin provides (no tab of its own: #include "host.fm" and it is there). Declare `Host* host;` in Voice (Shared may have one too) and the plugin points it at the Host, filled before every start, stop and process; read it, never write it. Its text is below.
+- The pitch wheel: give the program a bend range (2 semitones is usual; 12 or 24 for leads and dives, a dial when the sound wants it) and take the frequency from the note and the bend each call: 440 * expf(0.0577622650f * (note + host->pitchbend * range - 69)) / rate. Without that the wheel does nothing, and a player expects it to bend.
+- The mod wheel (host->modwheel, 0 to 1) and aftertouch (host->aftertouch): give each a job that suits the sound, usually vibrato or an LFO's depth (depth = lfodepth[i] + host->modwheel * (1 - lfodepth[i])), else the filter's brightness or a swell; say in your answer what they do.
+- The sustain pedal is the plugin's (a key let go while it is down gets its stop when the pedal comes up): nothing to write.
+- Tempo sync: an LFO's rate or a delay's time in beats (an int dial of divisions, 1/16 to 4 bars, beside the free rate, or a switch between them): Hz = host->bpm / 60 / beats; a delay of `beats` quarter notes lasts beats * 60 / host->bpm seconds. To follow the song as well (the same phase at the same place in the bar, whenever it is played), take the phase from the position: lfo.follow(host->beat + i * host->bpm / (60 * rate), beats) in place of lfo.advance (lfo.fm). host->beat stands still while the host is stopped, so an LFO that follows the song stops with it; one that only takes its rate from the tempo runs on.
+- Tracking: the key is the note start gets. A filter that follows the keyboard: fc = cutoff[i] * expf(0.0577622650f * keytrack * (note - 60)) (keytrack 0 to 1: at 1 the filter moves with the pitch; often a dial); an envelope's times can follow it too (shorter decays high up, as a piano's), and velocity can reach more than the level (the brightness, the attack).
+- measure_output takes bpm, modwheel and pitchbend, to measure these; a keyboard element with wheels (keyboard ... wheels) lets the user play the wheels without a controller.
+
+<host_file name="host.fm">
+%HOST%</host_file>
+)";
+
+        const char* const kHostEffect = R"(
+THE HOST: TEMPO AND POSITION (host.fm)
+
+The plugin tells a program what the host is doing through one module, Host, in host.fm: a file the plugin provides (no tab of its own: #include "host.fm" and it is there). Declare `Host* host;` in Effect and the plugin points it at the Host, filled before every process; read it, never write it. Its text is below (an effect gets no MIDI: its wheels stay at rest).
+- Tempo sync: a delay's time or an LFO's rate in beats (an int dial of divisions, 1/16 to 4 bars, beside the free time, or a switch between them): a delay of `beats` quarter notes lasts beats * 60 / host->bpm seconds (ramp a change of it, or crossfade, so a tempo change does not click); an LFO's Hz = host->bpm / 60 / beats. To follow the song as well (the same phase at the same place in the bar: a tremolo or a filter sweep in time), take the phase from the position: lfo.follow(host->beat + i * host->bpm / (60 * rate), beats) in place of lfo.advance (lfo.fm). host->beat stands still while the host is stopped, so what follows the song stops with it.
+- measure_output takes bpm, to measure a synced effect.
+
+<host_file name="host.fm">
+%HOST%</host_file>
 )";
 
         const char* const kLanguage = R"(
@@ -311,12 +339,13 @@ The plugin carries ready-made building blocks, tested and tuned: band-limited, s
         // A program built from the library, for each kind (ChatAgent::promptExample), and the library files it includes
         // in their order: plugin.chatexample compiles and plays it.
         [[maybe_unused]] const char* const kInstrumentProgram = R"FM(// Modular voice: two detuned oscillators, a resonant low-pass, an amplitude envelope, a filter envelope and an
-// LFO, wired by the routing at the top of the sample loop. Its building blocks are the library's; its interface is
-// panel.gui's.
+// LFO, wired by the routing at the top of the sample loop; the pitch wheel bends it, the mod wheel deepens the LFO.
+// Its building blocks are the library's; its interface is panel.gui's.
 #include "osc.fm"
 #include "svf.fm"
 #include "adsr.fm"
 #include "lfo.fm"
+#include "host.fm"
 
 module Voice
 {
@@ -343,6 +372,7 @@ module Voice
     float rate;
     float note;
     float velocity;
+    Host* host;         // the plugin's (host.fm): the wheels, the tempo
     float lfolight;     // the LFO's light on the panel, 0 to 1
     float cutoffnow;    // the cutoff the voice plays (Hz), on the panel's cutoff knob (live=)
 
@@ -378,7 +408,8 @@ module Voice
         // Once a call: the envelopes' times and what changes slowly.
         amp.set(attack[0], decay[0], sustain[0], release[0], rate);
         fenv.set(attack[0], 1.5f * decay[0], 0.2f, release[0], rate);
-        const float base = 440 * expf(0.0577622650f * (note - 69)) / rate;
+        const float bend = 2 * host->pitchbend;                     // semitones: the wheel's range is 2
+        const float base = 440 * expf(0.0577622650f * (note + bend - 69)) / rate;
         const float spread = expf(0.000577622650f * detune[0]);    // cents to a frequency ratio
         const float keytrack = 0.5f * (note - 60) / 12;            // octaves: the cutoff follows the keyboard halfway
         const float gain = velocity * expf(0.115129255f * level[0]);
@@ -393,11 +424,12 @@ module Voice
             lfo.advance(lfoStep);
 
             // The routing, in octaves: filter envelope, LFO, velocity and the keyboard to the cutoff; the LFO to the
-            // pitch (vibrato of a few cents).
-            const float octaves = envamount[i] * f + 1.5f * lfodepth[i] * l + 0.5f * (velocity - 0.5f) + keytrack;
+            // pitch (vibrato of a few cents). The mod wheel takes the LFO's depth up to all of it.
+            const float depth = lfodepth[i] + host->modwheel * (1 - lfodepth[i]);
+            const float octaves = envamount[i] * f + 1.5f * depth * l + 0.5f * (velocity - 0.5f) + keytrack;
             fc = cutoff[i] * expf(0.693147181f * octaves);
             filter.set(fc, resonance[i], rate);
-            const float pitch = expf(0.693147181f * 0.004f * lfodepth[i] * l);
+            const float pitch = expf(0.693147181f * 0.004f * depth * l);
 
             const float s = 0.5f * (osc1.morph(base * pitch, shape[i]) + osc2.morph(base * pitch * spread, shape[i]));
             const float out = gain * a * filter.tick(s);
@@ -451,7 +483,7 @@ panel accent=orange background=#1f1c1a gradient=#131110 {
             scope out
         }
     }
-    keyboard from=48 keys=37
+    keyboard from=48 keys=37 wheels
 }
 )GUI";
 
@@ -572,6 +604,7 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
             s = replaceAll(s, "%KIND%", instrument ? "synthesizer (instrument)" : "effect");
             s = replaceAll(s, "%THINGS%", instrument ? "synthesizers" : "effects");
             s += instrument ? kInstrumentContract : kEffectContract;
+            s += replaceAll(instrument ? kHostInstrument : kHostEffect, "%HOST%", std::string(Patch::hostSource()));
             s += kLanguage;
             s += kCraft;
             s += kThreads;

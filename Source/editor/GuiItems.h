@@ -204,17 +204,26 @@ namespace testingplayground::ui
 
     // A keyboard (an instrument's): its keys, from= for keys=, across its cell. A click plays a note (louder lower on
     // the key), a drag slides from key to key, letting go releases it; `play` takes (note, velocity 0..1), 0 a release.
+    // With wheels, a pitch wheel and a mod wheel at its left: a drag moves one (the pitch wheel springs back to its
+    // middle when let go); `wheel` takes (pitch, value: -1..1 for the pitch wheel, 0..1 for the mod wheel).
     class GuiKeyboardItem final : public Item
     {
     public:
-        GuiKeyboardItem(uint32_t id, std::function<void(int note, float velocity)> play) : id_(id), play_(std::move(play)) {}
+        GuiKeyboardItem(uint32_t id, std::function<void(int note, float velocity)> play,
+                        std::function<void(bool pitch, float value)> wheel)
+            : id_(id), play_(std::move(play)), wheel_(std::move(wheel)) {}
 
         void place(const GuiNode& node, const funkgui::Rect& cell, const funkgui::Rect& area, bool shown,
                    const std::string& color);
         int noteAt(funkgui::Point p, float* velocity = nullptr) const;     // -1 off its keys
         funkgui::Point centreOfNote(int note) const;     // a key's middle, for the probes (its cell's centre if none)
         int held() const noexcept { return held_; }      // the note held, -1 for none
-        void release();                                  // lets go of it
+        void release();                                  // lets go of it (and of the pitch wheel)
+        bool wheels() const noexcept { return wheels_; }
+        funkgui::Rect pitchWheel() const noexcept;       // the wheels' slots (empty without wheels)
+        funkgui::Rect modWheel() const noexcept;
+        float pitch() const noexcept { return pitch_; }
+        float mod() const noexcept { return mod_; }
 
         void tick(float, bool hovered, bool, funkgui::Point p) override;
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override;
@@ -226,7 +235,7 @@ namespace testingplayground::ui
         void accessibility(std::vector<funkgui::A11yItem>& out) const override;
         bool a11yAction(uint32_t, funkgui::A11yAction, double, funkgui::GestureController&) override { return false; }
         void specLine(char* out, std::size_t n) const override;
-        bool settled() const override { return held_ < 0; }
+        bool settled() const override { return held_ < 0 && dragWheel_ < 0; }
         funkgui::Point centre() const override { return { cell_.centreX(), cell_.centreY() }; }
         bool shown() const override { return shown_; }
         bool focusable() const override { return false; }
@@ -239,9 +248,15 @@ namespace testingplayground::ui
             bool black = false;
         };
         void press(int note, float velocity);
+        void moveWheel(float y);                         // the wheel held, to the pointer's height
+        funkgui::Rect keysArea() const noexcept;         // the cell less the wheels
 
         uint32_t id_;
         std::function<void(int, float)> play_;
+        std::function<void(bool, float)> wheel_;
+        bool wheels_ = false;
+        float pitch_ = 0.0f, mod_ = 0.0f;
+        int dragWheel_ = -1;                             // 0 the pitch wheel, 1 the mod wheel, -1 none
         std::vector<Key> keys_;                          // the white keys, then the black (over them)
         int from_ = 48, count_ = 25;
         std::string color_;
