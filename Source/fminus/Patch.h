@@ -30,6 +30,12 @@
 //       void end();                                             optional: after theirs
 //   The audio thread reads it through those pointers; it is the plugin's to free, never a voice's.
 //
+//   either kind, optionally: module Host, from host.fm, the plugin's own file (#include "host.fm"; hostSource()): one
+//   instance, which every field of type Host* of the main module (and of Shared) points at, and which the Engine fills
+//   before every call of start, stop and process (setHost): the tempo, the song's position at the call's first sample,
+//   the time signature, whether the host plays, and an instrument's mod wheel, pitch bend, aftertouch and sustain
+//   pedal. A program reads it, never writes it.
+//
 // The methods the audio thread calls (process, start, stop) must not allocate: FMinus refuses a program whose methods
 // could reach calloc, malloc or free from them (init and end may: a delay line's memory). They need no
 // [[clang::nonblocking]] of their own: the plugin calls each through a function of its own with the type it calls it
@@ -46,6 +52,7 @@
 #pragma once
 
 #include "dsp/Controls.h"
+#include "dsp/Events.h"
 #include "fminus/PanelSpec.h"
 #include "dsp/Sources.h"
 
@@ -116,6 +123,11 @@ namespace testingplaygroundsynth
         // An effect's instance over n samples, in place.
         void process(float* left, float* right, int n) noexcept;
 
+        // The Host block's fields (host.fm), for the calls that follow; nothing when the program has no module Host.
+        void setHost(const HostBlock& h) noexcept;
+        bool host() const noexcept { return host_ != nullptr; }
+        static std::string_view hostSource() noexcept;   // host.fm's text
+
         // An instrument's voice i.
         void start(int i, float note, float velocity) noexcept;
         void stop(int i) noexcept;
@@ -154,5 +166,17 @@ namespace testingplaygroundsynth
         bool sharedInitialised_ = false;
         std::size_t sharedSize_ = 0, sharedAlign_ = 16;
         std::vector<std::size_t> sharedFields_;        // the main module's fields of type Shared*: their offsets
+        // The module Host's one instance (host.fm), the fields that point at it, and where its own fields are.
+        struct HostLayout
+        {
+            static constexpr std::size_t kNone = static_cast<std::size_t>(-1);
+            std::size_t bpm = kNone, beat = kNone, barStart = kNone, beatsPerBar = kNone, beatUnit = kNone,
+                        playing = kNone, modwheel = kNone, pitchbend = kNone, aftertouch = kNone, sustain = kNone;
+            std::size_t boolSize = 1;
+        };
+        void* host_ = nullptr;
+        std::size_t hostSize_ = 0, hostAlign_ = 16;
+        std::vector<std::size_t> hostFields_, sharedHostFields_;
+        HostLayout hostLayout_;
     };
 }

@@ -13,6 +13,13 @@
 // one more steals the oldest released voice, else the oldest, fading it out over 2 ms (fsdsp::kStealFadeMs) on its own
 // instance while the new note starts on another. A key pressed again while it still sounds stops its voice first.
 //
+// The host (host.fm, Patch.h). setTransport() takes the host's transport once a block; the Engine keeps the song's
+// position from there, sample by sample (its own clock at 120 BPM when the host says nothing), and fills the program's
+// Host block before each call into it (start, stop, process, every part of a block), so a call reads the position of
+// its own first sample. An instrument's controllers (the mod wheel, pitch bend, aftertouch) change at their events'
+// offsets, and so does the sustain pedal, which the Engine applies itself: a key let go while it is down keeps its
+// voice until the pedal comes up, which then stops it.
+//
 // Dials. setControls() takes the host's normalised values (P1 to P32) once a block. A real control glides to its new
 // value over 20 ms, sample by sample, and while it moves the program reads it as a stream of those samples (a null
 // stream, and the value, while it holds still: FMinus's flat copy of the method); an integer or a toggle is set once a
@@ -83,6 +90,10 @@ namespace testingplaygroundsynth
 
         // ---- the audio thread ------------------------------------------------------------------------------------
         void setControls(const std::array<float, kMaxControls>& normalised) noexcept;
+        // The host's transport at the next process call's first sample (once a host block, before its first call).
+        void setTransport(const Transport& t) noexcept;
+        // The Host block as the last call saw it (for the probes, while the audio thread is stopped).
+        const HostBlock& host() const noexcept { return host_; }
         // At most prepare()'s maxBlockSize samples (the processor cuts a host's larger block); events sorted by offset.
         void process(float* const* channels, int numChannels, int numSamples, std::span<const Event> events) noexcept;
 
@@ -129,6 +140,7 @@ namespace testingplaygroundsynth
             bool released = false;
             bool ending = false;        // its process returned false: free at the next multiple of kGrid
             bool fading = false;        // stolen, or its program swapped out: gain falls to 0, then the voice is free
+            bool pedal = false;         // its key let go while the sustain pedal was down: stopped when it comes up
             float gain = 1.0f, fall = 0.0f;   // per sample, while fading
         };
 
@@ -137,6 +149,8 @@ namespace testingplaygroundsynth
         void glideControls(int n) noexcept;           // the ramps over the block: streamBuf_, streaming_
         void feed(Patch& p, int offset, int instance) noexcept;   // the dials into p: streams from `offset`
         void processEffect(float* const* channels, int numChannels, int n) noexcept;
+        void syncHost(int offset) noexcept;           // the Host block at the call's sample `offset`, into the programs
+        void controller(const Event& e) noexcept;     // a controller, pitch bend or pressure event
         void processInstrument(float* const* channels, int numChannels, int n, std::span<const Event> events) noexcept;
         void noteOn(int key, float velocity) noexcept;
         void noteOff(int key) noexcept;
@@ -174,6 +188,10 @@ namespace testingplaygroundsynth
         std::array<float, 128> heldVelocity_{};
         uint64_t noteCount_ = 0;
         uint64_t clock_ = 0;                          // samples processed since prepare(): the grid's origin
+        HostBlock host_;                              // what the programs' Host block holds (host.fm)
+        double beat_ = 0.0;                           // the song's position at this call's first sample
+        double bpm_ = 120.0;
+        bool running_ = true;                         // the position moves (the host plays, or it said nothing)
         int stealFade_ = 96, swapFade_ = 960;         // samples (2 ms and 20 ms at the rate)
 
         std::vector<float> accL_, accR_, voiceL_, voiceR_, dryL_, dryR_, mono_;

@@ -256,7 +256,8 @@ namespace testingplaygroundsynth::ui
                     case GuiKind::envelope:
                         return { 150.0f, 80.0f };
                     case GuiKind::keyboard:
-                        return { std::max(160.0f, 16.0f * static_cast<float>(guiWhiteKeys(n.from, n.keys))), 72.0f };
+                        return { std::max(160.0f, 16.0f * static_cast<float>(guiWhiteKeys(n.from, n.keys)))
+                                     + (n.wheels ? kGuiWheelsW : 0.0f), 72.0f };
                     case GuiKind::shader:
                         return { 200.0f, 120.0f };
                     case GuiKind::display:

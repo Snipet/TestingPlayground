@@ -1224,7 +1224,14 @@ namespace testingplaygroundsynth
                                             { "tail_seconds", prop("number", "How long to go on after the release (an "
                                                                              "effect: after the impulse); default 1.5, at "
                                                                              "most 10") },
-                                            { "dials", dials } }),
+                                            { "dials", dials },
+                                            { "bpm", prop("number", "The host's tempo for a program that reads it "
+                                                                    "(host.fm: the host plays from the song's start); "
+                                                                    "default 120") },
+                                            { "modwheel", prop("number", "An instrument's mod wheel, 0 to 1, from the "
+                                                                         "start (default 0)") },
+                                            { "pitchbend", prop("number", "An instrument's pitch wheel, -1 to 1, from "
+                                                                          "the start (default 0)") } }),
                            {}));
         }
         tools.add(tool("view_panel",
@@ -2152,6 +2159,9 @@ namespace testingplaygroundsynth
             numberArg("velocity", req.velocity);
             numberArg("hold_seconds", req.holdSeconds);
             numberArg("tail_seconds", req.tailSeconds);
+            numberArg("bpm", req.bpm);
+            numberArg("modwheel", req.modwheel);
+            numberArg("pitchbend", req.pitchbend);
             const juce::var dials = input.getProperty("dials", juce::var());
             if (const auto* o = dials.getDynamicObject())
                 for (const auto& kv : o->getProperties())

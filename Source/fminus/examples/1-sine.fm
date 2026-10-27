@@ -4,12 +4,16 @@
 // and its velocity (0 to 1), stop the key's release, and process the voice's next n samples into both channels, which
 // arrive at 0, returning false once the voice is silent for good: that frees it. The params are the dials under the
 // editor, up to 32, the same in every voice: a float is read sample by sample, attack[i], and glides when its dial
-// turns; an int or a bool is read once a call.
+// turns; an int or a bool is read once a call. host (host.fm, a file the plugin provides) is what the host and the
+// player are doing: here the pitch wheel bends the note up to 2 semitones.
+#include "host.fm"
+
 module Voice
 {
     param float attack [[fminus::range(1, 2000)]] [[fminus::default(5)]];      // ms
     param float release [[fminus::range(5, 5000)]] [[fminus::default(300)]];   // ms, to -60 dB
     param float level [[fminus::range(-36, 0)]] [[fminus::default(-12)]];      // dB
+    Host* host;       // the plugin points it at the Host: the tempo, the wheels, the pedal
     float rate;
     float phase;      // 0 to 1
     float step;       // the frequency, in cycles a sample
@@ -39,13 +43,14 @@ module Voice
         const float up = 1000 / (attack[0] * rate);                     // the envelope's rise a sample
         const float down = expf(-6907.7553f / (release[0] * rate));     // its fall: -60 dB in `release` ms
         const float gain = velocity * expf(0.115129255f * level[0]);
+        const float f = step * expf(0.0577622650f * 2 * host->pitchbend);   // the pitch wheel: 2 semitones
         for (int i = 0; i < n; ++i)
         {
             env = held ? fminf(1, env + up) : env * down;
             const float out = gain * env * sinf(6.28318531f * phase);
             left[i] += out;
             right[i] += out;
-            phase += step;
+            phase += f;
             if (phase >= 1)
                 phase -= 1;
         }

@@ -23,8 +23,10 @@
 //   - a block of 0 samples (JUCE's VST3 wrapper passes them on): an instrument's Engine still gets its events;
 //   - more than kMaxEventsPerBlock events in a block: the block is played in parts, cut at the event that does not
 //     fit, so no event is lost;
-//   - MIDI: note-on (at velocity 0 a note-off), note-off, and the controllers All Sound Off (120) and All Notes Off
-//     (123), both an allNotesOff event; everything else is ignored. The panel's keyboard's notes (playNote) come
+//   - MIDI: note-on (at velocity 0 a note-off), note-off, the controllers All Sound Off (120) and All Notes Off (123),
+//     both an allNotesOff event, the mod wheel (1) and the sustain pedal (64), pitch bend and channel pressure; the
+//     rest is ignored. The host's transport (tempo, position, signature, playing) goes to the Engine once a block,
+//     for the program's Host block (host.fm). The panel's keyboard's notes (playNote) come
 //     through a lock-free queue and play at the start of the next block, before its MIDI;
 //   - bypass (processBlockBypassed; there is no bypass parameter): each edge is a 20 ms smootherstep crossfade between
 //     the Engine's output and the bypassed sound (an effect's input; an instrument's silence), and the Engine keeps
@@ -165,6 +167,7 @@ namespace testingplaygroundsynth
         bool chatOpen() const override { return chatOpen_.load(); }
         void setChatOpen(bool open) override { chatOpen_.store(open); }
         void playNote(int note, float velocity) override;
+        void playWheel(bool pitch, float value) override;
         std::vector<std::string> guiPages() const override;
         void setGuiPages(const std::vector<std::string>& titles) override;
 
@@ -232,6 +235,7 @@ namespace testingplaygroundsynth
         static constexpr uint32_t kUiNotes = 64;
         std::array<Event, kUiNotes> uiNotes_{};
         std::atomic<uint32_t> uiNoteHead_{ 0 }, uiNoteTail_{ 0 };   // written: head by the writer, tail by the reader
+        void pushUiEvent(const Event& e);                         // into that ring (the writer's side)
         bool prepared_ = false;
         int maxBlock_ = 1;
         int largestCall_ = 0;

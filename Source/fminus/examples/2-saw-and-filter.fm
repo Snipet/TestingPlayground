@@ -1,7 +1,9 @@
 // Saw and filter: a band-limited sawtooth (polyBLEP) through a resonant low-pass whose cutoff an ADSR envelope opens.
 // The envelope's stages are the voice's: attack up to 1, decay down to the sustain level while the key is held, and
 // release to silence after stop. The #pragma panel lines lay the dials out in titled sections, as a synth's panel:
-// faders for the envelope, a light that follows it (the field env, the newest voice's) and a VU of the output.
+// faders for the envelope, a light that follows it (the field env, the newest voice's) and a VU of the output. The
+// pitch wheel bends it up to 2 semitones, and the mod wheel opens the filter by up to two octaves more (host.fm).
+#include "host.fm"
 #pragma panel section "FILTER" cutoff resonance sweep
 #pragma panel section "ENVELOPE" attack decay sustain release env
 #pragma panel section "OUTPUT" level out
@@ -37,6 +39,7 @@ module Voice
     param float sustain [[fminus::range(0, 1)]] [[fminus::default(0.5)]];
     param float release [[fminus::range(10, 4000)]] [[fminus::default(250)]];     // ms
     param float level [[fminus::range(-36, 0)]] [[fminus::default(-15)]];         // dB
+    Host* host;      // the plugin's: the wheels
     float rate;
     float phase;
     float step;
@@ -72,6 +75,8 @@ module Voice
         const float down = expf(-6907.7553f / (release[0] * rate));
         const float gain = velocity * expf(0.115129255f * level[0]);
         const float k = 2 - 1.9f * resonance[0];                        // 1 / Q
+        const float f = step * expf(0.0577622650f * 2 * host->pitchbend);   // the pitch wheel: 2 semitones
+        const float wheel = 2 * host->modwheel;                          // octaves the mod wheel opens it
         for (int i = 0; i < n; ++i)
         {
             if (!held)
@@ -88,13 +93,13 @@ module Voice
             else
                 env = sustain[i] + (env - sustain[i]) * fall;
 
-            const float saw = 2 * phase - 1 - blep(phase, step);
-            phase += step;
+            const float saw = 2 * phase - 1 - blep(phase, f);
+            phase += f;
             if (phase >= 1)
                 phase -= 1;
 
             // The cutoff, opened by the envelope; g = tan(pi fc / fs) below the Nyquist frequency.
-            const float fc = cutoff[i] * expf(0.693147181f * sweep[i] * env);
+            const float fc = cutoff[i] * expf(0.693147181f * (sweep[i] * env + wheel));
             const float w = fminf(3.14159265f * fc / rate, 1.5f);
             const float g = sinf(w) / cosf(w);
             const float a1 = 1 / (1 + g * (g + k));

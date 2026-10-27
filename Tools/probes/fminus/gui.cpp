@@ -358,7 +358,7 @@ panel background=#1d1b19 accent=orange {
 
     // ---- STYLES --------------------------------------------------------------------------------------------------------
     {
-        const std::string keys = kInstrument ? "  keyboard from=36 octaves=3 height=80\n" : "  spacer\n";
+        const std::string keys = kInstrument ? "  keyboard from=36 octaves=3 height=80 wheels\n" : "  spacer\n";
         const Compiled c = withGui("class \"big\" size=72 arc=#ffaa00 pointer=dot\n"                                  // 1
                                    "defaults knob look=ring ticks=11\n"                                                // 2
                                    "defaults section look=card radius=8\n"                                             // 3
@@ -419,7 +419,7 @@ panel background=#1d1b19 accent=orange {
         if constexpr (kInstrument)
         {
             const tp::GuiNode& kb = at(t, find(t, tp::GuiKind::keyboard));
-            P.eq("styles.keyboard", kb.from == 36 && kb.keys == 37 && kb.height == 80.0f ? 1 : 0, 1);
+            P.eq("styles.keyboard", kb.from == 36 && kb.keys == 37 && kb.height == 80.0f && kb.wheels ? 1 : 0, 1);
         }
 
         // Mistakes: an unknown class, a look a knob has not, a keyboard on an effect, defaults of no element, a class
