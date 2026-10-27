@@ -39,6 +39,11 @@ namespace testingplaygroundsynth::measure
         std::map<std::string, float> dials;       // plain values, by parameter name: what to render with
         std::map<std::string, float> current;     // the plugin's dials as they are now, by name
         double rate = 48000.0;
+        // The program's Host block (host.fm): the host plays at `bpm` from the song's start; an instrument's mod wheel
+        // (0..1) and pitch bend (-1..1) from the first sample.
+        float bpm = 120.0f;
+        float modwheel = 0.0f;
+        float pitchbend = 0.0f;
     };
 
     // The report, a few lines of plain text; when the program does not compile, its messages.

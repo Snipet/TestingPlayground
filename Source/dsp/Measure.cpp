@@ -267,13 +267,18 @@ namespace testingplaygroundsynth::measure
         // The program over `in` (an effect) or `total` samples (an instrument, `events` by absolute sample).
         Rendered render(std::unique_ptr<Patch> patch, double rate, const Dials& dials, const Stereo* in,
                         std::size_t total, const std::vector<std::pair<std::size_t, Event>>& events,
-                        std::size_t watchFrom)
+                        std::size_t watchFrom, const Request& request)
         {
             Rendered r;
             Engine e;
             e.prepare(rate, kBlock);
             e.offer(std::move(patch));
             e.prepare(rate, kBlock);                     // takes it at once, without a fade
+            Transport t;                                 // the host plays from the song's start, at the tempo asked
+            t.known = true;
+            t.bpm = std::clamp(static_cast<double>(request.bpm), 20.0, 400.0);
+            t.playing = true;
+            e.setTransport(t);
             r.out.l.assign(total, 0.0f);
             r.out.r.assign(total, 0.0f);
             if (in != nullptr)
@@ -439,6 +444,12 @@ namespace testingplaygroundsynth::measure
 
         std::string out = "Rendered offline at " + fmt("%.0f", rate) + " Hz, in blocks of " + std::to_string(kBlock)
                         + ". Dials: " + dials.text + ".\n";
+        if (first->host())
+            out += "Host: playing from the song's start at " + fmt("%.0f", std::clamp(request.bpm, 20.0f, 400.0f)) + " BPM"
+                 + (kInstrument ? ", mod wheel " + fmt("%.2f", std::clamp(request.modwheel, 0.0f, 1.0f))
+                                  + ", pitch bend " + fmt("%.2f", std::clamp(request.pitchbend, -1.0f, 1.0f))
+                                : std::string())
+                 + ".\n";
         if (!dials.unknown.empty())
         {
             out += "No dial is named";
@@ -462,6 +473,9 @@ namespace testingplaygroundsynth::measure
             const float vel = std::clamp(request.velocity, 0.0f, 1.0f);
             const auto eventsFor = [&](const std::vector<int>& ns, std::size_t offAt) {
                 std::vector<std::pair<std::size_t, Event>> ev;
+                // The wheels where the request puts them, before the notes.
+                ev.push_back({ 0, Event{ 0, EventKind::controller, 1, std::clamp(request.modwheel, 0.0f, 1.0f) } });
+                ev.push_back({ 0, Event{ 0, EventKind::pitchBend, 0, std::clamp(request.pitchbend, -1.0f, 1.0f) } });
                 for (const int n : ns)
                     ev.push_back({ 0, Event{ 0, EventKind::noteOn, static_cast<uint8_t>(n), vel } });
                 for (const int n : ns)
@@ -469,7 +483,7 @@ namespace testingplaygroundsynth::measure
                 return ev;
             };
             const std::size_t total = holdN + tailN;
-            const Rendered r = render(std::move(first), rate, dials, nullptr, total, eventsFor(notes, holdN), holdN);
+            const Rendered r = render(std::move(first), rate, dials, nullptr, total, eventsFor(notes, holdN), holdN, request);
 
             std::string what;
             for (const int n : notes)
@@ -562,7 +576,7 @@ namespace testingplaygroundsynth::measure
                 if (std::unique_ptr<Patch> again = compile(nullptr))
                 {
                     const std::size_t chordN = std::min(holdN, static_cast<std::size_t>(0.6 * rate));
-                    const Rendered c = render(std::move(again), rate, dials, nullptr, chordN, eventsFor(chord, chordN), chordN);
+                    const Rendered c = render(std::move(again), rate, dials, nullptr, chordN, eventsFor(chord, chordN), chordN, request);
                     std::string names;
                     for (const int k : chord)
                         names += (names.empty() ? "" : " ") + std::to_string(k);
@@ -607,7 +621,7 @@ namespace testingplaygroundsynth::measure
             double worstStep = 0.0, worstStepAt = 0.0;
             std::string worstStepWhere;
             const auto through = [&](const Stereo& in, std::unique_ptr<Patch> p, const char* name) {
-                Rendered r = render(std::move(p), rate, dials, &in, in.size(), {}, 0);
+                Rendered r = render(std::move(p), rate, dials, &in, in.size(), {}, 0, request);
                 cpu += r.cpuMs;
                 audio += static_cast<double>(in.size()) / rate;
                 alerts |= r.alerts;

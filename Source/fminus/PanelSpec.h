@@ -155,6 +155,7 @@ namespace testingplaygroundsynth
         float minW = 0.0f, maxW = 0.0f, minH = 0.0f, maxH = 0.0f;   // px; 0: none
         int live = -1;                                      // a control's live= field: its tap's display (hidden)
         int from = 48, keys = 25;                           // a keyboard's lowest note and its keys
+        bool wheels = false;                                // and its pitch and mod wheels, at its left
         std::string file;                                   // a shader's source file
         std::array<std::string, 8> inputs{};                // a shader's inputs: parameters, fields, in, out
         int shader = -1;                                    // a shader's program (PanelSpec::shaders)

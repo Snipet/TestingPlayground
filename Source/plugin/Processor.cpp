@@ -186,6 +186,24 @@ namespace testingplaygroundsynth
                 e.kind = EventKind::noteOff;
             else if (status == 0xb0 && (d1 == 120 || d1 == 123))
                 e.kind = EventKind::allNotesOff;
+            else if (status == 0xb0 && (d1 == 1 || d1 == 64))  // the mod wheel, the sustain pedal
+            {
+                e.kind = EventKind::controller;
+                e.velocity = static_cast<float>(d2) / 127.0f;
+            }
+            else if (status == 0xe0)                            // the pitch wheel: 14 bits, 8192 at rest
+            {
+                e.kind = EventKind::pitchBend;
+                const int v = (static_cast<int>(d2) << 7) | static_cast<int>(d1);
+                e.velocity = std::clamp(static_cast<float>(v - 8192) / 8191.0f, -1.0f, 1.0f);
+                e.note = 0;
+            }
+            else if (status == 0xd0)                            // channel pressure
+            {
+                e.kind = EventKind::pressure;
+                e.velocity = static_cast<float>(d1) / 127.0f;
+                e.note = 0;
+            }
             else
                 return false;
             return true;
@@ -360,24 +378,53 @@ namespace testingplaygroundsynth
         guiPages_ = titles;
     }
 
+    void Processor::pushUiEvent(const Event& e)
+    {
+        const uint32_t head = uiNoteHead_.load(std::memory_order_relaxed);
+        if (head - uiNoteTail_.load(std::memory_order_acquire) >= kUiNotes)
+            return;                                              // full: dropped
+        uiNotes_[head % kUiNotes] = e;
+        uiNoteHead_.store(head + 1, std::memory_order_release);
+    }
+
     void Processor::playNote(int note, float velocity)
     {
         if constexpr (product::kIsInstrument)
         {
             if (note < 0 || note > 127 || !std::isfinite(velocity))
                 return;
-            const uint32_t head = uiNoteHead_.load(std::memory_order_relaxed);
-            if (head - uiNoteTail_.load(std::memory_order_acquire) >= kUiNotes)
-                return;                                          // full: dropped
             Event e;
             e.note = static_cast<uint8_t>(note);
             e.velocity = std::clamp(velocity, 0.0f, 1.0f);
             e.kind = e.velocity > 0.0f ? EventKind::noteOn : EventKind::noteOff;
-            uiNotes_[head % kUiNotes] = e;
-            uiNoteHead_.store(head + 1, std::memory_order_release);
+            pushUiEvent(e);
         }
         else
             juce::ignoreUnused(note, velocity);
+    }
+
+    void Processor::playWheel(bool pitch, float value)
+    {
+        if constexpr (product::kIsInstrument)
+        {
+            if (!std::isfinite(value))
+                return;
+            Event e;
+            if (pitch)
+            {
+                e.kind = EventKind::pitchBend;
+                e.velocity = std::clamp(value, -1.0f, 1.0f);
+            }
+            else
+            {
+                e.kind = EventKind::controller;
+                e.note = 1;
+                e.velocity = std::clamp(value, 0.0f, 1.0f);
+            }
+            pushUiEvent(e);
+        }
+        else
+            juce::ignoreUnused(pitch, value);
     }
 
     void Processor::keepDry(float* const* channels, int numChannels, int numSamples) noexcept
@@ -458,6 +505,23 @@ namespace testingplaygroundsynth
             wetSet_ = true;
         }
         readParameters();
+        // The host's transport, for the program's Host block (host.fm): its tempo, position, signature, playing.
+        Transport t;
+        if (juce::AudioPlayHead* head = getPlayHead())
+            if (const auto pos = head->getPosition())
+            {
+                t.known = true;
+                t.bpm = pos->getBpm().orFallback(120.0);
+                t.beat = pos->getPpqPosition().orFallback(0.0);
+                t.barStart = pos->getPpqPositionOfLastBarStart().orFallback(0.0);
+                if (const auto sig = pos->getTimeSignature())
+                {
+                    t.beatsPerBar = sig->numerator;
+                    t.beatUnit = sig->denominator;
+                }
+                t.playing = pos->getIsPlaying();
+            }
+        engine_.setTransport(t);
         play(buffer, midi, bypassed);
     }
 

@@ -1562,9 +1562,9 @@ namespace testingplaygroundsynth::ui
         for (int k = 0; k < kGuiPool; ++k)
             guiEnvelopes_.push_back(add(std::make_unique<GuiEnvelopeItem>(idFor())));
         for (int k = 0; k < 2; ++k)
-            guiKeyboards_.push_back(add(std::make_unique<GuiKeyboardItem>(idFor(), [this](int note, float velocity) {
-                port_.playNote(note, velocity);
-            })));
+            guiKeyboards_.push_back(add(std::make_unique<GuiKeyboardItem>(
+                idFor(), [this](int note, float velocity) { port_.playNote(note, velocity); },
+                [this](bool pitch, float value) { port_.playWheel(pitch, value); })));
         for (int k = 0; k < 4; ++k)
             guiShaders_.push_back(add(std::make_unique<GuiShaderItem>(idFor())));
         shaderNode_.assign(guiShaders_.size(), -1);

@@ -138,5 +138,7 @@ namespace testingplaygroundsynth
         // An instrument plays it at the start of its next block; an effect ignores it. 64 can wait at once; past that
         // a note is dropped.
         virtual void playNote(int note, float velocity) = 0;
+        // The keyboard's wheels: the pitch wheel (`pitch`, -1..1) or the mod wheel (0..1), as MIDI's would be.
+        virtual void playWheel(bool pitch, float value) = 0;
     };
 }

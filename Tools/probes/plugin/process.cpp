@@ -19,6 +19,9 @@
 //           un-bypass edge the output is the never-bypassed run's, bit for bit (the Engine ran through the bypass)
 //   EARLY   a block before any prepareToPlay: an effect passes its input, NaN and inf as 0; an instrument is silent
 //   MIDI    (an instrument) a note-on at velocity 0 is a note-off; All Notes Off (CC 123) releases every note
+//   HOSTDATA the host's playhead (100 BPM, 7/8, from beat 8, playing) reaches the Engine's Host block; an
+//           instrument's mod wheel (CC 1), pitch wheel (both ends), channel pressure and sustain pedal (CC 64) too,
+//           and the keyboard's wheels through EditorPort::playWheel
 #include "Probe.h"
 
 #include "Audio.h"
@@ -282,6 +285,68 @@ PROBE(plugin, process)
         const auto tailDb = [&](const probe::Stereo& x) { return probe::rmsDb(x.l, n - 4800, 4800); };
         P.le("midi.velocity0_releases_db", tailDb(a), -100.0);
         P.le("midi.cc123_releases_db", tailDb(b), -100.0);
+    }
+    // HOSTDATA: the host's playhead and an instrument's controllers reach the program's Host block (host.fm)
+    {
+        class Head final : public juce::AudioPlayHead
+        {
+        public:
+            juce::Optional<PositionInfo> getPosition() const override
+            {
+                PositionInfo pos;
+                pos.setBpm(100.0);
+                pos.setPpqPosition(8.0);
+                pos.setPpqPositionOfLastBarStart(7.0);
+                pos.setTimeSignature(TimeSignature{ 7, 8 });
+                pos.setIsPlaying(true);
+                return pos;
+            }
+        };
+        Head head;
+        tp::Processor p;
+        p.setPlayHead(&head);
+        p.prepareToPlay(kFs, kBlock);
+        juce::AudioBuffer<float> buffer(2, kBlock);
+        juce::MidiBuffer midi;
+        if constexpr (kInstrument)
+        {
+            midi.addEvent(juce::MidiMessage::controllerEvent(1, 1, 64), 10);
+            midi.addEvent(juce::MidiMessage::pitchWheel(1, 16383), 20);
+            midi.addEvent(juce::MidiMessage::channelPressureChange(1, 127), 30);
+            midi.addEvent(juce::MidiMessage::controllerEvent(1, 64, 127), 40);
+        }
+        buffer.clear();
+        p.processBlock(buffer, midi);
+        const tp::HostBlock& h = p.engine().host();
+        P.near("hostdata.bpm", static_cast<double>(h.bpm), 100.0, 1e-4);
+        // The position of the last call's first sample: an instrument's last part on the 16-sample grid, an effect's
+        // block.
+        P.near("hostdata.beat", static_cast<double>(h.beat), 8.0 + (kInstrument ? kBlock - 16 : 0) * 100.0 / (60.0 * kFs), 1e-4);
+        P.eq("hostdata.signature", h.beatsPerBar == 7 && h.beatUnit == 8 ? 1 : 0, 1);
+        P.near("hostdata.bar_start", static_cast<double>(h.barStart), 7.0, 1e-6);
+        P.eq("hostdata.playing", h.playing ? 1 : 0, 1);
+        if constexpr (kInstrument)
+        {
+            P.near("hostdata.modwheel", static_cast<double>(h.modwheel), 64.0 / 127.0, 1e-6);
+            P.near("hostdata.pitchbend_top", static_cast<double>(h.pitchbend), 1.0, 1e-6);
+            P.near("hostdata.aftertouch", static_cast<double>(h.aftertouch), 1.0, 1e-6);
+            P.eq("hostdata.sustain", h.sustain ? 1 : 0, 1);
+            juce::MidiBuffer rest;
+            rest.addEvent(juce::MidiMessage::pitchWheel(1, 8192), 0);
+            rest.addEvent(juce::MidiMessage::pitchWheel(1, 0), 100);
+            p.processBlock(buffer, rest);
+            P.near("hostdata.pitchbend_bottom", static_cast<double>(p.engine().host().pitchbend), -1.0, 1e-3);
+            // The keyboard's wheels (EditorPort::playWheel) reach it too, at the next block's start.
+            p.editorPort().playWheel(true, 0.25f);
+            p.editorPort().playWheel(false, 0.75f);
+            juce::MidiBuffer none;
+            p.processBlock(buffer, none);
+            P.near("hostdata.ui_pitch", static_cast<double>(p.engine().host().pitchbend), 0.25, 1e-6);
+            P.near("hostdata.ui_mod", static_cast<double>(p.engine().host().modwheel), 0.75, 1e-6);
+        }
+        else
+            P.eq("hostdata.effect_wheels_rest", h.modwheel == 0.0f && h.pitchbend == 0.0f ? 1 : 0, 1);
+        p.setPlayHead(nullptr);
     }
     return P.finish();
 }

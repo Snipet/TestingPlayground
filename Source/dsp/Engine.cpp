@@ -249,8 +249,10 @@ namespace testingplaygroundsynth
                         noteOn(e.note, e.velocity);
                     else if (e.kind == EventKind::noteOff)
                         noteOff(e.note);
-                    else
+                    else if (e.kind == EventKind::allNotesOff)
                         allNotesOff();
+                    else
+                        controller(e);
                 }
             return;
         }
@@ -263,6 +265,8 @@ namespace testingplaygroundsynth
         else
             processEffect(channels, numChannels, n);
         publish(channels, numChannels, n);
+        if (running_)                                // the song's position at the next call's first sample
+            beat_ += static_cast<double>(n) * bpm_ / (60.0 * static_cast<double>(fs_));
 
         const double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         const float share = static_cast<float>(took * static_cast<double>(fs_) / static_cast<double>(n));
@@ -382,6 +386,7 @@ namespace testingplaygroundsynth
 
         if (current_ == nullptr)
             return;                                  // no program yet: the input, as it came
+        syncHost(0);
         if (!xfading_)
         {
             feed(*current_, 0, -1);
@@ -435,12 +440,15 @@ namespace testingplaygroundsynth
                 render(done, at);
                 done = at;
             }
+            syncHost(at);                            // start and stop read the Host block at the event's sample
             if (e.kind == EventKind::noteOn)
                 noteOn(e.note, e.velocity);
             else if (e.kind == EventKind::noteOff)
                 noteOff(e.note);
-            else
+            else if (e.kind == EventKind::allNotesOff)
                 allNotesOff();
+            else
+                controller(e);
         }
         if (done < n)
             render(done, n);
@@ -558,9 +566,66 @@ namespace testingplaygroundsynth
         for (Voice& v : voices_)
             if (v.patch != nullptr && v.patch == current_ && v.key == key && !v.released)
             {
+                if (host_.sustain)
+                {
+                    v.pedal = true;                  // the pedal holds it; its stop comes when the pedal goes up
+                    continue;
+                }
                 current_->stop(v.instance);
                 v.released = true;
             }
+    }
+
+    void Engine::controller(const Event& e) noexcept
+    {
+        if (e.kind == EventKind::pitchBend)
+            host_.pitchbend = std::clamp(e.velocity, -1.0f, 1.0f);
+        else if (e.kind == EventKind::pressure)
+            host_.aftertouch = std::clamp(e.velocity, 0.0f, 1.0f);
+        else if (e.kind == EventKind::controller && e.note == 1)
+            host_.modwheel = std::clamp(e.velocity, 0.0f, 1.0f);
+        else if (e.kind == EventKind::controller && e.note == 64)
+        {
+            const bool down = e.velocity >= 0.5f;
+            if (host_.sustain && !down)
+                for (Voice& v : voices_)             // the pedal up: the keys let go meanwhile stop now
+                    if (v.patch != nullptr && v.pedal && !v.released)
+                    {
+                        v.patch->stop(v.instance);
+                        v.released = true;
+                        v.pedal = false;
+                    }
+            host_.sustain = down;
+        }
+    }
+
+    void Engine::syncHost(int offset) noexcept
+    {
+        host_.bpm = static_cast<float>(bpm_);
+        const double at = running_ ? static_cast<double>(offset) * bpm_ / (60.0 * static_cast<double>(fs_)) : 0.0;
+        host_.beat = static_cast<float>(beat_ + at);
+        if (current_ != nullptr)
+            current_->setHost(host_);
+        if (old_ != nullptr)
+            old_->setHost(host_);
+    }
+
+    void Engine::setTransport(const Transport& t) noexcept
+    {
+        if (!t.known)
+        {
+            running_ = true;                         // no host clock: our own, at 120 BPM, never playing
+            bpm_ = 120.0;
+            host_.playing = false;
+            return;
+        }
+        bpm_ = t.bpm > 1.0 && t.bpm < 1000.0 ? t.bpm : 120.0;
+        beat_ = std::isfinite(t.beat) ? t.beat : 0.0;
+        running_ = t.playing;
+        host_.playing = t.playing;
+        host_.barStart = static_cast<float>(std::isfinite(t.barStart) ? t.barStart : 0.0);
+        host_.beatsPerBar = t.beatsPerBar > 0 ? t.beatsPerBar : 4;
+        host_.beatUnit = t.beatUnit > 0 ? t.beatUnit : 4;
     }
 
     void Engine::allNotesOff() noexcept
@@ -571,6 +636,7 @@ namespace testingplaygroundsynth
             {
                 current_->stop(v.instance);
                 v.released = true;
+                v.pedal = false;
             }
     }
 
@@ -592,6 +658,7 @@ namespace testingplaygroundsynth
         const int len = to - from;
         if (len <= 0)
             return;
+        syncHost(from);
         for (Voice& v : voices_)
         {
             if (v.patch == nullptr)

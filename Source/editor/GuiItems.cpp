@@ -986,9 +986,11 @@ namespace testingplaygroundsynth::ui
         area_ = area;
         shown_ = shown;
         color_ = color;
+        wheels_ = node.kind == GuiKind::keyboard && node.wheels;
         keys_.clear();
+        const Rect area_k = keysArea();
         const int whites = std::max(1, guiWhiteKeys(from_, count_));
-        const float kw = cell_.w / static_cast<float>(whites);
+        const float kw = area_k.w / static_cast<float>(whites);
         const auto black = [](int k) {
             const int pc = ((k % 12) + 12) % 12;
             return pc == 1 || pc == 3 || pc == 6 || pc == 8 || pc == 10;
@@ -997,7 +999,7 @@ namespace testingplaygroundsynth::ui
         for (int k = from_; k < from_ + count_; ++k)
             if (!black(k))
             {
-                keys_.push_back({ { cell_.x + kw * static_cast<float>(w), cell_.y, kw, cell_.h }, k, false });
+                keys_.push_back({ { area_k.x + kw * static_cast<float>(w), cell_.y, kw, cell_.h }, k, false });
                 ++w;
             }
         // A black key sits over the line between its two white keys, 0.6 of a white key wide and 0.62 as tall.
@@ -1009,9 +1011,53 @@ namespace testingplaygroundsynth::ui
                 ++w;
                 continue;
             }
-            const float x = cell_.x + kw * static_cast<float>(w);
+            const float x = area_k.x + kw * static_cast<float>(w);
             const float bw = 0.6f * kw;
             keys_.push_back({ { x - 0.5f * bw, cell_.y, bw, std::round(0.62f * cell_.h) }, k, true });
+        }
+    }
+
+    Rect GuiKeyboardItem::keysArea() const noexcept
+    {
+        if (!wheels_)
+            return cell_;
+        return { cell_.x + kGuiWheelsW, cell_.y, std::max(1.0f, cell_.w - kGuiWheelsW), cell_.h };
+    }
+
+    Rect GuiKeyboardItem::pitchWheel() const noexcept
+    {
+        if (!wheels_)
+            return {};
+        return { cell_.x + 4.0f, cell_.y + 4.0f, 20.0f, cell_.h - 8.0f };
+    }
+
+    Rect GuiKeyboardItem::modWheel() const noexcept
+    {
+        if (!wheels_)
+            return {};
+        return { cell_.x + 28.0f, cell_.y + 4.0f, 20.0f, cell_.h - 8.0f };
+    }
+
+    void GuiKeyboardItem::moveWheel(float y)
+    {
+        const Rect r = dragWheel_ == 0 ? pitchWheel() : modWheel();
+        const float t = std::clamp((r.bottom() - 6.0f - y) / std::max(1.0f, r.h - 12.0f), 0.0f, 1.0f);   // 0 bottom, 1 top
+        if (dragWheel_ == 0)
+        {
+            const float v = 2.0f * t - 1.0f;
+            const float snapped = std::fabs(v) < 0.03f ? 0.0f : v;
+            if (snapped != pitch_)
+            {
+                pitch_ = snapped;
+                if (wheel_)
+                    wheel_(true, pitch_);
+            }
+        }
+        else if (t != mod_)
+        {
+            mod_ = t;
+            if (wheel_)
+                wheel_(false, mod_);
         }
     }
 
@@ -1053,6 +1099,13 @@ namespace testingplaygroundsynth::ui
 
     void GuiKeyboardItem::release()
     {
+        if (dragWheel_ == 0 && pitch_ != 0.0f)       // the pitch wheel springs back to its middle
+        {
+            pitch_ = 0.0f;
+            if (wheel_)
+                wheel_(true, 0.0f);
+        }
+        dragWheel_ = -1;
         if (held_ < 0)
             return;
         if (play_)
@@ -1069,6 +1122,13 @@ namespace testingplaygroundsynth::ui
     {
         if (e.popup || !shown_)
             return;
+        const funkgui::Point at{ e.x, e.y };
+        if (wheels_ && (pitchWheel().contains(at) || modWheel().contains(at)))
+        {
+            dragWheel_ = pitchWheel().contains(at) ? 0 : 1;
+            moveWheel(e.y);
+            return;
+        }
         float v = 0.8f;
         const int note = noteAt({ e.x, e.y }, &v);
         press(note, v);
@@ -1076,6 +1136,11 @@ namespace testingplaygroundsynth::ui
 
     void GuiKeyboardItem::pointerDrag(const funkgui::PointerEvent& e, funkgui::GestureController&)
     {
+        if (dragWheel_ >= 0)
+        {
+            moveWheel(e.y);
+            return;
+        }
         // A glissando: across the keys, the next note as the pointer reaches it; off them, the note held goes on.
         float v = 0.8f;
         if (const int note = noteAt({ e.x, e.y }, &v); note >= 0)
@@ -1113,7 +1178,32 @@ namespace testingplaygroundsynth::ui
             c.hairlineH(k.r.x + 2.0f, k.r.bottom() - 5.0f, k.r.w - 4.0f, funkgui::mix(fill, Col{ 0xFF, 0xFF, 0xFF }, 0.18f));
         }
         // The top: a felt strip over the keys' ends.
-        c.rrect(cell_.x, cell_.y, cell_.w, 3.0f, 0.0f, funkgui::mix(col, ebony, 0.55f));
+        const Rect keysR = keysArea();
+        c.rrect(keysR.x, cell_.y, keysR.w, 3.0f, 0.0f, funkgui::mix(col, ebony, 0.55f));
+        if (wheels_)
+        {
+            // Two wheels in their slots: a dark slot, the wheel's face with ridges, a lit mark where it stands (the
+            // pitch wheel's middle drawn).
+            for (int w = 0; w < 2; ++w)
+            {
+                const Rect r = w == 0 ? pitchWheel() : modWheel();
+                const float t = w == 0 ? 0.5f * (pitch_ + 1.0f) : mod_;
+                const bool hot = dragWheel_ == w;
+                c.rrect(r.x, r.y, r.w, r.h, 6.0f, Col{ 0x14, 0x14, 0x17 }, 1.0f, gap);
+                const Rect face{ r.x + 3.0f, r.y + 3.0f, r.w - 6.0f, r.h - 6.0f };
+                c.rrect(face.x, face.y, face.w, face.h, 4.0f, Col{ 0x2B, 0x2B, 0x30 });
+                const float y = face.bottom() - 3.0f - t * (face.h - 6.0f);
+                for (int k = -3; k <= 3; ++k)            // ridges, moving with the wheel
+                {
+                    const float ry = y + static_cast<float>(k) * 5.0f;
+                    if (ry > face.y + 2.0f && ry < face.bottom() - 2.0f)
+                        c.hairlineH(face.x + 2.0f, ry, face.w - 4.0f, Col{ 0x3A, 0x3A, 0x41 });
+                }
+                if (w == 0)
+                    c.hairlineH(r.x - 2.0f, face.centreY(), 3.0f, Col{ 0x70, 0x70, 0x76 });
+                c.rrect(face.x, y - 1.5f, face.w, 3.0f, 1.5f, hot ? funkgui::mix(col, Col{ 0xFF, 0xFF, 0xFF }, 0.25f) : col);
+            }
+        }
     }
 
     void GuiKeyboardItem::accessibility(std::vector<funkgui::A11yItem>& out) const
@@ -1126,6 +1216,12 @@ namespace testingplaygroundsynth::ui
         item.bounds = cell_;
         item.title = "Keyboard";
         item.value = noteName(from_) + " to " + noteName(from_ + count_ - 1) + (held_ >= 0 ? ", playing " + noteName(held_) : "");
+        if (wheels_)
+        {
+            char wheels[64];
+            std::snprintf(wheels, sizeof wheels, ", pitch %+.2f, mod %.2f", static_cast<double>(pitch_), static_cast<double>(mod_));
+            item.value += wheels;
+        }
         item.readOnly = true;
         out.push_back(std::move(item));
     }
