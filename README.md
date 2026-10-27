@@ -383,6 +383,13 @@ in a panel (its instructions are in `Source/plugin/ChatPrompt.cpp`).
   - **tune_dials** finds dial values for goals by rendering the program many times (up to 400 renders, a few seconds)
     and searching, instead of guessing: "the release at 1.2 s", "the level at -18 dBFS RMS". It tunes up to eight
     float dials and sets the best values; the stop button ends the search with the best so far. `Source/dsp/Tune.h`.
+- **A planner**: the model menu has two parts. **Build with** is the model that does the work (writes the files,
+  runs, measures, tunes, answers); **Plan with** can add a second model that plans each of your requests first, Claude
+  Fable 5.1 for the DSP and the architecture, say, with Claude Sonnet 5.5 building. Its plan (what to build, the signal
+  flow, the dials, the files, the DSP's methods, what to measure and check) shows as a card that folds, and joins your
+  message for the builder, which may ask the planner again mid-way (`ask_planner`, four times a request at most). Each
+  plan is a request of its own to the planning model (the footer counts its tokens); **No planner** goes back to one
+  model. The pill shows both ("Fable 5.1 > Sonnet 5.5"); the choice is machine-wide, as the model's is.
 - **The message box** grows with its text (up to eight lines). Return sends, Shift-Return breaks the line. In its bar:
   **the model** (a menu of the models your key or your account can use that think adaptively), **Thinking** (low to max:
   how much Claude thinks before it answers, and how hard it works), on Claude Opus 5.5 **Fast** (the API's fast

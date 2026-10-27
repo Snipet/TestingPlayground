@@ -184,6 +184,13 @@ editor and went with the old DSP): `plugin.py clone` copies this playground (its
   there adds the results as a user text message and the turn goes on, at most `kMaxCheckNudges` (2) times a turn. One `ChatEntry::Kind::checks` card a turn, brought up to date in place; its
   Clear calls `ChatPort::clearChecks`. The session keeps `checks_` in set_checks's own shape. Never let a check
   nudge without a cap: each nudge is a billed request.
+- **The planner** (`setPlanner`, chat.json "planner"; ChatAgent.h "A planner"): `planTurn` sends a message's
+  history to the planning model through `forAnotherModel` (no thinking blocks, which are bound to the builder's model
+  and prompt; no compaction or server-tool blocks; citations dropped) with `tool_choice` none and the tools defined
+  (the history's tool calls stay valid), a brief after the user's words; the plan streams into a
+  `ChatEntry::Kind::plan` entry and is appended to the user's message before the builder's first request (never to
+  a message already sent). `ask_planner` sends the history up to the reply that asks. A failing planner leaves the
+  turn to the builder with a note. `plugin.chat` PLANNER checks the requests' shapes.
 - **tune_dials** (`dsp/Tune.h`): Nelder-Mead over the named float dials' normalised ranges, from the dials as they
   are and a Halton spread, restarted when it settles with a goal unmet, until every goal is met, the budget (150, at
   most 400 renders) is spent or the stop button cancels; deterministic. The best values go on the dials through

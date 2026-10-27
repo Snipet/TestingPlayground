@@ -717,6 +717,54 @@ namespace testingplaygroundsynth::ui
                 }
                 break;
             }
+            case ChatEntry::Kind::plan:
+            {
+                // The planning model's plan (or its answer to ask_planner): a row that folds it, and its text in light
+                // markdown past a bar, open until folded.
+                b.from = asciiText(e.from);
+                b.answerPlan = e.answer;
+                b.label = e.answer ? "The planner's answer" : "The plan";
+                b.value = (b.from.empty() ? std::string() : b.from + ": ") + t;
+                b.actions.push_back({ { 0.0f, 0.0f, w, kThinkRow }, ActionKind::togglePlan, {} });
+                y = kThinkRow;
+                if (!planClosed_[b.entry] && !t.empty())
+                {
+                    y += 2.0f;
+                    const float top = y;
+                    Block body;
+                    float by = 0.0f;
+                    constexpr float kIndent = 14.0f;
+                    layoutMarkdown(body, t, w - kIndent, by);
+                    for (Span s : body.spans)
+                    {
+                        s.x += kIndent;
+                        s.y += top;
+                        b.spans.push_back(std::move(s));
+                    }
+                    for (Shape s : body.shapes)
+                    {
+                        s.r.x += kIndent;
+                        s.r.y += top;
+                        b.shapes.push_back(s);
+                    }
+                    for (CodeLine l : body.code)
+                    {
+                        l.x += kIndent;
+                        l.y += top;
+                        b.code.push_back(std::move(l));
+                    }
+                    for (Action a : body.actions)
+                    {
+                        a.r.x += kIndent;
+                        a.r.y += top;
+                        b.actions.push_back(std::move(a));
+                    }
+                    y = top + by;
+                    b.shapes.push_back({ { 4.0f, top + 1.0f, 2.0f, std::max(0.0f, y - top - 2.0f) }, ShapeKind::quoteBar });
+                    y += 4.0f;
+                }
+                break;
+            }
             case ChatEntry::Kind::tool:
             {
                 b.label = "What Claude did";
@@ -942,6 +990,7 @@ namespace testingplaygroundsynth::ui
         if (state.entries.size() < entryCount_)
         {
             open_.clear();                           // a new chat
+            planClosed_.clear();
             picks_.clear();
         }
         entryCount_ = state.entries.size();
@@ -989,7 +1038,8 @@ namespace testingplaygroundsynth::ui
                 endsTurn = false;
             std::string key = std::to_string(static_cast<int>(desc.kind)) + '|' + std::to_string(desc.count) + '|'
                             + std::to_string(w) + '|' + (endsTurn ? '1' : '0') + '|'
-                            + (desc.kind == ChatEntry::Kind::thinking && open_[desc.entry] ? '1' : '0') + '|';
+                            + (desc.kind == ChatEntry::Kind::thinking && open_[desc.entry] ? '1' : '0')
+                            + (desc.kind == ChatEntry::Kind::plan && planClosed_[desc.entry] ? 'c' : 'o') + '|';
             for (int k = 0; k < desc.count; ++k)
                 key += state.entries[static_cast<std::size_t>(desc.entry + k)].text + '\x1f';
             for (int k = 0; k < desc.count; ++k)
@@ -1020,7 +1070,8 @@ namespace testingplaygroundsynth::ui
         }
         const Block* last = blocks_.empty() ? nullptr : &blocks_.back();
         liveText_ = busy_ && last != nullptr
-                 && (last->kind == ChatEntry::Kind::thinking || last->kind == ChatEntry::Kind::assistant);
+                 && (last->kind == ChatEntry::Kind::thinking || last->kind == ChatEntry::Kind::assistant
+                     || last->kind == ChatEntry::Kind::plan);
         typingY_ = y + (blocks_.empty() ? 0.0f : kGap);
         if (busy_ && !(last != nullptr && last->kind == ChatEntry::Kind::thinking))
             y = typingY_ + kWorkingRow;
@@ -1085,6 +1136,12 @@ namespace testingplaygroundsynth::ui
         {
             open_[b.entry] = !open_[b.entry];
             b.key.clear();                           // lays out again at the next show()
+            return;
+        }
+        if (a.kind == ActionKind::togglePlan)
+        {
+            planClosed_[b.entry] = !planClosed_[b.entry];
+            b.key.clear();
             return;
         }
         if (a.kind == ActionKind::clearChecks)
@@ -1585,6 +1642,26 @@ namespace testingplaygroundsynth::ui
                     text(label, r.centreX() - lw * 0.5f, r.y, r.h, Role::smallStrong, ready ? p.onAccent : p.faint);
                     continue;
                 }
+                if (a.kind == ActionKind::togglePlan)
+                {
+                    const bool open = !(planClosed_.count(b.entry) != 0 && planClosed_.at(b.entry));
+                    const funkgui::Col ink = hover ? p.text : p.soft;
+                    chat::drawIcon(c, open ? chat::Icon::chevronDown : chat::Icon::chevronRight, r.x + 6.0f, r.centreY(), 9.0f, ink);
+                    chat::drawIcon(c, chat::Icon::list, r.x + 22.0f, r.centreY(), 10.0f, p.accent);
+                    const std::string title = b.answerPlan ? "The planner answers" : (live(b) ? "Planning" : "Plan");
+                    text(title, r.x + 34.0f, r.y, r.h, Role::smallStrong, ink);
+                    const float tx = r.x + 34.0f + static_cast<float>(title.size()) * adv(Role::smallStrong) + 8.0f;
+                    if (live(b))
+                        for (int k = 0; k < 3; ++k)
+                        {
+                            const float t = std::fmod(phase_ / 1.2f + 1.0f - static_cast<float>(k) * 0.18f, 1.0f);
+                            const float amp = 0.35f + 0.65f * std::max(0.0f, std::sin(t * 3.14159265f));
+                            c.disc(tx + static_cast<float>(k) * 7.0f, r.centreY() + 1.0f, 1.6f, funkgui::mix(p.card, ink, amp));
+                        }
+                    else if (!b.from.empty())
+                        text(b.from, tx, r.y, r.h, Role::faint, p.faint);
+                    continue;
+                }
                 if (a.kind == ActionKind::toggleThinking)
                 {
                     const bool open = open_.count(b.entry) != 0 && open_.at(b.entry);
@@ -1729,9 +1806,17 @@ namespace testingplaygroundsynth::ui
                 funkgui::A11yItem act;
                 act.id = base_ + 16 + static_cast<uint32_t>(bi) * kA11yStride + 1 + static_cast<uint32_t>(ai);
                 act.parent = base_;
-                act.role = a.kind == ActionKind::toggleThinking ? funkgui::A11yRole::toggleButton : funkgui::A11yRole::button;
+                act.role = a.kind == ActionKind::toggleThinking || a.kind == ActionKind::togglePlan ? funkgui::A11yRole::toggleButton
+                                                                                                   : funkgui::A11yRole::button;
                 act.bounds = r;
-                if (a.kind == ActionKind::toggleThinking)
+                if (a.kind == ActionKind::togglePlan)
+                {
+                    act.title = b.answerPlan ? "Show the planner's answer" : "Show the plan";
+                    act.description = b.from;
+                    act.checkable = true;
+                    act.checked = !(planClosed_.count(b.entry) != 0 && planClosed_.at(b.entry));
+                }
+                else if (a.kind == ActionKind::toggleThinking)
                 {
                     act.title = "Show Claude's thinking";
                     act.checkable = true;
@@ -1809,6 +1894,7 @@ namespace testingplaygroundsynth::ui
         {
             const ActionKind k = blocks_[static_cast<std::size_t>(b)].actions[static_cast<std::size_t>(a)].kind;
             std::snprintf(out, n, "%s", k == ActionKind::toggleThinking ? "THINKING   SHOW OR HIDE WHAT CLAUDE THOUGHT"
+                                        : k == ActionKind::togglePlan   ? "PLAN   SHOW OR HIDE THE PLANNING MODEL'S PLAN"
                                         : k == ActionKind::copyCode     ? "COPY   THE CODE BLOCK TO THE CLIPBOARD"
                                         : k == ActionKind::option       ? "ANSWER   CHOOSE THIS FOR CLAUDE'S QUESTION"
                                         : k == ActionKind::submit       ? "SEND ANSWERS   CLAUDE GOES ON WITH THEM"

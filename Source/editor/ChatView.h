@@ -125,7 +125,7 @@ namespace testingplaygroundsynth::ui
             std::string text;
             std::vector<funkgui::text::Span> spans;
         };
-        enum class ActionKind : uint8_t { copyMessage, copyCode, toggleThinking, option, submit, clearChecks };
+        enum class ActionKind : uint8_t { copyMessage, copyCode, toggleThinking, option, submit, clearChecks, togglePlan };
         struct Action
         {
             funkgui::Rect r;
@@ -165,6 +165,9 @@ namespace testingplaygroundsynth::ui
             bool open = false;
             // The checks' (set_checks).
             std::vector<ChatCheck> checks;
+            // A plan's (the planning model's, ChatAgent.h).
+            std::string from;
+            bool answerPlan = false;
         };
         struct EmptyLayout
         {
@@ -201,6 +204,7 @@ namespace testingplaygroundsynth::ui
         funkgui::Rect bounds_;
         std::vector<Block> blocks_;
         std::map<int, bool> open_;                    // thinking blocks opened, by their entry
+        std::map<int, bool> planClosed_;              // plans folded, by their entry (a plan shows open)
         std::map<int, std::vector<std::vector<bool>>> picks_;   // an open question's picks, by its entry
         EmptyLayout empty_;
         Empty emptyText_;

@@ -1623,7 +1623,7 @@ namespace testingplaygroundsynth::ui
                           "PICTURES   ADD PICTURES FOR CLAUDE (A PANEL TO TAKE AFTER, A SKETCH), OR DROP THEM ON THE CHAT")));
         modelItem_ = add(std::make_unique<B>(
             idFor(), spec(B::Shape::pill, {}, [this] { return modelLabel(); }, true, [] { return B::Look::ghost; }, {},
-                          [this] { openModels(); }, "Model", "MODEL   THE CLAUDE MODEL THE CHAT TALKS TO")));
+                          [this] { openModels(); }, "Model", "MODEL   THE MODEL THAT BUILDS, AND ONE THAT PLANS EACH REQUEST FIRST")));
         thinkingItem_ = add(std::make_unique<B>(
             idFor(), spec(B::Shape::pill, {}, [this] { return thinkingLabel(); }, true, [] { return B::Look::ghost; },
                           [this] { return !chatEfforts().empty(); }, [this] { openThinking(); }, "Thinking level",
@@ -2525,10 +2525,15 @@ namespace testingplaygroundsynth::ui
 
     std::string Panel::modelLabel() const
     {
-        for (const ChatModel& m : chat_.models)
-            if (m.id == chat_.model)
-                return m.name.rfind("Claude ", 0) == 0 ? m.name.substr(7) : m.name;
-        return chat_.model.empty() ? std::string("Model") : chat_.model;
+        const auto shortName = [this](const std::string& id) {
+            for (const ChatModel& m : chat_.models)
+                if (m.id == id)
+                    return m.name.rfind("Claude ", 0) == 0 ? m.name.substr(7) : m.name;
+            return id;
+        };
+        const std::string builder = chat_.model.empty() ? std::string("Model") : shortName(chat_.model);
+        // With a planner: "Fable 5.1 > Sonnet 5.5", the plan's model first.
+        return chat_.planner.empty() ? builder : shortName(chat_.planner) + " > " + builder;
     }
 
     std::vector<std::string> Panel::chatEfforts() const
@@ -2686,7 +2691,11 @@ namespace testingplaygroundsynth::ui
     {
         if (host_ == nullptr || chat_.models.empty())
             return;
+        // Two choices: the model that builds (writes the files, runs, measures, answers), and the one that plans each
+        // request first, or none (ChatAgent.h, "A planner").
+        constexpr int kPlanNone = 1000, kPlanFirst = 1001, kHeading = 2000;
         funkgui::MenuRequest request;
+        request.items.push_back({ kHeading, "BUILD WITH", false });
         int id = 1;
         for (const ChatModel& m : chat_.models)
         {
@@ -2696,13 +2705,37 @@ namespace testingplaygroundsynth::ui
             item.checked = m.id == chat_.model;
             request.items.push_back(std::move(item));
         }
+        request.items.push_back({ 0, {}, false, false, true });
+        request.items.push_back({ kHeading + 1, "PLAN WITH (EACH REQUEST, FIRST)", false });
+        {
+            funkgui::MenuItem none;
+            none.id = kPlanNone;
+            none.label = "No planner";
+            none.checked = chat_.planner.empty();
+            request.items.push_back(std::move(none));
+        }
+        id = kPlanFirst;
+        for (const ChatModel& m : chat_.models)
+        {
+            funkgui::MenuItem item;
+            item.id = id++;
+            item.label = m.name;
+            item.checked = m.id == chat_.planner;
+            request.items.push_back(std::move(item));
+        }
         request.anchor = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(modelItem_)]).bounds();
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
         const std::vector<ChatModel> models = chat_.models;
         host_->showMenu(request, [this, models](int chosen) {
-            if (chosen < 1 || chosen > static_cast<int>(models.size()))
+            const int n = static_cast<int>(models.size());
+            if (chosen >= 1 && chosen <= n)
+                port_.chat().setModel(models[static_cast<std::size_t>(chosen - 1)].id);
+            else if (chosen == kPlanNone)
+                port_.chat().setPlanner({});
+            else if (chosen >= kPlanFirst && chosen < kPlanFirst + n)
+                port_.chat().setPlanner(models[static_cast<std::size_t>(chosen - kPlanFirst)].id);
+            else
                 return;
-            port_.chat().setModel(models[static_cast<std::size_t>(chosen - 1)].id);
             chatAt_ = -1.0;
             dirty_ = true;
         });
