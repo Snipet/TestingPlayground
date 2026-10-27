@@ -21,6 +21,9 @@
 //   gui.chat.answered.png the question answered: the choices marked, the rest muted
 //   gui.chat.pictures.png two pictures in the message box, each with its remove button
 //   gui.chat.sent.png     a message sent with two pictures: their thumbnails above its bubble
+//   gui.chat.checks.png   Claude's checks card, every check passing, and the picture of the sound it looked at
+//   gui.chat.checks-fail.png  a check that fails, after the turn went on twice
+//   gui.chat.view_sound.png   the picture view_sound gave Claude there (an instrument's saw at A2; an effect's sweep)
 // and checks:
 //   EMPTY    with neither a sign-in nor a key the empty chat has a Sign in button (which opens the access dialog on its
 //            account tab), an API key button (on its API key tab) and suggestions
@@ -61,6 +64,10 @@
 //            the chat's card come too (the card says so while the drag is over the editor), not on the editor, and a
 //            text file is no drop the chat takes; sent, the pictures go before the words and show above the message;
 //            FunkGui holds each thumbnail while the chat does, and a new chat lets them go
+//   CHECKS   Claude's checks (set_checks) as a card, a row each (its label, its value against the goal), and the
+//            picture of the sound it looked at (view_sound) under its row, drawn; one fails, the turn goes on, a dial
+//            set and a run fix it: the card brought up to date (every check passing); a check that cannot pass shows
+//            failing; the card's Clear (spoken as a button) forgets the checks and goes
 //   NEW      NEW asks first, then forgets the conversation; a suggestion goes into the message box, unsent; Tab leaves
 //            the message box
 //   SCROLL   a conversation taller than the view scrolls with the wheel, and the round button jumps back to its end
@@ -210,6 +217,54 @@ namespace
     juce::var input(std::initializer_list<std::pair<const char*, juce::var>> fields)
     {
         return tp::claude::object(fields);
+    }
+
+    // A program that sounds, with a dial to fix: an instrument's sine with its level (dB) and a release (s); an effect's
+    // gain (dB).
+    std::string soundProgram()
+    {
+        if constexpr (tp::product::kIsInstrument)
+            return R"(module Voice
+{
+    param float level [[fminus::range(-40, 0)]] [[fminus::default(-20)]];
+    param float release [[fminus::range(0.01, 3)]] [[fminus::default(0.5)]];
+    float rate, ph, step, env;
+    bool held;
+    void init(float r) { rate = r; }
+    void start(float note, float v) { step = 440 * expf(0.0577622650f * (note - 69)) / rate; held = true; env = 1; }
+    void stop() { held = false; }
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        const float g = expf(0.115129255f * level[0]);
+        const float fall = expf(-6.90775528f / (release[0] * rate));
+        for (int i = 0; i < n; ++i)
+        {
+            if (!held) env *= fall;
+            const float out = g * env * (2 * ph - 1);
+            ph += step;
+            if (ph >= 1) ph -= 1;
+            left[i] += out;
+            right[i] += out;
+        }
+        return held || env > 0.00001f;
+    }
+};
+)";
+        else
+            return R"(module Effect
+{
+    param float gain [[fminus::range(-24, 24)]] [[fminus::default(0)]];
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        const float g = expf(0.115129255f * gain[0]);
+        for (int i = 0; i < n; ++i)
+        {
+            left[i] = tanhf(g * left[i]);
+            right[i] = tanhf(g * right[i]);
+        }
+    }
+};
+)";
     }
 }
 
@@ -859,6 +914,113 @@ PROBE(gui, chat)
         for (const uint32_t id : pictureIds)
             held = held && funkgui::images::has(id);
         P.eq("pictures.registered", held ? 1 : 0, 1);
+    }
+
+    // ---- CHECKS --------------------------------------------------------------------------------------------------------
+    {
+        tp::Draft d;
+        d.files = tp::singleFile(soundProgram());
+        processor.editorPort().setDraft(d);
+        processor.editorPort().run(d.files);
+        processor.settle();
+        juce::Array<juce::var> checks;
+        if constexpr (tp::product::kIsInstrument)
+        {
+            checks.add(input({ { "label", "A sensible level" }, { "metric", "rms_db" }, { "min", -40.0 }, { "max", -10.0 } }));
+            checks.add(input({ { "label", "Dies away quickly" }, { "metric", "release_s" }, { "max", 0.2 } }));
+            checks.add(input({ { "label", "No alerts" }, { "metric", "alerts" }, { "max", 0.0 } }));
+        }
+        else
+        {
+            checks.add(input({ { "label", "No boost" }, { "metric", "sine_gain_db" }, { "max", 1.0 } }));
+            checks.add(input({ { "label", "Quieter by 6 dB" }, { "metric", "sine_gain_db" }, { "max", -6.0 } }));
+            checks.add(input({ { "label", "No alerts" }, { "metric", "alerts" }, { "max", 0.0 } }));
+        }
+        const char* fixDial = tp::product::kIsInstrument ? "release" : "gain";
+        const double fixValue = tp::product::kIsInstrument ? 0.1 : -8.0;
+        script->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .tool("toolu_k1", "set_checks", input({ { "checks", checks } }))
+                                           .tool("toolu_k2", "view_sound", tp::product::kIsInstrument
+                                                                               ? input({ { "notes", juce::Array<juce::var>{ 45 } } })
+                                                                               : input({}))
+                                           .end("tool_use")));
+        script->add(fake::Response::ok(fake::Sse().start().text("Here is the sound.").end()));
+        script->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .tool("toolu_k3", "set_dial", input({ { "name", fixDial }, { "value", fixValue } }))
+                                           .tool("toolu_k4", "run_program", input({}))
+                                           .end("tool_use")));
+        script->add(fake::Response::ok(fake::Sse().start().text("Fixed: every check passes now.").end()));
+        const int at = script->postCount();
+        clickInput(host, panel);
+        type(host, "check it");
+        host.keys("return");
+        for (int k = 0; k < 6000 && (chat(processor).busy || script->postCount() < at + 4); ++k)
+        {
+            processor.poll();
+            host.tick(1);
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        settleChat(processor, host);
+        tp::ui::ChatView& view = panel.chatView();
+        view.scrollTo(view.contentHeight());
+        host.settle();
+        P.eq("checks.turn", script->postCount() - at, 4);
+        {
+            // The picture Claude got (view_sound's, the reply's second result), for a look at a fuller sound than a sine.
+            const juce::var body = tp::claude::parseJson(script->body(at + 1));
+            const juce::Array<juce::var>* m = body.getProperty("messages", {}).getArray();
+            std::string data;
+            if (m != nullptr && !m->isEmpty())
+                if (const auto* results = (*m)[m->size() - 1].getProperty("content", {}).getArray())
+                    for (const juce::var& r : *results)
+                        if (const auto* content = r.getProperty("content", {}).getArray())
+                            for (const juce::var& c : *content)
+                                if (c.getProperty("type", "").toString() == "image")
+                                    data = c.getProperty("source", {}).getProperty("data", "").toString().toStdString();
+            juce::MemoryOutputStream png;
+            const bool decoded = !data.empty() && juce::Base64::convertFromBase64(png, juce::String(data));
+            if (decoded)
+                juce::File(juce::String(probe::outPath("gui.chat.view_sound.png"))).replaceWithData(png.getData(), png.getDataSize());
+            P.eq("checks.sound_png", decoded ? 1 : 0, 1);
+        }
+        P.eq("checks.rows", view.checkRows(), 3);
+        P.eq("checks.sound_picture", view.tiles() >= 1 && host.draw().missingImages == 0 ? 1 : 0, 1);
+        P.eq("checks.transcript", has(panel.transcript(), "  # Checks: 3 of 3 pass") ? 1 : 0, 1);
+        P.eq("checks.inside", allInside(host, panel) ? 1 : 0, 1);
+        // The card at the top of the view, then the sound's picture.
+        view.scrollTo(std::max(0.0f, view.contentHeight() - 900.0f));
+        host.settle();
+        P.eq("checks.clear_shown", view.centreOfClearChecks().has_value() ? 1 : 0, 1);
+        P.eq("checks.a11y", a11yTitled(host, "Clear the checks").has_value() ? 1 : 0, 1);
+        writePng(P, host, "gui.chat.checks.png");
+        // A check that cannot pass: the card shows it failing; Clear forgets the checks.
+        juce::Array<juce::var> impossible;
+        impossible.add(input({ { "label", "Impossibly loud" }, { "metric", tp::product::kIsInstrument ? "rms_db" : "sine_rms_db" },
+                               { "min", 30.0 } }));
+        script->add(fake::Response::ok(fake::Sse().start().tool("toolu_k5", "set_checks", input({ { "checks", impossible } })).end("tool_use")));
+        script->add(fake::Response::ok(fake::Sse().start().text("Done.").end()));
+        script->add(fake::Response::ok(fake::Sse().start().text("Still.").end()));
+        script->add(fake::Response::ok(fake::Sse().start().text("It cannot pass: that is beyond the output.").end()));
+        clickInput(host, panel);
+        type(host, "louder");
+        host.keys("return");
+        settleChat(processor, host);
+        view.scrollTo(view.contentHeight());
+        host.settle();
+        writePng(P, host, "gui.chat.checks-fail.png");
+        P.eq("checks.failing_shown", has(panel.transcript(), "  # Checks: 0 of 1 pass") ? 1 : 0, 1);
+        if (const auto clear = view.centreOfClearChecks())
+            clickAt(host, *clear);
+        host.tick(2);
+        host.settle();
+        P.eq("checks.cleared", chat(processor).checks ? 0 : 1, 1);
+        P.eq("checks.clear_gone", view.centreOfClearChecks().has_value() ? 0 : 1, 1);
+        for (const tp::ChatEntry& e : chat(processor).entries)
+            if (e.kind == tp::ChatEntry::Kind::tool)
+                for (const tp::ChatPicturePtr& pic : e.pictures)
+                    pictureIds.push_back(pic->id);
     }
 
     // ---- NEW -----------------------------------------------------------------------------------------------------------

@@ -5,7 +5,12 @@
 
 #include "plugin/ChatStore.h"
 
+#include "dsp/Goals.h"
 #include "dsp/Measure.h"
+#include "dsp/SoundView.h"
+#include "dsp/Tune.h"
+
+#include "plugin/SoundPicture.h"
 
 #include "Library.h"
 #include "Product.h"
@@ -27,6 +32,12 @@ namespace testingplaygroundsynth
         constexpr int kMaxAttempts = 4;            // a request, retried on an overload, a rate limit or a dropped line
         constexpr int kMaxCutOffs = 2;             // replies cut off at max_tokens in a row before a turn ends
         constexpr std::size_t kMaxToolOutput = 12000;   // a tool result's characters (a compile's messages)
+        constexpr int kMaxChecks = 12;             // set_checks's checks
+        constexpr int kMaxCheckNudges = 2;         // times a turn goes on because its checks fail (ChatAgent.h)
+        // The tools that change the program, the dials or the checks: a turn that used none is never sent on by them.
+        constexpr const char* kChangingTools[] = { "write_file", "edit_file", "rename_file", "delete_file", "add_library_file",
+                                                   "run_program", "set_dial", "tune_dials", "set_checks" };
+        constexpr bool kInstrument = product::kIsInstrument;
         constexpr const char* kDefaultModel = "claude-opus-5-5";
         constexpr const char* kDefaultEffort = "medium";
         constexpr const char* kFallbackBeta = "server-side-fallback-2026-07-01";
@@ -40,11 +51,13 @@ namespace testingplaygroundsynth
         constexpr const char* kCompactInstructions =
             "Summarize the conversation so far between a user and Claude, who builds and changes FMinus DSP programs "
             "inside an audio plugin through tools (read_file, write_file, edit_file, run_program, set_dial, "
-            "measure_output, get_status). The summary replaces that part of the conversation, so keep everything "
+            "measure_output, view_sound, set_checks, tune_dials, get_status). The summary replaces that part of the "
+            "conversation, so keep everything "
             "needed to carry on: what the user asked for, and their preferences about the sound and the code; what "
             "was built: each file and what it holds, the signal flow and the modulation routing, what each dial does "
             "and the values chosen; decisions made and ideas rejected, and why; problems met and how they were "
-            "solved, and measurements that matter; what is unfinished or was promised next; and the user's latest "
+            "solved, and measurements that matter; the checks set (set_checks) and how they stand (the plugin keeps "
+            "measuring them); what is unfinished or was promised next; and the user's latest "
             "request, word for word. Do not copy the programs' code: the plugin sends the current files after this "
             "summary, and read_file shows any of them. Plain prose and short lists.";
 
@@ -215,6 +228,7 @@ namespace testingplaygroundsynth
                 case ChatEntry::Kind::error: return "error";
                 case ChatEntry::Kind::note: return "note";
                 case ChatEntry::Kind::question: return "question";
+                case ChatEntry::Kind::checks: return "checks";
             }
             return "note";
         }
@@ -223,7 +237,7 @@ namespace testingplaygroundsynth
         {
             for (const auto k : { ChatEntry::Kind::user, ChatEntry::Kind::assistant, ChatEntry::Kind::thinking,
                                   ChatEntry::Kind::tool, ChatEntry::Kind::error, ChatEntry::Kind::note,
-                                  ChatEntry::Kind::question })
+                                  ChatEntry::Kind::question, ChatEntry::Kind::checks })
                 if (s == kindName(k))
                     return k;
             return ChatEntry::Kind::note;
@@ -369,6 +383,114 @@ namespace testingplaygroundsynth
         juce::var prop(const char* type, const char* description)
         {
             return claude::object({ { "type", type }, { "description", description } });
+        }
+
+        bool isNumber(const juce::var& v) { return v.isDouble() || v.isInt() || v.isInt64(); }
+
+        // A render's settings from a tool's input (measure_output's, view_sound's, a check's, tune_dials's): the notes,
+        // the velocity, the times, the host and the dials asked for.
+        measure::Request renderOf(const juce::var& input)
+        {
+            measure::Request req;
+            const auto numberArg = [&](const char* k, float& out) {
+                const juce::var v = input.getProperty(k, juce::var());
+                if (isNumber(v))
+                    out = static_cast<float>(static_cast<double>(v));
+            };
+            const juce::var notes = input.getProperty("notes", juce::var());
+            if (const auto* arr = notes.getArray())
+                for (const auto& n : *arr)
+                    if (isNumber(n))
+                        req.notes.push_back(static_cast<int>(std::lround(static_cast<double>(n))));
+            numberArg("velocity", req.velocity);
+            numberArg("hold_seconds", req.holdSeconds);
+            numberArg("tail_seconds", req.tailSeconds);
+            numberArg("bpm", req.bpm);
+            numberArg("modwheel", req.modwheel);
+            numberArg("pitchbend", req.pitchbend);
+            const juce::var dials = input.getProperty("dials", juce::var());
+            if (const auto* o = dials.getDynamicObject())
+                for (const auto& kv : o->getProperties())
+                    if (isNumber(kv.value) || kv.value.isBool())
+                        req.dials[kv.name.toString().toStdString()] = static_cast<float>(static_cast<double>(kv.value));
+            return req;
+        }
+
+        // The render's settings as a tool's input schema has them (measure_output's own, which the others share).
+        void addRenderProps(juce::var& props)
+        {
+            auto* o = props.getDynamicObject();
+            if constexpr (kInstrument)
+            {
+                o->setProperty("notes", claude::object({ { "type", "array" },
+                                                         { "items", claude::object({ { "type", "integer" } }) },
+                                                         { "description", "MIDI notes played together (69 is A, 440 Hz). "
+                                                                          "Default: one note, 48 (C3)." } }));
+                o->setProperty("velocity", prop("number", "The velocity, 0 to 1 (default 0.8)"));
+                o->setProperty("modwheel", prop("number", "The mod wheel, 0 to 1, from the start (default 0)"));
+                o->setProperty("pitchbend", prop("number", "The pitch wheel, -1 to 1, from the start (default 0)"));
+            }
+            o->setProperty("hold_seconds", prop("number", kInstrument ? "How long the notes are held; default 1, at most 10"
+                                                                      : "How long the input plays; default 1, at most 10"));
+            o->setProperty("tail_seconds", prop("number", kInstrument ? "How long to go on after the release; default 1.5, "
+                                                                        "at most 10"
+                                                                      : "How long to go on after it (silence); default 1.5, "
+                                                                        "at most 10"));
+            o->setProperty("dials", claude::object({ { "type", "object" },
+                                                     { "additionalProperties", claude::object({ { "type", "number" } }) },
+                                                     { "description", "Dial values to render with, by parameter name, in "
+                                                                      "the parameter's own units. Dials not named keep the "
+                                                                      "values they have now." } }));
+            o->setProperty("bpm", prop("number", "The host's tempo for a program that reads it (host.fm); default 120"));
+        }
+
+        // The metrics' names, for a schema's enum (Measure.h).
+        juce::var metricEnum(const char* description)
+        {
+            juce::Array<juce::var> names;
+            for (const measure::MetricInfo& m : measure::metrics())
+                names.add(juce::String(m.name));
+            return claude::object({ { "type", "string" }, { "enum", names }, { "description", description } });
+        }
+
+        // A goal (Goals.h) from a tool's input: metric and min, max or target (and a tolerance, a weight); false with why.
+        bool goalOf(const juce::var& in, measure::Goal& g, std::string& why)
+        {
+            g = {};
+            g.metric = in.getProperty("metric", juce::var()).toString().toStdString();
+            const auto take = [&](const char* k, bool& has, double& v) {
+                const juce::var x = in.getProperty(k, juce::var());
+                if (isNumber(x))
+                {
+                    has = true;
+                    v = static_cast<double>(x);
+                }
+            };
+            take("min", g.hasMin, g.min);
+            take("max", g.hasMax, g.max);
+            take("target", g.hasTarget, g.target);
+            bool hasTol = false, hasWeight = false;
+            take("tolerance", hasTol, g.tolerance);
+            take("weight", hasWeight, g.weight);
+            if (!hasWeight)
+                g.weight = 1.0;
+            why = measure::invalid(g);
+            return why.empty();
+        }
+
+        // A goal's properties in a schema.
+        juce::var goalProps(bool weight)
+        {
+            juce::var p = claude::object({ { "metric", metricEnum("What to measure (CHECKING YOUR WORK lists them)") },
+                                           { "min", prop("number", "At least this, in the metric's unit") },
+                                           { "max", prop("number", "At most this, in the metric's unit") },
+                                           { "target", prop("number", "Near this (instead of min and max)") },
+                                           { "tolerance", prop("number", "How near the target counts, in the metric's "
+                                                                         "unit (default: the metric's own)") } });
+            if (weight)
+                p.getDynamicObject()->setProperty("weight", prop("number", "How much this goal counts against the "
+                                                                           "others (default 1)"));
+            return p;
         }
 
         // The web tools (ChatAgent.h): the API's server tools, with dynamic filtering unless `direct`.
@@ -639,6 +761,7 @@ namespace testingplaygroundsynth
         s.signInError = signInError_;
         s.busy = busy_;
         s.asking = !asking_.empty();
+        s.checks = !checks_.empty();
         for (const Attached& a : attached_)
             s.attached.push_back(a.picture);
         s.attaching = attaching_;
@@ -1113,6 +1236,8 @@ namespace testingplaygroundsynth
         asking_.clear();
         attached_.clear();
         ++attachEpoch_;
+        checks_.clear();
+        checksFailing_ = false;
         touch();
     }
 
@@ -1134,6 +1259,16 @@ namespace testingplaygroundsynth
                 o->setProperty("a", answers);
                 o->setProperty("o", e.open);
                 o->setProperty("y", e.typed);
+            }
+            if (e.kind == ChatEntry::Kind::checks)
+            {
+                juce::Array<juce::var> rows;
+                for (const ChatCheck& c : e.checks)
+                    rows.add(claude::object({ { "l", juce::String::fromUTF8(c.label.c_str()) },
+                                              { "d", juce::String::fromUTF8(c.detail.c_str()) },
+                                              { "m", c.measured },
+                                              { "p", c.pass } }));
+                entry.getDynamicObject()->setProperty("c", rows);
             }
             if (!e.pictures.empty())
             {
@@ -1181,7 +1316,7 @@ namespace testingplaygroundsynth
                 juce::Array<juce::var> kept;
                 for (const juce::var& x : *inner)
                     kept.add(str(x, "type") == "image"
-                                 ? claude::object({ { "type", "text" }, { "text", "(A picture of the panel: not kept in the session.)" } })
+                                 ? claude::object({ { "type", "text" }, { "text", "(A picture of the panel or the sound: not kept in the session.)" } })
                                  : x);
                 juce::var nb = claude::object({});
                 for (const auto& kv : b.getDynamicObject()->getProperties())
@@ -1204,6 +1339,46 @@ namespace testingplaygroundsynth
         if (!asking_.empty())
             state.getDynamicObject()->setProperty("asking", juce::String(asking_));
         state.getDynamicObject()->setProperty("web", historyWeb_);
+        if (!checks_.empty())
+        {
+            // Each check as set_checks takes it, so loadState reads it back the same way.
+            juce::Array<juce::var> checks;
+            for (const measure::Check& c : checks_)
+            {
+                juce::var v = claude::object({ { "label", juce::String::fromUTF8(c.label.c_str()) },
+                                               { "metric", juce::String(c.goal.metric) } });
+                auto* o = v.getDynamicObject();
+                if (c.goal.hasMin)
+                    o->setProperty("min", c.goal.min);
+                if (c.goal.hasMax)
+                    o->setProperty("max", c.goal.max);
+                if (c.goal.hasTarget)
+                    o->setProperty("target", c.goal.target);
+                if (c.goal.tolerance > 0.0)
+                    o->setProperty("tolerance", c.goal.tolerance);
+                const measure::Request& r = c.request;
+                juce::Array<juce::var> notes;
+                for (const int n : r.notes)
+                    notes.add(n);
+                if (!notes.isEmpty())
+                    o->setProperty("notes", notes);
+                o->setProperty("velocity", r.velocity);
+                o->setProperty("hold_seconds", r.holdSeconds);
+                o->setProperty("tail_seconds", r.tailSeconds);
+                o->setProperty("bpm", r.bpm);
+                o->setProperty("modwheel", r.modwheel);
+                o->setProperty("pitchbend", r.pitchbend);
+                if (!r.dials.empty())
+                {
+                    juce::var dials = claude::object({});
+                    for (const auto& [k, x] : r.dials)
+                        dials.getDynamicObject()->setProperty(juce::Identifier(juce::String::fromUTF8(k.c_str())), x);
+                    o->setProperty("dials", dials);
+                }
+                checks.add(v);
+            }
+            state.getDynamicObject()->setProperty("checks", checks);
+        }
         return claude::toJson(state);
     }
 
@@ -1231,13 +1406,32 @@ namespace testingplaygroundsynth
         asking_.clear();
         activity_.clear();
         historyWeb_ = static_cast<bool>(v.getProperty("web", false));
+        checks_.clear();
+        checksFailing_ = false;
+        if (const auto* cs = v.getProperty("checks", juce::var()).getArray())
+            for (const auto& c : *cs)
+            {
+                measure::Check k;
+                std::string why;
+                if (!goalOf(c, k.goal, why) || static_cast<int>(checks_.size()) >= kMaxChecks)
+                    continue;
+                k.label = str(c, "label");
+                k.request = renderOf(c);
+                checks_.push_back(std::move(k));
+            }
         const juce::var messages = v.getProperty("messages", juce::var()), entries = v.getProperty("entries", juce::var());
         if (const auto* arr = messages.getArray())
             messages_ = *arr;
         if (const auto* arr = entries.getArray())
             for (const auto& e : *arr)
             {
-                ChatEntry entry{ kindOf(str(e, "k")), str(e, "t"), {}, {}, false, false, {} };
+                ChatEntry entry;
+                entry.kind = kindOf(str(e, "k"));
+                entry.text = str(e, "t");
+                if (const auto* rows = e.getProperty("c", juce::var()).getArray())
+                    for (const auto& r : *rows)
+                        entry.checks.push_back({ str(r, "l"), str(r, "d"), static_cast<bool>(r.getProperty("m", false)),
+                                                 static_cast<bool>(r.getProperty("p", false)) });
                 if (entry.kind == ChatEntry::Kind::question)
                 {
                     entry.questions = questionsOf(e.getProperty("q", juce::var()));
@@ -1686,6 +1880,112 @@ namespace testingplaygroundsynth
                                                                  "pages the user has") } }),
                        {}));
         {
+            juce::var props = claude::object({});
+            addRenderProps(props);
+            if constexpr (!kInstrument)
+            {
+                props.getDynamicObject()->setProperty(
+                    "input", claude::object({ { "type", "string" },
+                                              { "enum", juce::Array<juce::var>{ "sweep", "noise", "impulse", "sine", "silence" } },
+                                              { "description", "What goes in, for hold_seconds, then silence for tail_seconds: "
+                                                               "sweep (the default: a sine from 20 Hz to 20 kHz at -12 "
+                                                               "dBFS, rising evenly in octaves), noise (-18 dBFS RMS), "
+                                                               "impulse (0.5, then silence: a reverb's or a delay's "
+                                                               "response), sine (at frequency, -12 dBFS) or silence" } }));
+                props.getDynamicObject()->setProperty("frequency", prop("number", "The sine's frequency in Hz (default 220)"));
+            }
+            props.getDynamicObject()->setProperty("from_seconds", prop("number", "The close-up's start, in seconds from "
+                                                                                 "the start (default: a few cycles of "
+                                                                                 "the held sound)"));
+            props.getDynamicObject()->setProperty("to_seconds", prop("number", "The close-up's end (at most 2 s after "
+                                                                               "its start)"));
+            tools.add(tool("view_sound",
+                           kInstrument
+                               ? "See the sound: a picture (PNG) of the program rendered offline as measure_output "
+                                 "renders it (the notes held, then released), drawn: the waveform and the level over "
+                                 "time, a spectrogram (frequency against time, 20 Hz to 20 kHz on a log scale), the "
+                                 "average spectrum while held (a note's harmonics marked) and a close-up of a few "
+                                 "cycles (or of from_seconds to to_seconds). You cannot hear the plugin: look when the "
+                                 "sound's shape matters, as an envelope's attack and release, a filter's sweep, "
+                                 "aliasing (lines that fold back down in the spectrogram), a click (a spike in the "
+                                 "waveform, a thin vertical line in the spectrogram), a wave's shape, noise, a "
+                                 "modulation's motion. A picture costs about 1,200 input tokens: measure_output gives "
+                                 "numbers, this shows the shape. It compiles the files as they are now and changes "
+                                 "nothing that plays; the user sees the picture too."
+                               : "See the sound: a picture (PNG) of the program rendered offline with an input (a sweep "
+                                 "by default), drawn: the waveform and the level over time, a spectrogram (frequency "
+                                 "against time, 20 Hz to 20 kHz on a log scale), the average spectrum while the input "
+                                 "plays and a close-up of a few cycles (or of from_seconds to to_seconds). You cannot "
+                                 "hear the plugin: look when the sound's shape matters, as a filter's response (a "
+                                 "sweep: where it is cut), what a drive adds (a sweep's or a sine's harmonics, aliasing "
+                                 "that folds back down), a reverb's or a delay's tail (an impulse), a modulation's "
+                                 "motion, a click. A picture costs about 1,200 input tokens: measure_output gives "
+                                 "numbers, this shows the shape. It compiles the files as they are now and changes "
+                                 "nothing that plays; the user sees the picture too.",
+                           props, {}));
+        }
+        {
+            juce::var item = goalProps(false);
+            item.getDynamicObject()->setProperty("label", prop("string", "What it checks, in a few words the user reads "
+                                                                         "(\"Releases within two seconds\")"));
+            addRenderProps(item);
+            juce::var checks = claude::object({ { "type", "array" },
+                                                { "maxItems", kMaxChecks },
+                                                { "items", claude::object({ { "type", "object" },
+                                                                            { "properties", item },
+                                                                            { "required", juce::Array<juce::var>{ "label", "metric" } } }) },
+                                                { "description", "The checks, each a metric with min, max or target, "
+                                                                 "and the render it is measured in (measure_output's "
+                                                                 "settings; the defaults when left out). Empty: no "
+                                                                 "checks" } });
+            tools.add(tool("set_checks",
+                           "Set the checks this work must pass: what the user asked for, as numbers the plugin "
+                           "measures (the metrics in CHECKING YOUR WORK), each with min, max or a target. The list "
+                           "replaces the checks set before; an empty one clears them. The plugin measures them now, "
+                           "again after every run_program (the results follow its own), and when you end a turn in "
+                           "which you changed something: while any fails, that turn goes on with the results (twice "
+                           "at most), so fix the program, "
+                           "change a check that asks for the wrong thing, or say why it cannot pass. The user sees them "
+                           "as a checklist. Set them early in a large piece of work, from the request (\"a pluck that "
+                           "dies away in a second\": decay_s at most 1; \"no aliasing\": inharmonic_db at most -70 "
+                           "at note 96), not afterwards to describe what was built.",
+                           claude::object({ { "checks", checks } }), { "checks" }));
+        }
+        {
+            juce::var props = claude::object({});
+            addRenderProps(props);
+            props.getDynamicObject()->setProperty(
+                "tune", claude::object({ { "type", "array" },
+                                         { "items", claude::object({ { "type", "string" } }) },
+                                         { "minItems", 1 },
+                                         { "maxItems", measure::kMaxTuned },
+                                         { "description", "The float dials to tune, by parameter name (ints and bools "
+                                                          "are set with set_dial)" } }));
+            props.getDynamicObject()->setProperty(
+                "goals", claude::object({ { "type", "array" },
+                                          { "minItems", 1 },
+                                          { "maxItems", measure::kMaxGoals },
+                                          { "items", claude::object({ { "type", "object" },
+                                                                      { "properties", goalProps(true) },
+                                                                      { "required", juce::Array<juce::var>{ "metric" } } }) },
+                                          { "description", "What the measurements should come to" } }));
+            props.getDynamicObject()->setProperty("budget", prop("integer", "Renders at most (default 150, at most 400; "
+                                                                            "each takes a few to a few hundred ms)"));
+            props.getDynamicObject()->setProperty("apply", prop("boolean", "Set the dials to the best values found "
+                                                                           "(default true)"));
+            tools.add(tool("tune_dials",
+                           "Find the values of up to eight float dials that bring measurements to goals, by rendering "
+                           "the program offline many times (as measure_output does, up to budget renders) and "
+                           "searching, instead of guessing: from the dials as they are, through points spread over "
+                           "their ranges, then a simplex search. Goals are metrics (CHECKING YOUR WORK) with min, max "
+                           "or a target. Use it to fit a level, a brightness, an envelope's times, a filter, an "
+                           "amount of drive, once the program does the right thing and only its settings are off; it "
+                           "cannot make a program do what it cannot. The best values go on the dials, as set_dial "
+                           "sets them, unless apply is false; the result gives the dials and the measurements before "
+                           "and after. Dials not tuned keep their values (or those in dials). It changes no file.",
+                           props, { "tune", "goals" }));
+        }
+        {
             juce::var option = claude::object(
                 { { "type", "object" },
                   { "properties", claude::object({ { "label", prop("string", "The choice in a few words (at most 60 "
@@ -2029,6 +2329,8 @@ namespace testingplaygroundsynth
         }
 
         int cutOffs = 0;                           // replies cut off at max_tokens in a row, this turn
+        int checkNudges = 0;                       // times this turn went on because a check failed
+        bool worked = false;                       // a tool changed the program, the dials or the checks this turn
         // The web pages the turn's answers cite (url, title), in order: listed under its last answer.
         std::vector<std::pair<std::string, std::string>> cited;
         std::size_t turnStart = 0;
@@ -2073,6 +2375,9 @@ namespace testingplaygroundsynth
                                 : name == "run_program"                     ? std::string("About to run the program")
                                 : name == "measure_output"                  ? std::string("About to measure the sound")
                                 : name == "view_panel"                      ? std::string("Looking at the panel")
+                                : name == "view_sound"                      ? std::string("About to look at the sound")
+                                : name == "set_checks"                      ? std::string("Writing checks")
+                                : name == "tune_dials"                      ? std::string("About to tune the dials")
                                 : name == "ask_user"                        ? std::string("Writing a question for you")
                                                                             : "Using " + name);
                 };
@@ -2327,6 +2632,41 @@ namespace testingplaygroundsynth
             }
             if (stopReason == "pause_turn" && !cutOff)
                 continue;                          // the API paused its own tools' loop: the reply goes back as it is
+            // A reply that ends the turn while Claude's checks fail: the turn goes on with their results (ChatAgent.h).
+            if (toolUses.empty() && !cutOff && stopReason == "end_turn" && worked && !cancel_.load()
+                && checkNudges < kMaxCheckNudges)
+            {
+                bool checking = false;
+                {
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    checking = !checks_.empty();
+                }
+                if (checking)
+                {
+                    const std::string results = evaluateChecks();
+                    bool failing = false;
+                    {
+                        const std::lock_guard<std::mutex> lock(mutex_);
+                        failing = checksFailing_;
+                    }
+                    if (failing && !cancel_.load())
+                    {
+                        ++checkNudges;
+                        const std::string line =
+                            "(From the plugin: your checks, measured on the files and dials as they are now.\n" + results
+                            + "Fix what fails, or change a check with set_checks if it asks for the wrong thing, or say why "
+                              "it cannot pass. Your turn ends when you answer without a tool call"
+                            + (checkNudges == kMaxCheckNudges ? std::string(", and the plugin will not ask again this turn.)")
+                                                              : std::string(".)"));
+                        const std::lock_guard<std::mutex> lock(mutex_);
+                        messages_.add(claude::object({ { "role", "user" }, { "content", juce::Array<juce::var>{ text(line) } } }));
+                        addEntry(ChatEntry::Kind::note, "A check fails, so Claude goes on (" + std::to_string(checkNudges) + " of "
+                                                            + std::to_string(kMaxCheckNudges) + ").");
+                        touch();
+                        continue;
+                    }
+                }
+            }
             if (toolUses.empty() && (!cutOff || endsHere))
                 break;                             // end_turn, or cut off again
 
@@ -2382,7 +2722,11 @@ namespace testingplaygroundsynth
                                                  { "content", juce::String::fromUTF8(why.c_str()) } }));
                     continue;
                 }
-                results.add(runTool(use));
+                const juce::var result = runTool(use);
+                if (!static_cast<bool>(result.getProperty("is_error", false)))
+                    for (const char* c : kChangingTools)
+                        worked = worked || str(use, "name") == c;
+                results.add(result);
             }
             if (toolUses.empty())
                 results.add(text(cutOffNote(maxTokens)));
@@ -2463,6 +2807,80 @@ namespace testingplaygroundsynth
         touch();
     }
 
+    // ---- the checks (set_checks) --------------------------------------------------------------------------------------
+    std::map<std::string, float> ChatAgent::currentDials() const
+    {
+        std::map<std::string, float> out;
+        const Controls controls = host_.chatDials();
+        for (int c = 0; c < kMaxControls; ++c)
+            if (controls[static_cast<std::size_t>(c)].used)
+                out[controls[static_cast<std::size_t>(c)].name] = host_.chatDialValue(c);
+        return out;
+    }
+
+    std::string ChatAgent::evaluateChecks()
+    {
+        std::vector<measure::Check> checks;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            checks = checks_;
+        }
+        if (checks.empty())
+            return {};
+        setActivity("Checking");
+        std::string errors;
+        const std::vector<measure::CheckResult> results = measure::evaluate(host_.chatDraft().files, checks, currentDials(), &errors);
+        std::vector<ChatCheck> rows;
+        int pass = 0;
+        std::string lines;
+        for (std::size_t i = 0; i < results.size() && i < checks.size(); ++i)
+        {
+            const measure::CheckResult& r = results[i];
+            rows.push_back({ checks[i].label, r.text, r.measured, r.pass });
+            pass += r.measured && r.pass ? 1 : 0;
+            lines += std::string(!r.measured ? "- NOT MEASURED " : r.pass ? "- pass " : "- FAIL ") + checks[i].label + " ("
+                   + checks[i].goal.metric + "): " + r.text + "\n";
+        }
+        const std::string head = "Checks: " + std::to_string(pass) + " of " + std::to_string(results.size()) + " pass.";
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            checksFailing_ = pass < static_cast<int>(results.size());
+            // Their entry: the one in this turn (since the user's last message) brought up to date, else a new one.
+            std::size_t at = entries_.size();
+            for (std::size_t i = entries_.size(); i-- > 0;)
+            {
+                if (entries_[i].kind == ChatEntry::Kind::checks)
+                {
+                    at = i;
+                    break;
+                }
+                if (entries_[i].kind == ChatEntry::Kind::user)
+                    break;
+            }
+            if (at == entries_.size())
+            {
+                ChatEntry e;
+                e.kind = ChatEntry::Kind::checks;
+                entries_.push_back(std::move(e));
+            }
+            entries_[at].text = head + "\n" + lines;
+            entries_[at].checks = std::move(rows);
+            touch();
+        }
+        return head + "\n" + lines + (errors.empty() ? "" : "The program does not compile:\n" + capped(errors));
+    }
+
+    void ChatAgent::clearChecks()
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (checks_.empty())
+            return;
+        checks_.clear();
+        checksFailing_ = false;
+        addEntry(ChatEntry::Kind::note, "The checks are cleared: the plugin no longer measures them.");
+        touch();
+    }
+
     // ---- the tools ----------------------------------------------------------------------------------------------------
     juce::var ChatAgent::runTool(const juce::var& use)
     {
@@ -2491,6 +2909,59 @@ namespace testingplaygroundsynth
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
                 addEntry(ChatEntry::Kind::tool, view == "window" ? "Looked at the editor" : "Looked at the panel");
+            }
+            return block;
+        }
+        if (name == "view_sound")
+        {
+            // A picture of the sound: an image block and what it shows; the chat shows the picture too.
+            setActivity("Drawing the sound");
+            measure::ViewRequest vr = soundpicture::request();
+            vr.render = renderOf(input);
+            vr.render.current = currentDials();
+            if constexpr (!kInstrument)
+            {
+                const std::string in = str(input, "input");
+                vr.input = in == "noise"     ? measure::ViewInput::noise
+                         : in == "impulse"   ? measure::ViewInput::impulse
+                         : in == "sine"      ? measure::ViewInput::sine
+                         : in == "silence"   ? measure::ViewInput::silence
+                                             : measure::ViewInput::sweep;
+                const juce::var f = input.getProperty("frequency", juce::var());
+                if (isNumber(f))
+                    vr.frequency = static_cast<float>(static_cast<double>(f));
+            }
+            const juce::var from = input.getProperty("from_seconds", juce::var()), to = input.getProperty("to_seconds", juce::var());
+            if (isNumber(from) && isNumber(to))
+            {
+                vr.from = static_cast<float>(static_cast<double>(from));
+                vr.to = static_cast<float>(static_cast<double>(to));
+            }
+            const measure::View v = measure::view(host_.chatDraft().files, vr);
+            juce::var block = claude::object({ { "type", "tool_result" }, { "tool_use_id", use.getProperty("id", "") } });
+            if (!v.compiled)
+            {
+                block.getDynamicObject()->setProperty(
+                    "content", juce::String::fromUTF8(("It did not compile, so nothing was drawn:\n" + capped(v.errors)).c_str()));
+                block.getDynamicObject()->setProperty("is_error", true);
+                const std::lock_guard<std::mutex> lock(mutex_);
+                addEntry(ChatEntry::Kind::tool, "looked at the sound: it did not compile");
+                return block;
+            }
+            setActivity("Looking at the sound");
+            const soundpicture::Drawn d = soundpicture::draw(v);
+            juce::Array<juce::var> content;
+            content.add(claude::object({ { "type", "image" },
+                                         { "source", claude::object({ { "type", "base64" },
+                                                                      { "media_type", "image/png" },
+                                                                      { "data", juce::Base64::toBase64(d.png.data(), d.png.size()) } }) } }));
+            content.add(claude::object({ { "type", "text" }, { "text", juce::String::fromUTF8(d.about.c_str()) } }));
+            block.getDynamicObject()->setProperty("content", content);
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                addEntry(ChatEntry::Kind::tool, "looked at the sound");
+                entries_.back().pictures.push_back(d.thumb);
+                touch();
             }
             return block;
         }
@@ -2728,9 +3199,10 @@ namespace testingplaygroundsynth
                     dials += c.used ? 1 : 0;
                 note("ran it: compiled in " + number(std::round(s.ms)) + " ms, " + std::to_string(dials) + " dial"
                      + (dials == 1 ? "" : "s"));
+                const std::string checks = evaluateChecks();
                 return "Compiled in " + number(std::round(s.ms)) + " ms; it plays now.\nIts dials:\n"
                      + dialLines(s.controls, host_) + panelLine(s.panel, s.controls)
-                     + (s.notes.empty() ? "" : "Notes:\n" + capped(s.notes));
+                     + (s.notes.empty() ? "" : "Notes:\n" + capped(s.notes)) + (checks.empty() ? "" : "\n" + checks);
             }
             int errors = 0;
             for (std::size_t p = s.errors.find(": error:"); p != std::string::npos; p = s.errors.find(": error:", p + 1))
@@ -2768,36 +3240,107 @@ namespace testingplaygroundsynth
         if (name == "measure_output")
         {
             setActivity("Measuring the sound");
-            measure::Request req;
-            const auto numberArg = [&](const char* k, float& out) {
-                const juce::var v = input.getProperty(k, juce::var());
-                if (v.isDouble() || v.isInt() || v.isInt64())
-                    out = static_cast<float>(static_cast<double>(v));
-            };
-            const juce::var notes = input.getProperty("notes", juce::var());
-            if (const auto* arr = notes.getArray())
-                for (const auto& n : *arr)
-                    if (n.isInt() || n.isInt64() || n.isDouble())
-                        req.notes.push_back(static_cast<int>(std::lround(static_cast<double>(n))));
-            numberArg("velocity", req.velocity);
-            numberArg("hold_seconds", req.holdSeconds);
-            numberArg("tail_seconds", req.tailSeconds);
-            numberArg("bpm", req.bpm);
-            numberArg("modwheel", req.modwheel);
-            numberArg("pitchbend", req.pitchbend);
-            const juce::var dials = input.getProperty("dials", juce::var());
-            if (const auto* o = dials.getDynamicObject())
-                for (const auto& kv : o->getProperties())
-                    if (kv.value.isDouble() || kv.value.isInt() || kv.value.isInt64() || kv.value.isBool())
-                        req.dials[kv.name.toString().toStdString()] = static_cast<float>(static_cast<double>(kv.value));
-            const Controls controls = host_.chatDials();
-            for (int c = 0; c < kMaxControls; ++c)
-                if (controls[static_cast<std::size_t>(c)].used)
-                    req.current[controls[static_cast<std::size_t>(c)].name] = host_.chatDialValue(c);
+            measure::Request req = renderOf(input);
+            req.current = currentDials();
             const std::string report = measure::run(host_.chatDraft().files, req);
             note(report.rfind("It did not compile", 0) == 0 ? "measured the sound: it did not compile"
                                                              : "measured the sound");
             return report;
+        }
+        if (name == "set_checks")
+        {
+            const juce::var list = input.getProperty("checks", juce::var());
+            const auto* arr = list.getArray();
+            if (arr == nullptr)
+                return fail("set_checks needs checks: a list of them (empty to clear them)");
+            if (arr->size() > kMaxChecks)
+                return fail("At most " + std::to_string(kMaxChecks) + " checks");
+            std::vector<measure::Check> checks;
+            for (int i = 0; i < arr->size(); ++i)
+            {
+                const juce::var& c = (*arr)[i];
+                measure::Check k;
+                std::string why;
+                if (!goalOf(c, k.goal, why))
+                    return fail("Check " + std::to_string(i + 1) + ": " + why + " Nothing was set.");
+                k.label = str(c, "label");
+                if (k.label.empty())
+                    k.label = k.goal.metric;
+                k.request = renderOf(c);
+                checks.push_back(std::move(k));
+            }
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                checks_ = checks;
+            }
+            if (checks.empty())
+            {
+                {
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    checksFailing_ = false;
+                }
+                note("cleared the checks");
+                return "The checks are cleared: nothing is measured after a run.";
+            }
+            note("set " + std::to_string(checks.size()) + " check" + (checks.size() == 1 ? "" : "s"));
+            return "Set " + std::to_string(checks.size()) + " check" + (checks.size() == 1 ? "" : "s")
+                 + ". The plugin measures them after every run_program and when you end your turn.\n" + evaluateChecks();
+        }
+        if (name == "tune_dials")
+        {
+            measure::TuneRequest q;
+            q.render = renderOf(input);
+            q.render.current = currentDials();
+            if (const auto* tune = input.getProperty("tune", juce::var()).getArray())
+                for (const auto& t : *tune)
+                    if (t.isString())
+                        q.dials.push_back(t.toString().toStdString());
+            if (const auto* goals = input.getProperty("goals", juce::var()).getArray())
+                for (int i = 0; i < goals->size(); ++i)
+                {
+                    measure::Goal g;
+                    std::string why;
+                    if (!goalOf((*goals)[i], g, why))
+                        return fail("Goal " + std::to_string(i + 1) + ": " + why);
+                    q.goals.push_back(std::move(g));
+                }
+            const juce::var budget = input.getProperty("budget", juce::var());
+            if (isNumber(budget))
+                q.budget = std::clamp(static_cast<int>(std::lround(static_cast<double>(budget))), 1, measure::kMaxBudget);
+            const juce::var applyVar = input.getProperty("apply", juce::var());
+            const bool apply = applyVar.isBool() ? static_cast<bool>(applyVar) : true;
+            setActivity("Tuning the dials");
+            q.progress = [this](int done, int all) {
+                setActivity("Tuning: " + std::to_string(done) + " of " + std::to_string(all) + " renders");
+                return !cancel_.load();
+            };
+            const measure::TuneResult t = measure::tune(host_.chatDraft().files, q);
+            if (!t.error.empty())
+            {
+                note("tuning failed");
+                return fail(t.error);
+            }
+            std::string out = t.text;
+            std::string tuned;
+            for (const auto& [dial, v] : t.best)
+                tuned += (tuned.empty() ? "" : ", ") + dial;
+            const int met = static_cast<int>(std::count(t.bestMet.begin(), t.bestMet.end(), true));
+            if (apply && t.bestScore < t.startScore)
+            {
+                const Controls controls = host_.chatDials();
+                for (const auto& [dial, v] : t.best)
+                    for (int c = 0; c < kMaxControls; ++c)
+                        if (controls[static_cast<std::size_t>(c)].used && dial == controls[static_cast<std::size_t>(c)].name)
+                            host_.chatSetDial(c, v);
+                out += "The dials are set to the best values (the user can move them).";
+            }
+            else if (apply)
+                out += "The dials are left as they were: nothing better was found.";
+            else
+                out += "The dials are left as they were (apply was false): set_dial sets them.";
+            note("tuned " + tuned + ": " + std::to_string(met) + " of " + std::to_string(t.bestMet.size()) + " goals met in "
+                 + std::to_string(t.renders) + " renders");
+            return out;
         }
         if (name == "get_status")
         {

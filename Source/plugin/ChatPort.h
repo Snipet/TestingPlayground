@@ -27,6 +27,7 @@
 //                    waits (asking), the message answers it in the user's own words
 //   answer()         the user's answer to Claude's question (ask_user), one per question: the chosen options' labels;
 //                    Claude's turn goes on with it
+//   clearChecks()    forgets Claude's checks (set_checks): the plugin no longer measures them after a run
 //   stop()           ends Claude's turn as soon as it can; the work done so far stays
 //   newChat()        forgets the conversation
 #pragma once
@@ -84,6 +85,17 @@ namespace testingplaygroundsynth
         return false;
     }
 
+    // One of Claude's checks (its set_checks tool): what it checks and how it came out the last time the plugin
+    // measured it (after each run of the program).
+    struct ChatCheck
+    {
+        std::string label;                    // a few words ("Releases within two seconds")
+        std::string detail;                   // the value against the goal ("2.61 s; at most 2.00 s"), or why it was
+                                              // not measured
+        bool measured = false;
+        bool pass = false;
+    };
+
     struct ChatEntry
     {
         enum class Kind : uint8_t
@@ -95,6 +107,8 @@ namespace testingplaygroundsynth
             error,       // something went wrong: the key, the network, the API
             note,        // the chat's own remarks
             question,    // Claude asks (ask_user): its questions, answered with a click; the turn waits for them
+            checks,      // Claude's checks (set_checks), each with its last result; one entry, brought up to date in
+                         // place after each run
         };
         Kind kind = Kind::note;
         std::string text;                     // a question's: the questions and their options, as plain text
@@ -103,7 +117,8 @@ namespace testingplaygroundsynth
                                               // between several), "" for none
         bool open = false;                    // a question still waiting for its answer
         bool typed = false;                   // a question answered by a message instead
-        std::vector<ChatPicturePtr> pictures; // a user message's
+        std::vector<ChatPicturePtr> pictures; // a user message's, or what a tool showed Claude (view_sound's picture)
+        std::vector<ChatCheck> checks;        // a checks entry's
     };
 
     struct ChatModel
@@ -146,6 +161,7 @@ namespace testingplaygroundsynth
         std::string signInError;              // why the last sign-in failed ("" when it did not)
         bool busy = false;                    // Claude is working on a turn
         bool asking = false;                  // Claude's question (the last question entry) waits for the answer
+        bool checks = false;                  // Claude's checks are set (set_checks): measured after each run
         std::vector<ChatPicturePtr> attached; // pictures for the next message
         int attaching = 0;                    // files still being read
         std::string activity;                 // what it is doing: "THINKING", "WRITING filters.fm", ...
@@ -185,6 +201,7 @@ namespace testingplaygroundsynth
         virtual void detach(uint32_t id) = 0;
         virtual void send(const std::string& text) = 0;
         virtual void answer(const std::vector<std::string>& answers) = 0;
+        virtual void clearChecks() = 0;
         virtual void stop() = 0;
         virtual void newChat() = 0;
     };

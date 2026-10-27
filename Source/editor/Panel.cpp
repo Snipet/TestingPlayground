@@ -1610,7 +1610,8 @@ namespace testingplaygroundsynth::ui
             kChatA11yBase, ChatView::Hooks{ [this](const std::string& s) { suggest(s); },
                                             [this] { openKeyDialog(DialogTab::key); },
                                             [this] { openKeyDialog(DialogTab::account); },
-                                            [this](const std::vector<std::string>& a) { port_.chat().answer(a); } }));
+                                            [this](const std::vector<std::string>& a) { port_.chat().answer(a); },
+                                            [this] { port_.chat().clearChecks(); } }));
         inputItem_ = add(std::make_unique<InputItem>(idFor(), [this] { sendChat(); }, [this](uint32_t id) {
             port_.chat().detach(id);
             chatAt_ = -1.0;
