@@ -1,6 +1,8 @@
 // Source/plugin/ChatAgent.cpp: see ChatAgent.h.
 #include "plugin/ChatAgent.h"
 
+#include "plugin/ChatImages.h"
+
 #include "plugin/ChatStore.h"
 
 #include "dsp/Measure.h"
@@ -369,6 +371,39 @@ namespace testingplaygroundsynth
             return claude::object({ { "type", type }, { "description", description } });
         }
 
+        // The web tools (ChatAgent.h): the API's server tools, with dynamic filtering unless `direct`.
+        constexpr int kWebUses = 5;                // searches, and fetches, a request
+        constexpr int kWebFetchTokens = 40000;     // a fetched page's text at most (a PDF is not cut)
+
+        juce::var withWebTools(const juce::var& tools, bool direct)
+        {
+            juce::Array<juce::var> all;
+            if (const auto* arr = tools.getArray())
+                all = *arr;
+            juce::var search = claude::object({ { "type", "web_search_20260209" }, { "name", "web_search" }, { "max_uses", kWebUses } });
+            juce::var fetch = claude::object({ { "type", "web_fetch_20260209" },
+                                               { "name", "web_fetch" },
+                                               { "max_uses", kWebUses },
+                                               { "max_content_tokens", kWebFetchTokens },
+                                               { "citations", claude::object({ { "enabled", true } }) } });
+            if (direct)
+                for (juce::var* t : { &search, &fetch })
+                    t->getDynamicObject()->setProperty("allowed_callers", juce::Array<juce::var>{ "direct" });
+            all.add(search);
+            all.add(fetch);
+            return all;
+        }
+
+        // A 400 about the web tools: one that wants them called directly, or an organisation without them.
+        bool wantsDirect(const std::string& error) { return error.find("allowed_callers") != std::string::npos; }
+        bool webDisabled(const std::string& error)
+        {
+            const std::string e = juce::String(error).toLowerCase().toStdString();
+            return (e.find("web search") != std::string::npos || e.find("web fetch") != std::string::npos
+                    || e.find("web_search") != std::string::npos || e.find("web_fetch") != std::string::npos)
+                && e.find("not enabled") != std::string::npos;
+        }
+
         // ask_user's limits.
         constexpr int kAskMaxQuestions = 4, kAskMinOptions = 2, kAskMaxOptions = 6;
         constexpr std::size_t kAskMaxQuestionText = 400, kAskMaxLabel = 60, kAskMaxDescription = 200, kAskMaxHeader = 16;
@@ -496,6 +531,7 @@ namespace testingplaygroundsynth
         model_ = choice.model.empty() ? std::string(kDefaultModel) : choice.model;
         effort_ = choice.effort.empty() ? std::string(kDefaultEffort) : choice.effort;
         fast_ = choice.fast;
+        web_ = choice.web;
         const chatstore::Account account = chatstore::loadAccount();
         account_ = account.username;
         useAccount_ = account.useAccount;
@@ -603,12 +639,18 @@ namespace testingplaygroundsynth
         s.signInError = signInError_;
         s.busy = busy_;
         s.asking = !asking_.empty();
+        for (const Attached& a : attached_)
+            s.attached.push_back(a.picture);
+        s.attaching = attaching_;
         s.activity = activity_;
         s.entries = entries_;
         s.models = models_;
         s.model = model_;
         s.effort = effort_;
         s.fast = fast_;
+        s.web = web_;
+        if (useAccount_)
+            s.webBlocked = "Web search needs your own API key: the account's server does not charge for searches.";
         s.usage = usage_;
         return s;
     }
@@ -793,7 +835,7 @@ namespace testingplaygroundsynth
             const auto medium = std::find(it->efforts.begin(), it->efforts.end(), std::string(kDefaultEffort));
             effort_ = medium != it->efforts.end() ? *medium : it->efforts.front();
         }
-        chatstore::saveChoice({ model_, effort_, fast_ });
+        chatstore::saveChoice({ model_, effort_, fast_, web_ });
         touch();
     }
 
@@ -804,7 +846,7 @@ namespace testingplaygroundsynth
         if (it != models_.end() && std::find(it->efforts.begin(), it->efforts.end(), effort) == it->efforts.end())
             return;                                // a level this model does not take
         effort_ = effort;
-        chatstore::saveChoice({ model_, effort_, fast_ });
+        chatstore::saveChoice({ model_, effort_, fast_, web_ });
         touch();
     }
 
@@ -812,18 +854,90 @@ namespace testingplaygroundsynth
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         fast_ = on;
-        chatstore::saveChoice({ model_, effort_, fast_ });
+        chatstore::saveChoice({ model_, effort_, fast_, web_ });
         touch();
+    }
+
+    void ChatAgent::setWeb(bool on)
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        web_ = on;
+        chatstore::saveChoice({ model_, effort_, fast_, web_ });
+        touch();
+    }
+
+    void ChatAgent::attach(const std::vector<std::string>& paths)
+    {
+        std::vector<std::string> take;
+        uint64_t epoch = 0;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            for (const std::string& p : paths)
+            {
+                const std::string name = juce::File(juce::String::fromUTF8(p.c_str())).getFileName().toStdString();
+                const int waiting = static_cast<int>(attached_.size()) + attaching_ + static_cast<int>(take.size());
+                if (!isPictureName(p))
+                    addEntry(ChatEntry::Kind::note, name + " is not a picture (PNG, JPEG, GIF, WebP, HEIC or TIFF).");
+                else if (waiting >= chatimages::kMaxPerMessage)
+                    addEntry(ChatEntry::Kind::note, "A message takes " + std::to_string(chatimages::kMaxPerMessage)
+                                                        + " pictures at most, so " + name + " was not added.");
+                else if (picturesInHistory() + waiting >= chatimages::kMaxInChat)
+                {
+                    addEntry(ChatEntry::Kind::note, "This conversation holds " + std::to_string(chatimages::kMaxInChat)
+                                                        + " pictures already (each request carries them all): start a "
+                                                          "new chat to add more.");
+                    break;
+                }
+                else
+                    take.push_back(p);
+            }
+            attaching_ += static_cast<int>(take.size());
+            epoch = attachEpoch_;
+            touch();
+        }
+        for (const std::string& p : take)
+            queueAuth([this, p, epoch] {
+                chatimages::Prepared r = chatimages::fromFile(p);
+                const std::lock_guard<std::mutex> lock(mutex_);
+                --attaching_;
+                if (epoch != attachEpoch_)
+                    return;                        // a new chat since
+                if (!r.why.empty())
+                    addEntry(ChatEntry::Kind::note, r.why);
+                else
+                    attached_.push_back({ std::move(r.picture), std::move(r.mediaType), std::move(r.data) });
+                touch();
+            });
+    }
+
+    void ChatAgent::detach(uint32_t id)
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        const auto before = attached_.size();
+        attached_.erase(std::remove_if(attached_.begin(), attached_.end(),
+                                       [&](const Attached& a) { return a.picture->id == id; }),
+                        attached_.end());
+        if (attached_.size() != before)
+            touch();
+    }
+
+    int ChatAgent::picturesInHistory() const
+    {
+        int n = 0;
+        for (const juce::var& m : messages_)
+            if (str(m, "role") == "user")
+                if (const auto* arr = m.getProperty("content", juce::var()).getArray())
+                    for (const juce::var& b : *arr)
+                        n += str(b, "type") == "image" ? 1 : 0;
+        return n;
     }
 
     void ChatAgent::send(const std::string& message)
     {
         const std::string trimmed = juce::String(message).trim().toStdString();
-        if (trimmed.empty())
-            return;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            if (busy_)
+            if (busy_ || (trimmed.empty() && attached_.empty()))
                 return;
         }
         joinWorker();                              // a finished turn's thread
@@ -839,8 +953,23 @@ namespace testingplaygroundsynth
                 }
             juce::Array<juce::var> content =
                 missingResults("The user did not choose from the options: their own words follow in this message.");
-            addEntry(ChatEntry::Kind::user, trimmed);
-            content.add(text(trimmed));
+            // The pictures first, then the words (the vision docs' advice).
+            ChatEntry entry;
+            entry.kind = ChatEntry::Kind::user;
+            entry.text = trimmed;
+            for (const Attached& a : attached_)
+            {
+                content.add(claude::object({ { "type", "image" },
+                                             { "source", claude::object({ { "type", "base64" },
+                                                                          { "media_type", juce::String(a.mediaType) },
+                                                                          { "data", juce::Base64::toBase64(a.data.data(), a.data.size()) } }) } }));
+                entry.pictures.push_back(a.picture);
+            }
+            attached_.clear();
+            entries_.push_back(std::move(entry));
+            touch();
+            if (!trimmed.empty())
+                content.add(text(trimmed));
             if (!context.empty())
                 content.add(text(context));
             if (effort_ == "xhigh" || effort_ == "max")
@@ -982,6 +1111,8 @@ namespace testingplaygroundsynth
         activity_.clear();
         busy_ = false;
         asking_.clear();
+        attached_.clear();
+        ++attachEpoch_;
         touch();
     }
 
@@ -1003,6 +1134,17 @@ namespace testingplaygroundsynth
                 o->setProperty("a", answers);
                 o->setProperty("o", e.open);
                 o->setProperty("y", e.typed);
+            }
+            if (!e.pictures.empty())
+            {
+                juce::Array<juce::var> pictures;
+                for (const ChatPicturePtr& p : e.pictures)
+                    pictures.add(claude::object({ { "n", juce::String::fromUTF8(p->name.c_str()) },
+                                                  { "w", p->width },
+                                                  { "h", p->height },
+                                                  { "m", juce::String(p->thumbType) },
+                                                  { "d", juce::Base64::toBase64(p->thumbData.data(), p->thumbData.size()) } }));
+                entry.getDynamicObject()->setProperty("p", pictures);
             }
             entries.add(entry);
         }
@@ -1061,6 +1203,7 @@ namespace testingplaygroundsynth
             state.getDynamicObject()->setProperty("pictures_cut", true);
         if (!asking_.empty())
             state.getDynamicObject()->setProperty("asking", juce::String(asking_));
+        state.getDynamicObject()->setProperty("web", historyWeb_);
         return claude::toJson(state);
     }
 
@@ -1087,13 +1230,14 @@ namespace testingplaygroundsynth
         busy_ = false;
         asking_.clear();
         activity_.clear();
+        historyWeb_ = static_cast<bool>(v.getProperty("web", false));
         const juce::var messages = v.getProperty("messages", juce::var()), entries = v.getProperty("entries", juce::var());
         if (const auto* arr = messages.getArray())
             messages_ = *arr;
         if (const auto* arr = entries.getArray())
             for (const auto& e : *arr)
             {
-                ChatEntry entry{ kindOf(str(e, "k")), str(e, "t"), {}, {}, false, false };
+                ChatEntry entry{ kindOf(str(e, "k")), str(e, "t"), {}, {}, false, false, {} };
                 if (entry.kind == ChatEntry::Kind::question)
                 {
                     entry.questions = questionsOf(e.getProperty("q", juce::var()));
@@ -1104,6 +1248,24 @@ namespace testingplaygroundsynth
                     entry.open = static_cast<bool>(e.getProperty("o", false));
                     entry.typed = static_cast<bool>(e.getProperty("y", false));
                 }
+                if (const auto* ps = e.getProperty("p", juce::var()).getArray())
+                    for (const auto& pv : *ps)
+                    {
+                        auto p = std::make_shared<ChatPicture>();
+                        p->id = chatimages::nextId();
+                        p->name = str(pv, "n");
+                        p->width = static_cast<int>(pv.getProperty("w", 0));
+                        p->height = static_cast<int>(pv.getProperty("h", 0));
+                        p->thumbType = str(pv, "m");
+                        juce::MemoryOutputStream bytes;
+                        if (juce::Base64::convertFromBase64(bytes, pv.getProperty("d", "").toString()))
+                        {
+                            const auto* b = static_cast<const uint8_t*>(bytes.getData());
+                            p->thumbData.assign(b, b + bytes.getDataSize());
+                        }
+                        chatimages::decodeThumb(*p);   // none: the conversation shows its frame without the picture
+                        entry.pictures.push_back(std::move(p));
+                    }
                 entries_.push_back(std::move(entry));
             }
         // Saved with another system prompt or other tools (an earlier version of the plugin): the API would refuse
@@ -1587,7 +1749,8 @@ namespace testingplaygroundsynth
                                           { "max_tokens", maxTokens },
                                           { "stream", true },
                                           { "system", system },
-                                          { "tools", toolDefinitions() },
+                                          { "tools", turnWeb_ ? withWebTools(toolDefinitions(), webDirect_.count(turnModel_) > 0)
+                                                              : toolDefinitions() },
                                           { "messages", messages_ },
                                           { "thinking", claude::object({ { "type", "adaptive" },
                                                                          { "display", "summarized" } }) } });
@@ -1723,6 +1886,10 @@ namespace testingplaygroundsynth
                                                       .getProperty("compact_20260112", juce::var())
                                                       .getProperty("supported", false));
                 cm.fast = takesFast(cm.id);        // /v1/models has no capability for it
+                const juce::var server = caps.getProperty("server_tools", juce::var());
+                cm.web = server.isObject() ? static_cast<bool>(server.getProperty("web_search", juce::var())
+                                                                   .getProperty("supported", false))
+                                           : true;
                 const juce::var effort = caps.getProperty("effort", juce::var());
                 for (const std::string& e : kAllEfforts)
                     if (static_cast<bool>(effort.getProperty(juce::String(e), juce::var()).getProperty("supported", false)))
@@ -1852,10 +2019,23 @@ namespace testingplaygroundsynth
             const auto model = std::find_if(models_.begin(), models_.end(),
                                             [&](const ChatModel& m) { return m.id == model_; });
             turnFast_ = fast_ && model != models_.end() && model->fast;
+            turnWeb_ = web_ && !useAccount_ && model != models_.end() && model->web;
+            if (turnWeb_ != historyWeb_)
+            {
+                dropThinking();                    // its thinking was made with the other tools
+                historyWeb_ = turnWeb_;
+            }
             maxTokens = maxTokensFor(turnModel_);
         }
 
         int cutOffs = 0;                           // replies cut off at max_tokens in a row, this turn
+        // The web pages the turn's answers cite (url, title), in order: listed under its last answer.
+        std::vector<std::pair<std::string, std::string>> cited;
+        std::size_t turnStart = 0;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            turnStart = entries_.size();
+        }
         for (int round = 0; round < kMaxRounds && !cancel_.load(); ++round)
         {
             std::string beta;
@@ -1863,6 +2043,7 @@ namespace testingplaygroundsynth
             int fastBusy = 0;                      // the fast requests the API turned away as busy, this round
 
             std::unique_ptr<claude::MessageBuilder> builder;
+            std::shared_ptr<std::vector<std::pair<std::string, std::string>>> lastSources;
             bool ok = false;
             std::string error;
             for (int attempt = 0; attempt < kMaxAttempts && !cancel_.load(); ++attempt)
@@ -1913,7 +2094,40 @@ namespace testingplaygroundsynth
                     addEntry(ChatEntry::Kind::note, "The conversation got long, so its earlier part was summarized to "
                                                     "make room; Claude carries on from the summary.");
                 };
+                auto sources = std::make_shared<std::vector<std::pair<std::string, std::string>>>();
+                cb.serverTool = [this](const std::string& name) {
+                    setActivity(name == "web_search"  ? std::string("Searching the web")
+                                : name == "web_fetch" ? std::string("Reading a page")
+                                                      : std::string("Sifting what it found"));
+                };
+                cb.serverInput = [this](const std::string& name, const juce::var& input) {
+                    const std::string line = name == "web_search" ? "Searched the web: " + str(input, "query")
+                                           : name == "web_fetch"  ? "Read " + str(input, "url")
+                                                                  : std::string();
+                    if (line.empty())
+                        return;
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    addEntry(ChatEntry::Kind::tool, line);
+                };
+                cb.serverResult = [this](const juce::var& block) {
+                    const juce::var c = block.getProperty("content", juce::var());
+                    if (!c.isObject() || str(c, "type").find("_error") == std::string::npos)
+                        return;
+                    const std::string what = str(block, "type").rfind("web_fetch", 0) == 0 ? "page" : "search";
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    addEntry(ChatEntry::Kind::tool, "The " + what + " failed with an error: " + str(c, "error_code"));
+                };
+                cb.citation = [sources](const juce::var& c) {
+                    const std::string url = str(c, "url");
+                    if (url.empty())
+                        return;                    // a fetched document's passage: its page is listed as read
+                    for (const auto& s : *sources)
+                        if (s.first == url)
+                            return;
+                    sources->emplace_back(url, str(c, "title"));
+                };
                 builder = std::make_unique<claude::MessageBuilder>(std::move(cb));
+                lastSources = sources;
                 int status = 0, retryAfter = -1;
                 bool viaServer = false;
                 ok = streamOnce(body, beta, *builder, status, error, retryAfter, viaServer);
@@ -1937,6 +2151,32 @@ namespace testingplaygroundsynth
                 const bool fastRefused = fastNow && !ok && status >= 400 && status < 500 && status != 429
                                       && aboutSpeed(error);
                 const bool fastBusyAgain = fastNow && !ok && (status == 429 || status == 529) && ++fastBusy >= 2;
+                // The web tools turned away: called directly on a model that cannot run dynamic filtering, else
+                // (web search off for the organisation) the turn goes on without them, and the switch is off.
+                bool webNow = false;
+                {
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    webNow = turnWeb_;
+                }
+                if (webNow && !ok && status == 400 && (wantsDirect(error) || webDisabled(error)))
+                {
+                    {
+                        const std::lock_guard<std::mutex> lock(mutex_);
+                        if (!(wantsDirect(error) && webDirect_.insert(turnModel_).second))
+                        {
+                            turnWeb_ = false;
+                            web_ = false;
+                            chatstore::saveChoice({ model_, effort_, fast_, web_ });
+                            dropThinking();
+                            historyWeb_ = false;
+                            addEntry(ChatEntry::Kind::note, "Web search is not open to this request (" + error
+                                                                + "): it is off now, and this turn goes on without it.");
+                        }
+                    }
+                    body = claude::toJson(buildRequest(beta));
+                    --attempt;
+                    continue;
+                }
                 if (fastRefused || fastBusyAgain)
                 {
                     {
@@ -1945,7 +2185,7 @@ namespace testingplaygroundsynth
                         if (fastRefused)
                         {
                             fast_ = false;
-                            chatstore::saveChoice({ model_, effort_, fast_ });
+                            chatstore::saveChoice({ model_, effort_, fast_, web_ });
                             addEntry(ChatEntry::Kind::note, "Fast mode is not open to this request (" + error
                                                                 + "): it is off now, and this turn goes on at "
                                                                   "standard speed.");
@@ -2017,6 +2257,8 @@ namespace testingplaygroundsynth
                 usage_ = "Last reply: " + thousands(u.input + u.cacheRead + u.cacheWrite) + " tokens in ("
                        + thousands(u.cacheRead) + " cached), " + thousands(u.output) + " out"
                        + (u.speed == "fast" ? ", fast" : "")
+                       + (u.webSearches > 0 ? ", " + std::to_string(u.webSearches) + (u.webSearches == 1 ? " search" : " searches")
+                                            : std::string())
                        + (u.compactions > 0 ? "; the conversation was summarized" : "");
                 touch();
             }
@@ -2034,7 +2276,8 @@ namespace testingplaygroundsynth
                         textOnly.add(b);                   // a summary made in this request stays (no second one)
                     else if (type == "text" && !str(b, "text").empty())
                     {
-                        textOnly.add(b);
+                        // Its citations point at search results that do not go back: the text alone.
+                        textOnly.add(claude::object({ { "type", "text" }, { "text", b.getProperty("text", "") } }));
                         hasText = true;
                     }
                 }
@@ -2053,6 +2296,10 @@ namespace testingplaygroundsynth
                 break;
             }
 
+            if (lastSources != nullptr)
+                for (const auto& s : *lastSources)
+                    if (std::none_of(cited.begin(), cited.end(), [&](const auto& c) { return c.first == s.first; }))
+                        cited.push_back(s);
             std::vector<juce::var> toolUses;
             for (const auto& b : blocks)
                 if (str(b, "type") == "tool_use")
@@ -2078,6 +2325,8 @@ namespace testingplaygroundsynth
                                             "thinking has no limit of its own."
                                   : limit + ", so it goes on from where it stopped.");
             }
+            if (stopReason == "pause_turn" && !cutOff)
+                continue;                          // the API paused its own tools' loop: the reply goes back as it is
             if (toolUses.empty() && (!cutOff || endsHere))
                 break;                             // end_turn, or cut off again
 
@@ -2185,6 +2434,26 @@ namespace testingplaygroundsynth
             }
         }
 
+        if (!cited.empty())
+        {
+            // The sources, under the turn's last answer (the web search docs: citations go with what is shown).
+            std::string list = "**Sources**";
+            for (std::size_t k = 0; k < cited.size(); ++k)
+                list += "\n" + std::to_string(k + 1) + ". "
+                      + (cited[k].second.empty() ? cited[k].first : cited[k].second + " -- " + cited[k].first);
+            const std::lock_guard<std::mutex> lock(mutex_);
+            bool placed = false;
+            for (std::size_t i = entries_.size(); i-- > turnStart;)
+                if (entries_[i].kind == ChatEntry::Kind::assistant)
+                {
+                    entries_[i].text += "\n\n" + list;
+                    placed = true;
+                    break;
+                }
+            if (!placed)
+                addEntry(ChatEntry::Kind::note, list);
+            touch();
+        }
         if (!cancel_.load())
             fetchAccount(cancel_, false);          // the credit left, for the footer (through the account only)
 

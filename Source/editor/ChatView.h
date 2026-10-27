@@ -1,6 +1,6 @@
 // Source/editor/ChatView.h: the chat's conversation (the chat column, Panel.h), drawn the way a chat app draws one
 // (ChatStyle.h has the look):
-//   the user's messages   right-aligned, in rounded bubbles
+//   the user's messages   right-aligned, in rounded bubbles; the pictures it had above it, as thumbnails
 //   Claude's answers      full width, in light markdown: paragraphs, - and 1. lists, # headings, **bold**, `code`,
 //                         > quotes, --- rules, and ``` code blocks (rounded cards, highlighted as FMinus, each with a
 //                         Copy); under the last answer of a turn a Copy for the whole answer, shown under the pointer
@@ -62,6 +62,7 @@ namespace testingplaygroundsynth::ui
 
         // For probes.
         int blocks() const noexcept { return static_cast<int>(blocks_.size()); }
+        int tiles() const;                                            // the pictures shown in the conversation
         std::optional<funkgui::Point> centreOfSuggestion(int i) const;
         std::optional<funkgui::Point> centreOfAddKey() const;
         std::optional<funkgui::Point> centreOfSignIn() const;
@@ -129,6 +130,12 @@ namespace testingplaygroundsynth::ui
             std::string payload;                      // what Copy copies
             int q = -1, o = -1;                       // an option's question and its place
         };
+        struct Tile
+        {
+            funkgui::Rect r;
+            uint32_t id = 0;                          // the picture's (ChatPicture::id), drawn from FunkGui's registry
+            funkgui::Rect uv{ 0.0f, 0.0f, 1.0f, 1.0f };
+        };
         struct IconAt
         {
             float x = 0.0f, y = 0.0f;
@@ -146,6 +153,7 @@ namespace testingplaygroundsynth::ui
             std::vector<CodeLine> code;
             std::vector<Action> actions;
             std::vector<IconAt> icons;
+            std::vector<Tile> tiles;
             std::string label;                        // the accessibility title
             std::string value;                        // the accessibility value (its text)
             // A question's (ask_user).

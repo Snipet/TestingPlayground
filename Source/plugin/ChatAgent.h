@@ -10,6 +10,22 @@
 // ChatHost::chatPicture, sent as an image in the tool's result and left out of the saved session), read the
 // plugin's status, and ask the user (ask_user: questions with options, which the chat shows as cards to click).
 //
+// Web search (setWeb; the API's server tools web_search and web_fetch, version 20260209, five of each a request, a
+// fetch at most kWebFetchTokens of text, its citations on): Claude searches the web and reads pages and PDFs (a
+// part's data sheet, a paper). It is on only with the user's own key (the TestingPlayground server does not charge for
+// searches) and on a model that takes it (/v1/models). The API runs them and returns their blocks (server_tool_use and
+// the results, encrypted, and with dynamic filtering the code that filtered them), which go back in the history as
+// they came; a reply paused in the middle (stop_reason pause_turn) is sent back as it is and goes on. What Claude
+// searched and read is shown, and the answer's sources under it (the docs ask for citations). A model that cannot run
+// dynamic filtering (a 400 that names allowed_callers) gets the tools called directly; an organisation that has web
+// search turned off gets the turn without it, and the switch off. The tools a reply was made with bind its thinking:
+// a turn whose tools differ from the history's (web search turned on or off) drops the thinking first.
+//
+// Pictures (attach): each file is read on the auth thread (ChatImages.h: scaled to the API's advice, a thumbnail
+// made) and waits in chatState().attached; send() puts them, as image blocks, before the message's text. A message
+// takes kMaxPerMessage, the history kMaxInChat (each request carries every picture in it); the session keeps them,
+// and each one's thumbnail for the conversation.
+//
 // A question (ask_user) pauses the turn: the reply's other tools run, their results wait in the history, and the
 // question's entry stays open (ChatState::asking) until the user answers, with a click (answer(): its result is the
 // labels chosen) or with a message (send(): its result says the user's own words follow, and they do, in the same
@@ -89,6 +105,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -137,6 +154,9 @@ namespace testingplaygroundsynth
         void setModel(const std::string& id) override;
         void setEffort(const std::string& effort) override;
         void setFast(bool on) override;
+        void setWeb(bool on) override;
+        void attach(const std::vector<std::string>& paths) override;
+        void detach(uint32_t id) override;
         void send(const std::string& text) override;
         void answer(const std::vector<std::string>& answers) override;
         void stop() override;
@@ -193,6 +213,7 @@ namespace testingplaygroundsynth
         // The results the last reply's tool calls still lack (an open question's says `instead`), for the next
         // user message; the open question closes (mutex held).
         juce::Array<juce::var> missingResults(const std::string& instead);
+        int picturesInHistory() const;                              // the user's pictures in the history (mutex held)
         void deliver(juce::Array<juce::var> content);               // a user message's blocks into the history, and
                                                                     // a turn (mutex held; the caller starts it)
         void repairHistory();                                       // one the API takes (mutex held)
@@ -219,6 +240,10 @@ namespace testingplaygroundsynth
         std::string turnModel_, turnEffort_;                        // the turn under way's (the worker's)
         bool fast_ = false;                                         // fast mode chosen
         bool turnFast_ = false;                                     // the turn under way asks for it
+        bool web_ = false;                                          // web search chosen
+        bool turnWeb_ = false;                                      // the turn under way has the web tools
+        bool historyWeb_ = false;                                   // the tools the history's thinking was made with
+        std::set<std::string> webDirect_;                           // models that call the web tools directly
         std::string activity_;
         std::string usage_;
         std::string key_;                                           // loaded on first use
@@ -237,6 +262,15 @@ namespace testingplaygroundsynth
         std::vector<std::string> requests_;                         // bodies sent (probes)
         bool busy_ = false;
         std::string asking_;                                        // the open question's tool_use id ("" for none)
+        struct Attached
+        {
+            ChatPicturePtr picture;
+            std::string mediaType;
+            std::vector<uint8_t> data;                              // as sent
+        };
+        std::vector<Attached> attached_;                            // for the next message
+        int attaching_ = 0;                                         // files the auth thread still reads
+        uint64_t attachEpoch_ = 0;                                  // a new chat: files read for the old one go
 
         std::atomic<bool> cancel_{ false };
         std::thread worker_;

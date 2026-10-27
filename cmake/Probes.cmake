@@ -31,6 +31,9 @@ target_compile_definitions(${FP_PROBES} PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL
 target_link_libraries(${FP_PROBES} PRIVATE
     ${PRODUCT_NAME}_dsp fp_flags FunkGui::core FunkGui::gpu FunkGui::harness
     juce::juce_audio_processors juce::juce_recommended_config_flags)
+if(APPLE)
+  target_link_libraries(${FP_PROBES} PRIVATE "-framework ImageIO" "-framework CoreGraphics")   # ChatImages.cpp
+endif()
 if(FP_LTO)
   target_link_options(${FP_PROBES} PRIVATE $<$<CONFIG:Release>:-flto>)    # the DSP library holds bitcode there
 endif()
