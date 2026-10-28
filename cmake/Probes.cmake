@@ -33,6 +33,7 @@ target_link_libraries(${FP_PROBES} PRIVATE
     juce::juce_audio_processors juce::juce_recommended_config_flags)
 if(APPLE)
   target_link_libraries(${FP_PROBES} PRIVATE "-framework ImageIO" "-framework CoreGraphics")   # ChatImages.cpp
+  target_link_libraries(${FP_PROBES} PRIVATE compression)   # ProjectExport.cpp
 endif()
 if(FP_LTO)
   target_link_options(${FP_PROBES} PRIVATE $<$<CONFIG:Release>:-flto>)    # the DSP library holds bitcode there

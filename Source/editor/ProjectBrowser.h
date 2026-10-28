@@ -17,6 +17,8 @@
 //              opened first when it is not the one open). When the editor's files have changes no version holds, a
 //              second click: Open anyway
 //   Delete     the chosen project, version or preset (a second click: Delete it)
+//   Import...  a .zip or a .fmpack another playground exported (the Panel's chooser), a project of its own here
+//   Export...  the chosen project's info and its export (the Panel's EXPORT card, ExportCard.h)
 //   Close      or Escape. Return saves when a name was typed, else opens (applies); Up and Down choose in the list
 //              chosen from, Tab moves to the next list
 // While it is open it takes every pointer event and key. What it did, it says once (takeNotice) for the status line.
@@ -58,7 +60,7 @@ namespace testingplayground::ui
         // Its places, for the panel's size.
         struct Places
         {
-            funkgui::Rect box, projects, versions, presets, mode, field, save, open, remove, close;
+            funkgui::Rect box, projects, versions, presets, mode, field, save, open, remove, close, importIt, exportIt;
             float rowH = 28.0f;
             std::array<int, 3> rows{};                   // how many rows each list shows
         };
@@ -78,6 +80,10 @@ namespace testingplayground::ui
 
         // What it did last ("SAVED: GLASS BLOOM V3"), once; "" for nothing new.
         std::string takeNotice();
+        // What the Panel does next, once: Import's chooser; EXPORT for that project ("" for none).
+        bool takeImport();
+        std::string takeExport();
+        void chooseProjectNamed(const std::string& name, float width, float height);
 
         // For probes.
         const std::vector<ProjectEntry>& projectList() const noexcept { return projects_; }
@@ -123,6 +129,8 @@ namespace testingplayground::ui
         Ask ask_ = Ask::none;                            // what the next click on that button does
         std::string why_;                                // the line under the field
         std::string notice_;
+        bool import_ = false;
+        std::string export_;
         uint32_t revision_ = 0;
     };
 }

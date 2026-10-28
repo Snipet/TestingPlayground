@@ -42,8 +42,16 @@
 //   applyPreset()     a preset's dials, by name: at once when its project is open, else after its latest version is
 //                     opened and compiled
 //   deletePreset()    a preset deleted
+//   projectInfo()     a project's description, author, category, tags and genres; setProjectInfo() keeps them (tidied)
+//   exportProject()   a project written as a .zip of its source or a .fmpack (ProjectExport.h), every version or the
+//                     newest only; exportFolder() where a chooser starts (the Desktop)
+//   importProject()   a .zip or a .fmpack exported by this plugin, added as a new project (its name, or "<name> 2"); it is
+//                     not opened
 //   chat()            the chat with Claude (ChatPort.h)
 #pragma once
+
+#include <cctype>
+#include <string_view>
 
 #include "plugin/ChatPort.h"
 
@@ -122,6 +130,36 @@ namespace testingplayground
         bool dialsEdited = false;                // a dial moved from the preset's (or the version's) value
     };
 
+    struct ProjectInfo
+    {
+        std::string description;
+        std::string author;
+        std::string category;
+        std::vector<std::string> tags;
+        std::vector<std::string> genres;
+        friend bool operator==(const ProjectInfo&, const ProjectInfo&) = default;
+    };
+
+    // A file's name a project export's (ProjectExport.h): what Import offers and a drop on the panel imports.
+    inline bool isProjectFile(std::string_view path)
+    {
+        const std::size_t dot = path.rfind('.');
+        if (dot == std::string_view::npos)
+            return false;
+        std::string ext(path.substr(dot + 1));
+        for (char& c : ext)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return ext == "fmpack" || ext == "zip";
+    }
+
+    struct Exported
+    {
+        int64_t bytes = 0;                       // the file
+        int64_t raw = 0;                         // what it holds, uncompressed
+        int versions = 0;
+        std::string method;                      // "xz", "zlib" or "stored" (a package's), "zip"
+    };
+
     struct SavedVersion
     {
         int number = 0;
@@ -166,6 +204,12 @@ namespace testingplayground
         virtual bool savePreset(const std::string& preset, std::string& why) = 0;
         virtual bool applyPreset(const std::string& project, const std::string& preset, std::string& why) = 0;
         virtual bool deletePreset(const std::string& project, const std::string& preset, std::string& why) = 0;
+        virtual ProjectInfo projectInfo(const std::string& project) const = 0;
+        virtual bool setProjectInfo(const std::string& project, const ProjectInfo& info, std::string& why) = 0;
+        virtual bool exportProject(const std::string& project, bool package, bool allVersions, const std::string& path,
+                                   Exported& out, std::string& why) = 0;
+        virtual bool importProject(const std::string& path, std::string& name, std::string& why) = 0;
+        virtual std::string exportFolder() const = 0;
         virtual ChatPort& chat() = 0;
 
         virtual bool panelView() const = 0;

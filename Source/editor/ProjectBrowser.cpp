@@ -23,7 +23,8 @@ namespace testingplayground::ui
         constexpr float kButtonH = 32.0f;
         constexpr uint32_t kBoxId = ProjectBrowser::kA11yBase, kListId = kBoxId + 1,   // + the list
                            kFieldId = kBoxId + 4, kSaveId = kBoxId + 5, kOpenId = kBoxId + 6, kRemoveId = kBoxId + 7,
-                           kCloseId = kBoxId + 8, kRowId = kBoxId + 0x100;            // + the list * 0x1000 + the row
+                           kCloseId = kBoxId + 8, kImportId = kBoxId + 9, kExportId = kBoxId + 10,
+                           kRowId = kBoxId + 0x100;                                     // + the list * 0x1000 + the row
 
         using L = ProjectBrowser::List;
         constexpr std::size_t idx(L l) { return static_cast<std::size_t>(l); }
@@ -83,6 +84,28 @@ namespace testingplayground::ui
         std::string n;
         n.swap(notice_);
         return n;
+    }
+
+    bool ProjectBrowser::takeImport()
+    {
+        const bool i = import_;
+        import_ = false;
+        return i;
+    }
+
+    std::string ProjectBrowser::takeExport()
+    {
+        std::string e;
+        e.swap(export_);
+        return e;
+    }
+
+    void ProjectBrowser::chooseProjectNamed(const std::string& name, float width, float height)
+    {
+        projects_ = port_.projects();
+        for (std::size_t i = 0; i < projects_.size(); ++i)
+            if (same(projects_[i].name, name))
+                choose(L::projects, static_cast<int>(i), places(width, height).rows[idx(L::projects)]);
     }
 
     std::string ProjectBrowser::chosenProject() const
@@ -155,6 +178,8 @@ namespace testingplayground::ui
         at.open = { at.save.x - 8.0f - openW, by, openW, kButtonH };
         at.close = { at.open.x - 8.0f - 84.0f, by, 84.0f, kButtonH };
         at.remove = { at.box.x + kPad, by, pillW(removeLabel()), kButtonH };
+        at.importIt = { at.remove.right() + 8.0f, by, 96.0f, kButtonH };
+        at.exportIt = { at.importIt.right() + 8.0f, by, 96.0f, kButtonH };
         return at;
     }
 
@@ -478,6 +503,24 @@ namespace testingplayground::ui
             remove();
         else if (at.close.contains(p))
             close();
+        else if (at.importIt.contains(p))
+        {
+            import_ = true;
+            close();
+        }
+        else if (at.exportIt.contains(p))
+        {
+            if (chosenProject().empty())
+            {
+                ask_ = Ask::none;
+                why_ = projects_.empty() ? "There is no project yet: name this program and Save it." : "Choose a project to export.";
+            }
+            else
+            {
+                export_ = chosenProject();
+                close();
+            }
+        }
         else if (at.field.contains(p))
         {
             name_.allSelected = false;
@@ -568,7 +611,8 @@ namespace testingplayground::ui
     funkgui::Cursor ProjectBrowser::cursor(funkgui::Point p, float width, float height) const
     {
         const Places at = places(width, height);
-        if (at.save.contains(p) || at.open.contains(p) || at.remove.contains(p) || at.close.contains(p))
+        if (at.save.contains(p) || at.open.contains(p) || at.remove.contains(p) || at.close.contains(p) || at.importIt.contains(p)
+            || at.exportIt.contains(p))
             return funkgui::Cursor::pointingHand;
         for (const List l : { L::projects, L::versions, L::presets })
             if (rowAt(p, at, l) >= 0)
@@ -732,6 +776,8 @@ namespace testingplayground::ui
         button(at.open, openLabel(), 1, canOpen);
         button(at.close, "Close", 1, true);
         button(at.remove, removeLabel(), 2, chosen_[idx(focus_)] >= 0);
+        button(at.importIt, "Import...", 1, true);
+        button(at.exportIt, "Export...", 1, chosen_[idx(L::projects)] >= 0);
     }
 
     void ProjectBrowser::accessibility(std::vector<funkgui::A11yItem>& out, float width, float height) const
@@ -807,6 +853,8 @@ namespace testingplayground::ui
         button(kOpenId, at.open, openLabel());
         button(kCloseId, at.close, "Close");
         button(kRemoveId, at.remove, removeLabel());
+        button(kImportId, at.importIt, "Import...");
+        button(kExportId, at.exportIt, "Export...");
     }
 
     bool ProjectBrowser::a11yAction(uint32_t id, funkgui::A11yAction a, float width, float height)
@@ -821,6 +869,12 @@ namespace testingplayground::ui
             remove();
         else if (id == kCloseId)
             close();
+        else if (id == kImportId || id == kExportId)
+        {
+            const Places at = places(width, height);
+            const funkgui::Rect& r = id == kImportId ? at.importIt : at.exportIt;
+            pointerDown({ r.centreX(), r.centreY() }, width, height);
+        }
         else if (id >= kRowId && id < kRowId + 3u * 0x1000u)
         {
             const auto l = static_cast<List>((id - kRowId) / 0x1000u);
