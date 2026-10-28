@@ -93,7 +93,7 @@ else
   APPS="$HOME/Applications"
 fi
 
-# Check every bundle first, so that a missing one installs nothing.
+# Check every bundle first, so that a missing one, or an installed one this user cannot replace, installs nothing.
 SOURCES=()
 TARGETS=()
 CONFIGS=()
@@ -119,8 +119,14 @@ for i in "${WANT[@]}"; do
       echo "install.sh: $src: its signature does not hold, and hosts refuse such a bundle (build it again)" >&2
       exit 1
     fi
+    dst="${pair##*:}/$(basename "$src")"
+    # Another user's (the .pkg installs as root: its app in /Applications): removing it would fail halfway.
+    if [[ -e "$dst" && ! -O "$dst" ]]; then
+      echo "install.sh: $dst is $(stat -L -f %Su "$dst")'s, not $(id -un)'s (the .pkg's?), and cannot be replaced: remove it first (Finder asks for an administrator's password)" >&2
+      exit 1
+    fi
     SOURCES+=("$src")
-    TARGETS+=("${pair##*:}/$(basename "$src")")
+    TARGETS+=("$dst")
     CONFIGS+=("$CONFIG")
   done
 done

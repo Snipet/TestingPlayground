@@ -629,7 +629,8 @@ scripts/install.sh synth                 # or one product's (its key, or its nam
 
 Builds never install anything by themselves; `scripts/install.sh build-dev` installs a dev build instead, and
 `--dry-run` says what it would copy. The apps go to `/Applications`, or to `~/Applications` when you may not write
-there (it says which).
+there (it says which). A bundle it may not replace (an app the `.pkg` installed is root's) stops it before it copies
+anything: remove that one first.
 
 For another Mac, `scripts/package.sh` (after the release build, or with `--build`) makes one installer of both products,
 `build-release/dist/TestingPlayground-<version>.pkg`, in which each product is a choice of its own (**Customize**) made
