@@ -31,20 +31,19 @@
 // its plan streams into a plan entry (ChatEntry::Kind::plan) and joins the user's message, which the builder has not
 // seen yet, so the history stays append-only. The builder's ask_planner asks it again mid-turn (kMaxPlannerAsks a
 // turn): the history up to the reply that asks, the question after it, the answer as the tool's result. A planner the
-// access does not offer, or one that fails, leaves the request to the builder, with a note.
+// models do not offer, or one that fails, leaves the request to the builder, with a note.
 //
 // Web search (setWeb; the API's server tools web_search and web_fetch, version 20260209, five of each a request, a
 // fetch at most kWebFetchTokens of text, its citations on): Claude searches the web and reads pages and PDFs (a
-// part's data sheet, a paper). It is on only with the user's own key (the TestingPlayground server does not charge for
-// searches) and on a model that takes it (/v1/models). The API runs them and returns their blocks (server_tool_use and
-// the results, encrypted, and with dynamic filtering the code that filtered them), which go back in the history as
-// they came; a reply paused in the middle (stop_reason pause_turn) is sent back as it is and goes on. What Claude
-// searched and read is shown, and the answer's sources under it (the docs ask for citations). A model that cannot run
-// dynamic filtering (a 400 that names allowed_callers) gets the tools called directly; an organisation that has web
-// search turned off gets the turn without it, and the switch off. The tools a reply was made with bind its thinking:
-// a turn whose tools differ from the history's (web search turned on or off) drops the thinking first.
+// part's data sheet, a paper), on a model that takes it (/v1/models). The API runs them and returns their blocks
+// (server_tool_use and the results, encrypted, and with dynamic filtering the code that filtered them), which go back
+// in the history as they came; a reply paused in the middle (stop_reason pause_turn) is sent back as it is and goes on.
+// What Claude searched and read is shown, and the answer's sources under it (the docs ask for citations). A model that
+// cannot run dynamic filtering (a 400 that names allowed_callers) gets the tools called directly; an organisation that
+// has web search turned off gets the turn without it, and the switch off. The tools a reply was made with bind its
+// thinking: a turn whose tools differ from the history's (web search turned on or off) drops the thinking first.
 //
-// Pictures (attach): each file is read on the auth thread (ChatImages.h: scaled to the API's advice, a thumbnail
+// Pictures (attach): each file is read on the job thread (ChatImages.h: scaled to the API's advice, a thumbnail
 // made) and waits in chatState().attached; send() puts them, as image blocks, before the message's text. A message
 // takes kMaxPerMessage, the history kMaxInChat (each request carries every picture in it); the session keeps them,
 // and each one's thumbnail for the conversation.
@@ -97,19 +96,13 @@
 // end, is sent again (kMaxAttempts, retry-after honoured; what the broken stream showed is taken back). While a file
 // streams in, the activity says which and how much has arrived. A tool's long output (a compile's messages) is cut.
 //
-// Access. The requests go to Anthropic with the user's own key (x-api-key), or to the TestingPlayground server with the
-// token it gave when the user signed in ("Authorization: Bearer"); the server passes them on unchanged, on its own key,
-// and charges each to the account's credit. Both can be stored (ChatStore.h); the chat uses the one set up last. The
-// server's /v1/models lists only the models it can charge for. Its 401 always means the sign-in is no longer good: the
-// token is forgotten and the chat asks the user to sign in again. Its 402 (the credit is used up), 403 (the account is
-// disabled), 400 (a model it has no price for) and 502 (Anthropic refused the server's key) carry messages written for
-// the user, shown as they are, and are not retried. After a turn through the account the agent asks the server for
-// the credit left (GET /account), which the footer shows; the account's view asks for it again (refreshAccount), with
-// this month's use and the sign-in's dates.
+// Access. The requests go to Anthropic with the user's own key (x-api-key), stored encrypted (ChatStore.h). A 401 means
+// the key was refused: it stays, and the chat says so until the user replaces or removes it. When it starts, the
+// agent deletes what an earlier version kept of a sign-in it no longer has (chatstore::forgetOldSignIn).
 //
 // Threads: the ChatPort calls run on the message thread; a turn runs on the agent's worker thread, which calls
-// ChatHost (whose implementation must be safe from that thread) and the transport. Signing in and out runs on a thread
-// of its own, so the message thread never waits for the network.
+// ChatHost (whose implementation must be safe from that thread) and the transport. Pictures are read on a job thread
+// of their own, so the message thread never waits for them.
 #pragma once
 
 #include "plugin/ChatPort.h"
@@ -171,10 +164,6 @@ namespace playground
         ChatState chatState() const override;
         bool saveKey(const std::string& key, std::string& why) override;
         void forgetKey() override;
-        void signIn(const std::string& username, const std::string& password) override;
-        void signOut() override;
-        void useAccount(bool account) override;
-        void refreshAccount() override;
         void setModel(const std::string& id) override;
         void setPlanner(const std::string& id) override;
         void setEffort(const std::string& effort) override;
@@ -193,8 +182,8 @@ namespace playground
         std::string saveState() const;
         void loadState(const std::string& json);
 
-        // For probes: the transport (the next turn uses it), waiting for the current turn (and for a sign-in or
-        // sign-out under way), the Messages API request bodies sent.
+        // For probes: the transport (the next turn uses it), waiting for the current turn (and for the pictures
+        // being read), the Messages API request bodies sent.
         void setTransport(std::unique_ptr<claude::Transport> transport);
         void waitIdle();
         std::vector<std::string> requestsSent() const;
@@ -221,18 +210,11 @@ namespace playground
         McpResult mcpCall(const std::string& name, const juce::var& arguments);
 
     private:
-        // Where a request goes and what it carries: the server and the token, or Anthropic and the key.
-        struct Access
-        {
-            bool account = false;
-            std::string host, secret;
-        };
-        Access access() const;                                      // the one in use (mutex held)
-        static claude::Headers headersFor(const Access& access);    // its credential and the API version
+        static claude::Headers headersFor(const std::string& key);  // the key and the API version
 
         void runTurn();                                             // the worker
         bool streamOnce(const std::string& body, const std::string& beta, claude::MessageBuilder& builder,
-                        int& status, std::string& error, int& retryAfter, bool& viaServer);
+                        int& status, std::string& error, int& retryAfter);
         juce::var buildRequest(std::string& beta) const;
         std::string contextBlock();                                 // the plugin's state, when it changed
         juce::var runTool(const juce::var& toolUse);               // a tool_result block
@@ -249,17 +231,13 @@ namespace playground
                                    std::string& why);
         std::map<std::string, float> currentDials() const;          // the running program's, by name
         void fetchModels();                                         // the worker, before a turn, once a key is known
-        // GET /account: the credit left and the account's details. The worker's after a turn through the account
-        // (`asked` false); the auth thread's when the account's view asks (true: whichever access the chat uses).
-        void fetchAccount(const std::atomic<bool>& cancel, bool asked);
-        void ensureAccess();                                        // the key or the token in use, loaded
-        void loadAccess();                                          // the same (mutex held)
-        void refused(const Access& access, int status, const std::string& why);   // a 401: that sign-in or key is
-                                                                    // no longer good (mutex held)
-        void runSignIn(const std::string& username, std::string password);   // the sign-in thread
-        void queueAuth(std::function<void()> job);                  // a sign-in or sign-out, on the auth thread
-        void authLoop();                                            // the auth thread
-        void waitAuth();                                            // until no job is queued or running
+        void ensureKey();                                           // the key, loaded
+        void loadKey();                                             // the same (mutex held)
+        void refused(const std::string& key, int status, const std::string& why);   // a 401: that key is refused
+                                                                    // (mutex held)
+        void queueJob(std::function<void()> job);                   // a picture to read, on the job thread
+        void jobLoop();                                             // the job thread
+        void waitJobs();                                            // until no job is queued or running
         void touch();                                               // revision + 1 (mutex held)
         void appendAnswer(const juce::Array<juce::var>& content);   // an assistant message into the history (mutex held)
         // The results the last reply's tool calls still lack (an open question's says `instead`), for the next
@@ -300,14 +278,6 @@ namespace playground
         std::string usage_;
         std::string key_;                                           // loaded on first use
         std::string keyProblem_;
-        std::string token_;                                         // the server's sign-in, loaded on first use
-        std::string account_;                                       // its username (kept after signing out)
-        std::string accountProblem_;                                // why the sign-in no longer works
-        std::string credit_;                                        // "$4.96 credit left", as the server last said
-        ChatAccount details_;                                       // the rest of what it said (GET /account)
-        bool useAccount_ = true;                                    // the chat goes through the account, else the key
-        bool signingIn_ = false;
-        std::string signInError_;
         std::map<std::string, uint64_t> seen_;                      // file name -> the text Claude saw (hashText)
         uint64_t lastSignature_ = 0;                                // the plugin's state as Claude last got it
         bool resendState_ = false;                                  // a summary came: the state goes with what follows
@@ -327,20 +297,19 @@ namespace playground
             std::vector<uint8_t> data;                              // as sent
         };
         std::vector<Attached> attached_;                            // for the next message
-        int attaching_ = 0;                                         // files the auth thread still reads
+        int attaching_ = 0;                                         // files the job thread still reads
         uint64_t attachEpoch_ = 0;                                  // a new chat: files read for the old one go
 
         std::atomic<bool> cancel_{ false };
         bool mcpNoted_ = false;                                      // the conversation says Claude Desktop is at work
         std::thread worker_;
-        // Signing in and out: jobs run in order on one thread, started on first use, so the message thread never
-        // waits for the network.
-        std::atomic<bool> authCancel_{ false };                    // the destructor ends a request under way
-        std::mutex authMutex_;
-        std::condition_variable authCv_;
-        std::deque<std::function<void()>> authJobs_;
-        bool authRunning_ = false;                                  // a job is running
-        bool authStop_ = false;
-        std::thread auth_;
+        // Pictures to read: jobs run in order on one thread, started on first use, so the message thread never waits
+        // for them.
+        std::mutex jobMutex_;
+        std::condition_variable jobCv_;
+        std::deque<std::function<void()>> jobs_;
+        bool jobRunning_ = false;                                   // a job is running
+        bool jobStop_ = false;
+        std::thread jobThread_;
     };
 }
