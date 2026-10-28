@@ -226,9 +226,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
   rendering thread's own time (`CLOCK_THREAD_CPUTIME_ID`, read at a render's few boundaries, never a block's), in an
   Engine as the audio thread runs it with no editor open: an instrument's `cpu_percent` over the held part, and
   `cpu16_percent` measured with sixteen notes held (the least of two short renders), not extrapolated; of the
-  program's own code (the frozen copy that plays once the dials are still usually costs less). A `Session` compiles once
-  and renders as often as asked, each render after `Engine::restart` (offline only: prepare() and `Patch::reset`), so
-  it gives what a fresh compile gives; `dsp.tune` checks that, and the numbers.
+  program's own code with its dials held still, every call flat (a dial that moves costs more: the Filter example
+  about 2.7x while its cutoff glides; the frozen copy that plays once they have held still a while usually costs
+  less), and the CPU line says so. A `Session` compiles once and renders as often as asked, each render after
+  `Engine::restart` (offline only: prepare() and `Patch::reset`), so it gives what a fresh compile gives; `dsp.tune`
+  checks that, and the numbers.
 - **view_sound** (`dsp/SoundView.h`, `plugin/SoundPicture.h`): the render (the effect's with an input: a sweep, noise,
   an impulse, a sine or silence; the synth's the notes held, then released) analysed (the waveform's extent and level
   per column, a Blackman-Harris spectrogram on a log axis, the held part's average spectrum, a close-up) and drawn as

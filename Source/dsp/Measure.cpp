@@ -262,8 +262,10 @@ namespace playground::measure
         // The CPU figures are this thread's own time (CLOCK_THREAD_CPUTIME_ID), read at a render's few boundaries: what
         // the render cost, however often the thread was put aside meanwhile (the plugin playing, other apps), which a
         // wall clock would count. The Engine runs as the audio thread runs it with no editor open: flush-to-zero, no
-        // meters. It times the program's own code, as it plays while a dial moves: with the dials still, the plugin
-        // plays the frozen copy (Patch.h), usually cheaper.
+        // meters. It times the program's own code with its dials held still (render() sets the same values every
+        // block, so no dial glides): every call is flat (Engine.h), FMinus's flat copy of each method, with what it
+        // computes from a dial lifted out of its loop. A dial that moves plays the stream copy, which costs more; once
+        // the dials have held still a while, the plugin plays the frozen copy (Patch.h), usually cheaper.
         double threadMs()
         {
             timespec ts{};
@@ -288,8 +290,10 @@ namespace playground::measure
         std::string percent(double share) { return fmt(share < 0.1 ? "%.3f%%" : "%.2f%%", share); }
 
         constexpr const char* kCpuWhat = "the rendering thread's own time (not a wall clock's) in the plugin's engine, "
-                                         "running the program's own code as it plays while a dial moves (with the dials "
-                                         "still the plugin plays a frozen copy, usually cheaper)";
+                                         "running the program's own code with its dials held still (what it computes "
+                                         "from a dial is lifted out of its loop; while a dial moves it is computed per "
+                                         "sample, which costs more; once the dials have held still a while the plugin "
+                                         "plays a frozen copy, usually cheaper)";
 
         // The peak of each window of w samples over [from, to), of either channel.
         [[maybe_unused]] std::vector<double> windowPeaks(const Stereo& s, std::size_t from, std::size_t to, std::size_t w)
@@ -366,7 +370,8 @@ namespace playground::measure
               false, 0.0 },
             { "alerts", "", "the output guard's alerts: 0 none, 1 NaN or infinite samples, 2 samples clipped, 3 both", 0.5,
               false, 0.0 },
-            { "cpu_percent", "%", "the notes' share of one core in real time while held, the program's own code", 0.1, true,
+            { "cpu_percent", "%",
+              "the notes' share of one core in real time while held, the program's own code, dials still", 0.1, true,
               0.01 },
             { "cpu16_percent", "%", "the share of sixteen voices at once, measured with sixteen notes held", 0.1, true,
               0.01 },
@@ -395,7 +400,8 @@ namespace playground::measure
             { "step", "", "the largest step between two samples, of any of the signals", 0.01, false, 0.0 },
             { "alerts", "", "the output guard's alerts: 0 none, 1 NaN or infinite samples, 2 samples clipped, 3 both", 0.5,
               false, 0.0 },
-            { "cpu_percent", "%", "the renders' share of one core in real time, the program's own code", 0.1, true, 0.01 },
+            { "cpu_percent", "%", "the renders' share of one core in real time, the program's own code, dials still", 0.1,
+              true, 0.01 },
         };
     }
 

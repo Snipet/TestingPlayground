@@ -25,8 +25,9 @@
 //
 // Off the audio thread only (it compiles and allocates). Deterministic: the same files and request give the same
 // report and numbers but for the CPU times, which are the rendering thread's own time (not the wall clock's) in the
-// Engine as the audio thread runs it with no editor open (flush-to-zero, no meters), of the program's own code (with
-// the dials still the plugin plays a frozen copy instead: Patch.h).
+// Engine as the audio thread runs it with no editor open (flush-to-zero, no meters), of the program's own code with
+// its dials held still: every call flat (Engine.h). A dial that moves costs more; once the dials have held still a
+// while the plugin plays a frozen copy instead, usually cheaper (Patch.h).
 #pragma once
 
 #include "dsp/Controls.h"
