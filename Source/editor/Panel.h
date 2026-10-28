@@ -63,7 +63,7 @@
 #pragma once
 
 #include "editor/Explorer.h"
-#include "editor/PresetBrowser.h"
+#include "editor/ProjectBrowser.h"
 
 #include <funkgui/a11y/A11yItem.h>
 #include <funkgui/canvas/Tags.h>
@@ -127,7 +127,7 @@ namespace testingplaygroundsynth::ui
     inline constexpr funkgui::Tag kTabTag = funkgui::tags::firstProduct + 4;          // the files' tabs
     inline constexpr funkgui::Tag kChatTag = funkgui::tags::firstProduct + 5;         // the chat's own text
     inline constexpr funkgui::Tag kKeyDialogTag = funkgui::tags::firstProduct + 6;    // the key dialog
-    inline constexpr funkgui::Tag kPresetsTag = funkgui::tags::firstProduct + 8;      // the preset browser
+    inline constexpr funkgui::Tag kProjectsTag = funkgui::tags::firstProduct + 8;     // the projects' card
     inline constexpr funkgui::Tag kSectionTag = funkgui::tags::firstProduct + 7;      // the dials' sections
     inline constexpr funkgui::Tag kExplorerTag = funkgui::tags::firstProduct + 9;     // the explorer's card
 
@@ -190,12 +190,15 @@ namespace testingplaygroundsynth::ui
         funkgui::Point centreOfExamples() const;
         funkgui::Point centreOfLibrary() const;
         funkgui::Point centreOfRandom() const;
-        funkgui::Point centreOfPresets() const;
-        // PRESETS: the browser (PresetBrowser.h), opened with the preset's name, or the program's title (its first
-        // line's words before a colon), in its field.
-        void openPresets();
-        PresetBrowser& presetBrowser() noexcept { return presets_; }
-        const std::string& presetText() const noexcept { return presetText_; }   // the header's "PRESET  NAME  EDITED"
+        funkgui::Point centreOfProjects() const;
+        // PROJECTS: the card (ProjectBrowser.h), opened on the project open, its name (or the program's title: its
+        // first line's words before a colon) in its field; with `preset`, the field a preset's name.
+        void openProjects(bool preset = false);
+        ProjectBrowser& projectBrowser() noexcept { return projects_; }
+        // "PROJECT  NAME  V3  EDITED  PRESET  BRIGHT  EDITED" (what the top bar's pill says, in words), "" for none.
+        const std::string& projectText() const noexcept { return projectText_; }
+        // Cmd-S: a new version of the project open (its name in the status), or, with none open, PROJECTS.
+        void saveVersion();
         // RANDOM (fminus/Random.h): the program for `seed` (its library files as tabs, those the editor lacks; its text
         // in place of the program's, an edit Cmd-Z takes back), run. When the tabs left cannot hold its files, the next
         // seeds are tried (up to 64); false, with a notice in the status, when none fits.
@@ -300,7 +303,6 @@ namespace testingplaygroundsynth::ui
         void openExamples();
         void openLibrary();
         uint32_t nextSeed();                             // RANDOM's: from the clock and a count
-        void afterPresets(bool wasOpen);                 // the browser's notice to the status, the focus back
         void notice(const std::string& text);            // the status says it for a few seconds
         void jumpTo(const Problem&);
         void closeFile(int tab);                         // a tab's x: asks first when the file has text
@@ -369,33 +371,38 @@ namespace testingplaygroundsynth::ui
         Meters meters_{};                                // the Engine's, as the last frame read them
         std::vector<float> scopeIn_, scopeOut_;          // the scopes' samples, read each frame they show
         int editorItem_ = -1, problemsItem_ = -1, runItem_ = -1, examplesItem_ = -1, libraryItem_ = -1, randomItem_ = -1,
-            presetsItem_ = -1;
+            projectsItem_ = -1;
         int themeItem_ = -1, zoomItem_ = -1;
         int panelViewItem_ = -1;                         // the Code / Panel switch's Panel half (viewItem_ the Code one)
         float actionsX_ = 0.0f;                          // the program's card's actions start here (at its right)
         funkgui::Rect programCard_;                      // the program's card (the tabs, the editor or the panel, the dials)
         std::unique_ptr<funkgui::CellModel> zoomModel_;  // the zoom's steps (zoom_ points at it)
-        std::string presetLabel() const;                 // the top bar's pill: the preset's name, "edited", or Presets
         void openZoom();                                 // the zoom's menu
         std::string statusShown() const;                 // the status as the card's header shows it (sentence case)
         int newChatItem_ = -1, keyItem_ = -1, accountItem_ = -1, chatViewItem_ = -1, inputItem_ = -1;
         int chatToggleItem_ = -1;                        // fold or open the chat
         bool chatOpen_ = true;
-        // The explorer (Explorer.h): its item, its fold button, its card; the presets it lists (read again every few
-        // seconds while it is open); what its rows were made from (syncExplorer rebuilds them when it changes).
+        // The explorer (Explorer.h): its item, its fold button, its card; the projects and the open one's presets it
+        // lists (read again every few seconds while it is open); what its rows were made from (syncExplorer rebuilds
+        // them when it changes).
         int explorerItem_ = -1, explorerToggleItem_ = -1;
         bool explorerOpen_ = true;
         bool explorerShown_ = true;                      // open, in the CODE view, and the window has room for it
         void toggleExplorer();
         funkgui::Rect explorerCard_;
         float leftX_ = 0.0f;                             // the program's card's left edge (after the explorer)
-        std::vector<PresetEntry> presetList_;
-        double presetsAt_ = -100.0;
+        std::vector<ProjectEntry> projectList_;
+        std::vector<PresetEntry> presetList_;            // the project open's
+        std::string presetsOf_;                          // the project presetList_ is of
+        double projectsAt_ = -100.0;
         std::string explorerKey_;
         void syncExplorer();
         void layoutExplorer();
         void openFromExplorer(ExplorerItem::Section section, const ExplorerItem::Row& row);
-        void loadPresetNamed(const std::string& name);
+        void openProjectNamed(const std::string& name);  // its newest version, asking first over unsaved edits
+        void applyPresetNamed(const std::string& name);  // a preset of the project open
+        void afterProjects(bool wasOpen);                // the card's notice to the status, the focus back
+        std::string projectLabel() const;                // the top bar's pill: "Name v3 - Preset", "edited", or Projects
         bool unread_ = false;                            // folded, and the conversation grew since
         // Pictures: the ids this Panel has in FunkGui's registry (images::set, counted across Panels: Picture.cpp
         // makes one too), and a drag of pictures over the editor (over the chat's card).
@@ -411,10 +418,10 @@ namespace testingplaygroundsynth::ui
         float width_ = 0.0f, height_ = 0.0f;
         uint32_t layoutRevision_ = 0;                    // bumps with each layout()
         std::string title_, subtitle_, status_, meter_;
-        std::string presetText_;                         // the header's: the preset loaded or saved last
-        PresetBrowser presets_{ port_ };
-        int focusBeforePresets_ = -1;
-        std::string notice_;                             // RANDOM's or PRESETS' word in the status, until noticeUntil_
+        std::string projectText_;                        // the project open, its version, the preset applied, in words
+        ProjectBrowser projects_{ port_ };
+        int focusBeforeProjects_ = -1;
+        std::string notice_;                             // RANDOM's or PROJECTS' word in the status, until noticeUntil_
         double noticeUntil_ = -1.0;
         uint32_t randomCount_ = 0;
 
