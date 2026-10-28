@@ -32,11 +32,11 @@
 #include <cstdio>
 #include <string>
 
-namespace tp = testingplayground;
+namespace pg = playground;
 
 namespace
 {
-    constexpr bool kInstrument = tp::product::kIsInstrument;
+    constexpr bool kInstrument = pg::product::kIsInstrument;
 
     // A program of this plugin's kind whose main module has `body` (and an instrument's start).
     std::string program(const std::string& before, const std::string& body)
@@ -61,16 +61,16 @@ namespace
 
     bool has(const std::string& s, const std::string& what) { return s.find(what) != std::string::npos; }
 
-    tp::Patch::Result compile(const std::string& source)
+    pg::Patch::Result compile(const std::string& source)
     {
-        tp::Patch::Result r = tp::Patch::compile(source, 48000.0f);
+        pg::Patch::Result r = pg::Patch::compile(source, 48000.0f);
         std::printf("----\n%s%s", r.errors.c_str(), r.notes.c_str());
         return r;
     }
 
-    tp::Patch::Result compile(const tp::Sources& files)
+    pg::Patch::Result compile(const pg::Sources& files)
     {
-        tp::Patch::Result r = tp::Patch::compile(files, 48000.0f);
+        pg::Patch::Result r = pg::Patch::compile(files, 48000.0f);
         std::printf("----\n%s%s", r.errors.c_str(), r.notes.c_str());
         return r;
     }
@@ -87,7 +87,7 @@ namespace
             std::fill(in.l.begin(), in.l.end(), 1.0f);
             std::fill(in.r.begin(), in.r.end(), 1.0f);
         }
-        const probe::Stereo out = rig.run(in, 256, { { 0, tp::EventKind::noteOn, 60, 1.0f } });
+        const probe::Stereo out = rig.run(in, 256, { { 0, pg::EventKind::noteOn, 60, 1.0f } });
         return out.l[16];
     }
 }
@@ -144,7 +144,7 @@ PROBE(fminus, contract)
     // DIALS
     {
         std::string params;
-        for (int k = 1; k <= tp::kMaxControls + 1; ++k)
+        for (int k = 1; k <= pg::kMaxControls + 1; ++k)
             params += "    param float p" + std::to_string(k) + " [[fminus::range(0, 100)]] [[fminus::default(" +
                       std::to_string(k) + ")]];\n";
         const auto r = compile(program("", params + process("            left[i] = p1[i];\n")));
@@ -152,14 +152,14 @@ PROBE(fminus, contract)
         if (r.patch)
         {
             int used = 0;
-            for (const tp::Control& c : r.patch->controls())
+            for (const pg::Control& c : r.patch->controls())
                 used += c.used ? 1 : 0;
-            P.eq("dials.all_slots", used, tp::kMaxControls);
-            const std::string last = r.patch->controls()[tp::kMaxControls - 1].name;
-            P.eq("dials.in_order", last == "p" + std::to_string(tp::kMaxControls) ? 1 : 0, 1);
+            P.eq("dials.all_slots", used, pg::kMaxControls);
+            const std::string last = r.patch->controls()[pg::kMaxControls - 1].name;
+            P.eq("dials.in_order", last == "p" + std::to_string(pg::kMaxControls) ? 1 : 0, 1);
             P.near("dials.default", static_cast<double>(r.patch->controls()[2].def), 3.0, 1e-6);
         }
-        P.eq("dials.next_noted", has(r.notes, "p" + std::to_string(tp::kMaxControls + 1) + " has no dial") ? 1 : 0, 1);
+        P.eq("dials.next_noted", has(r.notes, "p" + std::to_string(pg::kMaxControls + 1) + " has no dial") ? 1 : 0, 1);
     }
 
     // DEFAULTS: a held module's parameter at its default (0.25), read in the main module's process.
@@ -187,13 +187,13 @@ PROBE(fminus, contract)
                                  "    void init(float r)\n    {\n        seenRate = shared->rate;\n        seenInits = shared->inits;\n    }\n"
                                  + process("            left[i] = shared->table[7] / 10 + seenInits * 0.1f + seenRate / 1000000;\n");
         const std::string lines = "#pragma panel number seenInits\n#pragma panel number seenRate 0 200000\n";
-        const tp::Patch::Result r = compile(program(lines + shared, body));
+        const pg::Patch::Result r = compile(program(lines + shared, body));
         P.eq("shared.compiles", r.patch ? 1 : 0, 1);
         P.eq("shared.no_note", r.notes.empty() ? 1 : 0, 1);
         if (r.patch)
         {
             P.eq("shared.made", r.patch->shared() ? 1 : 0, 1);
-            bool every = r.patch->instances() == (kInstrument ? tp::Patch::kInstances : 1);
+            bool every = r.patch->instances() == (kInstrument ? pg::Patch::kInstances : 1);
             for (int i = 0; i < r.patch->instances(); ++i)
                 every = every && r.patch->tap(0, i) == 1.0f && r.patch->tap(1, i) == 48000.0f;
             P.eq("shared.init_once_before_every_instance", every ? 1 : 0, 1);
@@ -204,10 +204,10 @@ PROBE(fminus, contract)
             P.eq("shared.again_at_a_new_rate", again ? 1 : 0, 1);
         }
         P.near("shared.read_on_the_audio_thread", static_cast<double>(firstSample(program(shared, body))), 0.848, 1e-5);
-        const tp::Patch::Result lone = compile(program(shared, process("            left[i] = 0;\n")));
+        const pg::Patch::Result lone = compile(program(shared, process("            left[i] = 0;\n")));
         P.eq("shared.unreached_note", lone.patch && has(lone.notes, std::string("no field of ") + mod) ? 1 : 0, 1);
         P.eq("shared.none_without_it", lone.patch && !compile(program("", process("            left[i] = 0;\n"))).patch->shared() ? 1 : 0, 1);
-        const tp::Patch::Result wrong = compile(program("module Shared\n{\n    float x;\n    void init() { x = 1; }\n};\n",
+        const pg::Patch::Result wrong = compile(program("module Shared\n{\n    float x;\n    void init() { x = 1; }\n};\n",
                                                         "    Shared* shared;\n" + process("            left[i] = shared->x;\n")));
         P.eq("shared.init_signature", !wrong.patch && has(wrong.errors, "Shared::init: the plugin calls it as `void init(float rate)`") ? 1 : 0, 1);
     }
@@ -215,7 +215,7 @@ PROBE(fminus, contract)
     // INCLUDE
     {
         // The output's first sample, scaled by a function from another file.
-        const tp::Sources two{ { "program.fm", "#include \"gain.fm\"\n" + program("", process("            left[i] = half(1.0f);\n")) },
+        const pg::Sources two{ { "program.fm", "#include \"gain.fm\"\n" + program("", process("            left[i] = half(1.0f);\n")) },
                                { "gain.fm", "float half(float x) { return 0.5f * x; }\n" } };
         const auto r = compile(two);
         P.eq("include.compiles", r.patch ? 1 : 0, 1);
@@ -224,17 +224,17 @@ PROBE(fminus, contract)
         {
             probe::Rig rig(48000.0, 256);
             P.eq("include.rig_loads", rig.load(two) ? 1 : 0, 1);
-            const probe::Stereo out = rig.run(probe::Stereo(256), 256, { { 0, tp::EventKind::noteOn, 60, 1.0f } });
+            const probe::Stereo out = rig.run(probe::Stereo(256), 256, { { 0, pg::EventKind::noteOn, 60, 1.0f } });
             P.near("include.plays_it", static_cast<double>(out.l[16]), 0.5, 1e-6);
         }
 
         // The main module in an included file: the program's own file only includes it.
-        const auto inside = compile(tp::Sources{ { "program.fm", "#include \"main.fm\"\n" },
+        const auto inside = compile(pg::Sources{ { "program.fm", "#include \"main.fm\"\n" },
                                                  { "main.fm", program("", process("            left[i] = 0.25f;\n")) } });
         P.eq("include.main_module_included", inside.patch ? 1 : 0, 1);
 
         // Two files include a third: read once (a second reading would define its function twice).
-        const auto diamond = compile(tp::Sources{
+        const auto diamond = compile(pg::Sources{
             { "program.fm", "#include \"a.fm\"\n#include \"b.fm\"\n" + program("", process("            left[i] = a() + b();\n")) },
             { "a.fm", "#include \"common.fm\"\nfloat a() { return one(); }\n" },
             { "b.fm", "#include \"common.fm\"\n#include \"program.fm\"\nfloat b() { return one(); }\n" },
@@ -242,21 +242,21 @@ PROBE(fminus, contract)
         P.eq("include.diamond_once", diamond.patch ? 1 : 0, 1);
 
         // An error in an included file: its name and line, after the include stack.
-        const auto wrong = compile(tp::Sources{ { "program.fm", "#include \"lib.fm\"\n" + program("", process("            left[i] = 0.0f;\n")) },
+        const auto wrong = compile(pg::Sources{ { "program.fm", "#include \"lib.fm\"\n" + program("", process("            left[i] = 0.0f;\n")) },
                                                 { "lib.fm", "float f(float x)\n{\n    return y;\n}\n" } });
         P.eq("include.error_refused", wrong.patch ? 0 : 1, 1);
         P.eq("include.error_names_file", has(wrong.errors, "lib.fm:3:12: error: use of undeclared identifier 'y'") ? 1 : 0, 1);
         P.eq("include.error_stack", has(wrong.errors, "In file included from program.fm:1:") ? 1 : 0, 1);
 
         // A name no file has.
-        const auto missing = compile(tp::Sources{ { "program.fm", "#include \"nope.fm\"\n" + program("", process("")) } });
+        const auto missing = compile(pg::Sources{ { "program.fm", "#include \"nope.fm\"\n" + program("", process("")) } });
         P.eq("include.missing_refused", missing.patch ? 0 : 1, 1);
         P.eq("include.missing_says", has(missing.errors, "program.fm:1:10: error: 'nope.fm' file not found") ? 1 : 0, 1);
 
         // The plugin's message for a method of the wrong type, with an #include before the main module.
         const std::string bad = kInstrument ? "    bool process(float* restrict left, int n) { return false; }\n"
                                             : "    void process(float* restrict left, int n) { left[0] = 0; }\n";
-        const auto shim = compile(tp::Sources{ { "program.fm", "#include \"gain.fm\"\n" + program("", bad) },
+        const auto shim = compile(pg::Sources{ { "program.fm", "#include \"gain.fm\"\n" + program("", bad) },
                                                { "gain.fm", "float half(float x) { return 0.5f * x; }\n" } });
         P.eq("include.signature_refused", shim.patch ? 0 : 1, 1);
         P.eq("include.signature_says_how",

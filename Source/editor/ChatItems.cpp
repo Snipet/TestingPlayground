@@ -8,7 +8,7 @@
 #include <cmath>
 #include <cstdio>
 
-namespace testingplayground::ui
+namespace playground::ui
 {
     // ---- text ---------------------------------------------------------------------------------------------------------
     std::string asciiText(std::string_view s)

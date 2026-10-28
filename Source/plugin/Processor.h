@@ -10,8 +10,9 @@
 //     <FILE name=".." text=".."/>s). A new instance plays the first of the EXAMPLES; a session loads its program
 //     (compiled at once, on the host's thread) and its dials as it saved them. A session of the version before files
 //     (<PROGRAM source=".." draft=".."/>) loads as a program of one file;
-//   - effect or instrument (cmake/Product.cmake, product::kIsInstrument): an effect has a stereo input and output and
-//     processes in place; an instrument has an output only and gets the block's MIDI notes as Events;
+//   - effect or instrument (the product's KIND, products/<key>.cmake: product::kIsInstrument): an effect has a
+//     stereo input and output and processes in place; an instrument has an output only and gets the block's MIDI
+//     notes as Events;
 //   - the chat with Claude (ChatAgent.h): its conversation is kept in the session (<CHAT json="..."/>), and its tools
 //     act on the draft, RUN and the dials through ChatHost, from the agent's thread (the draft under programMutex_,
 //     a dial queued for poll()).
@@ -68,7 +69,7 @@
 #include <string>
 #include <vector>
 
-namespace testingplayground
+namespace playground
 {
     class Processor final : public juce::AudioProcessor, private EditorPort, private ChatHost, private juce::Timer
     {

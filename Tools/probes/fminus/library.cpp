@@ -56,7 +56,7 @@
 #include <string_view>
 #include <vector>
 
-namespace tp = testingplayground;
+namespace pg = playground;
 
 namespace
 {
@@ -70,7 +70,7 @@ namespace
         o.fileName = "harness.fm";
         o.denormals = fminus::Program::Denormals::Flush;
         o.include = [](std::string_view name, std::string_view) -> std::optional<fminus::Program::IncludedFile> {
-            if (const tp::LibraryFile* f = tp::findLibraryFile(name))
+            if (const pg::LibraryFile* f = pg::findLibraryFile(name))
                 return fminus::Program::IncludedFile{ f->name, f->source };
             return std::nullopt;
         };
@@ -140,9 +140,9 @@ namespace
     // relative to the strongest.
     double worstAlias(const std::vector<float>& x, double f0)
     {
-        const std::vector<tp::measure::Peak> peaks = tp::measure::spectrumPeaks(x, kFs, 64);
+        const std::vector<pg::measure::Peak> peaks = pg::measure::spectrumPeaks(x, kFs, 64);
         double worst = -200.0;
-        for (const tp::measure::Peak& p : peaks)
+        for (const pg::measure::Peak& p : peaks)
         {
             const double k = std::round(p.hz / f0);
             if (p.hz < 16000.0 && std::fabs(p.hz - k * f0) > 30.0)
@@ -477,10 +477,10 @@ PROBE(fminus, library)
     {
         int named = 0, headed = 0, alone = 0;
         std::string all;
-        for (const tp::LibraryFile& f : tp::kLibrary)
+        for (const pg::LibraryFile& f : pg::kLibrary)
         {
             const std::string text = f.source;
-            named += text.rfind(std::string("// ") + f.name + ": ", 0) == 0 && tp::validFileName(f.name) ? 1 : 0;
+            named += text.rfind(std::string("// ") + f.name + ": ", 0) == 0 && pg::validFileName(f.name) ? 1 : 0;
             headed += text.find("\n//\n") != std::string::npos ? 1 : 0;
             std::string errors;
             const auto p = compileHarness(std::string("#include \"") + f.name + "\"\nfloat one() { return 1; }\n", errors);
@@ -489,7 +489,7 @@ PROBE(fminus, library)
                 std::printf("%s alone:\n%s", f.name, errors.c_str());
             all += std::string("#include \"") + f.name + "\"\n";
         }
-        const auto count = static_cast<int64_t>(std::size(tp::kLibrary));
+        const auto count = static_cast<int64_t>(std::size(pg::kLibrary));
         std::printf("the library: %lld files\n", static_cast<long long>(count));
         P.ge("files.count", static_cast<double>(count), 12.0);
         P.eq("files.first_line_names_it", named, count);
@@ -755,7 +755,7 @@ PROBE(fminus, library)
             for (const double f0 : { 1000.0, 3700.0, 7000.0, 11000.0 })
             {
                 run(y.data(), N, static_cast<float>(f0 / kFs), 0.0f, 2, 1);
-                const tp::measure::Peak odd = tp::measure::inharmonic(y, kFs, f0, 20000.0);
+                const pg::measure::Peak odd = pg::measure::inharmonic(y, kFs, f0, 20000.0);
                 std::printf("the wavetable saw at %.0f Hz: nothing that is no harmonic above %.1f dB (at %.0f Hz)\n", f0,
                             odd.db, odd.hz);
                 P.le("wavetable.saw_" + std::to_string(static_cast<int>(f0)) + "_hz_no_alias_db", odd.db, -80.0);
@@ -770,7 +770,7 @@ PROBE(fminus, library)
                     ph += f0 / kFs;
                     ph -= std::floor(ph);
                 }
-                const tp::measure::Peak odd = tp::measure::inharmonic(naive, kFs, f0, 20000.0);
+                const pg::measure::Peak odd = pg::measure::inharmonic(naive, kFs, f0, 20000.0);
                 std::printf("a naive saw at %.0f Hz: an alias at %.1f dB (%.0f Hz)\n", f0, odd.db, odd.hz);
                 P.ge("wavetable.naive_saw_aliases_db", odd.db, -40.0);
             }
@@ -778,9 +778,9 @@ PROBE(fminus, library)
             {
                 const double f0 = kFs * std::pow(2.0, 5.5) / 2048.0 * 0.9999;
                 run(y.data(), N, static_cast<float>(f0 / kFs), 0.0f, 2, 1);
-                const std::vector<tp::measure::Peak> peaks = tp::measure::spectrumPeaks(y, kFs, 64);
+                const std::vector<pg::measure::Peak> peaks = pg::measure::spectrumPeaks(y, kFs, 64);
                 double h16 = -200.0;
-                for (const tp::measure::Peak& pk : peaks)
+                for (const pg::measure::Peak& pk : peaks)
                     if (std::fabs(pk.hz - 16.0 * f0) < 20.0)
                         h16 = pk.db;
                 std::printf("at %.1f Hz the 16th harmonic (%.0f Hz) is %.2f dB under the fundamental\n", f0, 16.0 * f0, -h16);

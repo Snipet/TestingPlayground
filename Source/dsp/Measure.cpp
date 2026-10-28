@@ -20,7 +20,7 @@
 #include <numbers>
 #include <set>
 
-namespace testingplayground::measure
+namespace playground::measure
 {
     namespace
     {

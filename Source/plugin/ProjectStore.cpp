@@ -13,7 +13,7 @@
 #include <mutex>
 #include <unordered_map>
 
-namespace testingplayground::projectstore
+namespace playground::projectstore
 {
     namespace
     {

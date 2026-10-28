@@ -3,7 +3,7 @@
 // The plugin's factory is Source/editor/gpu/CreateEditorGpu.cpp.
 #include "plugin/Processor.h"
 
-namespace testingplayground
+namespace playground
 {
     juce::AudioProcessorEditor* createEditor(Processor& processor)
     {

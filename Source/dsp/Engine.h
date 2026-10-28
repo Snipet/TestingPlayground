@@ -62,7 +62,7 @@
 #include <span>
 #include <vector>
 
-namespace testingplayground
+namespace playground
 {
     // What the editor's displays show, as of the last block.
     struct Meters

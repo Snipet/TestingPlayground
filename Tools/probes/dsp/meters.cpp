@@ -26,11 +26,11 @@
 #include <string>
 #include <vector>
 
-namespace tp = testingplayground;
+namespace pg = playground;
 
 namespace
 {
-    constexpr bool kInstrument = tp::product::kIsInstrument;
+    constexpr bool kInstrument = pg::product::kIsInstrument;
     constexpr double kFs = 48000.0;
     constexpr int kBlock = 256;
 
@@ -68,14 +68,14 @@ PROBE(dsp, meters)
         return P.finish();
 
     const std::size_t second = static_cast<std::size_t>(kFs);
-    tp::Meters m;
+    pg::Meters m;
     // LEVELS
     probe::Stereo in(second);
     if constexpr (!kInstrument)
         in.l = in.r = probe::sine(1000.0, 0.8, kFs, second);
     std::vector<probe::Note> notes;
     if constexpr (kInstrument)
-        notes.push_back({ 0, tp::EventKind::noteOn, 60, 0.8f });
+        notes.push_back({ 0, pg::EventKind::noteOn, 60, 0.8f });
     const probe::Stereo out = rig.run(in, kBlock, notes);
     P.eq("levels.read", rig.engine().meters(m) ? 1 : 0, 1);
     if constexpr (kInstrument)
@@ -127,15 +127,15 @@ PROBE(dsp, meters)
     // VOICE (an instrument): a second note while the first sounds, then the second's voice ends.
     if constexpr (kInstrument)
     {
-        std::vector<probe::Note> two{ { 0, tp::EventKind::noteOn, 64, 0.8f } };
+        std::vector<probe::Note> two{ { 0, pg::EventKind::noteOn, 64, 0.8f } };
         rig.run(probe::Stereo(static_cast<std::size_t>(kBlock) * 8), kBlock, two);
         rig.engine().meters(m);
         P.near("voice.newest", static_cast<double>(m.taps[3]), 64.0, 1e-6);
-        std::vector<probe::Note> off{ { 0, tp::EventKind::noteOff, 64, 0.0f } };
+        std::vector<probe::Note> off{ { 0, pg::EventKind::noteOff, 64, 0.0f } };
         rig.run(probe::Stereo(static_cast<std::size_t>(kBlock) * 8), kBlock, off);
         rig.engine().meters(m);
         P.near("voice.then_the_one_left", static_cast<double>(m.taps[3]), 60.0, 1e-6);
-        std::vector<probe::Note> all{ { 0, tp::EventKind::noteOff, 60, 0.0f } };
+        std::vector<probe::Note> all{ { 0, pg::EventKind::noteOff, 60, 0.0f } };
         rig.run(probe::Stereo(static_cast<std::size_t>(kBlock) * 8), kBlock, all);
         rig.engine().meters(m);
         P.near("voice.none_left", static_cast<double>(m.taps[3]), 0.0, 1e-6);
@@ -143,7 +143,7 @@ PROBE(dsp, meters)
 
     // FALL: half a second of silence (an instrument's voices have ended above).
     {
-        tp::Meters before = m;
+        pg::Meters before = m;
         rig.engine().meters(before);
         const probe::Stereo quiet(second / 2);
         rig.run(quiet, kBlock);
@@ -161,7 +161,7 @@ PROBE(dsp, meters)
     {
         rig.engine().meters(m);
         P.eq("program.the_one_playing", m.program == rig.program() && m.program != 0 ? 1 : 0, 1);
-        tp::Patch::Result next = tp::Patch::compile(source, static_cast<float>(kFs));
+        pg::Patch::Result next = pg::Patch::compile(source, static_cast<float>(kFs));
         P.eq("program.next_compiles", next.patch != nullptr ? 1 : 0, 1);
         if (next.patch)
         {

@@ -36,11 +36,11 @@
 #include <string>
 #include <vector>
 
-namespace tp = testingplayground;
+namespace pg = playground;
 
 namespace
 {
-    constexpr bool kInstrument = tp::product::kIsInstrument;
+    constexpr bool kInstrument = pg::product::kIsInstrument;
 
     // A program of this plugin's kind with these parameters and fields (and `before`: pragma lines).
     std::string program(const std::string& before = "")
@@ -71,14 +71,14 @@ namespace
     struct Compiled
     {
         bool ok = false;
-        tp::PanelSpec panel;
-        tp::Controls controls{};
+        pg::PanelSpec panel;
+        pg::Controls controls{};
         std::string notes;
     };
 
-    Compiled compile(const tp::Sources& files)
+    Compiled compile(const pg::Sources& files)
     {
-        tp::Patch::Result r = tp::Patch::compile(files, 48000.0f);
+        pg::Patch::Result r = pg::Patch::compile(files, 48000.0f);
         Compiled c;
         c.ok = r.patch != nullptr;
         c.notes = r.notes;
@@ -94,7 +94,7 @@ namespace
 
     Compiled withGui(const std::string& gui, const std::string& before = "")
     {
-        return compile({ { tp::kProgramName, program(before) }, { "panel.gui", gui } });
+        return compile({ { pg::kProgramName, program(before) }, { "panel.gui", gui } });
     }
 
     bool has(const std::string& s, const std::string& part) { return s.find(part) != std::string::npos; }
@@ -108,27 +108,27 @@ namespace
     }
 
     // The first node of this kind (and, when given, this text or slot), else -1.
-    int find(const tp::GuiTree& t, tp::GuiKind kind, const std::string& text = "", int slot = -1)
+    int find(const pg::GuiTree& t, pg::GuiKind kind, const std::string& text = "", int slot = -1)
     {
         for (std::size_t i = 0; i < t.nodes.size(); ++i)
         {
-            const tp::GuiNode& n = t.nodes[i];
+            const pg::GuiNode& n = t.nodes[i];
             if (n.kind == kind && (text.empty() || n.text == text) && (slot < 0 || n.slot == slot))
                 return static_cast<int>(i);
         }
         return -1;
     }
 
-    const tp::GuiNode& at(const tp::GuiTree& t, int i)
+    const pg::GuiNode& at(const pg::GuiTree& t, int i)
     {
-        static const tp::GuiNode none{};
+        static const pg::GuiNode none{};
         return i >= 0 && static_cast<std::size_t>(i) < t.nodes.size() ? t.nodes[static_cast<std::size_t>(i)] : none;
     }
 
-    std::string text(const tp::Control& c, float plain)
+    std::string text(const pg::Control& c, float plain)
     {
         char buf[32];
-        tp::formatValue(c, plain, buf, sizeof buf);
+        pg::formatValue(c, plain, buf, sizeof buf);
         return buf;
     }
 }
@@ -183,89 +183,89 @@ panel background=#1d1b19 accent=orange {
             std::printf("notes:\n%s", c.notes.c_str());
         P.eq("tree.compiles", c.ok ? 1 : 0, 1);
         P.eq("tree.no_notes", c.notes.empty() ? 1 : 0, 1);
-        const tp::GuiTree& t = c.panel.gui;
+        const pg::GuiTree& t = c.panel.gui;
         P.eq("tree.file", t.file == "panel.gui" ? 1 : 0, 1);
-        P.eq("tree.root_column", !t.nodes.empty() && t.nodes[0].kind == tp::GuiKind::column ? 1 : 0, 1);
+        P.eq("tree.root_column", !t.nodes.empty() && t.nodes[0].kind == pg::GuiKind::column ? 1 : 0, 1);
         P.eq("tree.panel_colours", t.background == "#1d1b19" && t.accent == "orange" ? 1 : 0, 1);
         // The root's children, in order: the label, the row, the tabs, the spacer, the knob.
-        std::vector<tp::GuiKind> top;
+        std::vector<pg::GuiKind> top;
         for (const int ch : at(t, 0).children)
             top.push_back(at(t, ch).kind);
-        P.eq("tree.top_order", top == std::vector<tp::GuiKind>{ tp::GuiKind::label, tp::GuiKind::row, tp::GuiKind::tabs,
-                                                                tp::GuiKind::spacer, tp::GuiKind::knob } ? 1 : 0, 1);
-        const tp::GuiNode& title = at(t, find(t, tp::GuiKind::label));
-        P.eq("tree.label", title.text == "TEST SYNTH" && title.textSize == tp::GuiText::title && title.color == "cream" ? 1 : 0, 1);
-        const tp::GuiNode& row = at(t, find(t, tp::GuiKind::row));
-        P.eq("tree.row_props", row.gap == 12.0f && row.pad == 4.0f && row.align == tp::GuiAlign::center
-                                   && row.justify == tp::GuiJustify::between && !row.vertical && row.children.size() == 4 ? 1 : 0, 1);
-        const tp::GuiNode& filter = at(t, find(t, tp::GuiKind::section, "FILTER"));
+        P.eq("tree.top_order", top == std::vector<pg::GuiKind>{ pg::GuiKind::label, pg::GuiKind::row, pg::GuiKind::tabs,
+                                                                pg::GuiKind::spacer, pg::GuiKind::knob } ? 1 : 0, 1);
+        const pg::GuiNode& title = at(t, find(t, pg::GuiKind::label));
+        P.eq("tree.label", title.text == "TEST SYNTH" && title.textSize == pg::GuiText::title && title.color == "cream" ? 1 : 0, 1);
+        const pg::GuiNode& row = at(t, find(t, pg::GuiKind::row));
+        P.eq("tree.row_props", row.gap == 12.0f && row.pad == 4.0f && row.align == pg::GuiAlign::center
+                                   && row.justify == pg::GuiJustify::between && !row.vertical && row.children.size() == 4 ? 1 : 0, 1);
+        const pg::GuiNode& filter = at(t, find(t, pg::GuiKind::section, "FILTER"));
         P.eq("tree.section", filter.color == "#e07b39" && filter.vertical && filter.children.size() == 2 ? 1 : 0, 1);
-        const tp::GuiNode& env = at(t, find(t, tp::GuiKind::section, "ENVELOPE"));
+        const pg::GuiNode& env = at(t, find(t, pg::GuiKind::section, "ENVELOPE"));
         P.eq("tree.section_row", !env.vertical && env.children.size() == 5 ? 1 : 0, 1);
-        const tp::GuiNode& big = at(t, find(t, tp::GuiKind::knob, "", cutoff));
-        P.eq("tree.knob_large", big.size == tp::GuiSize::large && !big.vintage && big.parent == find(t, tp::GuiKind::section, "FILTER") ? 1 : 0, 1);
-        const tp::GuiNode& res = at(t, find(t, tp::GuiKind::knob, "", resonance));
-        P.eq("tree.knob_vintage_small", res.vintage && res.size == tp::GuiSize::small ? 1 : 0, 1);
-        const tp::GuiNode& att = at(t, find(t, tp::GuiKind::slider, "", attack));
+        const pg::GuiNode& big = at(t, find(t, pg::GuiKind::knob, "", cutoff));
+        P.eq("tree.knob_large", big.size == pg::GuiSize::large && !big.vintage && big.parent == find(t, pg::GuiKind::section, "FILTER") ? 1 : 0, 1);
+        const pg::GuiNode& res = at(t, find(t, pg::GuiKind::knob, "", resonance));
+        P.eq("tree.knob_vintage_small", res.vintage && res.size == pg::GuiSize::small ? 1 : 0, 1);
+        const pg::GuiNode& att = at(t, find(t, pg::GuiKind::slider, "", attack));
         P.eq("tree.slider_length", att.vertical && att.height == 120.0f ? 1 : 0, 1);
-        const tp::GuiNode& adsr = at(t, find(t, tp::GuiKind::envelope));
+        const pg::GuiNode& adsr = at(t, find(t, pg::GuiKind::envelope));
         P.eq("tree.envelope", adsr.env == std::array<int, 4>{ attack, decay, sustain, release } && adsr.text == "AMP"
                                   && adsr.width == 160.0f && adsr.height == 90.0f ? 1 : 0, 1);
-        P.eq("tree.divider", at(t, find(t, tp::GuiKind::divider)).color == "grey" ? 1 : 0, 1);
-        const tp::GuiNode& box = at(t, find(t, tp::GuiKind::box));
+        P.eq("tree.divider", at(t, find(t, pg::GuiKind::divider)).color == "grey" ? 1 : 0, 1);
+        const pg::GuiNode& box = at(t, find(t, pg::GuiKind::box));
         P.eq("tree.box", box.color == "teal" && !box.vertical && box.children.size() == 3 && box.pad == 8.0f ? 1 : 0, 1);
-        const tp::GuiNode& buttons = at(t, find(t, tp::GuiKind::buttons, "", wave));
+        const pg::GuiNode& buttons = at(t, find(t, pg::GuiKind::buttons, "", wave));
         P.eq("tree.buttons_row", !buttons.vertical ? 1 : 0, 1);
         P.eq("tree.options", c.panel.options[wave] == std::vector<std::string>{ "SAW", "SQUARE", "TRI" }
                                  && c.panel.options[syncSlot] == std::vector<std::string>{ "FREE", "SYNC" }
                                  && c.panel.options[mode] == std::vector<std::string>{ "POLY", "MONO" } ? 1 : 0, 1);
-        P.eq("tree.menu", find(t, tp::GuiKind::menu, "", mode) >= 0 && at(t, find(t, tp::GuiKind::menu, "", mode)).width == 90.0f ? 1 : 0, 1);
-        P.eq("tree.switch", find(t, tp::GuiKind::toggle, "", syncSlot) >= 0 ? 1 : 0, 1);
-        const int tabs = find(t, tp::GuiKind::tabs);
+        P.eq("tree.menu", find(t, pg::GuiKind::menu, "", mode) >= 0 && at(t, find(t, pg::GuiKind::menu, "", mode)).width == 90.0f ? 1 : 0, 1);
+        P.eq("tree.switch", find(t, pg::GuiKind::toggle, "", syncSlot) >= 0 ? 1 : 0, 1);
+        const int tabs = find(t, pg::GuiKind::tabs);
         P.eq("tree.tabs", tabs >= 0 && at(t, tabs).children.size() == 2 && at(t, tabs).color == "blue"
                               && at(t, at(t, tabs).children[0]).text == "MOD" && at(t, at(t, tabs).children[1]).text == "METERS"
                               && !at(t, at(t, tabs).children[1]).vertical ? 1 : 0, 1);
-        const tp::GuiNode& pad = at(t, find(t, tp::GuiKind::xy));
+        const pg::GuiNode& pad = at(t, find(t, pg::GuiKind::xy));
         P.eq("tree.xy", pad.slot == level && pad.slot2 == pan && pad.width == 140.0f && pad.text == "LEVEL / PAN" ? 1 : 0, 1);
-        const tp::GuiNode& grid = at(t, find(t, tp::GuiKind::grid));
+        const pg::GuiNode& grid = at(t, find(t, pg::GuiKind::grid));
         P.eq("tree.grid", grid.cols == 3 && grid.gap == 6.0f && grid.children.size() == 6 ? 1 : 0, 1);
         P.eq("tree.labels", c.panel.labels[cutoff] == "CUTOFF" ? 1 : 0, 1);
-        const tp::GuiNode& spacer = at(t, find(t, tp::GuiKind::spacer));
+        const pg::GuiNode& spacer = at(t, find(t, pg::GuiKind::spacer));
         P.eq("tree.spacer", spacer.height == 12.0f && spacer.grow == 0.0f ? 1 : 0, 1);
-        P.eq("tree.grow", at(t, find(t, tp::GuiKind::knob, "", voices)).grow == 1.0f ? 1 : 0, 1);
-        P.eq("tree.no_rest", find(t, tp::GuiKind::section, "") < 0 || at(t, find(t, tp::GuiKind::section, "")).text != "" ? 1 : 0, 1);
+        P.eq("tree.grow", at(t, find(t, pg::GuiKind::knob, "", voices)).grow == 1.0f ? 1 : 0, 1);
+        P.eq("tree.no_rest", find(t, pg::GuiKind::section, "") < 0 || at(t, find(t, pg::GuiKind::section, "")).text != "" ? 1 : 0, 1);
 
         // ---- DISPLAYS ----------------------------------------------------------------------------------------------
-        const std::vector<tp::PanelDisplay>& d = c.panel.displays;
+        const std::vector<pg::PanelDisplay>& d = c.panel.displays;
         P.eq("displays.count", static_cast<int64_t>(d.size()), 6);
         if (d.size() == 6)
         {
-            P.eq("displays.kinds", d[0].kind == tp::DisplayKind::meter && d[1].kind == tp::DisplayKind::vu
-                                       && d[2].kind == tp::DisplayKind::led && d[3].kind == tp::DisplayKind::number
-                                       && d[4].kind == tp::DisplayKind::scope && d[5].kind == tp::DisplayKind::spectrum ? 1 : 0, 1);
+            P.eq("displays.kinds", d[0].kind == pg::DisplayKind::meter && d[1].kind == pg::DisplayKind::vu
+                                       && d[2].kind == pg::DisplayKind::led && d[3].kind == pg::DisplayKind::number
+                                       && d[4].kind == pg::DisplayKind::scope && d[5].kind == pg::DisplayKind::spectrum ? 1 : 0, 1);
             P.eq("displays.audio_no_tap", d[0].tap == -1 && d[1].tap == -1 && d[5].tap == -1 ? 1 : 0, 1);
             P.eq("displays.field_taps", d[2].tap == 0 && d[3].tap == 1 && d[4].tap == 2 ? 1 : 0, 1);
             P.eq("displays.two_of_out", d[0].name == "out" && d[1].name == "out2" && d[5].name == "out3" ? 1 : 0, 1);
             P.eq("displays.range", d[3].lo == 0.0f && d[3].hi == 16.0f ? 1 : 0, 1);
             P.eq("displays.label", d[0].label == "OUT" ? 1 : 0, 1);
-            const tp::GuiNode& scope = at(t, find(t, tp::GuiKind::display) + 4);
+            const pg::GuiNode& scope = at(t, find(t, pg::GuiKind::display) + 4);
             P.eq("displays.scope_size", scope.display == 4 && scope.width == 200.0f && scope.height == 70.0f ? 1 : 0, 1);
         }
 
         // ---- CONTROLS ----------------------------------------------------------------------------------------------
-        const tp::Control& f = c.controls[cutoff];
-        P.eq("controls.taper", f.taper == tp::ControlTaper::log ? 1 : 0, 1);
-        P.near("controls.log_middle", static_cast<double>(tp::plainOf(f, 0.5f)), std::sqrt(20.0 * 20000.0), 0.5);
-        P.near("controls.log_back", static_cast<double>(tp::normOf(f, 632.455f)), 0.5, 1e-4);
-        P.near("controls.log_ends", static_cast<double>(tp::plainOf(f, 0.0f)) + static_cast<double>(tp::plainOf(f, 1.0f)), 20020.0, 0.1);
+        const pg::Control& f = c.controls[cutoff];
+        P.eq("controls.taper", f.taper == pg::ControlTaper::log ? 1 : 0, 1);
+        P.near("controls.log_middle", static_cast<double>(pg::plainOf(f, 0.5f)), std::sqrt(20.0 * 20000.0), 0.5);
+        P.near("controls.log_back", static_cast<double>(pg::normOf(f, 632.455f)), 0.5, 1e-4);
+        P.near("controls.log_ends", static_cast<double>(pg::plainOf(f, 0.0f)) + static_cast<double>(pg::plainOf(f, 1.0f)), 20020.0, 0.1);
         P.eq("controls.hz", text(f, 440.0f) == "440 Hz" ? 1 : 0, 1);
         P.eq("controls.khz", text(f, 2500.0f) == "2.50 kHz" ? 1 : 0, 1);
-        P.near("controls.parse_k", static_cast<double>(tp::parseValue(f, "2.5k")), 2500.0, 1e-3);
-        const tp::Control& s = c.controls[sustain];
+        P.near("controls.parse_k", static_cast<double>(pg::parseValue(f, "2.5k")), 2500.0, 1e-3);
+        const pg::Control& s = c.controls[sustain];
         P.eq("controls.percent", text(s, 0.6f) == "60 %" ? 1 : 0, 1);
-        P.near("controls.parse_scaled", static_cast<double>(tp::parseValue(s, "60")), 0.6, 1e-5);
+        P.near("controls.parse_scaled", static_cast<double>(pg::parseValue(s, "60")), 0.6, 1e-5);
         P.eq("controls.decimals", text(c.controls[resonance], 0.25f) == "0.25" ? 1 : 0, 1);
-        P.eq("controls.linear_others", c.controls[attack].taper == tp::ControlTaper::linear ? 1 : 0, 1);
+        P.eq("controls.linear_others", c.controls[attack].taper == pg::ControlTaper::linear ? 1 : 0, 1);
     }
 
     // ---- LEX -----------------------------------------------------------------------------------------------------------
@@ -273,17 +273,17 @@ panel background=#1d1b19 accent=orange {
         const std::string gui = "/* a block\n   comment */ row // a row\n{\n  knob cutoff; knob resonance, size=small\n"
                                 "  label \"A \\\"QUOTE\\\"\" color=#e73\n}\nknob attack\n";
         const Compiled c = withGui(gui);
-        const tp::GuiTree& t = c.panel.gui;
-        const int row = find(t, tp::GuiKind::row);
+        const pg::GuiTree& t = c.panel.gui;
+        const int row = find(t, pg::GuiKind::row);
         P.eq("lex.brace_next_line", row >= 0 && at(t, row).children.size() == 3 ? 1 : 0, 1);
-        P.eq("lex.semicolon_comma", find(t, tp::GuiKind::knob, "", resonance) >= 0
-                                        && at(t, find(t, tp::GuiKind::knob, "", resonance)).size == tp::GuiSize::small ? 1 : 0, 1);
-        const tp::GuiNode& l = at(t, find(t, tp::GuiKind::label));
+        P.eq("lex.semicolon_comma", find(t, pg::GuiKind::knob, "", resonance) >= 0
+                                        && at(t, find(t, pg::GuiKind::knob, "", resonance)).size == pg::GuiSize::small ? 1 : 0, 1);
+        const pg::GuiNode& l = at(t, find(t, pg::GuiKind::label));
         P.eq("lex.escaped_quote", l.text == "A \"QUOTE\"" ? 1 : 0, 1);
         P.eq("lex.short_hex", l.color == "#ee7733" ? 1 : 0, 1);
-        P.eq("lex.after_block", find(t, tp::GuiKind::knob, "", attack) >= 0 && at(t, find(t, tp::GuiKind::knob, "", attack)).parent == 0 ? 1 : 0, 1);
+        P.eq("lex.after_block", find(t, pg::GuiKind::knob, "", attack) >= 0 && at(t, find(t, pg::GuiKind::knob, "", attack)).parent == 0 ? 1 : 0, 1);
         // The rest (9 parameters) in a section without a title, with a note naming them: REST.
-        const int rest = find(t, tp::GuiKind::section);
+        const int rest = find(t, pg::GuiKind::section);
         P.eq("rest.section", rest >= 0 && at(t, rest).text.empty() && at(t, rest).parent == 0 && at(t, rest).children.size() == 9 ? 1 : 0, 1);
         P.eq("rest.note", has(c.notes, "decay, sustain, release, wave, sync, mode, voices, level, pan have no control") ? 1 : 0, 1);
         P.eq("rest.only_note", countLines(c.notes), 1);
@@ -328,32 +328,32 @@ panel background=#1d1b19 accent=orange {
         P.eq("notes.label_text", has(c.notes, "panel.gui:10:1: note: label takes a \"text\"") ? 1 : 0, 1);
         P.eq("notes.tabs_page", has(c.notes, "panel.gui:11:8: note: tabs hold pages") ? 1 : 0, 1);
         P.eq("notes.page_outside", has(c.notes, "panel.gui:12:1: note: a page goes in tabs") ? 1 : 0, 1);
-        P.eq("notes.page_children_kept", find(c.panel.gui, tp::GuiKind::knob, "", resonance) >= 0 ? 1 : 0, 1);
+        P.eq("notes.page_children_kept", find(c.panel.gui, pg::GuiKind::knob, "", resonance) >= 0 ? 1 : 0, 1);
         P.eq("notes.colour", has(c.notes, "panel.gui:13:13: note: 'puce' is not a colour") ? 1 : 0, 1);
         P.eq("notes.unit", has(c.notes, "note: a number takes no unit after it: 'px'") ? 1 : 0, 1);
-        P.eq("notes.unit_value_kept", at(c.panel.gui, find(c.panel.gui, tp::GuiKind::row)).gap == 12.0f ? 1 : 0, 1);
+        P.eq("notes.unit_value_kept", at(c.panel.gui, find(c.panel.gui, pg::GuiKind::row)).gap == 12.0f ? 1 : 0, 1);
         P.eq("notes.log_from_zero", has(c.notes, "panel.gui:15:14: note: a log taper needs a range above 0") ? 1 : 0, 1);
-        P.eq("notes.log_stays_linear", c.controls[sustain].taper == tp::ControlTaper::linear ? 1 : 0, 1);
+        P.eq("notes.log_stays_linear", c.controls[sustain].taper == pg::ControlTaper::linear ? 1 : 0, 1);
         P.eq("notes.decimals_range", has(c.notes, "panel.gui:16:14: note: decimals=9 is outside 0 to 4: 4 instead") ? 1 : 0, 1);
         P.eq("notes.no_field", has(c.notes, "panel.gui:17:7: note: there is no field nofield") ? 1 : 0, 1);
         P.eq("notes.open_quote", has(c.notes, "panel.gui:18:7: note: a \"text\" without its closing \"") ? 1 : 0, 1);
         P.eq("notes.stray_close", has(c.notes, "panel.gui:19:1: note: a } that closes nothing") ? 1 : 0, 1);
         P.eq("notes.unclosed", has(c.notes, "panel.gui:20:5: note: this { has no }") ? 1 : 0, 1);
-        P.eq("notes.rest_stands", find(c.panel.gui, tp::GuiKind::knob, "", level) >= 0 && find(c.panel.gui, tp::GuiKind::knob, "", cutoff) >= 0 ? 1 : 0, 1);
+        P.eq("notes.rest_stands", find(c.panel.gui, pg::GuiKind::knob, "", level) >= 0 && find(c.panel.gui, pg::GuiKind::knob, "", cutoff) >= 0 ? 1 : 0, 1);
     }
 
     // ---- two .gui files, pragmas beside one, and PRAGMAS alone -------------------------------------------------------
     {
         const std::string pragmas = "#pragma panel section \"F\" cutoff resonance\n";
-        const Compiled both = compile({ { tp::kProgramName, program(pragmas) }, { "panel.gui", "knob cutoff\n" },
+        const Compiled both = compile({ { pg::kProgramName, program(pragmas) }, { "panel.gui", "knob cutoff\n" },
                                         { "other.gui", "knob level\n" } });
         P.eq("files.second_gui", has(both.notes, "other.gui: note: the interface is panel.gui's") ? 1 : 0, 1);
         P.eq("files.pragmas_left_out", has(both.notes, "the #pragma panel lines are left out") ? 1 : 0, 1);
         P.eq("files.gui_wins", !both.panel.gui.empty() && both.panel.sections.empty() ? 1 : 0, 1);
-        const Compiled alone = compile({ { tp::kProgramName, program(pragmas) } });
+        const Compiled alone = compile({ { pg::kProgramName, program(pragmas) } });
         P.eq("pragmas.no_tree", alone.panel.gui.empty() && !alone.panel.sections.empty() ? 1 : 0, 1);
         P.eq("pragmas.no_note_about_gui", has(alone.notes, ".gui") ? 0 : 1, 1);
-        P.eq("pragmas.is_gui_file", tp::isGuiFile("panel.gui") && !tp::isGuiFile("gui") && !tp::isGuiFile("panel.fm") ? 1 : 0, 1);
+        P.eq("pragmas.is_gui_file", pg::isGuiFile("panel.gui") && !pg::isGuiFile("gui") && !pg::isGuiFile("panel.fm") ? 1 : 0, 1);
     }
 
     // ---- STYLES --------------------------------------------------------------------------------------------------------
@@ -385,40 +385,40 @@ panel background=#1d1b19 accent=orange {
         if (lineNotes > 0)
             std::printf("styles notes:\n%s", c.notes.c_str());
         P.eq("styles.no_line_notes", lineNotes, 0);
-        const tp::GuiTree& t = c.panel.gui;
+        const pg::GuiTree& t = c.panel.gui;
         P.eq("styles.gradient", t.gradient == "#101010" && t.background == "#202020" ? 1 : 0, 1);
-        const tp::GuiNode& tabs = at(t, find(t, tp::GuiKind::tabs));
+        const pg::GuiNode& tabs = at(t, find(t, pg::GuiKind::tabs));
         P.eq("styles.tabs_bar", tabs.style.look == "bar" ? 1 : 0, 1);
-        const tp::GuiNode& sec = at(t, find(t, tp::GuiKind::section, "S"));
+        const pg::GuiNode& sec = at(t, find(t, pg::GuiKind::section, "S"));
         P.eq("styles.section_own_look", sec.style.look == "plate" ? 1 : 0, 1);              // its own beats the defaults'
         P.eq("styles.section_defaults_radius", sec.style.radius == 8.0f ? 1 : 0, 1);         // the defaults' still apply
         P.eq("styles.section_title", sec.style.titleAlign == 0 && sec.style.titleSize == 2 && sec.style.shadow == 0 ? 1 : 0, 1);
-        const tp::GuiNode& row = at(t, find(t, tp::GuiKind::row));
+        const pg::GuiNode& row = at(t, find(t, pg::GuiKind::row));
         P.eq("styles.row_wrap", row.wrap && row.gap == 6.0f && row.margin == 4.0f ? 1 : 0, 1);
-        const tp::GuiNode& big = at(t, find(t, tp::GuiKind::knob, "", cutoff));
+        const pg::GuiNode& big = at(t, find(t, pg::GuiKind::knob, "", cutoff));
         P.eq("styles.class", big.style.px == 72.0f && big.style.arc == "#ffaa00" && big.style.pointer == 1 ? 1 : 0, 1);
         P.eq("styles.own_beats_class", big.style.look == "soft" ? 1 : 0, 1);
         P.eq("styles.defaults_ticks", big.style.tickCount == 11 ? 1 : 0, 1);
         P.eq("styles.live", big.live >= 0 && big.live < static_cast<int>(c.panel.displays.size())
                                 && c.panel.displays[static_cast<std::size_t>(big.live)].hidden
                                 && c.panel.displays[static_cast<std::size_t>(big.live)].source == "env" ? 1 : 0, 1);
-        const tp::GuiNode& slider = at(t, find(t, tp::GuiKind::slider, "", attack));
+        const pg::GuiNode& slider = at(t, find(t, pg::GuiKind::slider, "", attack));
         P.eq("styles.live_shared_tap", slider.live == big.live ? 1 : 0, 1);                   // one tap for one field
         P.eq("styles.slider_colours", slider.style.track == "none" && slider.style.cap == "#ffffff" ? 1 : 0, 1);
-        const tp::GuiNode& reso = at(t, find(t, tp::GuiKind::knob, "", resonance));
+        const pg::GuiNode& reso = at(t, find(t, pg::GuiKind::knob, "", resonance));
         P.eq("styles.knob_props", reso.style.bipolar && reso.style.labelPos == 1 && reso.style.valueShow == 2
                                       && reso.style.sweep == 300.0f && reso.style.thickness == 4.0f && reso.style.look == "ring" ? 1 : 0, 1);
-        const tp::GuiNode& box = at(t, find(t, tp::GuiKind::box));
+        const pg::GuiNode& box = at(t, find(t, pg::GuiKind::box));
         P.eq("styles.box", box.style.look == "inset" && box.style.fill == "none" && box.style.borderWidth == 2.0f
                                && !box.style.border.empty() ? 1 : 0, 1);
-        const tp::GuiNode& lvl = at(t, find(t, tp::GuiKind::knob, "", level));
+        const pg::GuiNode& lvl = at(t, find(t, pg::GuiKind::knob, "", level));
         P.eq("styles.self_min", lvl.self == 3 && lvl.minW == 80.0f ? 1 : 0, 1);
-        const tp::GuiNode& label = at(t, find(t, tp::GuiKind::label, "BIG"));
+        const pg::GuiNode& label = at(t, find(t, pg::GuiKind::label, "BIG"));
         P.eq("styles.label_px", label.textPx == 24.0f && label.textAlign == 2 ? 1 : 0, 1);
-        P.eq("styles.divider", at(t, find(t, tp::GuiKind::divider)).style.thickness == 3.0f ? 1 : 0, 1);
+        P.eq("styles.divider", at(t, find(t, pg::GuiKind::divider)).style.thickness == 3.0f ? 1 : 0, 1);
         if constexpr (kInstrument)
         {
-            const tp::GuiNode& kb = at(t, find(t, tp::GuiKind::keyboard));
+            const pg::GuiNode& kb = at(t, find(t, pg::GuiKind::keyboard));
             P.eq("styles.keyboard", kb.from == 36 && kb.keys == 37 && kb.height == 80.0f && kb.wheels ? 1 : 0, 1);
         }
 
@@ -436,8 +436,8 @@ panel background=#1d1b19 accent=orange {
         P.eq("styles.note_look", has(m.notes, "panel.gui:4:") && has(m.notes, "shiny") ? 1 : 0, 1);
         P.eq("styles.note_tabs_look", has(m.notes, "panel.gui:5:") && has(m.notes, "folder") ? 1 : 0, 1);
         P.eq("styles.note_keyboard", has(m.notes, "panel.gui:6:1: note: an effect plays no notes") ? (kInstrument ? 0 : 1) : (kInstrument ? 1 : 0), 1);
-        P.eq("styles.mistakes_rest_stands", find(m.panel.gui, tp::GuiKind::knob, "", cutoff) >= 0
-                                                && find(m.panel.gui, tp::GuiKind::knob, "", resonance) >= 0 ? 1 : 0, 1);
+        P.eq("styles.mistakes_rest_stands", find(m.panel.gui, pg::GuiKind::knob, "", cutoff) >= 0
+                                                && find(m.panel.gui, pg::GuiKind::knob, "", resonance) >= 0 ? 1 : 0, 1);
     }
 
     // ---- an instrument has no input ------------------------------------------------------------------------------------

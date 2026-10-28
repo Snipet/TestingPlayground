@@ -7,7 +7,7 @@
 #include <cstdlib>
 #include <thread>
 
-namespace testingplayground::claude
+namespace playground::claude
 {
     // ---- JSON helpers ------------------------------------------------------------------------------------------------
     juce::var parseJson(const std::string& text)

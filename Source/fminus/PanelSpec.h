@@ -44,7 +44,7 @@
 #include <string>
 #include <vector>
 
-namespace testingplayground
+namespace playground
 {
     inline constexpr std::size_t kMaxSectionTitle = 24;   // characters; longer ones are cut
     inline constexpr std::size_t kMaxDialLabel = 14;

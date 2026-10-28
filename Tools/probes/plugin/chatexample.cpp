@@ -47,7 +47,7 @@
 #include <string>
 #include <vector>
 
-namespace tp = testingplayground;
+namespace pg = playground;
 
 namespace
 {
@@ -72,7 +72,7 @@ namespace
     // A program that uses a region as the prompt's THREADS says, for this plugin's kind.
     std::string threadsProgram()
     {
-        if constexpr (tp::product::kIsInstrument)
+        if constexpr (pg::product::kIsInstrument)
             return R"FM(// Threads: eight band-limited saw tables built at once in Shared's init, each voice reading its note's.
 module Table
 {
@@ -243,11 +243,11 @@ module Effect
     }
 
     // Whether every dial has a control in the interface (a .gui file's), each inside a titled section or page.
-    bool everyDialTitled(const tp::PanelSpec& spec, const tp::Controls& controls, int& placed)
+    bool everyDialTitled(const pg::PanelSpec& spec, const pg::Controls& controls, int& placed)
     {
         placed = 0;
         bool titled = !spec.gui.empty();
-        for (const tp::GuiNode& n : spec.gui.nodes)
+        for (const pg::GuiNode& n : spec.gui.nodes)
         {
             if (n.slot < 0)
                 continue;
@@ -255,14 +255,14 @@ module Effect
             bool inTitled = false;
             for (int p = n.parent; p >= 0; p = spec.gui.nodes[static_cast<std::size_t>(p)].parent)
             {
-                const tp::GuiNode& up = spec.gui.nodes[static_cast<std::size_t>(p)];
-                if ((up.kind == tp::GuiKind::section || up.kind == tp::GuiKind::page) && !up.text.empty())
+                const pg::GuiNode& up = spec.gui.nodes[static_cast<std::size_t>(p)];
+                if ((up.kind == pg::GuiKind::section || up.kind == pg::GuiKind::page) && !up.text.empty())
                     inTitled = true;
             }
             titled = titled && inTitled;
         }
         int used = 0;
-        for (const tp::Control& c : controls)
+        for (const pg::Control& c : controls)
             used += c.used ? 1 : 0;
         return titled && placed == used;
     }
@@ -278,11 +278,11 @@ module Effect
 PROBE(plugin, chatexample)
 {
     constexpr double kFs = 48000.0;
-    constexpr bool kInstrument = tp::product::kIsInstrument;
+    constexpr bool kInstrument = pg::product::kIsInstrument;
 
     // ---- PROMPT ----------------------------------------------------------------------------------------------------
-    const std::string& prompt = tp::ChatAgent::systemPrompt();
-    const tp::Sources example = tp::ChatAgent::promptExample();
+    const std::string& prompt = pg::ChatAgent::systemPrompt();
+    const pg::Sources example = pg::ChatAgent::promptExample();
     P.eq("prompt.large_section", has(prompt, "BUILDING A LARGE PROGRAM") ? 1 : 0, 1);
     P.eq("prompt.measure_workflow", has(prompt, "measure_output") ? 1 : 0, 1);
     P.eq("prompt.library_tool", has(prompt, "add_library_file") ? 1 : 0, 1);
@@ -292,17 +292,17 @@ PROBE(plugin, chatexample)
                            && has(prompt, "fft_inverse(plan, bins, out)") ? 1 : 0, 1);
     P.eq("prompt.shared", has(prompt, "module Shared") && has(prompt, "Shared*") ? 1 : 0, 1);
     P.eq("prompt.host", has(prompt, "THE HOST: TEMPO") && has(prompt, "Host* host;") && has(prompt, "lfo.follow(")
-                            && has(prompt, "<host_file name=\"host.fm\">\n" + std::string(tp::Patch::hostSource()) + "</host_file>")
+                            && has(prompt, "<host_file name=\"host.fm\">\n" + std::string(pg::Patch::hostSource()) + "</host_file>")
                             ? 1 : 0, 1);
     P.eq("prompt.interface_section", has(prompt, "THE INTERFACE: panel.gui") && has(prompt, "section \"FILTER\"")
                                          && has(prompt, "tabs { page") && has(prompt, "knob cutoff size=large taper=log")
                                          && has(prompt, "spectrum out") && has(prompt, "envelope attack decay sustain release")
                                          && has(prompt, "#pragma panel lines") ? 1 : 0, 1);
     int headers = 0;
-    for (const tp::LibraryFile& f : tp::kLibrary)
+    for (const pg::LibraryFile& f : pg::kLibrary)
         headers += has(prompt, std::string("<library_file name=\"") + f.name + "\" category=\"" + f.category + "\">\n"
                                    + header(f.source) + "</library_file>") ? 1 : 0;
-    P.eq("prompt.library_headers", headers, static_cast<int64_t>(std::size(tp::kLibrary)));
+    P.eq("prompt.library_headers", headers, static_cast<int64_t>(std::size(pg::kLibrary)));
     P.ge("prompt.example_files", static_cast<double>(example.size()), 3.0);
     P.eq("prompt.example_word_for_word",
          !example.empty() && has(prompt, "\">\n" + example[0].text + "</example_program>") ? 1 : 0, 1);
@@ -311,12 +311,12 @@ PROBE(plugin, chatexample)
     int fromLibrary = 0;
     for (std::size_t k = 2; k < example.size(); ++k)
     {
-        const tp::LibraryFile* f = tp::findLibraryFile(example[k].name);
+        const pg::LibraryFile* f = pg::findLibraryFile(example[k].name);
         fromLibrary += f != nullptr && example[k].text == f->source ? 1 : 0;
     }
     P.eq("prompt.example_uses_library", fromLibrary, static_cast<int64_t>(example.size()) - 2);
-    P.eq("prompt.program_first_in_editor", example.empty() ? 0 : (example[0].name == tp::kProgramName ? 1 : 0), 1);
-    P.le("prompt.files_fit_editor", static_cast<double>(example.size()), static_cast<double>(tp::kMaxFiles));
+    P.eq("prompt.program_first_in_editor", example.empty() ? 0 : (example[0].name == pg::kProgramName ? 1 : 0), 1);
+    P.le("prompt.files_fit_editor", static_cast<double>(example.size()), static_cast<double>(pg::kMaxFiles));
     std::printf("system prompt: %zu characters; the example: %zu files\n", prompt.size(), example.size());
 
     // ---- EXAMPLE ---------------------------------------------------------------------------------------------------
@@ -326,9 +326,9 @@ PROBE(plugin, chatexample)
     if constexpr (kInstrument)
     {
         for (const int note : { 48, 55, 60, 64 })
-            chord.push_back({ 0, tp::EventKind::noteOn, note, 0.8f });
+            chord.push_back({ 0, pg::EventKind::noteOn, note, 0.8f });
         for (const int note : { 48, 55, 60, 64 })
-            chord.push_back({ static_cast<std::size_t>(kFs), tp::EventKind::noteOff, note, 0.0f });
+            chord.push_back({ static_cast<std::size_t>(kFs), pg::EventKind::noteOff, note, 0.0f });
     }
     {
         probe::Rig rig(kFs, 512);
@@ -341,9 +341,9 @@ PROBE(plugin, chatexample)
         if (ok)
         {
             int dials = 0;
-            for (int c = 0; c < tp::kMaxControls; ++c)
+            for (int c = 0; c < pg::kMaxControls; ++c)
             {
-                const tp::Control& ctl = rig.controls()[static_cast<std::size_t>(c)];
+                const pg::Control& ctl = rig.controls()[static_cast<std::size_t>(c)];
                 if (!ctl.used)
                     continue;
                 ++dials;
@@ -352,7 +352,7 @@ PROBE(plugin, chatexample)
                 P.in(ck + ".default_in_range", static_cast<double>(ctl.def), static_cast<double>(ctl.min),
                      static_cast<double>(ctl.max));
             }
-            P.in("example.dials", static_cast<double>(dials), 8.0, static_cast<double>(tp::kMaxControls));
+            P.in("example.dials", static_cast<double>(dials), 8.0, static_cast<double>(pg::kMaxControls));
             // Its interface (panel.gui): every dial a control in a titled section (none left over for an untitled one).
             int placed = 0;
             const bool titled = everyDialTitled(rig.panel(), rig.controls(), placed);
@@ -380,8 +380,8 @@ PROBE(plugin, chatexample)
             P.eq("example.blocks_64_333_same_bits",
                  probe::sameBits(o64.l, o333.l) && probe::sameBits(o64.r, o333.r) ? 1 : 0, 1);
         }
-        tp::measure::Request req;
-        const std::string report = tp::measure::run(example, req);
+        pg::measure::Request req;
+        const std::string report = pg::measure::run(example, req);
         std::printf("the example, measured:\n%s", report.c_str());
         P.eq("example.report_no_alerts", has(report, "Alerts: none.") ? 1 : 0, 1);
         P.eq("example.report_no_notes", has(report, "Note: ") ? 0 : 1, 1);
@@ -394,12 +394,12 @@ PROBE(plugin, chatexample)
         for (std::size_t i = 0; i < sine.size(); ++i)
             sine[i] = 0.5f * static_cast<float>(std::sin(2.0 * std::numbers::pi * 1000.0 * static_cast<double>(i) / kFs));
         double centroid = 0.0;
-        const std::vector<tp::measure::Peak> peaks = tp::measure::spectrumPeaks(sine, kFs, 4, &centroid);
+        const std::vector<pg::measure::Peak> peaks = pg::measure::spectrumPeaks(sine, kFs, 4, &centroid);
         P.eq("measure.sine_one_peak", static_cast<int64_t>(peaks.size()), 1);
         P.near("measure.sine_peak_hz", peaks.empty() ? 0.0 : peaks[0].hz, 1000.0, 0.5);
         P.near("measure.sine_centroid_hz", centroid, 1000.0, 60.0);
     }
-    const std::string broken = tp::measure::run(tp::singleFile("module Nothing {};\n"), {});
+    const std::string broken = pg::measure::run(pg::singleFile("module Nothing {};\n"), {});
     P.eq("measure.uncompiled_says_so", broken.rfind("It did not compile", 0) == 0 ? 1 : 0, 1);
     if constexpr (kInstrument)
     {
@@ -421,10 +421,10 @@ PROBE(plugin, chatexample)
             "        }\n"
             "        return held || env > 0.0001f;\n"
             "    }\n};\n";
-        tp::measure::Request req;
+        pg::measure::Request req;
         req.notes = { 57 };                                  // A3: 220 Hz
         req.dials["volume"] = 1.0f;                          // no such dial
-        const std::string r = tp::measure::run(tp::singleFile(voice), req);
+        const std::string r = pg::measure::run(pg::singleFile(voice), req);
         std::printf("a sine voice at 0.25:\n%s", r.c_str());
         P.eq("measure.voice_peak", has(r, "Held: peak -12.0 dBFS") ? 1 : 0, 1);
         P.near("measure.voice_partial_hz", firstPartial(r), 220.0, 0.2);
@@ -437,12 +437,12 @@ PROBE(plugin, chatexample)
             std::string bent = "#include \"host.fm\"\n" + voice;
             bent.replace(bent.find("    float rate;"), 0, "    Host* host;\n");
             bent.replace(bent.find("phase += step;"), 14, "phase += step * expf(0.0577622650f * 2 * host->pitchbend);");
-            tp::measure::Request wheels;
+            pg::measure::Request wheels;
             wheels.notes = { 57 };
             wheels.bpm = 90.0f;
             wheels.modwheel = 0.5f;
             wheels.pitchbend = 1.0f;
-            const std::string w = tp::measure::run(tp::singleFile(bent), wheels);
+            const std::string w = pg::measure::run(pg::singleFile(bent), wheels);
             if (!has(w, "Host: "))
                 std::printf("a sine voice on the pitch wheel:\n%s", w.c_str());
             P.eq("measure.host_line", has(w, "Host: playing from the song's start at 90 BPM, mod wheel 0.50, pitch bend 1.00.") ? 1 : 0, 1);
@@ -456,15 +456,15 @@ PROBE(plugin, chatexample)
                 const std::size_t at = report.find(key);
                 return at == std::string::npos ? -200.0 : std::atof(report.c_str() + at + key.size());
             };
-            tp::measure::Request high;
+            pg::measure::Request high;
             high.notes = { 96 };
             std::string naive = voice;
             naive.replace(naive.find("sinf(6.28318531f * phase)"), 25, "(2 * phase - 1)");
-            const std::string a = tp::measure::run(tp::singleFile(naive), high);
+            const std::string a = pg::measure::run(pg::singleFile(naive), high);
             std::printf("a naive saw at C7:\n%s", a.c_str());
             P.ge("measure.naive_saw_aliases_db", inharmonicDb(a), -40.0);
             P.eq("measure.saw_edges_no_click", !has(a, "likely a click") ? 1 : 0, 1);
-            const tp::LibraryFile* lib = tp::findLibraryFile("wavetable.fm");
+            const pg::LibraryFile* lib = pg::findLibraryFile("wavetable.fm");
             const std::string program =
                 "#include \"wavetable.fm\"\n"
                 "module Shared\n{\n    Wavetable table;\n"
@@ -490,12 +490,12 @@ PROBE(plugin, chatexample)
             P.eq("measure.wavetable_in_library", lib != nullptr ? 1 : 0, 1);
             if (lib != nullptr)
             {
-                const tp::Sources files{ { tp::kProgramName, program }, { "wavetable.fm", lib->source } };
-                const tp::Patch::Result compiled = tp::Patch::compile(files, static_cast<float>(kFs));
+                const pg::Sources files{ { pg::kProgramName, program }, { "wavetable.fm", lib->source } };
+                const pg::Patch::Result compiled = pg::Patch::compile(files, static_cast<float>(kFs));
                 P.eq("measure.wavetable_compiles_clean", compiled.patch != nullptr && compiled.notes.empty() ? 1 : 0, 1);
                 if (!compiled.errors.empty() || !compiled.notes.empty())
                     std::printf("%s%s", compiled.errors.c_str(), compiled.notes.c_str());
-                const std::string w = tp::measure::run(files, high);
+                const std::string w = pg::measure::run(files, high);
                 std::printf("a wavetable saw at C7, its table in Shared:\n%s", w.c_str());
                 P.eq("measure.wavetable_nothing_inharmonic", has(w, "Inharmonic: nothing below 20 kHz") ? 1 : 0, 1);
                 P.eq("measure.wavetable_audible", has(w, "Held: peak -") && !has(w, "It is silent") ? 1 : 0, 1);
@@ -507,14 +507,14 @@ PROBE(plugin, chatexample)
             std::string jump = voice;
             jump.replace(jump.find("float env;"), 10, "float env; int count;");
             jump.replace(jump.find("phase += step;"), 14, "phase += step; count += 1; if (count == 24000) phase += 0.5f;");
-            const std::string j = tp::measure::run(tp::singleFile(jump), {});
+            const std::string j = pg::measure::run(pg::singleFile(jump), {});
             P.eq("measure.jump_is_a_click", has(j, "likely a click") ? 1 : 0, 1);
             if (!has(j, "likely a click"))
                 std::printf("a sine that jumps:\n%s", j.c_str());
         }
         std::string forever = voice;
         forever.replace(forever.find("return held || env > 0.0001f;"), 29, "return true;");
-        const std::string f = tp::measure::run(tp::singleFile(forever), {});
+        const std::string f = pg::measure::run(pg::singleFile(forever), {});
         P.eq("measure.never_ends_flagged", has(f, "No voice ended") && has(f, "Note: A voice that never returns false") ? 1 : 0,
              1);
     }
@@ -527,9 +527,9 @@ PROBE(plugin, chatexample)
             "    {\n"
             "        for (int i = 0; i < n; ++i) { left[i] *= level[i]; right[i] *= level[i]; }\n"
             "    }\n};\n";
-        tp::measure::Request req;
+        pg::measure::Request req;
         req.dials["volume"] = 1.0f;                          // no such dial
-        const std::string r = tp::measure::run(tp::singleFile(gain), req);
+        const std::string r = pg::measure::run(pg::singleFile(gain), req);
         std::printf("a gain of 0.5:\n%s", r.c_str());
         P.eq("measure.sine_gain", has(r, "(gain -6.0 dB), DC") ? 1 : 0, 1);
         P.eq("measure.noise_gain", has(r, "-18.0 dBFS RMS for 1.00 s: out RMS -24.0 dBFS (gain -6.0 dB)") ? 1 : 0, 1);
@@ -544,7 +544,7 @@ PROBE(plugin, chatexample)
             "        for (int i = 0; i < n; ++i) { left[i] += 0.1f * sinf(6.28318531f * phase); right[i] = left[i];\n"
             "                                      phase += 0.01f; phase -= floorf(phase); }\n"
             "    }\n};\n";
-        const std::string h = tp::measure::run(tp::singleFile(hum), {});
+        const std::string h = pg::measure::run(pg::singleFile(hum), {});
         P.eq("measure.self_sound_flagged", has(h, "Note: It makes sound from silence") ? 1 : 0, 1);
         // A delay of one beat (host.fm) at the tempo measure_output is asked for: 90 BPM, 666.7 ms.
         const std::string beat =
@@ -563,9 +563,9 @@ PROBE(plugin, chatexample)
             "            w += 1;\n            if (w >= 65536) w = 0;\n"
             "        }\n"
             "    }\n};\n";
-        tp::measure::Request synced;
+        pg::measure::Request synced;
         synced.bpm = 90.0f;
-        const std::string b = tp::measure::run(tp::singleFile(beat), synced);
+        const std::string b = pg::measure::run(pg::singleFile(beat), synced);
         if (!has(b, "after 666.7 ms"))
             std::printf("a delay of one beat at 90 BPM:\n%s", b.c_str());
         P.eq("measure.host_line", has(b, "Host: playing from the song's start at 90 BPM.") ? 1 : 0, 1);
@@ -578,8 +578,8 @@ PROBE(plugin, chatexample)
                                    && has(prompt, "about 4 microseconds") ? 1 : 0, 1);
         P.eq("threads.kind_advice", has(prompt, kInstrument ? "never put one there" : "process runs once a host block") ? 1 : 0, 1);
         const std::string text = threadsProgram();
-        const tp::Sources together{ { tp::kProgramName, text } };
-        const tp::Sources alone{ { tp::kProgramName, replaced(text, "parallel for", "for") } };
+        const pg::Sources together{ { pg::kProgramName, text } };
+        const pg::Sources alone{ { pg::kProgramName, replaced(text, "parallel for", "for") } };
         P.eq("threads.has_region", has(text, "parallel for") && !has(alone[0].text, "parallel") ? 1 : 0, 1);
         const std::size_t len = static_cast<std::size_t>(1.5 * kFs);
         const probe::Stereo in = kInstrument ? probe::Stereo(len) : probe::noise(len, 0.25);
@@ -587,9 +587,9 @@ PROBE(plugin, chatexample)
         if constexpr (kInstrument)
         {
             for (const int note : { 36, 60, 84, 103 })
-                notes.push_back({ 0, tp::EventKind::noteOn, note, 0.8f });
+                notes.push_back({ 0, pg::EventKind::noteOn, note, 0.8f });
             for (const int note : { 36, 60, 84, 103 })
-                notes.push_back({ static_cast<std::size_t>(0.75 * kFs), tp::EventKind::noteOff, note, 0.0f });
+                notes.push_back({ static_cast<std::size_t>(0.75 * kFs), pg::EventKind::noteOff, note, 0.0f });
         }
         probe::Rig a(kFs, 1024), b(kFs, 1024), c(kFs, 1024);
         std::string messages;

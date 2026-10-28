@@ -23,7 +23,7 @@
 #include <sstream>
 #include <utility>
 
-namespace testingplayground
+namespace playground
 {
     namespace
     {

@@ -28,12 +28,12 @@
 #include <cstdio>
 #include <string>
 
-namespace tp = testingplayground;
+namespace pg = playground;
 
 namespace
 {
     constexpr double kFs = 48000.0;
-    constexpr bool kInstrument = tp::product::kIsInstrument;
+    constexpr bool kInstrument = pg::product::kIsInstrument;
 
     // A program whose output (an effect's, or a held voice's) is `expr`, with `params` in its main module.
     std::string program(const std::string& params, const std::string& expr)
@@ -52,9 +52,9 @@ namespace
                    "            left[i] = " + expr + ";\n            right[i] = " + expr + ";\n        }\n    }\n};\n";
     }
 
-    std::unique_ptr<tp::Patch> compile(const std::string& source, float rate)
+    std::unique_ptr<pg::Patch> compile(const std::string& source, float rate)
     {
-        tp::Patch::Result r = tp::Patch::compile(source, rate);
+        pg::Patch::Result r = pg::Patch::compile(source, rate);
         if (!r.errors.empty())
             std::printf("%s", r.errors.c_str());
         return std::move(r.patch);
@@ -72,7 +72,7 @@ namespace
 PROBE(dsp, swap)
 {
     const std::size_t fade = static_cast<std::size_t>(0.020 * kFs);
-    const probe::Note held{ 0, tp::EventKind::noteOn, 60, 1.0f };
+    const probe::Note held{ 0, pg::EventKind::noteOn, 60, 1.0f };
 
     if constexpr (!kInstrument)
     {
@@ -87,12 +87,12 @@ PROBE(dsp, swap)
 
         // FIRST and SWAP: offers at blocks 40 and 120 (samples 10240 and 30720).
         probe::Rig rig(kFs, 512);
-        tp::Engine& e = rig.engine();
+        pg::Engine& e = rig.engine();
         auto half = compile(program("", "0.5f * x"), e.rate());
         auto quarter = compile(program("", "0.25f * x"), e.rate());
         P.eq("programs.compile", half && quarter ? 1 : 0, 1);
         const std::size_t first = 40 * 256, second = 120 * 256;
-        const probe::Stereo out = rig.run(in, 256, {}, {}, [&](std::size_t pos, std::array<float, tp::kMaxControls>&) {
+        const probe::Stereo out = rig.run(in, 256, {}, {}, [&](std::size_t pos, std::array<float, pg::kMaxControls>&) {
             if (pos == first)
                 e.offer(std::move(half));
             if (pos == second)
@@ -121,11 +121,11 @@ PROBE(dsp, swap)
         // SWAP: a held note on a program of 1s, then one of 0.5s.
         probe::Rig rig(kFs, 512);
         rig.load(program("", "1.0f"));
-        tp::Engine& e = rig.engine();
+        pg::Engine& e = rig.engine();
         auto next = compile(program("", "0.5f"), e.rate());
         const std::size_t offer = 20 * 256;
         const probe::Stereo out = rig.run(probe::Stereo(static_cast<std::size_t>(0.25 * kFs)), 256, { held }, {},
-                                          [&](std::size_t pos, std::array<float, tp::kMaxControls>&) {
+                                          [&](std::size_t pos, std::array<float, pg::kMaxControls>&) {
                                               if (pos == offer)
                                                   e.offer(std::move(next));
                                           });
@@ -141,7 +141,7 @@ PROBE(dsp, swap)
         steal.load(program("", "0.0625f"));
         std::vector<probe::Note> notes;
         for (int k = 0; k < 17; ++k)
-            notes.push_back({ static_cast<std::size_t>(k) * 256, tp::EventKind::noteOn, 40 + k, 1.0f });
+            notes.push_back({ static_cast<std::size_t>(k) * 256, pg::EventKind::noteOn, 40 + k, 1.0f });
         const probe::Stereo s = steal.run(probe::Stereo(32 * 256), 256, notes);
         P.near("steal.sixteen_sound_db", static_cast<double>(s.l.back()), 1.0, 1e-6);
         P.eq("steal.voices", steal.engine().activeVoices(), 16);
@@ -150,7 +150,7 @@ PROBE(dsp, swap)
         probe::Rig rel(kFs, 512);
         rel.load(program("", "1.0f"));
         rel.run(probe::Stereo(4 * 256), 256,
-                { held, { 2 * 256, tp::EventKind::noteOff, 60, 0.0f } });
+                { held, { 2 * 256, pg::EventKind::noteOff, 60, 0.0f } });
         P.eq("release.voice_free", rel.engine().activeVoices(), 0);
     }
 
@@ -161,7 +161,7 @@ PROBE(dsp, swap)
         const std::size_t move = 8 * 256;
         const probe::Stereo out = rig.run(sineInput(32 * 256), 256, kInstrument ? std::vector<probe::Note>{ held }
                                                                                  : std::vector<probe::Note>{},
-                                          {}, [&](std::size_t pos, std::array<float, tp::kMaxControls>& norm) {
+                                          {}, [&](std::size_t pos, std::array<float, pg::kMaxControls>& norm) {
                                               norm[0] = pos >= move ? 1.0f : 0.0f;
                                           });
         P.near("glide.before", static_cast<double>(out.l[move - 1]), 0.0, 0.0);
@@ -181,7 +181,7 @@ PROBE(dsp, swap)
         const std::size_t move = 8 * 256;
         const probe::Stereo out = rig.run(sineInput(16 * 256), 256, kInstrument ? std::vector<probe::Note>{ held }
                                                                                  : std::vector<probe::Note>{},
-                                          {}, [&](std::size_t pos, std::array<float, tp::kMaxControls>& norm) {
+                                          {}, [&](std::size_t pos, std::array<float, pg::kMaxControls>& norm) {
                                               norm[0] = pos >= move ? 1.0f : 0.0f;
                                           });
         P.near("knob.before", static_cast<double>(out.l[move - 1]), 0.0, 0.0);
@@ -203,7 +203,7 @@ PROBE(dsp, swap)
             const double want = index == 3 ? 4.0 : 0.0;
             P.near(key + ".output", static_cast<double>(out.l[300]), want, 0.0);
             P.eq(key + ".finite", probe::allFinite(out.l) && probe::allFinite(out.r) ? 1 : 0, 1);
-            P.eq(key + ".alert", (alerts & (index == 3 ? tp::Engine::clipped : tp::Engine::nonFinite)) != 0 ? 1 : 0, 1);
+            P.eq(key + ".alert", (alerts & (index == 3 ? pg::Engine::clipped : pg::Engine::nonFinite)) != 0 ? 1 : 0, 1);
         }
     }
     return P.finish();

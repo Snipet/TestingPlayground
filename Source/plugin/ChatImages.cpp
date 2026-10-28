@@ -13,7 +13,7 @@
 #include <cmath>
 #include <utility>
 
-namespace testingplayground::chatimages
+namespace playground::chatimages
 {
     namespace
     {

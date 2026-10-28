@@ -35,15 +35,15 @@
 #include <memory>
 #include <string>
 
-namespace tp = testingplayground;
+namespace pg = playground;
 
 namespace
 {
     constexpr double kFs = 48000.0;
-    constexpr bool kInstrument = tp::product::kIsInstrument;
+    constexpr bool kInstrument = pg::product::kIsInstrument;
 
     // Half a second of the processor's output: an effect over noise, an instrument playing middle C.
-    probe::Stereo play(tp::Processor& p)
+    probe::Stereo play(pg::Processor& p)
     {
         p.setRateAndBufferSizeDetails(kFs, 256);
         p.prepareToPlay(kFs, 256);
@@ -70,21 +70,21 @@ namespace
         return in;
     }
 
-    void runAndSettle(tp::Processor& p, const tp::Sources& files)
+    void runAndSettle(pg::Processor& p, const pg::Sources& files)
     {
         p.editorPort().run(files);
         p.settle();
     }
 
-    void runAndSettle(tp::Processor& p, const std::string& source)
+    void runAndSettle(pg::Processor& p, const std::string& source)
     {
-        runAndSettle(p, tp::singleFile(source));
+        runAndSettle(p, pg::singleFile(source));
     }
 
     // The second example, including a file of its own: lib.fm, a function nothing calls.
-    tp::Sources twoFiles()
+    pg::Sources twoFiles()
     {
-        return { { "program.fm", "#include \"lib.fm\"\n" + std::string(tp::kExamples[1].source) },
+        return { { "program.fm", "#include \"lib.fm\"\n" + std::string(pg::kExamples[1].source) },
                  { "lib.fm", "float twice(float x) { return x * 2.0f; }\n" } };
     }
 
@@ -119,15 +119,15 @@ namespace
 PROBE(plugin, state)
 {
     const funkgui::HeadlessGuiScope gui;
-    P.ge("examples", static_cast<double>(std::size(tp::kExamples)), 2.0);
+    P.ge("examples", static_cast<double>(std::size(pg::kExamples)), 2.0);
 
     // ROUND
     {
-        tp::Processor a;
+        pg::Processor a;
         runAndSettle(a, twoFiles());
         P.eq("round.runs_two_files", a.editorPort().running() == twoFiles() ? 1 : 0, 1);
         a.getParameters()[0]->setValueNotifyingHost(0.8f);
-        tp::Draft draft;
+        pg::Draft draft;
         draft.files = twoFiles();
         draft.files[0].text += "// an edit not run yet\n";
         draft.files.push_back({ "notes.fm", "// a third file\n" });
@@ -136,7 +136,7 @@ PROBE(plugin, state)
         juce::MemoryBlock saved;
         a.getStateInformation(saved);
 
-        tp::Processor b;
+        pg::Processor b;
         b.setStateInformation(saved.getData(), static_cast<int>(saved.getSize()));
         b.poll();
         P.eq("round.same_program", b.editorPort().running() == twoFiles() ? 1 : 0, 1);
@@ -151,7 +151,7 @@ PROBE(plugin, state)
 
     // RENAME
     {
-        tp::Processor p;
+        pg::Processor p;
         runAndSettle(p, withFirstParam("alpha", 2.0));
         P.near("rename.default", static_cast<double>(p.getParameters()[0]->getValue()), 0.2, 1e-6);
         p.getParameters()[0]->setValueNotifyingHost(0.7f);
@@ -164,9 +164,9 @@ PROBE(plugin, state)
 
     // BROKEN
     {
-        tp::Processor a;
+        pg::Processor a;
         juce::MemoryBlock saved;
-        a.editorPort().setDraft({ tp::singleFile("draft of a broken one"), 0 });
+        a.editorPort().setDraft({ pg::singleFile("draft of a broken one"), 0 });
         a.getStateInformation(saved);
         // The saved state with its program's text replaced by one that does not compile.
         std::unique_ptr<juce::XmlElement> xml = juce::AudioProcessor::getXmlFromBinary(saved.getData(),
@@ -183,37 +183,37 @@ PROBE(plugin, state)
                 file->setAttribute("text", "module {");
             juce::MemoryBlock broken;
             juce::AudioProcessor::copyXmlToBinary(*xml, broken);
-            tp::Processor b;
-            runAndSettle(b, tp::kExamples[1].source);
+            pg::Processor b;
+            runAndSettle(b, pg::kExamples[1].source);
             b.setStateInformation(broken.getData(), static_cast<int>(broken.getSize()));
             b.poll();
-            const tp::CompileStatus s = b.editorPort().status();
+            const pg::CompileStatus s = b.editorPort().status();
             P.eq("broken.not_ok", s.ok ? 0 : 1, 1);
             P.eq("broken.errors", s.errors.empty() ? 0 : 1, 1);
-            P.eq("broken.previous_plays", b.editorPort().running() == tp::singleFile(tp::kExamples[1].source) ? 1 : 0, 1);
-            P.eq("broken.draft", b.editorPort().draft().files == tp::singleFile("draft of a broken one") ? 1 : 0, 1);
+            P.eq("broken.previous_plays", b.editorPort().running() == pg::singleFile(pg::kExamples[1].source) ? 1 : 0, 1);
+            P.eq("broken.draft", b.editorPort().draft().files == pg::singleFile("draft of a broken one") ? 1 : 0, 1);
         }
     }
 
     // OLD
     {
-        tp::Processor a;
+        pg::Processor a;
         juce::MemoryBlock saved;
         a.getStateInformation(saved);
         auto program = std::make_unique<juce::XmlElement>("PROGRAM");
-        program->setAttribute("source", juce::String::fromUTF8(tp::kExamples[1].source));
+        program->setAttribute("source", juce::String::fromUTF8(pg::kExamples[1].source));
         program->setAttribute("draft", "// the old draft\n");
         const juce::MemoryBlock old = withProgram(saved, std::move(program));
-        tp::Processor b;
+        pg::Processor b;
         b.setStateInformation(old.getData(), static_cast<int>(old.getSize()));
         b.poll();
-        P.eq("old.plays_its_program", b.editorPort().running() == tp::singleFile(tp::kExamples[1].source) ? 1 : 0, 1);
-        P.eq("old.its_draft", b.editorPort().draft().files == tp::singleFile("// the old draft\n") ? 1 : 0, 1);
+        P.eq("old.plays_its_program", b.editorPort().running() == pg::singleFile(pg::kExamples[1].source) ? 1 : 0, 1);
+        P.eq("old.its_draft", b.editorPort().draft().files == pg::singleFile("// the old draft\n") ? 1 : 0, 1);
     }
 
     // TIDY
     {
-        tp::Processor a;
+        pg::Processor a;
         juce::MemoryBlock saved;
         a.getStateInformation(saved);
         auto program = std::make_unique<juce::XmlElement>("PROGRAM");
@@ -221,7 +221,7 @@ PROBE(plugin, state)
         auto* run = program->createNewChildElement("RUN");
         auto* file = run->createNewChildElement("FILE");
         file->setAttribute("name", "program.fm");
-        file->setAttribute("text", juce::String::fromUTF8(tp::kExamples[0].source));
+        file->setAttribute("text", juce::String::fromUTF8(pg::kExamples[0].source));
         auto* draft = program->createNewChildElement("DRAFT");
         const char* names[] = { "../program", "a.fm", "a.fm", "", ".hidden", "b c", "c.fm", "d.fm", "e.fm", "f.fm",
                                 "g.fm" };
@@ -232,26 +232,26 @@ PROBE(plugin, state)
             f->setAttribute("text", "// text\n");
         }
         const juce::MemoryBlock crafted = withProgram(saved, std::move(program));
-        tp::Processor b;
+        pg::Processor b;
         b.setStateInformation(crafted.getData(), static_cast<int>(crafted.getSize()));
         b.poll();
-        const tp::Draft d = b.editorPort().draft();
-        P.le("tidy.at_most_max", static_cast<double>(d.files.size()), static_cast<double>(tp::kMaxFiles));
+        const pg::Draft d = b.editorPort().draft();
+        P.le("tidy.at_most_max", static_cast<double>(d.files.size()), static_cast<double>(pg::kMaxFiles));
         int valid = 0, unique = 0;
         for (std::size_t i = 0; i < d.files.size(); ++i)
         {
-            valid += tp::validFileName(d.files[i].name) ? 1 : 0;
+            valid += pg::validFileName(d.files[i].name) ? 1 : 0;
             int same = 0;
-            for (const tp::SourceFile& g : d.files)
+            for (const pg::SourceFile& g : d.files)
                 same += g.name == d.files[i].name ? 1 : 0;
             unique += same == 1 ? 1 : 0;
             std::printf("  tidy file %zu: %s\n", i, d.files[i].name.c_str());
         }
         P.eq("tidy.names_valid", valid, static_cast<int64_t>(d.files.size()));
         P.eq("tidy.names_unique", unique, static_cast<int64_t>(d.files.size()));
-        P.eq("tidy.program_first", d.files.empty() ? 0 : (d.files[0].name == tp::kProgramName ? 1 : 0), 1);
+        P.eq("tidy.program_first", d.files.empty() ? 0 : (d.files[0].name == pg::kProgramName ? 1 : 0), 1);
         P.in("tidy.tab_in_range", static_cast<double>(d.active), 0.0, static_cast<double>(d.files.size()) - 1.0);
-        P.eq("tidy.plays", b.editorPort().running() == tp::singleFile(tp::kExamples[0].source) ? 1 : 0, 1);
+        P.eq("tidy.plays", b.editorPort().running() == pg::singleFile(pg::kExamples[0].source) ? 1 : 0, 1);
     }
 
     // EMPTY and NAN
@@ -263,11 +263,11 @@ PROBE(plugin, state)
         state.appendChild(p1, nullptr);
         juce::MemoryBlock block;
         juce::AudioProcessor::copyXmlToBinary(*state.createXml(), block);
-        tp::Processor p;
-        runAndSettle(p, tp::kExamples[1].source);
+        pg::Processor p;
+        runAndSettle(p, pg::kExamples[1].source);
         p.setStateInformation(block.getData(), static_cast<int>(block.getSize()));
         p.poll();
-        P.eq("empty.first_example", p.editorPort().running() == tp::singleFile(tp::kExamples[0].source) ? 1 : 0, 1);
+        P.eq("empty.first_example", p.editorPort().running() == pg::singleFile(pg::kExamples[0].source) ? 1 : 0, 1);
         P.near("nan.half", static_cast<double>(p.getParameters()[0]->getValue()), 0.5, 1e-6);
     }
     return P.finish();

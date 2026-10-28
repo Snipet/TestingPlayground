@@ -12,7 +12,7 @@
 #include <cmath>
 #include <cstdint>
 
-namespace testingplayground::ui::chat
+namespace playground::ui::chat
 {
     struct Palette
     {

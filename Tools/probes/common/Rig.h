@@ -23,7 +23,7 @@ namespace probe
     struct Note
     {
         std::size_t at = 0;                                      // the absolute sample
-        testingplayground::EventKind kind = testingplayground::EventKind::noteOn;
+        playground::EventKind kind = playground::EventKind::noteOn;
         int note = 60;
         float velocity = 0.8f;
     };
@@ -40,13 +40,13 @@ namespace probe
         // False, with the messages in `errors`, when it does not compile.
         bool load(const std::string& source, std::string* errors = nullptr)
         {
-            return load(testingplayground::singleFile(source), errors);
+            return load(playground::singleFile(source), errors);
         }
 
         // The same for a program of several files (Sources.h).
-        bool load(const testingplayground::Sources& files, std::string* errors = nullptr)
+        bool load(const playground::Sources& files, std::string* errors = nullptr)
         {
-            testingplayground::Patch::Result r = testingplayground::Patch::compile(files, engine_.rate());
+            playground::Patch::Result r = playground::Patch::compile(files, engine_.rate());
             if (errors != nullptr)
                 *errors = r.errors + r.notes;
             if (!r.patch)
@@ -65,11 +65,11 @@ namespace probe
         uint64_t program() const noexcept { return loaded_; }
 
         // The dials at their programs' defaults, normalised.
-        std::array<float, testingplayground::kMaxControls> defaults() const
+        std::array<float, playground::kMaxControls> defaults() const
         {
-            std::array<float, testingplayground::kMaxControls> n{};
+            std::array<float, playground::kMaxControls> n{};
             for (std::size_t c = 0; c < n.size(); ++c)
-                n[c] = testingplayground::normOf(controls_[c], controls_[c].def);
+                n[c] = playground::normOf(controls_[c], controls_[c].def);
             return n;
         }
 
@@ -78,11 +78,11 @@ namespace probe
         // before each block (its argument: the block's first sample).
         Stereo run(const Stereo& in, int block, const std::vector<Note>& notes = {},
                    const std::vector<int>& sizes = {},
-                   const std::function<void(std::size_t, std::array<float, testingplayground::kMaxControls>&)>& perBlock = {})
+                   const std::function<void(std::size_t, std::array<float, playground::kMaxControls>&)>& perBlock = {})
         {
             Stereo out = in;
             std::size_t pos = 0, k = 0, nextNote = 0;
-            std::vector<testingplayground::Event> events;
+            std::vector<playground::Event> events;
             while (pos < in.size())
             {
                 const int want = sizes.empty() ? block : sizes[k++ % sizes.size()];
@@ -92,7 +92,7 @@ namespace probe
                 while (nextNote < notes.size() && notes[nextNote].at < pos + static_cast<std::size_t>(len))
                 {
                     const Note& n = notes[nextNote++];
-                    testingplayground::Event e;
+                    playground::Event e;
                     e.offset = static_cast<uint32_t>(n.at >= pos ? n.at - pos : 0);
                     e.kind = n.kind;
                     e.note = static_cast<uint8_t>(n.note);
@@ -109,16 +109,16 @@ namespace probe
             return out;
         }
 
-        testingplayground::Engine& engine() noexcept { return engine_; }
+        playground::Engine& engine() noexcept { return engine_; }
         // The frozen copy of the program that plays (Patch::freeze), at the dials as the last block left them, offered
         // to the Engine: false, with why, when it does not compile.
         bool freeze(std::string* why = nullptr)
         {
-            testingplayground::DialState d;
+            playground::DialState d;
             if (!engine_.dials(d))
                 return false;
             std::string w;
-            std::unique_ptr<testingplayground::Patch::Frozen> f = testingplayground::Patch::freeze(recipe_, d.plain, w);
+            std::unique_ptr<playground::Patch::Frozen> f = playground::Patch::freeze(recipe_, d.plain, w);
             if (why != nullptr)
                 *why = w;
             if (!f)
@@ -126,22 +126,22 @@ namespace probe
             engine_.offerFrozen(std::move(f));
             return true;
         }
-        const testingplayground::Patch::Recipe& recipe() const noexcept { return recipe_; }
+        const playground::Patch::Recipe& recipe() const noexcept { return recipe_; }
 
-        const testingplayground::Controls& controls() const noexcept { return controls_; }
-        const testingplayground::PanelSpec& panel() const noexcept { return panel_; }      // its #pragma panel lines
-        std::array<float, testingplayground::kMaxControls>& norm() noexcept { return norm_; }
+        const playground::Controls& controls() const noexcept { return controls_; }
+        const playground::PanelSpec& panel() const noexcept { return panel_; }      // its #pragma panel lines
+        std::array<float, playground::kMaxControls>& norm() noexcept { return norm_; }
         double fs() const noexcept { return fs_; }
 
     private:
         double fs_;
         int maxBlock_;
-        testingplayground::Engine engine_;
-        testingplayground::Controls controls_{};
-        testingplayground::PanelSpec panel_;
-        std::array<float, testingplayground::kMaxControls> norm_{};
+        playground::Engine engine_;
+        playground::Controls controls_{};
+        playground::PanelSpec panel_;
+        std::array<float, playground::kMaxControls> norm_{};
         uint64_t loaded_ = 0;
-        testingplayground::Patch::Recipe recipe_;
+        playground::Patch::Recipe recipe_;
     };
 
     // Stereo noise at `amp` (a fixed seed: the same every run), `n` samples.

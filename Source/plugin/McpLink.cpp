@@ -8,7 +8,7 @@
 #include <memory>
 #include <vector>
 
-namespace testingplayground
+namespace playground
 {
     namespace
     {

@@ -44,19 +44,19 @@
 #include <thread>
 #include <vector>
 
-namespace tp = testingplayground;
+namespace pg = playground;
 
 namespace
 {
     constexpr double kFs = 48000.0;
     constexpr int kBlock = 256;
-    constexpr bool kInstrument = tp::product::kIsInstrument;
+    constexpr bool kInstrument = pg::product::kIsInstrument;
     constexpr double kAmpL = 0.25118864315095801;             // -12 dBFS
     constexpr double kAmpR = 0.12589254117941673;             // -18 dBFS
 
-    void setPlain(tp::Processor& p, int slot, float plain)
+    void setPlain(pg::Processor& p, int slot, float plain)
     {
-        p.getParameters()[slot]->setValueNotifyingHost(tp::normOf(p.control(slot), plain));
+        p.getParameters()[slot]->setValueNotifyingHost(pg::normOf(p.control(slot), plain));
     }
 
     struct HostPlan
@@ -70,7 +70,7 @@ namespace
     // `in` through a fresh processor as `plan` says.
     probe::Stereo hostRun(const probe::Stereo& in, const HostPlan& plan, int* largest = nullptr)
     {
-        tp::Processor p;
+        pg::Processor p;
         p.setRateAndBufferSizeDetails(kFs, plan.prepared);
         p.prepareToPlay(kFs, plan.prepared);
         probe::Stereo out(in.size());
@@ -140,22 +140,22 @@ PROBE(plugin, process)
 
     // NAMES
     {
-        tp::Processor p;
+        pg::Processor p;
         const juce::String name = p.getParameters()[0]->getName(100);
         std::printf("P1 is \"%s\", its default's text \"%s\"; P8 is \"%s\"\n", name.toRawUTF8(),
                     p.getParameters()[0]->getCurrentValueAsText().toRawUTF8(), p.getParameters()[7]->getName(100).toRawUTF8());
         P.eq("names.p1", name == (kInstrument ? "1 attack" : "1 gain") ? 1 : 0, 1);
         P.eq("names.p8_unused", p.getParameters()[7]->getName(100) == "8" ? 1 : 0, 1);
-        P.eq("names.params", static_cast<int64_t>(p.getParameters().size()) >= tp::kMaxControls ? 1 : 0, 1);
+        P.eq("names.params", static_cast<int64_t>(p.getParameters().size()) >= pg::kMaxControls ? 1 : 0, 1);
         P.eq("names.last_unused",
-             p.getParameters()[tp::kMaxControls - 1]->getName(100) == juce::String(tp::kMaxControls) ? 1 : 0, 1);
+             p.getParameters()[pg::kMaxControls - 1]->getName(100) == juce::String(pg::kMaxControls) ? 1 : 0, 1);
         P.eq("names.p1_text", p.getParameters()[0]->getCurrentValueAsText() == (kInstrument ? "5.00" : "0.00") ? 1 : 0,
              1);
     }
 
     // HOST and NAN
     {
-        tp::Processor p;
+        pg::Processor p;
         p.setRateAndBufferSizeDetails(kFs, kBlock);
         p.prepareToPlay(kFs, kBlock);
         const int slot = kInstrument ? 2 : 0;                   // level, gain
@@ -260,7 +260,7 @@ PROBE(plugin, process)
 
     // EARLY
     {
-        tp::Processor p;
+        pg::Processor p;
         juce::AudioBuffer<float> buffer(2, 64);
         for (int i = 0; i < 64; ++i)
         {
@@ -309,7 +309,7 @@ PROBE(plugin, process)
             }
         };
         Head head;
-        tp::Processor p;
+        pg::Processor p;
         p.setPlayHead(&head);
         p.prepareToPlay(kFs, kBlock);
         juce::AudioBuffer<float> buffer(2, kBlock);
@@ -323,7 +323,7 @@ PROBE(plugin, process)
         }
         buffer.clear();
         p.processBlock(buffer, midi);
-        const tp::HostBlock& h = p.engine().host();
+        const pg::HostBlock& h = p.engine().host();
         P.near("hostdata.bpm", static_cast<double>(h.bpm), 100.0, 1e-4);
         // The position of the last call's first sample: an instrument's last part on the 16-sample grid, an effect's
         // block.
@@ -358,8 +358,8 @@ PROBE(plugin, process)
     // frozen copy plays, the same sound as a processor that never freezes; a host's write: the program's own code that
     // block, and the copy again after the delay
     {
-        tp::Processor a, b;
-        for (tp::Processor* p : { &a, &b })
+        pg::Processor a, b;
+        for (pg::Processor* p : { &a, &b })
         {
             p->setRateAndBufferSizeDetails(kFs, kBlock);
             p->prepareToPlay(kFs, kBlock);
@@ -421,9 +421,9 @@ PROBE(plugin, process)
         for (int k = 0; k < 40; ++k)
             block(false);
         P.eq("freeze.same_sound", sameSound() ? 1 : 0, 1);
-        const tp::Control c0 = a.control(0);
-        setPlain(a, 0, tp::plainOf(c0, 0.4f));
-        setPlain(b, 0, tp::plainOf(c0, 0.4f));
+        const pg::Control c0 = a.control(0);
+        setPlain(a, 0, pg::plainOf(c0, 0.4f));
+        setPlain(b, 0, pg::plainOf(c0, 0.4f));
         block(false);
         P.eq("freeze.write_drops_it", a.engine().frozen() ? 0 : 1, 1);
         P.eq("freeze.again", waitFrozen() && a.compiler().freezes() >= 2 ? 1 : 0, 1);

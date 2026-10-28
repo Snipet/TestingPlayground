@@ -42,11 +42,11 @@
 #include <string>
 #include <vector>
 
-namespace tp = testingplayground;
+namespace pg = playground;
 
 namespace
 {
-    constexpr bool kInstrument = tp::product::kIsInstrument;
+    constexpr bool kInstrument = pg::product::kIsInstrument;
     // The parameters, in their slots.
     enum Slot : int
     {
@@ -142,13 +142,13 @@ panel background=#1b1d24 gradient=#0e0f13 accent=teal {
 )GUI";
     }
 
-    void load(tp::Processor& p, const tp::Sources& files)
+    void load(pg::Processor& p, const pg::Sources& files)
     {
         p.editorPort().setDraft({ files, 0 });
         p.editorPort().run(files);
     }
 
-    void settleRun(tp::Processor& p, funkgui::HeadlessHost& host)
+    void settleRun(pg::Processor& p, funkgui::HeadlessHost& host)
     {
         p.settle();
         host.tick(2);
@@ -176,21 +176,21 @@ panel background=#1b1d24 gradient=#0e0f13 accent=teal {
     }
 
     // The node of a section titled `title`, -1 for none.
-    int sectionNode(const tp::ui::Panel& panel, const char* title)
+    int sectionNode(const pg::ui::Panel& panel, const char* title)
     {
-        const std::vector<tp::GuiNode>& nodes = panel.panelSpec().gui.nodes;
+        const std::vector<pg::GuiNode>& nodes = panel.panelSpec().gui.nodes;
         for (std::size_t i = 0; i < nodes.size(); ++i)
-            if (nodes[i].kind == tp::GuiKind::section && nodes[i].text == title)
+            if (nodes[i].kind == pg::GuiKind::section && nodes[i].text == title)
                 return static_cast<int>(i);
         return -1;
     }
 
     // The node of slot's control.
-    int controlNode(const tp::ui::Panel& panel, int slot)
+    int controlNode(const pg::ui::Panel& panel, int slot)
     {
-        const std::vector<tp::GuiNode>& nodes = panel.panelSpec().gui.nodes;
+        const std::vector<pg::GuiNode>& nodes = panel.panelSpec().gui.nodes;
         for (std::size_t i = 0; i < nodes.size(); ++i)
-            if ((nodes[i].kind == tp::GuiKind::knob || nodes[i].kind == tp::GuiKind::slider) && nodes[i].slot == slot)
+            if ((nodes[i].kind == pg::GuiKind::knob || nodes[i].kind == pg::GuiKind::slider) && nodes[i].slot == slot)
                 return static_cast<int>(i);
         return -1;
     }
@@ -200,7 +200,7 @@ panel background=#1b1d24 gradient=#0e0f13 accent=teal {
     {
         double rms = 0.0, hz = 0.0;
     };
-    Heard listen(tp::Processor& p, funkgui::HeadlessHost& host, int blocks)
+    Heard listen(pg::Processor& p, funkgui::HeadlessHost& host, int blocks)
     {
         constexpr int kBlock = 256;
         juce::AudioBuffer<float> buffer(2, kBlock);
@@ -231,10 +231,10 @@ PROBE(gui, styles)
     const funkgui::HeadlessGuiScope scope;
     funkgui::UiPreferences::get().setBackend(funkgui::UiPreferences::memoryBackend());
     funkgui::UiPreferences::get().setTheme(0);
-    tp::Processor processor;
-    tp::EditorPort& port = processor.editorPort();
+    pg::Processor processor;
+    pg::EditorPort& port = processor.editorPort();
     processor.prepareToPlay(48000.0, 256);
-    tp::ui::Panel panel(processor.ports(), port);
+    pg::ui::Panel panel(processor.ports(), port);
     funkgui::HeadlessHost host(panel, 0, 2.0f);
     host.settle();
     {
@@ -244,7 +244,7 @@ PROBE(gui, styles)
     }
 
     // ---- PARSE ---------------------------------------------------------------------------------------------------------
-    load(processor, { { tp::kProgramName, program() }, { "panel.gui", gui("STYLES") } });
+    load(processor, { { pg::kProgramName, program() }, { "panel.gui", gui("STYLES") } });
     settleRun(processor, host);
     P.eq("parse.compiles", port.status().ok ? 1 : 0, 1);
     if (!port.status().notes.empty() || !port.status().errors.empty())
@@ -261,13 +261,13 @@ PROBE(gui, styles)
 
     // ---- KNOBS ---------------------------------------------------------------------------------------------------------
     {
-        const tp::ui::GuiLayout& L = panel.guiLayout();
+        const pg::ui::GuiLayout& L = panel.guiLayout();
         int shown = 0;
         bool apart = true, within = true;
         const int card = sectionNode(panel, "KNOBS");
         for (int s = drive; s <= level; ++s)
         {
-            const tp::ui::GuiControlItem& k = panel.guiControl(s);
+            const pg::ui::GuiControlItem& k = panel.guiControl(s);
             shown += k.shown() ? 1 : 0;
             if (card >= 0)
                 within = within && inside(L.rects[static_cast<std::size_t>(card)], k.cell());
@@ -277,7 +277,7 @@ PROBE(gui, styles)
         P.eq("knobs.nine_shown", shown, 9);
         P.eq("knobs.apart", apart ? 1 : 0, 1);
         P.eq("knobs.in_section", within ? 1 : 0, 1);
-        const tp::ui::GuiKnobGeom& small = panel.guiControl(pan).knobGeom();
+        const pg::ui::GuiKnobGeom& small = panel.guiControl(pan).knobGeom();
         P.eq("knobs.small", small.d < 30.0f && small.labelBottom && !small.labelTop ? 1 : 0, 1);
         P.eq("knobs.value_never", small.value ? 0 : 1, 1);
         P.near("knobs.px_size", static_cast<double>(panel.guiControl(res).knobGeom().d), 96.0, 0.5);
@@ -288,18 +288,18 @@ PROBE(gui, styles)
 
     // ---- SECTIONS ------------------------------------------------------------------------------------------------------
     {
-        const tp::GuiTree& t = panel.panelSpec().gui;
+        const pg::GuiTree& t = panel.panelSpec().gui;
         const int inset = sectionNode(panel, "SHAPES"), plate = sectionNode(panel, "PLATE");
         P.eq("sections.looks", inset >= 0 && plate >= 0 && t.nodes[static_cast<std::size_t>(inset)].style.look == "inset"
                                    && t.nodes[static_cast<std::size_t>(plate)].style.look == "plate" ? 1 : 0, 1);
         P.eq("sections.gradient", t.gradient.empty() ? 0 : 1, 1);
         // The inset and the plate sit side by side and share the row.
-        const tp::ui::GuiLayout& L = panel.guiLayout();
+        const pg::ui::GuiLayout& L = panel.guiLayout();
         if (inset >= 0 && plate >= 0)
         {
             const funkgui::Rect a = L.rects[static_cast<std::size_t>(inset)], b = L.rects[static_cast<std::size_t>(plate)];
             P.eq("sections.side_by_side", a.right() <= b.x && std::fabs(a.y - b.y) < 0.5f ? 1 : 0, 1);
-            const tp::ui::GuiControlItem& big = panel.guiControl(cutoff);
+            const pg::ui::GuiControlItem& big = panel.guiControl(cutoff);
             P.eq("sections.knob_inside", inside(a, big.cell()) ? 1 : 0, 1);
         }
     }
@@ -307,10 +307,10 @@ PROBE(gui, styles)
 
     // ---- LIVE ----------------------------------------------------------------------------------------------------------
     // The field is written while the program plays (an instrument's: while a note sounds; the keyboard plays one).
-    const tp::ui::GuiKeyboardItem* keys = nullptr;
+    const pg::ui::GuiKeyboardItem* keys = nullptr;
     if constexpr (kInstrument)
     {
-        keys = &static_cast<const tp::ui::GuiKeyboardItem&>(panel.guiItem(3, 0));
+        keys = &static_cast<const pg::ui::GuiKeyboardItem&>(panel.guiItem(3, 0));
         P.eq("keyboard.shown", keys->shown() ? 1 : 0, 1);
         const Heard before = listen(processor, host, 8);
         P.le("keyboard.silent_first", before.rms, 1e-6);
@@ -373,7 +373,7 @@ PROBE(gui, styles)
 
     // ---- PAGES ---------------------------------------------------------------------------------------------------------
     {
-        const auto& bar = static_cast<const tp::ui::GuiTabsItem&>(panel.guiItem(2, 0));
+        const auto& bar = static_cast<const pg::ui::GuiTabsItem&>(panel.guiItem(2, 0));
         P.eq("pages.three", bar.shown() && bar.tabs().size() == 3 ? 1 : 0, 1);
         P.eq("pages.first", panel.guiControl(drive).shown() && !panel.guiControl(busA).shown() ? 1 : 0, 1);
         if (bar.tabs().size() == 3)
@@ -390,10 +390,10 @@ PROBE(gui, styles)
         writePng(P, host, "gui.styles.mixer.png", "mixer");
 
         // The side list: its second page.
-        const tp::ui::GuiTabsItem* side = nullptr;
+        const pg::ui::GuiTabsItem* side = nullptr;
         for (int k = 0; k < 8; ++k)
         {
-            const auto& t = static_cast<const tp::ui::GuiTabsItem&>(panel.guiItem(2, k));
+            const auto& t = static_cast<const pg::ui::GuiTabsItem&>(panel.guiItem(2, k));
             if (t.shown() && t.node() != bar.node() && t.tabs().size() == 3)
                 side = &t;
         }
@@ -411,13 +411,13 @@ PROBE(gui, styles)
         // In the session: another processor, and a Panel on it, open on MIXER (BUS B).
         juce::MemoryBlock state;
         processor.getStateInformation(state);
-        tp::Processor second;
+        pg::Processor second;
         second.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
         const std::vector<std::string> again = second.editorPort().guiPages();
         // Every tabs element's page, in the file's order: the bar's, the pills' (on FX), the side list's.
         P.eq("pages.in_session", again == std::vector<std::string>{ "MIXER", "ECHO", "BUS B" } ? 1 : 0, 1);
         {
-            tp::ui::Panel other(second.ports(), second.editorPort());
+            pg::ui::Panel other(second.ports(), second.editorPort());
             funkgui::HeadlessHost otherHost(other, 0, 2.0f);
             second.settle();
             otherHost.tick(2);
@@ -426,7 +426,7 @@ PROBE(gui, styles)
         }
 
         // The interface edited (its title) and run again: the same pages.
-        load(processor, { { tp::kProgramName, program() }, { "panel.gui", gui("STYLES 2") } });
+        load(processor, { { pg::kProgramName, program() }, { "panel.gui", gui("STYLES 2") } });
         settleRun(processor, host);
         P.eq("pages.edited_keeps", panel.guiControl(busB).shown() && !panel.guiControl(drive).shown() ? 1 : 0, 1);
 
@@ -438,10 +438,10 @@ PROBE(gui, styles)
             host.settle();
         }
         P.eq("pages.fx", panel.guiControl(echo).shown() && !panel.guiControl(space).shown() ? 1 : 0, 1);
-        const tp::ui::GuiTabsItem* pills = nullptr;
+        const pg::ui::GuiTabsItem* pills = nullptr;
         for (int k = 0; k < 8; ++k)
         {
-            const auto& t = static_cast<const tp::ui::GuiTabsItem&>(panel.guiItem(2, k));
+            const auto& t = static_cast<const pg::ui::GuiTabsItem&>(panel.guiItem(2, k));
             if (t.shown() && t.node() != bar.node() && t.tabs().size() == 2)
                 pills = &t;
         }
@@ -466,7 +466,7 @@ PROBE(gui, styles)
     {
         host.resize(900, 640);
         host.settle();
-        const tp::ui::GuiLayout& L = panel.guiLayout();
+        const pg::ui::GuiLayout& L = panel.guiLayout();
         float top = 1e9f, bottom = -1e9f;
         bool within = true;
         const int card = sectionNode(panel, "KNOBS");

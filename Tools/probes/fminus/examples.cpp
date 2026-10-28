@@ -1,7 +1,7 @@
 // PROBE name=fminus.examples timeout=300
 //
-// fminus.examples: every program of the editor's EXAMPLES (Source/fminus/examples/*.fm, the first the default) as the
-// plugin compiles and plays it (Patch::compile, the Engine), at 48 kHz:
+// fminus.examples: every program of the editor's EXAMPLES (Source/fminus/examples/<product>/*.fm, the first the
+// default) as the plugin compiles and plays it (Patch::compile, the Engine), at 48 kHz:
 //   COMPILE  it compiles for this plugin's kind, with no message; its dials are its first parameters, at most 32,
 //            each with a name, a range (min < max) and a default inside it
 //   PLAY     two seconds at the defaults: an effect over stereo noise at -12 dBFS, an instrument playing a chord
@@ -21,26 +21,26 @@
 #include <cstdio>
 #include <string>
 
-namespace tp = testingplayground;
+namespace pg = playground;
 
 PROBE(fminus, examples)
 {
     constexpr double kFs = 48000.0;
-    constexpr bool kInstrument = tp::product::kIsInstrument;
+    constexpr bool kInstrument = pg::product::kIsInstrument;
     const std::size_t n = static_cast<std::size_t>(2.0 * kFs);
     const probe::Stereo input = kInstrument ? probe::Stereo(n) : probe::noise(n, 0.25);
     std::vector<probe::Note> chord;
     if constexpr (kInstrument)
         for (const int note : { 60, 64, 67 })
         {
-            chord.push_back({ 0, tp::EventKind::noteOn, note, 0.8f });
-            chord.push_back({ static_cast<std::size_t>(kFs), tp::EventKind::noteOff, note, 0.0f });
+            chord.push_back({ 0, pg::EventKind::noteOn, note, 0.8f });
+            chord.push_back({ static_cast<std::size_t>(kFs), pg::EventKind::noteOff, note, 0.0f });
         }
     std::sort(chord.begin(), chord.end(), [](const probe::Note& a, const probe::Note& b) { return a.at < b.at; });
 
-    P.ge("examples.count", static_cast<double>(std::size(tp::kExamples)), 1.0);
+    P.ge("examples.count", static_cast<double>(std::size(pg::kExamples)), 1.0);
     int index = 0;
-    for (const tp::Example& example : tp::kExamples)
+    for (const pg::Example& example : pg::kExamples)
     {
         const std::string key = "example" + std::to_string(++index);
         std::printf("%s: %s\n", key.c_str(), example.title);
@@ -55,9 +55,9 @@ PROBE(fminus, examples)
         P.eq(key + ".no_messages", messages.empty() ? 1 : 0, 1);
         if (!ok)
             continue;
-        for (int c = 0; c < tp::kMaxControls; ++c)
+        for (int c = 0; c < pg::kMaxControls; ++c)
         {
-            const tp::Control& ctl = rig.controls()[static_cast<std::size_t>(c)];
+            const pg::Control& ctl = rig.controls()[static_cast<std::size_t>(c)];
             if (!ctl.used)
                 continue;
             const std::string ck = key + ".dial" + std::to_string(c + 1);

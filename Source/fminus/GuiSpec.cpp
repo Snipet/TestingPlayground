@@ -12,7 +12,7 @@
 #include <set>
 #include <utility>
 
-namespace testingplayground
+namespace playground
 {
     namespace
     {

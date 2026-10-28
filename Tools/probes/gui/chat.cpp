@@ -112,7 +112,7 @@
 
 #include <juce_graphics/juce_graphics.h>
 
-namespace tp = testingplayground;
+namespace pg = playground;
 
 namespace
 {
@@ -141,14 +141,14 @@ namespace
 
     void clickAt(funkgui::HeadlessHost& host, funkgui::Point p) { host.click(p.x, p.y); }
 
-    void clickInput(funkgui::HeadlessHost& host, tp::ui::Panel& panel)
+    void clickInput(funkgui::HeadlessHost& host, pg::ui::Panel& panel)
     {
         const funkgui::Rect r = panel.chatInput().bounds();
         host.click(r.centreX(), r.centreY());
     }
 
     // The turn finished, its compile and dials taken, the panel caught up.
-    void settleChat(tp::Processor& p, funkgui::HeadlessHost& host)
+    void settleChat(pg::Processor& p, funkgui::HeadlessHost& host)
     {
         p.chatAgent().waitIdle();
         p.settle();
@@ -156,7 +156,7 @@ namespace
         host.settle();
     }
 
-    tp::ChatState chat(tp::Processor& p) { return p.chatAgent().chatState(); }
+    pg::ChatState chat(pg::Processor& p) { return p.chatAgent().chatState(); }
 
     // Nothing the panel speaks holds the key, or any 12 characters of it.
     bool a11yHoldsKey(const funkgui::HeadlessHost& host, const std::string& key)
@@ -186,7 +186,7 @@ namespace
     }
 
     // Every item the panel speaks of lies inside it.
-    bool allInside(const funkgui::HeadlessHost& host, const tp::ui::Panel& panel)
+    bool allInside(const funkgui::HeadlessHost& host, const pg::ui::Panel& panel)
     {
         const float w = static_cast<float>(panel.width()), h = static_cast<float>(panel.height());
         for (const funkgui::A11yItem& item : host.accessibility())
@@ -207,7 +207,7 @@ namespace
     std::string levelProgram()
     {
         const std::string param = "    param float level [[fminus::range(0, 2)]] [[fminus::default(1)]];\n";
-        if constexpr (tp::product::kIsInstrument)
+        if constexpr (pg::product::kIsInstrument)
             return "module Voice\n{\n" + param +
                    "    void start(float n, float v) {}\n"
                    "    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n";
@@ -220,14 +220,14 @@ namespace
 
     juce::var input(std::initializer_list<std::pair<const char*, juce::var>> fields)
     {
-        return tp::claude::object(fields);
+        return pg::claude::object(fields);
     }
 
     // A program that sounds, with a dial to fix: an instrument's sine with its level (dB) and a release (s); an effect's
     // gain (dB).
     std::string soundProgram()
     {
-        if constexpr (tp::product::kIsInstrument)
+        if constexpr (pg::product::kIsInstrument)
             return R"(module Voice
 {
     param float level [[fminus::range(-40, 0)]] [[fminus::default(-20)]];
@@ -279,21 +279,21 @@ PROBE(gui, chat)
     funkgui::UiPreferences::get().setTheme(0);
     const juce::File keys = juce::File(juce::String(probe::outPath("gui-chat-keys")));
     keys.deleteRecursively();
-    tp::chatstore::setDirectoryForTests(keys);
+    pg::chatstore::setDirectoryForTests(keys);
     const std::string key = fake::fakeKey();
 
-    tp::Processor processor;
+    pg::Processor processor;
     auto script = std::make_shared<fake::Script>();
     script->models = fake::modelsBody({ { "claude-opus-5-5", "Claude Opus 5.5", true, { "low", "medium", "high", "xhigh", "max" } },
                                         { "claude-sonnet-5-5", "Claude Sonnet 5.5", true, { "low", "medium", "high", "xhigh" } },
                                         { "claude-haiku-5-5", "Claude Haiku 5.5", true, { "low", "medium", "high" } } });
     processor.chatAgent().setTransport(std::make_unique<fake::Transport>(script));
 
-    tp::ui::Panel panel(processor.ports(), processor.editorPort());
+    pg::ui::Panel panel(processor.ports(), processor.editorPort());
     funkgui::HeadlessHost host(panel, 0, 2.0f);
     host.setZoom({ 100, 125, 150, 200 }, 100);
     P.le("open.settle_frames", host.settle(), 599.0);
-    P.eq("open.default_size", panel.width() == tp::ui::kDefaultWidth && panel.height() == tp::ui::kDefaultHeight ? 1 : 0, 1);
+    P.eq("open.default_size", panel.width() == pg::ui::kDefaultWidth && panel.height() == pg::ui::kDefaultHeight ? 1 : 0, 1);
     P.eq("open.missing_glyphs", static_cast<int64_t>(host.draw().missingGlyphs), 0);
 
     // ---- EMPTY ---------------------------------------------------------------------------------------------------------
@@ -367,7 +367,7 @@ PROBE(gui, chat)
         clickAt(host, panel.centreOfKeySave());
         settleChat(processor, host);
         P.eq("key.saved_closes", panel.keyDialogOpen() ? 1 : 0, 0);
-        P.eq("key.stored", chat(processor).hasKey && tp::chatstore::loadKey().value_or("") == key ? 1 : 0, 1);
+        P.eq("key.stored", chat(processor).hasKey && pg::chatstore::loadKey().value_or("") == key ? 1 : 0, 1);
         P.eq("key.waiting_message_sent", script->postCount(), 1);
         P.eq("key.box_emptied", panel.chatInput().text().empty() ? 1 : 0, 1);
         P.eq("key.answer_shown", has(panel.transcript(), "YOU\nhello claude\n") && has(panel.transcript(), "CLAUDE\nHello!") ? 1 : 0, 1);
@@ -381,7 +381,7 @@ PROBE(gui, chat)
             clickAt(host, *remove);
         host.tick(2);
         host.settle();
-        P.eq("key.removed", chat(processor).hasKey || tp::chatstore::hasKey() ? 1 : 0, 0);
+        P.eq("key.removed", chat(processor).hasKey || pg::chatstore::hasKey() ? 1 : 0, 0);
         P.eq("key.remove_closes", panel.keyDialogOpen() ? 1 : 0, 0);
         clickAt(host, panel.centreOfKey());
         host.setClipboard(key);
@@ -422,9 +422,9 @@ PROBE(gui, chat)
         writePng(P, host, "gui.chat.signin.png");
         host.keys("return");
         settleChat(processor, host);
-        tp::ChatState s = chat(processor);
+        pg::ChatState s = chat(processor);
         P.eq("account.signed_in_closes", panel.keyDialogOpen() ? 1 : 0, 0);
-        P.eq("account.signed_in", s.signedIn && s.useAccount && tp::chatstore::loadToken().value_or("") == token ? 1 : 0, 1);
+        P.eq("account.signed_in", s.signedIn && s.useAccount && pg::chatstore::loadToken().value_or("") == token ? 1 : 0, 1);
         P.eq("account.credit_shown", has(panel.chatActivity(), "$5.00 credit left") ? 1 : 0, 1);
 
         script->add(fake::Response::ok(fake::Sse().start().text("Hello from the server.").end()));
@@ -432,7 +432,7 @@ PROBE(gui, chat)
         type(host, "through the account");
         host.keys("return");
         settleChat(processor, host);
-        P.eq("account.sent_to_server", script->lastHost("POST /v1/messages") == tp::claude::serverHost()
+        P.eq("account.sent_to_server", script->lastHost("POST /v1/messages") == pg::claude::serverHost()
                                            && script->lastHeader("POST /v1/messages", "authorization") == "Bearer " + token
                                            && !script->lastHas("POST /v1/messages", "x-api-key") ? 1 : 0, 1);
         P.eq("account.answer_shown", has(panel.transcript(), "CLAUDE\nHello from the server.") ? 1 : 0, 1);
@@ -454,7 +454,7 @@ PROBE(gui, chat)
         P.eq("account.signed_in_says_who", a11yTitled(host, "Your TestingPlayground account").has_value()
                                                && has(a11yTitled(host, "Your TestingPlayground account")->description, "alice") ? 1 : 0, 1);
         {
-            const tp::ChatAccount info = chat(processor).details;
+            const pg::ChatAccount info = chat(processor).details;
             P.eq("account.details", info.known && info.requests == 3 && info.inputTokens == 12000 && info.outputTokens == 900
                                         && info.client == "probe" ? 1 : 0, 1);
             const auto box = a11yTitled(host, "Your TestingPlayground account");
@@ -502,7 +502,7 @@ PROBE(gui, chat)
             clickAt(host, *signOut);
         settleChat(processor, host);
         s = chat(processor);
-        P.eq("account.signed_out", !s.signedIn && !tp::chatstore::hasToken() && !panel.keyDialogOpen() ? 1 : 0, 1);
+        P.eq("account.signed_out", !s.signedIn && !pg::chatstore::hasToken() && !panel.keyDialogOpen() ? 1 : 0, 1);
         P.eq("account.server_told", script->count("POST /auth/logout") == logouts + 1 ? 1 : 0, 1);
         P.eq("account.key_in_use_after", !s.useAccount && s.ready() ? 1 : 0, 1);
         processor.chatAgent().loadState(before);       // the conversation the sections below go on with
@@ -555,7 +555,7 @@ PROBE(gui, chat)
         P.near("send.dial", processor.getParameters()[0]->getValue(), 0.75, 1e-4);
         P.eq("send.dial_shown", panel.centreOfDial(0).has_value() && !panel.centreOfDial(1).has_value() ? 1 : 0, 1);
         std::printf("transcript:\n%s\n", t.c_str());
-        tp::ui::ChatView& view = panel.chatView();
+        pg::ui::ChatView& view = panel.chatView();
         view.scrollTo(0.0f);
         host.settle();
         const auto think = view.centreOfThinking(0);
@@ -614,7 +614,7 @@ PROBE(gui, chat)
     // ---- PAPER ---------------------------------------------------------------------------------------------------------
     {
         funkgui::UiPreferences::get().setTheme(1);
-        tp::ui::Panel paper(processor.ports(), processor.editorPort());
+        pg::ui::Panel paper(processor.ports(), processor.editorPort());
         funkgui::HeadlessHost paperHost(paper, 1, 2.0f);
         paperHost.settle();
         P.eq("paper.shows_conversation", paper.transcript() == panel.transcript() ? 1 : 0, 1);
@@ -726,7 +726,7 @@ PROBE(gui, chat)
         type(host, "a bright lead");
         host.keys("return");
         settleChat(processor, host);
-        tp::ui::ChatView& view = panel.chatView();
+        pg::ui::ChatView& view = panel.chatView();
         view.scrollTo(view.contentHeight());
         host.settle();
         P.eq("planner.card", has(panel.transcript(), "  % ### Plan") && has(panel.transcript(), "Built it from the plan.") ? 1 : 0, 1);
@@ -803,7 +803,7 @@ PROBE(gui, chat)
             { { "questions", juce::Array<juce::var>{ input({ { "question", "Mono or poly?" },
                                                              { "options", juce::Array<juce::var>{ option("Poly", "Chords"),
                                                                                                   option("Mono", "One note, with glide") } } }) } } });
-        tp::ui::ChatView& view = panel.chatView();
+        pg::ui::ChatView& view = panel.chatView();
         script->add(fake::Response::ok(fake::Sse().start().text("Two questions first.").tool("toolu_q1", "ask_user", two).end("tool_use")));
         clickInput(host, panel);
         type(host, "make me a synth");
@@ -905,7 +905,7 @@ PROBE(gui, chat)
             host.tick(4);
             host.settle();
         };
-        const tp::ui::InputItem& box = panel.chatInputItem();
+        const pg::ui::InputItem& box = panel.chatInputItem();
         clickAt(host, panel.centreOfAttach());
         const funkgui::FileRequest* asked = host.pendingFiles();
         P.eq("pictures.chooser", asked != nullptr && asked->mode == funkgui::FileRequest::Mode::openMany
@@ -937,11 +937,11 @@ PROBE(gui, chat)
         type(host, "a panel like these");
         host.keys("return");
         settleChat(processor, host);
-        tp::ui::ChatView& view = panel.chatView();
+        pg::ui::ChatView& view = panel.chatView();
         view.scrollTo(view.contentHeight());
         host.settle();
         {
-            const juce::var body = tp::claude::parseJson(script->body(at));
+            const juce::var body = pg::claude::parseJson(script->body(at));
             const juce::Array<juce::var>* m = body.getProperty("messages", {}).getArray();
             int images = 0;
             if (m != nullptr && !m->isEmpty())
@@ -954,8 +954,8 @@ PROBE(gui, chat)
         P.eq("pictures.above_the_message", view.tiles(), 2);
         P.eq("pictures.drawn_sent", host.draw().missingImages == 0 && host.draw().images.size() >= 2 ? 1 : 0, 1);
         writePng(P, host, "gui.chat.sent.png");
-        for (const tp::ChatEntry& e : chat(processor).entries)
-            for (const tp::ChatPicturePtr& pic : e.pictures)
+        for (const pg::ChatEntry& e : chat(processor).entries)
+            for (const pg::ChatPicturePtr& pic : e.pictures)
                 pictureIds.push_back(pic->id);
         bool held = !pictureIds.empty();
         for (const uint32_t id : pictureIds)
@@ -965,13 +965,13 @@ PROBE(gui, chat)
 
     // ---- CHECKS --------------------------------------------------------------------------------------------------------
     {
-        tp::Draft d;
-        d.files = tp::singleFile(soundProgram());
+        pg::Draft d;
+        d.files = pg::singleFile(soundProgram());
         processor.editorPort().setDraft(d);
         processor.editorPort().run(d.files);
         processor.settle();
         juce::Array<juce::var> checks;
-        if constexpr (tp::product::kIsInstrument)
+        if constexpr (pg::product::kIsInstrument)
         {
             checks.add(input({ { "label", "A sensible level" }, { "metric", "rms_db" }, { "min", -40.0 }, { "max", -10.0 } }));
             checks.add(input({ { "label", "Dies away quickly" }, { "metric", "release_s" }, { "max", 0.2 } }));
@@ -983,12 +983,12 @@ PROBE(gui, chat)
             checks.add(input({ { "label", "Quieter by 6 dB" }, { "metric", "sine_gain_db" }, { "max", -6.0 } }));
             checks.add(input({ { "label", "No alerts" }, { "metric", "alerts" }, { "max", 0.0 } }));
         }
-        const char* fixDial = tp::product::kIsInstrument ? "release" : "gain";
-        const double fixValue = tp::product::kIsInstrument ? 0.1 : -8.0;
+        const char* fixDial = pg::product::kIsInstrument ? "release" : "gain";
+        const double fixValue = pg::product::kIsInstrument ? 0.1 : -8.0;
         script->add(fake::Response::ok(fake::Sse()
                                            .start()
                                            .tool("toolu_k1", "set_checks", input({ { "checks", checks } }))
-                                           .tool("toolu_k2", "view_sound", tp::product::kIsInstrument
+                                           .tool("toolu_k2", "view_sound", pg::product::kIsInstrument
                                                                                ? input({ { "notes", juce::Array<juce::var>{ 45 } } })
                                                                                : input({}))
                                            .end("tool_use")));
@@ -1010,13 +1010,13 @@ PROBE(gui, chat)
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
         settleChat(processor, host);
-        tp::ui::ChatView& view = panel.chatView();
+        pg::ui::ChatView& view = panel.chatView();
         view.scrollTo(view.contentHeight());
         host.settle();
         P.eq("checks.turn", script->postCount() - at, 4);
         {
             // The picture Claude got (view_sound's, the reply's second result), for a look at a fuller sound than a sine.
-            const juce::var body = tp::claude::parseJson(script->body(at + 1));
+            const juce::var body = pg::claude::parseJson(script->body(at + 1));
             const juce::Array<juce::var>* m = body.getProperty("messages", {}).getArray();
             std::string data;
             if (m != nullptr && !m->isEmpty())
@@ -1044,7 +1044,7 @@ PROBE(gui, chat)
         writePng(P, host, "gui.chat.checks.png");
         // A check that cannot pass: the card shows it failing; Clear forgets the checks.
         juce::Array<juce::var> impossible;
-        impossible.add(input({ { "label", "Impossibly loud" }, { "metric", tp::product::kIsInstrument ? "rms_db" : "sine_rms_db" },
+        impossible.add(input({ { "label", "Impossibly loud" }, { "metric", pg::product::kIsInstrument ? "rms_db" : "sine_rms_db" },
                                { "min", 30.0 } }));
         script->add(fake::Response::ok(fake::Sse().start().tool("toolu_k5", "set_checks", input({ { "checks", impossible } })).end("tool_use")));
         script->add(fake::Response::ok(fake::Sse().start().text("Done.").end()));
@@ -1064,9 +1064,9 @@ PROBE(gui, chat)
         host.settle();
         P.eq("checks.cleared", chat(processor).checks ? 0 : 1, 1);
         P.eq("checks.clear_gone", view.centreOfClearChecks().has_value() ? 0 : 1, 1);
-        for (const tp::ChatEntry& e : chat(processor).entries)
-            if (e.kind == tp::ChatEntry::Kind::tool)
-                for (const tp::ChatPicturePtr& pic : e.pictures)
+        for (const pg::ChatEntry& e : chat(processor).entries)
+            if (e.kind == pg::ChatEntry::Kind::tool)
+                for (const pg::ChatPicturePtr& pic : e.pictures)
                     pictureIds.push_back(pic->id);
     }
 
@@ -1109,7 +1109,7 @@ PROBE(gui, chat)
             host.keys("return");
             settleChat(processor, host);
         }
-        tp::ui::ChatView& view = panel.chatView();
+        pg::ui::ChatView& view = panel.chatView();
         P.eq("scroll.overflows", view.contentHeight() > view.bounds().h ? 1 : 0, 1);
         P.eq("scroll.follows_end", view.atEnd() ? 1 : 0, 1);
         const funkgui::Rect vb = view.bounds();
@@ -1148,7 +1148,7 @@ PROBE(gui, chat)
         {
             juce::MemoryBlock state;
             processor.getStateInformation(state);
-            tp::Processor second;
+            pg::Processor second;
             second.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
             P.eq("collapse.in_session", second.editorPort().chatOpen() ? 0 : 1, 1);
         }
@@ -1164,7 +1164,7 @@ PROBE(gui, chat)
         host.resize(500, 300);
         host.settle();
         // Twelve files: their tabs narrow to fit the bar.
-        for (int k = 0; k < 2 * static_cast<int>(tp::kMaxFiles) && panel.fileCount() < static_cast<int>(tp::kMaxFiles); ++k)
+        for (int k = 0; k < 2 * static_cast<int>(pg::kMaxFiles) && panel.fileCount() < static_cast<int>(pg::kMaxFiles); ++k)
         {
             const funkgui::Point plus = panel.centreOfNewTab();
             const int had = panel.fileCount();
@@ -1179,9 +1179,9 @@ PROBE(gui, chat)
                             static_cast<double>(panel.explorerCard().w), panel.explorerOpen() ? 1 : 0,
                             panel.explorerShown() ? 1 : 0, panel.width());
         }
-        P.eq("resize.twelve_files", panel.fileCount(), static_cast<int64_t>(tp::kMaxFiles));
-        P.eq("resize.least_w", panel.width(), tp::ui::kMinWidth);
-        P.eq("resize.least_h", panel.height(), tp::ui::kMinHeight);
+        P.eq("resize.twelve_files", panel.fileCount(), static_cast<int64_t>(pg::kMaxFiles));
+        P.eq("resize.least_w", panel.width(), pg::ui::kMinWidth);
+        P.eq("resize.least_h", panel.height(), pg::ui::kMinHeight);
         P.eq("resize.least_inside", allInside(host, panel) ? 1 : 0, 1);
         const float smallEditor = panel.editor().bounds().h;
         const float smallChat = panel.chatInput().bounds().y;
@@ -1195,26 +1195,26 @@ PROBE(gui, chat)
         P.eq("resize.large", panel.width() == 1900 && panel.height() == 1100 ? 1 : 0, 1);
         P.eq("resize.large_inside", allInside(host, panel) ? 1 : 0, 1);
         P.near("resize.editor_grows", static_cast<double>(panel.editor().bounds().h - smallEditor),
-               1100.0 - static_cast<double>(tp::ui::kMinHeight), 0.5);
+               1100.0 - static_cast<double>(pg::ui::kMinHeight), 0.5);
         P.near("resize.chat_follows", static_cast<double>(panel.chatInput().bounds().y - smallChat),
-               1100.0 - static_cast<double>(tp::ui::kMinHeight), 0.5);
+               1100.0 - static_cast<double>(pg::ui::kMinHeight), 0.5);
         P.near("resize.conversation_grows", static_cast<double>(panel.chatView().bounds().h - smallView),
-               1100.0 - static_cast<double>(tp::ui::kMinHeight), 0.5);
+               1100.0 - static_cast<double>(pg::ui::kMinHeight), 0.5);
         writePng(P, host, "gui.chat.large.png");
-        host.resize(tp::ui::kDefaultWidth, tp::ui::kDefaultHeight);
+        host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
         host.settle();
 
         processor.setEditorSize(1500, 900);
         juce::MemoryBlock state;
         processor.getStateInformation(state);
-        tp::Processor other;
+        pg::Processor other;
         other.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
         P.eq("resize.session_keeps_size", other.editorWidth() == 1500 && other.editorHeight() == 900 ? 1 : 0, 1);
         processor.setEditorSize(-3, 70000);
         P.eq("resize.nonsense_size_dropped", processor.editorWidth() == 0 && processor.editorHeight() == 0 ? 1 : 0, 1);
     }
 
-    tp::chatstore::setDirectoryForTests(juce::File());
+    pg::chatstore::setDirectoryForTests(juce::File());
     keys.deleteRecursively();
     return P.finish();
 }

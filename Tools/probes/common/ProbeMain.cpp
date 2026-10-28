@@ -77,7 +77,7 @@ namespace
     std::string makeSandbox()
     {
         namespace fs = std::filesystem;
-        const std::string var = std::string(testingplayground::product::kEnvPrefix) + "PREFS_DIR";
+        const std::string var = std::string(playground::product::kEnvPrefix) + "PREFS_DIR";
         const char* dir = std::getenv(var.c_str());
         if (dir == nullptr || *dir == '\0')
             return {};

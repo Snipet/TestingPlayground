@@ -15,7 +15,7 @@
 #include <iterator>
 #include <system_error>
 
-namespace testingplayground
+namespace playground
 {
     namespace
     {

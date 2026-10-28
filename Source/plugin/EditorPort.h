@@ -70,7 +70,7 @@ namespace funkgui
     class ParamPort;
 }
 
-namespace testingplayground
+namespace playground
 {
     class EditorPort;
 

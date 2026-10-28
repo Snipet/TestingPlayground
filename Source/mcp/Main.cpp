@@ -30,13 +30,13 @@
 
 #include <dirent.h>
 
-namespace tp = testingplayground;
+namespace pg = playground;
 
 namespace
 {
     constexpr int kCallTimeoutMs = 180000;              // a tool may run a while (tune_dials, a long render)
     constexpr int kQuickTimeoutMs = 5000;               // info, tools, guide
-    constexpr bool kInstrument = tp::product::kIsInstrument;
+    constexpr bool kInstrument = pg::product::kIsInstrument;
     const char* const kThing = kInstrument ? "synth" : "effect";          // what the user calls it
     const char* const kThings = kInstrument ? "synths" : "effects";
 
@@ -84,7 +84,7 @@ namespace
     {
         std::string id, path;
         int fd = -1;
-        std::unique_ptr<tp::mcp::LineReader> reader;
+        std::unique_ptr<pg::mcp::LineReader> reader;
         int next = 1;
     };
 
@@ -191,7 +191,7 @@ namespace
                 version = "2025-06-18";
             const std::string thing = kThing;
             const std::string instructions =
-                std::string(tp::product::kName) + " is " + (kInstrument ? "a synth" : "an effect")
+                std::string(pg::product::kName) + " is " + (kInstrument ? "a synth" : "an effect")
                 + " plugin whose sound is a short program in FMinus, a small language it compiles as you write. With it open "
                   "in the user's DAW (or as its own app), these tools let you make and change its sound as the plugin's "
                   "own chat would: write the program, run it, measure it, look at it, and set its dials.\n"
@@ -209,14 +209,14 @@ namespace
             return object({ { "protocolVersion", version },
                             { "capabilities", object({ { "tools", object({ { "listChanged", true } }) },
                                                        { "prompts", object({ { "listChanged", false } }) } }) },
-                            { "serverInfo", object({ { "name", tp::product::kName }, { "title", tp::product::kName }, { "version", tp::product::kVersion } }) },
+                            { "serverInfo", object({ { "name", pg::product::kName }, { "title", pg::product::kName }, { "version", pg::product::kVersion } }) },
                             { "instructions", str(instructions) } });
         }
 
         // ---- the instances ----------------------------------------------------------------------------------------------
         void discover()
         {
-            const std::string dir = tp::mcp::folder();
+            const std::string dir = pg::mcp::folder();
             if (dir.empty())
                 return;
             // The sockets, by readdir: a socket is no regular file to JUCE's listing.
@@ -242,7 +242,7 @@ namespace
                 if (instances_.count(id) != 0)
                     continue;
                 const std::string path = dir + "/" + id + ".sock";
-                const int fd = tp::mcp::connectTo(path);
+                const int fd = pg::mcp::connectTo(path);
                 if (fd < 0)
                 {
                     if (errno == ECONNREFUSED)
@@ -253,7 +253,7 @@ namespace
                 in.id = id;
                 in.path = path;
                 in.fd = fd;
-                in.reader = std::make_unique<tp::mcp::LineReader>(fd);
+                in.reader = std::make_unique<pg::mcp::LineReader>(fd);
                 instances_.emplace(id, std::move(in));
             }
             for (const std::string& id : ids())
@@ -290,7 +290,7 @@ namespace
             }
             Instance& in = it->second;
             const int n = in.next++;
-            if (!tp::mcp::writeLine(in.fd, juce::JSON::toString(object({ { "id", n }, { "method", method }, { "params", params } }), true).toStdString()))
+            if (!pg::mcp::writeLine(in.fd, juce::JSON::toString(object({ { "id", n }, { "method", method }, { "params", params } }), true).toStdString()))
             {
                 why = "it has closed";
                 drop(id);
@@ -415,7 +415,7 @@ namespace
                 if (const std::optional<juce::var> t = ask(id, "tools", juce::var(), kQuickTimeoutMs, why); t && t->isArray())
                     return *t;
             }
-            const std::string dir = tp::mcp::folder();
+            const std::string dir = pg::mcp::folder();
             if (dir.empty())
                 return {};
             const juce::var cached = juce::JSON::parse(juce::File(str(dir)).getChildFile("tools.json"));
@@ -436,7 +436,7 @@ namespace
             juce::Array<juce::var> out;
             const std::string thing = kThing, things = kThings;
             out.add(ownTool("list_instances", "Find the open " + things,
-                            "Which " + things + " (" + tp::product::kName + ") are open now: each one's name (as the plugin "
+                            "Which " + things + " (" + pg::product::kName + ") are open now: each one's name (as the plugin "
                             "shows it), its track, its project and where it runs. Use it when more than one may be open."));
             out.add(ownTool("playground_guide", "Read the guide",
                             "The guide to this plugin and to FMinus, the language its sound is written in. Read it once in a "
@@ -479,7 +479,7 @@ namespace
             const std::string wanted = args["instance"].toString().toStdString();
             args.getDynamicObject()->removeProperty("instance");
             if (instances_.empty())
-                return textContent("No " + thing + " is open (" + tp::product::kName + "). Ask the user to open it in their DAW ("
+                return textContent("No " + thing + " is open (" + pg::product::kName + "). Ask the user to open it in their DAW ("
                                    + (kInstrument ? "on an instrument track" : "on an audio track") + ") or as its own app, then try again.",
                                    true);
             std::string id;
@@ -530,7 +530,7 @@ namespace
             const std::string thing = kThing, things = kThings;
             const std::vector<Seen> all = seen();
             if (all.empty())
-                return textContent("No " + thing + " is open (" + tp::product::kName + "). Ask the user to open it in their DAW ("
+                return textContent("No " + thing + " is open (" + pg::product::kName + "). Ask the user to open it in their DAW ("
                                    + (kInstrument ? "on an instrument track" : "on an audio track") + ") or as its own app.");
             std::string text = std::to_string(all.size()) + (all.size() == 1 ? " " + thing + " is" : " " + things + " are") + " open:\n";
             for (const Seen& s : all)
@@ -550,11 +550,11 @@ namespace
                 if (const std::optional<juce::var> g = ask(id, "guide", juce::var(), kQuickTimeoutMs, why); g && g->isString())
                     return textContent(g->toString().toStdString());
             }
-            const std::string dir = tp::mcp::folder();
+            const std::string dir = pg::mcp::folder();
             const juce::File cached = juce::File(str(dir)).getChildFile("guide.md");
             if (!dir.empty() && cached.existsAsFile())
                 return textContent(cached.loadFileAsString().toStdString());
-            return textContent(std::string("The guide comes from the plugin: ask the user to open ") + tp::product::kName + " once.", true);
+            return textContent(std::string("The guide comes from the plugin: ask the user to open ") + pg::product::kName + " once.", true);
         }
 
         // ---- the prompts: requests the user picks in Claude Desktop ------------------------------------------------------
@@ -591,17 +591,17 @@ namespace
             const std::string thing = kThing;
             std::string text;
             if (name == "make_a_sound")
-                text = std::string("In the ") + thing + " (" + tp::product::kName + "), make this: " + a["sound"].toString().toStdString()
+                text = std::string("In the ") + thing + " (" + pg::product::kName + "), make this: " + a["sound"].toString().toStdString()
                      + ". Read its guide first if you have not in this conversation, build it, run it, measure it and look at it, fix "
                        "what is wrong, and leave its dials at good settings. Then tell me in a few plain sentences what you made and "
                        "how to play it.";
             else if (name == "improve_the_sound")
-                text = std::string("Listen to what the ") + thing + " (" + tp::product::kName + ") plays now: measure it and look at it. "
+                text = std::string("Listen to what the ") + thing + " (" + pg::product::kName + ") plays now: measure it and look at it. "
                      + (a["change"].toString().isEmpty() ? std::string("Make it sound better")
                                                          : "Make it " + a["change"].toString().toStdString())
                      + ", keeping what already works. Tell me briefly what you changed and why.";
             else if (name == "explain_the_sound")
-                text = std::string("Explain in plain words what the ") + thing + " (" + tp::product::kName + ") plays now: how the sound "
+                text = std::string("Explain in plain words what the ") + thing + " (" + pg::product::kName + ") plays now: how the sound "
                        "is made and what each of its dials does. Read its program and measure it; change nothing.";
             else
                 return std::nullopt;

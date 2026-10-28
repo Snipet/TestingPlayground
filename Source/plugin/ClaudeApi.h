@@ -29,7 +29,7 @@
 #include <utility>
 #include <vector>
 
-namespace testingplayground::claude
+namespace playground::claude
 {
     inline constexpr const char* kHost = "https://api.anthropic.com";
     inline constexpr const char* kApiVersion = "2026-10-21";
@@ -37,7 +37,7 @@ namespace testingplayground::claude
     // The TestingPlayground server (a Cloudflare Worker): sign-in (POST /auth/login, /auth/logout), the account
     // (GET /account) and the Claude API's /v1/messages and /v1/models, as Anthropic's, with "Authorization: Bearer".
     // The Worker as deployed (the TestingPlaygroundBackend repo: `npm run deploy`).
-    inline constexpr const char* kServerHost = "https://testingplayground-backend.example.workers.dev";
+    inline constexpr const char* kServerHost = "https://playground-backend.example.workers.dev";
 
     // The server the chat signs in to: kServerHost, or <ENV_PREFIX>SERVER_URL when it is set to an https:// address
     // or to http:// on this Mac (http://localhost:8787 for `wrangler dev`); anything else in it is ignored, so a

@@ -23,7 +23,7 @@
 
 extern char** environ;
 
-namespace testingplayground
+namespace playground
 {
     namespace
     {

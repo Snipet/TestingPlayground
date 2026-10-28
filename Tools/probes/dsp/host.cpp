@@ -35,11 +35,11 @@
 #include <string>
 #include <vector>
 
-namespace tp = testingplayground;
+namespace pg = playground;
 
 namespace
 {
-    constexpr bool kInstrument = tp::product::kIsInstrument;
+    constexpr bool kInstrument = pg::product::kIsInstrument;
     constexpr double kFs = 48000.0;
 
     // The fields, in display (tap) order.
@@ -77,7 +77,7 @@ namespace
 
     float tap(probe::Rig& rig, int t)
     {
-        tp::Meters m;
+        pg::Meters m;
         rig.engine().meters(m);
         return m.taps[t];
     }
@@ -109,7 +109,7 @@ namespace
 
     [[maybe_unused]] std::string example(const char* title)
     {
-        for (const tp::Example& e : tp::kExamples)
+        for (const pg::Example& e : pg::kExamples)
             if (std::string(e.title) == title)
                 return e.source;
         return {};
@@ -120,7 +120,7 @@ namespace
     {
         for (std::size_t c = 0; c < rig.norm().size(); ++c)
             if (std::string(rig.controls()[c].name) == name)
-                rig.norm()[c] = tp::normOf(rig.controls()[c], plain);
+                rig.norm()[c] = pg::normOf(rig.controls()[c], plain);
     }
 
     // Where `x` peaks from sample `from` on.
@@ -133,9 +133,9 @@ namespace
         return at;
     }
 
-    tp::Transport playing(double bpm, double beat, int perBar)
+    pg::Transport playing(double bpm, double beat, int perBar)
     {
-        tp::Transport t;
+        pg::Transport t;
         t.known = true;
         t.bpm = bpm;
         t.beat = beat;
@@ -151,14 +151,14 @@ PROBE(dsp, host)
 {
     // ---- FILE ----------------------------------------------------------------------------------------------------------
     {
-        const tp::Patch::Result lone = tp::Patch::compile(std::string("#include \"host.fm\"\n") +
+        const pg::Patch::Result lone = pg::Patch::compile(std::string("#include \"host.fm\"\n") +
                                                               (kInstrument ? "module Voice\n{\n    void start(float n, float v) {}\n"
                                                                              "    bool process(float* restrict l, float* restrict r, int n) { return false; }\n};\n"
                                                                            : "module Effect\n{\n    void process(float* restrict l, float* restrict r, int n) {}\n};\n"),
                                                           48000.0f);
         P.eq("file.compiles", lone.patch != nullptr ? 1 : 0, 1);
         P.eq("file.note_nothing_points", lone.notes.find("no field points at it (`Host* host;`") != std::string::npos ? 1 : 0, 1);
-        P.eq("file.has_text", tp::Patch::hostSource().find("module Host") != std::string_view::npos ? 1 : 0, 1);
+        P.eq("file.has_text", pg::Patch::hostSource().find("module Host") != std::string_view::npos ? 1 : 0, 1);
     }
 
     probe::Rig rig(kFs, 256);
@@ -176,7 +176,7 @@ PROBE(dsp, host)
         in.l = in.r = probe::sine(1000.0, 0.5, kFs, second);
     std::vector<probe::Note> note;
     if constexpr (kInstrument)
-        note.push_back({ 0, tp::EventKind::noteOn, 69, 0.8f });
+        note.push_back({ 0, pg::EventKind::noteOn, 69, 0.8f });
 
     // ---- PLAYING -------------------------------------------------------------------------------------------------------
     rig.engine().setTransport(playing(90.0, 4.0, 3));
@@ -207,7 +207,7 @@ PROBE(dsp, host)
     {
         probe::Rig other(kFs, 256);
         other.load(program());
-        tp::Transport t = playing(100.0, 2.0, 4);
+        pg::Transport t = playing(100.0, 2.0, 4);
         t.playing = false;
         other.engine().setTransport(t);
         other.run(in, 256, note);
@@ -220,7 +220,7 @@ PROBE(dsp, host)
     {
         probe::Rig other(kFs, 256);
         other.load(program());
-        other.engine().setTransport(tp::Transport{});
+        other.engine().setTransport(pg::Transport{});
         other.run(in, 256, note);
         P.near("free.bpm", static_cast<double>(tap(other, tBpm)), 120.0, 1e-4);
         P.near("free.beat_runs", static_cast<double>(tap(other, tBeat)), lastCall(second, { 256 }) * 2.0 / kFs, 1e-3);
@@ -233,9 +233,9 @@ PROBE(dsp, host)
         probe::Rig other(kFs, 256);
         other.load(program());
         std::vector<probe::Note> events = note;
-        events.push_back({ 1000, tp::EventKind::controller, 1, 0.5f });
-        events.push_back({ 2000, tp::EventKind::pitchBend, 0, 1.0f });
-        events.push_back({ 3000, tp::EventKind::pressure, 0, 0.3f });
+        events.push_back({ 1000, pg::EventKind::controller, 1, 0.5f });
+        events.push_back({ 2000, pg::EventKind::pitchBend, 0, 1.0f });
+        events.push_back({ 3000, pg::EventKind::pressure, 0, 0.3f });
         const probe::Stereo bent = other.run(in, 256, events);
         P.near("wheels.modwheel", static_cast<double>(tap(other, tWheel)), 0.5, 1e-6);
         P.near("wheels.pitchbend", static_cast<double>(tap(other, tBend)), 1.0, 1e-6);
@@ -248,17 +248,17 @@ PROBE(dsp, host)
         pedal.load(program());
         const std::size_t half = second / 2;
         probe::Stereo quiet(half);
-        pedal.run(quiet, 256, { { 0, tp::EventKind::noteOn, 60, 0.8f },
-                                { 4800, tp::EventKind::controller, 64, 1.0f },
-                                { 9600, tp::EventKind::noteOff, 60, 0.0f } });
+        pedal.run(quiet, 256, { { 0, pg::EventKind::noteOn, 60, 0.8f },
+                                { 4800, pg::EventKind::controller, 64, 1.0f },
+                                { 9600, pg::EventKind::noteOff, 60, 0.0f } });
         P.eq("pedal.holds", pedal.engine().activeVoices(), 1);
         P.eq("pedal.down_seen", tap(pedal, tSustain) == 1.0f ? 1 : 0, 1);
-        pedal.run(quiet, 256, { { 100, tp::EventKind::controller, 64, 0.0f } });
+        pedal.run(quiet, 256, { { 100, pg::EventKind::controller, 64, 0.0f } });
         P.eq("pedal.up_stops", pedal.engine().activeVoices(), 0);
         // And without the pedal the key's release stops it at once.
         probe::Rig plain(kFs, 256);
         plain.load(program());
-        plain.run(quiet, 256, { { 0, tp::EventKind::noteOn, 60, 0.8f }, { 9600, tp::EventKind::noteOff, 60, 0.0f } });
+        plain.run(quiet, 256, { { 0, pg::EventKind::noteOn, 60, 0.8f }, { 9600, pg::EventKind::noteOff, 60, 0.0f } });
         P.eq("pedal.none_stops", plain.engine().activeVoices(), 0);
     }
     else
@@ -272,7 +272,7 @@ PROBE(dsp, host)
     {
         probe::Rig sine(kFs, 256);
         P.eq("examples.sine_loads", sine.load(example("Sine")) ? 1 : 0, 1);
-        const probe::Stereo up = sine.run(in, 256, { { 0, tp::EventKind::noteOn, 69, 0.8f }, { 0, tp::EventKind::pitchBend, 0, 1.0f } });
+        const probe::Stereo up = sine.run(in, 256, { { 0, pg::EventKind::noteOn, 69, 0.8f }, { 0, pg::EventKind::pitchBend, 0, 1.0f } });
         P.near("examples.sine_bends", frequency(up.l), 440.0 * std::pow(2.0, 2.0 / 12.0), 3.0);
     }
     else

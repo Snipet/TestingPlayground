@@ -36,11 +36,11 @@
 #include <string>
 #include <vector>
 
-namespace tp = testingplayground;
+namespace pg = playground;
 
 namespace
 {
-    constexpr bool kInstrument = tp::product::kIsInstrument;
+    constexpr bool kInstrument = pg::product::kIsInstrument;
 
     // A program of this plugin's kind: `before` (the panel's lines, an #include), then a main module with these float
     // parameters.
@@ -61,13 +61,13 @@ namespace
     struct Compiled
     {
         bool ok = false;
-        tp::PanelSpec panel;
+        pg::PanelSpec panel;
         std::string notes;
     };
 
-    Compiled compile(const tp::Sources& files)
+    Compiled compile(const pg::Sources& files)
     {
-        tp::Patch::Result r = tp::Patch::compile(files, 48000.0f);
+        pg::Patch::Result r = pg::Patch::compile(files, 48000.0f);
         Compiled c;
         c.ok = r.patch != nullptr;
         c.notes = r.notes;
@@ -78,15 +78,15 @@ namespace
         return c;
     }
 
-    Compiled compile(const std::string& source) { return compile(tp::singleFile(source)); }
+    Compiled compile(const std::string& source) { return compile(pg::singleFile(source)); }
 
     bool has(const std::string& s, const std::string& part) { return s.find(part) != std::string::npos; }
 
     // A section's dials' slots, in order.
-    std::vector<int> dialsOf(const tp::PanelSection& s)
+    std::vector<int> dialsOf(const pg::PanelSection& s)
     {
         std::vector<int> out;
-        for (const tp::PanelItem& it : s.items)
+        for (const pg::PanelItem& it : s.items)
             if (!it.display)
                 out.push_back(it.index);
         return out;
@@ -117,7 +117,7 @@ PROBE(fminus, panel)
         P.eq("lines.no_note", c.notes.empty() ? 1 : 0, 1);
         if (!c.notes.empty())
             std::printf("%s", c.notes.c_str());
-        const std::vector<tp::PanelSection>& s = c.panel.sections;
+        const std::vector<pg::PanelSection>& s = c.panel.sections;
         P.eq("lines.sections", static_cast<int64_t>(s.size()), 4);
         if (s.size() == 4)
         {
@@ -134,7 +134,7 @@ PROBE(fminus, panel)
     // UNTITLED, REST
     {
         const Compiled c = compile(program("#pragma panel section shape detune\n#pragma panel section \"F\" cutoff\n", kDials));
-        const std::vector<tp::PanelSection>& s = c.panel.sections;
+        const std::vector<pg::PanelSection>& s = c.panel.sections;
         P.eq("untitled.title_empty", !s.empty() && s[0].title.empty() && dialsOf(s[0]) == std::vector<int>{ 0, 1 } ? 1 : 0, 1);
         P.eq("rest.last_untitled", s.size() == 3 && s[2].title.empty() && dialsOf(s[2]) == std::vector<int>{ 3, 4, 5, 6, 7 } ? 1 : 0, 1);
         P.eq("rest.noted", has(c.notes, "resonance, amount, rate, depth, level are in no section") ? 1 : 0, 1);
@@ -152,9 +152,9 @@ PROBE(fminus, panel)
                                    "#pragma panel row now\n"                             // 8: words after row
                                    "#pragma panel section \"AN EXTREMELY LONG SECTION TITLE\" cutoff\n"   // 9: cut
                                    "#pragma panel section \"open cutoff\n"               // 10: no closing quote
-                                   "#pragma panel section \"D\" p" + std::to_string(tp::kMaxControls + 1) + "\n";   // 11: past the dials
+                                   "#pragma panel section \"D\" p" + std::to_string(pg::kMaxControls + 1) + "\n";   // 11: past the dials
         std::vector<std::string> params = kDials;
-        for (int k = 9; k <= tp::kMaxControls + 1; ++k)
+        for (int k = 9; k <= pg::kMaxControls + 1; ++k)
             params.push_back("p" + std::to_string(k));
         const Compiled c = compile(program(before, params));
         P.eq("notes.still_plays", c.ok ? 1 : 0, 1);
@@ -172,31 +172,31 @@ PROBE(fminus, panel)
         P.eq("notes.row_words", noteOn(8, "row takes nothing") ? 1 : 0, 1);
         P.eq("notes.title_cut", noteOn(9, "is cut to 24 characters") ? 1 : 0, 1);
         P.eq("notes.open_quote", noteOn(10, "without its closing") ? 1 : 0, 1);
-        P.eq("notes.past_the_dials", noteOn(11, ("there is no dial p" + std::to_string(tp::kMaxControls + 1)).c_str()) ? 1 : 0, 1);
-        const std::vector<tp::PanelSection>& s = c.panel.sections;
+        P.eq("notes.past_the_dials", noteOn(11, ("there is no dial p" + std::to_string(pg::kMaxControls + 1)).c_str()) ? 1 : 0, 1);
+        const std::vector<pg::PanelSection>& s = c.panel.sections;
         P.eq("notes.first_keeps_dial", !s.empty() && s[0].title == "A" && dialsOf(s[0]) == std::vector<int>{ 0 } ? 1 : 0, 1);
         P.eq("notes.label_kept_cut", c.panel.labels[1] == std::string("LONG LABEL TEXT HERE").substr(0, 14) ? 1 : 0, 1);
         bool cutTitle = false;
-        for (const tp::PanelSection& x : s)
+        for (const pg::PanelSection& x : s)
             cutTitle = cutTitle || x.title == std::string("AN EXTREMELY LONG SECTION TITLE").substr(0, 24);
         P.eq("notes.title_kept_cut", cutTitle ? 1 : 0, 1);
         bool drawnC = false;
-        for (const tp::PanelSection& x : s)
+        for (const pg::PanelSection& x : s)
             drawnC = drawnC || x.title == "C";
         P.eq("notes.empty_section_dropped", drawnC ? 0 : 1, 1);
     }
 
     // FILES
     {
-        tp::Sources files{ { "program.fm", program("#pragma panel section \"MAIN\" shape detune\n#include \"more.fm\"\n#pragma once\n#pragma panelx bogus\n", kDials) },
+        pg::Sources files{ { "program.fm", program("#pragma panel section \"MAIN\" shape detune\n#include \"more.fm\"\n#pragma once\n#pragma panelx bogus\n", kDials) },
                            { "more.fm", "#pragma panel section \"MORE\" cutoff resonance\nfloat twice(float x) { return 2 * x; }\n" },
                            { "unread.fm", "#pragma panel section \"UNREAD\" amount\n" } };
         const Compiled c = compile(files);
         P.eq("files.compiles", c.ok ? 1 : 0, 1);
-        const std::vector<tp::PanelSection>& s = c.panel.sections;
+        const std::vector<pg::PanelSection>& s = c.panel.sections;
         P.eq("files.included_counts_after", s.size() >= 2 && s[0].title == "MAIN" && s[1].title == "MORE" ? 1 : 0, 1);
         bool unread = false;
-        for (const tp::PanelSection& x : s)
+        for (const pg::PanelSection& x : s)
             unread = unread || x.title == "UNREAD";
         P.eq("files.unread_ignored", unread ? 0 : 1, 1);
         P.eq("files.other_pragmas_no_note", lines(c.notes), 1);         // only the dials in no section
@@ -250,25 +250,25 @@ PROBE(fminus, panel)
         const auto noteOn = [&](int line, const char* what) {
             return has(c.notes, "program.fm:" + std::to_string(line) + ":1: note: #pragma panel: ") && has(c.notes, what);
         };
-        const std::vector<tp::PanelDisplay>& d = c.panel.displays;
+        const std::vector<pg::PanelDisplay>& d = c.panel.displays;
         P.eq("displays.count", static_cast<int64_t>(d.size()), kInstrument ? 6 : 7);
-        const auto find = [&](const std::string& name) -> const tp::PanelDisplay* {
-            for (const tp::PanelDisplay& x : d)
+        const auto find = [&](const std::string& name) -> const pg::PanelDisplay* {
+            for (const pg::PanelDisplay& x : d)
                 if (x.name == name)
                     return &x;
             return nullptr;
         };
-        const tp::PanelDisplay* out = find("out");
-        P.eq("displays.audio_meter", out != nullptr && out->kind == tp::DisplayKind::meter && out->audio() && out->tap < 0 ? 1 : 0, 1);
-        const tp::PanelDisplay* vu = find("needle");
-        P.eq("displays.named_vu", vu != nullptr && vu->kind == tp::DisplayKind::vu && vu->source == "out" && vu->label == "OUTPUT" ? 1 : 0, 1);
-        const tp::PanelDisplay* gr = find("gr");
+        const pg::PanelDisplay* out = find("out");
+        P.eq("displays.audio_meter", out != nullptr && out->kind == pg::DisplayKind::meter && out->audio() && out->tap < 0 ? 1 : 0, 1);
+        const pg::PanelDisplay* vu = find("needle");
+        P.eq("displays.named_vu", vu != nullptr && vu->kind == pg::DisplayKind::vu && vu->source == "out" && vu->label == "OUTPUT" ? 1 : 0, 1);
+        const pg::PanelDisplay* gr = find("gr");
         P.eq("displays.field_range", gr != nullptr && gr->lo == 0.0f && gr->hi == 24.0f && gr->tap == 0 && gr->label == "GR" ? 1 : 0, 1);
-        const tp::PanelDisplay* gate = find("gate");
-        const tp::PanelDisplay* steps = find("steps");
-        P.eq("displays.taps_in_order", gate != nullptr && gate->tap == 1 && gate->kind == tp::DisplayKind::led && steps != nullptr
-                                           && steps->tap == 2 && steps->kind == tp::DisplayKind::number ? 1 : 0, 1);
-        const tp::PanelDisplay* bad = find("grbad");
+        const pg::PanelDisplay* gate = find("gate");
+        const pg::PanelDisplay* steps = find("steps");
+        P.eq("displays.taps_in_order", gate != nullptr && gate->tap == 1 && gate->kind == pg::DisplayKind::led && steps != nullptr
+                                           && steps->tap == 2 && steps->kind == pg::DisplayKind::number ? 1 : 0, 1);
+        const pg::PanelDisplay* bad = find("grbad");
         P.eq("displays.range_reset", bad != nullptr && bad->lo == 0.0f && bad->hi == 1.0f && bad->tap == 3 ? 1 : 0, 1);
         P.eq("notes.second_display_named", noteOn(2, "a display is named out already") ? 1 : 0, 1);
         P.eq("notes.no_field", noteOn(7, "there is no field nosuch") ? 1 : 0, 1);
@@ -281,7 +281,7 @@ PROBE(fminus, panel)
             P.eq("displays.effect_input", find("in") != nullptr && find("in")->label == "CLIP" ? 1 : 0, 1);
         P.eq("notes.dial_name", noteOn(12, "cutoff is a dial's name") ? 1 : 0, 1);
         // The section takes displays by name; the rest come last.
-        const std::vector<tp::PanelSection>& s = c.panel.sections;
+        const std::vector<pg::PanelSection>& s = c.panel.sections;
         bool mixed = false;
         if (!s.empty() && s[0].title == "S" && s[0].items.size() == 4)
             mixed = s[0].items[0].display && d[static_cast<std::size_t>(s[0].items[0].index)].name == "needle"
@@ -289,15 +289,15 @@ PROBE(fminus, panel)
         P.eq("displays.in_section", mixed ? 1 : 0, 1);
         int leftover = 0;
         if (s.size() == 2 && s[1].title.empty())
-            for (const tp::PanelItem& it : s[1].items)
+            for (const pg::PanelItem& it : s[1].items)
                 leftover += it.display ? 1 : 0;
         P.eq("displays.rest_last", leftover, kInstrument ? 3 : 4);          // out, steps, grbad (and in)
         // Styles.
-        P.eq("styles.fader_after_a_misfit", c.panel.styles[0] == tp::DialStyle::fader ? 1 : 0, 1);
-        P.eq("styles.vintage", c.panel.styles[4] == tp::DialStyle::vintage ? 1 : 0, 1);
-        P.eq("styles.switch_pair", c.panel.styles[3] == tp::DialStyle::toggle ? 1 : 0, 1);
-        P.eq("styles.buttons_mode", c.panel.styles[1] == tp::DialStyle::buttons ? 1 : 0, 1);
-        P.eq("styles.misfits_keep_theirs", c.panel.styles[2] == tp::DialStyle::knob && c.panel.styles[4] == tp::DialStyle::vintage ? 1 : 0, 1);
+        P.eq("styles.fader_after_a_misfit", c.panel.styles[0] == pg::DialStyle::fader ? 1 : 0, 1);
+        P.eq("styles.vintage", c.panel.styles[4] == pg::DialStyle::vintage ? 1 : 0, 1);
+        P.eq("styles.switch_pair", c.panel.styles[3] == pg::DialStyle::toggle ? 1 : 0, 1);
+        P.eq("styles.buttons_mode", c.panel.styles[1] == pg::DialStyle::buttons ? 1 : 0, 1);
+        P.eq("styles.misfits_keep_theirs", c.panel.styles[2] == pg::DialStyle::knob && c.panel.styles[4] == pg::DialStyle::vintage ? 1 : 0, 1);
         P.eq("notes.bool_fader", noteOn(15, "on is a bool") ? 1 : 0, 1);
         P.eq("notes.switch_three", noteOn(16, "a switch takes a bool, or an int of two values") ? 1 : 0, 1);
         P.eq("notes.buttons_many", noteOn(18, "buttons take a bool, or an int of 2 to 8 values") ? 1 : 0, 1);

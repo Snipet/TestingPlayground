@@ -27,7 +27,7 @@
 #include <string_view>
 #include <vector>
 
-namespace testingplayground::ui
+namespace playground::ui
 {
     std::string asciiText(std::string_view utf8);
     std::string transcriptText(const std::vector<ChatEntry>& entries);

@@ -7,7 +7,7 @@
 #include <cmath>
 #include <numbers>
 
-namespace testingplayground::ui::looks
+namespace playground::ui::looks
 {
     namespace
     {

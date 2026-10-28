@@ -7,7 +7,7 @@
 #include <cmath>
 #include <cstdio>
 
-namespace testingplayground::ui
+namespace playground::ui
 {
     using funkgui::Point;
     using funkgui::Rect;

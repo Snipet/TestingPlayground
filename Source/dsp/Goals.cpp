@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <cmath>
 
-namespace testingplayground::measure
+namespace playground::measure
 {
     namespace
     {

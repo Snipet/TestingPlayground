@@ -11,7 +11,7 @@
 #include <cstdio>
 #include <numbers>
 
-namespace testingplayground::ui
+namespace playground::ui
 {
     namespace
     {

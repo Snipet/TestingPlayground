@@ -27,20 +27,20 @@
 #include <string>
 #include <vector>
 
-namespace tp = testingplayground;
+namespace pg = playground;
 
 namespace
 {
-    constexpr bool kInstrument = tp::product::kIsInstrument;
+    constexpr bool kInstrument = pg::product::kIsInstrument;
     constexpr int kSeeds = 160;
     constexpr int kBlockSeeds = 16;
     constexpr double kFs = 48000.0;
 
-    tp::Sources filesOf(const tp::random::Program& p)
+    pg::Sources filesOf(const pg::random::Program& p)
     {
-        tp::Sources s{ { tp::kProgramName, p.text } };
+        pg::Sources s{ { pg::kProgramName, p.text } };
         for (const std::string& name : p.library)
-            if (const tp::LibraryFile* f = tp::findLibraryFile(name))
+            if (const pg::LibraryFile* f = pg::findLibraryFile(name))
                 s.push_back({ name, f->source });
         return s;
     }
@@ -65,9 +65,9 @@ namespace
         {
             std::vector<probe::Note> notes;
             for (const int n : { 48, 55, 60, 64 })
-                notes.push_back({ 0, tp::EventKind::noteOn, n, 0.8f });
+                notes.push_back({ 0, pg::EventKind::noteOn, n, 0.8f });
             for (const int n : { 48, 55, 60, 64 })
-                notes.push_back({ static_cast<std::size_t>(kFs), tp::EventKind::noteOff, n, 0.0f });
+                notes.push_back({ static_cast<std::size_t>(kFs), pg::EventKind::noteOff, n, 0.0f });
             return rig.run(probe::Stereo(length), block, notes);
         }
         else
@@ -91,8 +91,8 @@ PROBE(fminus, random)
     const std::size_t length = static_cast<std::size_t>(kFs * (kInstrument ? 6.0 : 2.0));
     for (uint32_t seed = 1; seed <= static_cast<uint32_t>(kSeeds); ++seed)
     {
-        const tp::random::Program p = tp::random::make(seed);
-        const tp::random::Program again = tp::random::make(seed);
+        const pg::random::Program p = pg::random::make(seed);
+        const pg::random::Program again = pg::random::make(seed);
         same += p.text == again.text && p.title == again.title ? 1 : 0;
         texts.insert(p.text);
         titles.insert(p.title);
@@ -101,7 +101,7 @@ PROBE(fminus, random)
         // FORM
         bool form = p.text.rfind("// " + p.title + " (random " + std::to_string(seed) + "): ", 0) == 0;
         for (const std::string& f : p.library)
-            form = form && tp::findLibraryFile(f) != nullptr && p.text.find("#include \"" + f + "\"") != std::string::npos;
+            form = form && pg::findLibraryFile(f) != nullptr && p.text.find("#include \"" + f + "\"") != std::string::npos;
         formed += form ? 1 : 0;
 
         // COMPILE, PANEL
@@ -116,16 +116,16 @@ PROBE(fminus, random)
         }
         ++compiled;
         int dials = 0, placed = 0;
-        for (const tp::Control& c : rig.controls())
+        for (const pg::Control& c : rig.controls())
             dials += c.used ? 1 : 0;
         bool titled = !rig.panel().sections.empty();
-        for (const tp::PanelSection& s : rig.panel().sections)
+        for (const pg::PanelSection& s : rig.panel().sections)
         {
             titled = titled && !s.title.empty();
-            for (const tp::PanelItem& it : s.items)
+            for (const pg::PanelItem& it : s.items)
                 placed += it.display ? 0 : 1;
         }
-        panelled += titled && placed == dials && dials <= tp::kMaxControls ? 1 : 0;
+        panelled += titled && placed == dials && dials <= pg::kMaxControls ? 1 : 0;
 
         // PLAYS
         const probe::Stereo out = play(rig, 256, length);
@@ -171,7 +171,7 @@ PROBE(fminus, random)
         }
     }
     std::printf("%zu different programs, %zu titles, %zu parts\n", texts.size(), titles.size(), parts.size());
-    std::printf("seed 1:\n%s\n", tp::random::make(1).text.c_str());
+    std::printf("seed 1:\n%s\n", pg::random::make(1).text.c_str());
 
     P.eq("same.each_seed_twice", same, kSeeds);
     P.eq("same.seeds_differ", static_cast<int64_t>(texts.size()), kSeeds);
@@ -186,13 +186,13 @@ PROBE(fminus, random)
         P.eq("plays.silence_stays_silent", quiet, kSeeds);
     P.eq("blocks.same_bits", blocks, kBlockSeeds);
     int missing = 0;
-    for (const std::string& part : tp::random::allParts())
+    for (const std::string& part : pg::random::allParts())
         if (parts.count(part) == 0)
         {
             std::printf("no seed chose %s\n", part.c_str());
             ++missing;
         }
     P.eq("parts.all_chosen", missing, 0);
-    P.eq("parts.none_unknown", static_cast<int64_t>(parts.size()), static_cast<int64_t>(tp::random::allParts().size()));
+    P.eq("parts.none_unknown", static_cast<int64_t>(parts.size()), static_cast<int64_t>(pg::random::allParts().size()));
     return P.finish();
 }

@@ -29,7 +29,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-namespace testingplayground::mcp
+namespace playground::mcp
 {
     inline constexpr std::size_t kMaxLine = 64u * 1024u * 1024u;   // a reply with pictures stays well under
 

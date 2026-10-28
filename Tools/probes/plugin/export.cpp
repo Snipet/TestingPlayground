@@ -33,13 +33,13 @@
 #include <string>
 #include <vector>
 
-namespace tp = testingplayground;
+namespace pg = playground;
 
 namespace
 {
-    constexpr bool kInstrument = tp::product::kIsInstrument;
+    constexpr bool kInstrument = pg::product::kIsInstrument;
 
-    tp::Sources twoFiles(int edit)
+    pg::Sources twoFiles(int edit)
     {
         const std::string params = "    param float level [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
                                    "    param float tone [[fminus::range(100, 10000)]] [[fminus::default(1000)]];\n";
@@ -53,15 +53,15 @@ namespace
                   + "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
                     "        for (int i = 0; i < n; ++i) { left[i] = half(left[i]) * level[i]; right[i] = half(right[i]) * level[i]; }\n"
                     "    }\n};\n";
-        return { { tp::kProgramName, program + "// edit " + std::to_string(edit) + "\n" },
+        return { { pg::kProgramName, program + "// edit " + std::to_string(edit) + "\n" },
                  { "gain.fm", "float half(float x) { return 0.5f * x; }\n" } };
     }
 
-    float dial(tp::Processor& p, int slot) { return tp::plainOf(p.control(slot), p.getParameters()[slot]->getValue()); }
+    float dial(pg::Processor& p, int slot) { return pg::plainOf(p.control(slot), p.getParameters()[slot]->getValue()); }
 
-    void setDial(tp::Processor& p, int slot, float plain)
+    void setDial(pg::Processor& p, int slot, float plain)
     {
-        p.getParameters()[slot]->setValueNotifyingHost(tp::normOf(p.control(slot), plain));
+        p.getParameters()[slot]->setValueNotifyingHost(pg::normOf(p.control(slot), plain));
     }
 
     std::vector<uint8_t> bytesOf(const juce::File& f)
@@ -75,10 +75,10 @@ namespace
     void writeBytes(const juce::File& f, const std::vector<uint8_t>& b) { f.replaceWithData(b.data(), b.size()); }
 
     // A package of `json`, its body compressed by `method` (stored or zlib only).
-    std::vector<uint8_t> packageOf(const std::string& json, tp::projectexport::Method method)
+    std::vector<uint8_t> packageOf(const std::string& json, pg::projectexport::Method method)
     {
         std::vector<uint8_t> body;
-        if (method == tp::projectexport::Method::zlib)
+        if (method == pg::projectexport::Method::zlib)
         {
             juce::MemoryOutputStream mem;
             {
@@ -96,14 +96,14 @@ namespace
         out[5] = static_cast<uint8_t>(method);
         for (int i = 0; i < 8; ++i)
             out[static_cast<std::size_t>(8 + i)] = static_cast<uint8_t>(static_cast<uint64_t>(json.size()) >> (8 * i));
-        const uint32_t crc = tp::projectexport::crc32(json.data(), json.size());
+        const uint32_t crc = pg::projectexport::crc32(json.data(), json.size());
         for (int i = 0; i < 4; ++i)
             out[static_cast<std::size_t>(16 + i)] = static_cast<uint8_t>(crc >> (8 * i));
         out.insert(out.end(), body.begin(), body.end());
         return out;
     }
 
-    bool sameVersions(const tp::projectstore::Project& a, const tp::projectstore::Project& b)
+    bool sameVersions(const pg::projectstore::Project& a, const pg::projectstore::Project& b)
     {
         if (a.versions.size() != b.versions.size())
             return false;
@@ -121,19 +121,19 @@ namespace
 PROBE(plugin, export)
 {
     const funkgui::HeadlessGuiScope gui;
-    namespace ps = tp::projectstore;
-    namespace px = tp::projectexport;
+    namespace ps = pg::projectstore;
+    namespace px = pg::projectexport;
     const juce::File dir = juce::File::getSpecialLocation(juce::File::tempDirectory)
-                               .getChildFile("export-probe-" + juce::String(juce::Time::currentTimeMillis()));
+                               .getChildFile(juce::String(pg::product::kEnvPrefix) + "export-probe-" + juce::String(juce::Time::currentTimeMillis()));
     dir.deleteRecursively();
     const juce::File out = dir.getChildFile("out");
     ps::setDirectoryForTests(dir.getChildFile("projects"));
 
     // A project of 30 versions, each a line more, and two presets.
-    tp::Processor a;
-    tp::EditorPort& pa = a.editorPort();
+    pg::Processor a;
+    pg::EditorPort& pa = a.editorPort();
     std::string why;
-    tp::SavedVersion saved;
+    pg::SavedVersion saved;
     pa.setDraft({ twoFiles(0), 1 });
     pa.run(twoFiles(0));
     a.settle();
@@ -149,14 +149,14 @@ PROBE(plugin, export)
     P.eq("setup.presets", pa.savePreset("Bright", why) && pa.savePreset("Dark", why) ? 1 : 0, 1);
 
     // INFO
-    tp::ProjectInfo info;
+    pg::ProjectInfo info;
     info.description = "A pad of glass,   slow to open. " + std::string(700, 'x');
     info.author = "Probe";
     info.category = kInstrument ? "Pad" : "Reverb";
     info.tags = { " warm ", "analog", "Warm", "" };
     info.genres = { "Ambient", "Cinematic" };
     P.eq("info.kept", pa.setProjectInfo("Glass Bloom", info, why) ? 1 : 0, 1);
-    const tp::ProjectInfo back = pa.projectInfo("Glass Bloom");
+    const pg::ProjectInfo back = pa.projectInfo("Glass Bloom");
     std::printf("info: %zu characters, author %s, category %s, %zu tags, %zu genres\n", back.description.size(), back.author.c_str(),
                 back.category.c_str(), back.tags.size(), back.genres.size());
     P.eq("info.tidied", back.description.rfind("A pad of glass, slow to open. x", 0) == 0 && back.description.size() == ps::kMaxDescription
@@ -171,7 +171,7 @@ PROBE(plugin, export)
 
     // PACKAGE
     const juce::File pack = out.getChildFile("Glass Bloom.fmpack");
-    tp::Exported ex;
+    pg::Exported ex;
     P.eq("package.written", pa.exportProject("Glass Bloom", true, true, pack.getFullPathName().toStdString(), ex, why) ? 1 : 0, 1);
     if (!why.empty())
         std::printf("package: %s\n", why.c_str());
@@ -208,7 +208,7 @@ PROBE(plugin, export)
     {
         const std::optional<ps::Project> copy = ps::load(name);
         P.eq("import.same", copy && original && sameVersions(*copy, *original) && copy->presets.size() == 2 && copy->info == original->info ? 1 : 0, 1);
-        tp::Processor b;
+        pg::Processor b;
         P.eq("import.opens", b.editorPort().openProject(name, 0, why) ? 1 : 0, 1);
         b.settle();
         P.eq("import.files", b.editorPort().draft().files == twoFiles(30) && b.editorPort().draft().active == 1 ? 1 : 0, 1);

@@ -9,7 +9,7 @@
 #include <cctype>
 #include <cmath>
 
-namespace testingplayground::ui
+namespace playground::ui
 {
     namespace
     {

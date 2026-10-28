@@ -15,7 +15,7 @@
 #include <string>
 #include <vector>
 
-namespace testingplayground::chatimages
+namespace playground::chatimages
 {
     inline constexpr int kMaxEdge = 1568;                    // px, the long side of a picture as sent
     inline constexpr int kThumbEdge = 320;                   // px, the thumbnail's

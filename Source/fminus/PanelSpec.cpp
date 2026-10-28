@@ -8,7 +8,7 @@
 #include <cstring>
 #include <string_view>
 
-namespace testingplayground
+namespace playground
 {
     namespace
     {

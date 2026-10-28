@@ -17,7 +17,7 @@
 #include <string>
 #include <vector>
 
-namespace testingplayground::soundpicture
+namespace playground::soundpicture
 {
     inline constexpr int kWidth = 1120, kHeight = 800;
 

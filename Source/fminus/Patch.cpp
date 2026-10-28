@@ -27,7 +27,7 @@
 #include <sstream>
 #include <string_view>
 
-namespace testingplayground
+namespace playground
 {
     namespace
     {
