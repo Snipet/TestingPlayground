@@ -29,10 +29,17 @@
 // an infinity becomes 0, and a sample beyond is clipped. Either raises an alert (takeAlerts) the editor shows. A NaN in
 // a program's state stays there: running the program again starts it from scratch.
 //
-// Meters. Each block the Engine measures what came in (an effect's input) and what goes out, keeps the last
-// kScopeLength samples of each for the scopes, and reads the fields the program's displays show (Patch::tap: an
-// effect's instance, an instrument's newest sounding voice), and publishes them (Meters) through a seqlock, which the
-// editor reads at its frame rate.
+// Meters. Each block the Engine reads the fields the program's displays show (Patch::tap: an effect's instance, an
+// instrument's newest sounding voice) and publishes them (Meters) through a seqlock, which the editor reads at its frame
+// rate. While someone reads them (readers(): an editor open, a tool that listens; addReader), it also measures what
+// came in (an effect's input) and what goes out, and keeps the last kScopeLength samples of each for the scopes; with
+// no reader the levels read 0 and the scopes stand still, which saves an effect about as much as a light program
+// costs. A reader that comes finds the levels from the next block on (its first block's own) and the scopes silent
+// before it.
+//
+// Flush-to-zero. process() runs in it (fsdsp::ScopedFtz), the mode the programs are compiled for, whoever calls it:
+// the audio thread has it already; an offline render (Measure, the chat's tools) would otherwise make FMinus set and
+// clear it around every call into the program.
 //
 // Frozen dials (Patch.h). While the dials hold still, the program's frozen copy may play: offerFrozen() leaves one in a
 // slot, and the audio thread takes it at a block's start only when it is of the program that plays, no swap runs, and
@@ -69,7 +76,8 @@ namespace playground
     {
         uint32_t frame = 0;                           // bumps with each block
         float inPeak[2] = {}, inRms[2] = {};          // the input (an effect's), left and right, linear: the peak
-                                                      // falls 20 dB a second, the RMS is smoothed over 50 ms
+                                                      // falls 20 dB a second, the RMS is smoothed over 50 ms (0
+                                                      // while no one reads them: Engine::readers)
         float outPeak[2] = {}, outRms[2] = {};        // the output
         float taps[kMaxDisplays] = {};                // the fields the program's displays show (PanelDisplay::tap)
         uint64_t program = 0;                         // the program they are of (Patch::program), 0 while none plays
@@ -136,6 +144,10 @@ namespace playground
         bool meters(Meters& out) const noexcept { return meters_.read(out); }
         // The last n samples (at most kScopeLength) of the input or the output, mono, oldest first.
         void scope(bool input, float* out, int n) const noexcept;
+        // Who reads the meters and the scopes (above): each reader adds itself while it reads, and removes itself after.
+        void addReader() noexcept { readers_.fetch_add(1, std::memory_order_relaxed); }
+        void removeReader() noexcept { readers_.fetch_sub(1, std::memory_order_relaxed); }
+        int readers() const noexcept { return readers_.load(std::memory_order_relaxed); }
 
         // For the probes, while the audio thread is stopped.
         bool playing() const noexcept { return current_ != nullptr || pending_.load() != nullptr; }
@@ -167,6 +179,7 @@ namespace playground
             bool fading = false;        // stolen, or its program swapped out: gain falls to 0, then the voice is free
             bool pedal = false;         // its key let go while the sustain pedal was down: stopped when it comes up
             float gain = 1.0f, fall = 0.0f;   // per sample, while fading
+            uint64_t fed = 0;           // the feedGen_ its instance's dials were last written at
         };
 
         void takePending() noexcept;
@@ -175,7 +188,7 @@ namespace playground
         bool fits(const Patch::Frozen& f) const noexcept;
         bool holdFrozen(Patch::Frozen* f) noexcept;   // to be handed back; false when every slot is taken
         void retireFrozen() noexcept;                 // the held copies into the slots collect() empties
-        void glideControls(int n) noexcept;           // the ramps over the block: streamBuf_, streaming_
+        void glideControls(int n) noexcept;           // the ramps over the block: streamBuf_, streaming_, feedGen_
         void feed(Patch& p, int offset, int instance) noexcept;   // the dials into p: streams from `offset`
         void processEffect(float* const* channels, int numChannels, int n) noexcept;
         void syncHost(int offset) noexcept;           // the Host block at the call's sample `offset`, into the programs
@@ -188,9 +201,10 @@ namespace playground
         void renderPart(int from, int to, bool onGrid) noexcept;   // one call a voice; to is a multiple of kGrid?
         int freeInstance(const Patch& p) const noexcept;
         void guard(float* x, int n) noexcept;
-        // The block's levels and samples (before and after the program), the program's taps, published.
-        void measureIn(float* const* channels, int numChannels, int n) noexcept;
-        void publish(float* const* channels, int numChannels, int n) noexcept;
+        // The block's levels and samples (before and after the program; while `metering`, `fresh` its first block),
+        // the program's taps, published.
+        void measureIn(float* const* channels, int numChannels, int n, bool fresh) noexcept;
+        void publish(float* const* channels, int numChannels, int n, bool metering, bool fresh) noexcept;
 
         std::atomic<Patch::Frozen*> frozenPending_{ nullptr };
         std::array<std::atomic<Patch::Frozen*>, 4> frozenRetired_{};
@@ -223,6 +237,13 @@ namespace playground
         std::array<bool, kMaxControls> streaming_{};
         const Patch* fedPatch_ = nullptr;             // the program the glides were last aimed for
         std::vector<float> streamBuf_;                // kMaxControls x maxBlock_
+        // What feed() writes changes only when a dial snaps or moves, or a stream starts or ends: glideControls bumps
+        // feedGen_ then, and an instance fed at this generation (Voice::fed, effectFed_) is not fed again while no dial
+        // streams. A stream's pointer moves every call, so while one streams every call feeds.
+        uint64_t feedGen_ = 1;
+        uint64_t effectFed_ = 0;                      // the effect's instance's
+        bool streamingNow_ = false;                   // a dial streams in this block
+        bool streamedLast_ = false;                   // one streamed in the block before
 
         std::array<Voice, 2 * Patch::kInstances> voices_{};
         std::array<bool, 128> held_{};
@@ -243,5 +264,7 @@ namespace playground
         Meters frame_{};                              // the audio thread's, built over a block
         std::array<std::atomic<float>, kScopeLength> scopeIn_{}, scopeOut_{};
         std::atomic<uint32_t> scopeAt_{ 0 };          // samples written so far
+        std::atomic<int> readers_{ 0 };               // who reads the meters and the scopes (addReader)
+        bool metering_ = false;                       // the audio thread measured the last block
     };
 }

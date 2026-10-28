@@ -4,6 +4,8 @@
 //
 //   OnePole tone;                  a field of your module
 //   tone.set(fc, rate);            the cutoff in Hz (-3 dB there); every sample while it moves, else once a call
+//   tone.setG(onePoleG(fc, rate)); the same: for a cutoff modulated every sample, compute onePoleG in a loop of its
+//                                  own (no state: four samples a math call), then setG in the loop that filters
 //   y = tone.lowpass(x);           one sample, low-passed; or
 //   y = tone.highpass(x);          one sample, high-passed (call one of the two a sample)
 //   tone.clear();                  silence
@@ -11,6 +13,15 @@
 //   DcBlock dc;                    a high-pass at 10 Hz, for what feedback, folding or asymmetric shaping leave
 //   dc.set(rate);                  in init
 //   y = dc.tick(x);
+// tan(pi * fc / rate), the cutoff kept within 1 Hz and 0.49 of the rate: what set computes, as a function with no
+// state.
+float onePoleG(float fc, float rate)
+{
+    const float r = fmaxf(rate, 1000);
+    const float w = 3.14159265f * fminf(fmaxf(fc, 1), 0.49f * r) / r;
+    return sinf(w) / cosf(w);
+}
+
 module OnePole
 {
     float s;
@@ -20,7 +31,13 @@ module OnePole
     {
         const float r = fmaxf(rate, 1000);
         const float w = 3.14159265f * fminf(fmaxf(fc, 1), 0.49f * r) / r;
-        const float g = sinf(w) / cosf(w);
+        // sin and cos in one call: cos(w) is sin(pi / 2 - w), pi / 2 in two parts so that it keeps its accuracy.
+        const float2 sc = sinf((float2)(w, 1.57079637f - w - 4.37113883e-8f));
+        setG(sc.x / sc.y);
+    }
+
+    void setG(float g)
+    {
         G = g / (1 + g);
     }
 

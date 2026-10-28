@@ -146,7 +146,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - The displays read what the audio thread publishes, without a lock: after each block the Engine measures the
   input (the effect's) and the output and reads the displays' fields (`Patch::tap`, a field of the effect's instance,
   or of the synth's newest sounding voice) into `Engine::Meters`, through an `fsdsp::Seqlock`, and writes the scope's
-  rings of atomics; the editor reads them each frame (`Panel::tick`). `Meters::program` names the program the fields
+  rings of atomics; the editor reads them each frame (`Panel::tick`). It measures the levels and writes the rings only
+  while someone reads them (`Engine::readers`: each Panel adds itself while it lives, `EditorPort::addMeterReader`; a
+  tool that listens adds itself, `Processor::addMeterReader`, and removes itself after): with no reader the levels
+  read 0 and the rings stand still, the fields go on, and a headless Panel with no other reader (view_panel's picture)
+  waits for two blocks measured. `Meters::program` names the program the fields
   are of (`Patch::program`, the compile's request id): the panel shows them only on that program's displays, since
   the audio thread takes a new program at its next block. Nothing there allocates; `dsp.meters` checks the values.
 - The output guard (Engine::guard) stays: whatever a program computes, what leaves the plugin is finite and within
@@ -163,6 +167,12 @@ place (its `products/<key>.cmake`, and its names in the docs).
   their offsets, its keyboard's wheels come through `EditorPort::playWheel` and the processor's lock-free ring of UI
   events, and the Engine holds the sustain pedal's notes itself (`Voice::pedal`); the effect's wheels stay at rest. A
   new field: kHostFile, `HostBlock`, `HostLayout` and `setHost` together; `dsp.host` checks.
+- Flush-to-zero: the programs compile for it (`Denormals::Flush`), and the plugin runs them in it on every thread:
+  `Engine::process` opens an `fsdsp::ScopedFtz` (the audio thread has it already; offline renders, Measure and the
+  chat's tools, would otherwise pay FMinus's wrapper two FPCR writes a call), and so do `Patch::reset` and its end
+  (a program's init and end). The dials reach an instance through slots looked up at compile (`Patch::setValue`,
+  `setStream`: inline stores, as FMinus's own setters write them), and the Engine writes them only when they change
+  (`Engine::feedGen_`): keep both when the dials' path changes.
 - Flags: `-ffp-contract=off`, never `-ffast-math`. Product constants come from the generated `Product.h`, never from
   `JucePlugin_*`. The editor never uses JUCE's parameter attachments: widgets write through FunkGui's
   `GestureController` to the ports (`funkgui::JuceParamPort`).
@@ -214,9 +224,15 @@ place (its `products/<key>.cmake`, and its names in the docs).
   never the one that plays) and reports in words; `plugin.chatexample` checks its numbers on programs whose answer is
   known. The same pass records named numbers (`measure::metrics()`: each a name, a unit, a line of what it is and a
   default tolerance; the system prompt's CHECKING YOUR WORK lists them from the table, so a metric added there is
-  taught at once); a request's `want` runs only the renders and the analysis they need. A `Session` compiles once
-  and renders as often as asked, each render after `Engine::restart` (offline only: prepare() and `Patch::reset`), so
-  it gives what a fresh compile gives; `dsp.tune` checks that, and the numbers.
+  taught at once); a request's `want` runs only the renders and the analysis they need. Its CPU figures are the
+  rendering thread's own time (`CLOCK_THREAD_CPUTIME_ID`, read at a render's few boundaries, never a block's), in an
+  Engine as the audio thread runs it with no editor open: an instrument's `cpu_percent` over the held part, and
+  `cpu16_percent` measured with sixteen notes held (the least of two short renders), not extrapolated; of the
+  program's own code with its dials held still, every call flat (a dial that moves costs more: the Filter example
+  about 2.7x while its cutoff glides; the frozen copy that plays once they have held still a while usually costs
+  less), and the CPU line says so. A `Session` compiles once and renders as often as asked, each render after
+  `Engine::restart` (offline only: prepare() and `Patch::reset`), so it gives what a fresh compile gives; `dsp.tune`
+  checks that, and the numbers.
 - **view_sound** (`dsp/SoundView.h`, `plugin/SoundPicture.h`): the render (the effect's with an input: a sweep, noise,
   an impulse, a sine or silence; the synth's the notes held, then released) analysed (the waveform's extent and level
   per column, a Blackman-Harris spectrogram on a log axis, the held part's average spectrum, a close-up) and drawn as

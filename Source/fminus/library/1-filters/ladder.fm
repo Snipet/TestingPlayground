@@ -6,10 +6,22 @@
 //   Ladder filter;                 a field of your module
 //   filter.set(fc, res, rate);     the cutoff in Hz and the resonance, 0 to 1 (above about 0.95: self-oscillation);
 //                                  every sample while they move, else once a call
+//   g = ladderG(fc, rate);         the cutoff as the filter's coefficient, and then
+//   filter.setG(g, res);           the same as set: for a cutoff modulated every sample, compute g in a loop of its
+//                                  own (no state: four samples a math call), then setG in the loop that filters
 //   y = filter.tick(x);            one sample. Its level: 0 dB at res 0, about -4 dB at res 1 (an analog ladder
 //                                  loses bass as the resonance rises; half of it is made up). x near 0.25 stays clean;
 //                                  louder drives the tanh
 //   filter.clear();                silence (a voice's start)
+// tan(pi * fc / rate), the cutoff kept within 5 Hz and 0.45 of the rate: what set computes, as a function with no
+// state.
+float ladderG(float fc, float rate)
+{
+    const float r = fmaxf(rate, 1000);
+    const float w = 3.14159265f * fminf(fmaxf(fc, 5), 0.45f * r) / r;
+    return sinf(w) / cosf(w);
+}
+
 module Ladder
 {
     float s1;
@@ -24,7 +36,13 @@ module Ladder
     {
         const float r = fmaxf(rate, 1000);
         const float w = 3.14159265f * fminf(fmaxf(fc, 5), 0.45f * r) / r;
-        const float g = sinf(w) / cosf(w);
+        // sin and cos in one call: cos(w) is sin(pi / 2 - w), pi / 2 in two parts so that it keeps its accuracy.
+        const float2 sc = sinf((float2)(w, 1.57079637f - w - 4.37113883e-8f));
+        setG(sc.x / sc.y, res);
+    }
+
+    void setG(float g, float res)
+    {
         G = g / (1 + g);
         k = 4.2f * fminf(fmaxf(res, 0), 1);
         makeup = 1 + 0.5f * k;

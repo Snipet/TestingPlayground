@@ -14,6 +14,10 @@
 //   FRAME   the frame counts the blocks (a last, shorter one too)
 //   PROGRAM the meters name the program their fields are of (Patch::program): the one that played the last block,
 //           not one offered and not yet taken
+//   READERS the levels and the scopes are measured only while someone reads them (Engine::addReader; the rows above
+//           have a reader, as a panel is): with none the levels read 0 and the scope stands still while the fields
+//           and the frame go on; a reader back, the next block's levels are its own (its peak and RMS, not smoothed up
+//           from 0), and the scope holds that block, silence before it
 #include "Probe.h"
 
 #include "Rig.h"
@@ -58,6 +62,7 @@ PROBE(dsp, meters)
                  "        for (int i = 0; i < n; ++i)\n        {\n            left[i] *= 0.5f;\n            right[i] *= 0.5f;\n        }\n"
                  "        x = 0.3f;\n        k = 7;\n        g = true;\n        v = 60;\n    }\n};\n";
     probe::Rig rig(kFs, kBlock);
+    rig.engine().addReader();                                    // as a panel does: the levels and the scopes measured
     std::string messages;
     const bool ok = rig.load(source, &messages);
     if (!messages.empty())
@@ -174,6 +179,66 @@ PROBE(dsp, meters)
             rig.engine().meters(m);
             P.eq("program.then_the_one_taken", m.program == id ? 1 : 0, 1);
         }
+    }
+
+    // READERS: the sound again (an instrument's a note held), with no one reading the meters, then with a reader back.
+    {
+        const std::size_t len = static_cast<std::size_t>(kBlock) * 8;
+        probe::Stereo loud(len);
+        if constexpr (!kInstrument)
+            loud.l = loud.r = probe::sine(1000.0, 0.8, kFs, len);
+        std::vector<probe::Note> held;
+        if constexpr (kInstrument)
+            held.push_back({ 0, pg::EventKind::noteOn, 67, 0.8f });
+        rig.run(loud, kBlock, held);
+        std::vector<float> before(512), after(512);
+        rig.engine().scope(false, before.data(), 512);
+        rig.engine().removeReader();
+        P.eq("readers.none", rig.engine().readers(), 0);
+        pg::Meters was;
+        rig.engine().meters(was);
+        rig.run(loud, kBlock);
+        rig.engine().meters(m);
+        P.eq("readers.none_levels_0", m.outPeak[0] == 0.0f && m.outRms[1] == 0.0f && m.inPeak[0] == 0.0f ? 1 : 0, 1);
+        rig.engine().scope(false, after.data(), 512);
+        P.eq("readers.none_scope_still", before == after ? 1 : 0, 1);
+        P.eq("readers.none_frames_go_on", static_cast<int64_t>(m.frame - was.frame), 8);
+        P.eq("readers.none_fields_go_on", m.taps[1] == 7.0f && m.program == was.program ? 1 : 0, 1);
+        rig.engine().addReader();
+        probe::Stereo one(static_cast<std::size_t>(kBlock));
+        std::copy_n(loud.l.begin(), kBlock, one.l.begin());
+        std::copy_n(loud.r.begin(), kBlock, one.r.begin());
+        const probe::Stereo block = rig.run(one, kBlock);
+        rig.engine().meters(m);
+        // The block's own peak and RMS (not smoothed up from 0, which would read a third of it).
+        const auto own = [](const std::vector<float>& x, double& peak, double& rms) {
+            double e = 0.0;
+            peak = 0.0;
+            for (const float v : x)
+            {
+                peak = std::max(peak, std::fabs(static_cast<double>(v)));
+                e += static_cast<double>(v) * static_cast<double>(v);
+            }
+            rms = std::sqrt(e / static_cast<double>(x.size()));
+        };
+        double peak = 0.0, rms = 0.0;
+        own(block.l, peak, rms);
+        P.near("readers.back_out_peak", static_cast<double>(m.outPeak[0]), peak, 1e-6);
+        P.near("readers.back_out_rms", static_cast<double>(m.outRms[0]), rms, 1e-4 * rms);
+        P.ge("readers.back_out_audible", rms, 0.1);
+        if constexpr (!kInstrument)
+        {
+            own(one.l, peak, rms);
+            P.near("readers.back_in_peak", static_cast<double>(m.inPeak[0]), peak, 1e-6);
+            P.near("readers.back_in_rms", static_cast<double>(m.inRms[0]), rms, 1e-4 * rms);
+        }
+        rig.engine().scope(false, after.data(), 512);
+        bool silentBefore = true, theBlock = true;
+        for (std::size_t i = 0; i < 512 - static_cast<std::size_t>(kBlock); ++i)
+            silentBefore = silentBefore && after[i] == 0.0f;
+        for (std::size_t i = 0; i < static_cast<std::size_t>(kBlock); ++i)
+            theBlock = theBlock && after[512 - static_cast<std::size_t>(kBlock) + i] == 0.5f * (block.l[i] + block.r[i]);
+        P.eq("readers.back_scope_silence_then_the_block", silentBefore && theBlock ? 1 : 0, 1);
     }
     return P.finish();
 }

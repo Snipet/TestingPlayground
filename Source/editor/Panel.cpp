@@ -1460,6 +1460,7 @@ namespace playground::ui
     // order.
     Panel::Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& port) : port_(port)
     {
+        port_.addMeterReader();                      // the displays read the meters and the scopes while it lives
         title_ = upper(product::kName);
         subtitle_ = std::string(product::kIsInstrument ? "Instrument" : "Effect") + "  v" + product::kVersion + "  FMinus";
         width_ = static_cast<float>(kDefaultWidth);
@@ -1993,6 +1994,7 @@ namespace playground::ui
         for (const int i : guiKeyboards_)                // a note held as the editor closes is let go
             static_cast<GuiKeyboardItem&>(*items_[static_cast<std::size_t>(i)]).release();
         releasePictures();
+        port_.removeMeterReader();
     }
 
     // ---- pictures ------------------------------------------------------------------------------------------------------
