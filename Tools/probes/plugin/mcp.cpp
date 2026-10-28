@@ -8,12 +8,20 @@
 //            run_program compiles and plays it; a dial set reads back at once (before the message thread applies it);
 //            read_file gives it back; view_panel answers with a PNG; an unknown
 //            tool, and ask_user, are errors
+//   NAMES    the first processor is "Synth 1" ("Effect 1"), its socket 1.sock; a second one "Synth 2"
 //   SERVER   the server program (<Name>MCP) over stdio, as Claude Desktop runs it: initialize (its protocol version,
-//            tools with listChanged, instructions), tools/list (list_instances, playground_guide and the chat's tools,
-//            each with `instance`), list_instances naming this processor, get_status and write_file routed to it,
-//            playground_guide; a second processor: a call without `instance` asks for one, with it goes there
-//   GONE     a processor gone, its socket goes; the server, asked again, finds the one left; with none, it says to
-//            open the plugin, and still lists the tools (from tools.json)
+//            tools with listChanged, prompts, instructions that keep tools and ids from the user), tools/list
+//            (list_instances, playground_guide and the chat's tools, each with `instance` and a title in words, the
+//            ones that only look marked read-only), list_instances naming this processor by its name, get_status and
+//            write_file routed to it, playground_guide; the processor then knows Claude Desktop is connected, and
+//            its port says so with its name; the prompts (Make a sound, Improve the sound, Explain the sound), one
+//            filled in with the user's words
+//   MATCH    a second processor, on the track "Bass Line" with the project "Moog Bass": `instance` reaches it by its
+//            name, by "2", by its track's name in another case, by part of its project's; a word matching nothing
+//            describes both so that Claude asks; a fresh server, with both open and none named, asks which one
+//   GONE     a processor gone, its socket goes; the server, asked again, finds the one left; the server gone, the
+//            processor no longer counts as connected; with none open, a call says to open the plugin, and the tools
+//            still list (from tools.json)
 #include "Probe.h"
 
 #include "mcp/McpProtocol.h"
@@ -208,7 +216,11 @@ PROBE(plugin, mcp)
     std::printf("link: %s, fd %d\n", link != nullptr ? link->socketPath().c_str() : "-", fd);
     const juce::var info = ask(*a, r, 1, "info", {});
     std::printf("info: %s\n", line(info).substr(0, 200).c_str());
-    P.eq("link.info", info["result"]["id"].toString() == juce::String(link != nullptr ? link->id() : "") && info["result"]["plugin"].toString() == tp::product::kName
+    const std::string first = std::string(kInstrument ? "Synth" : "Effect") + " 1";
+    P.eq("names.first", link != nullptr && link->id() == "1" && link->name() == first
+                            && juce::File(juce::String::fromUTF8(link->socketPath().c_str())).getFileName() == "1.sock" ? 1 : 0, 1);
+    P.eq("link.info", info["result"]["id"].toString() == juce::String(link != nullptr ? link->id() : "") && info["result"]["name"].toString() == juce::String(first)
+                          && info["result"]["plugin"].toString() == tp::product::kName
                           && info["result"]["kind"].toString() == tp::product::kKind ? 1 : 0, 1);
     const juce::var tools = ask(*a, r, 2, "tools", {})["result"];
     P.eq("link.tools", hasTool(tools, "write_file") && hasTool(tools, "run_program") && hasTool(tools, "view_panel")
@@ -269,7 +281,9 @@ PROBE(plugin, mcp)
                                                                     { "clientInfo", object({ { "name", "probe" }, { "version", "1" } }) } }));
         std::printf("initialize: %s\n", line(rep["result"]["serverInfo"]).c_str());
         P.eq("server.initialize", rep["result"]["protocolVersion"].toString() == "2025-06-18" && static_cast<bool>(rep["result"]["capabilities"]["tools"]["listChanged"])
-                                      && rep["result"]["instructions"].toString().contains("playground_guide") ? 1 : 0, 1);
+                                      && rep["result"]["capabilities"].hasProperty("prompts")
+                                      && rep["result"]["instructions"].toString().contains("playground_guide")
+                                      && rep["result"]["instructions"].toString().contains("never ask them about tools") ? 1 : 0, 1);
         rep = s.request({ a.get() }, "tools/list", {});
         const juce::var list = rep["result"]["tools"];
         bool instanceArg = true;
@@ -284,32 +298,94 @@ PROBE(plugin, mcp)
         std::printf("tools/list: %d of the plugin's\n", pluginTools);
         P.eq("server.tools", hasTool(list, "list_instances") && hasTool(list, "playground_guide") && hasTool(list, "write_file")
                                  && !hasTool(list, "ask_user") && pluginTools == tools.size() && instanceArg ? 1 : 0, 1);
+        {
+            juce::var measure, write;
+            bool titled = true;
+            if (const juce::Array<juce::var>* t = list.getArray())
+                for (const juce::var& tool : *t)
+                {
+                    titled = titled && tool["title"].toString().isNotEmpty() && tool["title"].toString() != tool["name"].toString();
+                    if (tool["name"].toString() == "measure_output")
+                        measure = tool;
+                    if (tool["name"].toString() == "write_file")
+                        write = tool;
+                }
+            P.eq("server.titles", titled && measure["title"].toString() == "Measure the sound"
+                                      && static_cast<bool>(measure["annotations"]["readOnlyHint"]) && !static_cast<bool>(write["annotations"]["readOnlyHint"]) ? 1 : 0, 1);
+        }
         rep = s.request({ a.get() }, "tools/call", object({ { "name", "list_instances" }, { "arguments", juce::var(new juce::DynamicObject()) } }));
         std::printf("list_instances: %s", firstText(rep["result"]).c_str());
-        P.eq("server.lists", firstText(rep["result"]).find(link != nullptr ? link->id() : "?") != std::string::npos ? 1 : 0, 1);
+        P.eq("server.lists", firstText(rep["result"]).find(first) != std::string::npos ? 1 : 0, 1);
         rep = s.request({ a.get() }, "tools/call", object({ { "name", "get_status" }, { "arguments", juce::var(new juce::DynamicObject()) } }));
         std::printf("get_status: %s\n", firstText(rep["result"]).substr(0, 160).c_str());
         P.eq("server.routes", !static_cast<bool>(rep["result"]["isError"]) && !firstText(rep["result"]).empty() ? 1 : 0, 1);
         rep = s.request({ a.get() }, "tools/call", object({ { "name", "playground_guide" }, { "arguments", juce::var(new juce::DynamicObject()) } }));
         P.eq("server.guide", firstText(rep["result"]) == guide ? 1 : 0, 1);
+        P.eq("server.connected", a->editorPort().desktopConnected() && a->editorPort().desktopName() == first ? 1 : 0, 1);
+        rep = s.request({ a.get() }, "prompts/list", {});
+        P.eq("server.prompts", rep["result"]["prompts"].size() == 3 && rep["result"]["prompts"][0]["title"].toString().isNotEmpty() ? 1 : 0, 1);
+        rep = s.request({ a.get() }, "prompts/get", object({ { "name", "make_a_sound" }, { "arguments", object({ { "sound", "a warm pad" } }) } }));
+        P.eq("server.prompt_filled", rep["result"]["messages"][0]["content"]["text"].toString().contains("a warm pad") ? 1 : 0, 1);
 
-        // A second instance: a call without `instance` is still the one used last; another names it.
+        // ---- MATCH: a second instance, on a track, with a project ---------------------------------------------------
         auto b = std::make_unique<tp::Processor>();
-        const std::string bid = b->mcpLink() != nullptr ? b->mcpLink()->id() : "";
-        rep = s.request({ a.get(), b.get() }, "tools/call",
-                        object({ { "name", "write_file" },
-                                 { "arguments", object({ { "name", "notes.fm" }, { "content", "// for b\n" }, { "instance", juce::String(bid) } }) } }));
-        P.eq("server.second", !static_cast<bool>(rep["result"]["isError"]) && b->editorPort().draft().files.size() == 2
-                                  && a->editorPort().draft().files.size() == 1 ? 1 : 0, 1);
+        const std::string second = std::string(kInstrument ? "Synth" : "Effect") + " 2";
+        P.eq("names.second", b->mcpLink() != nullptr && b->mcpLink()->name() == second ? 1 : 0, 1);
+        juce::AudioProcessor::TrackProperties track;
+        track.name = "Bass Line";
+        b->updateTrackProperties(track);
+        {
+            std::string why;
+            tp::SavedVersion saved;
+            b->editorPort().saveVersion("Moog Bass", saved, why);
+        }
+        const auto writeTo = [&](const char* instance, const char* file) {
+            return s.request({ a.get(), b.get() }, "tools/call",
+                             object({ { "name", "write_file" },
+                                      { "arguments", object({ { "name", file }, { "content", "// a file\n" }, { "instance", instance } }) } }))["result"];
+        };
+        const auto has = [](tp::Processor& p, const char* file) {
+            for (const tp::SourceFile& f : p.editorPort().draft().files)
+                if (f.name == file)
+                    return true;
+            return false;
+        };
+        juce::var res2 = writeTo(second.c_str(), "byname.fm");
+        P.eq("match.name", !static_cast<bool>(res2["isError"]) && has(*b, "byname.fm") && !has(*a, "byname.fm") ? 1 : 0, 1);
+        res2 = writeTo("2", "bynumber.fm");
+        P.eq("match.number", has(*b, "bynumber.fm") ? 1 : 0, 1);
+        res2 = writeTo("bass line", "bytrack.fm");
+        P.eq("match.track", has(*b, "bytrack.fm") ? 1 : 0, 1);
+        res2 = writeTo("the moog one", "byproject.fm");
+        std::printf("by project: %s\n", firstText(res2).substr(0, 200).c_str());
+        P.eq("match.project_part", has(*b, "byproject.fm") || has(*b, "byproject.fm") ? 1 : 0, 1);
+        res2 = writeTo("the drums", "nowhere.fm");
+        std::printf("no match: %s\n", firstText(res2).c_str());
+        P.eq("match.none_asks", static_cast<bool>(res2["isError"]) && firstText(res2).find("Ask the user") != std::string::npos
+                                    && firstText(res2).find("Bass Line") != std::string::npos ? 1 : 0, 1);
         rep = s.request({ a.get(), b.get() }, "tools/call", object({ { "name", "list_instances" }, { "arguments", juce::var(new juce::DynamicObject()) } }));
-        P.eq("server.lists_two", firstText(rep["result"]).rfind("2 instances", 0) == 0 ? 1 : 0, 1);
+        std::printf("list_instances: %s", firstText(rep["result"]).c_str());
+        P.eq("server.lists_two", firstText(rep["result"]).rfind(std::string("2 ") + (kInstrument ? "synths" : "effects") + " are open", 0) == 0
+                                     && firstText(rep["result"]).find("Moog Bass") != std::string::npos ? 1 : 0, 1);
+        {
+            // A server just started, two open and none named: it asks which.
+            Server fresh;
+            if (serverPath != nullptr && fresh.start(serverPath))
+            {
+                fresh.request({ a.get(), b.get() }, "initialize", object({ { "protocolVersion", "2025-06-18" } }));
+                const juce::var r2 = fresh.request({ a.get(), b.get() }, "tools/call", object({ { "name", "get_status" }, { "arguments", juce::var(new juce::DynamicObject()) } }))["result"];
+                std::printf("several open: %s\n", firstText(r2).c_str());
+                P.eq("match.several_ask", static_cast<bool>(r2["isError"]) && firstText(r2).find("Ask the user which one") != std::string::npos ? 1 : 0, 1);
+                fresh.stop();
+            }
+        }
 
         // ---- GONE ------------------------------------------------------------------------------------------------------
         const std::string bsock = b->mcpLink() != nullptr ? b->mcpLink()->socketPath() : "";
         b.reset();
         P.eq("gone.socket", !juce::File(juce::String::fromUTF8(bsock.c_str())).exists() ? 1 : 0, 1);
         rep = s.request({ a.get() }, "tools/call", object({ { "name", "list_instances" }, { "arguments", juce::var(new juce::DynamicObject()) } }));
-        P.eq("gone.one_left", firstText(rep["result"]).rfind("1 instance", 0) == 0 ? 1 : 0, 1);
+        P.eq("gone.one_left", firstText(rep["result"]).rfind(std::string("1 ") + (kInstrument ? "synth" : "effect") + " is open", 0) == 0 ? 1 : 0, 1);
         a.reset();
         rep = s.request({}, "tools/call", object({ { "name", "get_status" }, { "arguments", juce::var(new juce::DynamicObject()) } }));
         std::printf("none open: %s\n", firstText(rep["result"]).c_str());
@@ -317,6 +393,24 @@ PROBE(plugin, mcp)
         rep = s.request({}, "tools/list", {});
         P.eq("gone.tools_cached", hasTool(rep["result"]["tools"], "write_file") ? 1 : 0, 1);
         s.stop();
+    }
+    {
+        // The server gone: a processor no longer counts as connected (its link saw the connection close).
+        auto c = std::make_unique<tp::Processor>();
+        Server t;
+        if (serverPath != nullptr && t.start(serverPath))
+        {
+            t.request({ c.get() }, "tools/call", object({ { "name", "list_instances" }, { "arguments", juce::var(new juce::DynamicObject()) } }));
+            const bool during = c->editorPort().desktopConnected();
+            t.stop();
+            bool after = true;
+            for (int k = 0; k < 100 && after; ++k)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                after = c->editorPort().desktopConnected();
+            }
+            P.eq("gone.disconnected", during && !after ? 1 : 0, 1);
+        }
     }
     a.reset();
     folder.deleteRecursively();
