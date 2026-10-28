@@ -1277,6 +1277,7 @@ namespace testingplaygroundsynth
         repairHistory();
         resendState_ = false;                      // the state (whole, after a summary) is in this message
         busy_ = true;
+        mcpNoted_ = false;                         // Claude Desktop's next call says so again
         activity_ = "Thinking";
         cancel_.store(false);
         touch();
@@ -3153,6 +3154,101 @@ namespace testingplaygroundsynth
         checksFailing_ = false;
         addEntry(ChatEntry::Kind::note, "The checks are cleared: the plugin no longer measures them.");
         touch();
+    }
+
+    // ---- MCP ------------------------------------------------------------------------------------------------------------
+    juce::var ChatAgent::mcpTools()
+    {
+        juce::Array<juce::var> out;
+        const juce::var all = toolDefinitions();         // held: getArray() points into it
+        if (const juce::Array<juce::var>* tools = all.getArray())
+            for (const juce::var& t : *tools)
+            {
+                const juce::String name = t["name"].toString();
+                if (name == "ask_user" || name == "ask_planner")
+                    continue;
+                out.add(claude::object({ { "name", name }, { "description", t["description"] }, { "inputSchema", t["input_schema"] } }));
+            }
+        return out;
+    }
+
+    std::string ChatAgent::mcpGuide()
+    {
+        return std::string("WORKING FROM OUTSIDE THE PLUGIN\n\n") + "You are driving " + product::kName + " (an " + (kInstrument ? "instrument" : "effect")
+             + " plugin) through MCP, from Claude Desktop, as its own chat would: the tools are the chat's, but ask_user and "
+               "ask_planner (ask the user here instead) and the web tools (use your own). The user hears the plugin in "
+               "their DAW (or its Standalone app) and sees what you do in its editor; its chat's card notes each tool you "
+               "use. The plugin does not send you its state with each message as it does its chat (the <plugin_state> "
+               "below): call get_status for the files, the dials and the last run, and read_file before editing a file. "
+               "With more than one instance of the plugin open, every tool takes `instance` (list_instances names them). "
+               "What follows is the guide the plugin's chat works from.\n\n"
+             + systemPrompt();
+    }
+
+    ChatAgent::McpResult ChatAgent::mcpCall(const std::string& name, const juce::var& arguments)
+    {
+        McpResult r;
+        const auto words = [](const std::string& t) {
+            juce::Array<juce::var> a;
+            a.add(claude::object({ { "type", "text" }, { "text", juce::String::fromUTF8(t.c_str()) } }));
+            return juce::var(a);
+        };
+        bool known = false;
+        const juce::var mine = mcpTools();
+        if (const juce::Array<juce::var>* tools = mine.getArray())
+            for (const juce::var& t : *tools)
+                known = known || t["name"].toString().toStdString() == name;
+        if (!known)
+        {
+            r.content = words("There is no tool " + name + " here (ask_user and ask_planner are the plugin chat's own).");
+            r.isError = true;
+            return r;
+        }
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (busy_)
+            {
+                r.content = words("The plugin's own chat is working on a request: wait for it to finish (or stop it in the "
+                                  "plugin), then call again.");
+                r.isError = true;
+                return r;
+            }
+            busy_ = true;
+            cancel_.store(false);
+            if (!mcpNoted_)
+            {
+                addEntry(ChatEntry::Kind::note, "Claude Desktop is working on the program through MCP: what it does shows here.");
+                mcpNoted_ = true;
+            }
+            activity_ = "Claude Desktop is at work";
+            touch();
+        }
+        juce::var input = arguments.isObject() ? arguments : juce::var(new juce::DynamicObject());
+        const juce::var block = runTool(claude::object({ { "type", "tool_use" }, { "id", "mcp" }, { "name", juce::String(name) }, { "input", input } }));
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            busy_ = false;
+            activity_.clear();
+            touch();
+        }
+        const juce::var content = block.getProperty("content", juce::var());
+        juce::Array<juce::var> out;
+        if (content.isString())
+            out.add(claude::object({ { "type", "text" }, { "text", content } }));
+        else if (const juce::Array<juce::var>* parts = content.getArray())
+            for (const juce::var& b : *parts)
+            {
+                const juce::String type = b["type"].toString();
+                if (type == "image")
+                    out.add(claude::object({ { "type", "image" }, { "data", b["source"]["data"] }, { "mimeType", b["source"]["media_type"] } }));
+                else if (type == "text")
+                    out.add(claude::object({ { "type", "text" }, { "text", b["text"] } }));
+            }
+        if (out.isEmpty())
+            out.add(claude::object({ { "type", "text" }, { "text", "(no result)" } }));
+        r.content = out;
+        r.isError = static_cast<bool>(block.getProperty("is_error", false));
+        return r;
     }
 
     // ---- the tools ----------------------------------------------------------------------------------------------------

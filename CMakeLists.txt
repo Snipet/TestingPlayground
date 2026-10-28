@@ -212,7 +212,7 @@ target_include_directories(${PRODUCT_NAME}_dsp PUBLIC ${FP_SOURCE_ROOT})
 target_link_libraries(${PRODUCT_NAME}_dsp PUBLIC fp_flags ${PRODUCT_NAME}_fminus PRIVATE fp_warnings fp_lto)
 
 # ---- the plugin ------------------------------------------------------------------------------------------------------
-if(PRODUCT_IS_INSTRUMENT)
+if(PRODUCT_KIND STREQUAL "instrument")
   set(_fp_plugin_kind IS_SYNTH TRUE NEEDS_MIDI_INPUT TRUE VST3_CATEGORIES Instrument Synth
                       AU_MAIN_TYPE kAudioUnitType_MusicDevice MICROPHONE_PERMISSION_ENABLED FALSE)
 else()
@@ -313,6 +313,51 @@ foreach(_fmt AU VST3)
         VERBATIM)
   endif()
 endforeach()
+
+# ---- the MCP server (Source/mcp): Claude Desktop starts it; it reaches the plugin's instances (plugin/McpLink.h) ------
+# <Name>MCP at the top of the build tree, and <Name>.mcpb beside it: a Claude Desktop extension (manifest.json and the
+# server), installed by opening it. juce_core only: the server holds no plugin code.
+set(FP_MCP ${PRODUCT_NAME}MCP)
+juce_add_console_app(${FP_MCP} PRODUCT_NAME "${FP_MCP}")
+target_sources(${FP_MCP} PRIVATE ${FP_SOURCE_ROOT}/mcp/Main.cpp)
+fp_warn_sources(${FP_SOURCE_ROOT}/mcp/Main.cpp)
+target_include_directories(${FP_MCP} PRIVATE ${FP_SOURCE_ROOT} ${FP_GENERATED_DIR})
+target_compile_definitions(${FP_MCP} PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(${FP_MCP} PRIVATE fp_flags juce::juce_core juce::juce_recommended_config_flags)
+set_target_properties(${FP_MCP} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+string(TOLOWER ${PRODUCT_NAME} FP_MCP_ID)
+if(PRODUCT_KIND STREQUAL "instrument")
+  set(FP_MCP_WHAT "synth")
+else()
+  set(FP_MCP_WHAT "effect")
+endif()
+file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/mcpb/manifest.json @ONLY CONTENT [=[{
+  "manifest_version": "0.3",
+  "name": "@FP_MCP_ID@",
+  "display_name": "@PRODUCT_NAME@",
+  "version": "@PROJECT_VERSION@",
+  "description": "Claude as the AI in the @PRODUCT_NAME@ plugin: it writes the @FP_MCP_WHAT@'s FMinus program, runs it, measures and looks at its sound, and sets its dials.",
+  "long_description": "Open @PRODUCT_NAME@ in your DAW (or its Standalone app), then ask Claude for a sound. The tools are the plugin chat's own: read_file, write_file, edit_file, run_program, measure_output, view_sound, view_panel, set_dial, tune_dials, set_checks and more, with list_instances when more than one is open and playground_guide, which teaches FMinus. Nothing leaves this Mac: the server talks to the plugin through a private socket.",
+  "author": { "name": "@PRODUCT_COMPANY@" },
+  "server": {
+    "type": "binary",
+    "entry_point": "server/@FP_MCP@",
+    "mcp_config": { "command": "${__dirname}/server/@FP_MCP@", "args": [], "env": {} }
+  },
+  "tools": [
+    { "name": "list_instances", "description": "The instances of @PRODUCT_NAME@ open now" },
+    { "name": "playground_guide", "description": "The guide to the plugin and to FMinus" }
+  ],
+  "tools_generated": true,
+  "compatibility": { "platforms": ["darwin"] }
+}
+]=])
+add_custom_command(TARGET ${FP_MCP} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/mcpb/server
+    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${FP_MCP}> ${CMAKE_BINARY_DIR}/mcpb/server/${FP_MCP}
+    COMMAND ${CMAKE_COMMAND} -E chdir ${CMAKE_BINARY_DIR}/mcpb ${CMAKE_COMMAND} -E tar cf ${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb
+            --format=zip manifest.json server/${FP_MCP}
+    VERBATIM)
 
 # ---- the probes (cmake/Probes.cmake) ---------------------------------------------------------------------------------
 enable_testing()

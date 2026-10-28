@@ -77,7 +77,7 @@ foreach(_f IN LISTS FP_PROBE_SOURCES)
   set_tests_properties(${_name} PROPERTIES
       LABELS "probe;${_layer}"
       TIMEOUT ${_timeout}
-      ENVIRONMENT "PROBE_OUT_DIR=${CMAKE_BINARY_DIR}/probe-out;${PRODUCT_ENV_PREFIX}PREFS_DIR=${_sb};${PRODUCT_ENV_PREFIX}SHADERC=${FP_SHADERC}")
+      ENVIRONMENT "PROBE_OUT_DIR=${CMAKE_BINARY_DIR}/probe-out;${PRODUCT_ENV_PREFIX}PREFS_DIR=${_sb};${PRODUCT_ENV_PREFIX}SHADERC=${FP_SHADERC};${PRODUCT_ENV_PREFIX}MCP_DIR=${_sb}/mcp;${PRODUCT_ENV_PREFIX}MCP_SERVER=$<TARGET_FILE:${FP_MCP}>")
 endforeach()
 list(LENGTH _fp_names _fp_n)
 message(STATUS "${PRODUCT_NAME}: ${_fp_n} probes: ${_fp_names}")
