@@ -9,13 +9,17 @@
 //     "versions": [ { "number": 1, "saved": 1761580000000, "note": "first save", "active": 0,
 //                     "files": [ { "name": "program.fm", "text": "..." }, ... ],
 //                     "dials": [ { "name": "cutoff", "value": 900 }, ... ] }, ... ],        oldest first
-//     "presets":  [ { "name": "Bright", "saved": 1761580100000, "from": 1, "dials": [ ... ] }, ... ] }   by name
+//     "presets":  [ { "name": "Bright", "saved": 1761580100000, "from": 1, "dials": [ ... ] }, ... ],  by name
+//     "info":     { "description": "...", "author": "...", "category": "Pad", "tags": [ "warm" ], "genres": [ ... ] } }
 //
 // The dials by parameter name, in the program's own units, so a version's or a preset's values land in whichever
 // slots its program's parameters take, and a preset saved with one version applies to the next. A version's note says
 // what changed since the one before ("program.fm +12 -3, lib.fm new, 2 dials"). A project keeps its last kMaxVersions
 // versions; the numbers go on counting. A project's name is its file's (a file renamed in the Finder is a project
 // renamed); names are told apart case aside, as the Mac's disks tell files apart.
+//
+// A project's info (Info) describes it to others: what an export (ProjectExport.h) carries besides the program, and
+// what a project imported brings.
 //
 // The presets of the playground before projects (<name>.fmpreset: a program and its dials) become projects of one
 // version, at the time the preset was saved, the first time the folder is read; the old files then move into the
@@ -76,11 +80,31 @@ namespace testingplaygroundsynth::projectstore
         std::vector<Dial> dials;
     };
 
+    inline constexpr int kMaxTags = 16;
+    inline constexpr std::size_t kMaxTag = 24;           // characters
+    inline constexpr std::size_t kMaxDescription = 600;
+    inline constexpr std::size_t kMaxAuthor = 60;
+
+    struct Info
+    {
+        std::string description;                         // what it is, in a few sentences
+        std::string author;
+        std::string category;                            // one ("Bass", "Reverb"): editor/ExportCard.h offers them
+        std::vector<std::string> tags;                   // free words, case aside unique
+        std::vector<std::string> genres;
+        bool empty() const noexcept
+        {
+            return description.empty() && author.empty() && category.empty() && tags.empty() && genres.empty();
+        }
+        friend bool operator==(const Info&, const Info&) = default;
+    };
+
     struct Project
     {
         std::string name;
         std::vector<Version> versions;                   // oldest first, never empty
         std::vector<Preset> presets;                     // by name, case aside
+        Info info;
 
         const Version& latest() const { return versions.back(); }
         const Version* version(int number) const;        // none when it is not kept
@@ -123,6 +147,20 @@ namespace testingplaygroundsynth::projectstore
     bool removePreset(std::string_view project, std::string_view preset, std::string* why = nullptr);
     bool removeVersion(std::string_view project, int number, std::string* why = nullptr);   // never its only one
     bool remove(std::string_view name, std::string* why = nullptr);
+
+    // The info as a project keeps it: printable text, cut to its lengths (a tag to kMaxTag, at most kMaxTags of them,
+    // each once case aside, as the genres), the spaces collapsed.
+    Info tidyInfo(Info info);
+    std::vector<std::string> splitTags(std::string_view commaSeparated);   // "warm, analog,, Warm" -> warm, analog
+    bool setInfo(std::string_view project, const Info& info, std::string* why = nullptr);
+
+    // A project as the JSON of its file, and back (`name` the project's when the JSON is a file's; nothing, with why, when
+    // it is not a project of this plugin's or it is damaged). For ProjectExport.
+    std::string toJson(const Project& p);
+    std::optional<Project> fromJson(const std::string& json, std::string_view name, std::string* why = nullptr);
+    // A project added under its name, or, when one has it, "<name> 2", "<name> 3", ...: the name it took, or nothing,
+    // with why, when it cannot be written.
+    std::optional<std::string> add(Project p, std::string* why = nullptr);
 
     // What changed from `before` (none: "first save") to the files and dials given: each file added, removed or edited
     // ("program.fm +12 -3": its lines added and taken away, whatever their order), and how many dials moved.

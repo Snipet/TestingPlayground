@@ -2114,9 +2114,9 @@ namespace testingplaygroundsynth::ui
 
     bool Panel::filesInterest(const std::vector<std::string>& paths) const
     {
-        if (!chatOpen_ || keyOpen_ || projects_.isOpen())
+        if (dialogOpen())
             return false;
-        return std::any_of(paths.begin(), paths.end(), [](const std::string& p) { return isPictureName(p); });
+        return std::any_of(paths.begin(), paths.end(), [this](const std::string& p) { return (chatOpen_ && isPictureName(p)) || isProjectFile(p); });
     }
 
     void Panel::filesDragEnter(const std::vector<std::string>&, float x, float y)
@@ -2147,6 +2147,12 @@ namespace testingplaygroundsynth::ui
         const bool onChat = dropHover_;
         dropActive_ = dropHover_ = false;
         dirty_ = true;
+        std::vector<std::string> projects;
+        for (const std::string& p : paths)
+            if (isProjectFile(p))
+                projects.push_back(p);
+        if (!projects.empty())
+            importFiles(projects);                       // anywhere on the panel
         if (!onChat)
             return;
         std::vector<std::string> pictures;
@@ -3766,7 +3772,7 @@ namespace testingplaygroundsynth::ui
 
     void Panel::openProjects(bool preset)
     {
-        if (projects_.isOpen() || keyOpen_)
+        if (dialogOpen())
             return;
         std::string name = port_.project().name;
         if (name.empty())
@@ -3796,10 +3802,128 @@ namespace testingplaygroundsynth::ui
         if (const std::string n = projects_.takeNotice(); !n.empty())
             notice(n);
         projectsAt_ = -100.0;                            // the explorer reads what it saved, opened or deleted
-        if (wasOpen && !projects_.isOpen())
+        const bool importIt = projects_.takeImport();
+        const std::string exportIt = projects_.takeExport();
+        if (wasOpen && !projects_.isOpen() && exportIt.empty())
         {
             setFocus(focusBeforeProjects_ >= 0 ? focusBeforeProjects_ : editorItem_);
             focusBeforeProjects_ = -1;
+        }
+        if (importIt)
+            chooseImport();
+        if (!exportIt.empty())
+        {
+            export_.open(exportIt);
+            setFocus(-1);
+        }
+        dirty_ = true;
+    }
+
+    void Panel::openExport(const std::string& project)
+    {
+        if (dialogOpen() || project.empty())
+            return;
+        files().endRename();
+        focusBeforeProjects_ = focus_;
+        export_.open(project);
+        setFocus(-1);
+        ring_ = false;
+        dirty_ = true;
+    }
+
+    // The save chooser for the export EXPORT asked for, then the file; or, with no chooser, the Desktop.
+    void Panel::afterExport(bool wasOpen)
+    {
+        if (const std::string n = export_.takeNotice(); !n.empty())
+            notice(n);
+        const ExportCard::Want want = export_.takeWant();
+        if (want != ExportCard::Want::none)
+        {
+            const bool package = want == ExportCard::Want::package;
+            const std::string project = export_.project();
+            const bool every = export_.allVersions();
+            const std::string ext = package ? ".fmpack" : ".zip";
+            const auto write = [this, project, package, every](const std::string& path) {
+                Exported out;
+                std::string why;
+                if (port_.exportProject(project, package, every, path, out, why))
+                {
+                    const auto kb = [](int64_t b) { return b < 10240 ? std::to_string(b) + " bytes" : std::to_string((b + 512) / 1024) + " KB"; };
+                    const std::string file = juce::File(juce::String::fromUTF8(path.c_str())).getFileName().toStdString();
+                    export_.exported(true, "Exported " + file + ": " + kb(out.bytes) + (package ? " (" + kb(out.raw) + " of text, " + out.method + ")" : std::string())
+                                               + ", " + std::to_string(out.versions) + (out.versions == 1 ? " version." : " versions."));
+                    notice("EXPORTED: " + upper(file));
+                }
+                else
+                    export_.exported(false, "Not exported: " + why + ".");
+                dirty_ = true;
+            };
+            funkgui::FileRequest request;
+            request.mode = funkgui::FileRequest::Mode::save;
+            request.title = "Export " + project;
+            request.pattern = "*" + ext;
+            request.suggestedName = project + ext;
+            if (host_ == nullptr || !host_->chooseFiles(request, [write](const std::vector<std::string>& paths) {
+                    if (!paths.empty())
+                        write(paths.front());
+                }))
+            {
+                // No chooser: the Desktop, under a name no file there has.
+                const juce::File desk(juce::String::fromUTF8(port_.exportFolder().c_str()));
+                juce::File to = desk.getChildFile(juce::String::fromUTF8((project + ext).c_str()));
+                for (int k = 2; to.exists() && k < 1000; ++k)
+                    to = desk.getChildFile(juce::String::fromUTF8((project + " " + std::to_string(k) + ext).c_str()));
+                write(to.getFullPathName().toStdString());
+            }
+        }
+        if (wasOpen && !export_.isOpen())
+        {
+            setFocus(focusBeforeProjects_ >= 0 ? focusBeforeProjects_ : editorItem_);
+            focusBeforeProjects_ = -1;
+        }
+        projectsAt_ = -100.0;
+        dirty_ = true;
+    }
+
+    void Panel::chooseImport()
+    {
+        if (host_ == nullptr)
+            return;
+        funkgui::FileRequest request;
+        request.mode = funkgui::FileRequest::Mode::openMany;
+        request.title = "Import projects";
+        request.pattern = "*.fmpack;*.zip";
+        host_->chooseFiles(request, [this](const std::vector<std::string>& paths) { importFiles(paths); });
+    }
+
+    // Each a project of its own; the last one chosen in PROJECTS, opened over the panel.
+    void Panel::importFiles(const std::vector<std::string>& paths)
+    {
+        std::string last, failed;
+        int done = 0;
+        for (const std::string& p : paths)
+        {
+            std::string name, why;
+            if (port_.importProject(p, name, why))
+            {
+                last = name;
+                ++done;
+            }
+            else
+                failed = why;
+        }
+        projectsAt_ = -100.0;
+        if (done == 0)
+        {
+            if (!failed.empty())
+                notice("NOT IMPORTED: " + upper(failed));
+            return;
+        }
+        notice(done == 1 ? "IMPORTED: " + upper(last) : "IMPORTED " + std::to_string(done) + " PROJECTS");
+        if (!dialogOpen())
+        {
+            openProjects();
+            projects_.chooseProjectNamed(last, width_, height_);
         }
         dirty_ = true;
     }
@@ -4451,6 +4575,8 @@ namespace testingplaygroundsynth::ui
                           tab_ == DialogTab::key ? "API KEY   CMD-V PASTES IT   RETURN SAVES IT   ESCAPE CANCELS"
                           : chat_.signedIn       ? "ACCOUNT   SIGNED IN   ESCAPE CLOSES"
                                                  : "ACCOUNT   TAB MOVES TO THE PASSWORD   CMD-V PASTES   RETURN SIGNS IN   ESCAPE CANCELS");
+        else if (export_.isOpen())
+            std::snprintf(line, sizeof line, "EXPORT   TAB THE NEXT FIELD   A PILL TOGGLES   ESCAPE KEEPS THE INFO AND CLOSES");
         else if (projects_.isOpen())
             std::snprintf(line, sizeof line, "PROJECTS   UP AND DOWN CHOOSE   TAB THE NEXT LIST   RETURN SAVES A NAME TYPED, ELSE OPENS   ESCAPE CLOSES");
         else
@@ -4493,12 +4619,17 @@ namespace testingplaygroundsynth::ui
             const funkgui::Canvas::Scope s(c, kProjectsTag, false);
             projects_.draw(c, th, width_, height_, pointer_, hasPointer_);
         }
+        if (export_.isOpen())
+        {
+            const funkgui::Canvas::Scope s(c, kExportTag, false);
+            export_.draw(c, th, width_, height_, pointer_, hasPointer_);
+        }
     }
 
     // ---- input --------------------------------------------------------------------------------------------------------
     int Panel::itemAt(funkgui::Point p) const
     {
-        if (keyOpen_ || projects_.isOpen())
+        if (dialogOpen())
             return -1;                                   // the dialog covers the panel
         for (std::size_t i = 0; i < items_.size(); ++i)
             if (items_[i]->shown() && items_[i]->contains(p))
@@ -4544,6 +4675,13 @@ namespace testingplaygroundsynth::ui
             keyDialogPointerDown(pointer_);
             return;
         }
+        if (export_.isOpen())
+        {
+            pressed_ = -1;
+            export_.pointerDown(pointer_, width_, height_);
+            afterExport(true);
+            return;
+        }
         if (projects_.isOpen())
         {
             pressed_ = -1;
@@ -4586,6 +4724,8 @@ namespace testingplaygroundsynth::ui
     {
         if (keyOpen_)
             return;
+        if (export_.isOpen())
+            return;
         if (projects_.isOpen())
         {
             projects_.doubleClick({ e.x, e.y }, width_, height_);
@@ -4604,6 +4744,8 @@ namespace testingplaygroundsynth::ui
     bool Panel::wheel(const funkgui::WheelEvent& e)
     {
         dirty_ = true;
+        if (export_.isOpen())
+            return true;
         if (projects_.isOpen())
         {
             projects_.wheel(e, width_, height_);
@@ -4652,6 +4794,12 @@ namespace testingplaygroundsynth::ui
         dirty_ = true;
         if (keyOpen_)
             return keyDialogKey(e);
+        if (export_.isOpen())
+        {
+            export_.key(e, host_, width_, height_);
+            afterExport(true);
+            return true;
+        }
         if (projects_.isOpen())
         {
             projects_.key(e, host_, width_, height_);
@@ -4715,6 +4863,8 @@ namespace testingplaygroundsynth::ui
                              || d.keyTab.contains(pointer_);
             return button ? funkgui::Cursor::pointingHand : funkgui::Cursor::normal;
         }
+        if (export_.isOpen())
+            return export_.cursor(pointer_, width_, height_);
         if (projects_.isOpen())
             return projects_.cursor(pointer_, width_, height_);
         const int i = pressed_ >= 0 ? pressed_ : (hasPointer_ ? itemAt(pointer_) : -1);
@@ -4815,6 +4965,11 @@ namespace testingplaygroundsynth::ui
             button(kKeyExtraId, d.extra, b.extra);
             return;
         }
+        if (export_.isOpen())
+        {
+            export_.accessibility(out, width_, height_);
+            return;
+        }
         if (projects_.isOpen())
         {
             projects_.accessibility(out, width_, height_);
@@ -4838,6 +4993,7 @@ namespace testingplaygroundsynth::ui
         r ^= dials * 0x27D4EB2Fu;
         r |= (keyOpen_ ? 1u : 0u) << 17;
         r ^= (projects_.isOpen() ? 0x9E3779B1u : 0u) ^ (projects_.revision() * 0x165667B1u);
+        r ^= (export_.isOpen() ? 0x85EBCA77u : 0u) ^ (export_.revision() * 0xC2B2AE3Du);
         r |= (chat_.ready() ? 1u : 0u) << 18;
         r ^= (tab_ == DialogTab::account ? 0x6A09E667u : 0u) ^ (chat_.signedIn ? 0xBB67AE85u : 0u)
            ^ (chat_.hasKey ? 0x3C6EF372u : 0u) ^ (chat_.signingIn || awaitingSignIn_ ? 0xA54FF53Au : 0u)
@@ -4880,6 +5036,12 @@ namespace testingplaygroundsynth::ui
             else if (id == kUserFieldId || id == kPassFieldId)
                 accountField_ = id == kUserFieldId ? 0 : 1;
             dirty_ = true;
+            return;
+        }
+        if (export_.isOpen())
+        {
+            export_.a11yAction(id, a, width_, height_);
+            afterExport(true);
             return;
         }
         if (projects_.isOpen())
