@@ -63,6 +63,7 @@
 #pragma once
 
 #include "editor/Explorer.h"
+#include "editor/ExportCard.h"
 #include "editor/ProjectBrowser.h"
 
 #include <funkgui/a11y/A11yItem.h>
@@ -130,6 +131,7 @@ namespace testingplayground::ui
     inline constexpr funkgui::Tag kProjectsTag = funkgui::tags::firstProduct + 8;     // the projects' card
     inline constexpr funkgui::Tag kSectionTag = funkgui::tags::firstProduct + 7;      // the dials' sections
     inline constexpr funkgui::Tag kExplorerTag = funkgui::tags::firstProduct + 9;     // the explorer's card
+    inline constexpr funkgui::Tag kExportTag = funkgui::tags::firstProduct + 10;      // EXPORT's card
 
     // One message of the last run, as the problems list shows it.
     struct Problem
@@ -195,6 +197,11 @@ namespace testingplayground::ui
         // first line's words before a colon) in its field; with `preset`, the field a preset's name.
         void openProjects(bool preset = false);
         ProjectBrowser& projectBrowser() noexcept { return projects_; }
+        // EXPORT (ExportCard.h): a project's info and its export; Import's chooser (a .zip or .fmpack, also dropped on the
+        // panel), each a project of its own, PROJECTS then open on it.
+        void openExport(const std::string& project);
+        ExportCard& exportCard() noexcept { return export_; }
+        void chooseImport();
         // "PROJECT  NAME  V3  EDITED  PRESET  BRIGHT  EDITED" (what the top bar's pill says, in words), "" for none.
         const std::string& projectText() const noexcept { return projectText_; }
         // Cmd-S: a new version of the project open (its name in the status), or, with none open, PROJECTS.
@@ -402,6 +409,9 @@ namespace testingplayground::ui
         void openProjectNamed(const std::string& name);  // its newest version, asking first over unsaved edits
         void applyPresetNamed(const std::string& name);  // a preset of the project open
         void afterProjects(bool wasOpen);                // the card's notice to the status, the focus back
+        void afterExport(bool wasOpen);                  // its notice; an export asked for: the save chooser, the file
+        void importFiles(const std::vector<std::string>& paths);
+        bool dialogOpen() const noexcept { return keyOpen_ || projects_.isOpen() || export_.isOpen(); }
         std::string projectLabel() const;                // the top bar's pill: "Name v3 - Preset", "edited", or Projects
         bool unread_ = false;                            // folded, and the conversation grew since
         // Pictures: the ids this Panel has in FunkGui's registry (images::set, counted across Panels: Picture.cpp
@@ -420,6 +430,7 @@ namespace testingplayground::ui
         std::string title_, subtitle_, status_, meter_;
         std::string projectText_;                        // the project open, its version, the preset applied, in words
         ProjectBrowser projects_{ port_ };
+        ExportCard export_{ port_ };
         int focusBeforeProjects_ = -1;
         std::string notice_;                             // RANDOM's or PROJECTS' word in the status, until noticeUntil_
         double noticeUntil_ = -1.0;

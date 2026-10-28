@@ -168,6 +168,12 @@ namespace testingplayground
         bool savePreset(const std::string& preset, std::string& why) override;
         bool applyPreset(const std::string& project, const std::string& preset, std::string& why) override;
         bool deletePreset(const std::string& project, const std::string& preset, std::string& why) override;
+        ProjectInfo projectInfo(const std::string& project) const override;
+        bool setProjectInfo(const std::string& project, const ProjectInfo& info, std::string& why) override;
+        bool exportProject(const std::string& project, bool package, bool allVersions, const std::string& path, Exported& out,
+                           std::string& why) override;
+        bool importProject(const std::string& path, std::string& name, std::string& why) override;
+        std::string exportFolder() const override;
         ChatPort& chat() override { return chat_; }
         bool panelView() const override { return panelView_.load(); }
         void setPanelView(bool on) override { panelView_.store(on); }

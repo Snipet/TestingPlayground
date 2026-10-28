@@ -1,6 +1,7 @@
 // Source/plugin/Processor.cpp: see Processor.h.
 #include "plugin/Processor.h"
 
+#include "plugin/ProjectExport.h"
 #include "plugin/ProjectStore.h"
 
 #include "Examples.h"
@@ -1168,6 +1169,58 @@ namespace testingplayground
         if (projectstore::sameName(projectName_, project) && projectstore::sameName(projectPreset_, preset))
             projectPreset_.clear();
         return true;
+    }
+
+    ProjectInfo Processor::projectInfo(const std::string& project) const
+    {
+        ProjectInfo out;
+        if (const std::optional<projectstore::Project> p = projectstore::load(project))
+            out = { p->info.description, p->info.author, p->info.category, p->info.tags, p->info.genres };
+        return out;
+    }
+
+    bool Processor::setProjectInfo(const std::string& project, const ProjectInfo& info, std::string& why)
+    {
+        return projectstore::setInfo(project, { info.description, info.author, info.category, info.tags, info.genres }, &why);
+    }
+
+    bool Processor::exportProject(const std::string& project, bool package, bool allVersions, const std::string& path,
+                                  Exported& out, std::string& why)
+    {
+        const std::optional<projectstore::Project> p = projectstore::load(project, &why);
+        if (!p)
+            return false;
+        const juce::File to(juce::String::fromUTF8(path.c_str()));
+        if (!juce::File::isAbsolutePath(to.getFullPathName()))
+        {
+            why = "the file needs a full path";
+            return false;
+        }
+        projectexport::Result r;
+        if (!(package ? projectexport::writePackage(*p, allVersions, to, r, &why) : projectexport::writeSource(*p, allVersions, to, r, &why)))
+            return false;
+        out.bytes = r.bytes;
+        out.raw = r.raw;
+        out.versions = r.versions;
+        out.method = !package ? "zip" : r.method == projectexport::Method::xz ? "xz" : r.method == projectexport::Method::zlib ? "zlib" : "stored";
+        return true;
+    }
+
+    bool Processor::importProject(const std::string& path, std::string& name, std::string& why)
+    {
+        const std::optional<projectstore::Project> p = projectexport::read(juce::File(juce::String::fromUTF8(path.c_str())), &why);
+        if (!p)
+            return false;
+        const std::optional<std::string> added = projectstore::add(*p, &why);
+        if (!added)
+            return false;
+        name = *added;
+        return true;
+    }
+
+    std::string Processor::exportFolder() const
+    {
+        return juce::File::getSpecialLocation(juce::File::userDesktopDirectory).getFullPathName().toStdString();
     }
 
     // ---- ChatHost (the agent's thread) -----------------------------------------------------------------------------------

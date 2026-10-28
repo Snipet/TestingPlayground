@@ -111,34 +111,45 @@ namespace testingplayground::projectstore
                 *why = what;
         }
 
-        // The project in `f`: nothing, with why, when it is not one of this plugin's or it is damaged.
-        std::optional<Project> parse(const juce::File& f, std::string* why)
+        std::vector<std::string> stringsOf(const juce::var& v)
         {
-            if (f.getSize() > kMaxBytes)
-            {
-                fail(why, f.getFileName().toStdString() + " is too large to be a project");
-                return std::nullopt;
-            }
-            const juce::var root = juce::JSON::parse(f.loadFileAsString());
+            std::vector<std::string> out;
+            if (const juce::Array<juce::var>* a = v.getArray())
+                for (const juce::var& s : *a)
+                    out.push_back(s.toString().toStdString());
+            return out;
+        }
+
+        juce::var stringsVar(const std::vector<std::string>& v)
+        {
+            juce::Array<juce::var> out;
+            for (const std::string& s : v)
+                out.add(str(s));
+            return out;
+        }
+
+        // The project in a file's JSON: nothing, with why, when it is not one of this plugin's or it is damaged.
+        std::optional<Project> parseRoot(const juce::var& root, const std::string& name, const std::string& label, std::string* why)
+        {
             if (!root.isObject() || root["format"].toString() != kFormat)
             {
-                fail(why, f.getFileName().toStdString() + " is not a project (or it is damaged)");
+                fail(why, label + " is not a project (or it is damaged)");
                 return std::nullopt;
             }
             if (static_cast<int>(root["version"]) > kFormatVersion)
             {
-                fail(why, f.getFileName().toStdString() + " is from a newer version of the plugin");
+                fail(why, label + " is from a newer version of the plugin");
                 return std::nullopt;
             }
             const std::string kind = root["kind"].toString().toStdString();
             if (kind != kindName(product::kIsInstrument))
             {
-                fail(why, "\"" + f.getFileNameWithoutExtension().toStdString() + "\" is a project of the " + kind + " playground ("
-                              + root["plugin"].toString().toStdString() + "): this one plays " + kindName(product::kIsInstrument) + "s");
+                fail(why, "\"" + name + "\" is a project of the " + kind + " playground (" + root["plugin"].toString().toStdString()
+                              + "): this one plays " + kindName(product::kIsInstrument) + "s");
                 return std::nullopt;
             }
             Project p;
-            p.name = f.getFileNameWithoutExtension().toStdString();
+            p.name = name;
             if (const juce::Array<juce::var>* versions = root["versions"].getArray())
                 for (const juce::var& v : *versions)
                 {
@@ -173,8 +184,32 @@ namespace testingplayground::projectstore
                     if (!pr.name.empty() && p.preset(pr.name) == nullptr)
                         p.presets.push_back(std::move(pr));
                 }
+            if (const juce::var info = root["info"]; info.isObject())
+            {
+                Info in;
+                in.description = info["description"].toString().toStdString();
+                in.author = info["author"].toString().toStdString();
+                in.category = info["category"].toString().toStdString();
+                in.tags = stringsOf(info["tags"]);
+                in.genres = stringsOf(info["genres"]);
+                p.info = tidyInfo(std::move(in));
+            }
             return p;
         }
+
+        // The project in `f`.
+        std::optional<Project> parse(const juce::File& f, std::string* why)
+        {
+            if (f.getSize() > kMaxBytes)
+            {
+                fail(why, f.getFileName().toStdString() + " is too large to be a project");
+                return std::nullopt;
+            }
+            return parseRoot(juce::JSON::parse(f.loadFileAsString()), f.getFileNameWithoutExtension().toStdString(),
+                             f.getFileName().toStdString(), why);
+        }
+
+        juce::var rootOf(const Project& p);
 
         void sortPresets(std::vector<Preset>& presets)
         {
@@ -201,6 +236,28 @@ namespace testingplayground::projectstore
                 return false;
             }
             sortPresets(p.presets);
+            const juce::String json = str(toJson(p));
+            const juce::File target = dir.getChildFile(str(p.name) + kExtension);
+            const juce::File temp = dir.getChildFile("." + str(p.name) + ".saving");
+            if (!temp.replaceWithText(json, false, false, "\n"))
+            {
+                fail(why, "cannot write " + temp.getFullPathName().toStdString());
+                return false;
+            }
+            const juce::File old = fileOf(p.name);
+            if (old != juce::File() && old.getFileName() != target.getFileName())
+                old.deleteFile();
+            if (!temp.moveFileTo(target))
+            {
+                temp.deleteFile();
+                fail(why, "cannot replace " + target.getFullPathName().toStdString());
+                return false;
+            }
+            return true;
+        }
+
+        juce::var rootOf(const Project& p)
+        {
             auto* root = new juce::DynamicObject();
             root->setProperty("format", kFormat);
             root->setProperty("version", kFormatVersion);
@@ -231,25 +288,17 @@ namespace testingplayground::projectstore
                 presets.add(juce::var(o));
             }
             root->setProperty("presets", presets);
-            const juce::String json = juce::JSON::toString(juce::var(root), false) + "\n";
-
-            const juce::File target = dir.getChildFile(str(p.name) + kExtension);
-            const juce::File temp = dir.getChildFile("." + str(p.name) + ".saving");
-            if (!temp.replaceWithText(json, false, false, "\n"))
+            if (!p.info.empty())
             {
-                fail(why, "cannot write " + temp.getFullPathName().toStdString());
-                return false;
+                auto* info = new juce::DynamicObject();
+                info->setProperty("description", str(p.info.description));
+                info->setProperty("author", str(p.info.author));
+                info->setProperty("category", str(p.info.category));
+                info->setProperty("tags", stringsVar(p.info.tags));
+                info->setProperty("genres", stringsVar(p.info.genres));
+                root->setProperty("info", juce::var(info));
             }
-            const juce::File old = fileOf(p.name);
-            if (old != juce::File() && old.getFileName() != target.getFileName())
-                old.deleteFile();
-            if (!temp.moveFileTo(target))
-            {
-                temp.deleteFile();
-                fail(why, "cannot replace " + target.getFullPathName().toStdString());
-                return false;
-            }
-            return true;
+            return juce::var(root);
         }
 
         // The playground's presets before projects: each a project of one version, the old file then moved aside.
@@ -587,6 +636,111 @@ namespace testingplayground::projectstore
             return false;
         }
         return true;
+    }
+
+    std::vector<std::string> splitTags(std::string_view commaSeparated)
+    {
+        std::vector<std::string> out;
+        std::size_t at = 0;
+        while (at <= commaSeparated.size())
+        {
+            const std::size_t end = std::min(commaSeparated.find(',', at), commaSeparated.size());
+            out.push_back(std::string(commaSeparated.substr(at, end - at)));
+            at = end + 1;
+        }
+        return tidyInfo({ {}, {}, {}, std::move(out), {} }).tags;
+    }
+
+    Info tidyInfo(Info info)
+    {
+        // Printable ASCII, the spaces collapsed and trimmed, cut to `most`.
+        const auto clean = [](std::string_view s, std::size_t most) {
+            std::string out;
+            bool space = false;
+            for (const char ch : s)
+            {
+                const auto c = static_cast<unsigned char>(ch);
+                if (c == ' ' || c == '\t' || c == '\n' || c == '\r')
+                {
+                    space = !out.empty();
+                    continue;
+                }
+                if (space)
+                    out += ' ';
+                space = false;
+                out += c >= 0x20 && c <= 0x7E ? ch : '?';
+            }
+            if (out.size() > most)
+                out.resize(most);
+            while (!out.empty() && out.back() == ' ')
+                out.pop_back();
+            return out;
+        };
+        const auto list = [&](const std::vector<std::string>& in) {
+            std::vector<std::string> out;
+            for (const std::string& t : in)
+            {
+                const std::string w = clean(t, kMaxTag);
+                if (!w.empty() && static_cast<int>(out.size()) < kMaxTags
+                    && std::none_of(out.begin(), out.end(), [&](const std::string& o) { return sameName(o, w); }))
+                    out.push_back(w);
+            }
+            return out;
+        };
+        info.description = clean(info.description, kMaxDescription);
+        info.author = clean(info.author, kMaxAuthor);
+        info.category = clean(info.category, kMaxTag);
+        info.tags = list(info.tags);
+        info.genres = list(info.genres);
+        return info;
+    }
+
+    bool setInfo(std::string_view project, const Info& info, std::string* why)
+    {
+        return update(project, why, [&](Project& p) {
+            p.info = tidyInfo(info);
+            return true;
+        });
+    }
+
+    std::string toJson(const Project& p)
+    {
+        Project q = p;
+        sortPresets(q.presets);
+        return (juce::JSON::toString(rootOf(q), false) + "\n").toStdString();
+    }
+
+    std::optional<Project> fromJson(const std::string& json, std::string_view name, std::string* why)
+    {
+        if (json.size() > static_cast<std::size_t>(kMaxBytes))
+        {
+            fail(why, "it is too large to be a project");
+            return std::nullopt;
+        }
+        return parseRoot(juce::JSON::parse(str(json)), tidyName(name), "\"" + std::string(name) + "\"", why);
+    }
+
+    std::optional<std::string> add(Project p, std::string* why)
+    {
+        std::string base = tidyName(p.name);
+        if (base.empty())
+            base = "Imported";
+        if (p.versions.empty())
+        {
+            fail(why, "it has no program");
+            return std::nullopt;
+        }
+        std::string name = base;
+        for (int k = 2; exists(name); ++k)
+        {
+            const std::string suffix = " " + std::to_string(k);
+            name = base.substr(0, kMaxName - suffix.size()) + suffix;
+        }
+        p.name = name;
+        p.info = tidyInfo(std::move(p.info));
+        if (!write(std::move(p), why))
+            return std::nullopt;
+        return name;
     }
 
     std::string describeChange(const Version* before, const Sources& files, const std::vector<Dial>& dials)
