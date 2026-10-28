@@ -406,6 +406,11 @@ namespace playground::standalone
             using Holder = juce::StandalonePluginHolder;
             holder_ = std::make_unique<Holder>(properties_.getUserSettings(), false, juce::String{}, nullptr,
                                                juce::Array<Holder::PluginInOuts>{}, false);
+            // JUCE's own menu bar first, then ours over it. Once this returns, JUCEApplication::initialiseApp sets up
+            // JUCE's (initialiseMacMainMenu), and making it is what puts it in NSApp.mainMenu: made then, it would
+            // replace ours with an app menu alone. Made now, it stays out of sight, and so does the Edit menu a native
+            // file chooser adds to it while it is open.
+            juce::MenuBarModel::setMacMainMenu(nullptr);
             native::installMenuBar(menuBar(product::kName), [this](Command c) { return run(c); });
             if (juce::Desktop::getInstance().getDisplays().displays.isEmpty())
                 return;                                  // no display: it plays without a window, as JUCE's did
