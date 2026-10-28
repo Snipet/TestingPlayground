@@ -7,7 +7,7 @@
       "hidden": true,
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-${presetName}",
-      "cacheVariables": { "CMAKE_OSX_ARCHITECTURES": "arm64" }
+      "cacheVariables": { "CMAKE_OSX_ARCHITECTURES": "arm64", "FP_PRODUCTS": "" }
     },
     {
       "name": "dev",

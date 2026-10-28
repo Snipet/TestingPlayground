@@ -22,8 +22,9 @@ namespace is `playground` in all of them). CMakeLists.txt builds every products/
 
 What a rename changes: products/<key>.cmake is rewritten with the new identity (name, codes, bundle id, FunkGui
 prefixes); the old name (as written, in upper case and in lower case), bundle id and environment prefix are replaced in
-every text file (docs, scripts) where they stand as whole words, except in products/, the vendored DSP core
-(Source/fsdsp/**) and SEED.tsv. A rename changes what users have: hosts find a plugin by its codes, and the product
+the docs and scripts (README.md, CLAUDE.md, scripts/ and the like) where they stand as whole words; products/, the
+shared code (Source/, Tools/) and SEED.tsv are never rewritten. Read README.md and CLAUDE.md after a rename: where they
+name the repository rather than the product, put the old name back. A rename changes what users have: hosts find a plugin by its codes, and the product
 keeps its projects, preferences and sockets in folders named after it, so an installed product renamed is a new one.
 
 The plugin code must differ from every other plugin's: add and rename refuse a code used by another product here or
@@ -54,8 +55,9 @@ PRODUCT_KEYS = ("NAME", "KIND", "VERSION", "COMPANY", "MFR_CODE", "CODE", "BUNDL
 EXAMPLES_DIR = Path("Source") / "fminus" / "examples"
 ICON_DIR = Path("Source") / "mcp"
 
-# Never rewritten: the product files (written whole), the vendored core and its manifest (SEED.tsv holds their sha256).
-REWRITE_EXCLUDES = ("products/", "Source/fsdsp/", "SEED.tsv")
+# Never rewritten: the product files (written whole), the shared code (Source/, Tools/: every product's, reached by a
+# product's identity only through its generated header) and SEED.tsv (the vendored core's sha256).
+REWRITE_EXCLUDES = ("products/", "Source/", "Tools/", "SEED.tsv")
 TEXT_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".inl", ".m", ".mm", ".cmake", ".in", ".txt",
                  ".md", ".py", ".sh", ".json", ".plist", ".xml", ".tsv", ".def", ".gitignore"}
 # Where the user's plugins live: a new plugin code must differ from every project's there. $FUNK_PLUGIN_DIRS (folders

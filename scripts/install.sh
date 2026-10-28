@@ -46,7 +46,7 @@ for arg in "$@"; do
   found=""
   for i in "${!KEYS[@]}"; do
     if [[ "$arg" == "${KEYS[$i]}" || "$arg" == "${NAMES[$i]}" ]]; then
-      found="${NAMES[$i]}"
+      found="$i"
     fi
   done
   if [[ -n "$found" ]]; then
@@ -58,11 +58,27 @@ for arg in "$@"; do
     exit 2
   fi
 done
-if [[ ${#WANT[@]} -eq 0 ]]; then
-  WANT=("${NAMES[@]}")
-fi
 BUILD="${BUILD:-build-release}"
 [[ "$BUILD" = /* ]] || BUILD="$ROOT/$BUILD"
+
+# What the build directory was configured for: its products and its build type (the bundles of another product or
+# type left there from an earlier configure are stale, and never installed).
+CACHE="$BUILD/CMakeCache.txt"
+if [[ ! -f "$CACHE" ]]; then
+  echo "install.sh: $BUILD is no build directory (build first: cmake --workflow --preset release-build)" >&2
+  exit 1
+fi
+BUILT=" $(sed -n 's/^FP_BUILT_PRODUCTS:INTERNAL=//p' "$CACHE" | tr ';' ' ') "
+TYPE="$(sed -n 's/^CMAKE_BUILD_TYPE:[A-Z]*=//p' "$CACHE")"
+if [[ -z "${BUILT// /}" || -z "$TYPE" ]]; then
+  echo "install.sh: $CACHE names no products or no build type (configure it again with its preset, e.g. cmake --preset release)" >&2
+  exit 1
+fi
+if [[ ${#WANT[@]} -eq 0 ]]; then
+  for i in "${!KEYS[@]}"; do
+    [[ "$BUILT" == *" ${KEYS[$i]} "* ]] && WANT+=("$i")
+  done
+fi
 
 COMPONENTS="$HOME/Library/Audio/Plug-Ins/Components"
 VST3="$HOME/Library/Audio/Plug-Ins/VST3"
@@ -71,11 +87,16 @@ VST3="$HOME/Library/Audio/Plug-Ins/VST3"
 SOURCES=()
 TARGETS=()
 CONFIGS=()
-for NAME in "${WANT[@]}"; do
+for i in "${WANT[@]}"; do
+  NAME="${NAMES[$i]}"
+  if [[ "$BUILT" != *" ${KEYS[$i]} "* ]]; then
+    echo "install.sh: $BUILD is not configured for $NAME (its products:$BUILT)" >&2
+    exit 1
+  fi
   ART="$BUILD/${NAME}_artefacts"
-  CONFIG="$(ls -1 "$ART" 2>/dev/null | grep -E '^(Release|RelWithDebInfo|Debug|MinSizeRel)$' | head -n 1 || true)"
-  if [[ -z "$CONFIG" ]]; then
-    echo "install.sh: no build of $NAME in $ART (build first: cmake --workflow --preset release-build)" >&2
+  CONFIG="$TYPE"
+  if [[ ! -d "$ART/$CONFIG" ]]; then
+    echo "install.sh: no $CONFIG build of $NAME in $ART (build first: cmake --workflow --preset release-build)" >&2
     exit 1
   fi
   for pair in "AU/$NAME.component:$COMPONENTS" "VST3/$NAME.vst3:$VST3"; do
@@ -114,7 +135,8 @@ done
 killall -q AudioComponentRegistrar 2>/dev/null || true
 # The MCP servers, for Claude Desktop: each product's extension is installed from Claude Desktop, by opening its .mcpb
 # (once).
-for NAME in "${WANT[@]}"; do
+for i in "${WANT[@]}"; do
+  NAME="${NAMES[$i]}"
   if [[ -f "$BUILD/$NAME.mcpb" ]]; then
     echo "Claude Desktop: open $BUILD/$NAME.mcpb to add $NAME's MCP server (once; its tools then reach any open instance)"
   fi

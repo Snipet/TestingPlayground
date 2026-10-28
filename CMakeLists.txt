@@ -61,7 +61,7 @@ set(FP_FUNKGUI_REPO "${_fp_funkgui_repo}" CACHE STRING
     "FunkGui's repository: the local one when this machine has it, else GitHub (the tag is cmake/Deps.cmake's)")
 
 # The products: every products/<key>.cmake, in key order, unless FP_PRODUCTS names some (-DFP_PRODUCTS=synth configures
-# the synth alone). The presets build them all.
+# the synth alone). Empty means every one, so a new products/<key>.cmake is picked up; the presets set it empty.
 file(GLOB _fp_product_files CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/products/*.cmake)
 set(_fp_all_products "")
 foreach(_f IN LISTS _fp_product_files)
@@ -69,11 +69,17 @@ foreach(_f IN LISTS _fp_product_files)
   list(APPEND _fp_all_products ${_k})
 endforeach()
 list(SORT _fp_all_products)
-set(FP_PRODUCTS "${_fp_all_products}" CACHE STRING "The products to build: keys of products/<key>.cmake")
-if(NOT FP_PRODUCTS)
-  message(FATAL_ERROR "no product: products/ has no <key>.cmake, or FP_PRODUCTS is empty")
+set(FP_PRODUCTS "" CACHE STRING "The products to build: keys of products/<key>.cmake; empty: every one")
+if(FP_PRODUCTS)
+  set(_fp_products ${FP_PRODUCTS})
+else()
+  set(_fp_products ${_fp_all_products})
 endif()
-foreach(_k IN LISTS FP_PRODUCTS)
+if(NOT _fp_products)
+  message(FATAL_ERROR "no product: products/ has no <key>.cmake")
+endif()
+set(FP_BUILT_PRODUCTS "${_fp_products}" CACHE INTERNAL "The configured products (scripts/install.sh reads it)")
+foreach(_k IN LISTS _fp_products)
   if(NOT _k MATCHES "^[a-z][a-z0-9]*$")
     message(FATAL_ERROR "products/${_k}.cmake: a product's key (its file's name) is lower-case letters and digits")
   endif()
@@ -460,11 +466,11 @@ namespace @FP_NAMESPACE@
                  "${PRODUCT_BUNDLE_ID})")
 endfunction()
 
-foreach(_k IN LISTS FP_PRODUCTS)
+foreach(_k IN LISTS _fp_products)
   fp_add_product(${_k})
 endforeach()
 
 # ---- the lints, once for every product's bundles (cmake/Probes.cmake) -----------------------------------------------
 fp_add_lints()
 
-message(STATUS "${PROJECT_NAME}: ${FP_PRODUCTS}; ${CMAKE_BUILD_TYPE}, LTO ${FP_LTO}, Werror ${FP_WERROR}")
+message(STATUS "${PROJECT_NAME}: ${_fp_products}; ${CMAKE_BUILD_TYPE}, LTO ${FP_LTO}, Werror ${FP_WERROR}")
