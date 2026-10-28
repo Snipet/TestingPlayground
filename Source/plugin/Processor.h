@@ -235,7 +235,7 @@ namespace testingplayground
         Engine engine_;
         Compiler compiler_{ engine_ };                           // after engine_: stops before the Engine goes
         // Dial values Claude set (slot, plain), applied by poll() on the message thread as host gestures.
-        std::mutex dialMutex_;
+        mutable std::mutex dialMutex_;
         // Claude's view_panel: a picture asked for (the agent's thread waits), made by poll() on the message thread.
         std::mutex pictureMutex_;
         std::condition_variable pictureDone_;
