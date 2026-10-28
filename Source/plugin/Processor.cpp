@@ -253,10 +253,49 @@ namespace testingplaygroundsynth
         seen_ = s.revision;
         apply(s, true);
         startTimerHz(20);
+        mcp_ = std::make_unique<McpLink>(McpLink::Hooks{ [this] { return mcpInfo(); },
+                                                         [this](const std::string& name, const juce::var& arguments) {
+                                                             return chat_.mcpCall(name, arguments);
+                                                         } });
+    }
+
+    void Processor::updateTrackProperties(const TrackProperties& properties)
+    {
+        const std::lock_guard<std::mutex> lock(trackMutex_);
+        trackName_ = properties.name.toStdString();
+    }
+
+    // What list_instances says of this one (the MCP socket's thread).
+    juce::var Processor::mcpInfo() const
+    {
+        auto* o = new juce::DynamicObject();
+        const juce::var out(o);
+        o->setProperty("kind", product::kIsInstrument ? "instrument" : "effect");
+        o->setProperty("plugin", product::kName);
+        o->setProperty("host", juce::PluginHostType().getHostDescription());
+        {
+            const std::lock_guard<std::mutex> lock(trackMutex_);
+            o->setProperty("track", juce::String::fromUTF8(trackName_.c_str()));
+        }
+        juce::Array<juce::var> files;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            o->setProperty("project", juce::String::fromUTF8(projectName_.c_str()));
+            o->setProperty("version", projectVersion_);
+            o->setProperty("preset", juce::String::fromUTF8(projectPreset_.c_str()));
+            o->setProperty("edited", !projectName_.empty() && draft_.files != projectFiles_);
+            for (const SourceFile& f : draft_.files)
+                files.add(juce::String::fromUTF8(f.name.c_str()));
+        }
+        o->setProperty("files", files);
+        o->setProperty("compiled", compiler_.status().ok);
+        o->setProperty("busy", chat_.chatState().busy);
+        return out;
     }
 
     Processor::~Processor()
     {
+        mcp_.reset();                                            // no call comes in while the rest goes
         stopTimer();
     }
 
