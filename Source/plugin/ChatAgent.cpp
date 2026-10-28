@@ -3159,6 +3159,23 @@ namespace testingplaygroundsynth
     // ---- MCP ------------------------------------------------------------------------------------------------------------
     juce::var ChatAgent::mcpTools()
     {
+        // What Claude Desktop shows of each (its permission prompts, its tool list): a title in words, whether it only
+        // looks, whether it takes something away.
+        struct Face
+        {
+            const char* name;
+            const char* title;
+            bool readOnly, destructive;
+        };
+        static constexpr Face kFaces[] = {
+            { "read_file", "Read a file", true, false },          { "write_file", "Write a file", false, false },
+            { "edit_file", "Edit a file", false, false },         { "rename_file", "Rename a file", false, false },
+            { "delete_file", "Delete a file", false, true },      { "add_library_file", "Add a building block", false, false },
+            { "run_program", "Run the program", false, false },   { "set_dial", "Turn a dial", false, false },
+            { "measure_output", "Measure the sound", true, false }, { "view_panel", "Look at the panel", true, false },
+            { "view_sound", "Look at the sound", true, false },   { "set_checks", "Set checks on the sound", false, false },
+            { "tune_dials", "Tune the dials", false, false },     { "get_status", "Check the plugin", true, false },
+        };
         juce::Array<juce::var> out;
         const juce::var all = toolDefinitions();         // held: getArray() points into it
         if (const juce::Array<juce::var>* tools = all.getArray())
@@ -3167,7 +3184,23 @@ namespace testingplaygroundsynth
                 const juce::String name = t["name"].toString();
                 if (name == "ask_user" || name == "ask_planner")
                     continue;
-                out.add(claude::object({ { "name", name }, { "description", t["description"] }, { "inputSchema", t["input_schema"] } }));
+                juce::String title = name;
+                bool readOnly = false, destructive = false;
+                for (const Face& f : kFaces)
+                    if (name == f.name)
+                    {
+                        title = f.title;
+                        readOnly = f.readOnly;
+                        destructive = f.destructive;
+                    }
+                out.add(claude::object({ { "name", name },
+                                         { "title", title },
+                                         { "description", t["description"] },
+                                         { "inputSchema", t["input_schema"] },
+                                         { "annotations", claude::object({ { "title", title },
+                                                                           { "readOnlyHint", readOnly },
+                                                                           { "destructiveHint", destructive },
+                                                                           { "openWorldHint", false } }) } }));
             }
         return out;
     }
