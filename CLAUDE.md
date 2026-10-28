@@ -267,9 +267,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   view_panel and view_sound take MCP's own `detail: "high"` for the whole picture. The plugin's own chat keeps its
   pictures as they were. The guide comes in parts (`mcp/McpGuide.h`, cut at ChatPrompt's headings at run time, in
   the plugin and from guide.md in the server): "start" (working from outside, the contract, FMINUS, DSP PRACTICE,
-  CHECKING YOUR WORK, the tools' notes, the other parts named), large-program, interface, library (a line a file),
-  library:<file> (its header), library:<file>:code (its whole text, adding nothing to the editor), examples,
-  projects, all. A heading renamed in ChatPrompt.cpp is a part lost: `plugin.mcp` GUIDE fails.
+  CHECKING YOUR WORK, the tools' notes, the other parts named), large-program (with THREADS), interface, library (a
+  line a file), library:<file> (its header), library:<file>:code (its whole text, adding nothing to the editor),
+  examples, projects, all. A heading renamed in ChatPrompt.cpp is a part lost: `plugin.mcp` GUIDE fails.
 - **tune_dials** (`dsp/Tune.h`): Nelder-Mead over the named float dials' normalised ranges, from the dials as they
   are and a Halton spread, restarted when it settles with a goal unmet, until every goal is met, the budget (150, at
   most 400 renders) is spent, its time limit passes (`seconds`: 120, at most 170, under the MCP server's deadline)

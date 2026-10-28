@@ -4,10 +4,11 @@
 // same way in the plugin (McpLink, from the guide it makes) and in the server (mcp/Main.cpp, from the guide.md an
 // instance left, when none runs), so the parts stay in step with the prompt (plugin/ChatPrompt.cpp).
 //
-//   start                 what to read before any work: from the top to BUILDING A LARGE PROGRAM (working from
-//                         outside, the contract, the host, FMINUS, DSP PRACTICE, CHECKING YOUR WORK, threads), the
-//                         tools' notes for it, and a line for each other part saying when to read it
-//   large-program         BUILDING A LARGE PROGRAM, and A PROGRAM BUILT FROM THE LIBRARY (the example and its panel.gui)
+//   start                 what to read before any work: from the top to THREADS (working from outside, the contract,
+//                         the host, FMINUS, DSP PRACTICE, CHECKING YOUR WORK), the tools' notes for it, and a line for
+//                         each other part saying when to read it
+//   large-program         BUILDING A LARGE PROGRAM, THREADS (FMinus's parallel for and parallel { }), and A PROGRAM
+//                         BUILT FROM THE LIBRARY (the example and its panel.gui)
 //   interface             THE INTERFACE: panel.gui, and the notes of the tools it uses
 //   library               THE LIBRARY's introduction and an index, one line a file, and the notes of the tools it uses
 //   library:<file>        that file's header (how to use it), as THE LIBRARY quotes it
@@ -28,6 +29,7 @@ namespace playground::mcp::guide
 {
     // The headings the guide is cut at (ChatPrompt.cpp writes them; plugin.mcp checks that every part is found).
     inline constexpr const char* kOutside = "WORKING FROM OUTSIDE THE PLUGIN";
+    inline constexpr const char* kThreads = "THREADS: parallel for AND parallel { }";
     inline constexpr const char* kLarge = "BUILDING A LARGE PROGRAM";
     inline constexpr const char* kInterface = "THE INTERFACE: panel.gui";
     inline constexpr const char* kLibrary = "THE LIBRARY";
@@ -78,14 +80,15 @@ namespace playground::mcp::guide
 
         struct Cuts
         {
-            std::size_t large, interface, library, built, examples, projects, notes;
+            std::size_t threads, large, interface, library, built, examples, projects, notes;
             bool ok = false;
         };
 
         inline Cuts cuts(const std::string& g)
         {
             Cuts c{};
-            c.large = heading(g, kLarge);
+            c.threads = heading(g, kThreads);
+            c.large = heading(g, kLarge, c.threads == std::string::npos ? 0 : c.threads);
             c.interface = heading(g, kInterface, c.large == std::string::npos ? 0 : c.large);
             c.library = heading(g, kLibrary, c.interface == std::string::npos ? 0 : c.interface);
             c.built = heading(g, kBuilt, c.library == std::string::npos ? 0 : c.library);
@@ -94,9 +97,9 @@ namespace playground::mcp::guide
             c.notes = heading(g, kNotes, c.projects == std::string::npos ? 0 : c.projects);
             if (c.notes == std::string::npos)
                 c.notes = g.size();                      // a guide from before the notes (an older plugin's guide.md)
-            c.ok = c.large != std::string::npos && c.interface != std::string::npos && c.library != std::string::npos
+            c.ok = c.threads != std::string::npos && c.large != std::string::npos && c.interface != std::string::npos && c.library != std::string::npos
                 && c.built != std::string::npos && c.examples != std::string::npos && c.projects != std::string::npos
-                && c.large < c.interface && c.interface < c.library && c.library < c.built && c.built < c.examples
+                && c.threads < c.large && c.large < c.interface && c.interface < c.library && c.library < c.built && c.built < c.examples
                 && c.examples < c.projects && c.projects <= c.notes;
             return c;
         }
@@ -169,12 +172,12 @@ namespace playground::mcp::guide
             for (const Block& b : files)
                 if (categories.find(b.category) == std::string::npos)
                     categories += (categories.empty() ? "" : ", ") + b.category;
-            return g.substr(0, c.large) + notes(g, c.notes, "start")
+            return g.substr(0, c.threads) + notes(g, c.notes, "start")
                  + "\nTHE OTHER PARTS OF THIS GUIDE\n\n"
                    "Read one with playground_guide's part when the work needs it:\n"
                    "- \"large-program\": how to build a large program (its files, modules and blocks, its modulation, its "
-                   "dials), and a program built from the library with its panel.gui. Read it before a program of more than "
-                   "one file.\n"
+                   "dials), FMinus's threads for heavy work (parallel for, parallel { }), and a program built from the library "
+                   "with its panel.gui. Read it before a program of more than one file, or one that is heavy.\n"
                    "- \"interface\": the panel.gui language (sections, controls and their looks, displays, pages) and looking at "
                    "the panel. Read it before you write or change panel.gui.\n"
                    "- \"library\": the ready-made building blocks (" + categories + "), a line each. Read it before you "
@@ -185,7 +188,8 @@ namespace playground::mcp::guide
                    "- \"all\": all of it at once (about " + std::to_string((g.size() / 4 + 500) / 1000) + "K tokens).\n";
         }
         if (n == "large-program")
-            return g.substr(c.large, c.interface - c.large) + "\n" + g.substr(c.built, c.examples - c.built);
+            return g.substr(c.large, c.interface - c.large) + "\n" + g.substr(c.threads, c.large - c.threads) + "\n"
+                 + g.substr(c.built, c.examples - c.built);
         if (n == "interface")
             return g.substr(c.interface, c.library - c.interface) + notes(g, c.notes, "interface");
         if (n == "library")

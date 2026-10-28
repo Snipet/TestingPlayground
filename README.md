@@ -561,9 +561,10 @@ socket (in your account's temp folder, `Funk-<name>-mcp/<n>.sock`: `Funk-Testing
 `TestingPlaygroundSynthMCP`), the MCP server the build makes for each product, passes Claude's requests to it, with the
 chat's own tools (each titled in words, those that only look marked read-only, each described in a sentence or two, so
 that they take little room in every conversation) and the chat's instructions as a guide that teaches FMinus, in parts:
-Claude reads its start (about 7,500 tokens) and then only the part the work needs (a large program, the panel, the
-library's building blocks, whose code it can read without adding a tab to your editor, the examples, the projects).
-Without the extension, Claude Desktop's `claude_desktop_config.json` can name the servers itself:
+Claude reads its start (about 7,000 tokens for the effect, 8,000 for the synth) and then only the part the work needs (a
+large program, the panel, the library's building blocks, whose code it can read without adding a tab to your editor, the
+examples, the projects). Without the extension, Claude Desktop's `claude_desktop_config.json` can name the servers
+itself:
 `"mcpServers": { "testingplayground": { "command": "<this folder>/build-release/TestingPlaygroundMCP" },
 "testingplaygroundsynth": { "command": "<this folder>/build-release/TestingPlaygroundSynthMCP" } }`.
 

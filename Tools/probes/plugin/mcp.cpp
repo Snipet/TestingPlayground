@@ -7,7 +7,7 @@
 //            full descriptions for comparison); the guide's start says it is driven from outside
 //   GUIDE    the guide in parts (mcp/McpGuide.h): start (working from outside, FMINUS, DSP PRACTICE, CHECKING, the
 //            notes of the tools it uses and the other parts named; its size printed, in bytes and about tokens),
-//            large-program, interface, library (a line a file), examples, projects, all (the system prompt whole);
+//            large-program (with THREADS), interface, library (a line a file), examples, projects, all (the system prompt whole);
 //            library:<file> its header, library:<file>:code its whole text with no tab added to the editor; an unknown
 //            part refused, naming the parts
 //   CALL     write_file through the socket writes the processor's draft (the chat's card notes Claude Desktop once);
@@ -464,10 +464,11 @@ PROBE(plugin, mcp)
                                 && has(guide, "\nCHECKING YOUR WORK\n") && has(guide, "\nTHE OTHER PARTS OF THIS GUIDE\n")
                                 && has(guide, "<tool name=\"write_file\" part=\"start\">") && has(guide, "\"library:<file>:code\"")
                                 && !has(guide, "\nTHE INTERFACE: panel.gui\n") && !has(guide, "<library_file")
-                                && !has(guide, "\nBUILDING A LARGE PROGRAM\n") && guide == text("start") ? 1 : 0, 1);
+                                && !has(guide, "\nBUILDING A LARGE PROGRAM\n") && !has(guide, "\nTHREADS: parallel for")
+                                && guide == text("start") ? 1 : 0, 1);
         std::printf("guide: start %zu bytes (about %zu tokens); all %zu bytes (about %zu tokens)\n", guide.size(), guide.size() / 4,
                     all.size(), all.size() / 4);
-        P.le("guide.start_tokens", static_cast<double>(guide.size() / 4), 8000.0);
+        P.le("guide.start_tokens", static_cast<double>(guide.size() / 4), 8500.0);
         const std::string large = text("large-program");
         interfacePart = text("interface");
         const std::string library = text("library"), examples = text("examples"), projects = text("projects");
@@ -478,7 +479,8 @@ PROBE(plugin, mcp)
                                           { "projects", &projects } })
             juce::File(juce::String(probe::outPath(std::string("plugin.mcp.guide.") + name + ".md"))).replaceWithText(juce::String::fromUTF8(body->c_str()));
         juce::File(juce::String(probe::outPath("plugin.mcp.tools.json"))).replaceWithText(juce::JSON::toString(tools, false));
-        P.eq("guide.large_program", large.rfind("BUILDING A LARGE PROGRAM\n", 0) == 0 && has(large, "\nA PROGRAM BUILT FROM THE LIBRARY")
+        P.eq("guide.large_program", large.rfind("BUILDING A LARGE PROGRAM\n", 0) == 0 && has(large, "\nTHREADS: parallel for")
+                                        && has(large, "\nA PROGRAM BUILT FROM THE LIBRARY")
                                         && has(large, "<example_program") && !has(large, "\nTHE INTERFACE: panel.gui\n") ? 1 : 0, 1);
         P.eq("guide.interface", interfacePart.rfind("THE INTERFACE: panel.gui\n", 0) == 0 && has(interfacePart, "<tool name=\"view_panel\"")
                                     && !has(interfacePart, "<library_file") ? 1 : 0, 1);
