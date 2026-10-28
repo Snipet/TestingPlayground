@@ -5,7 +5,8 @@
 //            guide.md there; info names its kind, plugin and files; tools are the chat's, but ask_user and
 //            ask_planner; the guide says it is driven from outside, then the system prompt
 //   CALL     write_file through the socket writes the processor's draft (the chat's card notes Claude Desktop once);
-//            run_program compiles and plays it; read_file gives it back; view_panel answers with a PNG; an unknown
+//            run_program compiles and plays it; a dial set reads back at once (before the message thread applies it);
+//            read_file gives it back; view_panel answers with a PNG; an unknown
 //            tool, and ask_user, are errors
 //   SERVER   the server program (<Name>MCP) over stdio, as Claude Desktop runs it: initialize (its protocol version,
 //            tools with listChanged, instructions), tools/list (list_instances, playground_guide and the chat's tools,
@@ -232,6 +233,17 @@ PROBE(plugin, mcp)
     std::printf("run_program: %s\n", firstText(res).substr(0, 120).c_str());
     a->settle();
     P.eq("call.run", !static_cast<bool>(res["isError"]) && a->editorPort().status().ok && a->editorPort().running().front().text == text ? 1 : 0, 1);
+    {
+        // A dial set and read back at once, before the message thread has applied it: the value set (a measurement
+        // right after set_dial renders it).
+        tp::ChatAgent& agent = a->chatAgent();
+        const tp::ChatAgent::McpResult set = agent.mcpCall("set_dial", object({ { "name", "level" }, { "value", 0.25 } }));
+        const tp::ChatAgent::McpResult status = agent.mcpCall("get_status", juce::var(new juce::DynamicObject()));
+        const std::string said = firstText(object({ { "content", status.content } }));
+        std::printf("dial now: %s\n", said.substr(said.find("level"), 60).c_str());
+        P.eq("call.dial_now", !set.isError && said.find("now 0.25") != std::string::npos ? 1 : 0, 1);
+        a->poll();
+    }
     res = ask(*a, r, 6, "call", object({ { "name", "read_file" }, { "arguments", object({ { "name", "program.fm" } }) } }))["result"];
     P.eq("call.read", firstText(res) == text ? 1 : 0, 1);
     res = ask(*a, r, 7, "call", object({ { "name", "view_panel" }, { "arguments", juce::var(new juce::DynamicObject()) } }))["result"];
