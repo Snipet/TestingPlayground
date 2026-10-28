@@ -4,6 +4,7 @@
 #include "editor/ChatItems.h"
 #include "editor/ChatStyle.h"
 #include "editor/ChatView.h"
+#include "editor/CodeAssist.h"
 #include "editor/DialLayout.h"
 #include "editor/DisplayItem.h"
 #include "editor/GuiItems.h"
@@ -59,35 +60,6 @@
 
 namespace playground::ui
 {
-
-    namespace
-    {
-        // A count as the account's view shows it: 900, 12.3K, 123K, 1.2M.
-        std::string countText(int64_t n)
-        {
-            char buf[32];
-            if (n < 1000)
-                std::snprintf(buf, sizeof buf, "%lld", static_cast<long long>(n));
-            else if (n < 100000)
-                std::snprintf(buf, sizeof buf, "%.1fK", static_cast<double>(n) / 1e3);
-            else if (n < 1000000)
-                std::snprintf(buf, sizeof buf, "%.0fK", static_cast<double>(n) / 1e3);
-            else
-                std::snprintf(buf, sizeof buf, "%.1fM", static_cast<double>(n) / 1e6);
-            return buf;
-        }
-
-        // An ISO 8601 date ("2026-10-26T00:00:00.000Z") as "26 Oct 2026"; anything else as it is.
-        std::string shortDate(const std::string& iso)
-        {
-            static constexpr const char* kMonths[12] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                                         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
-            int y = 0, m = 0, d = 0;
-            if (iso.size() < 10 || std::sscanf(iso.c_str(), "%4d-%2d-%2d", &y, &m, &d) != 3 || m < 1 || m > 12)
-                return iso;
-            return std::to_string(d) + " " + kMonths[m - 1] + " " + std::to_string(y);
-        }
-    }
 
     std::vector<std::string> guiPageTitles(const GuiTree& gui, const std::vector<int>& pages)
     {
@@ -162,6 +134,7 @@ namespace playground::ui
             else if (rest.rfind("warning: ", 0) == 0)
             {
                 p.error = false;
+                p.warning = true;
                 rest = rest.substr(9);
             }
             p.text = rest;
@@ -172,6 +145,23 @@ namespace playground::ui
 
     namespace
     {
+        // The problems as the code editor marks them.
+        std::vector<Diagnostic> diagnosticsOf(const std::vector<Problem>& problems)
+        {
+            std::vector<Diagnostic> out;
+            for (const Problem& p : problems)
+            {
+                Diagnostic d;
+                d.file = p.file;
+                d.line = p.line;
+                d.column = p.column;
+                d.severity = p.error ? Diagnostic::Severity::error : p.warning ? Diagnostic::Severity::warning : Diagnostic::Severity::info;
+                d.text = p.text;
+                out.push_back(std::move(d));
+            }
+            return out;
+        }
+
         // ---- layout (logical px) ----------------------------------------------------------------------------------
         constexpr float kMargin = 20.0f;
         // The top bar: the product, the project, the view, the load and the theme. Under it two cards: the program's
@@ -179,6 +169,9 @@ namespace playground::ui
         constexpr float kTopBarY = 10.0f, kTopBarH = 40.0f;
         constexpr float kTopButtonH = 28.0f;             // the top bar's pills
         constexpr float kMainY = kTopBarY + kTopBarH + 10.0f;   // the cards' top
+        // The Standalone window's buttons (EditorPort::windowButtons) sit inside the top bar's left end, the product's
+        // mark after them and this gap.
+        constexpr float kButtonsX = kMargin + 10.0f, kButtonsGap = 12.0f;
         constexpr float kInset = 10.0f;                  // inside the program's card
         constexpr float kActionH = 28.0f;                // its header's first row: the status and the actions
         constexpr float kActionsY = kMainY + 6.0f;
@@ -215,11 +208,8 @@ namespace playground::ui
         constexpr uint32_t kExplorerA11yBase = 0x30000000u;   // the explorer's (Explorer.h)
         // The key dialog.
         constexpr float kKeyDialogW = 540.0f;
-        constexpr float kKeyDialogH = 296.0f;
-        constexpr float kAccountDialogH = 404.0f;        // the account tab, signed in: this month's use under the card
+        constexpr float kKeyDialogH = 256.0f;
         constexpr int   kMaxKeyLength = 320;
-        constexpr int   kMaxUsernameLength = 64;         // the server's limits
-        constexpr int   kMaxPasswordLength = 256;
         constexpr uint32_t kA11yStride = 64;             // item i's ids: kA11yStride * (i + 1) + 0..63
 
         // Where a new #include goes in a program: after the last #include before its first line of code, else after
@@ -673,7 +663,8 @@ namespace playground::ui
         // their names), then the new-file box. A click shows a file, a double-click edits its name in place (Return
         // keeps it, Escape cancels), the close box closes it (asking first when it has text). The tab of a file the
         // last run's errors name has a mark before its name. Each file has an editor of its own, so its caret, scroll
-        // and undo steps stay with it.
+        // and undo steps stay with it; CodeAssist.h makes them a code editor (the status line under them, the find bar,
+        // the completion list, the signature and the hover card, the problems' squiggles and marks).
         constexpr float kTabH = 26.0f;
         constexpr float kTabPad = 12.0f;                 // before a tab's name, and after it
         constexpr float kTabCloseW = 14.0f;              // a closable tab's close box, after its name
@@ -694,9 +685,29 @@ namespace playground::ui
 
         FilesItem(funkgui::Rect bar, funkgui::Rect editor, uint32_t id, const std::vector<Problem>& problems,
                   Close close)
-            : bar_(bar), editorBounds_(editor), id_(id), problems_(problems), close_(std::move(close))
+            : bar_(bar), editorBounds_(editor), id_(id), problems_(problems), close_(std::move(close)),
+              assist_(CodeAssist::Tabs{
+                  [this] { return count(); }, [this] { return active(); },
+                  [this](int i) -> funkgui::TextEditor& { return editorOf(i); }, [this](int i) { return name(i); },
+                  [this](int i) { select(i); },
+                  [this](const std::string& n, const std::string& text) { return addFileQuiet(n, text); },
+                  [this](const std::string& text) {
+                      if (notice_)
+                          notice_(text);
+                  } })
         {
+            assist_.setArea(editor);
             load(Draft{ singleFile(""), 0 });
+        }
+
+        CodeAssist& assist() noexcept { return assist_; }
+        const CodeAssist& assist() const noexcept { return assist_; }
+        void setNotice(std::function<void(const std::string&)> notice) { notice_ = std::move(notice); }
+        // The completion list, the signature and the hover card, over everything (the Panel draws them last).
+        void drawOverlays(funkgui::Canvas& c, const funkgui::Theme& th, float w, float h) const
+        {
+            if (!hidden_)
+                assist_.drawOverlays(c, th, w, h);
         }
 
         funkgui::TextEditor& editor() noexcept { return *tabs_[static_cast<std::size_t>(active_)].editor; }
@@ -792,7 +803,7 @@ namespace playground::ui
                 }
                 Tab t = std::move(old[static_cast<std::size_t>(match[i])]);
                 if (rulesFor(t.name).types != rulesFor(f.name).types)   // renamed to or from a .gui file
-                    t.editor->setHighlighter(std::make_unique<funkgui::text::KeywordHighlighter>(rulesFor(f.name)));
+                    assist_.configure(*t.editor, f.name);
                 t.name = f.name;
                 replaceText(*t.editor, f.text);
                 tabs_.push_back(std::move(t));
@@ -809,13 +820,15 @@ namespace playground::ui
         {
             bar_ = bar;
             editorBounds_ = editorBounds;
+            assist_.setArea(editorBounds_);
             for (Tab& t : tabs_)
-                t.editor->setBounds(editorBounds_);
+                t.editor->setBounds(assist_.editorRect());
         }
 
         void attach(funkgui::HostServices* host)
         {
             host_ = host;
+            assist_.attach(host);
             for (Tab& t : tabs_)
                 t.editor->attach(host);
         }
@@ -827,6 +840,7 @@ namespace playground::ui
             editor().setFocused(false);
             active_ = i;
             show();
+            assist_.tabShown();
             structure_ += kStructureStep;
         }
 
@@ -859,6 +873,17 @@ namespace playground::ui
         }
 
         funkgui::TextEditor& editorOf(int i) { return *tabs_[static_cast<std::size_t>(i)].editor; }
+
+        // A file after the others with this name and text, not shown (a library file completion adds). False when there
+        // is no room or the name is taken.
+        bool addFileQuiet(const std::string& fileName, const std::string& text)
+        {
+            if (tabs_.size() >= kMaxFiles || find(fileName) >= 0)
+                return false;
+            tabs_.push_back(makeTab(fileName, text));
+            structure_ += kStructureStep;
+            return true;
+        }
 
         // Closes file i (not the program's); the tab before it is shown when it was.
         void remove(int i)
@@ -908,7 +933,7 @@ namespace playground::ui
                 }
                 Tab& tab = tabs_[static_cast<std::size_t>(renaming_)];
                 if (rulesFor(tab.name).types != rulesFor(typed).types)
-                    tab.editor->setHighlighter(std::make_unique<funkgui::text::KeywordHighlighter>(rulesFor(typed)));
+                    assist_.configure(*tab.editor, typed);
                 tab.name = typed;
                 structure_ += kStructureStep;
             }
@@ -959,14 +984,17 @@ namespace playground::ui
         {
             pointer_ = pointer;
             editor().tick(dt);
+            assist_.tick(dt, pointer, focused_);
         }
+        bool settled() const override { return assist_.settled(); }
 
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override
         {
             namespace type = funkgui::type;
             const funkgui::TextEditor& ed = editor();
+            assist_.drawGround(c, th);
             ed.draw(c, th, ring);
-            drawMarks(c, th);
+            assist_.drawInEditor(c, th);
 
             // The tabs: pills, the shown one raised, a file the last run's errors name marked before its name.
             const funkgui::Canvas::Scope s(c, kTabTag, false);
@@ -1024,9 +1052,14 @@ namespace playground::ui
             }
         }
 
-        bool contains(funkgui::Point p) const override { return bar_.contains(p) || editor().contains(p); }
+        bool contains(funkgui::Point p) const override
+        {
+            return bar_.contains(p) || editor().contains(p) || (!hidden_ && assist_.over(p));
+        }
         funkgui::Cursor cursorAt(funkgui::Point p) const override
         {
+            if (const std::optional<funkgui::Cursor> own = assist_.cursorAt(p))
+                return *own;
             if (bar_.contains(p))
                 return tabAt(p) >= 0 || (canAdd() && newTabRect().contains(p)) ? funkgui::Cursor::pointingHand
                                                                                 : funkgui::Cursor::normal;
@@ -1038,6 +1071,11 @@ namespace playground::ui
             if (!bar_.contains(p))
             {
                 endRename();
+                if (assist_.pointerDown(e))
+                {
+                    pressedEditor_ = false;
+                    return;
+                }
                 pressedEditor_ = true;
                 editor().pointerDown(e);
                 return;
@@ -1086,12 +1124,12 @@ namespace playground::ui
         }
         bool wheel(const funkgui::WheelEvent& e, funkgui::GestureController&, double) override
         {
-            return !bar_.contains({ e.x, e.y }) && editor().wheel(e);
+            return !bar_.contains({ e.x, e.y }) && (assist_.wheel(e) || editor().wheel(e));
         }
         bool key(const funkgui::KeyEvent& e, funkgui::GestureController&) override
         {
             if (renaming_ < 0)
-                return editor().key(e);
+                return assist_.key(e);
             // The name being edited takes every key: Return keeps it, Escape cancels, Cmd-V pastes.
             if (e.key == funkgui::Key::enter)
                 commitRename();
@@ -1196,6 +1234,8 @@ namespace playground::ui
                     out[0] = '\0';
                 return;
             }
+            if (assist_.specLine(out, n, pointer_))
+                return;
             const funkgui::TextPos p = editor().caret();
             const std::string sel = editor().selectedText();
             const std::string file = upper(name(active_));
@@ -1210,11 +1250,12 @@ namespace playground::ui
         void focusChanged(bool focused) override
         {
             focused_ = focused;
-            editor().setFocused(focused);
+            assist_.focusChanged(focused);
+            editor().setFocused(focused && !assist_.takesKeys());
             if (!focused)
                 endRename();
         }
-        bool takesAllKeys() const override { return editor().focused() || renaming_ >= 0; }
+        bool takesAllKeys() const override { return editor().focused() || renaming_ >= 0 || assist_.takesKeys(); }
 
     private:
         struct Tab
@@ -1235,9 +1276,8 @@ namespace playground::ui
                           : n.size() > 4 && n.substr(n.size() - 4) == ".gui" ? "The program's interface: rows, sections, knobs, displays"
                                                                              : "A file the program can #include by its name";
             t.editor->setOptions(o);
-            t.editor->setBounds(editorBounds_);
-            t.editor->setHighlighter(std::make_unique<funkgui::text::KeywordHighlighter>(rulesFor(n)));
-            t.editor->setPalette(funkgui::TextEditor::defaultPalette());
+            t.editor->setBounds(assist_.editorRect());
+            assist_.configure(*t.editor, n);
             t.editor->setText(text);
             t.editor->attach(host_);
             return t;
@@ -1320,32 +1360,6 @@ namespace playground::ui
             c.polyline(xs2, ys2, 2, 1.2f, ink);
         }
 
-        // A mark in the gutter, beside the line number, on each line of the shown file the last run's errors name.
-        void drawMarks(funkgui::Canvas& c, const funkgui::Theme& th) const
-        {
-            const funkgui::TextEditor& ed = editor();
-            const std::string& file = name(active_);
-            const funkgui::Rect b = ed.bounds();
-            const funkgui::Rect area = ed.textArea();
-            const float rowH = ed.rowHeight();
-            const float scrollY = ed.scroll().y;
-            c.pushClip({ b.x + 1.0f, b.y + 1.0f, b.w - 2.0f, b.h - 2.0f });
-            {
-                const funkgui::Canvas::Scope s(c, kMarkTag, false);
-                for (const Problem& p : problems_)
-                {
-                    if (!p.error || p.file != file || p.line < 1 || p.line > ed.lineCount())
-                        continue;
-                    const int row = ed.rowOf({ p.line - 1, 0 });
-                    const float y = area.y + static_cast<float>(row) * rowH - scrollY;
-                    if (y + rowH < b.y || y > b.bottom())
-                        continue;
-                    c.rrect(b.x + 3.0f, y + 2.0f, 3.0f, rowH - 4.0f, 1.0f, th.signal);
-                }
-            }
-            c.popClip();
-        }
-
         funkgui::Rect bar_, editorBounds_;
         uint32_t id_;
         const std::vector<Problem>& problems_;       // the Panel's
@@ -1361,6 +1375,9 @@ namespace playground::ui
         funkgui::text::LineEdit edit_;
         std::string why_;                            // why the name typed cannot be the file's
         bool hidden_ = false;                        // the PANEL view
+        std::function<void(const std::string&)> notice_;
+        // Last: its tabs' callbacks reach the members above.
+        CodeAssist assist_;
 
     public:
         void setHidden(bool hidden) { hidden_ = hidden; }
@@ -1489,6 +1506,7 @@ namespace playground::ui
     // order.
     Panel::Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& port) : port_(port)
     {
+        port_.addMeterReader();                      // the displays read the meters and the scopes while it lives
         title_ = upper(product::kName);
         subtitle_ = std::string(product::kIsInstrument ? "Instrument" : "Effect") + "  v" + product::kVersion + "  FMinus";
         width_ = static_cast<float>(kDefaultWidth);
@@ -1546,6 +1564,15 @@ namespace playground::ui
         // The editor, the problems under it, the dials under them.
         editorItem_ = add(std::make_unique<FilesItem>(funkgui::Rect{}, funkgui::Rect{}, idFor(), problems_,
                                                       [this](int tab) { closeFile(tab); }));
+        {
+            FilesItem& f = static_cast<FilesItem&>(*items_[static_cast<std::size_t>(editorItem_)]);
+            f.setNotice([this](const std::string& text) { notice(text); });
+            Sources library;
+            for (const LibraryFile& l : kLibrary)
+                library.push_back({ l.name, l.source });
+            f.assist().setLibrary(library);
+            f.assist().setInstrument(product::kIsInstrument);
+        }
         problemsItem_ = add(std::make_unique<ProblemsItem>(funkgui::Rect{}, idFor(), problems_,
                                                            [this](const Problem& p) { jumpTo(p); }));
         itemOfSlot_.assign(static_cast<std::size_t>(kMaxControls), -1);
@@ -1602,7 +1629,7 @@ namespace playground::ui
                           "New chat", "NEW CHAT   FORGET THIS CONVERSATION AND START ANOTHER")));
         keyItem_ = add(std::make_unique<B>(
             idFor(), spec(B::Shape::square, [] { return chat::Icon::key; }, {}, false, {}, {}, [this] { openKeyDialog(); },
-                          "Account or API key", "ACCESS   SIGN IN, OR USE YOUR OWN ANTHROPIC API KEY")));
+                          "Anthropic API key", "API KEY   STORED ENCRYPTED ON THIS MAC, FOR BOTH PLAYGROUND PLUGINS")));
         chatToggleItem_ = add(std::make_unique<B>(
             idFor(), spec(B::Shape::square, [this] { return chatOpen_ ? chat::Icon::chevronRight : chat::Icon::bubble; }, {},
                           false, {}, {}, [this] { setChatOpen(!chatOpen_); }, "Fold or open the chat",
@@ -1644,17 +1671,9 @@ namespace playground::ui
             sp.shown = [this] { return !panelView_; };   // the PANEL view is the plugin's face: no explorer
             explorerToggleItem_ = add(std::make_unique<B>(idFor(), std::move(sp)));
         }
-        {
-            B::Spec sp = spec(B::Shape::pill, [] { return chat::Icon::person; }, [this] { return accountLabel(); }, false,
-                              [] { return B::Look::ghost; }, {}, [this] { openKeyDialog(DialogTab::account); }, "Your account",
-                              "ACCOUNT   WHO IS SIGNED IN, THE CREDIT LEFT AND THIS MONTH'S USE");
-            sp.shown = [this] { return chat_.signedIn; };
-            accountItem_ = add(std::make_unique<B>(idFor(), std::move(sp)));
-        }
         chatViewItem_ = add(std::make_unique<ChatView>(
             kChatA11yBase, ChatView::Hooks{ [this](const std::string& s) { suggest(s); },
-                                            [this] { openKeyDialog(DialogTab::key); },
-                                            [this] { openKeyDialog(DialogTab::account); },
+                                            [this] { openKeyDialog(); },
                                             [this](const std::vector<std::string>& a) { port_.chat().answer(a); },
                                             [this] { port_.chat().clearChecks(); } }));
         inputItem_ = add(std::make_unique<InputItem>(idFor(), [this] { sendChat(); }, [this](uint32_t id) {
@@ -1690,8 +1709,7 @@ namespace playground::ui
         }
         {
             B::Spec web = spec(B::Shape::pill, [] { return chat::Icon::globe; }, [] { return std::string("Web"); }, false,
-                               [this] { return chat_.web && chat_.webBlocked.empty() ? B::Look::primary : B::Look::ghost; },
-                               [this] { return chat_.webBlocked.empty(); },
+                               [this] { return chat_.web ? B::Look::primary : B::Look::ghost; }, {},
                                [this] {
                                    port_.chat().setWeb(!chat_.web);
                                    chatAt_ = -1.0;
@@ -1701,7 +1719,7 @@ namespace playground::ui
                                "WEB   CLAUDE SEARCHES THE WEB AND READS PAGES AND PDFS (DATA SHEETS, PAPERS): $10 A THOUSAND "
                                "SEARCHES, WITH YOUR OWN API KEY");
             web.shown = [this] { return chatTakesWeb(); };
-            web.checked = [this] { return chat_.web && chat_.webBlocked.empty(); };
+            web.checked = [this] { return chat_.web; };
             webItem_ = add(std::make_unique<B>(idFor(), std::move(web)));
         }
         sendItem_ = add(std::make_unique<B>(
@@ -1768,6 +1786,11 @@ namespace playground::ui
 
     void Panel::layout()
     {
+        // The Standalone window's buttons: their room, and where they go, told once while they are there.
+        buttonsRoom_ = buttonsRoomNow();
+        if (buttonsRoom_ > 0.0f && !buttonsPlaced_)
+            port_.placeWindowButtons(kButtonsX, kTopBarY + 0.5f * kTopBarH);
+        buttonsPlaced_ = buttonsRoom_ > 0.0f;
         const float W = width_, H = height_;
         const float footerTop = H - kFooterH;
         const float bottom = footerTop - kBottomGap;     // the dials' and the message box's bottom
@@ -1802,7 +1825,7 @@ namespace playground::ui
         at(viewItem_).setBounds({ segRight - 3.0f - 2.0f * kSegmentW, barMid - 0.5f * (kTopButtonH - 6.0f), kSegmentW, kTopButtonH - 6.0f });
         {
             const funkgui::FontAtlasSdf& atlas = funkgui::FontService::get().atlas();
-            const float nameRight = kMargin + 50.0f + std::max(funkgui::text::width(atlas, product::kName, chat::kStrong),
+            const float nameRight = kMargin + 50.0f + buttonsRoom_ + std::max(funkgui::text::width(atlas, product::kName, chat::kStrong),
                                                                funkgui::text::width(atlas, subtitle_.c_str(), chat::kSmall));
             const float segLeft = segRight - 3.0f - 2.0f * kSegmentW - 3.0f;
             const float w = std::min(kProjectW, std::max(120.0f, segLeft - 24.0f - (nameRight + 24.0f)));
@@ -1936,8 +1959,7 @@ namespace playground::ui
         const float inX = card_.x + kCardPad, inW = card_.w - 2.0f * kCardPad;
         const float hy = card_.y + kCardPad;
         // Folded: every item of the chat hidden but the rail's button, at its top.
-        for (const int i : { newChatItem_, keyItem_, accountItem_, modelItem_, thinkingItem_, fastItem_, webItem_, attachItem_,
-                             sendItem_ })
+        for (const int i : { newChatItem_, keyItem_, modelItem_, thinkingItem_, fastItem_, webItem_, attachItem_, sendItem_ })
             static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(i)]).setHidden(!chatOpen_);
         chatView().setHidden(!chatOpen_);
         inputItem().setHidden(!chatOpen_);
@@ -1946,25 +1968,17 @@ namespace playground::ui
         {
             toggle.setBounds({ card_.centreX() - 0.5f * kIconButton, card_.y + 8.0f, kIconButton, kIconButton });
             headerY_ = hy;
-            headerLabel_ = accountLabel();
             ++layoutRevision_;
             dirty_ = true;
             return;
         }
-        // The header's buttons, right to left: fold, the key, a new chat, and the account pill.
+        // The header's buttons, right to left: fold, the key, a new chat.
         const float fx = card_.right() - kCardPad - kIconButton;
         toggle.setBounds({ fx, hy, kIconButton, kIconButton });
         static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(keyItem_)])
             .setBounds({ fx - kIconButton - 4.0f, hy, kIconButton, kIconButton });
         static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(newChatItem_)])
             .setBounds({ fx - 2.0f * kIconButton - 8.0f, hy, kIconButton, kIconButton });
-        {
-            // The account pill, left of them, while signed in (as wide as its label, up to a third of the card).
-            auto& pill = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(accountItem_)]);
-            const float w = chat_.signedIn ? std::min(pill.preferredWidth(), std::floor(card_.w / 3.0f)) : 0.0f;
-            pill.setBounds({ fx - 2.0f * kIconButton - 8.0f - 6.0f - w, hy, w, kIconButton });
-            headerLabel_ = accountLabel();
-        }
         headerY_ = hy;
         const float headerBottom = hy + kIconButton;
 
@@ -2035,6 +2049,7 @@ namespace playground::ui
         for (const int i : guiKeyboards_)                // a note held as the editor closes is let go
             static_cast<GuiKeyboardItem&>(*items_[static_cast<std::size_t>(i)]).release();
         releasePictures();
+        port_.removeMeterReader();
     }
 
     // ---- pictures ------------------------------------------------------------------------------------------------------
@@ -2531,32 +2546,12 @@ namespace playground::ui
             const int f = focus_;
             if (f == inputItem_ || f == modelItem_ || f == thinkingItem_ || f == fastItem_ || f == webItem_ || f == sendItem_
                 || f == attachItem_ || f == newChatItem_
-                || f == keyItem_ || f == accountItem_)
+                || f == keyItem_)
                 setFocus(panelView_ ? -1 : editorItem_);
         }
         layout();
     }
 
-    std::optional<funkgui::Point> Panel::centreOfAccount() const
-    {
-        if (!chat_.signedIn)
-            return std::nullopt;
-        return centreOf(accountItem_);
-    }
-
-    std::string Panel::accountLabel() const
-    {
-        if (!chat_.signedIn)
-            return {};
-        std::string name = asciiText(chat_.account.empty() ? std::string("Account") : chat_.account);
-        if (name.size() > 16)
-            name = name.substr(0, 15) + "~";
-        if (!chat_.details.known)
-            return name;
-        char credit[32];
-        std::snprintf(credit, sizeof credit, "  $%.2f", chat_.details.balanceUsd);
-        return name + credit;
-    }
     funkgui::Point Panel::centreOfThinking() const { return centreOf(thinkingItem_); }
     std::optional<funkgui::Point> Panel::centreOfFast() const
     {
@@ -2570,11 +2565,6 @@ namespace playground::ui
             return std::nullopt;
         return centreOf(webItem_);
     }
-    funkgui::Point Panel::centreOfDialogTab(bool account) const
-    {
-        const funkgui::Rect r = account ? keyDialog().accountTab : keyDialog().keyTab;
-        return { r.centreX(), r.centreY() };
-    }
     funkgui::Point Panel::centreOfKeyField() const
     {
         const funkgui::Rect r = keyDialog().field;
@@ -2582,45 +2572,19 @@ namespace playground::ui
     }
     funkgui::Point Panel::centreOfKeySave() const
     {
-        const funkgui::Rect r = keyDialog().primary;
+        const funkgui::Rect r = keyDialog().save;
         return { r.centreX(), r.centreY() };
     }
     funkgui::Point Panel::centreOfKeyCancel() const
     {
-        const funkgui::Rect r = keyDialog().secondary;
+        const funkgui::Rect r = keyDialog().cancel;
         return { r.centreX(), r.centreY() };
     }
     std::optional<funkgui::Point> Panel::centreOfKeyRemove() const
     {
-        if (tab_ != DialogTab::key || !chat_.hasKey)
+        if (!chat_.hasKey)
             return std::nullopt;
-        const funkgui::Rect r = keyDialog().danger;
-        return funkgui::Point{ r.centreX(), r.centreY() };
-    }
-    funkgui::Point Panel::centreOfUsername() const
-    {
-        const funkgui::Rect r = keyDialog().user;
-        return { r.centreX(), r.centreY() };
-    }
-    funkgui::Point Panel::centreOfPassword() const
-    {
-        const funkgui::Rect r = keyDialog().pass;
-        return { r.centreX(), r.centreY() };
-    }
-    std::optional<funkgui::Point> Panel::centreOfSignOut() const
-    {
-        if (tab_ != DialogTab::account || dialogButtons().danger.empty())
-            return std::nullopt;
-        const funkgui::Rect r = keyDialog().danger;
-        return funkgui::Point{ r.centreX(), r.centreY() };
-    }
-    std::optional<funkgui::Point> Panel::centreOfUseThis() const
-    {
-        const DialogButtons b = dialogButtons();
-        const bool primary = b.primary == "Use account";
-        if (!primary && b.extra != "Use this key")
-            return std::nullopt;
-        const funkgui::Rect r = primary ? keyDialog().primary : keyDialog().extra;
+        const funkgui::Rect r = keyDialog().remove;
         return funkgui::Point{ r.centreX(), r.centreY() };
     }
 
@@ -2667,6 +2631,7 @@ namespace playground::ui
         return static_cast<const FilesItem&>(*items_[static_cast<std::size_t>(editorItem_)]);
     }
     funkgui::TextEditor& Panel::editor() noexcept { return files().editor(); }
+    CodeAssist& Panel::codeAssist() noexcept { return files().assist(); }
     int Panel::fileCount() const { return files().count(); }
     std::string Panel::fileName(int i) const { return i >= 0 && i < files().count() ? files().name(i) : std::string(); }
     int Panel::activeFile() const { return files().active(); }
@@ -2690,10 +2655,13 @@ namespace playground::ui
     void Panel::runNow()
     {
         files().endRename();
+        if (files().assist().formatOnRun())
+            files().assist().formatAll();
         const Draft draft = files().draft();
         port_.setDraft(draft);
         syncedFiles_ = files().revision();
         port_.run(draft.files);
+        files().assist().cancelCheck();                  // RUN's messages will say more of these files
         compiling_ = true;
         dirty_ = true;
     }
@@ -2717,6 +2685,19 @@ namespace playground::ui
             syncedFiles_ = files().revision();
             textChanged = true;
         }
+        // The editor's check while typing (CodeAssist.h): the files once they have rested, its messages when it is done.
+        if (files().assist().takeCheckRequest())
+        {
+            port_.check(files().draft().files);
+            files().assist().checkSent();
+        }
+        if (files().assist().checking())
+            if (const CheckStatus c = port_.checkStatus(); files().assist().takeCheckResult(c.revision))
+            {
+                files().assist().setCheckDiagnostics(diagnosticsOf(parseProblems(c.errors)), c.sources);
+                files().assist().checkDone();
+                dirty_ = true;
+            }
         // A finished compile: its messages, and the dials of the program that plays.
         bool statusChanged = false;
         if (const uint64_t r = port_.statusRevision(); r != seenStatus_)
@@ -2726,6 +2707,7 @@ namespace playground::ui
             lastOk_ = s.ok;
             lastMs_ = s.ms;
             problems_ = parseProblems(s.errors + s.notes);
+            files().assist().setRunDiagnostics(diagnosticsOf(problems_), s.sources);
             // The dials and the source of the program that plays: this compile's when it compiled (the processor
             // takes them on its own timer, which may not have run yet), else the ones before.
             const Controls cs = s.ok ? s.controls : port_.controls();
@@ -2854,12 +2836,10 @@ namespace playground::ui
                            "dials. Ask it about FMinus, synthesis or the code, too."
                          : "Describe an effect and Claude writes it in FMinus, runs it, measures it and sets the dials. "
                            "Ask it about FMinus, DSP or the code, too.";
-            if (!s.ready() && s.useAccount && !s.accountProblem.empty())
-                e.body += " Sign in again: " + s.accountProblem;
-            else if (!s.ready())
-                e.body += " First sign in with your TestingPlayground account (its credit pays for Claude), or add your "
-                          "own Anthropic API key (billed to you).";
-            if (!s.useAccount && !s.keyProblem.empty())
+            if (!s.hasKey)
+                e.body += " First add your Anthropic API key: it is stored encrypted on this Mac, for both playground "
+                          "plugins, and the chat's requests are billed to it.";
+            if (!s.keyProblem.empty())
                 e.body += " The stored key cannot be used: " + s.keyProblem;
             e.body = asciiText(e.body);
             if (product::kIsInstrument)
@@ -2882,8 +2862,7 @@ namespace playground::ui
                               std::max(0.0, seconds));
                 return buf;
             }
-            const std::string credit = s.useAccount ? s.credit : std::string();
-            return asciiText(s.usage.empty() || credit.empty() ? s.usage + credit : s.usage + "; " + credit);
+            return asciiText(s.usage);
         }
 
         std::string effortName(const std::string& e)
@@ -2977,8 +2956,6 @@ namespace playground::ui
                                                                  : "Ask Claude for an effect, or about the code"));
             if (barLabels() != barLabels_)
                 placeChatBar();
-            if (accountLabel() != headerLabel_)          // signed in or out, or the credit came
-                layoutChat();
             if (!chatOpen_ && !unread_ && chat_.entries.size() > entriesAtFold_)
             {
                 unread_ = true;                          // the rail's dot
@@ -2989,8 +2966,6 @@ namespace playground::ui
                 dirty_ = true;
                 ++chatA11y_;
             }
-            if (awaitingSignIn_ && keyOpen_ && !chat_.signingIn)
-                afterSignIn();
         }
         const std::string a = activityText(chat_, nowSec - busySince_);
         if (a != activity_)
@@ -3058,7 +3033,7 @@ namespace playground::ui
             return;
         if (!chat_.ready())
         {
-            pendingSend_ = text;                         // it goes once a key is saved, or the user signs in
+            pendingSend_ = text;                         // it goes once a key is saved
             openKeyDialog();
             return;
         }
@@ -3146,98 +3121,39 @@ namespace playground::ui
         });
     }
 
-    // ---- the access dialog --------------------------------------------------------------------------------------------
+    // ---- the key dialog -----------------------------------------------------------------------------------------------
     Panel::KeyDialog Panel::keyDialog() const
     {
         KeyDialog d;
         const float w = std::min(kKeyDialogW, width_ - 2.0f * kMargin);
-        const float h = tab_ == DialogTab::account && chat_.signedIn ? kAccountDialogH : kKeyDialogH;
-        d.box = { std::round((width_ - w) * 0.5f), std::round((height_ - h) * 0.42f), w, h };
-        d.keyTab = { d.box.right() - 24.0f - 88.0f, d.box.y + 24.0f, 88.0f, 26.0f };
-        d.accountTab = { d.keyTab.x - 88.0f, d.keyTab.y, 88.0f, 26.0f };
+        d.box = { std::round((width_ - w) * 0.5f), std::round((height_ - kKeyDialogH) * 0.42f), w, kKeyDialogH };
         d.field = { d.box.x + 24.0f, d.box.y + 134.0f, w - 48.0f, 34.0f };
-        d.user = { d.box.x + 24.0f, d.box.y + 128.0f, w - 48.0f, 34.0f };
-        d.pass = { d.box.x + 24.0f, d.user.bottom() + 8.0f, w - 48.0f, 34.0f };
         const float by = d.box.bottom() - 24.0f - 32.0f;
-        d.primary = { d.box.right() - 24.0f - 96.0f, by, 96.0f, 32.0f };
-        d.secondary = { d.primary.x - 8.0f - 84.0f, by, 84.0f, 32.0f };
-        d.danger = { d.box.x + 24.0f, by, 104.0f, 32.0f };
-        d.extra = { d.danger.right() + 8.0f, by, 112.0f, 32.0f };
-        if (dialogButtons().primary.empty())
-            d.secondary = { d.box.right() - 24.0f - 84.0f, by, 84.0f, 32.0f };   // Close, alone at the right
+        d.save = { d.box.right() - 24.0f - 96.0f, by, 96.0f, 32.0f };
+        d.cancel = { d.save.x - 8.0f - 84.0f, by, 84.0f, 32.0f };
+        d.remove = { d.box.x + 24.0f, by, 104.0f, 32.0f };
         return d;
     }
 
-    Panel::DialogButtons Panel::dialogButtons() const
-    {
-        DialogButtons b;
-        if (tab_ == DialogTab::account)
-        {
-            if (chat_.signedIn)
-            {
-                b.secondary = "Close";
-                b.danger = "Sign out";
-                b.extra = chat_.details.refreshing ? "Refreshing" : "Refresh";
-                if (!chat_.useAccount)
-                    b.primary = "Use account";
-            }
-            else
-            {
-                b.primary = chat_.signingIn || awaitingSignIn_ ? "Signing in" : "Sign in";
-                b.secondary = "Cancel";
-            }
-            return b;
-        }
-        b.primary = "Save";
-        b.secondary = "Cancel";
-        if (chat_.hasKey)
-        {
-            b.danger = "Remove key";
-            if (chat_.useAccount)
-                b.extra = "Use this key";
-        }
-        return b;
-    }
-
-    void Panel::openKeyDialog() { openKeyDialog(chat_.useAccount ? DialogTab::account : DialogTab::key); }
-
-    void Panel::openKeyDialog(DialogTab tab)
+    void Panel::openKeyDialog()
     {
         if (keyOpen_)
             return;
         keyOpen_ = true;
+        keyEdit_.set("", kMaxKeyLength);
+        keyWhy_.clear();
         focusBeforeKey_ = focus_;
         setFocus(-1);
         ring_ = false;
-        showTab(tab);
-    }
-
-    void Panel::showTab(DialogTab tab)
-    {
-        tab_ = tab;
-        keyEdit_.set("", kMaxKeyLength);
-        std::fill(passEdit_.buffer.begin(), passEdit_.buffer.end(), '\0');   // the password typed goes from memory
-        passEdit_.set("", kMaxPasswordLength);
-        userEdit_.set(chat_.account, kMaxUsernameLength);
-        userEdit_.allSelected = false;
-        accountField_ = chat_.account.empty() ? 0 : 1;   // the password, when the username is known
-        keyWhy_.clear();
-        if (tab == DialogTab::account && !chat_.signedIn && !chat_.accountProblem.empty())
-            keyWhy_ = asciiText(chat_.accountProblem);
-        if (tab == DialogTab::account && chat_.signedIn)
-            port_.chat().refreshAccount();             // the account's view, as the server has it now
         dirty_ = true;
     }
 
     void Panel::closeKeyDialog()
     {
         keyOpen_ = false;
-        keyEdit_.set("", kMaxKeyLength);                 // nothing of the key or the password stays in the panel
-        std::fill(passEdit_.buffer.begin(), passEdit_.buffer.end(), '\0');
-        passEdit_.set("", kMaxPasswordLength);
+        keyEdit_.set("", kMaxKeyLength);                 // nothing of the key stays in the panel
         keyWhy_.clear();
         pendingSend_.clear();
-        awaitingSignIn_ = false;
         if (focusBeforeKey_ >= 0)
             setFocus(focusBeforeKey_);
         focusBeforeKey_ = -1;
@@ -3284,155 +3200,29 @@ namespace playground::ui
         refreshChat(host_ != nullptr ? host_->nowSeconds() : 0.0);
     }
 
-    // The username and password go to the agent, which signs in on a thread of its own; the password field empties at
-    // once. afterSignIn() acts on the answer.
-    void Panel::signInFromDialog()
-    {
-        if (chat_.signingIn || awaitingSignIn_)
-            return;
-        std::string user = userEdit_.buffer;
-        while (!user.empty() && user.back() == ' ')
-            user.pop_back();
-        while (!user.empty() && user.front() == ' ')
-            user.erase(user.begin());
-        if (user.empty())
-        {
-            keyWhy_ = "Type your username.";
-            accountField_ = 0;
-            dirty_ = true;
-            return;
-        }
-        if (passEdit_.buffer.empty())
-        {
-            keyWhy_ = "Type your password (Cmd-V pastes it).";
-            accountField_ = 1;
-            dirty_ = true;
-            return;
-        }
-        keyWhy_.clear();
-        awaitingSignIn_ = true;
-        port_.chat().signIn(user, passEdit_.buffer);
-        std::fill(passEdit_.buffer.begin(), passEdit_.buffer.end(), '\0');
-        passEdit_.set("", kMaxPasswordLength);
-        chatAt_ = -1.0;
-        refreshChat(host_ != nullptr ? host_->nowSeconds() : 0.0);
-        dirty_ = true;
-    }
-
-    void Panel::afterSignIn()
-    {
-        awaitingSignIn_ = false;
-        dirty_ = true;
-        if (!chat_.signedIn || !chat_.signInError.empty())
-        {
-            keyWhy_ = asciiText(chat_.signInError.empty() ? std::string("The sign-in failed.") : chat_.signInError);
-            accountField_ = 1;
-            return;
-        }
-        const std::string pending = pendingSend_;
-        closeKeyDialog();
-        if (!pending.empty())
-        {
-            setFocus(inputItem_);
-            sendChat();
-        }
-    }
-
-    void Panel::signOutFromDialog()
-    {
-        port_.chat().signOut();
-        closeKeyDialog();
-        chatAt_ = -1.0;
-        refreshChat(host_ != nullptr ? host_->nowSeconds() : 0.0);
-    }
-
-    void Panel::useFromDialog()
-    {
-        port_.chat().useAccount(tab_ == DialogTab::account);
-        const std::string pending = pendingSend_;
-        closeKeyDialog();
-        chatAt_ = -1.0;
-        refreshChat(host_ != nullptr ? host_->nowSeconds() : 0.0);
-        if (!pending.empty())
-        {
-            setFocus(inputItem_);
-            sendChat();
-        }
-    }
-
-    void Panel::dialogAction(const std::string& label)
-    {
-        if (label == "Save")
-            saveKeyFromDialog();
-        else if (label == "Sign in")
-            signInFromDialog();
-        else if (label == "Cancel" || label == "Close")
-            closeKeyDialog();
-        else if (label == "Remove key")
-            removeKeyFromDialog();
-        else if (label == "Sign out")
-            signOutFromDialog();
-        else if (label == "Use account" || label == "Use this key")
-            useFromDialog();
-        else if (label == "Refresh")
-            port_.chat().refreshAccount();
-        dirty_ = true;
-    }
-
-    // Every key is the dialog's while it is open: Return saves (or signs in), Escape cancels, Cmd-V pastes. On the
-    // account tab Tab moves between the username and the password, and the arrows move the username's caret; a masked
-    // field keeps its caret at its end (there is nothing to move it over).
+    // Every key is the dialog's while it is open: Return saves, Escape cancels, Cmd-V pastes; the caret stays at the end
+    // (the key is masked, so there is nothing to move it over).
     bool Panel::keyDialogKey(const funkgui::KeyEvent& e)
     {
         using funkgui::Key;
-        const bool account = tab_ == DialogTab::account;
-        const bool form = account && !chat_.signedIn;
-        funkgui::text::LineEdit& edit = !account ? keyEdit_ : (accountField_ == 0 ? userEdit_ : passEdit_);
-        const int limit = !account ? kMaxKeyLength : (accountField_ == 0 ? kMaxUsernameLength : kMaxPasswordLength);
-        const bool masked = !account || accountField_ == 1;
-        if (e.key == Key::escape)
-        {
-            closeKeyDialog();
-            return true;
-        }
-        if (account && !form)
-        {
-            if (e.key == Key::enter)
-                dialogAction(dialogButtons().primary.empty() ? std::string("Close") : dialogButtons().primary);
-            dirty_ = true;
-            return true;                             // signed in: nothing to type
-        }
         if (e.key == Key::enter)
-        {
-            if (!account)
-                saveKeyFromDialog();
-            else if (accountField_ == 0 && passEdit_.buffer.empty())
-                accountField_ = 1;
-            else
-                signInFromDialog();
-        }
-        else if (e.key == Key::tab && account)
-            accountField_ = 1 - accountField_;
-        else if (account && (chat_.signingIn || awaitingSignIn_))
-        {
-        }
+            saveKeyFromDialog();
+        else if (e.key == Key::escape)
+            closeKeyDialog();
         else if (e.key == Key::character && e.mods.cmd && (e.ch == 'v' || e.ch == 'V'))
         {
-            if (host_ != nullptr && edit.paste(host_->clipboardText(), limit))
+            if (host_ != nullptr && keyEdit_.paste(host_->clipboardText(), kMaxKeyLength))
                 keyWhy_.clear();
         }
         else if (e.key == Key::character && e.mods.cmd && (e.ch == 'a' || e.ch == 'A'))
-            edit.allSelected = !edit.buffer.empty();
-        else if (masked && (e.key == Key::left || e.key == Key::right || e.key == Key::home || e.key == Key::end))
+            keyEdit_.allSelected = !keyEdit_.buffer.empty();
+        else if (e.key == Key::left || e.key == Key::right || e.key == Key::home || e.key == Key::end
+                 || e.key == Key::up || e.key == Key::down || e.key == Key::tab)
         {
         }
-        else if (e.key == Key::up || e.key == Key::down || e.key == Key::tab)
-        {
-        }
-        else if (edit.key(e, limit))
+        else if (keyEdit_.key(e, kMaxKeyLength))
             keyWhy_.clear();
-        if (masked)
-            edit.caret = static_cast<int>(edit.buffer.size());
+        keyEdit_.caret = static_cast<int>(keyEdit_.buffer.size());
         dirty_ = true;
         return true;
     }
@@ -3440,23 +3230,12 @@ namespace playground::ui
     void Panel::keyDialogPointerDown(funkgui::Point p)
     {
         const KeyDialog d = keyDialog();
-        const DialogButtons b = dialogButtons();
-        if (d.accountTab.contains(p) && tab_ != DialogTab::account && !awaitingSignIn_)
-            showTab(DialogTab::account);
-        else if (d.keyTab.contains(p) && tab_ != DialogTab::key && !awaitingSignIn_)
-            showTab(DialogTab::key);
-        else if (tab_ == DialogTab::account && !chat_.signedIn && d.user.contains(p))
-            accountField_ = 0;
-        else if (tab_ == DialogTab::account && !chat_.signedIn && d.pass.contains(p))
-            accountField_ = 1;
-        else if (!b.primary.empty() && d.primary.contains(p))
-            dialogAction(b.primary);
-        else if (!b.secondary.empty() && d.secondary.contains(p))
-            dialogAction(b.secondary);
-        else if (!b.danger.empty() && d.danger.contains(p))
-            dialogAction(b.danger);
-        else if (!b.extra.empty() && d.extra.contains(p))
-            dialogAction(b.extra);
+        if (d.save.contains(p))
+            saveKeyFromDialog();
+        else if (d.cancel.contains(p))
+            closeKeyDialog();
+        else if (chat_.hasKey && d.remove.contains(p))
+            removeKeyFromDialog();
         dirty_ = true;
     }
 
@@ -3475,8 +3254,6 @@ namespace playground::ui
     {
         const chat::Palette p = chat::palette(th);
         const KeyDialog d = keyDialog();
-        const DialogButtons buttons = dialogButtons();
-        const bool account = tab_ == DialogTab::account;
         const funkgui::Canvas::Scope s(c, kKeyDialogTag, false);
         c.rrect(0.0f, 0.0f, width_, height_, 0.0f, th.ground.withAlpha(0.68f));
         constexpr funkgui::Col black{ 0, 0, 0, 255 };
@@ -3489,169 +3266,51 @@ namespace playground::ui
 
         const float x = d.box.x + 24.0f;
         c.rrect(x, d.box.y + 22.0f, 30.0f, 30.0f, 9.0f, p.accent.withAlpha(0.16f));
-        chat::drawIcon(c, account ? chat::Icon::person : chat::Icon::key, x + 15.0f, d.box.y + 37.0f, 15.0f, p.accent);
-        c.text(account ? "Your account" : "Anthropic API key", x + 42.0f, c.capCentreTop(d.box.y + 37.0f, chat::kH2),
-               chat::kH2, p.text);
+        chat::drawIcon(c, chat::Icon::key, x + 15.0f, d.box.y + 37.0f, 15.0f, p.accent);
+        c.text("Anthropic API key", x + 42.0f, c.capCentreTop(d.box.y + 37.0f, chat::kH2), chat::kH2, p.text);
 
-        // The tabs: a segmented pill, the chosen one filled; a dot on the one the chat uses.
-        {
-            const funkgui::Rect all{ d.accountTab.x, d.accountTab.y, d.keyTab.right() - d.accountTab.x, d.keyTab.h };
-            c.rrect(all.x, all.y, all.w, all.h, all.h * 0.5f, p.raised, 1.0f, p.cardEdge);
-            const auto tab = [&](const funkgui::Rect& r, const char* label, bool chosen, bool inUse) {
-                const bool hover = hasPointer_ && r.contains(pointer_) && !chosen;
-                if (chosen)
-                    c.rrect(r.x + 2.0f, r.y + 2.0f, r.w - 4.0f, r.h - 4.0f, (r.h - 4.0f) * 0.5f, p.composer, 1.0f, p.composerEdge);
-                const funkgui::TextStyle& st = chosen ? chat::kSmallStrong : chat::kSmall;
-                const float tw = c.textWidth(label, st);
-                const float tx = r.centreX() - tw * 0.5f + (inUse ? 5.0f : 0.0f);
-                if (inUse)
-                    c.disc(tx - 9.0f, r.centreY(), 2.5f, p.accent);
-                c.text(label, tx, c.capCentreTop(r.centreY(), st), st, chosen || hover ? p.text : p.soft);
-            };
-            const bool ready = chat_.ready();
-            tab(d.accountTab, "Account", account, ready && chat_.useAccount);
-            tab(d.keyTab, "API key", !account, ready && !chat_.useAccount);
-        }
-
-        // The lines under the title: what this access is, and its state.
-        std::vector<std::string> lines;
-        if (account && chat_.signedIn)
-            lines = { "Claude runs on the TestingPlayground server, charged to this",
-                      "account's credit at Anthropic's prices. The sign-in is kept,",
-                      "encrypted, for both playground plugins on this Mac." };
-        else if (account)
-            lines = { "Sign in with the account the TestingPlayground admin gave you:",
-                      "Claude then runs on the server, charged to the account's credit.",
-                      "The password is sent once; only the sign-in is kept, encrypted." };
-        else
-            lines = { "Claude runs on your own key, from console.anthropic.com (API keys).",
-                      "It is stored encrypted on this Mac, for both playground plugins,",
-                      "and sent only to api.anthropic.com. Requests are billed to it.",
-                      !chat_.hasKey       ? std::string()
-                      : chat_.useAccount ? std::string("A key is stored; the chat uses your account now.")
-                                         : std::string("A key is stored, and the chat uses it.") };
+        // The lines under the title: what the key is, and whether one is stored.
+        const std::string lines[] = { "Claude runs on your own key, from console.anthropic.com (API keys).",
+                                      "It is stored encrypted on this Mac, for both playground plugins,",
+                                      "and sent only to api.anthropic.com. Requests are billed to it.",
+                                      chat_.hasKey ? std::string("A key is stored, and the chat uses it.") : std::string() };
         float y = d.box.y + 66.0f;
         for (const std::string& line : lines)
         {
-            c.text(fitText(c, asciiText(line), chat::kSmall, d.box.w - 48.0f).c_str(), x, c.capCentreTop(y + 8.0f, chat::kSmall),
+            c.text(fitText(c, line, chat::kSmall, d.box.w - 48.0f).c_str(), x, c.capCentreTop(y + 8.0f, chat::kSmall),
                    chat::kSmall, p.soft);
             y += 16.0f;
         }
 
-        // A field: its text (or a hint), the selection, and the caret where it has one.
-        const auto field = [&](const funkgui::Rect& f, const std::string& shown, const char* hint, bool caret,
-                               int caretAt, bool selected) {
-            c.rrect(f.x, f.y, f.w, f.h, 10.0f, p.composer, 1.0f,
-                    !caret ? p.composerEdge : keyWhy_.empty() ? funkgui::mix(p.composerEdge, p.accent, 0.45f) : p.danger);
-            const float textTop = c.capCentreTop(f.centreY(), chat::kBody);
-            const float maxW = f.w - 28.0f;
-            if (shown.empty())
-                c.text(hint, f.x + 14.0f, textTop, chat::kBody, p.faint);
-            else
-            {
-                const float w = std::min(c.textWidth(shown.c_str(), chat::kBody), maxW);
-                if (selected)
-                    c.rrect(f.x + 12.0f, f.y + 8.0f, w + 4.0f, f.h - 16.0f, 3.0f, th.accentDim);
-                c.text(fitText(c, shown, chat::kBody, maxW).c_str(), f.x + 14.0f, textTop, chat::kBody, p.text);
-            }
-            if (caret)
-            {
-                const std::string before = shown.substr(0, static_cast<std::size_t>(std::clamp(caretAt, 0, static_cast<int>(shown.size()))));
-                const float cx = f.x + 14.0f + std::min(c.textWidth(before.c_str(), chat::kBody), maxW);
-                c.rrect(cx, f.y + 9.0f, 1.5f, f.h - 18.0f, 0.75f, p.accent);
-            }
-        };
-        float whyY = 0.0f, whyX = x, whyW = d.box.w - 48.0f;
-        if (!account)
-        {
-            // The key masked (its first and last characters shown), the caret at its end.
-            const std::string shown = keyEdit_.buffer.empty() ? std::string() : maskedKey();
-            field(d.field, shown, "sk-ant-...   (Cmd-V pastes it)", true, static_cast<int>(shown.size()),
-                  keyEdit_.allSelected);
-            whyY = d.field.bottom() + 14.0f;
-        }
-        else if (chat_.signedIn)
-        {
-            // Who is signed in, the credit left, and whether the chat uses the account.
-            const funkgui::Rect r{ d.user.x, d.user.y, d.user.w, d.pass.bottom() - d.user.y };
-            c.rrect(r.x, r.y, r.w, r.h, 12.0f, p.raised, 1.0f, p.cardEdge);
-            c.disc(r.x + 34.0f, r.centreY(), 17.0f, p.accent.withAlpha(0.16f));
-            chat::drawIcon(c, chat::Icon::person, r.x + 34.0f, r.centreY(), 16.0f, p.accent);
-            const float tx = r.x + 64.0f, tw = r.w - 64.0f - 120.0f;
-            c.text(fitText(c, asciiText(chat_.account), chat::kStrong, tw).c_str(), tx,
-                   c.capCentreTop(r.centreY() - 10.0f, chat::kStrong), chat::kStrong, p.text);
-            const std::string credit = chat_.credit.empty() ? std::string("The credit left shows after a message")
-                                                            : chat_.credit;
-            c.text(fitText(c, asciiText(credit), chat::kSmall, tw).c_str(), tx, c.capCentreTop(r.centreY() + 11.0f, chat::kSmall),
-                   chat::kSmall, p.soft);
-            const char* state = chat_.useAccount ? "In use" : "Not in use";
-            const float sw = c.textWidth(state, chat::kSmall) + 24.0f;
-            const funkgui::Rect pill{ r.right() - 16.0f - sw, r.centreY() - 12.0f, sw, 24.0f };
-            c.rrect(pill.x, pill.y, pill.w, pill.h, 12.0f, chat_.useAccount ? p.accent.withAlpha(0.16f) : p.card, 1.0f,
-                    chat_.useAccount ? p.accent.withAlpha(0.0f) : p.composerEdge);
-            c.text(state, pill.centreX(), c.capCentreTop(pill.centreY(), chat::kSmall), chat::kSmall,
-                   chat_.useAccount ? p.accent : p.dim, funkgui::Align::centre);
-
-            // This month's use, four tiles; under them the sign-in's dates and what made it.
-            const ChatAccount& info = chat_.details;
-            float ty = r.bottom() + 16.0f;
-            c.text("THIS MONTH", x + 2.0f, c.capCentreTop(ty, funkgui::type::kMicro), funkgui::type::kMicro, p.faint);
-            ty += 12.0f;
-            const float gap = 8.0f, tw4 = std::floor((r.w - 3.0f * gap) / 4.0f), th4 = 50.0f;
-            char spent[32];
-            std::snprintf(spent, sizeof spent, "$%.2f", info.costUsd);
-            const std::string values[4] = { info.known ? std::to_string(info.requests) : "-", info.known ? spent : "-",
-                                            info.known ? countText(info.inputTokens) : "-",
-                                            info.known ? countText(info.outputTokens) : "-" };
-            const char* const names[4] = { info.requests == 1 ? "request" : "requests", "spent", "tokens in", "tokens out" };
-            for (int k = 0; k < 4; ++k)
-            {
-                const funkgui::Rect t{ r.x + static_cast<float>(k) * (tw4 + gap), ty, tw4, th4 };
-                c.rrect(t.x, t.y, t.w, t.h, 10.0f, p.raised, 1.0f, p.cardEdge);
-                c.text(fitText(c, values[k], chat::kH2, t.w - 20.0f).c_str(), t.x + 12.0f, c.capCentreTop(t.y + 18.0f, chat::kH2),
-                       chat::kH2, info.known ? p.text : p.faint);
-                c.text(names[k], t.x + 12.0f, c.capCentreTop(t.y + 36.0f, chat::kSmall), chat::kSmall, p.soft);
-            }
-            ty += th4 + 18.0f;
-            std::string line, tone = "soft";
-            if (!info.error.empty())
-            {
-                line = info.error;
-                tone = "danger";
-            }
-            else if (!info.known)
-                line = info.refreshing ? "Asking the server..." : "Refresh asks the server for the account.";
-            else
-            {
-                line = "Signed in " + shortDate(info.since) + (info.client.empty() ? std::string() : " from " + info.client)
-                     + "; it lasts until " + shortDate(info.expires) + ".";
-            }
-            c.text(fitText(c, asciiText(line), chat::kSmall, r.w).c_str(), x + 2.0f, c.capCentreTop(ty, chat::kSmall), chat::kSmall,
-                   tone == "danger" ? p.danger : p.soft);
-        }
+        // The field: the key masked (its first and last characters shown), the caret at its end.
+        const funkgui::Rect f = d.field;
+        c.rrect(f.x, f.y, f.w, f.h, 10.0f, p.composer, 1.0f,
+                keyWhy_.empty() ? funkgui::mix(p.composerEdge, p.accent, 0.45f) : p.danger);
+        const float textTop = c.capCentreTop(f.centreY(), chat::kBody);
+        const std::string shown = keyEdit_.buffer.empty() ? std::string() : maskedKey();
+        const float maxW = f.w - 28.0f;
+        if (shown.empty())
+            c.text("sk-ant-...   (Cmd-V pastes it)", f.x + 14.0f, textTop, chat::kBody, p.faint);
         else
         {
-            const bool waiting = chat_.signingIn || awaitingSignIn_;
-            field(d.user, userEdit_.buffer, "Username", accountField_ == 0 && !waiting, userEdit_.caret, userEdit_.allSelected);
-            const std::string stars(std::min<std::size_t>(passEdit_.buffer.size(), 40), '*');
-            field(d.pass, stars, "Password   (Cmd-V pastes it)", accountField_ == 1 && !waiting,
-                  static_cast<int>(stars.size()), passEdit_.allSelected);
-            whyY = d.pass.bottom() + 14.0f;
+            const float w = std::min(c.textWidth(shown.c_str(), chat::kBody), maxW);
+            if (keyEdit_.allSelected)
+                c.rrect(f.x + 12.0f, f.y + 8.0f, w + 4.0f, f.h - 16.0f, 3.0f, th.accentDim);
+            c.text(fitText(c, shown, chat::kBody, maxW).c_str(), f.x + 14.0f, textTop, chat::kBody, p.text);
         }
-        if (!keyWhy_.empty() && whyY > 0.0f)
-            c.text(fitText(c, asciiText(keyWhy_), chat::kSmall, whyW).c_str(), whyX + 2.0f, c.capCentreTop(whyY, chat::kSmall),
-                   chat::kSmall, p.danger);
+        const float cx = f.x + 14.0f + (shown.empty() ? 0.0f : std::min(c.textWidth(shown.c_str(), chat::kBody), maxW));
+        c.rrect(cx, f.y + 9.0f, 1.5f, f.h - 18.0f, 0.75f, p.accent);
+        if (!keyWhy_.empty())
+            c.text(fitText(c, asciiText(keyWhy_), chat::kSmall, f.w).c_str(), f.x + 2.0f,
+                   c.capCentreTop(f.bottom() + 14.0f, chat::kSmall), chat::kSmall, p.danger);
 
         // The buttons: pills.
-        const auto button = [&](const funkgui::Rect& r, const std::string& label, int look) {   // 0 primary, 1 outlined, 2 quiet
-            if (label.empty())
-                return;
-            const bool waiting = label == "Signing in" || label == "Refreshing";
-            const bool hover = hasPointer_ && r.contains(pointer_) && !waiting;
+        const auto button = [&](const funkgui::Rect& r, const char* label, int look) {   // 0 primary, 1 outlined, 2 quiet
+            const bool hover = hasPointer_ && r.contains(pointer_);
             funkgui::Col fill = p.card.withAlpha(0.0f), edge = p.card.withAlpha(0.0f), ink = p.soft;
             if (look == 0)
             {
-                fill = hover ? funkgui::mix(p.accent, p.text, 0.12f) : waiting ? p.accent.withAlpha(0.55f) : p.accent;
+                fill = hover ? funkgui::mix(p.accent, p.text, 0.12f) : p.accent;
                 ink = p.onAccent;
             }
             else
@@ -3664,13 +3323,12 @@ namespace playground::ui
             }
             c.rrect(r.x, r.y, r.w, r.h, r.h * 0.5f, fill, look == 1 ? 1.0f : 0.0f, edge);
             const funkgui::TextStyle& st = look == 0 ? chat::kSmallStrong : chat::kSmall;
-            c.text(waiting ? (label + "...").c_str() : label.c_str(), r.centreX(), c.capCentreTop(r.centreY(), st), st,
-                   waiting ? p.faint : ink, funkgui::Align::centre);
+            c.text(label, r.centreX(), c.capCentreTop(r.centreY(), st), st, ink, funkgui::Align::centre);
         };
-        button(d.primary, buttons.primary, 0);
-        button(d.secondary, buttons.secondary, buttons.primary.empty() ? 0 : 1);
-        button(d.danger, buttons.danger, 2);
-        button(d.extra, buttons.extra, 1);
+        button(d.save, "Save", 0);
+        button(d.cancel, "Cancel", 1);
+        if (chat_.hasKey)
+            button(d.remove, "Remove key", 2);
     }
 
     void Panel::openExamples()
@@ -4303,6 +3961,7 @@ namespace playground::ui
     void Panel::tick(float dt)
     {
         refresh(host_ != nullptr ? host_->nowSeconds() : 0.0);
+        syncWindowButtons();
         syncExplorer();
         // The message box follows its text, one row to eight: the conversation gives it the room.
         if (std::fabs(inputItem().desiredHeight(inputItem().box().w, kBarH) - composerH_) > 0.5f)
@@ -4413,6 +4072,7 @@ namespace playground::ui
     void Panel::draw(funkgui::Canvas& c, const funkgui::Theme& hostTheme)
     {
         const funkgui::Theme th = productTheme(hostTheme);
+        files().assist().setTheme(th);                   // the code's colours follow the theme
         const float contentW = width_ - 2.0f * kMargin;
 
         const chat::Palette pal = chat::palette(th);
@@ -4423,7 +4083,7 @@ namespace playground::ui
             const funkgui::Rect bar{ kMargin, kTopBarY, contentW, kTopBarH };
             c.rrect(bar.x, bar.y, bar.w, bar.h, 12.0f, pal.card, 1.0f, pal.cardEdge);
             const float mid = bar.centreY();
-            const float mx = bar.x + 10.0f;
+            const float mx = bar.x + 10.0f + buttonsRoom_;     // after the Standalone window's buttons
             c.rrect(mx, mid - 13.0f, 26.0f, 26.0f, 8.0f, pal.accent.withAlpha(0.16f));
             chat::drawIcon(c, chat::Icon::wave, mx + 13.0f, mid, 12.0f, pal.accent);
             c.text(product::kName, mx + 36.0f, c.capCentreTop(mid - 7.0f, chat::kStrong), chat::kStrong, pal.text);
@@ -4494,9 +4154,7 @@ namespace playground::ui
             c.disc(tx + 4.0f, ty, chat_.busy ? 4.0f : 3.5f, chat_.busy ? p.accent : funkgui::mix(p.card, p.accent, 0.75f));
             c.text("Claude", tx + 15.0f, c.capCentreTop(ty, chat::kTitle), chat::kTitle, p.text);
             const float sub = tx + 15.0f + c.textWidth("Claude", chat::kTitle) + 10.0f;
-            const float pillW = chat_.signedIn ? static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(accountItem_)]).bounds().w + 6.0f
-                                               : 0.0f;
-            const float subRoom = card_.right() - kCardPad - 3.0f * kIconButton - 16.0f - pillW - sub;
+            const float subRoom = card_.right() - kCardPad - 3.0f * kIconButton - 16.0f - sub;
             const std::string kind = !desktop_.empty()             ? "Claude Desktop calls this " + desktop_
                                    : product::kIsInstrument          ? "builds and edits your synth"
                                                                      : "builds and edits your effect";
@@ -4560,6 +4218,7 @@ namespace playground::ui
             else
                 items_[i]->draw(c, th, ring_ && focus_ == static_cast<int>(i));
         }
+        files().drawOverlays(c, th, width_, height_);    // the completion list, the signature, the hover card
         if (gui && (gui_.maxScrollY > 0.0f || gui_.maxScrollX > 0.0f))
         {
             const funkgui::Rect& a = gui_.area;
@@ -4581,10 +4240,7 @@ namespace playground::ui
         // dialog's own while it is open.
         char line[256] = {};
         if (keyOpen_)
-            std::snprintf(line, sizeof line, "%s",
-                          tab_ == DialogTab::key ? "API KEY   CMD-V PASTES IT   RETURN SAVES IT   ESCAPE CANCELS"
-                          : chat_.signedIn       ? "ACCOUNT   SIGNED IN   ESCAPE CLOSES"
-                                                 : "ACCOUNT   TAB MOVES TO THE PASSWORD   CMD-V PASTES   RETURN SIGNS IN   ESCAPE CANCELS");
+            std::snprintf(line, sizeof line, "API KEY   CMD-V PASTES IT   RETURN SAVES IT   ESCAPE CANCELS");
         else if (export_.isOpen())
             std::snprintf(line, sizeof line, "EXPORT   TAB THE NEXT FIELD   A PILL TOGGLES   ESCAPE KEEPS THE INFO AND CLOSES");
         else if (projects_.isOpen())
@@ -4679,6 +4335,7 @@ namespace playground::ui
         ring_ = false;                                   // the pointer is the affordance now
         pointer_ = { e.x, e.y };
         hasPointer_ = true;
+        windowPress_ = false;
         if (keyOpen_)
         {
             pressed_ = -1;
@@ -4712,6 +4369,27 @@ namespace playground::ui
                 reshowChat();                            // a thinking row opened or closed
         }
         dirty_ = true;
+        // The Standalone's window has no title bar: a press on the top bar where nothing is drags it instead.
+        windowPress_ = pressed_ < 0 && !e.popup && buttonsRoom_ > 0.0f && pointer_.y < kMainY;
+        if (windowPress_)
+            port_.dragWindow(e.clicks);
+    }
+
+    // ---- the Standalone window's buttons over the top bar (EditorPort::windowButtons) -------------------------------
+    float Panel::buttonsRoomNow() const
+    {
+        const WindowButtons b = port_.windowButtons();
+        if (b.width <= 0.0f)
+            return 0.0f;
+        // The buttons keep their size in window points whatever the zoom: their logical width shrinks as it grows.
+        const float zoom = host_ != nullptr ? static_cast<float>(std::max(host_->zoomPercent(), 25)) * 0.01f : 1.0f;
+        return std::ceil(b.width / zoom) + kButtonsGap;
+    }
+
+    void Panel::syncWindowButtons()
+    {
+        if (buttonsRoomNow() != buttonsRoom_)           // the buttons came or went, or the zoom changed
+            layout();
     }
 
     void Panel::pointerDrag(const funkgui::PointerEvent& e)
@@ -4732,6 +4410,10 @@ namespace playground::ui
 
     void Panel::doubleClick(const funkgui::PointerEvent& e)
     {
+        // The double-click's second press went to the window (dragWindow), which may have zoomed or minimised since:
+        // its release, and so this, comes where the pointer now is over the panel, and is no click of the panel's.
+        if (windowPress_)
+            return;
         if (keyOpen_)
             return;
         if (export_.isOpen())
@@ -4865,12 +4547,8 @@ namespace playground::ui
         if (keyOpen_)
         {
             const KeyDialog d = keyDialog();
-            const DialogButtons b = dialogButtons();
-            const bool button = (!b.primary.empty() && d.primary.contains(pointer_))
-                             || (!b.secondary.empty() && d.secondary.contains(pointer_))
-                             || (!b.danger.empty() && d.danger.contains(pointer_))
-                             || (!b.extra.empty() && d.extra.contains(pointer_)) || d.accountTab.contains(pointer_)
-                             || d.keyTab.contains(pointer_);
+            const bool button = d.save.contains(pointer_) || d.cancel.contains(pointer_)
+                             || (chat_.hasKey && d.remove.contains(pointer_));
             return button ? funkgui::Cursor::pointingHand : funkgui::Cursor::normal;
         }
         if (export_.isOpen())
@@ -4884,95 +4562,47 @@ namespace playground::ui
     // ---- accessibility ------------------------------------------------------------------------------------------------
     namespace
     {
-        // The access dialog's ids, past every item's.
+        // The key dialog's ids, past every item's.
         constexpr uint32_t kKeyDialogId = 0x7FFF0000u;
         constexpr uint32_t kKeyFieldId = kKeyDialogId + 1, kKeySaveId = kKeyDialogId + 2,
-                           kKeyCancelId = kKeyDialogId + 3, kKeyRemoveId = kKeyDialogId + 4,
-                           kKeyExtraId = kKeyDialogId + 5, kAccountTabId = kKeyDialogId + 6,
-                           kKeyTabId = kKeyDialogId + 7, kUserFieldId = kKeyDialogId + 8,
-                           kPassFieldId = kKeyDialogId + 9;
+                           kKeyCancelId = kKeyDialogId + 3, kKeyRemoveId = kKeyDialogId + 4;
     }
 
     void Panel::accessibility(std::vector<funkgui::A11yItem>& out) const
     {
         if (keyOpen_)
         {
-            // Never the key or the password: their lengths only. The username is not a secret.
+            // Never the key: its length only.
             const KeyDialog d = keyDialog();
-            const DialogButtons b = dialogButtons();
-            const bool account = tab_ == DialogTab::account;
             funkgui::A11yItem box;
             box.id = kKeyDialogId;
             box.role = funkgui::a11yrole::group;
             box.bounds = d.box;
-            box.title = account ? "Your TestingPlayground account" : "Anthropic API key";
-            box.description = account ? (chat_.signedIn ? "Signed in as " + chat_.account
-                                                               + (chat_.credit.empty() ? std::string() : ", " + chat_.credit)
-                                                         : std::string("Claude runs on the server, charged to the account's credit"))
-                                      : std::string("Stored encrypted on this Mac, for both playground plugins");
-            if (account && chat_.signedIn && chat_.details.known)
-            {
-                const ChatAccount& info = chat_.details;
-                char spent[32];
-                std::snprintf(spent, sizeof spent, "$%.2f", info.costUsd);
-                box.description += ". This month: " + std::to_string(info.requests) + (info.requests == 1 ? " request, " : " requests, ")
-                                 + spent + " spent, " + countText(info.inputTokens) + " tokens in, "
-                                 + countText(info.outputTokens) + " out. Signed in " + shortDate(info.since) + ", until "
-                                 + shortDate(info.expires);
-            }
+            box.title = "Anthropic API key";
+            box.description = "Stored encrypted on this Mac, for both playground plugins";
             out.push_back(box);
-            const auto tab = [&](uint32_t id, const funkgui::Rect& r, const char* title, bool chosen) {
-                funkgui::A11yItem t;
-                t.id = id;
-                t.parent = kKeyDialogId;
-                t.role = funkgui::A11yRole::toggleButton;
-                t.bounds = r;
-                t.title = title;
-                t.checkable = true;
-                t.checked = chosen;
-                out.push_back(std::move(t));
+            funkgui::A11yItem field;
+            field.id = kKeyFieldId;
+            field.parent = kKeyDialogId;
+            field.role = funkgui::a11yrole::editableText;
+            field.bounds = d.field;
+            field.title = "Key";
+            field.value = keyEdit_.buffer.empty() ? "empty" : std::to_string(keyEdit_.buffer.size()) + " characters";
+            field.help = keyWhy_.empty() ? "Command V pastes it" : keyWhy_;
+            out.push_back(std::move(field));
+            const auto button = [&](uint32_t id, const funkgui::Rect& r, const char* title) {
+                funkgui::A11yItem b;
+                b.id = id;
+                b.parent = kKeyDialogId;
+                b.role = funkgui::A11yRole::button;
+                b.bounds = r;
+                b.title = title;
+                out.push_back(std::move(b));
             };
-            tab(kAccountTabId, d.accountTab, "Account", account);
-            tab(kKeyTabId, d.keyTab, "API key", !account);
-            const auto field = [&](uint32_t id, const funkgui::Rect& r, const char* title, std::string value,
-                                   std::string help) {
-                funkgui::A11yItem f;
-                f.id = id;
-                f.parent = kKeyDialogId;
-                f.role = funkgui::a11yrole::editableText;
-                f.bounds = r;
-                f.title = title;
-                f.value = std::move(value);
-                f.help = keyWhy_.empty() ? std::move(help) : keyWhy_;
-                out.push_back(std::move(f));
-            };
-            const auto length = [](const std::string& t) {
-                return t.empty() ? std::string("empty") : std::to_string(t.size()) + " characters";
-            };
-            if (!account)
-                field(kKeyFieldId, d.field, "Key", length(keyEdit_.buffer), "Command V pastes it");
-            else if (!chat_.signedIn)
-            {
-                field(kUserFieldId, d.user, "Username", userEdit_.buffer.empty() ? "empty" : userEdit_.buffer, "");
-                field(kPassFieldId, d.pass, "Password", length(passEdit_.buffer), "Command V pastes it");
-            }
-            const auto button = [&](uint32_t id, const funkgui::Rect& r, const std::string& title) {
-                if (title.empty())
-                    return;
-                funkgui::A11yItem a;
-                a.id = id;
-                a.parent = kKeyDialogId;
-                a.role = funkgui::A11yRole::button;
-                a.bounds = r;
-                a.title = title == "Remove key" ? std::string("Remove the stored key")
-                        : title == "Signing in" ? std::string("Signing in")
-                                                : title;
-                out.push_back(std::move(a));
-            };
-            button(kKeySaveId, d.primary, b.primary);
-            button(kKeyCancelId, d.secondary, b.secondary);
-            button(kKeyRemoveId, d.danger, b.danger);
-            button(kKeyExtraId, d.extra, b.extra);
+            button(kKeySaveId, d.save, "Save");
+            button(kKeyCancelId, d.cancel, "Cancel");
+            if (chat_.hasKey)
+                button(kKeyRemoveId, d.remove, "Remove the stored key");
             return;
         }
         if (export_.isOpen())
@@ -5005,9 +4635,6 @@ namespace playground::ui
         r ^= (projects_.isOpen() ? 0x9E3779B1u : 0u) ^ (projects_.revision() * 0x165667B1u);
         r ^= (export_.isOpen() ? 0x85EBCA77u : 0u) ^ (export_.revision() * 0xC2B2AE3Du);
         r |= (chat_.ready() ? 1u : 0u) << 18;
-        r ^= (tab_ == DialogTab::account ? 0x6A09E667u : 0u) ^ (chat_.signedIn ? 0xBB67AE85u : 0u)
-           ^ (chat_.hasKey ? 0x3C6EF372u : 0u) ^ (chat_.signingIn || awaitingSignIn_ ? 0xA54FF53Au : 0u)
-           ^ (chat_.useAccount ? 0x510E527Fu : 0u);
         static_assert(kMaxDisplays <= 32, "the displays' mask");
         uint32_t displays = 0;                                // the displays shown, one bit each, mixed in
         for (int d = 0; d < kMaxDisplays; ++d)
@@ -5030,21 +4657,12 @@ namespace playground::ui
             return;
         if (keyOpen_)
         {
-            const DialogButtons b = dialogButtons();
             if (id == kKeySaveId)
-                dialogAction(b.primary);
+                saveKeyFromDialog();
             else if (id == kKeyCancelId)
-                dialogAction(b.secondary);
-            else if (id == kKeyRemoveId)
-                dialogAction(b.danger);
-            else if (id == kKeyExtraId)
-                dialogAction(b.extra);
-            else if (id == kAccountTabId && !awaitingSignIn_)
-                showTab(DialogTab::account);
-            else if (id == kKeyTabId && !awaitingSignIn_)
-                showTab(DialogTab::key);
-            else if (id == kUserFieldId || id == kPassFieldId)
-                accountField_ = id == kUserFieldId ? 0 : 1;
+                closeKeyDialog();
+            else if (id == kKeyRemoveId && chat_.hasKey)
+                removeKeyFromDialog();
             dirty_ = true;
             return;
         }

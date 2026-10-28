@@ -53,14 +53,14 @@ namespace playground::ui
 
     inline constexpr funkgui::TextStyle kStatusStyle{ 10.0f, 1.4f, 0.03f, false };
 
-    // FMinus's words, for the editor's highlighter and the chat's code blocks: C's that FMinus has, and its own (module,
-    // param, the vector types). It has no strings, and of the preprocessor only #include and #pragma: a line that starts
-    // with # is one preprocessor span.
+    // FMinus's words, for the chat's code blocks (the editor has its own highlighter, CodeAssist.h): C's that FMinus has,
+    // and its own (module, param, parallel, the vector types). It has no strings, and of the preprocessor only #include
+    // and #pragma: a line that starts with # is one preprocessor span.
     inline funkgui::text::KeywordRules fminusRules()
     {
         funkgui::text::KeywordRules r;
-        r.keywords = { "break", "const", "continue", "else", "false", "for", "if", "module", "param", "restrict",
-                       "return", "sizeof", "this", "true", "while" };
+        r.keywords = { "break", "const", "continue", "else", "false", "for", "if", "module", "param", "parallel",
+                       "restrict", "return", "sizeof", "this", "true", "while" };
         r.types = { "bool", "float", "float2", "float4", "float8", "int", "poly", "void" };
         r.lineComment = "//";
         r.blockOpen = "/*";

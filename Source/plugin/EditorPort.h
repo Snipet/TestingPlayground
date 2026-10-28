@@ -12,6 +12,8 @@
 //   compiling()       a run is waiting or compiling
 //   status()          the last compile's outcome: FMinus's messages, the dials, the time (CompileStatus)
 //   statusRevision()  bumps with each compile that finishes
+//   check()           the editor's check while typing: Patch::check of `files` on the compiler's thread
+//                     (Compiler::check), nothing played; checkStatus() its outcome (CheckStatus::revision bumps)
 //   running()         the files of the program that plays (none before the first compiles)
 //   controls()        the dials of the program that plays
 //   panel()           its interface: a .gui file's (GuiSpec.h), or how its #pragma panel lines lay its dials out
@@ -23,6 +25,8 @@
 //   meters()          the last block's levels and the program's taps, for the panel's displays (Engine::Meters); false
 //                     while the audio thread publishes (keep the last)
 //   scope()           the last n samples of the input or the output (Engine::scope)
+//   addMeterReader()  meters() and scope() are measured only while someone reads them (Engine::readers): a Panel adds
+//   removeMeterReader() itself in its constructor and removes itself in its destructor; meterReaders() how many now
 //   load()            the audio thread's busiest recent block, as a share of its time (Engine::load)
 //   alerts()          the output guard's alerts of the last two seconds (Engine::Alert bits)
 //   projects()        the projects saved on this Mac (ProjectStore.h), by name: each a program and its dials, kept as
@@ -48,6 +52,7 @@
 //   importProject()   a .zip or a .fmpack exported by this plugin, added as a new project (its name, or "<name> 2"); it is
 //                     not opened
 //   chat()            the chat with Claude (ChatPort.h)
+//   windowButtons()   the Standalone's own window: its buttons over the top bar, their place, its drag (below)
 #pragma once
 
 #include <cctype>
@@ -160,6 +165,12 @@ namespace playground
         std::string method;                      // "xz", "zlib" or "stored" (a package's), "zip"
     };
 
+    // The Standalone window's close, minimise and zoom buttons, together (EditorPort::windowButtons).
+    struct WindowButtons
+    {
+        float width = 0.0f, height = 0.0f;       // window points; 0 x 0: none over the editor
+    };
+
     struct SavedVersion
     {
         int number = 0;
@@ -180,12 +191,17 @@ namespace playground
         virtual bool compiling() const = 0;
         virtual CompileStatus status() const = 0;
         virtual uint64_t statusRevision() const = 0;
+        virtual void check(const Sources& files) { (void)files; }
+        virtual CheckStatus checkStatus() const { return {}; }
         virtual Sources running() const = 0;
         virtual Controls controls() const = 0;
         virtual PanelSpec panel() const = 0;
         virtual uint64_t program() const = 0;
         virtual bool meters(Meters& out) const = 0;
         virtual void scope(bool input, float* out, int n) const = 0;
+        virtual void addMeterReader() = 0;
+        virtual void removeMeterReader() = 0;
+        virtual int meterReaders() const = 0;
 
         virtual float load() const = 0;
         virtual uint32_t alerts() const = 0;
@@ -238,5 +254,17 @@ namespace playground
         virtual void playNote(int note, float velocity) = 0;
         // The keyboard's wheels: the pitch wheel (`pitch`, -1..1) or the mod wheel (0..1), as MIDI's would be.
         virtual void playWheel(bool pitch, float value) = 0;
+
+        // The Standalone's own window (plugin/standalone/) draws no title bar: its close, minimise and zoom buttons sit
+        // over the top bar, which keeps them room. In a host's window none of this applies: windowButtons() is 0 x 0
+        // and the other two do nothing.
+        //   windowButtons()       the three buttons' size together, in window points (the editor's px at 100 %)
+        //   placeWindowButtons()  where the top bar keeps their room, in the editor's logical px: its left edge and its
+        //                         middle's height (the window places them there, at the editor's zoom)
+        //   dragWindow()          a press on the top bar where nothing is (`clicks` 2: a double-click's second press):
+        //                         the window drags, or zooms or minimises as the system's setting says
+        virtual WindowButtons windowButtons() const { return {}; }
+        virtual void placeWindowButtons(float x, float middle) { (void)x; (void)middle; }
+        virtual void dragWindow(int clicks) { (void)clicks; }
     };
 }

@@ -6,7 +6,8 @@
 // one-pole low-pass, and an int that tune_dials must refuse.
 //   METRICS  the named numbers: an instrument's pitch (the fundamental within 1 Hz, within 5 cents), its attack and
 //            release as the dials set them, when its voice ends, a brighter low-pass a higher centroid, a high naive
-//            saw's aliasing seen (inharmonic_db), the alerts and the CPU there; an effect's gain as its dial, its
+//            saw's aliasing seen (inharmonic_db), the alerts and the CPU there (sixteen voices, measured, at least twice
+//            the one note's; its line says the dials were held still); an effect's gain as its dial, its
 //            THD+N rising with the drive, a darker tone a lower centroid, the impulse's peak and delay, silence silent.
 //            Every metric of metrics() comes, with its unit and its words; valueText says "never" for infinity
 //   SESSION  one compile measured again gives the same numbers; a render after another (Engine::restart) the same as a
@@ -211,6 +212,10 @@ PROBE(dsp, tune)
         P.in("metrics.decay_s", at(m.values, "decay_s"), 0.45, 1.35);
         P.eq("metrics.alerts", static_cast<int64_t>(at(m.values, "alerts")), 0);
         P.ge("metrics.cpu", at(m.values, "cpu_percent"), 0.0);
+        // Sixteen voices measured at once cost more than the one note held (about sixteen times; twice is the floor).
+        P.ge("metrics.cpu16_sixteen_voices", at(m.values, "cpu16_percent"), 2.0 * at(m.values, "cpu_percent"));
+        // The CPU line says what it timed: the dials held still (every call flat), not a dial moving.
+        P.eq("metrics.cpu_says_dials_still", m.report.find("with its dials held still") != std::string::npos ? 1 : 0, 1);
         ms::Request dark = base, bright = base;
         dark.dials = { { "cutoff", 300.0f } };
         bright.dials = { { "cutoff", 6000.0f } };
@@ -256,6 +261,7 @@ PROBE(dsp, tune)
         P.eq("metrics.darker_lower_centroid",
              at(d.values, "centroid_out_hz") < 0.5 * at(d.values, "centroid_in_hz") ? 1 : 0, 1);
         P.eq("metrics.alerts", static_cast<int64_t>(at(m.values, "alerts")), 0);
+        P.eq("metrics.cpu_says_dials_still", m.report.find("with its dials held still") != std::string::npos ? 1 : 0, 1);
     }
     {
         const ms::Result all = session.measure(base);

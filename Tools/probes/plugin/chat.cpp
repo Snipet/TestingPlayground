@@ -6,7 +6,8 @@
 //            ends); MessageBuilder puts a message back together: a thinking block with its summary and signature, a
 //            text block, a tool_use block whose input streamed in pieces, the stop reason and the usage, and the live
 //            callbacks; a tool input that is not a JSON object is {} with its raw text in invalidToolInputs
-//   NOKEY    without a key a message ends at once with an error that asks for one, and nothing is sent
+//   NOKEY    without a key a message ends at once with an error that asks for one (and for nothing else), and nothing
+//            is sent
 //   TURN     with a key, a message: Claude thinks, writes program.fm (a level control) and runs it, sets its dial, and
 //            answers. The draft holds the program and it plays, the dial has the value, the conversation shows the
 //            user's message, the thinking, the answer and what Claude did; the models are /v1/models's with adaptive
@@ -15,7 +16,8 @@
 //            thinking (summarized), the effort, the system prompt cached for an hour, the automatic cache breakpoint,
 //            the sixteen tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
 //            and instructions) with their beta headers for a model that takes them, the API version and the key, and
-//            no temperature, top_p or top_k; the first message carries the plugin's state; the history is append-only
+//            no temperature, top_p or top_k; it goes to api.anthropic.com with no other credential; the first message
+//            carries the plugin's state; the history is append-only
 //            (each request's messages begin with the previous request's, unchanged, signatures included) and the
 //            tool results answer the tool calls by id
 //   CHOICE   another model and level: the next request has them; a model that takes no fallbacks and no compaction
@@ -82,7 +84,7 @@
 //            (the query, the encrypted results, the citations); a reply paused (pause_turn) goes back as it is, with
 //            no message after it, and the turn goes on; a 400 that names allowed_callers: the tools again, called
 //            directly; a 400 for an organisation without web search: the turn goes on without it, a note, the switch
-//            off; through the account it does not apply (and says why)
+//            off
 //   LIBRARY  add_library_file: the library's file as a tab of the editor, its text in the result (and seen: the next
 //            state names it without its text), a what Claude did entry; a name the library has not is an error
 //            result naming its files; the same file again is there already, not added twice
@@ -100,18 +102,12 @@
 //   STOP     a stalled stream: stop() ends the turn at once; the history ends with Claude's text so far
 //   STATE    the conversation is in the session: a second processor loading the first's state has the same entries
 //            and the same history
-//   ACCOUNT  signing in to the TestingPlayground server (a scripted one): no username sends nothing; a wrong password
-//            and a locked account (429) show the server's message, store nothing and keep the key in use; the sign-in
-//            goes to the server with the username, the password and the client, never a key. Signed in: the token is
-//            stored (encrypted), the account is in use (the one set up last), the credit is the sign-in's. A turn goes
-//            to the server with "Authorization: Bearer <token>", no x-api-key, the API version and the same betas, the
-//            models are asked of the server, and GET /account after it gives the footer's credit; neither the token nor
-//            the password is in the session or a request body. The server's 402, 502, 400 and 403 show its message and
-//            are not retried; a 529 it passes back is. A 401 forgets the token, the chat asks to sign in again, and the
-//            next message sends nothing. Using the key again sends to Anthropic with it; a key saved while signed in
-//            is used, and removed the account is; signing out forgets the token, tells the server (with that token)
-//            and leaves the key in use. <ENV_PREFIX>SERVER_URL moves the server, for https:// or http:// on this Mac
-//            only
+//   OLD      what a build from before 2026-10-28 kept of a sign-in to a server (account-token.bin; chat.json's
+//            "account" and "use", the account chosen), the key stored too: a processor made then deletes the token's
+//            file and the two fields, keeps the choice, and the chat uses the key; a session saved by such a build (a
+//            note of the sign-in, a turn through it) loads as any other, and the next turn goes to api.anthropic.com
+//            with the key and no other credential (the models too), the history valid; the key removed, a message
+//            asks for the key (and for nothing else) and sends nothing
 //   NEW      newChat forgets the conversation
 #include "Probe.h"
 
@@ -449,6 +445,7 @@ PROBE(plugin, chat)
         agent.waitIdle();
         const pg::ChatState s = agent.chatState();
         P.eq("nokey.asks_for_key", has(lastText(s, pg::ChatEntry::Kind::error), "API key") ? 1 : 0, 1);
+        P.eq("nokey.key_only", has(lastText(s, pg::ChatEntry::Kind::error), "ign in") ? 1 : 0, 0);
         P.eq("nokey.nothing_sent", static_cast<int64_t>(script->paths.size()), 0);
         P.eq("nokey.idle", s.busy ? 1 : 0, 0);
         agent.newChat();
@@ -541,6 +538,8 @@ PROBE(plugin, chat)
              script->header(1, "anthropic-beta") == "server-side-fallback-2026-07-01,compact-2026-01-12" ? 1 : 0, 1);
         P.eq("request.version", script->header(1, "anthropic-version") == claude::kApiVersion ? 1 : 0, 1);
         P.eq("request.key", script->header(1, "x-api-key") == fake::fakeKey() ? 1 : 0, 1);
+        P.eq("request.host", script->hosts.size() > 1 && script->hosts[1] == claude::kHost
+                                 && script->header(1, "authorization").empty() ? 1 : 0, 1);
         P.eq("request.no_sampling", b0.hasProperty("temperature") || b0.hasProperty("top_p") || b0.hasProperty("top_k") ? 1 : 0, 0);
         const juce::Array<juce::var> m0 = messagesOf(script->body(0));
         const juce::Array<juce::var> first = arr(m0.isEmpty() ? juce::var() : m0[0].getProperty("content", {}));
@@ -1612,7 +1611,7 @@ PROBE(plugin, chat)
         agent.waitIdle();
         P.eq("web.off_no_tools", toolsOf(at).size() == 16 && webTool(at, "web_search").isVoid() ? 1 : 0, 1);
         agent.setWeb(true);
-        P.eq("web.on", agent.chatState().web && agent.chatState().webBlocked.empty() ? 1 : 0, 1);
+        P.eq("web.on", agent.chatState().web ? 1 : 0, 1);
         const juce::var result = input({ { "type", "web_search_tool_result" },
                                          { "tool_use_id", "srvtoolu_w1" },
                                          { "content", juce::Array<juce::var>{ input({ { "type", "web_search_result" },
@@ -1974,181 +1973,70 @@ PROBE(plugin, chat)
         P.eq("state.history", history(agent) == history(second.chatAgent()) ? 1 : 0, 1);
     }
 
-    // ---- ACCOUNT -------------------------------------------------------------------------------------------------------
+    // ---- OLD -----------------------------------------------------------------------------------------------------------
     {
-        const std::string server = claude::serverHost();
-        const std::string token = fake::fakeToken(), password = fake::fakePassword();
-        const auto lastError = [&] { return lastText(agent.chatState(), pg::ChatEntry::Kind::error); };
-        P.eq("account.server_default", server == claude::kServerHost ? 1 : 0, 1);
-        const std::string betaBefore = script->lastHeader("POST /v1/messages", "anthropic-beta");   // the key's last
-        P.eq("account.key_in_use", !agent.chatState().useAccount && agent.chatState().ready() ? 1 : 0, 1);
-
-        // Refused sign-ins: nothing stored, the key still in use, the server's message shown.
-        agent.signIn("  ", password);
-        P.eq("account.no_username_refused", has(agent.chatState().signInError, "username") ? 1 : 0, 1);
-        P.eq("account.no_username_nothing_sent", script->count("POST /auth/login"), 0);
-        script->logins.push_back(fake::Response::failure(401, "authentication_error", "Wrong username or password."));
-        agent.signIn("alice", password);
-        agent.waitIdle();
-        pg::ChatState s = agent.chatState();
-        P.eq("account.wrong_password_says", s.signInError == "Wrong username or password." ? 1 : 0, 1);
-        P.eq("account.wrong_password_not_signed_in", s.signedIn || pg::chatstore::hasToken() ? 1 : 0, 0);
-        P.eq("account.wrong_password_key_kept", !s.useAccount && s.ready() ? 1 : 0, 1);
-        P.eq("account.login_host", script->lastHost("POST /auth/login") == server ? 1 : 0, 1);
-        P.eq("account.login_no_key", script->lastHas("POST /auth/login", "x-api-key") ? 1 : 0, 0);
+        // What a build from before 2026-10-28 left: a sign-in's token (sealed as the key's file is: a copy of it stands
+        // in), and chat.json's "account" and "use" with the account chosen.
+        const juce::File tokenFile = keys.getChildFile("account-token.bin");
+        const juce::File chatJson = keys.getChildFile("chat.json");
+        P.eq("old.setup", keys.getChildFile("anthropic-key.bin").copyFileTo(tokenFile) ? 1 : 0, 1);
         {
-            const juce::var login = claude::parseJson(script->loginBodies.back());
-            P.eq("account.login_body", str(login, "username") == "alice" && str(login, "password") == password
-                                           && !str(login, "client").empty() ? 1 : 0, 1);
+            juce::var json = juce::JSON::parse(chatJson);   // the choice the sections above stored
+            if (json.getDynamicObject() == nullptr)
+                json = juce::var(new juce::DynamicObject());
+            json.getDynamicObject()->setProperty("account", "alice");
+            json.getDynamicObject()->setProperty("use", "account");
+            chatJson.replaceWithText(juce::JSON::toString(json));
         }
-        script->logins.push_back(fake::Response::failure(429, "rate_limit_error", "Too many wrong passwords. Try again in 15 minutes.", 900));
-        agent.signIn("alice", password);
-        agent.waitIdle();
-        P.eq("account.locked_says", has(agent.chatState().signInError, "Try again in 15 minutes") ? 1 : 0, 1);
-        P.eq("account.locked_not_retried", script->count("POST /auth/login"), 2);
+        const std::string model = pg::chatstore::loadChoice().model;
+        pg::Processor older;
+        pg::ChatAgent& a = older.chatAgent();
+        const std::string json = chatJson.loadFileAsString().toStdString();
+        P.eq("old.token_deleted", tokenFile.exists() ? 1 : 0, 0);
+        P.eq("old.fields_deleted", has(json, "\"account\"") || has(json, "\"use\"") || has(json, "alice") ? 1 : 0, 0);
+        P.eq("old.choice_kept", !model.empty() && pg::chatstore::loadChoice().model == model ? 1 : 0, 1);
+        P.eq("old.key_ready", a.chatState().ready() ? 1 : 0, 1);
 
-        // Signed in: the token stored (encrypted), the account in use, the credit from the sign-in's answer.
-        agent.signIn("alice", password);
-        agent.waitIdle();
-        s = agent.chatState();
-        P.eq("account.signed_in", s.signedIn && s.signInError.empty() && !s.signingIn ? 1 : 0, 1);
-        P.eq("account.token_stored", pg::chatstore::loadToken().value_or("") == token ? 1 : 0, 1);
-        P.eq("account.username", s.account == "alice" ? 1 : 0, 1);
-        P.eq("account.in_use", s.useAccount && s.ready() ? 1 : 0, 1);
-        P.eq("account.credit", s.credit == "$5.00 credit left" ? 1 : 0, 1);
-        P.eq("account.note", has(lastText(s, pg::ChatEntry::Kind::note), "Signed in as alice") ? 1 : 0, 1);
-        P.eq("account.choice_stored", pg::chatstore::loadAccount().useAccount && pg::chatstore::loadAccount().username == "alice" ? 1 : 0, 1);
-
-        // A turn through the server: the same request, to the server, with the token as a bearer and no key; the
-        // models asked of the server again; the credit asked for after the turn, for the footer.
-        const int modelsBefore = script->count("GET /v1/models?limit=100");
-        script->add(fake::Response::ok(fake::Sse().start().text("Through the server.").end()));
-        const int before = script->postCount();
-        agent.send("hello through the server");
-        agent.waitIdle();
-        s = agent.chatState();
-        P.eq("account.turn_answered", lastText(s, pg::ChatEntry::Kind::assistant) == "Through the server." ? 1 : 0, 1);
-        P.eq("account.turn_one_request", script->postCount() - before, 1);
-        P.eq("account.turn_host", script->lastHost("POST /v1/messages") == server ? 1 : 0, 1);
-        P.eq("account.turn_bearer", script->lastHeader("POST /v1/messages", "authorization") == "Bearer " + token ? 1 : 0, 1);
-        P.eq("account.turn_no_key", script->lastHas("POST /v1/messages", "x-api-key") ? 1 : 0, 0);
-        P.eq("account.turn_version", script->lastHeader("POST /v1/messages", "anthropic-version") == claude::kApiVersion ? 1 : 0, 1);
-        P.eq("account.turn_beta_kept", !betaBefore.empty()
-                                           && script->lastHeader("POST /v1/messages", "anthropic-beta") == betaBefore ? 1 : 0, 1);
-        P.eq("account.models_from_server", script->count("GET /v1/models?limit=100") == modelsBefore + 1
-                                               && script->lastHost("GET /v1/models?limit=100") == server
-                                               && script->lastHeader("GET /v1/models?limit=100", "authorization") == "Bearer " + token ? 1 : 0, 1);
-        P.eq("account.credit_asked", script->lastHost("GET /account") == server
-                                         && script->lastHeader("GET /account", "authorization") == "Bearer " + token ? 1 : 0, 1);
-        P.eq("account.credit_after_turn", s.credit == "$4.50 credit left" ? 1 : 0, 1);
-        P.eq("account.body_unchanged", claude::parseJson(script->body(script->postCount() - 1)).hasProperty("metadata") ? 1 : 0, 0);
-        const std::string session = agent.saveState();
-        P.eq("account.session_no_token", has(session, token) || has(session, password) ? 1 : 0, 0);
-        bool leaked = false;
-        for (const std::string& b : agent.requestsSent())
-            leaked = leaked || has(b, token) || has(b, password);
-        P.eq("account.requests_no_secrets", leaked ? 1 : 0, 0);
-
-        // The server's own refusals: its message as it is, not asked again.
-        const struct
+        // A session saved by such a build: the sign-in's note, a turn through the server.
+        a.loadState(R"({"version":1,"prompt":"0","messages":[)"
+                    R"({"role":"user","content":[{"type":"text","text":"hello through the server"}]},)"
+                    R"({"role":"assistant","content":[{"type":"text","text":"Through the server."}]}],"entries":[)"
+                    R"({"k":"note","t":"Signed in as alice: the chat goes through the TestingPlayground server, charged to your account ($5.00 credit left)."},)"
+                    R"({"k":"user","t":"hello through the server"},{"k":"assistant","t":"Through the server."}]})");
+        P.eq("old.session_loads", static_cast<int64_t>(a.chatState().entries.size()), 3);
+        auto oldScript = std::make_shared<fake::Script>();
+        oldScript->models = script->models;
+        a.setTransport(std::make_unique<fake::Transport>(oldScript));
+        oldScript->add(fake::Response::ok(fake::Sse().start().text("With your key.").end()));
+        a.send("and now?");
+        a.waitIdle();
+        const pg::ChatState s = a.chatState();
+        P.eq("old.turn_answered", lastText(s, pg::ChatEntry::Kind::assistant) == "With your key." ? 1 : 0, 1);
+        P.eq("old.turn_with_key", oldScript->lastHost("POST /v1/messages") == claude::kHost
+                                      && oldScript->lastHeader("POST /v1/messages", "x-api-key") == fake::fakeKey()
+                                      && !oldScript->lastHas("POST /v1/messages", "authorization") ? 1 : 0, 1);
+        P.eq("old.models_with_key", oldScript->lastHost("GET /v1/models?limit=100") == claude::kHost
+                                        && oldScript->lastHeader("GET /v1/models?limit=100", "x-api-key") == fake::fakeKey() ? 1 : 0, 1);
         {
-            const char* name;
-            int status;
-            const char* type;
-            const char* message;
-        } refusals[] = { { "credit", 402, "billing_error", "Your credit has run out. Ask the admin for more." },
-                         { "key_refused", 502, "api_error", "The server's Claude API key was refused. Tell the admin." },
-                         { "no_price", 400, "invalid_request_error", "claude-opus-5-5 is not available through this server." },
-                         { "disabled", 403, "permission_error", "This account is disabled." } };
-        for (const auto& r : refusals)
-        {
-            script->add(fake::Response::failure(r.status, r.type, r.message));
-            const int n = script->postCount();
-            agent.send(std::string("refused ") + r.name);
-            agent.waitIdle();
-            P.eq(std::string("account.") + r.name + "_says", lastError() == r.message ? 1 : 0, 1);
-            P.eq(std::string("account.") + r.name + "_not_retried", script->postCount() - n, 1);
-            P.eq(std::string("account.") + r.name + "_still_signed_in", agent.chatState().signedIn ? 1 : 0, 1);
+            const juce::Array<juce::var> m = messagesOf(oldScript->body(0));
+            P.eq("old.history", m.size() == 3 && alternates(m) && says(m[0], "hello through the server") ? 1 : 0, 1);
         }
-        // Anthropic's overload, passed back by the server, is asked again.
-        script->add(fake::Response::failure(529, "overloaded_error", "Overloaded", 1));
-        script->add(fake::Response::ok(fake::Sse().start().text("Back through the server.").end()));
-        {
-            const int n = script->postCount();
-            agent.send("busy?");
-            agent.waitIdle();
-            P.eq("account.overload_retried", script->postCount() - n, 2);
-        }
+        bool other = false;
+        for (const std::string& path : oldScript->paths)
+            other = other || (path != "POST /v1/messages" && path != "GET /v1/models?limit=100");
+        for (const std::string& host : oldScript->hosts)
+            other = other || host != claude::kHost;
+        P.eq("old.nothing_else_asked", other ? 1 : 0, 0);
 
-        // A 401: the sign-in is over. Its token goes, the chat says to sign in again, and the next message sends
-        // nothing until the user does.
-        script->add(fake::Response::failure(401, "authentication_error", "Your sign-in has expired. Sign in again."));
-        agent.send("expired?");
-        agent.waitIdle();
-        s = agent.chatState();
-        P.eq("account.expired_says", lastError() == "Your sign-in has expired. Sign in again." ? 1 : 0, 1);
-        P.eq("account.expired_signed_out", s.signedIn || pg::chatstore::hasToken() ? 1 : 0, 0);
-        P.eq("account.expired_problem", s.accountProblem == "Your sign-in has expired. Sign in again." ? 1 : 0, 1);
-        P.eq("account.expired_not_ready", s.useAccount && !s.ready() ? 1 : 0, 1);
-        {
-            const int n = static_cast<int>(script->paths.size());
-            agent.send("anyone?");
-            agent.waitIdle();
-            P.eq("account.expired_asks_sign_in", has(lastError(), "Sign in again") ? 1 : 0, 1);
-            P.eq("account.expired_nothing_sent", static_cast<int>(script->paths.size()) - n, 0);
-        }
-
-        // Use the key instead (it is still stored), and back: the request goes to Anthropic with the key.
-        agent.useAccount(false);
-        script->add(fake::Response::ok(fake::Sse().start().text("With the key.").end()));
-        const int accountAsks = script->count("GET /account");
-        agent.send("with the key");
-        agent.waitIdle();
-        P.eq("account.key_again_host", script->lastHost("POST /v1/messages") == claude::kHost ? 1 : 0, 1);
-        P.eq("account.key_again_header", script->lastHeader("POST /v1/messages", "x-api-key") == fake::fakeKey()
-                                             && !script->lastHas("POST /v1/messages", "authorization") ? 1 : 0, 1);
-        P.eq("account.key_no_credit_asked", script->count("GET /account") == accountAsks ? 1 : 0, 1);
-
-        // Signed in again (the one set up last is used); a key saved then is used instead; removed, the account is.
-        agent.signIn("alice", password);
-        agent.waitIdle();
-        P.eq("account.again_in_use", agent.chatState().useAccount && agent.chatState().ready() ? 1 : 0, 1);
-        agent.saveKey(fake::fakeKey(), why);
-        P.eq("account.key_saved_wins", !agent.chatState().useAccount ? 1 : 0, 1);
-        agent.forgetKey();
-        P.eq("account.key_removed_account_left", agent.chatState().useAccount && agent.chatState().ready() ? 1 : 0, 1);
-        agent.saveKey(fake::fakeKey(), why);
-
-        // Signing out: the token forgotten here, the server told (with that token), the key in use.
-        agent.useAccount(true);
-        const int logouts = script->count("POST /auth/logout");
-        agent.signOut();
-        agent.waitIdle();
-        s = agent.chatState();
-        P.eq("account.signed_out", s.signedIn || pg::chatstore::hasToken() ? 1 : 0, 0);
-        P.eq("account.logout_sent", script->count("POST /auth/logout") == logouts + 1
-                                        && script->lastHost("POST /auth/logout") == server
-                                        && script->lastHeader("POST /auth/logout", "authorization") == "Bearer " + token ? 1 : 0, 1);
-        P.eq("account.signed_out_key_used", !s.useAccount && s.ready() ? 1 : 0, 1);
-        P.eq("account.username_kept", s.account == "alice" ? 1 : 0, 1);
-
-        // The server's address: <ENV_PREFIX>SERVER_URL, for an https:// address or http:// on this Mac only.
-        const std::string var = std::string(pg::product::kEnvPrefix) + "SERVER_URL";
-        ::setenv(var.c_str(), "http://localhost:8787/", 1);
-        P.eq("account.url_local", claude::serverHost() == "http://localhost:8787" ? 1 : 0, 1);
-        ::setenv(var.c_str(), "https://tp.example.workers.dev", 1);
-        P.eq("account.url_https", claude::serverHost() == "https://tp.example.workers.dev" ? 1 : 0, 1);
-        ::setenv(var.c_str(), "http://tp.example.com", 1);
-        P.eq("account.url_plain_http_ignored", claude::serverHost() == claude::kServerHost ? 1 : 0, 1);
-        ::setenv(var.c_str(), "ftp://localhost", 1);
-        P.eq("account.url_other_ignored", claude::serverHost() == claude::kServerHost ? 1 : 0, 1);
-        ::setenv(var.c_str(), "http://localhost:8787", 1);
-        agent.signIn("alice", password);
-        agent.waitIdle();
-        P.eq("account.url_used", script->lastHost("POST /auth/login") == "http://localhost:8787" ? 1 : 0, 1);
-        agent.signOut();
-        agent.waitIdle();
-        ::unsetenv(var.c_str());
+        // The key removed: the chat asks for the key, and for nothing else, and sends nothing.
+        a.forgetKey();
+        const std::size_t n = oldScript->paths.size();
+        a.send("anyone?");
+        a.waitIdle();
+        const std::string error = lastText(a.chatState(), pg::ChatEntry::Kind::error);
+        P.eq("old.no_key_asks_for_key", has(error, "API key") && !has(error, "ign in") ? 1 : 0, 1);
+        P.eq("old.no_key_nothing_sent", static_cast<int64_t>(oldScript->paths.size() - n), 0);
+        P.eq("old.saved_again", a.saveKey(fake::fakeKey(), why) ? 1 : 0, 1);
     }
 
     // ---- NEW -----------------------------------------------------------------------------------------------------------

@@ -1,7 +1,8 @@
 // lfo.fm: a low-frequency oscillator: sine, triangle, saw, square, sample and hold.
 //
 // -1 to 1. Every shape reads the same phase, at an offset you choose (0.25: a quarter cycle on, for a second output
-// in quadrature, or the other side of a stereo chorus); the random one steps once a cycle.
+// in quadrature, or the other side of a stereo chorus); the random one steps once a cycle. The sine is a polynomial,
+// within 0.0011 of sinf's (no LFO's motion shows it) and far cheaper; an audio-rate sine keeps sinf (osc.fm).
 //
 //   Lfo lfo;                       a field of your module
 //   lfo.advance(hz / rate);        once a sample (or lfo.advance(hz * n / rate) once a call, for a slow one)
@@ -64,7 +65,10 @@ module Lfo
 
     float sine(float offset)
     {
-        return sinf(6.28318531f * at(offset));
+        // sin(2 pi p) is -sin(pi x) for x = 2p - 1: a parabola through its zeros and peaks, then bent toward it.
+        const float x = 2 * at(offset) - 1;
+        const float y = 4 * x * (1 - fabsf(x));
+        return -(y + 0.225f * y * (fabsf(y) - 1));
     }
 
     float triangle(float offset)

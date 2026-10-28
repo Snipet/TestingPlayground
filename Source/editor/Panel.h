@@ -24,8 +24,9 @@
 //             it, Escape cancels), the + adds a file (its name being edited), a tab's x closes its file (asking first
 //             when it has text). A tab whose file the last run's errors name has a mark before its name
 //   editor    a funkgui::TextEditor for each file, the shown file's drawn (the processor keeps the files and the tab:
-//             EditorPort::draft), FMinus's words highlighted; a mark in the gutter on each line of the shown file the
-//             last run's errors name
+//             EditorPort::draft), made a code editor by CodeAssist.h: FMinus highlighted, the problems' squiggles and
+//             marks (RUN's, and a check while typing), completion, signature help, hover cards, Format Document, the
+//             find bar, the line commands, go to definition, and a status line under it
 //   problems  the last run's messages, a line each (the first four, and how many more), each with its file; a click
 //             on one with a line number shows its file and puts the caret there
 //   dials     the running program's parameters, P1 to P32 (a funkgui::Dial each, labelled with the parameter's name
@@ -40,18 +41,14 @@
 //   view      the toolbar's CODE and PANEL cells: PANEL gives the interface the whole left column (the tabs, the editor
 //             and the problems go), CODE brings the editor back; the session keeps the choice (EditorPort::panelView)
 //   chat      at the right, a rounded card set apart from the square panel (ChatStyle.h): its header (the title, a new
-//             chat (asking first), access: the account or the API key), the conversation (ChatView.h: bubbles, light markdown, thinking rows,
+//             chat (asking first), the API key), the conversation (ChatView.h: bubbles, light markdown, thinking rows,
 //             cards of what Claude did, code blocks with Copy, an empty chat's suggestions), the message box that grows
 //             with its text (Return sends it, Shift-Return breaks the line) with the model and thinking pills (menus)
 //             and the round send-or-stop button in its bar (ChatItems.h), and the line under it (what Claude is doing,
-//             else the last reply's tokens, and through the account the credit left)
-//   access    a dialog over the panel with two tabs, the one in use marked with a dot. ACCOUNT: signed out, the
-//             username and a masked password (Tab moves between them, Return signs in, Cmd-V pastes) and Sign in,
-//             which waits for the server and then closes, or says why not; signed in, who and the credit left, and
-//             Sign out. API KEY: a masked field for an Anthropic API key (Cmd-V pastes), Save and, when a key is stored,
-//             Remove key. Each tab whose access is stored but not in use offers to use it (Use account, Use this key).
-//             It opens from the header's key, the empty chat's buttons (Sign in, Use an API key), and when a message
-//             is sent before the chat can send it (the message goes once it can)
+//             else the last reply's tokens)
+//   key       a dialog over the panel for the Anthropic API key: a masked field (Cmd-V pastes), Save, Cancel and, when a
+//             key is stored, Remove key. It opens from the header's key, the empty chat's button, and when a message
+//             is sent before any key is stored (the message goes once a key is saved)
 //   footer    the spec line of the control under the hand (or focused, or last touched), and the ZOOM cells
 //
 // Keys go to a text field while it has the caret (the editor: Tab indents there; the chat's message box and its
@@ -113,6 +110,7 @@ namespace playground::ui
     class FilesItem;                                     // the files' tabs and editors (Panel.cpp)
     class ChatView;                                      // the chat's conversation (ChatView.h)
     class InputItem;                                     // the chat's message box (ChatItems.h)
+    class CodeAssist;                                    // the editor's language features (CodeAssist.h)
     class DisplayItem;                                   // a program's display (DisplayItem.h)
     class GuiControlItem;                                // a .gui file's control (GuiItems.h)
 
@@ -124,7 +122,8 @@ namespace playground::ui
     inline constexpr funkgui::Tag kHeaderTextTag = funkgui::tags::firstProduct;       // name, kind and version
     inline constexpr funkgui::Tag kStatusTag = funkgui::tags::firstProduct + 1;       // the toolbar's status
     inline constexpr funkgui::Tag kProblemTag = funkgui::tags::firstProduct + 2;      // the problems' lines
-    inline constexpr funkgui::Tag kMarkTag = funkgui::tags::firstProduct + 3;         // an error's mark in the gutter
+    inline constexpr funkgui::Tag kMarkTag = funkgui::tags::firstProduct + 3;         // unused: the editor's line marks
+                                                                                      // (TextEditor, EDIT_MARK) show errors
     inline constexpr funkgui::Tag kTabTag = funkgui::tags::firstProduct + 4;          // the files' tabs
     inline constexpr funkgui::Tag kChatTag = funkgui::tags::firstProduct + 5;         // the chat's own text
     inline constexpr funkgui::Tag kKeyDialogTag = funkgui::tags::firstProduct + 6;    // the key dialog
@@ -139,6 +138,7 @@ namespace playground::ui
         std::string file;                                // the file it is in ("program.fm")
         int line = 0, column = 0;                        // 1-based; 0: no place (the plugin's own message)
         bool error = true;                               // else a note
+        bool warning = false;                            // a warning (not an error)
         std::string text;                                // the message, without its file and place
     };
 
@@ -162,6 +162,7 @@ namespace playground::ui
 
         // For probes.
         funkgui::TextEditor& editor() noexcept;         // the shown file's
+        CodeAssist& codeAssist() noexcept;               // its completion, hover, find bar, problems (CodeAssist.h)
         int fileCount() const;
         std::string fileName(int i) const;
         int activeFile() const;
@@ -252,22 +253,15 @@ namespace playground::ui
         void setChatOpen(bool open);
         funkgui::Point centreOfChatToggle() const;       // the header's chevron, or the rail's button
         bool chatUnread() const noexcept { return unread_; }   // folded, Claude has written since
-        std::optional<funkgui::Point> centreOfAccount() const;        // the header's account pill, while signed in
         ChatView& chatView();                            // the conversation (its own probe hooks)
         const ChatView& chatView() const;
-        // The access dialog. Its primary button is Save on the API key tab and Sign in on the account tab.
+        // The key dialog.
         bool keyDialogOpen() const noexcept { return keyOpen_; }
-        bool dialogOnAccount() const noexcept { return tab_ == DialogTab::account; }
         const std::string& keyDialogWhy() const noexcept { return keyWhy_; }
-        funkgui::Point centreOfDialogTab(bool account) const;
         funkgui::Point centreOfKeyField() const;
         funkgui::Point centreOfKeySave() const;
         funkgui::Point centreOfKeyCancel() const;
-        std::optional<funkgui::Point> centreOfKeyRemove() const;      // nullopt while no key is stored (the key tab)
-        funkgui::Point centreOfUsername() const;
-        funkgui::Point centreOfPassword() const;
-        std::optional<funkgui::Point> centreOfSignOut() const;        // the account tab, while signed in
-        std::optional<funkgui::Point> centreOfUseThis() const;        // Use account / Use this key, when offered
+        std::optional<funkgui::Point> centreOfKeyRemove() const;      // nullopt while no key is stored
 
         // funkgui::Panel
         void  attach(funkgui::HostServices&) override;
@@ -302,7 +296,20 @@ namespace playground::ui
         void  filesDragExit() override;
         void  filesDropped(const std::vector<std::string>& paths) override;
 
+        // The Standalone's window (EditorPort::windowButtons): the room the top bar keeps at its left for the window's
+        // buttons (logical px at the host's zoom; 0 in a host's window), where the product's mark then starts. A press
+        // on the top bar where nothing is drags that window (EditorPort::dragWindow).
+        float windowButtonsRoom() const noexcept { return buttonsRoom_; }
+
     private:
+        float buttonsRoomNow() const;                    // the room for the port's buttons now (layout() keeps it)
+        void syncWindowButtons();                        // each frame: a new room lays out again (layout() tells
+                                                         // the port where they go)
+        float buttonsRoom_ = 0.0f;
+        bool buttonsPlaced_ = false;                     // the port was told where they go (while they are there)
+        bool windowPress_ = false;                       // the last press went to the window (dragWindow): its
+                                                         // double-click is none of the panel's
+
         int  itemAt(funkgui::Point) const;               // the item under p, -1 for none
         bool moveFocus(int dir);
         void setFocus(int item);
@@ -338,34 +345,16 @@ namespace playground::ui
         const InputItem& inputItem() const;
         funkgui::Point centreOf(int item) const;
 
-        // The access dialog.
-        enum class DialogTab : uint8_t { account, key };
+        // The key dialog.
         struct KeyDialog
         {
-            funkgui::Rect box, accountTab, keyTab;
-            funkgui::Rect field;                         // the key tab's
-            funkgui::Rect user, pass;                    // the account tab's
-            funkgui::Rect primary, secondary;            // Save or Sign in; Cancel or Close (at the right)
-            funkgui::Rect danger, extra;                 // Remove key or Sign out; Use this key or Use account (left)
-        };
-        // What the dialog's buttons are now (empty: not shown).
-        struct DialogButtons
-        {
-            std::string primary, secondary, danger, extra;
+            funkgui::Rect box, field, save, cancel, remove;
         };
         KeyDialog keyDialog() const;                     // its places, for the panel's size
-        DialogButtons dialogButtons() const;
-        void openKeyDialog();                            // on the tab of the access in use
-        void openKeyDialog(DialogTab tab);
-        void showTab(DialogTab tab);
+        void openKeyDialog();
         void closeKeyDialog();
         void saveKeyFromDialog();
         void removeKeyFromDialog();
-        void signInFromDialog();
-        void signOutFromDialog();
-        void useFromDialog();                            // Use account / Use this key
-        void dialogAction(const std::string& label);     // a button, by what it says
-        void afterSignIn();                              // the server answered a sign-in
         bool keyDialogKey(const funkgui::KeyEvent&);
         void keyDialogPointerDown(funkgui::Point);
         void drawKeyDialog(funkgui::Canvas&, const funkgui::Theme&) const;
@@ -386,7 +375,7 @@ namespace playground::ui
         std::unique_ptr<funkgui::CellModel> zoomModel_;  // the zoom's steps (zoom_ points at it)
         void openZoom();                                 // the zoom's menu
         std::string statusShown() const;                 // the status as the card's header shows it (sentence case)
-        int newChatItem_ = -1, keyItem_ = -1, accountItem_ = -1, chatViewItem_ = -1, inputItem_ = -1;
+        int newChatItem_ = -1, keyItem_ = -1, chatViewItem_ = -1, inputItem_ = -1;
         int chatToggleItem_ = -1;                        // fold or open the chat
         bool chatOpen_ = true;
         // The explorer (Explorer.h): its item, its fold button, its card; the projects and the open one's presets it
@@ -466,8 +455,6 @@ namespace playground::ui
         float composerH_ = 0.0f;                         // the message box's height (it follows its text)
         float usageY_ = 0.0f;                            // the line under the message box
         std::string barLabels_;                          // the pills' labels when they were placed
-        std::string headerLabel_;                        // the account pill's when the header was placed
-        std::string accountLabel() const;                // the account pill's: the username, and the credit when known
 
         // The chat, as refresh() last saw it.
         uint64_t seenChat_ = 0;
@@ -477,16 +464,12 @@ namespace playground::ui
         std::string activity_;                           // the line under the message box
         std::string desktop_;                            // Claude Desktop's name for this instance, while connected
         uint32_t chatA11y_ = 0;                          // bumps when the conversation's items change
-        std::string pendingSend_;                        // a message waiting for a key or a sign-in
+        std::string pendingSend_;                        // a message waiting for a key
 
-        // The access dialog.
+        // The key dialog.
         bool keyOpen_ = false;
-        DialogTab tab_ = DialogTab::account;
         funkgui::text::LineEdit keyEdit_;
-        funkgui::text::LineEdit userEdit_, passEdit_;    // the account tab's username and password
-        int accountField_ = 0;                           // the account tab's field with the caret: 0 username, 1 password
-        bool awaitingSignIn_ = false;                    // a sign-in was sent; the server has not answered yet
-        std::string keyWhy_;                             // why the key typed, or the sign-in, was refused
+        std::string keyWhy_;                             // why the key typed was refused
         int focusBeforeKey_ = -1;
 
         funkgui::HostServices* host_ = nullptr;

@@ -58,7 +58,8 @@
 // host's blocks end. No fast-math flags: no reassociation, NaN and infinity kept as IEEE has them.
 //
 // Threads: compile(), freeze() and reset() run off the audio thread (or while it is stopped), the calls marked
-// noexcept on it.
+// noexcept on it. init and end run in flush-to-zero (fsdsp::ScopedFtz), the mode the program is compiled for, on
+// whatever thread resets or destroys it.
 // The audio thread never destroys a Patch; the Engine hands it back (Engine.h).
 #pragma once
 
@@ -68,8 +69,11 @@
 #include "dsp/Sources.h"
 
 #include <array>
+#include <atomic>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -104,6 +108,12 @@ namespace playground
         static Result compile(const Sources& files, float sampleRate);
         // A program of one file.
         static Result compile(std::string_view source, float sampleRate, std::string_view fileName = kProgramName);
+        // The editor's check while typing (Compiler::check): what compile() would say of `files`, but faster and
+        // without the code or the instances: FMinus's pass over the program as written (-O0, which finds what is
+        // wrong in the text) and the plugin's checks that the main module is there with its methods. What only the
+        // second pass finds (a method the audio thread calls that could allocate, a method declared otherwise than
+        // the plugin calls it) waits for RUN. Off the audio thread; `patch` is always null.
+        static Result check(const Sources& files);
 
         ~Patch();
         Patch(const Patch&) = delete;
@@ -151,7 +161,8 @@ namespace playground
         bool frozen() const noexcept { return active_ != nullptr; }
 
         // Control c's value (its plain value, Controls.h) in instance i, or in every instance (i < 0): what a stream
-        // reads while its buffer is null, and what a knob reads.
+        // reads while its buffer is null, and what a knob reads. As fminus::Program::setValue writes it (a relaxed
+        // store; an int's truncated, a bool's true unless 0), through the slot compile() looked up: no call, no lookup.
         void setValue(int c, float plain, int i = -1) noexcept;
         // Control c's samples for the next calls (a real control only; nullptr: it holds still at its value).
         void setStream(int c, const float* samples, int i = -1) noexcept;
@@ -199,6 +210,16 @@ namespace playground
         };
         std::vector<Tap> taps_;
         std::vector<const void*> params_;              // per control: its fminus::Program::Parameter (null: unused)
+        // Per control, where its parameter's slot is in an instance (fminus::Program::Parameter's offsets: the stream's
+        // pointer, then the value) and the value's type; `none` for a control the program does not have.
+        struct Slot
+        {
+            enum class Kind : uint8_t { none, real, integer, boolean };
+            std::size_t stream = 0, value = 0;
+            Kind kind = Kind::none;
+        };
+        std::array<Slot, kMaxControls> slots_{};
+        static void store(void* instance, const Slot& slot, float plain) noexcept;
         Sources sources_;
         float rate_ = 48000.0f;
         uint64_t program_ = 0;
@@ -219,6 +240,68 @@ namespace playground
         std::vector<std::size_t> hostFields_, sharedHostFields_;
         HostLayout hostLayout_;
     };
+
+    inline void Patch::store(void* instance, const Slot& slot, float plain) noexcept
+    {
+        char* at = static_cast<char*>(instance) + slot.value;
+        switch (slot.kind)
+        {
+            case Slot::Kind::real:
+                std::atomic_ref<float>(*static_cast<float*>(static_cast<void*>(at))).store(plain, std::memory_order_relaxed);
+                break;
+            case Slot::Kind::integer:
+            {
+                // C's conversion toward 0, clamped to an int's range, NaN as 0: as FMinus's setValue.
+                const double v = std::isnan(plain) ? 0.0 : std::fmin(std::fmax(std::trunc(static_cast<double>(plain)),
+                                                                                -2147483648.0), 2147483647.0);
+                std::atomic_ref<int32_t>(*static_cast<int32_t*>(static_cast<void*>(at))).store(static_cast<int32_t>(v),
+                                                                              std::memory_order_relaxed);
+                break;
+            }
+            case Slot::Kind::boolean:
+                std::atomic_ref<bool>(*static_cast<bool*>(static_cast<void*>(at))).store(plain != 0.0f, std::memory_order_relaxed);
+                break;
+            case Slot::Kind::none:
+                break;
+        }
+    }
+
+    inline void Patch::setValue(int c, float plain, int i) noexcept
+    {
+        if (c < 0 || c >= kMaxControls)
+            return;
+        const Slot& slot = slots_[static_cast<std::size_t>(c)];
+        if (slot.kind == Slot::Kind::none)
+            return;
+        if (i >= 0)
+        {
+            if (i < static_cast<int>(instances_.size()))
+                store(instances_[static_cast<std::size_t>(i)], slot, plain);
+            return;
+        }
+        for (void* p : instances_)
+            store(p, slot, plain);
+    }
+
+    inline void Patch::setStream(int c, const float* samples, int i) noexcept
+    {
+        if (c < 0 || c >= kMaxControls)
+            return;
+        const Slot& slot = slots_[static_cast<std::size_t>(c)];
+        if (slot.kind != Slot::Kind::real)
+            return;
+        const auto put = [&slot, samples](void* instance) {
+            std::memcpy(static_cast<char*>(instance) + slot.stream, &samples, sizeof samples);
+        };
+        if (i >= 0)
+        {
+            if (i < static_cast<int>(instances_.size()))
+                put(instances_[static_cast<std::size_t>(i)]);
+            return;
+        }
+        for (void* p : instances_)
+            put(p);
+    }
 
     // A frozen copy of a program's code (Patch::freeze): the Engine owns it while it plays, and hands it back as it
     // does a Patch.

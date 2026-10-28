@@ -32,7 +32,6 @@ namespace playground::chatstore
         juce::File overrideDir;                      // empty: the default
 
         juce::File keyFile() { return directory().getChildFile("anthropic-key.bin"); }
-        juce::File tokenFile() { return directory().getChildFile("account-token.bin"); }
         juce::File choiceFile() { return directory().getChildFile("chat.json"); }
 
         bool ensureDirectory(std::string* why)
@@ -144,22 +143,6 @@ namespace playground::chatstore
         return true;
     }
 
-    bool plausibleToken(std::string_view token)
-    {
-        constexpr std::string_view prefix = "tpb_";
-        if (token.size() < prefix.size() + 20 || token.size() > prefix.size() + 200
-            || token.substr(0, prefix.size()) != prefix)
-            return false;
-        for (const char c : token)
-        {
-            const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-'
-                         || c == '_';
-            if (!ok)
-                return false;
-        }
-        return true;
-    }
-
     namespace
     {
         // `secret` sealed into `file` (ChatStore.h: FPK1).
@@ -205,7 +188,7 @@ namespace playground::chatstore
         }
 
         // What `file` holds, opened; nothing, with why, when it is missing, damaged or made elsewhere. `what` names
-        // it in the reasons ("key", "sign-in").
+        // it in the reasons ("key").
         std::optional<std::string> unseal(const juce::File& file, const std::string& what, std::string* why)
         {
             const auto fail = [&](const std::string& reason) -> std::optional<std::string> {
@@ -296,39 +279,6 @@ namespace playground::chatstore
         return !f.existsAsFile() || f.deleteFile();
     }
 
-    bool hasToken() { return tokenFile().existsAsFile(); }
-
-    bool saveToken(std::string_view token, std::string* why)
-    {
-        if (!plausibleToken(token))
-        {
-            if (why != nullptr)
-                *why = "the server answered with something that is not a sign-in token";
-            return false;
-        }
-        return seal(tokenFile(), token, why);
-    }
-
-    std::optional<std::string> loadToken(std::string* why)
-    {
-        std::optional<std::string> token = unseal(tokenFile(), "sign-in", why);
-        if (token && !plausibleToken(*token))
-        {
-            if (why != nullptr)
-                *why = "the saved sign-in is damaged";
-            return std::nullopt;
-        }
-        if (!token && why != nullptr && why->find("another Mac") != std::string::npos)
-            *why += ": sign in again";
-        return token;
-    }
-
-    bool forgetToken()
-    {
-        const juce::File f = tokenFile();
-        return !f.existsAsFile() || f.deleteFile();
-    }
-
     Choice loadChoice()
     {
         Choice c;
@@ -355,29 +305,19 @@ namespace playground::chatstore
         });
     }
 
-    Account loadAccount()
+    void forgetOldSignIn()
     {
-        Account a;
+        const juce::File dir = directory();
+        for (const char* name : { "account-token.bin", "account-token.bin.tmp" })
+            if (const juce::File f = dir.getChildFile(name); f.existsAsFile())
+                f.deleteFile();
         const juce::var v = juce::JSON::parse(choiceFile());
-        if (auto* o = v.getDynamicObject())
-        {
-            a.username = o->getProperty("account").toString().toStdString();
-            if (o->hasProperty("use"))
-            {
-                a.useAccount = o->getProperty("use").toString() != "key";
-                return a;
-            }
-        }
-        // Never chosen (a key saved before sign-in existed): the key, when one is stored and no sign-in is.
-        a.useAccount = hasToken() || !hasKey();
-        return a;
-    }
-
-    void saveAccount(const Account& account)
-    {
-        saveChatJson([&](juce::DynamicObject& o) {
-            o.setProperty("account", juce::String::fromUTF8(account.username.c_str()));
-            o.setProperty("use", account.useAccount ? "account" : "key");
+        const auto* o = v.getDynamicObject();
+        if (o == nullptr || (!o->hasProperty("account") && !o->hasProperty("use")))
+            return;
+        saveChatJson([](juce::DynamicObject& json) {
+            json.removeProperty("account");
+            json.removeProperty("use");
         });
     }
 }

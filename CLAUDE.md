@@ -46,13 +46,14 @@ FunkPluginTemplate are carried over by hand (`Source/plugin`, `Source/editor`, t
 | Path | What | Rule |
 | --- | --- | --- |
 | `products/<key>.cmake` | a product's identity: name, kind (`effect.cmake` an effect, `synth.cmake` an instrument), version, company, codes, bundle id, environment and Objective-C prefixes | `scripts/plugin.py` reads and rewrites them; the plugin code stays unique among the user's plugins; nothing else names a product |
-| `cmake/Deps.cmake` | the pins: JUCE, bgfx, FunkGui (v0.21.0: the TextEditor, resizable Panels, custom shaders, images, several editors in one host), FMinus (a commit) | move a pin's tag, commit and version together |
+| `cmake/Deps.cmake` | the pins: JUCE, bgfx, FunkGui (v0.22.0: the TextEditor and its code-editor hooks, resizable Panels, custom shaders, images, several editors in one host), FMinus (a commit) | move a pin's tag, commit and version together |
 | `cmake/Probes.cmake` | each product's probe executable and tests (`fp_add_probes`), the lints once (`fp_add_lints`) | test names `<key>:<layer>.<name>`, labels `probe`, `<layer>`, `<key>` |
 | `Source/fsdsp/core/**` | FSynth's DSP core, vendored (`SEED.tsv`) | do not edit casually: `scripts/sync-dsp-core.sh` refuses to overwrite edits |
-| `Source/fminus/**` | `Patch` (a program compiled for the plugin: the contract, the appended calls, the instances and the module Shared's one, the taps: the main module's fields its displays read, the Host block: host.fm, built in, `Patch::setHost`); `PanelSpec` (its `#pragma panel` lines, read from the files it compiled: sections, dial styles and options, colours, displays); `GuiSpec` (a `.gui` file, the first of its files: the interface's tree, in place of the pragmas, and the tapers, units and scales it gives the dials; `fminus.gui`); `Random` (RANDOM: a program for the product's kind from the library's building blocks; `fminus.random` compiles and plays 160 seeds); `examples/<key>/*.fm`, a product's EXAMPLES (the first the default program; first line `// <Title>: ...`); `library/<n>-<category>/*.fm`, the LIBRARY, every product's (first line `// <file name>: what it is`, then its usage header; `fminus.library` measures each) | JUCE-free; FMinus only through `fminus/FMinus.h` (C++17, no LLVM), never its internals or LLVM's headers (`lint.layers`) |
+| `Source/fminus/**` | `Patch` (a program compiled for the plugin: the contract, the appended calls, the instances and the module Shared's one, the taps: the main module's fields its displays read, the Host block: host.fm, built in, `Patch::setHost`); `PanelSpec` (its `#pragma panel` lines, read from the files it compiled: sections, dial styles and options, colours, displays); `GuiSpec` (a `.gui` file, the first of its files: the interface's tree, in place of the pragmas, and the tapers, units and scales it gives the dials; `fminus.gui`); `Random` (RANDOM: a program for the product's kind from the library's building blocks; `fminus.random` compiles and plays 160 seeds); `Lang` (FMinus's language service, reusable by the chat's tools: its tokens, the program's symbols across its files, host.fm and the library, completion, signature help, hover, definitions, occurrences; `LangFormat.cpp`, the formatter, which checks that it changes no token; `fminus.lang`); `examples/<key>/*.fm`, a product's EXAMPLES (the first the default program; first line `// <Title>: ...`); `library/<n>-<category>/*.fm`, the LIBRARY, every product's (first line `// <file name>: what it is`, then its usage header; `fminus.library` measures each) | JUCE-free; FMinus only through `fminus/FMinus.h` (C++17, no LLVM), never its internals or LLVM's headers (`lint.layers`) |
 | `Source/dsp/**` | `Engine` (programs swapped by crossfade, the dials as glided streams, voices for an instrument, the output guard, the meters the displays read: `Engine::Meters` and the scope's rings), `Compiler` (compiles off the audio thread, offers to the Engine, collects), `Controls.h` (slot mapping), `Events.h` (the host's `Transport`, the program's `HostBlock`, an instrument's MIDI as events), `Measure` (a program rendered offline in an Engine of its own and measured in words and in named numbers: the chat's measure_output; `Session`, one compile measured many times through `Engine::restart`), `Goals` (goals and checks on those numbers: set_checks), `Tune` (tune_dials' search), `SoundView` (view_sound's render and analysis) | JUCE-free C++20 |
-| `Source/plugin/**` | the JUCE `AudioProcessor`: P1 to P32 (`ControlParameter`: the program's names and texts), one FunkGui port each, the program's files and the draft in the session, the bypass, the compiler's outcome polled on the message thread; `EditorPort.h`; the chat with Claude: `ChatAgent` (the conversation, the turn on its own thread, Claude's tools through `ChatHost`), `ChatPrompt.cpp` (the system prompt), `ClaudeApi` (the Messages API over HTTPS, to Anthropic or the TestingPlayground server), `ChatStore` (the key and the server's sign-in token, encrypted), `ChatImages` (pictures for a message: read with JUCE, Core Image for WebP and HEIC, scaled, thumbnailed), `SoundPicture` (view_sound's PNG, drawn with JUCE's software renderer on the agent's worker, and its thumbnail), `ChatPort.h`; `McpLink` (the instance's socket for the MCP server: info, tools, guide and call, a call through `ChatAgent::mcpCall`) | reads parameters once per block, calls the Engine; copes with what a host may do (below); the chat's rules below |
-| `Source/editor/**` | the FunkGui `Panel`, resizable (`layout()` places every item for the size; `kMinWidth` x `kMinHeight`): the top bar (the product, the project's pill, the Code / Panel switch, the load, the theme), the explorer's card at the left (`Explorer`: the program's files, the project open's presets, the projects, the library and the examples in sections that fold, its rows doing what the tabs, PROJECTS, LIBRARY and EXAMPLES do through the Panel's hooks; it folds away, its button then at the left of the program's card's header, `EditorPort::explorerOpen`; it is away in the PANEL view and when the program's card would keep less than `kProgramMinW`; `gui.explorer`), the program's card (its status and actions: Examples, Library, Random, Run; the files' tabs, a `funkgui::TextEditor` each with FMinus highlighting and error marks, the problems list, the dials (`DialLayout`: plain rows, or the panel's sections; `Looks`: the dial styles and the displays drawn; `DisplayItem`: a display's motion), or a `.gui` file's interface (`GuiLayout`: its flexbox layout; `GuiItems`: its controls in their looks, pad, envelope, keyboard (an instrument's), tabs and frames; `gui.panel`, `gui.styles`), its pages kept by title (`EditorPort::guiPages`), and the Code / Panel view (the session keeps it: `EditorPort::panelView`)); the chat's card, which folds into a rail (`EditorPort::chatOpen`); the chat's card (`ChatView`: the conversation, laid out and drawn as a chat app does; `ChatItems`: the message box and the chat's buttons; `ChatStyle.h`: the rounded look, its palette mixed from the theme's tokens) and the access dialog (account or API key); `ProjectBrowser`, the projects' card (the projects, the chosen one's versions and presets, Import and Export); `ExportCard`, EXPORT (a project's info, its two exports); `Picture.cpp`, view_panel's picture (a headless Panel on the message thread, for `ChatHost::chatPicture`); `Items.h`; `Theme.h`; `gpu/` the EditorHost factory (the window's size goes to the session) | reaches the processor only through its ports and `EditorPort` (the chat through `EditorPort::chat()`) |
+| `Source/plugin/**` | the JUCE `AudioProcessor`: P1 to P32 (`ControlParameter`: the program's names and texts), one FunkGui port each, the program's files and the draft in the session, the bypass, the compiler's outcome polled on the message thread; `EditorPort.h`; the chat with Claude: `ChatAgent` (the conversation, the turn on its own thread, Claude's tools through `ChatHost`), `ChatPrompt.cpp` (the system prompt), `ClaudeApi` (the Messages API over HTTPS, to Anthropic), `ChatStore` (the key, encrypted), `ChatImages` (pictures for a message: read with JUCE, Core Image for WebP and HEIC, scaled, thumbnailed), `SoundPicture` (view_sound's PNG, drawn with JUCE's software renderer on the agent's worker, and its thumbnail), `ChatPort.h`; `McpLink` (the instance's socket for the MCP server: info, tools, guide and call, a call through `ChatAgent::mcpCall`); `StandaloneMenu` (the Standalone's menu bar as data: `gui.window`) | reads parameters once per block, calls the Engine; copes with what a host may do (below); the chat's rules below |
+| `Source/plugin/standalone/**` | the Standalone app, compiled into each product's Standalone target only (`JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP`): `App.cpp` (its `JUCEApplication`, window and content, with `juce::StandalonePluginHolder` for the devices and the state, in JUCE's own settings file and keys: `filterState`, `audioSetup`, `windowX`/`windowY`; the effect's muted-input bar; the menu bar's commands), `NativeWindow.mm` (Objective-C++, ARC: the window's transparent title bar over full-size content, a view of ours in the title bar that keeps the buttons where the editor wants them, the drag and the double-click, the menu bar) | the AU and the VST3 never include it; the editor learns of the window only through `EditorPort::windowButtons`, `placeWindowButtons` and `dragWindow` (`Processor::setWindowHooks`; none in a host); a key the editor uses never becomes a menu shortcut (the editor gets every key first) |
+| `Source/editor/**` | the FunkGui `Panel`, resizable (`layout()` places every item for the size; `kMinWidth` x `kMinHeight`): the top bar (the product, the project's pill, the Code / Panel switch, the load, the theme; in the Standalone, room at its left for the window's buttons, and its empty parts drag the window: `EditorPort::windowButtons`, `gui.window`), the explorer's card at the left (`Explorer`: the program's files, the project open's presets, the projects, the library and the examples in sections that fold, its rows doing what the tabs, PROJECTS, LIBRARY and EXAMPLES do through the Panel's hooks; it folds away, its button then at the left of the program's card's header, `EditorPort::explorerOpen`; it is away in the PANEL view and when the program's card would keep less than `kProgramMinW`; `gui.explorer`), the program's card (its status and actions: Examples, Library, Random, Run; the files' tabs, a `funkgui::TextEditor` each made a code editor by `CodeAssist` (FMinus's highlighter, the problems' squiggles and marks from RUN and from the check while typing, completion, signature help, hover cards, Format Document and Format on Run, the find bar, the line commands, go to definition, the status line; the completion list, the signature and the hover card drawn over everything; `gui.code`), the problems list, the dials (`DialLayout`: plain rows, or the panel's sections; `Looks`: the dial styles and the displays drawn; `DisplayItem`: a display's motion), or a `.gui` file's interface (`GuiLayout`: its flexbox layout; `GuiItems`: its controls in their looks, pad, envelope, keyboard (an instrument's), tabs and frames; `gui.panel`, `gui.styles`), its pages kept by title (`EditorPort::guiPages`), and the Code / Panel view (the session keeps it: `EditorPort::panelView`)); the chat's card, which folds into a rail (`EditorPort::chatOpen`); the chat's card (`ChatView`: the conversation, laid out and drawn as a chat app does; `ChatItems`: the message box and the chat's buttons; `ChatStyle.h`: the rounded look, its palette mixed from the theme's tokens) and the key dialog; `ProjectBrowser`, the projects' card (the projects, the chosen one's versions and presets, Import and Export); `ExportCard`, EXPORT (a project's info, its two exports); `Picture.cpp`, view_panel's picture (a headless Panel on the message thread, for `ChatHost::chatPicture`); `Items.h`; `Theme.h`; `gpu/` the EditorHost factory (the window's size goes to the session) | reaches the processor only through its ports and `EditorPort` (the chat through `EditorPort::chat()`) |
 | `Source/mcp/**` | `<Name>MCP` (TestingPlaygroundMCP, TestingPlaygroundSynthMCP), the MCP server Claude Desktop starts (`Main.cpp`: JSON-RPC 2.0 on stdio; list_instances, playground_guide and the chat's tools, routed to the instance named or used last), and `McpProtocol.h` (the private folder, the sockets, the line protocol, shared with `plugin/McpLink`); the build packs it with the product's `icon-<key>.png` as `<Name>.mcpb` (a Claude Desktop extension) | juce_core and POSIX only: no plugin code; stdout is the protocol's |
 | `Tools/probes/**` | probes on FunkGui's Harness, each run for every product: `fminus/` (the examples, the contract, the library, the panel's lines), `dsp/` (the Engine, its meters, the Host block), `plugin/`, `gui/`; `common/Rig.h` runs a program in an Engine | spec rows only, no golden files; where the kinds differ, a probe branches on `product::kIsInstrument` |
 
@@ -64,7 +65,7 @@ place (its `products/<key>.cmake`, and its names in the docs).
 ## Build and test
 
 - `cmake --workflow --preset dev-verify`: configure, build (both products' Standalone, AU, VST3, MCP server and
-  probes) and run every test in `build-dev`: each of the 25 probes once for each product (`effect:fminus.examples`,
+  probes) and run every test in `build-dev`: each of the 28 probes once for each product (`effect:fminus.examples`,
   `synth:fminus.examples`, ...), and the lints once. Done means it exits 0 with no warning from our sources (they build
   with `-Werror`). While working on one product, `cmake --workflow --preset effect-verify` (or `synth-verify`) builds
   and tests it alone (the build preset and target `<key>`, the test preset `dev-<key>`: label `<key>`); the gate is
@@ -72,7 +73,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - `scripts/test.sh [effect|synth]`: build and run the probes only, of both products or the one named (`-R <name>`,
   `-L <label>`, `-V` pass through to ctest). Run the probes through ctest only: outside CTest a probe's stores are the
   user's own folders. The editor rendered headless lands in `build-dev/probe-out/<key>/` (`gui.dump*.png`,
-  `gui.chat*.png`: the empty chat, a conversation, the access dialog's key, sign-in and signed-in tabs, PAPER, the
+  `gui.code*.png`: the code editor's completion, signature, hover, problems, find bar and PAPER;
+  `gui.chat*.png`: the empty chat, a conversation, the key dialog with a key pasted and with one stored, PAPER, the
   least size and a large one): look at both products' PNGs after any editor change.
 - An example added or changed is checked by its product's `fminus.examples` (compiles with no message, plays, the same
   bits in blocks of 64 and 333; the synth's voices end). A change to the contract (Patch.h) changes `fminus.contract`,
@@ -89,8 +91,17 @@ place (its `products/<key>.cmake`, and its names in the docs).
   (`funk-playground-source`) or a .fmpack (a 20-byte header, then the project's JSON as xz through macOS's
   libcompression, zlib elsewhere) and reads both back; the same rule holds for both formats. plugin.export checks them.
 - `cmake --workflow --preset release-build`: Release with LTO in `build-release`, both products. `scripts/install.sh`
-  copies both products' AU and VST3 into `~/Library/Audio/Plug-Ins` (`scripts/install.sh synth`: one; `--dry-run`
-  says what it would copy); only the user (or the lead) runs it, never an agent.
+  copies both products' AU and VST3 into `~/Library/Audio/Plug-Ins` and their Standalone apps into `/Applications`
+  (`~/Applications` when that is not writable; `scripts/install.sh synth`: one; `--dry-run` says what it would copy);
+  only the user (or the lead) runs it, never an agent. `scripts/package.sh` makes the installer from the release build,
+  `build-release/dist/<Name>-<version>.pkg`: a choice a product, each of its AU, VST3, app (system folders) and
+  extension (`/Library/Application Support/<Company>/<Name>/`, which the installer's last page says to double-click: a
+  package never opens Claude Desktop). Unsigned unless given identities (`--sign`, `--sign-installer`, `--notarize`, or
+  `DEVELOPER_ID_APPLICATION`, `DEVELOPER_ID_INSTALLER`, `NOTARY_PROFILE`): it signs copies under `dist/stage/`, every
+  Mach-O inside out with the hardened runtime and a timestamp, each app with `scripts/entitlements/<kind>.plist`
+  (`allow-unsigned-executable-memory`: FMinus's JIT maps without `MAP_JIT`, so `allow-jit` alone gets it killed). An
+  agent may build and inspect the .pkg (`pkgutil --expand`, `--payload-files`), never install it (no `installer`, no
+  copy into `/Applications`) nor sign it.
 - The presets build at `-j6` (the machine is shared). No network: JUCE, bgfx and shaderc come from `~/audio/.deps`
   (read-only, never write there) and FunkGui is cloned from `~/audio/libraries/FunkGui` at the pinned commit. FMinus is
   cloned from `~/audio/libraries/FMinus` at the pinned commit (`FP_FMINUS_SHA`; `-DFETCHCONTENT_SOURCE_DIR_FMINUS=`
@@ -109,7 +120,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   merged with every other plugin's that exports them, and the plugins would share LLVM's state; the two products,
   whose C++ is one namespace, would share their own code's too.
 - FMinus compiles off the audio thread only (`Compiler`: its thread, or `compileNow` on the message thread or a host's
-  state call). A program's instances, and its module `Shared`'s one (init'd before them, end'd after), are created,
+  state call; the editor's check while typing too, `Compiler::check`: `Patch::check`, FMinus's first pass over the
+  text and the main module's methods, nothing made to play and nothing offered). A program's instances, and its module `Shared`'s one (init'd before them, end'd after), are created,
   reset (`init`) and destroyed (`end`) off the audio thread too; the audio thread only calls the appended nonblocking
   functions (process, start, stop) and sets parameters. Never call a program function through another type than its
   declaration's: the appended lines (Patch.cpp) are what make the types right, so a new call needs its own line.
@@ -136,7 +148,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - The displays read what the audio thread publishes, without a lock: after each block the Engine measures the
   input (the effect's) and the output and reads the displays' fields (`Patch::tap`, a field of the effect's instance,
   or of the synth's newest sounding voice) into `Engine::Meters`, through an `fsdsp::Seqlock`, and writes the scope's
-  rings of atomics; the editor reads them each frame (`Panel::tick`). `Meters::program` names the program the fields
+  rings of atomics; the editor reads them each frame (`Panel::tick`). It measures the levels and writes the rings only
+  while someone reads them (`Engine::readers`: each Panel adds itself while it lives, `EditorPort::addMeterReader`; a
+  tool that listens adds itself, `Processor::addMeterReader`, and removes itself after): with no reader the levels
+  read 0 and the rings stand still, the fields go on, and a headless Panel with no other reader (view_panel's picture)
+  waits for two blocks measured. `Meters::program` names the program the fields
   are of (`Patch::program`, the compile's request id): the panel shows them only on that program's displays, since
   the audio thread takes a new program at its next block. Nothing there allocates; `dsp.meters` checks the values.
 - The output guard (Engine::guard) stays: whatever a program computes, what leaves the plugin is finite and within
@@ -153,36 +169,49 @@ place (its `products/<key>.cmake`, and its names in the docs).
   their offsets, its keyboard's wheels come through `EditorPort::playWheel` and the processor's lock-free ring of UI
   events, and the Engine holds the sustain pedal's notes itself (`Voice::pedal`); the effect's wheels stay at rest. A
   new field: kHostFile, `HostBlock`, `HostLayout` and `setHost` together; `dsp.host` checks.
+- Flush-to-zero: the programs compile for it (`Denormals::Flush`), and the plugin runs them in it on every thread:
+  `Engine::process` opens an `fsdsp::ScopedFtz` (the audio thread has it already; offline renders, Measure and the
+  chat's tools, would otherwise pay FMinus's wrapper two FPCR writes a call), and so do `Patch::reset` and its end
+  (a program's init and end). The dials reach an instance through slots looked up at compile (`Patch::setValue`,
+  `setStream`: inline stores, as FMinus's own setters write them), and the Engine writes them only when they change
+  (`Engine::feedGen_`): keep both when the dials' path changes.
 - Flags: `-ffp-contract=off`, never `-ffast-math`. Product constants come from the generated `Product.h`, never from
   `JucePlugin_*`. The editor never uses JUCE's parameter attachments: widgets write through FunkGui's
   `GestureController` to the ports (`funkgui::JuceParamPort`).
 
+## The code editor
+
+- **`fminus/Lang.h` is the language, as an editor sees it**: plain C++ over the files' text, no FMinus call. Its
+  tables (keywords, type words, the builtins with their signatures, the attributes, `#pragma panel`'s words) follow
+  FMinus at its pin and PanelSpec: a pin move that adds a keyword or a builtin adds it there, with `fminus.lang` rows.
+- **The formatter never changes what a program means**: it re-indents, re-spaces and breaks lines (before a `{` that
+  opens a block, around a `}` after code), never joins them, and it compares the tokens it wrote with the text's and
+  gives the text back unchanged when one differs. `fminus.lang` renders the examples and RANDOM programs formatted:
+  the same bits.
+- **The check while typing** runs on the compiler's thread after a RUN waiting, never swaps the program that plays,
+  and its messages land only in tabs whose text is what was checked (a later edit waits for the next check); RUN's do
+  the same. RUN's messages are kept (`CodeAssist::setRunDiagnostics`): a check of the files RUN compiled shows them
+  again, as they hold what only RUN finds, and RUN cancels a check due. The chat's message box is a TextEditor too and
+  gets none of this.
+
 ## The chat (Claude)
 
-- **The network.** The chat is the only code that reaches the network at run time, over HTTPS to two hosts
-  (`ClaudeApi.cpp`), and only when the user sends a message, signs in or signs out: `api.anthropic.com` with the
-  user's own key (the Messages API, streamed; `GET /v1/models` once per key), or the TestingPlayground server
-  (`claude::serverHost()`: `kServerHost`, or `<prefix>SERVER_URL` when it is https:// or http:// on this Mac, as for
-  `wrangler dev` at http://localhost:8787) once the user has signed in: `POST /auth/login` and `/auth/logout`, the same
-  `/v1/messages` and `/v1/models` with `Authorization: Bearer <token>` instead of `x-api-key`, and `GET /account`
-  after a turn (the footer's credit). The server's own repo is TestingPlaygroundBackend (its README has the API). The
-  build never reaches the network. Probes never do: they give the agent `fake::Transport`
-  (`Tools/probes/plugin/FakeClaude.h`, a scripted API and server) and a key folder of their own
+- **The network.** The chat is the only code that reaches the network at run time, over HTTPS to one host
+  (`ClaudeApi.cpp`), and only when the user sends a message: `api.anthropic.com` with the user's own key (the Messages
+  API, streamed; `GET /v1/models` once per key). The build never reaches the network. Probes never do: they give the
+  agent `fake::Transport` (`Tools/probes/plugin/FakeClaude.h`, a scripted API) and a key folder of their own
   (`chatstore::setDirectoryForTests`; under CTest the default folder is the test's sandbox, `<prefix>PREFS_DIR/chat`).
-  A session never makes a live call to Anthropic or the server (it is billed to the user) unless the user asks for
-  one.
-- **The key and the sign-in** live only in their encrypted files (`ChatStore.h` says the format and what it protects
-  against): `anthropic-key.bin` and `account-token.bin`, in the folder both products share; the password typed to
-  sign in is sent once and kept nowhere. Never log any of them, print them, put them in the session, a probe's output,
-  a test fixture or a commit; the panel masks the key and the password and speaks only their lengths. A probe's are
-  `fake::fakeKey()`, `fake::fakeToken()` and `fake::fakePassword()`.
-- **The account.** Both a key and a sign-in can be stored; the chat uses the one set up last (`chat.json`'s "use",
-  `ChatPort::useAccount`). Through the server a request is the same as to Anthropic (the server only adds
-  `metadata.user_id`); its 401 always means the sign-in is over (the token is forgotten and the chat asks the user to
-  sign in again); its 402 (credit used up), 403 (disabled), 400 (a model it has no price for) and 502 (Anthropic
-  refused its key) carry messages written for the user (`claude::serverError`), shown as they are and never retried.
-  Signing in and out runs on a thread of its own (`ChatAgent::auth_`), never on the message thread. `plugin.chat`'s
-  ACCOUNT and `gui.chat`'s ACCOUNT check each.
+  A session never makes a live call to Anthropic (it is billed to the user) unless the user asks for one.
+- **The key** lives only in its encrypted file (`ChatStore.h` says the format and what it protects against):
+  `anthropic-key.bin`, in the folder both products share. Never log it, print it, put it in the session, a probe's
+  output, a test fixture or a commit; the panel masks it and speaks only its length. A probe's is `fake::fakeKey()`.
+  With no key stored the chat asks for one, and for nothing else.
+<!-- origin -->
+- **No accounts.** Until 2026-10-28 the chat could also sign in to a TestingPlayground server and go through it
+  instead of a key. That is gone (the repository is open source): the agent deletes what it kept when it starts
+  (`chatstore::forgetOldSignIn`: `account-token.bin` and `chat.json`'s "account" and "use"), and a session from then
+  loads as any other. `plugin.chatstore`'s OLD and `plugin.chat`'s OLD check it.
+<!-- /origin -->
 - **The API.** Requests follow the Claude API reference (the `claude-api` skill): the `anthropic-version` header
   (`claude::kApiVersion`), adaptive thinking with `output_config.effort`, no sampling parameters, the system prompt
   cached for an hour and the automatic breakpoint, tools with `eager_input_streaming` whose input is parsed strictly
@@ -212,9 +241,15 @@ place (its `products/<key>.cmake`, and its names in the docs).
   never the one that plays) and reports in words; `plugin.chatexample` checks its numbers on programs whose answer is
   known. The same pass records named numbers (`measure::metrics()`: each a name, a unit, a line of what it is and a
   default tolerance; the system prompt's CHECKING YOUR WORK lists them from the table, so a metric added there is
-  taught at once); a request's `want` runs only the renders and the analysis they need. A `Session` compiles once
-  and renders as often as asked, each render after `Engine::restart` (offline only: prepare() and `Patch::reset`), so
-  it gives what a fresh compile gives; `dsp.tune` checks that, and the numbers.
+  taught at once); a request's `want` runs only the renders and the analysis they need. Its CPU figures are the
+  rendering thread's own time (`CLOCK_THREAD_CPUTIME_ID`, read at a render's few boundaries, never a block's), in an
+  Engine as the audio thread runs it with no editor open: an instrument's `cpu_percent` over the held part, and
+  `cpu16_percent` measured with sixteen notes held (the least of two short renders), not extrapolated; of the
+  program's own code with its dials held still, every call flat (a dial that moves costs more: the Filter example
+  about 2.7x while its cutoff glides; the frozen copy that plays once they have held still a while usually costs
+  less), and the CPU line says so. A `Session` compiles once and renders as often as asked, each render after
+  `Engine::restart` (offline only: prepare() and `Patch::reset`), so it gives what a fresh compile gives; `dsp.tune`
+  checks that, and the numbers.
 - **view_sound** (`dsp/SoundView.h`, `plugin/SoundPicture.h`): the render (the effect's with an input: a sweep, noise,
   an impulse, a sine or silence; the synth's the notes held, then released) analysed (the waveform's extent and level
   per column, a Blackman-Harris spectrogram on a log axis, the held part's average spectrum, a close-up) and drawn as
@@ -257,17 +292,18 @@ place (its `products/<key>.cmake`, and its names in the docs).
   product's kind (`ChatAgent::promptExample`: the program, its `panel.gui` and the library files it includes), which
   `plugin.chatexample` compiles and plays: a change to the contract (Patch.h), the panel's lines, the language's
   rules, a library file's header or the examples changes it too, and the example must keep compiling with no note.
-- **Pictures** (`attach`/`detach`, `ChatImages.h`): read on the auth thread, kept as sent (the file's own PNG or
-  JPEG bytes when they fit, else encoded again) with a thumbnail (RGBA8, and encoded for the session); sent as base64
-  image blocks before the message's text; six a message, twenty in the history. The editor draws thumbnails through
-  FunkGui's image registry (`funkgui::images`, v0.20.0): `Panel::syncPictures` registers each picture's id while
-  `chat_` holds it, counted across Panels (Picture.cpp makes one), so the last to let go removes it.
+- **Pictures** (`attach`/`detach`, `ChatImages.h`): read on the agent's job thread (`ChatAgent::queueJob`), kept as
+  sent (the file's own PNG or JPEG bytes when they fit, else encoded again) with a thumbnail (RGBA8, and encoded for
+  the session); sent as base64 image blocks before the message's text; six a message, twenty in the history. The
+  editor draws thumbnails through FunkGui's image registry (`funkgui::images`, v0.20.0): `Panel::syncPictures`
+  registers each picture's id while `chat_` holds it, counted across Panels (Picture.cpp makes one), so the last to
+  let go removes it.
 - **Web search** (`setWeb`, chat.json "web"): the API's server tools web_search and web_fetch (20260209) go in the
-  request only on a turn with the user's own key (`turnWeb_`; the server does not charge for searches), and a turn
-  whose tools differ from the history's drops its thinking (`historyWeb_`, in the session as "web"). Their blocks
-  (`server_tool_use`, the `*_tool_result`s with their encrypted parts, text with `citations`) go back as they came
-  (`MessageBuilder` keeps them); `pause_turn` sends the history again with nothing after it. The sources listed under
-  an answer are the citations' pages (the docs ask for them).
+  request on a turn whose model takes them (`turnWeb_`), and a turn whose tools differ from the history's drops its
+  thinking (`historyWeb_`, in the session as "web"). Their blocks (`server_tool_use`, the `*_tool_result`s with their
+  encrypted parts, text with `citations`) go back as they came (`MessageBuilder` keeps them); `pause_turn` sends the
+  history again with nothing after it. The sources listed under an answer are the citations' pages (the docs ask for
+  them).
 - **ask_user** pauses the turn: the reply's other tools run and their results wait in the history; the question's
   entry stays open (`ChatState::asking`) until `ChatPort::answer` (the labels clicked) or `send` (the user's own words,
   after a result that says so), and either starts the next turn with the question's result first in the user
@@ -281,10 +317,12 @@ place (its `products/<key>.cmake`, and its names in the docs).
 
 - **An example**: a file `Source/fminus/examples/<key>/<n>-<name>.fm` whose first line is `// <Title>: what it is`;
   it appears in that product's EXAMPLES menu in file-name order (the first is the default program). Run its product's
-  `fminus.examples` (`scripts/test.sh <key> -R fminus.examples`).
+  `fminus.examples` (`scripts/test.sh <key> -R fminus.examples`). Write it in the house style: the editor's Format
+  (Shift-Alt-F) changes nothing in it, which `fminus.lang` checks for every example and library file.
 - **A library file**: `Source/fminus/library/<n>-<category>/<name>.fm`, its first line `// <name>.fm: what it is`
   (the LIBRARY menu shows it, in both products), then `//` and a usage header (the comment lines it starts with, which
-  Claude's instructions quote); names that no other library file uses; no allocation outside methods init and end
+  Claude's instructions quote, and the editor's hover cards: a member's line, `filter.lp`, `y = filter.tick(x);`,
+  then what it does after a gap of three spaces or more); in the house style (`fminus.lang`); names that no other library file uses; no allocation outside methods init and end
   call; safe before its set or allocate. Measure it in `fminus.library` (a harness there runs its modules over
   buffers), and run `plugin.chatexample` (the headers are in the prompt), for both products.
 - **A new call into programs** (a note's own pressure for the synth, or one when the host's transport starts, say;

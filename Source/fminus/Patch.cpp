@@ -15,6 +15,8 @@
 
 #include "fminus/FMinus.h"
 
+#include "fsdsp/core/ScopedFtz.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -262,6 +264,7 @@ module Host
 
     void Patch::endInstances() noexcept
     {
+        const fsdsp::ScopedFtz ftz;                  // end runs in the mode the program is compiled for
         for (std::size_t i = 0; i < instances_.size(); ++i)
         {
             if (initialised_[i] && s_->end != nullptr)
@@ -449,7 +452,17 @@ module Host
         }
         patch->params_.assign(static_cast<std::size_t>(kMaxControls), nullptr);
         for (std::size_t k = 0; k < names.size(); ++k)
-            patch->params_[k] = program.parameter(names[k]);
+        {
+            const fminus::Program::Parameter* param = program.parameter(names[k]);
+            patch->params_[k] = param;
+            if (param == nullptr)
+                continue;
+            Slot& slot = patch->slots_[k];
+            slot.stream = param->streamOffset;
+            slot.value = param->valueOffset;
+            slot.kind = param->type == "int" ? Slot::Kind::integer
+                      : param->type == "bool" ? Slot::Kind::boolean : Slot::Kind::real;
+        }
         {
             Recipe& rc = patch->recipe_;
             rc.files = files;
@@ -622,6 +635,7 @@ module Host
 
     void Patch::reset(float sampleRate)
     {
+        const fsdsp::ScopedFtz ftz;                  // init (and end) run in the mode the program is compiled for
         rate_ = sampleRate > 0.0f ? sampleRate : 48000.0f;
         endInstances();
         // Shared first: the instances' init may read what its init made.
@@ -691,37 +705,6 @@ module Host
     }
 
     std::string_view Patch::hostSource() noexcept { return kHostFile; }
-
-    void Patch::setValue(int c, float plain, int i) noexcept
-    {
-        if (c < 0 || c >= kMaxControls || params_.empty() || params_[static_cast<std::size_t>(c)] == nullptr)
-            return;
-        const auto& param = *static_cast<const fminus::Program::Parameter*>(params_[static_cast<std::size_t>(c)]);
-        if (i >= 0)
-        {
-            if (i < static_cast<int>(instances_.size()))
-                fminus::Program::setValue(instances_[static_cast<std::size_t>(i)], param, static_cast<double>(plain));
-            return;
-        }
-        for (void* p : instances_)
-            fminus::Program::setValue(p, param, static_cast<double>(plain));
-    }
-
-    void Patch::setStream(int c, const float* samples, int i) noexcept
-    {
-        if (c < 0 || c >= kMaxControls || params_.empty() || params_[static_cast<std::size_t>(c)] == nullptr
-            || controls_[static_cast<std::size_t>(c)].type != ControlType::real)
-            return;
-        const auto& param = *static_cast<const fminus::Program::Parameter*>(params_[static_cast<std::size_t>(c)]);
-        if (i >= 0)
-        {
-            if (i < static_cast<int>(instances_.size()))
-                fminus::Program::setStream(instances_[static_cast<std::size_t>(i)], param, samples);
-            return;
-        }
-        for (void* p : instances_)
-            fminus::Program::setStream(p, param, samples);
-    }
 
     void Patch::process(float* left, float* right, int n) noexcept
     {
@@ -856,5 +839,50 @@ module Host
                 return *at != 0 ? 1.0f : 0.0f;
         }
         return 0.0f;
+    }
+
+    // The front of compile()'s pass 1, kept in step with it: FMinus over the program as written (its messages), then the
+    // main module and its required methods. Nothing appended, no second pass, no instance.
+    Patch::Result Patch::check(const Sources& files)
+    {
+        const auto t0 = std::chrono::steady_clock::now();
+        Result r;
+        if (files.empty())
+        {
+            r.errors = std::string(kProgramName) + ": error: there is no program\n";
+            return r;
+        }
+        const std::string file = files.front().name;
+        const fminus::Program::IncludeResolver include =
+            [&files](std::string_view name, std::string_view) -> std::optional<fminus::Program::IncludedFile> {
+            if (const SourceFile* f = findFile(files, name))
+                return fminus::Program::IncludedFile{ f->name, f->text };
+            if (name == kHostFileName)
+                return fminus::Program::IncludedFile{ kHostFileName, kHostFile };
+            return std::nullopt;
+        };
+        fminus::Program::Options read;
+        read.optimisation = 0;
+        read.knobVersions = 0;
+        read.fileName = file;
+        read.include = include;
+        const std::unique_ptr<fminus::Program> first = fminus::Program::compile(files.front().text, r.errors, read);
+        if (first)
+        {
+            const fminus::Program::Module* main = first->module(kModule);
+            if (main == nullptr)
+                r.errors = file + ": error: the plugin plays a module " + kModule + " (README.md, \"Writing a program\")\n";
+            else
+                for (std::size_t k = 0; k < callCount(); ++k)
+                {
+                    const Call& c = calls()[k];
+                    const std::string name = std::string(kModule) + "::" + c.method;
+                    if (c.required && std::find(main->methods.begin(), main->methods.end(), name) == main->methods.end())
+                        r.errors += file + ": error: " + kModule + " needs a method `" + c.declaration + "`" +
+                                    (audioThread(c) ? ", which the plugin calls on the audio thread" : "") + "\n";
+                }
+        }
+        r.compileMs = msSince(t0);
+        return r;
     }
 }

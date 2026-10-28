@@ -10,7 +10,6 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <complex>
 #include <cstdio>
@@ -19,6 +18,8 @@
 #include <memory>
 #include <numbers>
 #include <set>
+
+#include <time.h>
 
 namespace playground::measure
 {
@@ -258,10 +259,25 @@ namespace playground::measure
         }
 
         // ---- rendering ---------------------------------------------------------------------------------------------
+        // The CPU figures are this thread's own time (CLOCK_THREAD_CPUTIME_ID), read at a render's few boundaries: what
+        // the render cost, however often the thread was put aside meanwhile (the plugin playing, other apps), which a
+        // wall clock would count. The Engine runs as the audio thread runs it with no editor open: flush-to-zero, no
+        // meters. It times the program's own code with its dials held still (render() sets the same values every
+        // block, so no dial glides): every call is flat (Engine.h), FMinus's flat copy of each method, with what it
+        // computes from a dial lifted out of its loop. A dial that moves plays the stream copy, which costs more; once
+        // the dials have held still a while, the plugin plays the frozen copy (Patch.h), usually cheaper.
+        double threadMs()
+        {
+            timespec ts{};
+            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+            return static_cast<double>(ts.tv_sec) * 1000.0 + static_cast<double>(ts.tv_nsec) / 1.0e6;
+        }
+
         struct Rendered
         {
             Stereo out;
-            double cpuMs = 0.0;
+            double cpuMs = 0.0;                              // the CPU time of the samples timed (render(): timeFrom
+            std::size_t cpuSamples = 0;                      // to timeUntil), and how many they were
             uint32_t alerts = 0;
             long endedAt = -1;                               // the sample after which no voice was left (-1: never)
         };
@@ -271,15 +287,13 @@ namespace playground::measure
             return audioSeconds > 0.0 ? ms / (audioSeconds * 1000.0) * 100.0 : 0.0;
         }
 
-        std::string cpuLine(double ms, double audioSeconds, int voices)
-        {
-            const double share = cpuShare(ms, audioSeconds);
-            std::string s = "CPU: " + fmt("%.1f ms", ms) + " to render " + seconds(audioSeconds) + " ("
-                          + fmt(share < 0.1 ? "%.3f" : "%.2f", share) + "% of one core in real time";
-            if (kInstrument && voices > 0)
-                s += fmt(", about %.2f%% for 16 voices at once", share / voices * 16.0);
-            return s + ").";
-        }
+        std::string percent(double share) { return fmt(share < 0.1 ? "%.3f%%" : "%.2f%%", share); }
+
+        constexpr const char* kCpuWhat = "the rendering thread's own time (not a wall clock's) in the plugin's engine, "
+                                         "running the program's own code with its dials held still (what it computes "
+                                         "from a dial is lifted out of its loop; while a dial moves it is computed per "
+                                         "sample, which costs more; once the dials have held still a while the plugin "
+                                         "plays a frozen copy, usually cheaper)";
 
         // The peak of each window of w samples over [from, to), of either channel.
         [[maybe_unused]] std::vector<double> windowPeaks(const Stereo& s, std::size_t from, std::size_t to, std::size_t w)
@@ -356,8 +370,11 @@ namespace playground::measure
               false, 0.0 },
             { "alerts", "", "the output guard's alerts: 0 none, 1 NaN or infinite samples, 2 samples clipped, 3 both", 0.5,
               false, 0.0 },
-            { "cpu_percent", "%", "the render's share of one core in real time", 0.1, true, 0.01 },
-            { "cpu16_percent", "%", "about that for sixteen voices at once", 0.1, true, 0.01 },
+            { "cpu_percent", "%",
+              "the notes' share of one core in real time while held, the program's own code, dials still", 0.1, true,
+              0.01 },
+            { "cpu16_percent", "%", "the share of sixteen voices at once, measured with sixteen notes held", 0.1, true,
+              0.01 },
         };
 
         constexpr MetricInfo kEffectMetrics[] = {
@@ -383,7 +400,8 @@ namespace playground::measure
             { "step", "", "the largest step between two samples, of any of the signals", 0.01, false, 0.0 },
             { "alerts", "", "the output guard's alerts: 0 none, 1 NaN or infinite samples, 2 samples clipped, 3 both", 0.5,
               false, 0.0 },
-            { "cpu_percent", "%", "the renders' share of one core in real time", 0.1, true, 0.01 },
+            { "cpu_percent", "%", "the renders' share of one core in real time, the program's own code, dials still", 0.1,
+              true, 0.01 },
         };
     }
 
@@ -546,10 +564,12 @@ namespace playground::measure
         bool host = false;                                   // the program reads the Host block
         bool ok = false;
 
-        // The program as new over `in` (an effect) or `total` samples (an instrument, `events` by absolute sample).
+        // The program as new over `in` (an effect) or `total` samples (an instrument, `events` by absolute sample); the
+        // CPU time of the blocks from the one at `timeFrom` to the one before `timeUntil` (the whole render: 0, and
+        // total or more).
         Rendered render(const Dials& dials, const Stereo* in, std::size_t total,
                         const std::vector<std::pair<std::size_t, Event>>& events, std::size_t watchFrom,
-                        const Request& request)
+                        const Request& request, std::size_t timeFrom = 0, std::size_t timeUntil = static_cast<std::size_t>(-1))
         {
             Rendered r;
             engine.restart();
@@ -568,8 +588,23 @@ namespace playground::measure
             }
             std::vector<Event> block;
             std::size_t next = 0;
+            double t0 = 0.0;
+            std::size_t timedFrom = 0;
+            bool timing = false;
             for (std::size_t pos = 0; pos < total;)
             {
+                if (!timing && r.cpuSamples == 0 && pos >= timeFrom && pos < timeUntil)
+                {
+                    timing = true;
+                    timedFrom = pos;
+                    t0 = threadMs();
+                }
+                else if (timing && pos >= timeUntil)
+                {
+                    timing = false;
+                    r.cpuMs = threadMs() - t0;
+                    r.cpuSamples = pos - timedFrom;
+                }
                 const int n = static_cast<int>(std::min<std::size_t>(kBlock, total - pos));
                 block.clear();
                 while (next < events.size() && events[next].first < pos + static_cast<std::size_t>(n))
@@ -580,13 +615,16 @@ namespace playground::measure
                     ++next;
                 }
                 float* ch[2] = { r.out.l.data() + pos, r.out.r.data() + pos };
-                const auto t0 = std::chrono::steady_clock::now();
                 engine.setControls(dials.norm);
                 engine.process(ch, 2, n, block);
-                r.cpuMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
                 pos += static_cast<std::size_t>(n);
                 if (kInstrument && r.endedAt < 0 && pos > watchFrom && engine.activeVoices() == 0)
                     r.endedAt = static_cast<long>(pos);
+            }
+            if (timing)
+            {
+                r.cpuMs = threadMs() - t0;
+                r.cpuSamples = total - timedFrom;
             }
             r.alerts = engine.takeAlerts();
             engine.collect();
@@ -727,7 +765,7 @@ namespace playground::measure
             const std::vector<int> notes = notesOf(request);
             const float vel = std::clamp(request.velocity, 0.0f, 1.0f);
             const std::size_t total = holdN + tailN;
-            const Rendered r = impl_->render(dials, nullptr, total, eventsFor(request, notes, holdN), holdN, request);
+            const Rendered r = impl_->render(dials, nullptr, total, eventsFor(request, notes, holdN), holdN, request, 0, holdN);
 
             std::string what;
             for (const int n : notes)
@@ -903,11 +941,32 @@ namespace playground::measure
                 }
             }
             v["alerts"] = static_cast<double>(r.alerts & 3u);
-            const double share = cpuShare(r.cpuMs, static_cast<double>(total) / rate);
-            v["cpu_percent"] = share;
-            v["cpu16_percent"] = share / static_cast<double>(notes.size()) * 16.0;
             out += "Alerts: " + alertsText(r.alerts) + ".\n";
-            out += cpuLine(r.cpuMs, static_cast<double>(total) / rate, static_cast<int>(notes.size())) + "\n";
+            // The CPU: the notes asked for while held, and sixteen voices at once, measured: sixteen keys from the lowest
+            // note up held for 0.15 s, timed after the first 0.03 s, the least of two renders.
+            const double heldSeconds = static_cast<double>(r.cpuSamples) / rate;
+            const double share = cpuShare(r.cpuMs, heldSeconds);
+            v["cpu_percent"] = share;
+            out += "CPU: the notes held take " + percent(share) + " of one core (" + fmt("%.2f ms", r.cpuMs) + " for "
+                 + seconds(heldSeconds) + ")";
+            if (need({ "cpu16_percent" }))
+            {
+                const int low = std::min(*std::min_element(notes.begin(), notes.end()), 127 - 15);
+                std::vector<int> keys;
+                for (int k = 0; k < 16; ++k)
+                    keys.push_back(low + k);
+                const std::size_t warm = static_cast<std::size_t>(0.03 * rate), len = static_cast<std::size_t>(0.15 * rate);
+                double best = kInf;
+                for (int k = 0; k < 2; ++k)
+                {
+                    const Rendered sixteen = impl_->render(dials, nullptr, len, eventsFor(request, keys, len), len, request,
+                                                           warm, len);
+                    best = std::min(best, cpuShare(sixteen.cpuMs, static_cast<double>(sixteen.cpuSamples) / rate));
+                }
+                v["cpu16_percent"] = best;
+                out += "; sixteen voices at once take " + percent(best) + " (measured, sixteen notes held)";
+            }
+            out += "; " + std::string(kCpuWhat) + ".\n";
         }
         else
         {
@@ -929,7 +988,7 @@ namespace playground::measure
             const auto through = [&](const Stereo& in, const char* name) {
                 Rendered r = impl_->render(dials, &in, in.size(), {}, 0, request);
                 cpu += r.cpuMs;
-                audio += static_cast<double>(in.size()) / rate;
+                audio += static_cast<double>(r.cpuSamples) / rate;
                 alerts |= r.alerts;
                 std::size_t at = 0;
                 const double s = largestStep(r.out, at);
@@ -1049,7 +1108,8 @@ namespace playground::measure
                 out += "Largest step between two samples: " + fmt("%.3f", worstStep) + " (in " + worstStepWhere + ", at "
                      + seconds(worstStepAt) + ").\n";
                 out += "Alerts: " + alertsText(alerts) + ".\n";
-                out += cpuLine(cpu, audio, 0) + "\n";
+                out += "CPU: " + percent(cpuShare(cpu, audio)) + " of one core (" + fmt("%.2f ms", cpu) + " to render "
+                     + seconds(audio) + "); " + kCpuWhat + ".\n";
             }
         }
         for (const std::string& w : warnings)

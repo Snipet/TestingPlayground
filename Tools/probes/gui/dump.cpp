@@ -23,8 +23,8 @@
 //             the text; the status says the text is edited
 //   RUN       Cmd-Return runs the text: the processor plays it, the status says it runs
 //   ERROR     a program with a syntax error on its line 3: the status counts one error, the problems list shows it
-//             with its line, a mark is drawn in the gutter, and the program that played plays on; a click on the
-//             problem puts the caret on that line
+//             with its line, the editor marks that line (a line mark in its mark column, a squiggle), and the program
+//             that played plays on; a click on the problem puts the caret on that line
 //   EXAMPLES  the EXAMPLES button opens a menu of every example; choosing the second replaces the text with it and
 //             runs it, and Cmd-Z gives the text back (one undo step). The panel shows the new program running, with
 //             its dials, as soon as the compile finishes, before the processor's timer has taken it
@@ -387,7 +387,8 @@ PROBE(gui, dump)
     P.eq("error.file", panel.problems().empty() ? 0 : (panel.problems()[0].file == "program.fm" ? 1 : 0), 1);
     {
         const funkgui::PrimList& frame = host.draw();
-        P.ge("error.gutter_mark", countTag(frame, pg::ui::kMarkTag), 1.0);
+        P.ge("error.gutter_mark", static_cast<double>(editor.lineMarks().size()), 1.0);
+        P.ge("error.marks_drawn", countTag(frame, funkgui::tags::editMark), 1.0);
         P.ge("error.problem_drawn", countTag(frame, pg::ui::kProblemTag), 1.0);
         P.eq("error.missing_glyphs", static_cast<int64_t>(frame.missingGlyphs), 0);
         writePng(P, host, "gui.dump.error.png", "error");
@@ -508,7 +509,7 @@ PROBE(gui, dump)
              1);
         {
             const funkgui::PrimList& frame = host.draw();
-            P.eq("files.no_gutter_mark_in_program", countTag(frame, pg::ui::kMarkTag), 0);
+            P.eq("files.no_gutter_mark_in_program", static_cast<int64_t>(panel.editor().lineMarks().size()), 0);
             P.ge("files.tabs_drawn", countTag(frame, pg::ui::kTabTag), 2.0);
         }
         const funkgui::Point inFile = panel.centreOfProblem(0);
@@ -518,7 +519,8 @@ PROBE(gui, dump)
         P.eq("files.problem_caret_line", panel.editor().caret().line, 2);
         {
             const funkgui::PrimList& frame = host.draw();
-            P.ge("files.gutter_mark_in_file", countTag(frame, pg::ui::kMarkTag), 1.0);
+            P.ge("files.gutter_mark_in_file", static_cast<double>(panel.editor().lineMarks().size()), 1.0);
+            P.ge("files.marks_drawn", countTag(frame, funkgui::tags::editMark), 1.0);
             P.eq("files.missing_glyphs", static_cast<int64_t>(frame.missingGlyphs), 0);
             writePng(P, host, "gui.dump.files.png", "files");
         }
