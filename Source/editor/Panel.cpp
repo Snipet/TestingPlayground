@@ -4688,6 +4688,7 @@ namespace playground::ui
         ring_ = false;                                   // the pointer is the affordance now
         pointer_ = { e.x, e.y };
         hasPointer_ = true;
+        windowPress_ = false;
         if (keyOpen_)
         {
             pressed_ = -1;
@@ -4722,7 +4723,8 @@ namespace playground::ui
         }
         dirty_ = true;
         // The Standalone's window has no title bar: a press on the top bar where nothing is drags it instead.
-        if (pressed_ < 0 && !e.popup && buttonsRoom_ > 0.0f && pointer_.y < kMainY)
+        windowPress_ = pressed_ < 0 && !e.popup && buttonsRoom_ > 0.0f && pointer_.y < kMainY;
+        if (windowPress_)
             port_.dragWindow(e.clicks);
     }
 
@@ -4761,6 +4763,10 @@ namespace playground::ui
 
     void Panel::doubleClick(const funkgui::PointerEvent& e)
     {
+        // The double-click's second press went to the window (dragWindow), which may have zoomed or minimised since:
+        // its release, and so this, comes where the pointer now is over the panel, and is no click of the panel's.
+        if (windowPress_)
+            return;
         if (keyOpen_)
             return;
         if (export_.isOpen())

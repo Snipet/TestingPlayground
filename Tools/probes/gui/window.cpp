@@ -18,8 +18,10 @@
 //          the room in logical px about halves (the buttons keep their size in points), back at 100 %; full screen
 //          (no buttons over the editor): no room
 //   DRAG   a press on the top bar where nothing is drags the window (clicks 1: its margin, the product's name), a
-//          double-click's second press asks for the double-click's action (clicks 2); a press on a button of the top
-//          bar (the CODE cell), a right-click, a press under the top bar and a press while PROJECTS is open drag nothing
+//          double-click's second press asks for the double-click's action (clicks 2), and when that zooms the window,
+//          the release and the double-click landing on a dial leave it alone (a double-click on the dial resets it); a
+//          press on a button of the top bar (the CODE cell), a right-click, a press under the top bar and a press while
+//          PROJECTS is open drag nothing
 //   EDIT   each Edit item sends its shortcut to the focused component (as the app does), and the editor's text field
 //          takes it: Select All and Copy (the clipboard holds the text), Cut (empty), Paste (back), Undo (empty), Redo
 //          (back); with no text field focused they change nothing
@@ -42,6 +44,7 @@
 #include <juce_core/juce_core.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <set>
 #include <string>
@@ -233,6 +236,46 @@ PROBE(gui, window)
     host.doubleClick(static_cast<float>(panel.width()) * 0.5f, 4.0f);
     host.settle();
     P.eq("drag.double_click", win.drags.size() == 2 && win.drags[0] == 1 && win.drags[1] == 2 ? 1 : 0, 1);
+    // That double-click zooms the window: its release and the double-click (JUCE sends both where the button comes up)
+    // land where the pointer now is over the panel, here on a dial, which keeps its value. A double-click pressed on the
+    // dial itself sets its default (so the check would see the dial take it).
+    {
+        int slot = -1;
+        for (int c = 0; c < pg::kMaxControls && slot < 0; ++c)
+            if (panel.centreOfDial(c).has_value())
+                slot = c;
+        P.ge("drag.dial_shown", static_cast<double>(slot), 0.0);
+        if (slot >= 0)
+        {
+            juce::AudioProcessorParameter& param = *processor.getParameters()[slot];
+            const funkgui::Point dial = *panel.centreOfDial(slot);
+            host.doubleClick(dial.x, dial.y);
+            host.settle();
+            const float fresh = param.getValue();                                    // the dial's default
+            param.setValueNotifyingHost(fresh < 0.5f ? 0.9f : 0.1f);
+            host.settle();
+            const float set = param.getValue();
+            P.ge("drag.dial_moved", std::fabs(static_cast<double>(set - fresh)), 0.1);
+            funkgui::PointerEvent bar;
+            bar.x = static_cast<float>(panel.width()) * 0.5f;
+            bar.y = 4.0f;
+            panel.pointerMove(bar);
+            panel.pointerDown(bar);
+            panel.pointerUp(bar);
+            bar.clicks = 2;
+            panel.pointerDown(bar);                                                  // the window zooms here
+            funkgui::PointerEvent there = bar;
+            there.x = dial.x;
+            there.y = dial.y;
+            panel.pointerUp(there);
+            panel.doubleClick(there);
+            host.settle();
+            P.near("drag.zoom_keeps_dial", static_cast<double>(param.getValue()), static_cast<double>(set), 1e-4);
+            host.doubleClick(dial.x, dial.y);
+            host.settle();
+            P.near("drag.dial_double_click", static_cast<double>(param.getValue()), static_cast<double>(fresh), 1e-4);
+        }
+    }
     win.drags.clear();
     const funkgui::Point code = panel.centreOfView(false);
     host.click(code.x, code.y);

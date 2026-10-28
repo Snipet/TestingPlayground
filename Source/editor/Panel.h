@@ -313,6 +313,8 @@ namespace playground::ui
                                                          // the port where they go)
         float buttonsRoom_ = 0.0f;
         bool buttonsPlaced_ = false;                     // the port was told where they go (while they are there)
+        bool windowPress_ = false;                       // the last press went to the window (dragWindow): its
+                                                         // double-click is none of the panel's
 
         int  itemAt(funkgui::Point) const;               // the item under p, -1 for none
         bool moveFocus(int dir);
