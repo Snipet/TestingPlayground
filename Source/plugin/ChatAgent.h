@@ -20,8 +20,8 @@
 // checks) while a check fails gets the results back as the user's line and the turn goes on, kMaxCheckNudges times a
 // turn at most (a turn that only talks is never sent on); clearChecks (the card's Clear) and an empty set_checks stop
 // it. The session keeps the checks. tune_dials (dsp/Tune.h) searches up to eight float dials for goals by rendering
-// offline (up to 400 renders, the activity counting them, the stop button ending the search with the best so far) and
-// sets the best values as set_dial does.
+// offline (up to 400 renders and `seconds`, 120 by default and 170 at most, the activity counting them, the stop button
+// or the time limit ending the search with the best so far) and sets the best values as set_dial does.
 //
 // A planner (setPlanner, chat.json "planner"): a second model plans each of the user's requests before the chosen one
 // builds it (Claude Fable 5.1 planning the DSP and the architecture, Claude Sonnet 5.5 writing, running and testing).
@@ -195,19 +195,36 @@ namespace playground
         static juce::var toolDefinitions();
 
         // MCP (plugin/McpLink.h): an assistant outside the plugin (Claude Desktop, through mcp/Main.cpp) working with the
-        // chat's own tools. mcpTools(): toolDefinitions() but ask_user and ask_planner, in MCP's form ({ name,
-        // description, inputSchema }); mcpGuide(): the system prompt after a word on working from outside. mcpCall() runs
-        // one tool as a turn's would, on the caller's thread: refused while a turn of the chat runs; while it runs the
-        // chat is busy (nothing can be sent; its stop button cancels a search), its activity says so, and what it did
-        // shows in the conversation. Its content is MCP's: text blocks and images ({ type, data, mimeType }).
+        // chat's own tools. mcpTools(): toolDefinitions() but ask_user and ask_planner, in MCP's form ({ name, title,
+        // description, inputSchema, annotations }), each description cut to its first paragraph (its first sentence when
+        // it has one: Claude Desktop puts the tools in every conversation), view_panel and view_sound with MCP's own
+        // `detail`. mcpGuide(): a word on working from outside, the system prompt, then what the descriptions lost (THE
+        // TOOLS: WHAT THEIR SHORT DESCRIPTIONS LEAVE OUT, each tool's in its guide part); mcpGuidePart(): a part of it
+        // (mcp/McpGuide.h; library:<file>:code from the library, adding nothing to the editor).
+        //
+        // mcpCall() runs one tool as a turn's would, on the caller's thread: refused while a turn of the chat runs; while
+        // it runs the chat is busy (nothing can be sent; its stop button cancels a search), its activity says so, and what
+        // it did shows in the conversation. `call` numbers it for mcpCancel (0: none), which stops it from any thread
+        // (as the stop button would, but a tune stopped so leaves the dials as they were); a cancel that comes before the
+        // call starts still counts. A live call (mcpLive: a read of what plays now) runs beside a running one, without
+        // the busy state, and is never refused. Its content is MCP's: text blocks and images ({ type, data, mimeType }),
+        // each picture at most kMcpPictureBytes (made smaller to fit, the text saying what was sent) unless its
+        // arguments ask for `detail` "high".
         struct McpResult
         {
             juce::var content;
             bool isError = false;
         };
+        static constexpr std::size_t kMcpPictureBytes = 75000;      // 100,000 characters in base64
         static juce::var mcpTools();
         static std::string mcpGuide();
-        McpResult mcpCall(const std::string& name, const juce::var& arguments);
+        static std::string mcpGuidePart(const std::string& part, bool& found);
+        // The calls that run on the MCP link's poll thread, beside a running call, without the busy state: get_status
+        // (ChatHost's locked getters and atomics), and the live tools to come (listen; capture's status and stop). One
+        // line a tool; such a tool keeps CLAUDE.md's live-tool contract.
+        static bool mcpLive(const std::string& name, const juce::var& arguments);
+        McpResult mcpCall(const std::string& name, const juce::var& arguments, uint64_t call = 0);
+        void mcpCancel(uint64_t call);
 
     private:
         static claude::Headers headersFor(const std::string& key);  // the key and the API version
@@ -302,6 +319,8 @@ namespace playground
 
         std::atomic<bool> cancel_{ false };
         bool mcpNoted_ = false;                                      // the conversation says Claude Desktop is at work
+        uint64_t mcpRunning_ = 0;                                   // the MCP call running (its number; mutex held)
+        std::atomic<uint64_t> mcpCancelled_{ 0 };                   // the MCP call last cancelled
         std::thread worker_;
         // Pictures to read: jobs run in order on one thread, started on first use, so the message thread never waits
         // for them.

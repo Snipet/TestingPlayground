@@ -12,10 +12,13 @@
 
 #include "plugin/SoundPicture.h"
 
+#include "mcp/McpGuide.h"
+
 #include "Library.h"
 #include "Product.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -1849,6 +1852,9 @@ namespace playground
                                                                             "each takes a few to a few hundred ms)"));
             props.getDynamicObject()->setProperty("apply", prop("boolean", "Set the dials to the best values found "
                                                                            "(default true)"));
+            props.getDynamicObject()->setProperty("seconds", prop("number", "How long it may search, in seconds (default "
+                                                                             "120, at most 170): it stops there with the best "
+                                                                             "so far"));
             tools.add(tool("tune_dials",
                            "Find the values of up to eight float dials that bring measurements to goals, by rendering "
                            "the program offline many times (as measure_output does, up to budget renders) and "
@@ -2851,49 +2857,96 @@ namespace playground
     }
 
     // ---- MCP ------------------------------------------------------------------------------------------------------------
-    juce::var ChatAgent::mcpTools()
+    namespace
     {
-        // What Claude Desktop shows of each (its permission prompts, its tool list): a title in words, whether it only
-        // looks, whether it takes something away.
+        // What Claude Desktop shows of each tool (its permission prompts, its tool list): a title in words, whether it
+        // only looks, whether it takes something away; and the guide's part that gets what its MCP description leaves
+        // out (mcp/McpGuide.h; "start" unless said). A new tool gets a line here.
         struct Face
         {
             const char* name;
             const char* title;
             bool readOnly, destructive;
+            const char* part = "start";
         };
-        static constexpr Face kFaces[] = {
+        constexpr Face kFaces[] = {
             { "read_file", "Read a file", true, false },          { "write_file", "Write a file", false, false },
             { "edit_file", "Edit a file", false, false },         { "rename_file", "Rename a file", false, false },
-            { "delete_file", "Delete a file", false, true },      { "add_library_file", "Add a building block", false, false },
+            { "delete_file", "Delete a file", false, true },      { "add_library_file", "Add a building block", false, false, "library" },
             { "run_program", "Run the program", false, false },   { "set_dial", "Turn a dial", false, false },
-            { "measure_output", "Measure the sound", true, false }, { "view_panel", "Look at the panel", true, false },
+            { "measure_output", "Measure the sound", true, false }, { "view_panel", "Look at the panel", true, false, "interface" },
             { "view_sound", "Look at the sound", true, false },   { "set_checks", "Set checks on the sound", false, false },
             { "tune_dials", "Tune the dials", false, false },     { "get_status", "Check the plugin", true, false },
         };
+
+        const Face* faceOf(const juce::String& name)
+        {
+            for (const Face& f : kFaces)
+                if (name == f.name)
+                    return &f;
+            return nullptr;
+        }
+
+        // The tools the MCP link runs, as the plugin's chat has them (toolDefinitions): all but the chat's own.
+        bool mcpOffers(const juce::String& name) { return name != "ask_user" && name != "ask_planner"; }
+
+        // A tool's description for MCP and what it leaves out: its first paragraph and the rest; one paragraph, its first
+        // sentence and the rest. (tools.json goes into every one of Claude Desktop's conversations, the guide only into
+        // those that work in the plugin.)
+        std::pair<std::string, std::string> leadOf(const std::string& d)
+        {
+            std::size_t cut = d.find("\n\n");
+            std::size_t next = cut == std::string::npos ? std::string::npos : cut + 2;
+            if (cut == std::string::npos)
+                for (std::size_t p = d.find(". "); p != std::string::npos; p = d.find(". ", p + 1))
+                    if (p + 2 < d.size() && std::isupper(static_cast<unsigned char>(d[p + 2])) != 0)
+                    {
+                        cut = p + 1;
+                        next = p + 2;
+                        break;
+                    }
+            if (cut == std::string::npos)
+                return { d, {} };
+            return { d.substr(0, cut), d.substr(next) };
+        }
+
+        std::vector<uint8_t> fromBase64(const juce::String& b64)
+        {
+            juce::MemoryOutputStream out;
+            if (!juce::Base64::convertFromBase64(out, b64))
+                return {};
+            const auto* p = static_cast<const uint8_t*>(out.getData());
+            return { p, p + out.getDataSize() };
+        }
+    }
+
+    juce::var ChatAgent::mcpTools()
+    {
         juce::Array<juce::var> out;
         const juce::var all = toolDefinitions();         // held: getArray() points into it
         if (const juce::Array<juce::var>* tools = all.getArray())
             for (const juce::var& t : *tools)
             {
                 const juce::String name = t["name"].toString();
-                if (name == "ask_user" || name == "ask_planner")
+                if (!mcpOffers(name))
                     continue;
-                juce::String title = name;
-                bool readOnly = false, destructive = false;
-                for (const Face& f : kFaces)
-                    if (name == f.name)
-                    {
-                        title = f.title;
-                        readOnly = f.readOnly;
-                        destructive = f.destructive;
-                    }
+                const Face* f = faceOf(name);
+                const juce::String title = f != nullptr ? juce::String(f->title) : name;
+                const juce::var schema = t["input_schema"];
+                if (name == "view_panel" || name == "view_sound")
+                    if (juce::DynamicObject* props = schema["properties"].getDynamicObject())
+                        props->setProperty("detail", claude::object({ { "type", "string" },
+                                                                      { "enum", juce::Array<juce::var>{ "high" } },
+                                                                      { "description", "high: the picture at its full size, "
+                                                                                       "which may not fit (by default it is "
+                                                                                       "made smaller to fit)" } }));
                 out.add(claude::object({ { "name", name },
                                          { "title", title },
-                                         { "description", t["description"] },
-                                         { "inputSchema", t["input_schema"] },
+                                         { "description", juce::String::fromUTF8(leadOf(t["description"].toString().toStdString()).first.c_str()) },
+                                         { "inputSchema", schema },
                                          { "annotations", claude::object({ { "title", title },
-                                                                           { "readOnlyHint", readOnly },
-                                                                           { "destructiveHint", destructive },
+                                                                           { "readOnlyHint", f != nullptr && f->readOnly },
+                                                                           { "destructiveHint", f != nullptr && f->destructive },
                                                                            { "openWorldHint", false } }) } }));
             }
         return out;
@@ -2901,18 +2954,65 @@ namespace playground
 
     std::string ChatAgent::mcpGuide()
     {
-        return std::string("WORKING FROM OUTSIDE THE PLUGIN\n\n") + "You are driving " + product::kName + " (an " + (kInstrument ? "instrument" : "effect")
+        std::string notes;
+        const juce::var all = toolDefinitions();
+        if (const juce::Array<juce::var>* tools = all.getArray())
+            for (const juce::var& t : *tools)
+            {
+                const juce::String name = t["name"].toString();
+                const std::string rest = leadOf(t["description"].toString().toStdString()).second;
+                if (!mcpOffers(name) || rest.empty())
+                    continue;
+                const Face* f = faceOf(name);
+                notes += "<tool name=\"" + name.toStdString() + "\" part=\"" + (f != nullptr ? f->part : "start") + "\">" + rest + "</tool>\n";
+            }
+        return std::string(mcp::guide::kOutside) + "\n\n" + "You are driving " + product::kName + " (an " + (kInstrument ? "instrument" : "effect")
              + " plugin) through MCP, from Claude Desktop, as its own chat would: the tools are the chat's, but ask_user and "
                "ask_planner (ask the user here instead) and the web tools (use your own). The user hears the plugin in "
                "their DAW (or its Standalone app) and sees what you do in its editor; its chat's card notes each tool you "
                "use. The plugin does not send you its state with each message as it does its chat (the <plugin_state> "
                "below): call get_status for the files, the dials and the last run, and read_file before editing a file. "
                "With more than one instance of the plugin open, every tool takes `instance` (list_instances names them). "
-               "What follows is the guide the plugin's chat works from.\n\n"
-             + systemPrompt();
+               "This guide comes in parts (playground_guide's part): \"start\" is what every piece of work needs, and its end "
+               "names the others and when to read them; a section it calls \"below\" that is not in the part you read is in "
+               "another part. The tools' descriptions here are short: what they leave out is in " + mcp::guide::kNotes
+             + ", at the end of the part that needs it. What follows is the guide the plugin's chat works from.\n\n"
+             + systemPrompt() + "\n" + mcp::guide::kNotes + "\n\n" + notes;
     }
 
-    ChatAgent::McpResult ChatAgent::mcpCall(const std::string& name, const juce::var& arguments)
+    std::string ChatAgent::mcpGuidePart(const std::string& part, bool& found)
+    {
+        return mcp::guide::part(mcpGuide(), part,
+                                [](const std::string& file) {
+                                    const LibraryFile* f = findLibraryFile(file);
+                                    return f != nullptr ? std::string(f->source) : std::string();
+                                },
+                                found);
+    }
+
+    bool ChatAgent::mcpLive(const std::string& name, const juce::var& arguments)
+    {
+        const juce::String action = arguments.getProperty("action", juce::var()).toString();
+        return name == "get_status"                                              // ChatHost's locked getters, atomics
+            || name == "listen"                                                  // the live state (wave 1, lane "live")
+            || (name == "capture" && (action == "status" || action == "stop"));  // the recorder (wave 1, lane "capture")
+    }
+
+    void ChatAgent::mcpCancel(uint64_t call)
+    {
+        if (call == 0)
+            return;
+        mcpCancelled_.store(call);
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (mcpRunning_ == call)
+        {
+            cancel_.store(true);
+            activity_ = "Stopping";
+            touch();
+        }
+    }
+
+    ChatAgent::McpResult ChatAgent::mcpCall(const std::string& name, const juce::var& arguments, uint64_t call)
     {
         McpResult r;
         const auto words = [](const std::string& t) {
@@ -2931,6 +3031,13 @@ namespace playground
             r.isError = true;
             return r;
         }
+        // A copy: `detail` is MCP's own (the pictures' size), not the tool's.
+        juce::var input = arguments.isObject() ? juce::JSON::parse(juce::JSON::toString(arguments)) : juce::var(new juce::DynamicObject());
+        const bool whole = input.getProperty("detail", juce::var()).toString() == "high";
+        if (name == "view_panel" || name == "view_sound")
+            input.getDynamicObject()->removeProperty("detail");
+        const bool live = mcpLive(name, input);
+        if (!live)
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             if (busy_)
@@ -2941,7 +3048,8 @@ namespace playground
                 return r;
             }
             busy_ = true;
-            cancel_.store(false);
+            mcpRunning_ = call;
+            cancel_.store(call != 0 && mcpCancelled_.load() == call);   // a cancel that came before it started
             if (!mcpNoted_)
             {
                 addEntry(ChatEntry::Kind::note, "Claude Desktop is working on the program through MCP: what it does shows here.");
@@ -2950,11 +3058,12 @@ namespace playground
             activity_ = "Claude Desktop is at work";
             touch();
         }
-        juce::var input = arguments.isObject() ? arguments : juce::var(new juce::DynamicObject());
         const juce::var block = runTool(claude::object({ { "type", "tool_use" }, { "id", "mcp" }, { "name", juce::String(name) }, { "input", input } }));
+        if (!live)
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             busy_ = false;
+            mcpRunning_ = 0;
             activity_.clear();
             touch();
         }
@@ -2967,7 +3076,25 @@ namespace playground
             {
                 const juce::String type = b["type"].toString();
                 if (type == "image")
-                    out.add(claude::object({ { "type", "image" }, { "data", b["source"]["data"] }, { "mimeType", b["source"]["media_type"] } }));
+                {
+                    // At most kMcpPictureBytes, unless asked whole: Claude Desktop caps a tool's result.
+                    const juce::String data = b["source"]["data"].toString();
+                    if (whole || static_cast<std::size_t>(data.length()) <= kMcpPictureBytes / 3 * 4)
+                    {
+                        out.add(claude::object({ { "type", "image" }, { "data", data }, { "mimeType", b["source"]["media_type"] } }));
+                        if (whole)
+                            out.add(text("(The picture is sent whole, as asked: " + thousands(data.length()) + " characters.)"));
+                        continue;
+                    }
+                    const chatimages::Fitted f = chatimages::fit(fromBase64(data), kMcpPictureBytes);
+                    out.add(claude::object({ { "type", "image" },
+                                             { "data", juce::Base64::toBase64(f.data.data(), f.data.size()) },
+                                             { "mimeType", juce::String(f.mediaType) } }));
+                    out.add(text("(The picture is sent smaller, to fit a tool's result: "
+                                 + std::string(f.mediaType == "image/png" ? "a PNG" : "a JPEG") + " of " + std::to_string(f.width) + " x "
+                                 + std::to_string(f.height) + ", from " + std::to_string(f.fromWidth) + " x "
+                                 + std::to_string(f.fromHeight) + ". detail \"high\" sends it whole.)"));
+                }
                 else if (type == "text")
                     out.add(claude::object({ { "type", "text" }, { "text", b["text"] } }));
             }
@@ -3406,6 +3533,8 @@ namespace playground
                 q.budget = std::clamp(static_cast<int>(std::lround(static_cast<double>(budget))), 1, measure::kMaxBudget);
             const juce::var applyVar = input.getProperty("apply", juce::var());
             const bool apply = applyVar.isBool() ? static_cast<bool>(applyVar) : true;
+            const juce::var seconds = input.getProperty("seconds", juce::var());
+            q.seconds = isNumber(seconds) ? std::clamp(static_cast<double>(seconds), 1.0, measure::kMaxSeconds) : measure::kDefaultSeconds;
             setActivity("Tuning the dials");
             q.progress = [this](int done, int all) {
                 setActivity("Tuning: " + std::to_string(done) + " of " + std::to_string(all) + " renders");
@@ -3422,21 +3551,31 @@ namespace playground
             for (const auto& [dial, v] : t.best)
                 tuned += (tuned.empty() ? "" : ", ") + dial;
             const int met = static_cast<int>(std::count(t.bestMet.begin(), t.bestMet.end(), true));
-            if (apply && t.bestScore < t.startScore)
+            bool dropped = false;                        // Claude Desktop cancelled the call (mcpCancel)
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                dropped = mcpRunning_ != 0 && mcpCancelled_.load() == mcpRunning_;
+            }
+            if (dropped)
+                out += "Claude Desktop stopped this call, so the dials are left exactly as they were (set_dial sets the "
+                       "values above).";
+            else if (apply && t.bestScore < t.startScore)
             {
                 const Controls controls = host_.chatDials();
                 for (const auto& [dial, v] : t.best)
                     for (int c = 0; c < kMaxControls; ++c)
                         if (controls[static_cast<std::size_t>(c)].used && dial == controls[static_cast<std::size_t>(c)].name)
                             host_.chatSetDial(c, v);
-                out += "The dials are set to the best values (the user can move them).";
+                out += t.timedOut ? "The dials are set to the best values found before the time limit (the user can move them)."
+                                  : "The dials are set to the best values (the user can move them).";
             }
             else if (apply)
                 out += "The dials are left as they were: nothing better was found.";
             else
                 out += "The dials are left as they were (apply was false): set_dial sets them.";
             note("tuned " + tuned + ": " + std::to_string(met) + " of " + std::to_string(t.bestMet.size()) + " goals met in "
-                 + std::to_string(t.renders) + " renders");
+                 + std::to_string(t.renders) + " renders" + (dropped ? ", stopped by Claude Desktop (the dials kept)"
+                                                             : t.timedOut ? ", stopped at the time limit" : ""));
             return out;
         }
         if (name == "ask_planner")
