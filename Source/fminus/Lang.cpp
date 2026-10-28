@@ -791,13 +791,14 @@ namespace playground::lang
                 return ln;
             }());
             Indexer(f, index).run();
-            // A module without comments over it, first in its file: the file's header is its documentation.
+            // A module without comments over it, the first module in its file: the file's header is its documentation
+            // (a library file may define functions before it: svf.fm's svfG, the filters' coefficients).
             for (Symbol& s : f.decls)
                 if (s.kind == Kind::module && s.doc.empty())
                 {
                     bool first = true;
-                    for (const Token& t : f.code)
-                        if (t.line < s.at.line)
+                    for (const Symbol& o : f.decls)
+                        if (o.kind == Kind::module && o.at.line < s.at.line)
                             first = false;
                     if (first)
                         s.doc = f.header;
