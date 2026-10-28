@@ -7,8 +7,11 @@
 // tools, guide (a part of it), cancel, and the live calls (ChatAgent::mcpLive: reads of what plays now, which keep
 // CLAUDE.md's live-tool contract). Every other call goes to the worker, one at a time in the order they came (the
 // chat's busy state allows one), and runs the chat's tool there (ChatAgent::mcpCall), as the chat's worker would. So a
-// quick read answers while a long call (tune_dials) runs. Replies are whole lines, written under one mutex, so the
-// two threads' replies interleave only line by line. cancel {id} stops that request's call: one waiting is dropped (its
+// quick read answers while a long call (tune_dials) runs. Replies are whole lines, put in the connection's outbox under
+// one mutex and sent at once as far as the socket takes them, so the two threads' replies interleave only line by line.
+// The sockets are non-blocking: what one cannot take yet the poll thread sends when it has room, reading meanwhile, so
+// neither thread ever waits for the server to read (a large reply and a large request crossing each other cannot stick
+// both ends, and the link always stops at once). cancel {id} stops that request's call: one waiting is dropped (its
 // reply says so), the one running is cancelled through the hook (a tune then leaves the dials as they were). A
 // connection that closes takes its calls with it: those waiting are dropped, the running one is cancelled.
 //
@@ -56,7 +59,8 @@ namespace playground
         bool connected() const noexcept { return talking_.load() > 0; }
 
     private:
-        struct Client;                                   // a connection: its socket (closed with the last owner), its lines
+        struct Client;                                   // a connection: its socket (closed with the last owner), its lines,
+                                                         // its outbox
         struct Job                                       // a call for the worker
         {
             std::shared_ptr<Client> client;
@@ -71,7 +75,9 @@ namespace playground
         void request(const std::shared_ptr<Client>& client, const std::string& line);
         void cancel(const std::shared_ptr<Client>& client, const juce::var& id, bool& found);
         void closed(const std::shared_ptr<Client>& client);   // its calls dropped or cancelled
-        bool answer(Client& client, const juce::var& reply);   // a whole line, under writeMutex_
+        void answer(Client& client, const juce::var& reply);   // a whole line, into its outbox (outMutex_), sent now
+                                                                // as far as it goes; the poll thread woken for the rest
+        void wake();                                     // the poll thread, out of poll() (stop_, or an outbox to send)
         static juce::var resultOf(const ChatAgent::McpResult& r);
 
         Hooks hooks_;
@@ -80,7 +86,7 @@ namespace playground
         int listen_ = -1;
         int wake_[2] = { -1, -1 };
         std::atomic<bool> stop_{ false };
-        std::mutex writeMutex_;                          // a reply's line, whole
+        std::mutex outMutex_;                            // the connections' outboxes
         std::mutex jobMutex_;
         std::condition_variable jobCv_;
         std::deque<Job> jobs_;                           // waiting, in order

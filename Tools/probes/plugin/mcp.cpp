@@ -19,6 +19,9 @@
 //            answered at once; a tune with a time limit of a second stops there with the best so far; pictures fit
 //            (view_panel's window and view_sound at most 100,000 base64 characters, the text saying what was sent;
 //            detail "high" the picture whole)
+//   CROSSING a large request (half a megabyte) sent while the link answers the guide's start (more than the socket's
+//            buffers hold), without reading meanwhile: the link keeps reading, so the request goes through; then both
+//            replies come, whole lines
 //   NAMES    the first processor is "Synth 1" ("Effect 1"), its socket 1.sock; a second one "Synth 2"
 //   SERVER   the server program (<Name>MCP) over stdio, as Claude Desktop runs it: initialize (its protocol version,
 //            2025-11-25 too, tools with listChanged, prompts, instructions that keep tools and ids from the user),
@@ -31,6 +34,8 @@
 //   DEADLINE a server whose calls may take 1.5 s: a tune past it is answered then ("still running"), once, while
 //            list_instances and get_status answer meanwhile; the plugin stops the tune (its dial as it was) and stays
 //            reachable
+//   STUCK    an instance that never reads (a socket nobody accepts on): a large call to it waits in the server's
+//            outbox, a ping is answered meanwhile, and the call is answered at its deadline
 //   MATCH    a second processor, on the track "Bass Line" with the project "Moog Bass": `instance` reaches it by its
 //            name, by "2", by its track's name in another case, by part of its project's; a word matching nothing
 //            describes both so that Claude asks; a fresh server, with both open and none named, asks which one
@@ -54,7 +59,10 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <csignal>
+#include <fcntl.h>
 #include <map>
+#include <poll.h>
 #include <spawn.h>
 #include <string>
 #include <sys/stat.h>
@@ -244,6 +252,32 @@ namespace
         }
     };
 
+    // `text` written to `fd` without reading from it meanwhile: false when the other end stops taking it for `ms` (it
+    // waits for this end to read what it sent).
+    bool writeWithin(int fd, const std::string& text, int ms)
+    {
+        const int flags = fcntl(fd, F_GETFL, 0);
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        std::size_t sent = 0;
+        auto last = std::chrono::steady_clock::now();
+        while (sent < text.size() && std::chrono::steady_clock::now() - last < std::chrono::milliseconds(ms))
+        {
+            const ssize_t n = send(fd, text.data() + sent, text.size() - sent, 0);
+            if (n > 0)
+            {
+                sent += static_cast<std::size_t>(n);
+                last = std::chrono::steady_clock::now();
+                continue;
+            }
+            if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR && errno != ENOBUFS)
+                break;
+            pollfd p{ fd, POLLOUT, 0 };
+            poll(&p, 1, 20);
+        }
+        fcntl(fd, F_SETFL, flags);
+        return sent == text.size();
+    }
+
     // A picture in a tool's result: its base64 characters, its type, and the text after it.
     struct Picture
     {
@@ -374,6 +408,13 @@ namespace
             return { order.begin() + static_cast<std::ptrdiff_t>(from), order.end() };
         }
 
+        // Gone at once (a server stuck writing would never see its stdin close).
+        void kill()
+        {
+            if (pid > 0)
+                ::kill(pid, SIGKILL);
+        }
+
         void stop()
         {
             if (in >= 0)
@@ -449,7 +490,7 @@ PROBE(plugin, mcp)
         P.eq("link.tools_short", leads ? 1 : 0, 1);
         P.le("link.tools_bytes", static_cast<double>(size), kInstrument ? 21000.0 : 19500.0);
     }
-    const std::string guide = ask(*a, r, 3, "guide", {})["result"].toString().toStdString();
+    const std::string guide = ask(*a, r, 3, "guide", object({ { "part", "start" } }))["result"].toString().toStdString();
     P.eq("link.guide", guide.rfind("WORKING FROM OUTSIDE THE PLUGIN", 0) == 0 ? 1 : 0, 1);
 
     // ---- GUIDE -----------------------------------------------------------------------------------------------------------
@@ -616,6 +657,23 @@ PROBE(plugin, mcp)
         close(w.fd);
     }
 
+    // ---- CROSSING: a large request while a large reply waits to be read -------------------------------------------------
+    {
+        Wire w(*a, link != nullptr ? pg::mcp::connectTo(link->socketPath()) : -1);
+        w.send(300, "guide", object({ { "part", "start" } }));
+        const std::string big = line(object({ { "id", 301 }, { "method", "call" },
+                                              { "params", object({ { "name", "no_such_tool" },
+                                                                   { "arguments", object({ { "padding", juce::String::repeatedString("x", 512 * 1024) } }) } }) } }))
+                              + "\n";
+        const bool through = writeWithin(w.fd, big, 5000);
+        const juce::var start = w.wait(300, 10000), refused = w.wait(301, 10000);
+        std::printf("crossing: the request %s, the guide's reply %zu bytes, the call's %s\n", through ? "went through" : "STUCK",
+                    start["result"].toString().toStdString().size(), firstText(refused["result"]).substr(0, 60).c_str());
+        P.eq("link.crossing", through && start["result"].toString().toStdString() == guide && static_cast<bool>(refused["result"]["isError"])
+                                  && w.lines == 2 && w.whole == 2 ? 1 : 0, 1);
+        close(w.fd);
+    }
+
     // ---- SERVER ----------------------------------------------------------------------------------------------------------
     P.eq("server.built", serverPath != nullptr && juce::File(serverPath).existsAsFile() ? 1 : 0, 1);
     Server s;
@@ -733,6 +791,41 @@ PROBE(plugin, mcp)
                 P.eq("deadline.whole_lines", d.lines > 0 && d.whole == d.lines ? 1 : 0, 1);
                 d.stop();
             }
+        }
+
+        // ---- STUCK: an instance that never reads ---------------------------------------------------------------------
+        {
+            // A folder of its own, with one "instance": a socket nobody accepts on (it takes 8 KB, then nothing).
+            const std::string stuckDir = dir + "-stuck";
+            mkdir(stuckDir.c_str(), 0700);
+            const int deaf = pg::mcp::listenAt(stuckDir + "/1.sock");
+            const std::string var2 = std::string(pg::product::kEnvPrefix) + "MCP_DEADLINE_MS";
+            setenv(var.c_str(), stuckDir.c_str(), 1);
+            setenv(var2.c_str(), "1500", 1);
+            Server k;
+            const bool kstarted = deaf >= 0 && k.start(serverPath);
+            setenv(var.c_str(), dir.c_str(), 1);
+            unsetenv(var2.c_str());
+            if (kstarted)
+            {
+                k.request({}, "initialize", object({ { "protocolVersion", "2025-11-25" } }));
+                const int callId = k.post("tools/call", object({ { "name", "write_file" },
+                                                                 { "arguments", object({ { "name", "big.fm" },
+                                                                                       { "content", juce::String::repeatedString("x", 256 * 1024) } }) } }));
+                const juce::var pong = k.wait({}, k.post("ping", juce::var(new juce::DynamicObject())), 5000);
+                const bool answered = pong.hasProperty("result");
+                const juce::var late = answered ? k.wait({}, callId, 10000) : juce::var();
+                std::printf("stuck instance: ping %s; the call: %s\n", answered ? "answered" : "NOT answered",
+                            firstText(late["result"]).substr(0, 80).c_str());
+                P.eq("stuck.ping_answered", answered ? 1 : 0, 1);
+                P.eq("stuck.call_deadline", static_cast<bool>(late["result"]["isError"]) && has(firstText(late["result"]), "Still running") ? 1 : 0, 1);
+                if (!answered)
+                    k.kill();
+                k.stop();
+            }
+            if (deaf >= 0)
+                close(deaf);
+            juce::File(juce::String::fromUTF8(stuckDir.c_str())).deleteRecursively();
         }
 
         // ---- MATCH: a second instance, on a track, with a project ---------------------------------------------------

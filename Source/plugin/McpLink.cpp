@@ -40,7 +40,8 @@ namespace playground
         }
     }
 
-    // A connection from the server: its socket, closed when the last of the poll thread and the jobs lets go of it.
+    // A connection from the server: its socket (non-blocking), closed when the last of the poll thread and the jobs
+    // lets go of it.
     struct McpLink::Client
     {
         explicit Client(int fd) : reader(fd) {}
@@ -50,6 +51,7 @@ namespace playground
 
         mcp::LineReader reader;                          // the poll thread's
         bool spoke = false;                              // it has sent a request (it counts as connected)
+        std::string out;                                 // replies the socket has not taken yet, whole lines (outMutex_)
     };
 
     McpLink::McpLink(Hooks hooks) : hooks_(std::move(hooks))
@@ -69,7 +71,7 @@ namespace playground
         }
         id_ = std::to_string(number);
         name_ = std::string(product::kIsInstrument ? "Synth " : "Effect ") + id_;
-        if (pipe(wake_) != 0)
+        if (pipe(wake_) != 0 || !mcp::nonBlocking(wake_[0]) || !mcp::nonBlocking(wake_[1]))
         {
             close(listen_);
             listen_ = -1;
@@ -84,11 +86,7 @@ namespace playground
     McpLink::~McpLink()
     {
         stop_.store(true);
-        if (wake_[1] >= 0)
-        {
-            const char x = 1;
-            [[maybe_unused]] const ssize_t n = write(wake_[1], &x, 1);
-        }
+        wake();
         if (thread_.joinable())
             thread_.join();
         // The worker: what waits is dropped, what runs is cancelled (a tune stops within a render) and waited for.
@@ -114,6 +112,14 @@ namespace playground
                 close(fd);
     }
 
+    void McpLink::wake()
+    {
+        if (wake_[1] < 0)
+            return;
+        const char x = 1;
+        [[maybe_unused]] const ssize_t n = write(wake_[1], &x, 1);   // a pipe full is a poll thread already woken
+    }
+
     void McpLink::run()
     {
         std::vector<std::shared_ptr<Client>> clients;
@@ -122,8 +128,11 @@ namespace playground
             std::vector<pollfd> fds;
             fds.push_back({ wake_[0], POLLIN, 0 });
             fds.push_back({ listen_, POLLIN, 0 });
-            for (const auto& c : clients)
-                fds.push_back({ c->reader.fd(), POLLIN, 0 });
+            {
+                const std::lock_guard<std::mutex> lock(outMutex_);
+                for (const auto& c : clients)
+                    fds.push_back({ c->reader.fd(), static_cast<short>(POLLIN | (c->out.empty() ? 0 : POLLOUT)), 0 });
+            }
             const int r = poll(fds.data(), static_cast<nfds_t>(fds.size()), -1);
             if (r < 0)
             {
@@ -131,15 +140,30 @@ namespace playground
                     continue;
                 break;
             }
-            if (fds[0].revents != 0 || stop_.load())
+            if (fds[0].revents != 0)
+            {
+                char drain[256];
+                while (read(wake_[0], drain, sizeof drain) > 0)
+                {
+                }
+            }
+            if (stop_.load())
                 break;
             const std::size_t polled = fds.size() - 2;   // the clients before this round's accept
             std::vector<bool> dead(clients.size(), false);
             for (std::size_t k = 0; k < polled; ++k)
             {
-                if (fds[k + 2].revents == 0)
+                const short revents = fds[k + 2].revents;
+                if (revents == 0)
                     continue;
                 const std::shared_ptr<Client>& c = clients[k];
+                if ((revents & POLLOUT) != 0)
+                {
+                    const std::lock_guard<std::mutex> lock(outMutex_);
+                    mcp::flush(c->reader.fd(), c->out);  // the other end gone: its read below says so
+                }
+                if ((revents & ~POLLOUT) == 0)
+                    continue;
                 if (!c->reader.readSome())
                 {
                     dead[k] = true;
@@ -170,7 +194,10 @@ namespace playground
                 if (const int fd = accept(listen_, nullptr, nullptr); fd >= 0)
                 {
                     mcp::noSigpipe(fd);
-                    clients.push_back(std::make_shared<Client>(fd));
+                    if (mcp::nonBlocking(fd))
+                        clients.push_back(std::make_shared<Client>(fd));
+                    else
+                        close(fd);
                 }
         }
         for (const auto& c : clients)
@@ -307,11 +334,18 @@ namespace playground
         }
     }
 
-    bool McpLink::answer(Client& client, const juce::var& reply)
+    void McpLink::answer(Client& client, const juce::var& reply)
     {
-        const std::string line = juce::JSON::toString(reply, true).toStdString();
-        const std::lock_guard<std::mutex> lock(writeMutex_);
-        return mcp::writeLine(client.reader.fd(), line);
+        const std::string line = juce::JSON::toString(reply, true).toStdString() + "\n";
+        bool left = false;
+        {
+            const std::lock_guard<std::mutex> lock(outMutex_);
+            client.out += line;
+            mcp::flush(client.reader.fd(), client.out);
+            left = !client.out.empty();
+        }
+        if (left)
+            wake();                                      // the poll thread sends the rest when the socket has room
     }
 
     juce::var McpLink::resultOf(const ChatAgent::McpResult& r)

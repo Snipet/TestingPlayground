@@ -252,6 +252,10 @@ place (its `products/<key>.cmake`, and its names in the docs).
   slow instance is never dropped, only one whose socket closes. The link (`McpLink`) answers info, tools, guide,
   cancel and the live calls on its poll thread, and runs every other call on its one worker, in order (the chat's
   `busy_` allows one at a time; a call is refused while a chat turn runs); replies are whole lines under one mutex.
+  Neither end ever waits to write: the server's and the link's sockets are non-blocking, what a socket cannot take
+  yet waits in that connection's outbox (sent on `POLLOUT`), and each end keeps reading meanwhile, so a large request
+  and a large reply crossing each other (more than the 8 KB a Unix socket holds on macOS) cannot leave both waiting
+  for the other to read, and the link always stops at once. Keep it so: no blocking `send` on either side.
   A cancel stops the call running (`ChatAgent::mcpCancel`, by the call's number: it sets `cancel_`, which tune's
   progress reads, and a tune cancelled so applies nothing) or drops one waiting; a connection closing cancels its
   calls, and the link going (the plugin closing) cancels and waits for the one running.

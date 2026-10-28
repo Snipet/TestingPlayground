@@ -10,6 +10,9 @@
 //                "params": { ... } }; several may be in flight on one connection
 //   a reply      one line: { "id": 1, "result": ... } or { "id": 1, "error": "why" }, exactly one a request, in the
 //                order they are ready (a quick one may pass a long call's)
+//   never stuck  both ends' sockets are non-blocking, and each end queues what it writes and keeps reading while it
+//                waits to send the rest: a large request and a large reply crossing each other (more than a socket's
+//                buffer, 8 KB on macOS) never leave both ends waiting for the other to read
 //                  info    the instance: { id, name, kind, plugin, host, track, project, version, preset, edited,
 //                          files, compiled, busy }
 //                  tools   the tools, as MCP lists them ({ name, title, description, inputSchema, annotations })
@@ -30,6 +33,7 @@
 #include <cstring>
 #include <string>
 
+#include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -181,7 +185,44 @@ namespace playground::mcp
         return -1;
     }
 
-    // `line` and a line feed, all of it; false when the other end is gone.
+    // `fd` non-blocking: a read or a write that would wait returns at once (EAGAIN) instead.
+    inline bool nonBlocking(int fd)
+    {
+        const int flags = fcntl(fd, F_GETFL, 0);
+        return flags >= 0 && fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
+    }
+
+    // What of `pending` the non-blocking socket `fd` takes now, sent and removed from it; the rest waits for the socket
+    // to have room (poll's POLLOUT). False when the other end is gone (`pending` is then dropped: nothing reaches it).
+    inline bool flush(int fd, std::string& pending)
+    {
+        std::size_t sent = 0;
+        bool open = true;
+        while (sent < pending.size())
+        {
+#if defined(MSG_NOSIGNAL)
+            const ssize_t n = send(fd, pending.data() + sent, pending.size() - sent, MSG_NOSIGNAL);
+#else
+            const ssize_t n = send(fd, pending.data() + sent, pending.size() - sent, 0);
+#endif
+            if (n > 0)
+            {
+                sent += static_cast<std::size_t>(n);
+                continue;
+            }
+            if (n < 0 && errno == EINTR)
+                continue;
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOBUFS))
+                break;
+            open = false;
+            sent = pending.size();
+        }
+        pending.erase(0, sent);
+        return open;
+    }
+
+    // `line` and a line feed, all of it, waiting while the socket is full (a blocking socket: the probes'); false when
+    // the other end is gone.
     inline bool writeLine(int fd, const std::string& line)
     {
         const std::string out = line + "\n";

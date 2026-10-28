@@ -21,7 +21,10 @@
 // writer. A call that passes its deadline (kCallMs, under Claude Desktop's own limit) is answered then ("still running;
 // asked the plugin to stop") and the plugin is asked to stop it; its late reply is dropped, as is the reply to a request
 // the client cancelled (notifications/cancelled, passed on to the plugin as a cancel): never two answers to one id.
-// A slow instance is never dropped: only one whose socket closes.
+// A slow instance is never dropped: only one whose socket closes. Nor does the loop ever wait to write to one: the
+// sockets are non-blocking, what an instance has not taken yet waits in its outbox (sent on POLLOUT), and the loop
+// keeps reading meanwhile, so a large request and a large reply crossing each other cannot leave the server and the
+// plugin each waiting for the other to read.
 //
 // stdout carries the protocol only; what went wrong, and what the client is, go to stderr (Claude Desktop keeps it in
 // its MCP logs).
@@ -37,6 +40,7 @@
 #include <cctype>
 #include <chrono>
 #include <csignal>
+#include <cstdint>
 #include <cstdlib>
 #include <functional>
 #include <iostream>
@@ -144,8 +148,10 @@ namespace
     struct Instance
     {
         std::string id, path;
-        int fd = -1;
+        int fd = -1;                                     // non-blocking
+        uint64_t serial = 0;                             // its connection's number: the same id reconnected is another
         std::unique_ptr<pg::mcp::LineReader> reader;
+        std::string out;                                 // requests its socket has not taken yet, whole lines, in order
         int next = 1;
     };
 
@@ -225,12 +231,13 @@ namespace
             for (;;)
             {
                 std::vector<pollfd> fds;
-                std::vector<std::string> order;
+                std::vector<std::pair<std::string, uint64_t>> order;   // each instance polled: its id and connection
                 fds.push_back({ 0, POLLIN, 0 });
                 for (const auto& entry : instances_)
                 {
-                    fds.push_back({ entry.second.fd, POLLIN, 0 });
-                    order.push_back(entry.first);
+                    const short events = static_cast<short>(POLLIN | (entry.second.out.empty() ? 0 : POLLOUT));
+                    fds.push_back({ entry.second.fd, events, 0 });
+                    order.push_back({ entry.first, entry.second.serial });
                 }
                 const int r = poll(fds.data(), static_cast<nfds_t>(fds.size()), msToNextDeadline());
                 if (r < 0)
@@ -249,10 +256,11 @@ namespace
                 }
                 for (std::size_t k = 0; k < order.size(); ++k)
                     if (fds[k + 1].revents != 0)
-                        onInstanceReadable(order[k], fds[k + 1].fd);
+                        onInstance(order[k].first, order[k].second, fds[k + 1].revents);
                 expire();
             }
-            // Nobody waits for what is still running: the plugin need not finish it.
+            // Nobody waits for what is still running: the plugin need not finish it (a cancel the socket cannot take now
+            // is lost, but the plugin cancels a closed connection's calls anyway).
             for (const Ask& a : asks_)
                 if (a.call)
                     stop(a.instance, a.number);
@@ -409,9 +417,10 @@ namespace
                 }
                 closedir(d);
             }
-            // A connection whose instance went away goes (its number may already be another's).
+            // A connection whose instance went away goes (its number may already be another's). Dropping one runs what
+            // waited for it, which may ask, and so drop, another first.
             for (const std::string& id : ids())
-                if (!alive(instances_.at(id).fd))
+                if (const auto it = instances_.find(id); it != instances_.end() && !alive(it->second.fd))
                     drop(id);
             std::map<std::string, bool> present;
             for (const std::string& id : socks)
@@ -427,10 +436,16 @@ namespace
                         unlink(path.c_str());            // nothing listens: its instance is gone (a crash, a host killed)
                     continue;
                 }
+                if (!pg::mcp::nonBlocking(fd))
+                {
+                    close(fd);
+                    continue;
+                }
                 Instance in;
                 in.id = id;
                 in.path = path;
                 in.fd = fd;
+                in.serial = ++serials_;
                 in.reader = std::make_unique<pg::mcp::LineReader>(fd);
                 instances_.emplace(id, std::move(in));
             }
@@ -469,6 +484,16 @@ namespace
                 a.done(Got::closed, juce::var(), "it has closed");
         }
 
+        // A request to instance `in`: into its outbox, and sent as far as its socket takes it now (the loop sends the
+        // rest). It never waits, and never drops the instance (a socket gone is the loop's to find): its number.
+        static int post(Instance& in, const char* method, const juce::var& params)
+        {
+            const int n = in.next++;
+            in.out += juce::JSON::toString(object({ { "id", n }, { "method", method }, { "params", params } }), true).toStdString() + "\n";
+            pg::mcp::flush(in.fd, in.out);
+            return n;
+        }
+
         // Request `method` of instance `id`, its answer to `done` when its reply comes (or it fails, or `ms` pass). `call`:
         // a tool call, which the instance is asked to stop past its deadline; `client`, the client's request it serves.
         void ask(const std::string& id, const char* method, const juce::var& params, int ms, bool call, const std::string& client, Done done)
@@ -479,35 +504,32 @@ namespace
                 done(Got::closed, juce::var(), "it is no longer open");
                 return;
             }
-            Instance& in = it->second;
-            const int n = in.next++;
-            if (!pg::mcp::writeLine(in.fd, juce::JSON::toString(object({ { "id", n }, { "method", method }, { "params", params } }), true).toStdString()))
-            {
-                drop(id);
-                done(Got::closed, juce::var(), "it has closed");
-                return;
-            }
+            const int n = post(it->second, method, params);
             asks_.push_back({ id, n, Clock::now() + std::chrono::milliseconds(ms), call, client, std::move(done) });
         }
 
         // Ask instance `id` to stop the call it was sent as request `number` (its reply, if any, is dropped).
         void stop(const std::string& id, int number)
         {
-            const auto it = instances_.find(id);
-            if (it == instances_.end())
-                return;
-            Instance& in = it->second;
-            const int n = in.next++;
-            pg::mcp::writeLine(in.fd, juce::JSON::toString(object({ { "id", n }, { "method", "cancel" }, { "params", object({ { "id", number } }) } }), true)
-                                          .toStdString());
+            if (const auto it = instances_.find(id); it != instances_.end())
+                post(it->second, "cancel", object({ { "id", number } }));
         }
 
-        void onInstanceReadable(const std::string& id, int fd)
+        // Instance `id`'s socket has news (`revents`), if it is still connection `serial`: room for its outbox, its
+        // replies, or its end.
+        void onInstance(const std::string& id, uint64_t serial, short revents)
         {
             {
                 const auto it = instances_.find(id);
-                if (it == instances_.end() || it->second.fd != fd)
+                if (it == instances_.end() || it->second.serial != serial)
                     return;                              // dropped (or replaced) meanwhile
+                if ((revents & POLLOUT) != 0 && !pg::mcp::flush(it->second.fd, it->second.out))
+                {
+                    drop(id);
+                    return;
+                }
+                if ((revents & ~POLLOUT) == 0)
+                    return;
                 if (!it->second.reader->readSome())
                 {
                     drop(id);
@@ -517,7 +539,7 @@ namespace
             for (;;)
             {
                 const auto it = instances_.find(id);
-                if (it == instances_.end() || it->second.fd != fd)
+                if (it == instances_.end() || it->second.serial != serial)
                     return;
                 std::string line;
                 if (!it->second.reader->take(line))
@@ -1025,6 +1047,7 @@ namespace
         }
 
         std::map<std::string, Instance> instances_;
+        uint64_t serials_ = 0;                           // the connections made so far
         std::list<Ask> asks_;
         std::set<std::string> open_;                     // the client's requests not answered yet (key(id))
         std::string chosen_;
