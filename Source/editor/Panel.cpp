@@ -2752,6 +2752,7 @@ namespace playground::ui
         port_.setDraft(draft);
         syncedFiles_ = files().revision();
         port_.run(draft.files);
+        files().assist().cancelCheck();                  // RUN's messages will say more of these files
         compiling_ = true;
         dirty_ = true;
     }
@@ -2784,7 +2785,7 @@ namespace playground::ui
         if (files().assist().checking())
             if (const CheckStatus c = port_.checkStatus(); files().assist().takeCheckResult(c.revision))
             {
-                files().assist().setDiagnostics(diagnosticsOf(parseProblems(c.errors)), c.sources);
+                files().assist().setCheckDiagnostics(diagnosticsOf(parseProblems(c.errors)), c.sources);
                 files().assist().checkDone();
                 dirty_ = true;
             }
@@ -2797,7 +2798,7 @@ namespace playground::ui
             lastOk_ = s.ok;
             lastMs_ = s.ms;
             problems_ = parseProblems(s.errors + s.notes);
-            files().assist().setDiagnostics(diagnosticsOf(problems_), s.sources);
+            files().assist().setRunDiagnostics(diagnosticsOf(problems_), s.sources);
             // The dials and the source of the program that plays: this compile's when it compiled (the processor
             // takes them on its own timer, which may not have run yet), else the ones before.
             const Controls cs = s.ok ? s.controls : port_.controls();

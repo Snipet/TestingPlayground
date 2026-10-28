@@ -1099,6 +1099,12 @@ namespace playground::ui
         return true;
     }
 
+    void CodeAssist::cancelCheck()
+    {
+        editedRevision_ = filesRevision();
+        checkDue_ = false;
+    }
+
     void CodeAssist::updateOccurrences()
     {
         funkgui::TextEditor& E = ed();
@@ -1116,6 +1122,23 @@ namespace playground::ui
     }
 
     // ---- problems ---------------------------------------------------------------------------------------------------
+    void CodeAssist::setRunDiagnostics(const std::vector<Diagnostic>& messages, const Sources& compiled)
+    {
+        runMessages_ = messages;
+        runSources_ = compiled;
+        setDiagnostics(messages, compiled);
+    }
+
+    void CodeAssist::setCheckDiagnostics(const std::vector<Diagnostic>& messages, const Sources& compiled)
+    {
+        // The files RUN compiled (the editor opened on them, an edit undone, a check that waited behind RUN): RUN's
+        // messages, which hold the check's and what only RUN finds (its second pass, the notes).
+        if (compiled == runSources_)
+            setDiagnostics(runMessages_, compiled);
+        else
+            setDiagnostics(messages, compiled);
+    }
+
     void CodeAssist::setDiagnostics(const std::vector<Diagnostic>& messages, const Sources& compiled)
     {
         for (int i = 0; i < tabs_.count(); ++i)
@@ -1170,6 +1193,10 @@ namespace playground::ui
                 marks.push_back({ ln, mark });
                 set.list.push_back({ { { ln, col }, { ln, end } }, kind, d.text });
             }
+            // In the editor's order (it keeps decorations by `from`, stably), so that diagnosticsAt pairs a squiggle
+            // with its message by index: a note may point before its error, and the plugin's own come after FMinus's.
+            std::stable_sort(set.list.begin(), set.list.end(),
+                             [](const Diag& a, const Diag& b) { return a.range.from < b.range.from; });
             E.setDecorations(std::move(decos), funkgui::kDiagnosticDecorations);
             E.setLineMarks(std::move(marks));
             diags_[name] = std::move(set);
@@ -1459,7 +1486,10 @@ namespace playground::ui
         findFocus_ = false;
         matches_.clear();
         current_ = -1;
-        ed().setDecorations({}, funkgui::kFindDecorations);
+        // Every tab's: one shown while the bar was open keeps its matches (one shown again with the bar open has its
+        // own set again by updateMatches).
+        for (int i = 0; i < tabs_.count(); ++i)
+            tabs_.editor(i).setDecorations({}, funkgui::kFindDecorations);
         if (focused_)
             ed().setFocused(true);
     }

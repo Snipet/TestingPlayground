@@ -170,7 +170,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   the same bits.
 - **The check while typing** runs on the compiler's thread after a RUN waiting, never swaps the program that plays,
   and its messages land only in tabs whose text is what was checked (a later edit waits for the next check); RUN's do
-  the same. The chat's message box is a TextEditor too and gets none of this.
+  the same. RUN's messages are kept (`CodeAssist::setRunDiagnostics`): a check of the files RUN compiled shows them
+  again, as they hold what only RUN finds, and RUN cancels a check due. The chat's message box is a TextEditor too and
+  gets none of this.
 
 ## The chat (Claude)
 

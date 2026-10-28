@@ -19,6 +19,8 @@
 //             (its file's header), a local (const float y), a param (its range), a keyword, a builtin
 //   DEFINE    a function of another file, a field, a module of the library's file, an #include's file
 //   OCCUR     a field's uses in its file (the declaration, the calls); a loop variable's, not another loop's
+//   UNCLOSED  a module whose `{` has no partner (a closer missing in a method, the file cut short) holds the rest of
+//             the file: its members are completed, hovered and found there
 //   FORMAT    every example and library file is the house style already (format changes nothing); three scrambled
 //             copies of each (no indent; tokens single-spaced, braces K&R; no space at all where none is needed) format
 //             back to it (comment gaps aside), each result formatted again unchanged; a messy program formats to the
@@ -531,6 +533,22 @@ PROBE(fminus, lang)
             inLoop = inLoop && r.from.line >= 23 && r.from.line <= 29;
         P.eq("occur.loop_variable", static_cast<int64_t>(i.size()), 7);
         P.eq("occur.not_other_loop", inLoop ? 1 : 0, 1);
+    }
+
+    // ---- UNCLOSED ---------------------------------------------------------------------------------------------------
+    {
+        // The loop's `}` gone: each closer pairs with an inner opener, and the module's `{` has none.
+        const std::string open = replaced(program, "            right[i] = y;\n        }\n", "            fi\n");
+        s.setFiles(programFiles(open));
+        const lg::CompletionList c = s.complete(0, posOf(open, "            fi\n", 14));
+        std::printf("complete fi (unclosed): %s\n", labels(c).c_str());
+        P.eq("unclosed.complete", !c.items.empty() && c.items[0].label == "filter" && c.items[0].kind == lg::Kind::field ? 1 : 0, 1);
+        const std::optional<lg::Hover> h = s.hover(0, posOf(open, "cutoff[i]", 2));
+        P.eq("unclosed.hover", h && h->code.find("[[fminus::range(20, 20000)]]") != std::string::npos ? 1 : 0, 1);
+        P.eq("unclosed.occurrences", static_cast<int64_t>(s.occurrences(0, posOf(open, "filter.tick", 0)).size()), 3);
+        const std::string cut = open.substr(0, open.find("            fi\n") + 15);   // the file ends in the method
+        s.setFiles(programFiles(cut));
+        P.eq("unclosed.cut_short", item(s.complete(0, posOf(cut, "            fi\n", 14)), "filter") != nullptr ? 1 : 0, 1);
     }
 
     // ---- FORMAT -----------------------------------------------------------------------------------------------------

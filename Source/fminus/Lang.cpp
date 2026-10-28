@@ -7,6 +7,7 @@
 #include <array>
 #include <cctype>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <set>
 #include <utility>
@@ -1213,13 +1214,18 @@ namespace playground::lang
             return nullptr;
         }
 
-        // The module whose braces hold a place of a file ("" for none).
+        // The module whose braces hold a place of a file ("" for none). A module whose `{` has no partner (its close
+        // is the code's end) holds the rest of the file.
         std::string moduleAt(const FileData& f, Pos p) const
         {
             for (const ModuleSpan& m : f.modules)
-                if (startOf(f.code[static_cast<std::size_t>(m.open)]) < p
-                    && p <= startOf(f.code[static_cast<std::size_t>(m.close)]))
+            {
+                const Pos end = m.close < static_cast<int>(f.code.size())
+                                    ? startOf(f.code[static_cast<std::size_t>(m.close)])
+                                    : Pos{ std::numeric_limits<int>::max(), 0 };
+                if (startOf(f.code[static_cast<std::size_t>(m.open)]) < p && p <= end)
                     return m.name;
+            }
             return {};
         }
 

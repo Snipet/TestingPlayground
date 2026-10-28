@@ -27,6 +27,7 @@
 //                  still holds what was compiled), and a check while typing: 0.6 s after the last edit, the files go to
 //                  the compiler's thread (EditorPort::check: FMinus's pass over the text and the main module's
 //                  methods, without the code, the instances or a swap of what plays), and its messages replace them
+//                  (RUN's again when the files are what RUN compiled: they say more; RUN itself cancels a check due)
 //   the status     under the editor: the problems' count (a click jumps to the next), Checking..., the caret's line and
 //   line           column, the indent, the language and the Format on Run switch (a machine-wide preference)
 //
@@ -154,10 +155,14 @@ namespace playground::ui
         bool specLine(char* out, std::size_t n, funkgui::Point pointer) const;   // the footer's, over the status line
 
         // ---- problems ---------------------------------------------------------------------------------------------
-        // Messages for `compiled` (RUN's or a check's): squiggles and marks in each tab whose text was compiled.
-        void setDiagnostics(const std::vector<Diagnostic>& messages, const Sources& compiled);
+        // Messages for `compiled`: squiggles and marks in each tab whose text was compiled. RUN's are kept: a check of
+        // the same files shows them again instead of its own, which are fewer (no notes, nothing only RUN's second
+        // pass finds).
+        void setRunDiagnostics(const std::vector<Diagnostic>& messages, const Sources& compiled);
+        void setCheckDiagnostics(const std::vector<Diagnostic>& messages, const Sources& compiled);
         // A check is due: the files changed and have rested (true once for each such rest).
         bool takeCheckRequest();
+        void cancelCheck();                              // RUN: the files as they are need no check
         void checkSent() noexcept { checking_ = true; }
         void checkDone() noexcept { checking_ = false; }
         bool checking() const noexcept { return checking_; }
@@ -234,6 +239,7 @@ namespace playground::ui
         void showMatch(int k);
         bool findKey(const funkgui::KeyEvent& e);
         std::vector<int> selectedLines(int& first, int& last) const;
+        void setDiagnostics(const std::vector<Diagnostic>& messages, const Sources& compiled);
         std::vector<std::string> diagnosticsAt(int tab, funkgui::TextPos p) const;
 
         // overlay geometry
@@ -270,6 +276,8 @@ namespace playground::ui
 
         // diagnostics, by file name
         std::map<std::string, DiagSet> diags_;
+        std::vector<Diagnostic> runMessages_;            // the last RUN's, and the files it compiled
+        Sources runSources_;
         bool checking_ = false;
         uint64_t checkSeen_ = 0;
         uint64_t editedRevision_ = 0;                    // the files' revision at the last edit seen

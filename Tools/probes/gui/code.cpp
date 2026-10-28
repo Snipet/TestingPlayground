@@ -32,6 +32,10 @@
 //             Shift-Cmd-K deletes it
 //   DEFINE    Cmd-click on a method of the library's file shows that tab, the caret on its declaration; Cmd-B on a
 //             field goes to its declaration
+//   ORDER     an error with a note before it (FMinus writes the error first): each squiggle's card says its own message
+//   RUN ONLY  a note only RUN gives stays after RUN (no check of what it compiled replaces it); an edit's check takes
+//             it away, and undone (the files RUN compiled) RUN's messages come back
+//   FIND TABS Escape after the bar was open over two tabs leaves no match marked in either
 #include "Probe.h"
 
 #include "editor/CodeAssist.h"
@@ -505,6 +509,107 @@ PROBE(gui, code)
             prog.setCaret(posIn(prog, "rate = r;", 1));
             host.keys("cmd+b");
             P.eq("define.field", prog.caret() == posIn(prog, "float rate;", 6) ? 1 : 0, 1);
+        }
+
+        // ---- ORDER --------------------------------------------------------------------------------------------------
+        {
+            funkgui::TextEditor& ed = panel.editor();
+            focusEditor(panel, host);
+            ed.setFocused(true);
+            ed.setCaret({ 0, 0 });
+            ed.insert("float fminus_rt_sinf(float x)\n{\n    return x;\n}\n");
+            const funkgui::TextPos end = posIn(ed, lastLine(), static_cast<int>(std::string(lastLine()).size()));
+            ed.setCaret(end);
+            ed.insert("\n            left[i] = sinf(left[i]);");
+            host.move(10.0f, 10.0f);
+            const bool checked = waitFor(host, [&] { return code.errorCount() > 0 && !code.checking(); });
+            funkgui::TextPos error{ -1, -1 }, note{ -1, -1 };
+            for (const funkgui::Decoration& d : ed.decorations())
+                if (d.kind == funkgui::DecorationKind::error && error.line < 0)
+                    error = d.from;
+                else if (d.kind == funkgui::DecorationKind::info && note.line < 0)
+                    note = d.from;
+            P.eq("order.checked", checked ? 1 : 0, 1);
+            P.eq("order.note_before_error", note.line >= 0 && error.line >= 0 && note < error ? 1 : 0, 1);
+            const auto hoverAt = [&](funkgui::TextPos p) {
+                ed.setCaret(p);                                  // in view (the note is at the file's top)
+                ed.scrollToCaret();
+                host.tick(1);
+                const funkgui::Point at = ed.pointOf(p);
+                host.move(at.x + 2.0f, at.y + ed.rowHeight() * 0.5f);
+                host.tick(40);
+                const std::string text = code.hoverOpen() ? code.hoverText() : std::string();
+                host.move(10.0f, 10.0f);
+                host.tick(2);
+                return text;
+            };
+            const std::string onError = hoverAt(error), onNote = hoverAt(note);
+            std::printf("hover on the error: %s\nhover on the note: %s\n", onError.c_str(), onNote.c_str());
+            P.eq("order.error_card", onError.find("error: ") != std::string::npos && onError.find("reserves") != std::string::npos
+                                         && onError.find("declared here") == std::string::npos ? 1 : 0, 1);
+            P.eq("order.note_card", onNote.find("note: ") != std::string::npos && onNote.find("declared here") != std::string::npos
+                                        && onNote.find("reserves") == std::string::npos ? 1 : 0, 1);
+            ed.selectAll();
+            ed.insert(withSvf);
+            P.eq("order.cleared", waitFor(host, [&] { return code.errorCount() == 0 && ed.lineMarks().empty() && !code.checking(); })
+                                      ? 1 : 0, 1);
+        }
+
+        // ---- RUN ONLY -----------------------------------------------------------------------------------------------
+        {
+            funkgui::TextEditor& ed = panel.editor();
+            const auto notes = [&] {
+                int n = 0;
+                for (const funkgui::LineMark& m : ed.lineMarks())
+                    n += m.kind == funkgui::LineMark::Kind::info ? 1 : 0;
+                return n;
+            };
+            focusEditor(panel, host);
+            ed.setFocused(true);
+            ed.setCaret({ 0, 0 });
+            ed.insert("#include \"host.fm\"\n");                // a Host no field points at: a note of RUN's alone
+            host.keys("cmd+return");                             // before the check due
+            settleRun(processor, host);
+            P.eq("runonly.run_note", port.status().ok && notes() == 1 ? 1 : 0, 1);
+            settleChecks(panel, host);
+            P.eq("runonly.no_check_after_run", notes(), 1);
+            const funkgui::TextPos end = posIn(ed, lastLine(), static_cast<int>(std::string(lastLine()).size()));
+            ed.setCaret(end);
+            ed.insert("\n            // edited");
+            P.eq("runonly.edit_checked", waitFor(host, [&] { return notes() == 0 && !code.checking(); }) ? 1 : 0, 1);
+            ed.undo();                                           // the files RUN compiled: its messages again
+            P.eq("runonly.undo_run_again", waitFor(host, [&] { return notes() == 1 && !code.checking(); }) ? 1 : 0, 1);
+            ed.selectAll();
+            ed.insert(withSvf);
+            host.keys("cmd+return");
+            settleRun(processor, host);
+            settleChecks(panel, host);
+            P.eq("runonly.restored", notes() == 0 && code.errorCount() == 0 && port.running()[0].text == withSvf ? 1 : 0, 1);
+        }
+
+        // ---- FIND TABS ----------------------------------------------------------------------------------------------
+        {
+            const auto found = [](const funkgui::TextEditor& e) {
+                int n = 0;
+                for (const funkgui::Decoration& d : e.decorations())
+                    n += d.kind == funkgui::DecorationKind::findMatch || d.kind == funkgui::DecorationKind::findCurrent ? 1 : 0;
+                return n;
+            };
+            focusEditor(panel, host);
+            panel.editor().setFocused(true);
+            panel.editor().setCaret({ 0, 0 });
+            host.keys("cmd+f");
+            type(panel, host, "rate");
+            P.ge("findtabs.program_marked", found(panel.editor()), 2.0);
+            const funkgui::Point tab1 = panel.centreOfTab(1);
+            host.click(tab1.x, tab1.y);                          // svf.fm, the bar open: its own matches
+            host.settle();
+            P.eq("findtabs.other_tab", panel.fileName(panel.activeFile()) == "svf.fm" && code.findOpen() ? 1 : 0, 1);
+            host.keys("escape");
+            P.eq("findtabs.closed", code.findOpen() ? 0 : 1, 1);
+            host.click(tab0.x, tab0.y);
+            host.settle();
+            P.eq("findtabs.program_clear", panel.activeFile() == 0 && found(panel.editor()) == 0 ? 1 : 0, 1);
         }
     }
 
