@@ -326,6 +326,9 @@ target_compile_definitions(${FP_MCP} PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 target_link_libraries(${FP_MCP} PRIVATE fp_flags juce::juce_core juce::juce_recommended_config_flags)
 set_target_properties(${FP_MCP} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 string(TOLOWER ${PRODUCT_NAME} FP_MCP_ID)
+# The extension's own version: Claude Desktop updates an installed extension only to a newer one, so this goes up with
+# every change to the server, its manifest or what the plugin tells it (the tools, the guide's preamble).
+set(FP_MCP_VERSION "0.2.0")
 if(PRODUCT_KIND STREQUAL "instrument")
   set(FP_MCP_WHAT "synth")
   set(FP_MCP_NAME "Synth")
@@ -346,7 +349,7 @@ file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/mcpb/manifest.json @ONLY CONTENT [=[{
   "manifest_version": "0.3",
   "name": "@FP_MCP_ID@",
   "display_name": "@PRODUCT_NAME@",
-  "version": "@PROJECT_VERSION@",
+  "version": "@FP_MCP_VERSION@",
   "description": "Ask Claude for @FP_MCP_ASK@ in words: it builds it in @PRODUCT_NAME@, listens to it and sets its dials.",
   "long_description": "Open @PRODUCT_NAME@ in your DAW (on @FP_MCP_TRACK@) or as its own app, then talk to Claude about the sound you want. Claude writes the @FP_MCP_WHAT@'s program, runs it, measures and looks at the result, fixes what is off and leaves the dials at good settings; you hear it right away, and the plugin's window shows what Claude did. Try: @FP_MCP_EXAMPLES@\n\nWith more than one open, say which you mean by its track or project (each also shows its name, such as \"@FP_MCP_NAME@ 2\", while Claude is connected). Claude Desktop's + menu also has ready-made requests: Make a sound, Improve the sound, Explain the sound.\n\nNothing leaves your Mac except your conversation with Claude: the extension talks to the plugin through a private local connection.",
   "author": { "name": "@PRODUCT_COMPANY@" },
