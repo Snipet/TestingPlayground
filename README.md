@@ -1,25 +1,38 @@
 # TestingPlayground
 
-An effect (AU, VST3 and Standalone, macOS on Apple silicon) whose DSP you write while it runs: its editor is a text
-field holding an [FMinus](https://github.com/Snipet/FMinus) program, the plugin compiles it when you press RUN (or
-Cmd-Return), and the next block plays it, crossfaded from the last. The program's parameters become the dials under
-the text. A chat with Claude at the right of the editor writes and changes the program for you: describe an effect
-and it writes the FMinus, runs it, fixes what does not compile and leaves the dials at good settings, so a sentence
-does what a preset did. Built on JUCE 8.0.4, with a GPU editor made with [FunkGui](https://github.com/Snipet/FunkGui)
-(its `TextEditor`) and FMinus, the JIT compiler for DSP, linked in.
+Two plugins (AU, VST3 and Standalone, macOS on Apple silicon) whose DSP you write while they run, built from one
+source tree: **TestingPlayground**, an effect, and **TestingPlaygroundSynth**, an instrument. The editor of each is a
+text field holding an [FMinus](https://github.com/Snipet/FMinus) program; the plugin compiles it when you press RUN
+(or Cmd-Return), and the next block plays it: the effect's crossfaded from the last, the synth's with the keys you
+hold started again on the new program while the old one's voices fade out. The program's parameters become the dials
+under the text. A chat with Claude at the right of the editor writes and changes the program for you: describe an
+effect or a sound and it writes the FMinus, runs it, fixes what does not compile and leaves the dials at good
+settings, so a sentence does what a preset did. Built on JUCE 8.0.4, with a GPU editor made with
+[FunkGui](https://github.com/Snipet/FunkGui) (its `TextEditor`) and FMinus, the JIT compiler for DSP, linked in.
+
+The two are one code base compiled twice, once for each product (`products/effect.cmake`, `products/synth.cmake`):
+what differs is the program each plays (below), its examples and its identity (name, codes, bundle id, its own
+folders). The editor, the chat, the projects, the library and the Claude Desktop extension work the same in both.
+Where this guide says "the effect" or "the synth", it means that product; the rest holds for both.
 
 <!-- origin -->
-It began as a feedback delay network reverb (made from FunkPluginTemplate, its FDN ported from the Visage version,
-git tag `legacy-visage`); that reverb, and the file-watching script that ran after it, are in the history before the
-branch `fminus-editor`.
+The effect began as a feedback delay network reverb (made from FunkPluginTemplate, its FDN ported from the Visage
+version, git tag `legacy-visage`), and the synth as the sine voice synth of the Visage version, ported onto FSynth's
+DSP core; each one's history before the branch `fminus-editor` holds that plugin and the file-watching script that ran
+after it. They were two repositories, TestingPlayground and TestingPlaygroundSynth, until this one took both: the
+synth's history is merged in.
 <!-- /origin -->
 
-After a build, `build-dev/probe-out/gui.dump.png` is a picture of the editor.
+After a build, `build-dev/probe-out/effect/gui.dump.png` and `build-dev/probe-out/synth/gui.dump.png` are pictures of
+the two editors.
 
 ## Writing a program
 
 FMinus is C with DSP's additions (vectors, modules, parameters); its README has the language, and its
-`docs/programs.md` and `docs/extending.md` the details. The plugin plays a module named `Effect`:
+`docs/programs.md` and `docs/extending.md` the details. The effect plays a module named `Effect`, one instance; the
+synth plays a module named `Voice`, one instance a note, sixteen at once.
+
+### The effect: module Effect
 
 ```c
 module Effect
@@ -48,39 +61,125 @@ module Effect
 - **process** gets n samples of both channels and changes them in place (a mono bus: `right` is a copy of the left,
   unheard). A module's fields are its state: they start at 0, live as long as the program, and carry from block to
   block. Keep the state per sample, and the output does not depend on the host's block size.
-- **Dials.** The module's first 32 parameters, in the order they are declared, are the dials, and the host's
-  parameters P1 to P32 (a host shows "1 gain", and the value in the program's units). A `float` glides when its dial
-  turns: it is read sample by sample, `gain[i]`, as a stream of 20 ms ramps, and held still otherwise. An `int` or a
-  `bool` is read once a call (`mode[0]`, or any index). `fminus::range` sets the dial's span (a float without one
-  spans 0 to 1, an int 0 to 10) and `fminus::default` where it starts and where a double-click returns it. A run
-  that brings a parameter the slot did not have moves that dial to its default; one with the same name keeps it.
+
+### The synth: module Voice
+
+```c
+module Voice
+{
+    param float release [[fminus::range(5, 5000)]] [[fminus::default(300)]];   // ms: a dial
+    float rate, phase, step, env;                                              // state: the module's fields
+    bool held;
+
+    void init(float sampleRate)                // optional: before the first note, and when the sample rate changes
+    {
+        rate = sampleRate;
+    }
+
+    void start(float note, float velocity)     // a note-on: 69 is A, 440 Hz; velocity 0 to 1
+    {
+        step = 440 * expf(0.0577622650f * (note - 69)) / rate;
+        env = velocity;
+        held = true;
+    }
+
+    void stop()                                // optional: the note-off
+    {
+        held = false;
+    }
+
+    bool process(float* restrict left, float* restrict right, int n)   // the voice's next n samples
+    {
+        const float down = expf(-6907.7553f / (release[0] * rate));
+        for (int i = 0; i < n; ++i)
+        {
+            if (!held)
+                env *= down;
+            const float out = env * sinf(6.28318531f * phase);
+            left[i] += out;
+            right[i] += out;
+            phase += step;
+            if (phase >= 1)
+                phase -= 1;
+        }
+        return held || env > 0.0001f;          // false: silent for good, and the voice is free
+    }
+
+    void end() {}                              // optional: before the program goes (free what init allocated)
+};
+```
+
+- **start** begins a note on a voice, which may have played another before: set what the note needs (a voice's
+  fields keep their values between notes, and start as 0 when the program does). **stop** releases it. **process**
+  adds the voice's next n samples into both channels (they arrive at 0, so writing works too) and returns false once
+  the voice is silent for good, which frees it. Keep the state per sample, and the output does not depend on the
+  host's block size: the plugin calls the voices in parts that end on multiples of 16 samples, and frees a finished
+  voice only there.
+- **Voices.** Sixteen sound at once. A seventeenth note steals the oldest released voice (else the oldest), fading it
+  out over 2 ms while the new note starts on another instance. A key pressed again while its note still sounds stops
+  that voice first. The voices are summed, and a mono output gets their two channels' average. The sustain pedal is
+  the plugin's: a key let go while it is down gets its stop when the pedal comes up.
+
+### Both
+
+- **Dials.** The main module's first 32 parameters, in the order they are declared, are the dials, and the host's
+  parameters P1 to P32 (a host shows "1 gain", and the value in the program's units); the synth's voices all read the
+  same values. A `float` glides when its dial turns: it is read sample by sample, `gain[i]`, as a stream of 20 ms
+  ramps, and held still otherwise (`release[0]` reads it once a call). An `int` or a `bool` is read once a call
+  (`mode[0]`, or any index). `fminus::range` sets the dial's span (a float without one spans 0 to 1, an int 0 to 10)
+  and `fminus::default` where it starts and where a double-click returns it. A run that brings a parameter the slot
+  did not have moves that dial to its default; one with the same name keeps it.
 - **Frozen dials.** Once no dial has moved for 3 seconds, the plugin compiles the program again in the background
   with each dial's value as a constant (FMinus's frozen binding) and in FMinus's fast math (LLVM's own sinf, cosf,
-  expf, tanhf and logf), and plays that copy on the same instance, at a block's start, until a dial moves (that block
-  it plays its own code again; 3 s later it freezes again); the top bar says FROZEN beside the CPU load while the copy
-  plays. The two sound the same, so the switch cannot be heard: fast math moves a result's last bits, never its level
-  or its spectrum (`dsp.freeze` plays the examples and 64 of RANDOM's programs for ten seconds each: every octave band
-  within 0.1 dB, the peaks within 0.01 dB). The samples are not the same bits, though, and while the copy plays the
-  output may depend on where the host's blocks end. On those programs the copy takes 78% of the program's time (58% to
-  126%; with exact math it would take 91%): FMinus already makes copies of a method for a bool's or a small int's
-  values and moves a still dial's arithmetic out of its loops, so most of the gain is fast math's. The Filter example
-  is the one slower frozen: its loop is the same instructions in both, placed differently (`dsp.freeze` prints them).
-- **The audio thread.** process may not allocate: FMinus refuses a program whose process could reach `calloc`,
-  `malloc` or `free`, and names the line. Allocate in init (a delay line: `calloc`, zeroed) and free in end, both
-  off the audio thread; or use a fixed array, `float line[48000];`, a field like any other.
-- **Modules inside modules.** The main module may hold others (`Svf l;`, `Osc osc[4];`): their methods are its
+  expf, tanhf and logf), and plays that copy on the same instance (the synth's on the same voices), at a block's
+  start, until a dial moves (that block it plays its own code again; 3 s later it freezes again); the top bar says
+  FROZEN beside the CPU load while the copy plays. The two sound the same, so the switch cannot be heard: fast math
+  moves a result's last bits, never its level or its spectrum (`dsp.freeze` plays the examples and 64 of RANDOM's
+  programs for ten seconds each: every octave band within 0.1 dB, the peaks within 0.01 dB). The samples are not the
+  same bits, though (an FM voice's pitch, from an expf an ulp apart, drifts its phase so slowly that its samples part
+  by 60 dB in ten seconds), and while the copy plays the output may depend on where the host's blocks end. On those
+  programs the copy takes 78% of the effect's time (58% to 126%; with exact math it would take 91%) and 75% of the
+  synth's (61% to 105%; 94%): FMinus already makes copies of a method for a bool's or a small int's values and moves
+  a still dial's arithmetic out of its loops, so most of the gain is fast math's. The effect's Filter example is the
+  one slower frozen: its loop is the same instructions in both, placed differently (`dsp.freeze` prints them).
+- **The audio thread.** process (and the synth's start and stop) may not allocate: FMinus refuses a program whose
+  methods could reach `calloc`, `malloc` or `free` from them, and names the line. Allocate in init (a delay line:
+  `calloc`, zeroed; in the synth each voice's own, as the Pluck example's) and free in end, both off the audio thread;
+  or use a fixed array, `float line[48000];`, a field like any other.
+- **Modules inside modules.** The main module may hold others (`Svf l;`, `Osc osc[3];`): their methods are its
   helpers, and their parameters start at their defaults (they have no dials).
-- **Shared data.** A module named `Shared`, when the program has one, is made once for it: its init runs before the
-  effect's (with the rate), its end after, and every field of Effect of type `Shared*` points at it. The synth
-  playground's voices share a wavetable this way; an effect, one instance, may as well hold what it needs.
-- **The host: tempo and position.** `#include "host.fm"` (the plugin provides it: no tab of its own) and declare
-  `Host* host;` in Effect: the plugin points it at one `Host`, filled before every process. It holds the host's tempo
-  (`bpm`), the song's position at the call's first sample in quarter notes (`beat`; sample i is at
-  `beat + i * bpm / (60 * rate)`), the bar's start, the time signature and whether the transport runs (`playing`); a
-  host that says nothing (the Standalone) gets 120 BPM and a position that runs on from the start. (Its wheels,
-  pressure and pedal are the synth playground's; an effect's stay at rest.) Tempo sync is the program's: a delay of
-  `beats * 60 / bpm` seconds, an LFO at `bpm / 60 / beats` Hz, or one that follows the song with
-  `lfo.follow(position, beats)` (`lfo.fm`). Read it, never write it.
+- **Shared data.** A module named `Shared`, when the program has one, is made once for it, not once a voice: its init
+  runs before the main module's (with the rate), its end after theirs, and every field of the main module of type
+  `Shared*` points at it. So the synth's voices read one wavetable, lookup table or sample that init built once, where
+  a voice's own init would build it for every voice instance; they read it on the audio thread and never free it. The
+  effect, one instance, may as well hold what it needs.
+
+  ```c
+  module Shared
+  {
+      Wavetable table;                                       // wavetable.fm
+      void init(float rate) { table.allocate(1); table.shape(0, 2); }
+      void end() { table.release(); }
+  };
+
+  module Voice
+  {
+      Shared* shared;                                        // the plugin sets it before init
+      WaveOsc osc;
+      void init(float rate) { osc.table = &shared->table; }
+      ...
+  };
+  ```
+- **The host: tempo, position, wheels.** `#include "host.fm"` (the plugin provides it: no tab of its own) and declare
+  `Host* host;` in the main module (Shared may have one too): the plugin points it at one `Host`, filled before every
+  call (process; the synth's start and stop too). It holds the host's tempo (`bpm`), the song's position at the call's
+  first sample in quarter notes (`beat`; sample i is at `beat + i * bpm / (60 * rate)`), the bar's start, the time
+  signature and whether the transport runs (`playing`), and, in the synth, the player's mod wheel (CC 1, 0 to 1),
+  pitch wheel (-1 to 1; the program picks the range), channel pressure and sustain pedal (the effect's stay at rest).
+  A host that says nothing (the Standalone) gets 120 BPM and a position that runs on from the start. Tempo sync is
+  the program's: a delay of `beats * 60 / bpm` seconds, an LFO at `bpm / 60 / beats` Hz, or one that follows the song
+  with `lfo.follow(position, beats)` (`lfo.fm`); a voice's key tracking comes from start's note. Read it, never write
+  it.
 
   ```c
   #include "host.fm"
@@ -93,6 +192,22 @@ module Effect
       void process(float* restrict left, float* restrict right, int n)
       {
           const int d = (int)(0.5f * 48000 * 60 / host->bpm);              // an eighth note
+          ...
+      }
+  };
+  ```
+
+  ```c
+  #include "host.fm"
+
+  module Voice
+  {
+      Host* host;
+      float step, phase;
+      void start(float note, float velocity) { step = 440 * expf(0.0577622650f * (note - 69)) / 48000; }
+      bool process(float* restrict left, float* restrict right, int n)
+      {
+          const float f = step * expf(0.0577622650f * 2 * host->pitchbend);     // a bend of 2 semitones
           ...
       }
   };
@@ -110,7 +225,7 @@ module Effect
   `noise.fm`), modulation (`adsr.fm`, `lfo.fm`, `follower.fm`), shaping and utilities (`shaper.fm`, `util.fm`).
   LIBRARY (the editor) or Claude adds one as a tab of the program's own; `#include` it and use its modules (each
   file's header says how). It is then the program's file like any other, saved with it, and yours to change. They
-  live in `Source/fminus/library/<n>-<category>/`.
+  live in `Source/fminus/library/<n>-<category>/`, the same in both products.
 - **The interface: a .gui file.** A file named `panel.gui` (any name ending in `.gui`) beside the program gives it
   an interface richer than the `#pragma panel` lines below, which it replaces: containers laid out as CSS's flexbox
   lays them out, pages behind tabs, every kind of control with its own label, unit and taper, displays and text
@@ -139,6 +254,7 @@ module Effect
           page "MOD" { xy level pan }           // a pad that moves two parameters
           page "METERS" { meter out; vu out; led gate; number count; scope out; spectrum out grow=1 }
       }
+      keyboard from=48 keys=25 wheels           // the synth's keys and its pitch and mod wheels, played with the mouse
   }
   ```
 
@@ -189,15 +305,15 @@ module Effect
     bool, or an int of two values); `buttons`, a lit button a value (an int or a bool, up to eight). A `style` line
     names one dial or several, the style last. `options` names an int's values (a bool's: off, on): its buttons show
     them, and its knob and the host say them.
-  - **Displays** show the plugin's audio, `in` (an effect's input) or `out` (the output; left and right, in dBFS), or
-    a float, int or bool field of the main module that process writes (`gr = reduction;`), across a range given
-    after it (0 to 1 unless it says: `#pragma panel meter gr 0 24 "GR"`). `meter`: LED bars, the highest held a
-    second (the audio's peaks); `vu`: an analog VU meter's needle (0 VU at -18 dBFS RMS); `led`: a light, a field's
-    value its brightness (of the audio: a clip light); `number`: a readout of the field (of the audio: its peak in
-    dBFS); `scope`: an oscilloscope (of a field: its trace over the last 2.5 seconds). An instrument's fields are its
-    newest sounding voice's. A section names a display by its source, or by the name `as` gives it, which a second
-    display of one source needs: `#pragma panel scope out as wave "WAVE"`. Eight displays at most. The colours: red,
-    orange, yellow, green, teal, blue, violet, pink, cream, grey.
+  - **Displays** show the plugin's audio, `in` (the effect's input; the synth has none) or `out` (the output; left and
+    right, in dBFS), or a float, int or bool field of the main module that process writes (`gr = reduction;`; the
+    synth's from the newest voice that sounds), across a range given after it (0 to 1 unless it says:
+    `#pragma panel meter gr 0 24 "GR"`). `meter`: LED bars, the highest held a second (the audio's peaks); `vu`: an
+    analog VU meter's needle (0 VU at -18 dBFS RMS); `led`: a light, a field's value its brightness (of the audio: a
+    clip light); `number`: a readout of the field (of the audio: its peak in dBFS); `scope`: an oscilloscope (of a
+    field: its trace over the last 2.5 seconds). A section names a display by its source, or by the name `as` gives
+    it, which a second display of one source needs: `#pragma panel scope out as wave "WAVE"`. Eight displays at most.
+    The colours: red, orange, yellow, green, teal, blue, violet, pink, cream, grey.
 
   A row too wide for the window wraps, its sections shared out evenly; shorter rows widen toward the widest; when
   the sections need more height than the window gives, every knob is drawn small. Dials and displays no section
@@ -205,21 +321,30 @@ module Effect
   that is not there, a style the dial does not suit) is a note on its line, and the rest stands
   (`Source/fminus/PanelSpec.h`). The examples and RANDOM's programs use these lines; Claude writes a `panel.gui`.
 - **Its types are checked.** The plugin calls each method through a line of its own with the type it calls it by, so
-  a `process` with other parameters is an error ("Effect::process: the plugin calls it as ..."), never a crash.
+  a `process` with other parameters (or, the synth's, one that returns nothing) is an error ("Effect::process: the
+  plugin calls it as ..."), never a crash.
 - **What the plugin guards, and what it cannot.** Every sample that leaves the plugin is finite and within +-4
-  (+12 dBFS): a NaN or an infinity becomes 0 and a louder sample is clipped, and the toolbar says so. A NaN in the
-  program's state stays there: RUN again starts it from scratch. But the program is native code: a write through a
-  pointer past its memory, or a loop that never ends, takes the host with it. Try a new program in the Standalone.
+  (+12 dBFS): the effect turns a NaN or an infinity into 0, the synth drops a voice whose output is not finite, a
+  louder sample is clipped, and the toolbar says so. A NaN in the effect's state stays there: RUN again starts it from
+  scratch. But the program is native code: a write through a pointer past its memory, or a loop that never ends,
+  takes the host with it. Try a new program in the Standalone.
 - **Subnormals** are flushed to zero (the plugin compiles with FMinus's `Denormals::Flush`, the mode the audio thread
   runs in), and the math builtins (`sinf`, `cosf`, `expf`, `tanhf`, `logf`; also `fabsf`, `sqrtf`, `floorf`, `fminf`,
   `fmaxf`) are FMinus's default math mode's: one result for a float wherever it is computed.
 
-The EXAMPLES menu holds five to start from (`Source/fminus/examples/`): Gain and pan (the program a new instance
-plays), Tremolo (init and the sample rate; SYNC follows the song in notes, host.fm), Filter (a state-variable filter
-as a module of its own), Echo (a delay line from calloc in init, freed in end; a VU and a switch; SYNC sets its time in
-notes at the host's tempo) and Drive (tanh saturation; input and output meters, a vintage
-knob). To add one, add a file there whose first line is
-`// <Title>: what it is`.
+The EXAMPLES menu holds each product's own to start from, `Source/fminus/examples/<key>/`:
+
+- **The effect's five** (`effect/`): Gain and pan (the program a new instance plays), Tremolo (init and the sample
+  rate; SYNC follows the song in notes, host.fm), Filter (a state-variable filter as a module of its own), Echo (a
+  delay line from calloc in init, freed in end; a VU and a switch; SYNC sets its time in notes at the host's tempo) and
+  Drive (tanh saturation; input and output meters, a vintage knob).
+- **The synth's four** (`synth/`): Sine (an attack and a release; the program a new instance plays; the pitch wheel
+  bends it, host.fm), Saw and filter (a polyBLEP sawtooth through a resonant low-pass, an ADSR on both: eight dials,
+  the envelope's on faders, a light that follows it and a VU; the pitch wheel bends it and the mod wheel opens the
+  filter), FM bell (two operators; a meter of its brightness and a scope; the mod wheel adds index) and Pluck
+  (Karplus-Strong, each voice's delay line from calloc in init).
+
+To add one, add a file there whose first line is `// <Title>: what it is`.
 
 ## The editor
 
@@ -241,36 +366,42 @@ knob). To add one, add a file there whose first line is
   program's card taking the room, and the button at the left of the program's card's header opens it again; the
   session keeps the fold. A window too narrow for it beside the chat leaves it folded, and its button then folds the
   chat to make room. The **Panel** view has no explorer: the plugin's interface keeps the whole left column.
-- **Run** compiles the text and plays it once it compiles, crossfaded over 20 ms; **Cmd-Return** does the same from
-  the keyboard. Compiling takes some tens of milliseconds, off the audio thread and off the editor's.
+- **Run** compiles the text and plays it once it compiles; **Cmd-Return** does the same from the keyboard. The effect
+  crossfades from the last program over 20 ms; in the synth the sounding voices fade out over 20 ms, and the keys
+  still held start again on the new program. Compiling takes some tens of milliseconds, off the audio thread and off
+  the editor's.
 - **Examples** replaces the program's text with an example (Cmd-Z gives yours back) and runs it; the other files
   stay.
 - **Library** lists the library's files by category, a tick on those the program has. One it lacks becomes a tab,
   shown, and the program `#include`s it (a line after its description; Cmd-Z in the program takes it back); one it
   has is shown. With twelve tabs, the rest are greyed.
-- **Random** writes a new effect for inspiration, from the library's building blocks: two to four of a drive (tanh,
-  a wavefolder, a crusher or a tube's curve), a filter (still, swept by an LFO, or opened by the input's level), a
-  chorus, a flanger, a tremolo or an auto-pan, and an echo or a reverb, then a dry/wet mix, with random settings, a
-  panel and a name. It replaces the program's text (Cmd-Z gives yours back), adds the library files it needs as
-  tabs, and runs it; each click makes another. Its first line names it and its seed (`random 4821`).
+- **Random** writes a new program for inspiration, from the library's building blocks, with random settings, a panel
+  and a name: in the effect, two to four of a drive (tanh, a wavefolder, a crusher or a tube's curve), a filter
+  (still, swept by an LFO, or opened by the input's level), a chorus, a flanger, a tremolo or an auto-pan, and an echo
+  or a reverb, then a dry/wet mix; in the synth, a voice of one or two oscillators (a band-limited morph, a wavetable
+  built once in `Shared`, or two operators of FM), noise, a filter its envelope opens, an envelope of a character (a
+  pluck, keys, a pad, a bass, brass, a bell), an LFO and a drive. It replaces the program's text (Cmd-Z gives yours
+  back), adds the library files it needs as tabs, and runs it; each click makes another. Its first line names it and
+  its seed (`random 4821`).
 - **Projects** (the top bar's pill, named after the project open, its version and the preset applied) keep programs on
-  this Mac: the editor's files (every tab, and the one shown) and the dials' values, under a name, in
-  `~/Library/Audio/Presets/Funk/TestingPlayground/` (a JSON file a project, `<name>.fmproject`: copy, rename or share
-  them in the Finder). Every save is a **version** of the project (v1, v2, ...), with when it was saved and what
-  changed since the one before ("program.fm +12 -3, 2 dials"); an older version opens again, and saving it makes it
-  the newest. A project keeps its last 100 versions. A project's **presets** are dial settings for its program, no
-  code: applying one turns the dials at once, with nothing to compile. The sounds a program makes by its dials alone
-  are presets of one project; a sound that needs other code is a project of its own. The card lists the projects at
-  the left (a click chooses one, a double-click opens its newest version) and the chosen project's versions and
-  presets at the right (a double-click opens a version, or applies a preset; a click under the presets starts a new
-  one). The field names what **Save** saves: a project (a new version of the project named, or a new project) or,
-  while the presets are chosen from, a preset of the project open. **Open** opens the chosen project or version,
-  **Apply** the chosen preset, **Delete** deletes the chosen project, version or preset. Saving into another project,
-  opening over changes no version holds, replacing a preset and deleting each ask first (a second click). **Cmd-S**
-  saves a new version of the project open (where the host passes the key on), or opens PROJECTS while none is. The
-  pill says (edited) once the files change, or the dials move from the preset's. The presets saved before projects
-  (`<name>.fmpreset`) become projects of one version the first time the folder is read, and the old files move into
-  its `Presets before projects` folder.
+  this Mac: the editor's files (every tab, and the one shown) and the dials' values, under a name, in each product's
+  own folder, `~/Library/Audio/Presets/Funk/TestingPlayground/` (the effect's) and
+  `~/Library/Audio/Presets/Funk/TestingPlaygroundSynth/` (the synth's; a JSON file a project, `<name>.fmproject`:
+  copy, rename or share them in the Finder). Every save is a **version** of
+  the project (v1, v2, ...), with when it was saved and what changed since the one before ("program.fm +12 -3, 2
+  dials"); an older version opens again, and saving it makes it the newest. A project keeps its last 100 versions. A
+  project's **presets** are dial settings for its program, no code: applying one turns the dials at once, with nothing
+  to compile. The sounds a program makes by its dials alone are presets of one project; a sound that needs other code
+  is a project of its own. The card lists the projects at the left (a click chooses one, a double-click opens its
+  newest version) and the chosen project's versions and presets at the right (a double-click opens a version, or
+  applies a preset; a click under the presets starts a new one). The field names what **Save** saves: a project (a
+  new version of the project named, or a new project) or, while the presets are chosen from, a preset of the project
+  open. **Open** opens the chosen project or version, **Apply** the chosen preset, **Delete** deletes the chosen
+  project, version or preset. Saving into another project, opening over changes no version holds, replacing a preset
+  and deleting each ask first (a second click). **Cmd-S** saves a new version of the project open (where the host
+  passes the key on), or opens PROJECTS while none is. The pill says (edited) once the files change, or the dials move
+  from the preset's. The presets saved before projects (`<name>.fmpreset`) become projects of one version the first
+  time the folder is read, and the old files move into its `Presets before projects` folder.
 - **Export** (PROJECTS, **Export...**) keeps a project's description, author, category (a synth's: Bass, Lead, Pad,
   ...; an effect's: Reverb, Delay, ...), tags and genres with it, and takes it off this Mac two ways: **Export source
   (.zip)**, its code to read and edit anywhere (`<Name>/README.md` says what it is; `project.json` keeps the dials, the
@@ -279,11 +410,12 @@ knob). To add one, add a file there whose first line is
   Compression framework: a project of 30 versions, 33 KB of text, is a 1.3 KB package; the header is 20 bytes and the
   rest a plain .xz stream). Every version goes, or the newest only. **Import...** in PROJECTS, or a .zip or a .fmpack
   dropped on the editor, adds one as a project of its own ("<name> 2" when the name is taken); a synth's export does
-  not open in the effect.
+  not open in the effect, nor an effect's in the synth.
 - **The files' tabs**, over the text: a click shows a file; a double-click edits its name in place (Return keeps it,
   Escape cancels; letters, digits, `_`, `-` and `.`, and no two the same); **+** adds a file (up to twelve; the tabs
-  narrow to fit), its name ready to type; a tab's **x** closes its file, asking first when it has text. The program's tab cannot be closed. A
-  tab whose file the last run's errors name has a mark before its name. Each file keeps its own caret, scroll and undo.
+  narrow to fit), its name ready to type; a tab's **x** closes its file, asking first when it has text. The program's
+  tab cannot be closed. A tab whose file the last run's errors name has a mark before its name. Each file keeps its
+  own caret, scroll and undo.
 - **The status**, left of the card's actions (its light green while the program plays as written), says whether the
   program plays, whether the text has changed since it was run, and how many errors the last run had; a program that
   does not compile leaves the last one that did playing. The top bar has the audio thread's load (the busiest recent
@@ -293,23 +425,25 @@ knob). To add one, add a file there whose first line is
   leave the text (the panel's keys then move the focus over the dials). It has the caret when the editor opens.
 - **Problems.** The last run's messages are listed under the text, with their file, line and column; a click on one
   shows its file and puts the caret there, and each line with an error has a mark in the gutter.
-- **Code and Panel**, the top bar's switch: Code shows the editor with the program's interface under it (a .gui file's takes
-  half the column at most and scrolls with the wheel past that; over a control the wheel turns it); Panel gives the
-  interface the whole program card, the editor out of the way. The session keeps the choice.
+- **Code and Panel**, the top bar's switch: Code shows the editor with the program's interface under it (a .gui file's
+  takes half the column at most and scrolls with the wheel past that; over a control the wheel turns it); Panel gives
+  the interface the whole program card, the editor out of the way. The session keeps the choice.
 - **The dials** are the program's parameters (above): in the sections its `#pragma panel` lines ask for (above),
   in their styles and beside its displays, or in order, in as few rows as the width holds (sixteen in two rows of
   eight at the default size, in one row on a wide window, 32 in three; every knob small when the window is too short
   for them); drag, scroll, or use the keys once Tab has focused one. A switch or a button takes a click (Return or
-  Space steps it). The displays move with the sound, as hardware does. A program with a `panel.gui` has its interface instead
-  (above): knobs, sliders and the XY pad take a drag (Shift is finer), the wheel and the keys, and a double-click for
-  the default; buttons, switches and menus a click; a tab shows its page.
+  Space steps it). The displays move with the sound, as hardware does. A program with a `panel.gui` has its interface
+  instead (above): knobs, sliders and the XY pad take a drag (Shift is finer), the wheel and the keys, and a
+  double-click for the default; buttons, switches and menus a click; a tab shows its page; in the synth, a keyboard's
+  key plays its note (louder lower on the key; a drag slides across the keys).
 - **The session** keeps the program that plays (all its files), the files as you left them (run or not), the tab
-  shown, the dials and the project open (its version, the preset applied). A session whose program no longer compiles (an older FMinus, say) leaves the
-  first example playing, its files in the editor. A session saved before files loads as a program of one file.
+  shown, the dials and the project open (its version, the preset applied). A session whose program no longer compiles
+  (an older FMinus, say) leaves the first example playing, its files in the editor. A session saved before files
+  loads as a program of one file.
 - **The window** resizes in both directions, from 1000 x 600 (logical px, before the zoom) up: the editor and the chat's
   conversation take the height, the chat about a third of the width. The session keeps the size.
 - The theme (the top bar's moon or sun: Graphite or Paper) and the zoom (the status bar's pill) are machine-wide
-  preferences.
+  preferences, each product's own.
 
 ## The chat
 
@@ -319,24 +453,27 @@ account's credit), or use your own Anthropic API key (billed to you). Claude see
 the last compile's messages and the dials (sent with a message when they changed; a file it has already seen goes as one
 line, not again in full), and it can act on them: read, write, edit, rename and delete the files (the editor's tabs
 follow, and Cmd-Z in a file undoes its change), add the library's building blocks, run the program (RUN; the compile's
-messages come back to it), set the dials, measure what the program puts out, see the panel (view_panel: a picture of it, drawn
-headless, which goes to Anthropic with the request, so that Claude can check its layout and fix it; the session keeps no
-picture), see the sound (view_sound), hold its work to checks it sets and tune the dials toward goals (below, **Checking
-its work**), read the CPU load and the output guard's alerts, and ask you questions you answer with a click. Ask it for an effect ("a tape delay with wow and flutter"), a change ("make the filter resonate more"),
-an explanation ("what does this program do?"), or help with an error or a click. It knows FMinus, the plugin's contract,
-the library (each file's header) and how to build a large program from it, and it lays the dials out in a panel (its
-instructions are in `Source/plugin/ChatPrompt.cpp`).
+messages come back to it), set the dials, measure what the program puts out, see the panel (view_panel: a picture of
+it, drawn headless, which goes to Anthropic with the request, so that Claude can check its layout and fix it; the
+session keeps no picture), see the sound (view_sound), hold its work to checks it sets and tune the dials toward goals
+(below, **Checking its work**), read the CPU load and the output guard's alerts, and ask you questions you answer with
+a click. Ask the effect for an effect ("a tape delay with wow and flutter") and the synth for a sound ("a warm detuned
+pad", "a plucked string"), either for a change ("make the filter resonate more", "a slower attack"), an explanation
+("what does this program do?"), or help with an error or a click. It knows FMinus, the plugin's contract, the library
+(each file's header) and how to build a large program from it, and it lays the dials out in a panel (its instructions
+are in `Source/plugin/ChatPrompt.cpp`).
 
 - **The conversation**: your messages in bubbles at the right; Claude's answers in light markdown (lists, headings,
   **bold**, `code`, and code blocks with a **Copy** of their own); a **Copy** under each finished answer (it shows
   under the pointer); Claude's thinking as a row that opens and closes; what it did (a file written, a run, a dial
   set, a sound measured) as a card of rows; errors in a tinted card. When a request leaves choices only you can make
-  (above all a first, open one: "make me an effect"), Claude asks: a card of up to four questions, each with its
-  options as buttons (a ring for one choice, a box for several, the one it recommends first). One question of one
-  choice is answered by its click, more by **Send answers**; or write your own answer in the message box instead. Its
-  turn waits for the answer, and the session keeps a question that waits. While Claude works, pulsing dots say what it is
-  doing ("Writing osc.fm (12 KB)"). The wheel scrolls; a round button brings you back to the end. An empty chat
-  offers suggestions: a click puts one in the message box, and nothing is sent until you send it.
+  (above all a first, open one: "make me an effect", "make me a synth"), Claude asks: a card of up to four questions,
+  each with its options as buttons (a ring for one choice, a box for several, the one it recommends first). One
+  question of one choice is answered by its click, more by **Send answers**; or write your own answer in the message
+  box instead. Its turn waits for the answer, and the session keeps a question that waits. While Claude works,
+  pulsing dots say what it is doing ("Writing osc.fm (12 KB)"). The wheel scrolls; a round button brings you back to
+  the end. An empty chat offers suggestions: a click puts one in the message box, and nothing is sent until you send
+  it.
 - **Pictures**: the picture button at the left of the message box's bar (or a drop on the chat) adds pictures to your
   next message: an effect's or a synth's panel to take after, a sketch, a screenshot, colours you like. PNG, JPEG,
   GIF, WebP, HEIC and TIFF; up to six a message and twenty a conversation (each request carries them all: a new chat
@@ -344,23 +481,27 @@ instructions are in `Source/plugin/ChatPrompt.cpp`).
   to Claude before your words, scaled to at most 1568 px on their long side (the API's advice), so a large photo costs
   what a small one does. The session keeps them, and their thumbnails.
 - **Checking its work**: Claude cannot hear the plugin, so it measures, looks and checks instead.
-  - **view_sound** renders the program offline with an input (a sweep from 20 Hz to 20 kHz by default; noise, an
-    impulse for a reverb's or a delay's tail, a sine, or silence) and draws it as a picture, which goes to Claude and
-    shows in the chat under its row: the waveform and the level over time, a spectrogram (20 Hz to 20 kHz on a log
-    scale; a filter's cut, what a drive adds and aliasing folding back down show there), the spectrum while the input
-    plays, and a close-up of a few cycles. About 1,200 input tokens a picture. `Source/dsp/SoundView.h`,
-    `Source/plugin/SoundPicture.h`.
+  - **view_sound** renders the program offline and draws it as a picture, which goes to Claude and shows in the chat
+    under its row: the waveform and the level over time, a spectrogram (20 Hz to 20 kHz on a log scale), the spectrum
+    while the input plays or the notes are held, and a close-up of a few cycles. The effect's render has an input (a
+    sweep from 20 Hz to 20 kHz by default; noise, an impulse for a reverb's or a delay's tail, a sine, or silence),
+    and its spectrogram shows a filter's cut, what a drive adds and aliasing folding back down; the synth's holds the
+    notes, then releases them, its spectrogram shows aliasing as lines folding back down and a click as a thin
+    vertical line, and its spectrum marks the note's harmonics. About 1,200 input tokens a picture.
+    `Source/dsp/SoundView.h`, `Source/plugin/SoundPicture.h`.
   - **set_checks**: from your request, Claude sets checks the work must pass, as numbers the plugin measures (the
-    gain, the distortion (THD+N), the brightness in and out, the impulse response's delay and tail, what comes out
-    of silence, the alerts, the CPU), each at least, at most or near a value, in a render of its own. The plugin
-    measures them after every run of the program (the results go to Claude with the run's) and when Claude ends a
-    turn in which it changed something: while one fails, the turn goes on with the results, twice at most, so Claude
-    fixes the program or says why a check cannot pass (a turn that only answers a question is never sent on). The chat shows them as a card (a tick or a cross a check, its value against its goal),
-    brought up to date as the turn goes; **Clear** on the card stops them. The session keeps them.
-    `Source/dsp/Goals.h`.
+    effect's gain, distortion (THD+N), brightness in and out, the impulse response's delay and tail and what comes
+    out of silence; the synth's level, brightness, pitch, aliasing, clicks, attack, decay and release, when a voice
+    ends and a chord's peak; the alerts and the CPU in both), each at least, at most or near a value, in a render of
+    its own. The plugin measures them after every run of the program (the results go to Claude with the run's) and
+    when Claude ends a turn in which it changed something: while one fails, the turn goes on with the results, twice
+    at most, so Claude fixes the program or says why a check cannot pass (a turn that only answers a question is never
+    sent on). The chat shows them as a card (a tick or a cross a check, its value against its goal), brought up to
+    date as the turn goes; **Clear** on the card stops them. The session keeps them. `Source/dsp/Goals.h`.
   - **tune_dials** finds dial values for goals by rendering the program many times (up to 400 renders, a few seconds)
-    and searching, instead of guessing: "the drive at -30 dB THD", "unity gain". It tunes up to eight float dials and
-    sets the best values; the stop button ends the search with the best so far. `Source/dsp/Tune.h`.
+    and searching, instead of guessing: "the drive at -30 dB THD", "unity gain", "the release at 1.2 s", "the level
+    at -18 dBFS RMS". It tunes up to eight float dials and sets the best values; the stop button ends the search with
+    the best so far. `Source/dsp/Tune.h`.
 - **A planner**: the model menu has two parts. **Build with** is the model that does the work (writes the files,
   runs, measures, tunes, answers); **Plan with** can add a second model that plans each of your requests first, Claude
   Fable 5.1 for the DSP and the architecture, say, with Claude Sonnet 5.5 building. Its plan (what to build, the signal
@@ -375,23 +516,22 @@ instructions are in `Source/plugin/ChatPrompt.cpp`).
   Claude searches the web and reads pages and PDFs, a part's data sheet, a paper, a manual; the API runs both, five
   searches and five pages a request at most, $10 a thousand searches; with your own API key only, since the
   account's server does not charge for searches; what it searched and read shows as rows, and the pages its answer
-  cites are listed under it), all four machine-wide and
-  shared by the two playground plugins (higher levels and larger models answer better and cost more), and the round
-  **send** button, which turns into **stop** while Claude works (what it did stays). The line under the box says what
-  Claude is doing, then the last reply's tokens: in (and how many were read from the cache) and out, "fast" when fast
-  mode wrote it, and, signed in, the credit left ("$4.50 credit left"). When fast mode stays busy a turn goes on at
-  standard speed; when your key cannot use it, it turns itself off and says why.
+  cites are listed under it), all four machine-wide and shared by the two products (higher levels and larger models
+  answer better and cost more), and the round **send** button, which turns into **stop** while Claude works (what it
+  did stays). The line under the box says what Claude is doing, then the last reply's tokens: in (and how many were
+  read from the cache) and out, "fast" when fast mode wrote it, and, signed in, the credit left ("$4.50 credit left").
+  When fast mode stays busy a turn goes on at standard speed; when your key cannot use it, it turns itself off and
+  says why.
 - **The header**: signed in, your username and the credit left (a click opens your account); the **>** folds the
-  chat into its rail; the pencil starts a
-  **new chat** (it asks first); the key opens the **access** dialog, which has two tabs (a dot marks the one the chat
-  uses):
+  chat into its rail; the pencil starts a **new chat** (it asks first); the key opens the **access** dialog, which has
+  two tabs (a dot marks the one the chat uses):
   - **Account**: your username and password (from the TestingPlayground admin; Tab moves to the password, Cmd-V
     pastes it) and **Sign in**. Signed in, it is your account: who you are, the credit left, this month's requests,
     spending and tokens, when you signed in and from which plugin, when the sign-in ends; **Refresh** asks the server
-    again (opening the tab does too), and **Sign out**. The password is
-    sent once, to the server, and kept nowhere; the server answers with a sign-in that lasts 90 days from its last
-    use. When it ends (it expired, or the admin signed you out) the chat says so and asks you to sign in again; when
-    the credit is used up it says that (ask the admin for more).
+    again (opening the tab does too), and **Sign out**. The password is sent once, to the server, and kept nowhere;
+    the server answers with a sign-in that lasts 90 days from its last use. When it ends (it expired, or the admin
+    signed you out) the chat says so and asks you to sign in again; when the credit is used up it says that (ask the
+    admin for more).
   - **API key**: paste your key (from console.anthropic.com, API keys) with Cmd-V and **Save**. **Remove key**
     forgets it.
 
@@ -400,14 +540,14 @@ instructions are in `Source/plugin/ChatPrompt.cpp`).
   sent before the chat can send it opens the dialog and goes once you have signed in or saved a key.
 - **Large work**: a complete synthesizer is a few hundred lines in several files (up to twelve tabs). Claude plans,
   takes building blocks from the library, writes its own files together, gives the dials a panel, runs them until
-  they compile, then **measures** the result (a render made offline:
-  levels, pitch, the release and whether a voice ends, clicks, NaNs, the CPU cost, at a tempo where it asks;
-  `Source/dsp/Measure.h`), since it cannot hear it, and sets the dials. An answer may be as long as the model allows (128K tokens, its thinking
-  included), a turn may take 80 requests, a dropped connection or an overloaded server is asked again, and a long
-  conversation is summarized by the API (compaction) when it nears 150K tokens, so it never runs out of room. An
-  answer cut off at its limit goes on by itself, Claude told why; a second one in a row ends the turn (send
-  "continue" to go on). At **Thinking: Max** (and XHigh) Claude thinks the longest, so a hard design is more likely
-  to reach the limit: **High** leaves it more room to write.
+  they compile, then **measures** the result (a render made offline: levels, pitch, aliasing, the release and whether
+  a voice ends, clicks, NaNs, the CPU cost, at a tempo and, in the synth, with the wheels where it asks;
+  `Source/dsp/Measure.h`), since it cannot hear it, and sets the dials. An answer may be as long as the model allows
+  (128K tokens, its thinking included), a turn may take 80 requests, a dropped connection or an overloaded server is
+  asked again, and a long conversation is summarized by the API (compaction) when it nears 150K tokens, so it never
+  runs out of room. An answer cut off at its limit goes on by itself, Claude told why; a second one in a row ends the
+  turn (send "continue" to go on). At **Thinking: Max** (and XHigh) Claude thinks the longest, so a hard design is
+  more likely to reach the limit: **High** leaves it more room to write.
 - **The session** keeps the conversation, so a project reopens with its chat; neither the key nor the sign-in is in
   it.
 - **Network**: the chat is the only part of the plugin that uses the network, and only when you send a message, sign
@@ -415,34 +555,38 @@ instructions are in `Source/plugin/ChatPrompt.cpp`).
   per key), billed to your key. Signed in: the same requests over HTTPS to the TestingPlayground server, which passes
   them on to Anthropic unchanged and charges each to your account's credit (it lists only the models it can charge
   for), and after each turn it is asked for the credit left. A turn goes on while the editor is closed. For a server
-  run locally (`wrangler dev`), start the plugin with `TSTN_SERVER_URL=http://localhost:8787` (only https://
-  addresses, or http:// on this Mac, are taken).
+  run locally (`wrangler dev`), start the plugin with `<PREFIX>SERVER_URL=http://localhost:8787` (`TSTN_SERVER_URL` for
+  the effect, `TSYN_SERVER_URL` for the synth; only https:// addresses, or http:// on this Mac, are taken).
 
 **Claude Desktop as the AI (MCP).** Claude Desktop can do what the chat does, on your Claude plan instead of an API
-key, and you talk to it as you would to the chat: "a tape delay with a little wow", "darker, please",
-"what does the third dial do?". Install it once: open `build-release/TestingPlayground.mcpb`, and Claude Desktop offers to add the extension (the effect
-and the synth each have their own). Then open the plugin in your DAW or as its Standalone and ask Claude in Desktop
-for an effect; its **+** menu also has ready-made requests (Make an effect, Improve the sound, Explain the sound). Each
-open effect has a name, the lowest number free: "Effect 1", "Effect 2"; while Claude Desktop is connected the chat
-card's subtitle shows it ("Claude Desktop calls this Effect 2"). With several open, say which you mean by its track,
-its project or that name ("the one on my bass track", "the Moog one"); Claude asks when it cannot tell. The plugin's
-chat card notes what Claude Desktop does; while it works nothing can be sent there, and Claude Desktop's
-requests are refused while one of the chat's own turns runs. How it works: each instance listens on a private socket (in your
-account's temp folder, `Funk-TestingPlayground-mcp/<n>.sock`: the folder 0700, each socket 0600), and `TestingPlaygroundMCP`, the MCP
-server the build makes, passes Claude's requests to it, with the chat's own tools (each titled in words, those that
-only look marked read-only) and the chat's instructions as a guide that teaches FMinus. Without the extension,
-Claude Desktop's `claude_desktop_config.json` can name the server itself:
-`"mcpServers": { "testingplayground": { "command": "<this folder>/build-release/TestingPlaygroundMCP" } }`.
+key, and you talk to it as you would to the chat: "a tape delay with a little wow", "make a warm pad", "darker,
+please", "what does the third dial do?". Install it once for each product: open `build-release/TestingPlayground.mcpb`
+(the effect's) or `build-release/TestingPlaygroundSynth.mcpb` (the synth's), and Claude Desktop offers to add the
+extension (each product has its own, with its own icon). Then open the plugin in your DAW or as its Standalone and
+ask Claude in Desktop for an effect or a sound; its **+** menu also has ready-made requests (Make an effect or Make a
+sound, Improve the sound, Explain the sound). Each open instance has a name, the lowest number free: "Effect 1",
+"Effect 2", or "Synth 1", "Synth 2"; while Claude Desktop is connected the chat card's subtitle shows it ("Claude
+Desktop calls this Effect 2"). With several open, say which you mean by its track, its project or that name ("the one
+on my bass track", "the Moog one"); Claude asks when it cannot tell. The plugin's chat card notes what Claude Desktop
+does; while it works nothing can be sent there, and Claude Desktop's requests are refused while one of the chat's own
+turns runs. How it works: each instance listens on a private socket (in your account's temp folder,
+`Funk-<name>-mcp/<n>.sock`: `Funk-TestingPlayground-mcp/` and `Funk-TestingPlaygroundSynth-mcp/`, each folder 0700,
+each socket 0600), and `<name>MCP` (`TestingPlaygroundMCP`, `TestingPlaygroundSynthMCP`), the MCP server the build makes
+for each product, passes Claude's requests to it, with the chat's own tools (each titled in words, those that only
+look marked read-only) and the chat's instructions as a guide that teaches FMinus. Without the extension, Claude
+Desktop's `claude_desktop_config.json` can name the servers itself:
+`"mcpServers": { "testingplayground": { "command": "<this folder>/build-release/TestingPlaygroundMCP" },
+"testingplaygroundsynth": { "command": "<this folder>/build-release/TestingPlaygroundSynthMCP" } }`.
 
 **Where the key is.** `~/Library/Application Support/Funk/Playground/anthropic-key.bin` (the folder 0700, the file
-0600), shared by the effect and the synth playground, in any host and in their Standalones; the sign-in (the token the
-server gave, never the password) is `account-token.bin` beside it, kept the same way; `chat.json` keeps the model, the
-level, the username and which of the two the chat uses. The file holds the key encrypted with AES-256-CBC and
-authenticated with HMAC-SHA256 (CommonCrypto), under keys derived with PBKDF2 (100,000 rounds, a fresh salt each save)
-from this Mac's device ID and your account: copied to another Mac or read by another account it is useless, and nothing
-on disk shows the key in clear. A program running as you on this Mac could derive the same keys, as it could read your
-other files: the encryption protects the key at rest (backups, a copied folder, a stray search), not from such a
-program. To revoke a key, delete it at console.anthropic.com; Sign out ends the sign-in on the server too.
+0600), shared by the two products, in any host and in their Standalones; the sign-in (the token the server gave, never
+the password) is `account-token.bin` beside it, kept the same way; `chat.json` keeps the model, the level, the username
+and which of the two the chat uses. The file holds the key encrypted with AES-256-CBC and authenticated with
+HMAC-SHA256 (CommonCrypto), under keys derived with PBKDF2 (100,000 rounds, a fresh salt each save) from this Mac's
+device ID and your account: copied to another Mac or read by another account it is useless, and nothing on disk shows
+the key in clear. A program running as you on this Mac could derive the same keys, as it could read your other files:
+the encryption protects the key at rest (backups, a copied folder, a stray search), not from such a program. To revoke
+a key, delete it at console.anthropic.com; Sign out ends the sign-in on the server too.
 
 ## Build and run
 
@@ -452,107 +596,127 @@ Python 3. JUCE, bgfx and the shader compiler come from the machine cache `~/audi
 machine without them fetches them from GitHub instead. FMinus comes from `~/audio/libraries/FMinus` at the pinned
 commit, with the LLVM, Bison and Flex its own build left in its deps cache: build FMinus once first ("FMinus" below).
 
+One configure builds both products; each of the presets below builds and tests both:
+
 ```sh
 cmake --workflow --preset dev-verify     # configure, build everything, run every test (build-dev/)
 open build-dev/TestingPlayground_artefacts/RelWithDebInfo/Standalone/TestingPlayground.app
+open build-dev/TestingPlaygroundSynth_artefacts/RelWithDebInfo/Standalone/TestingPlaygroundSynth.app
 ```
 
-In the Standalone, the Options button in the title bar picks the audio input and output. It starts with its input
-muted (JUCE's guard against feedback): unmute it there, with headphones on. For a host:
+`cmake --workflow --preset effect-verify` (or `synth-verify`) builds and tests one product alone; the build presets
+`dev-effect` and `dev-synth`, and the targets `effect` and `synth`, build one (`cmake --build build-dev --target
+synth`).
+
+In the effect's Standalone, the Options button in the title bar picks the audio input and output; it starts with its
+input muted (JUCE's guard against feedback): unmute it there, with headphones on. In the synth's, it picks the audio
+output and the MIDI input. For a host:
 
 ```sh
-cmake --workflow --preset release-build  # Release with LTO (build-release/)
-scripts/install.sh                       # copy the AU and VST3 into ~/Library/Audio/Plug-Ins
+cmake --workflow --preset release-build  # Release with LTO, both products (build-release/)
+scripts/install.sh                       # copy both products' AU and VST3 into ~/Library/Audio/Plug-Ins
+scripts/install.sh synth                 # or one product's (its key, or its name)
 ```
 
-Builds never install anything by themselves; `scripts/install.sh build-dev` installs a dev build instead. The plugin
-code in `cmake/Product.cmake` (`scripts/plugin.py info` prints the whole identity) is this plugin's own, so it loads
-in one host beside your other plugins. A host that keeps keys for itself (some do for the space bar or the arrows)
-may need its "keyboard to plugin" option on for typing in the editor.
+Builds never install anything by themselves; `scripts/install.sh build-dev` installs a dev build instead, and
+`--dry-run` says what it would copy. Each product's plugin code (`products/<key>.cmake`; `scripts/plugin.py info`
+prints both identities) is its own, so the two load in one host beside each other and your other plugins. A host that
+keeps keys for itself (some do for the space bar or the arrows, or play notes from the computer keyboard) may need its
+"keyboard to plugin" option on for typing in the editor.
 
-Each block the plugin reads the host's tempo, position, time signature and transport, and passes them to the program
-through host.fm.
+Each block the plugin reads the host's tempo, position, time signature and transport (and passes them to the program
+through host.fm); the synth also reads from the MIDI the notes, the mod wheel (CC 1), the pitch wheel, channel
+pressure, the sustain pedal (CC 64) and All Notes Off (CC 123).
 
 ## Test
 
 ```sh
-scripts/test.sh                       # build the probes, run them; outputs in build-dev/probe-out/
-scripts/test.sh -R fminus.contract -V # one probe, every row printed
-build-dev/TestingPlayground_probes --list
+scripts/test.sh                       # build both products' probes, run them; outputs in build-dev/probe-out/<key>/
+scripts/test.sh synth                 # the synth's only
+scripts/test.sh -R fminus.contract -V # one probe, for both products, every row printed
+ctest --test-dir build-dev -L effect  # every probe of the effect (after a build)
 ```
+
+Every probe runs for both products, as `effect:<probe>` and `synth:<probe>` (labelled `effect` and `synth`, and
+`probe` and the probe's layer), each against its own build of the plugin; the lints run once. Where the kinds
+differ, a row says what each product's run checks. Run the probes through ctest (or `scripts/test.sh`): outside CTest
+a probe would find the user's own folders.
 
 | Probe | Checks |
 | --- | --- |
-| `fminus.examples` | every example compiles with no message, its dials named, with ranges and defaults inside them; plays two seconds over noise, finite, audible and with no alert; the same bits in blocks of 64 and 333 |
-| `fminus.contract` | what a program needs, and what the plugin says when it does not fit: no module `Effect`, no `process`, a `process` of another type (refused, never called), one that could allocate, a syntax error with its line; 32 dials and a note for the 33rd parameter; a held module's parameters at their defaults; init gets the rate; a module Shared made once, its init before the effect's (which reads what it made through a `Shared*` field), again at a new rate, read on the audio thread, a note when nothing points at it, a `Shared::init` of another type refused; several files: an included function plays, the main module in an included file, a file two files include read once, an included file's error with its name and include stack, a file not found, the plugin's message for a wrong `process` after an `#include` |
+| `fminus.examples` | every example compiles with no message, its dials named, with ranges and defaults inside them; plays (the effect's two seconds over noise; the synth's a chord for a second, then released), finite, audible and with no alert; the same bits in blocks of 64 and 333; the synth's voices end within eight seconds |
+| `fminus.contract` | what a program needs, and what the plugin says when it does not fit: no module `Effect` (the synth: `Voice`), no `process` (the synth: `start`), a `process` of another type (refused, never called), one that could allocate, a syntax error with its line; 32 dials and a note for the 33rd parameter; a held module's parameters at their defaults; init gets the rate; a module Shared made once, its init before the main module's (the synth: every instance's), which reads what it made through a `Shared*` field, again at a new rate, read on the audio thread, a note when nothing points at it, a `Shared::init` of another type refused; several files: an included function plays, the main module in an included file, a file two files include read once, an included file's error with its name and include stack, a file not found, the plugin's message for a wrong `process` after an `#include` |
 | `fminus.library` | every library file named on its first line, with a usage header, compiling alone and all together; each measured: the filters' responses (SVF and biquad -3 dB at their cutoffs, notches under -60 dB, the ladder's 24 dB/octave and its self-oscillation at the cutoff), the delay exact to the sample and its four-point read, the reverb's decay times, width and level, the oscillators' levels, DC and pitch and the saw's aliasing against a naive one, the noises' levels and colours, the envelope's times and its retrigger without a step, the LFO (and one following the song's position), the follower and the compressor's curve, the shapers' bounds, the crusher's steps and the conversions; the wavetable's shapes (RMS, no DC, pitch), nothing inharmonic above -80 dB from 1 to 11 kHz where a naive saw's aliases are above -40 dB, the 16th harmonic at full strength at the end of a fade, a glide's copies continuous and rising, a saw-to-square morph that keeps its fundamental, every call safe before build |
-| `fminus.random` | RANDOM's programs, seeds 1 to 160: one program a seed, every seed's another; its first line names it and its seed, and it #includes its library files; each compiles with no message, at most sixteen dials, every one in a titled section; noise and a sine through it play finite, audible and under +6 dBFS with no alert, and silence through a fresh one stays silent; the first sixteen the same bits in blocks of 64 and 333; every part the generator can choose chosen by some seed |
-| `fminus.gui` | a `.gui` file: a rich file's every element in its tree (the panel's colours, containers and their properties, sections, a box, tabs and pages, labels, a divider, a spacer, every control and display), options and labels for the host; comments, `;`, a `{` on the next line, an escaped quote, `#rgb`; a log taper's middle (the geometric mean) and back, units (Hz to kHz), decimals and scale, a typed text back to its value; displays (kinds, taps, two of one source, a range); the parameters left out, last with a note; a note on its line and column for each thing it cannot use (an unknown element, property or value, no such parameter, one twice, a control that does not suit its parameter, a pad on an int, an envelope of three, a label without text, tabs without pages, a page outside tabs, a colour, a unit after a number, a log taper from 0, decimals out of range, a field that is not there, an open quote, a stray `}`, an unclosed `{`), the rest standing; a second `.gui` file and `#pragma panel` lines beside one, noted; pragmas alone as before; classes and defaults (an element's own property beating its class's and the defaults'), every look and style property in its node (bar tabs, a plate section, a row that wraps, a knob's class, look, ticks, bipolar, label and value, a slider's colours, an inset box, self= and minwidth=, a label in px, a divider's thickness, the gradient), live= tapping its field once, and their mistakes noted on their line and column |
-| `fminus.panel` | the `#pragma panel` lines: sections, titles, order, a row break, labels and small knobs, comments and commas; an untitled section; the dials left over, last and noted; a note on its line for each line it cannot use (an unknown word, no such dial, a dial twice, an open quote, a missing label, an empty section, a title or label too long), the program still playing; lines in an included file, after the program's, and none from a file no `#include` reads; labels without a section; displays (each kind, of `in`, `out` and the main module's fields: name, `as`, label, range, the fields' taps in order; a display in a section and one left over; notes for a field that is not there, an array, a dial as a source, a name taken, a range from high to low, an instrument's `in`); styles where they suit and a note where not; options; colours; displays without a section line |
-| `dsp.swap` | the Engine: no program passes the input; the first program fades in from it, a second crossfades from the first over 20 ms with no step beyond the signal's own, bit for bit outside the fades, and the old one is handed back; a real dial glides over 20 ms sample by sample, an integer one steps at the block; a NaN, an infinity and 10 leave as 0, 0 and 4, with their alerts |
-| `dsp.tune` | the numbers checks and tune_dials read, and view_sound's analysis (Measure.h, Goals.h, Tune.h, SoundView.h), on programs whose answers are known: an effect's gain as its dial (sine, noise, the impulse's peak), its THD+N rising with the drive, a darker tone a lower centroid, the impulse's delay, silence silent, every metric measured and worded; one compile measured again the same, a render after another (Engine::restart) the same as a fresh compile's, `want` measuring only what it asks, run()'s report the Session's; goals' bounds, targets, tolerances, infinity and a value not measured, a goal that cannot be refused; checks passing and failing, a program that does not compile; tune_dials meeting a gain, a THD+N and two goals at once within its budget, goals met already in one render, an int, an unknown dial and no goal refused, progress stopping it, the same dials every time; the spectrogram's and the spectrum's loudest place a 440 Hz sine's, the close-up four of its cycles, a sweep rising through the rows, the waveform's peak, a close-up asked for |
-| `dsp.meters` | what the Engine publishes for the displays: an effect's input and output peaks and RMS, left and right, within 1 % (an instrument's output); the peaks falling 10 dB in half a second and the RMS 40 dB; the fields the displays show (a float, an int, a bool, as written last; an instrument's from its newest sounding voice, then the one left, then none); the scope's samples bit for bit; the frame count; the program the fields are of, not one offered and not yet taken |
+| `fminus.random` | RANDOM's programs, seeds 1 to 160: one program a seed, every seed's another; its first line names it and its seed, and it #includes its library files; each compiles with no message, at most sixteen dials, every one in a titled section; the effect's: noise and a sine through it play finite, audible and under +6 dBFS with no alert, and silence through a fresh one stays silent; the synth's: a chord held a second and released plays finite, audible and under 0 dBFS with no alert, every voice ended within five seconds; the first sixteen the same bits in blocks of 64 and 333; every part the generator can choose chosen by some seed |
+| `fminus.gui` | a `.gui` file: a rich file's every element in its tree (the panel's colours, containers and their properties, sections, a box, tabs and pages, labels, a divider, a spacer, every control and display), options and labels for the host; comments, `;`, a `{` on the next line, an escaped quote, `#rgb`; a log taper's middle (the geometric mean) and back, units (Hz to kHz), decimals and scale, a typed text back to its value; displays (kinds, taps, two of one source, a range); the parameters left out, last with a note; a note on its line and column for each thing it cannot use (an unknown element, property or value, no such parameter, one twice, a control that does not suit its parameter, a pad on an int, an envelope of three, a label without text, tabs without pages, a page outside tabs, a colour, a unit after a number, a log taper from 0, decimals out of range, a field that is not there, an open quote, a stray `}`, an unclosed `{`), the rest standing; a second `.gui` file and `#pragma panel` lines beside one, noted; pragmas alone as before; classes and defaults (an element's own property beating its class's and the defaults'), every look and style property in its node (bar tabs, a plate section, a row that wraps, a knob's class, look, ticks, bipolar, label and value, a slider's colours, an inset box, self= and minwidth=, a label in px, a divider's thickness, the gradient; the synth's a keyboard of three octaves with wheels), live= tapping its field once, and their mistakes noted on their line and column |
+| `fminus.panel` | the `#pragma panel` lines: sections, titles, order, a row break, labels and small knobs, comments and commas; an untitled section; the dials left over, last and noted; a note on its line for each line it cannot use (an unknown word, no such dial, a dial twice, an open quote, a missing label, an empty section, a title or label too long), the program still playing; lines in an included file, after the program's, and none from a file no `#include` reads; labels without a section; displays (each kind, of `in` (the effect's), `out` and the main module's fields: name, `as`, label, range, the fields' taps in order; a display in a section and one left over; notes for a field that is not there, an array, a dial as a source, a name taken, a range from high to low, the synth's `in`, which an instrument lacks); styles where they suit and a note where not, several dials a line; options; colours; displays without a section line |
+| `dsp.swap` | the Engine. The effect's: no program passes the input; the first program fades in from it, a second crossfades from the first over 20 ms with no step beyond the signal's own, bit for bit outside the fades, and the old one is handed back. The synth's: a held note's voice fades out when another program arrives, which starts the key again; seventeen notes steal the oldest; a voice that returns false is free. Both: a real dial glides over 20 ms sample by sample, an integer one steps at the block; a NaN, an infinity and 10 leave as 0, 0 and 4, with their alerts |
+| `dsp.tune` | the numbers checks and tune_dials read, and view_sound's analysis (Measure.h, Goals.h, Tune.h, SoundView.h), on programs whose answers are known: the effect's gain as its dial (sine, noise, the impulse's peak), its THD+N rising with the drive, a darker tone a lower centroid, the impulse's delay, silence silent; the synth's pitch, attack, release and voice end as its dials set them, a brighter filter a higher centroid, a high naive saw's aliasing, infinity for a release that never ends; every metric measured and worded; one compile measured again the same, a render after another (Engine::restart) the same as a fresh compile's, `want` measuring only what it asks, run()'s report the Session's; goals' bounds, targets, tolerances, infinity and a value not measured, a goal that cannot be refused; checks passing and failing (the synth's also not measured), a program that does not compile; tune_dials meeting a gain and a THD+N (the synth: a level and a release) and two goals at once within its budget, goals met already in one render, an int, an unknown dial and no goal refused, progress stopping it, the same dials every time; the spectrogram's and the spectrum's loudest place a 440 Hz tone's, the close-up four of its cycles, the effect's sweep rising through the rows, the waveform's peak, the synth's note-off, a close-up asked for |
+| `dsp.meters` | what the Engine publishes for the displays: the effect's input and output peaks and RMS, left and right, within 1 % (the synth's output; no input: 0); the peaks falling 10 dB in half a second and the RMS 40 dB; the fields the displays show (a float, an int, a bool, as written last; the synth's from the newest sounding voice, then the one left, then none); the scope's samples bit for bit; the frame count; the program the fields are of, not one offered and not yet taken |
 | `dsp.freeze` | frozen dials: what the Engine says of them (the program, how long they have held still, from its arrival or the end of a glide, their values); a frozen copy (fast math) at the dials' values plays from the next block, the same samples as the program's own code (finite, the difference 80 dB under the signal), in blocks of 64 and of 333 too; a dial moved drops it that block, the same samples still; a copy at the new values plays again; a copy at other values, or of another program, is not taken; each example frozen at its defaults plays the same spectrum (every octave band within 0.1 dB each half second); LONG: the examples and RANDOM's seeds 1 to 64, ten seconds frozen in irregular blocks, finite, every half second's level and the peak within 0.1 dB, the same spectrum; the time live and frozen take (printed) |
-| `dsp.host` | the program's Host block (host.fm) as the Engine fills it: host.fm compiles with no file of that name, and a module Host nothing points at is a note; the host at 90 BPM in 3/4 from beat 4 (the tempo, the signature, playing, the position of each call's first sample); in blocks of 48 and 80 the output the same as of 256 and the position that of the last call's first sample; a stopped host's position standing; a host that says nothing at 120 BPM, its position running on; an effect's wheels at rest; the Tremolo example at SYNC 1/4 taking its phase from the song's position, the Echo repeating after TIME, and at SYNC 1/4 after a beat at 90 BPM |
-| `plugin.process` | the processor as a host drives it: P1 to P32 named and worded as the program's, host writes reach the program (within 0.05 dB), a host's NaN ignored (its text a dash), a block of 0 samples and a block larger than announced change nothing, the bypass passes the input bit for bit and its edges do not click, a block before prepareToPlay passes the input with NaN and inf as 0; the host's playhead (100 BPM, 7/8, from beat 8, playing) reaching the Host block, the wheels at rest; the freezer (its dials still for its delay, the frozen copy plays, the same sound as a processor that never freezes (the difference 80 dB under the signal), a host write drops it that block and it comes back) |
+| `dsp.host` | the program's Host block (host.fm) as the Engine fills it: host.fm compiles with no file of that name, and a module Host nothing points at is a note; the host at 90 BPM in 3/4 from beat 4 (the tempo, the signature, playing, the position of each call's first sample); in blocks of 48 and 80 the output the same as of 256 and the position that of the last call's first sample; a stopped host's position standing; a host that says nothing at 120 BPM, its position running on. The effect's: its wheels at rest; the Tremolo example at SYNC 1/4 taking its phase from the song's position, the Echo repeating after TIME, and at SYNC 1/4 after a beat at 90 BPM. The synth's: the mod wheel, the pitch wheel and aftertouch from their events, the wheel up bending a sine 2 semitones; a key let go under the sustain pedal sounding until the pedal comes up; the Sine example bent 2 semitones by the pitch wheel |
+| `plugin.process` | the processor as a host drives it: P1 to P32 named and worded as the program's, host writes reach the program (within 0.05 dB), a host's NaN ignored (its text a dash), a block of 0 samples (the synth's with a note-on in it) and a block larger than announced change nothing; the effect's bypass passes the input bit for bit (the synth's is silent) and its edges do not click; a block before prepareToPlay passes the input with NaN and inf as 0 (the synth's is silent); the synth's note-on at velocity 0 and All Notes Off release; the host's playhead (100 BPM, 7/8, from beat 8, playing) reaching the Host block, the effect's wheels at rest, the synth's mod wheel, pitch wheel at both ends, channel pressure and sustain pedal from MIDI, and the keyboard's wheels (`EditorPort::playWheel`); the freezer (its dials still for its delay, the frozen copy plays, the same sound as a processor that never freezes (the difference 80 dB under the signal), a host write drops it that block and it comes back) |
 | `plugin.projects` | the projects, in a folder of the probe's own (under CTest the default is the sandbox's): names tidied; a program of two files and its two dials saved as a new project, version 1, listed with a date, the JSON naming this plugin and its kind; saved again unchanged, no version added; an edit and a dial each a version, with their notes; another processor opening version 1 (its files, tab and dials) and the newest; an older version saved, the newest; a preset of the dials (from its version), a dial moved and the preset applied back at once, applied in a processor with no project open (its project opened, the dials after the compile), refused with no project open, replaced case aside; dials by name in any order (an unknown one ignored); a name in another case the same project; the session keeps the project, its version and the preset, an old session's preset a project; an old preset file migrated (one version, the file moved aside); the newest 100 versions kept; another kind's project, a damaged file, a missing name and a missing version refused, the draft untouched; a preset, a version (never the only one) and a project deleted |
 | `plugin.export` | a project's info and its exports, in a folder of the probe's own: the description, author, category, tags and genres kept tidied (tags split at commas, once each case aside; a long description cut) and in the file; a project of 30 versions as a .fmpack (FMPK, format 1, xz on macOS, the header's size and CRC-32 the JSON's, an .xz stream, an eighth of its text at most), imported as "<name> 2" with the same versions, presets and info and opened with its newest files and dials; the newest version only; a source .zip (README with the description, tags and presets; project.json; the newest files on top, older ones under versions/v<N>/) imported the same; a zlib package; another kind's package, a changed byte, a header cut short, a file that is no export and a zip with no project.json refused, nothing added |
-| `plugin.mcp` | Claude Desktop's way in, in a folder of the probe's own: a processor's socket (0600, its folder 0700) and the tools.json and guide.md it leaves; info, the tools (the chat's but ask_user and ask_planner) and the guide through it; write_file, run_program, read_file and view_panel (a PNG) through it, the chat's card noting Claude Desktop once, an unknown tool and ask_user errors; the instances named Synth 1, Synth 2 (Effect for the effect), the server program over stdio as Claude Desktop runs it: initialize (instructions that keep tools and ids from the user), tools/list (each tool with `instance` and a title in words, read-only ones marked), list_instances, get_status and the guide routed, the plugin then showing it is connected, the prompts (one filled in); a second processor on a track with a project reached by its name, its number, its track and part of its project, a word matching nothing and two open with none named each asking the user; a processor gone, its socket gone; with none open, a call says to open the plugin and the tools still list |
+| `plugin.mcp` | Claude Desktop's way in, in a folder of the probe's own: a processor's socket (0600, its folder 0700) and the tools.json and guide.md it leaves; info, the tools (the chat's but ask_user and ask_planner) and the guide through it; write_file, run_program, read_file and view_panel (a PNG) through it, the chat's card noting Claude Desktop once, an unknown tool and ask_user errors; the instances named Effect 1, Effect 2 (the synth: Synth 1, Synth 2), the product's server program over stdio as Claude Desktop runs it: initialize (instructions that keep tools and ids from the user), tools/list (each tool with `instance` and a title in words, read-only ones marked), list_instances, get_status and the guide routed, the plugin then showing it is connected, the prompts (one filled in); a second processor on a track with a project reached by its name, its number, its track and part of its project, a word matching nothing and two open with none named each asking the user; a processor gone, its socket gone; with none open, a call says to open the plugin and the tools still list |
 | `plugin.state` | the session round-trips (a program of two files, the draft's three files and its tab, the dials, the output bit for bit); a run moves a renamed parameter's dial to its default and keeps a kept one's; a session whose program does not compile leaves the last one playing; one without a program plays the first example; one saved before files loads as one file; one with too many files or bad names loads tidied; a NaN dial loads as 0.5 |
 | `plugin.chatstore` | the key on disk, in a folder of the probe's own: a key's shape; saved, the file is the format above with no 12 characters of the key in it, 0600 in a 0700 folder, and loads back; saved twice it differs (fresh salt and IV); one byte changed anywhere, or the file cut short, and it does not load; forgotten, it is gone; the sign-in token the same way (its shape, the file, a byte changed, forgotten without the key); the model, level and fast mode round-trip, a damaged chat.json loads as none; the username and the access in use round-trip beside them, and never chosen the chat uses the account unless only a key is stored |
-| `plugin.chat` | the chat's agent against a scripted API (no network): the event stream however it is cut, a message rebuilt (thinking and its signature, text, a tool call's streamed input, a compaction block, the usage over its iterations); no key, no request; a turn that writes a program, runs it, sets its dial and answers; each request's shape (model, the model's own max_tokens, adaptive thinking, effort, the cached system prompt, the fifteen tools, fallbacks and compaction with their betas, the API version) and the history append-only; another model and level; fast mode (`speed` and no fallbacks, the footer's "fast", standard speed when it stays busy, off when the API refuses it, the beta on Opus 4.8, none on Sonnet); a tool input that is not JSON; an answer cut off at its limit (the turn goes on, Claude told; twice in a row it ends; a tool call cut off runs nothing; the limit note at max effort, none at medium); a retry after 529; a 401; a refusal; a fallback; a file Claude has seen named but not resent; measure_output through the agent; view_panel through the agent (a PNG of the panel and one of the whole editor, drawn on the message thread, with a line of what each shows; the user's view kept; no picture in the saved session); view_sound (a PNG of 1120 x 800 and what it shows, the tool's row with its thumbnail, the session with the thumbnail and not the PNG, nothing drawn for a program that does not compile); set_checks (measured at once, a failing check sending the turn on with the results as the user's line, a dial set and a run fixing it, the run's result ending with the checks, one card a turn, checks that cannot pass going on twice and then ending, a metric that is none refused, the session keeping them, Clear); tune_dials (a gain met and set, the dial then measuring as asked, an unknown dial refused); pictures (a PNG kept as its bytes, a large JPEG scaled to 1568 px, thumbnails, a text file and a broken picture refused with a note, detach, the pictures before the words as base64 image blocks, a message of pictures alone, six a message, the session keeping the thumbnails, a new chat dropping the attached); web search (off at first; on, web_search and web_fetch in the request and the thinking dropped, what Claude searched and read as rows, the sources under the answer, the footer's search count, the API's blocks back as they came with their encrypted parts, a paused reply sent back as it is, a 400 that wants the tools called directly, an organisation without web search); ask_user (the turn waiting with the question open, the other calls' results kept and a second ask refused, a session saved meanwhile opening with it still waiting, the answer's labels as its result after the others, a question answered by a message instead, one of one option refused); add_library_file (the tab, its text in the result and seen after it, an unknown name, the same file twice); a stream cut short asked again and shown once; a compaction (the history starting at the summary, the files sent again), in the middle of a turn too (every tool result with its call, the files with the results), and a session saved with the old cut repaired; a session saved with another system prompt or none loading without its thinking; STOP; the session; signing in to a scripted server (refusals shown and nothing stored, the token stored, the account in use; a turn sent to the server with the token as a bearer and no key, the models asked of it, the credit after the turn; no token or password in the session or a request body; its 402, 502, 400 and 403 shown and not retried, a 529 retried; a 401 forgetting the token and sending nothing after; the key used again; the one set up last in use; signing out; the server's address from the environment); NEW |
-| `plugin.chatexample` | the system prompt has the large-program section, the .gui file's language (THE INTERFACE), every library file's header and the program built from the library and its `panel.gui`, word for word; that program compiles with no message (its interface too), every dial a control in a titled section, two displays, plays finite and audible, the same in blocks of 64 and 333, its voices ending; measure_output's numbers on programs whose answer is known (a level, a pitch, a gain, an impulse), and its notes for a voice that never ends or an effect that makes sound from silence; the prompt's FFT and `Shared`; THE HOST and host.fm word for word, measure_output's Host line and a delay of a beat at 90 BPM |
-| `gui.chat` | the chat column and resizing, headless, to `gui.chat.png`, `.empty.png`, `.key.png`, `.signin.png`, `.account.png`, `.paper.png`, `.small.png`, `.large.png`, `.folded.png`, `.ask.png`, `.answered.png`, `.pictures.png`, `.sent.png`, `.checks.png` and `.checks-fail.png`: the empty chat (Sign in and API key buttons, suggestions); the access dialog's API key tab (opened by a message the chat cannot send yet, Escape, modal, a key refused, pasted, never spoken, Save sends the waiting message, Remove); its account tab (a username typed, a password pasted and never spoken, a wrong password, signed in, a message through the server, the credit, the header's account pill opening the account (asked of the server again: this month's requests, spending and tokens, the sign-in's dates, spoken too), Refresh, Use this key and Use account, Sign out); the message box growing with its rows and shrinking when sent; a turn shown (thinking that opens and closes, what Claude did, the answer, a code block and its Copy, an answer's Copy, the usage), its files as tabs, the program playing, Cmd-Z undoing Claude's change; the model and thinking menus; the Fast switch (on Claude Opus 5.5 only, a switch to a screen reader); stop; Claude's question as a card (the message box saying so, the options as radio buttons and toggles to a screen reader, a pick that replaces or adds, Send answers waiting for each question, the labels sent, the card then without buttons and the answers in the transcript; one question of one choice answered by its click); pictures (the picture button's file chooser, thumbnails in the box drawn with none missing, a remove button, a drop on the chat's card taken and one on the editor not, a text file no drop, sent before the words and shown above the message, FunkGui's registry holding them until a new chat); Claude's checks as a card (a row each, the sound's picture under its row, drawn; brought up to date when a fix makes them pass; one failing; Clear spoken as a button, forgetting them); the Web switch after the Fast one; new chat; a suggestion into the box, unsent; the wheel and the jump to the end; the chat folded into its rail (the editor wider, the chat's items gone, an answer's dot, the session keeping it) and opened again; the least size with twelve narrowed tabs and a large size, every item inside; the session keeps the size |
-| `gui.dump` | the panel headless to `gui.dump.png`, `.paper.png`, `.error.png`, `.edited.png`, `.files.png`, `.dials.png`, `.dials.small.png`, `.dials.most.png`, `.dials.most.small.png`, `.panel.png`, `.panel.paper.png`, `.panel.small.png`, `.example.png`, `.displays.png`, `.displays.paper.png`, `.random.png`, `.projects.png` and `.export.png`: settles, every glyph, the draft in the editor and a dial for each parameter; typing, Cmd-Return, a syntax error (status, problem line, gutter mark, the click that jumps to it), the EXAMPLES menu and its undo; the files' tabs (+, renaming in place, a taken name refused, Escape, typing into a second file, an `#include` of it that runs, its error's problem and marks, the click that shows its file, closing with and without asking); a dial's drag and double-click; sixteen dials in rows (two at the default and the least size, one when wide; in order, evenly spaced, inside the left column, the editor giving up a row's height; 32 in three rows, every knob small at the least size); sixteen dials in five sections (two rows of frames, titles in order, every dial inside its frame, the rows even, the labels and small knobs asked for, at the least size too; a bad panel line noted on its line); the LIBRARY menu (every file under its heading; a file added as a tab and #included after the program's description, undoable, still running; ticked and not added twice; greyed with twelve tabs); the program Claude's instructions build from the library, its files added through the menu's path and its `panel.gui` in a tab of its own, running with no note, its interface's every dial in a titled section; a program with every display and dial style, coloured, audio through the processor (each item in its frame; a meter at the Engine's peak within 0.3 dB, a field's meter, light, number and trace; a button's click chooses its value, the switch flips, a fader's drag raises its dial, the host says an option's name; another program's light dark until the audio thread plays it); RANDOM (a seed's program in place of the text, its library files as tabs, run with no note, Cmd-Z back in one step; the button's another; with twelve tabs, a notice and nothing changed); PROJECTS (the card opened with the program's title, a name typed and saved as a new project: the status and the pill say so, EDITED after an edit; Cmd-S a version, again nothing new; a preset saved in the project open; listed by name, the open one chosen with its versions and presets, another's older version opened over changes after asking; saving into another project asking (Add version); a project and a version deleted, each asking; Escape; EXPORT from Export..., its info pasted, typed and chosen, a package written where the save chooser says and the info kept, Import... adding it back as a project of its own); Escape and Tab |
+| `plugin.chat` | the chat's agent against a scripted API (no network): the event stream however it is cut, a message rebuilt (thinking and its signature, text, a tool call's streamed input, a compaction block, the usage over its iterations); no key, no request; a turn that writes a program (the synth: a voice), runs it, sets its dial and answers; each request's shape (model, the model's own max_tokens, adaptive thinking, effort, the cached system prompt, the fifteen tools, fallbacks and compaction with their betas, the API version) and the history append-only; another model and level; fast mode (`speed` and no fallbacks, the footer's "fast", standard speed when it stays busy, off when the API refuses it, the beta on Opus 4.8, none on Sonnet); a tool input that is not JSON; an answer cut off at its limit (the turn goes on, Claude told; twice in a row it ends; a tool call cut off runs nothing; the limit note at max effort, none at medium); a retry after 529; a 401; a refusal; a fallback; a file Claude has seen named but not resent; measure_output through the agent; view_panel through the agent (a PNG of the panel and one of the whole editor, drawn on the message thread, with a line of what each shows; the user's view kept; no picture in the saved session); view_sound (a PNG of 1120 x 800 and what it shows, the tool's row with its thumbnail, the session with the thumbnail and not the PNG, nothing drawn for a program that does not compile); set_checks (measured at once, a failing check sending the turn on with the results as the user's line, a dial set and a run fixing it, the run's result ending with the checks, one card a turn, checks that cannot pass going on twice and then ending, a metric that is none refused, the session keeping them, Clear); tune_dials (a gain (the synth: a level or a gain) met and set, the dial then measuring as asked, an unknown dial refused); pictures (a PNG kept as its bytes, a large JPEG scaled to 1568 px, thumbnails, a text file and a broken picture refused with a note, detach, the pictures before the words as base64 image blocks, a message of pictures alone, six a message, the session keeping the thumbnails, a new chat dropping the attached); web search (off at first; on, web_search and web_fetch in the request and the thinking dropped, what Claude searched and read as rows, the sources under the answer, the footer's search count, the API's blocks back as they came with their encrypted parts, a paused reply sent back as it is, a 400 that wants the tools called directly, an organisation without web search); ask_user (the turn waiting with the question open, the other calls' results kept and a second ask refused, a session saved meanwhile opening with it still waiting, the answer's labels as its result after the others, a question answered by a message instead, one of one option refused); add_library_file (the tab, its text in the result and seen after it, an unknown name, the same file twice); a stream cut short asked again and shown once; a compaction (the history starting at the summary, the files sent again), in the middle of a turn too (every tool result with its call, the files with the results), and a session saved with the old cut repaired; a session saved with another system prompt or none loading without its thinking; STOP; the session; signing in to a scripted server (refusals shown and nothing stored, the token stored, the account in use; a turn sent to the server with the token as a bearer and no key, the models asked of it, the credit after the turn; no token or password in the session or a request body; its 402, 502, 400 and 403 shown and not retried, a 529 retried; a 401 forgetting the token and sending nothing after; the key used again; the one set up last in use; signing out; the server's address from the environment); NEW |
+| `plugin.chatexample` | the system prompt has the large-program section, the .gui file's language (THE INTERFACE), every library file's header and the program built from the library for the product's kind and its `panel.gui`, word for word; that program compiles with no message (its interface too), every dial a control in a titled section, two displays, plays finite and audible, the same in blocks of 64 and 333, its voices ending; measure_output's numbers on programs whose answer is known (a level, a pitch, a gain, an impulse), and its notes for a voice that never ends or an effect that makes sound from silence; the synth's Inharmonic line (a sine's clean; at C7 a naive saw's aliases above -40 dB and a wavetable voice's clean, its table built once in `Shared`) and a saw's own edges no click, a phase that jumps once a click; the prompt's FFT and `Shared`; THE HOST and host.fm word for word, measure_output's Host line and the effect's delay of a beat at 90 BPM, the synth's voice on the pitch wheel 2 semitones up |
+| `gui.chat` | the chat column and resizing, headless, to `gui.chat.png`, `.empty.png`, `.key.png`, `.signin.png`, `.account.png`, `.paper.png`, `.small.png`, `.large.png`, `.folded.png`, `.ask.png`, `.answered.png`, `.pictures.png`, `.sent.png`, `.checks.png` and `.checks-fail.png`: the empty chat (Sign in and API key buttons, suggestions); the access dialog's API key tab (opened by a message the chat cannot send yet, Escape, modal, a key refused, pasted, never spoken, Save sends the waiting message, Remove); its account tab (a username typed, a password pasted and never spoken, a wrong password, signed in, a message through the server, the credit, the header's account pill opening the account (asked of the server again: this month's requests, spending and tokens, the sign-in's dates, spoken too), Refresh, Use this key and Use account, Sign out); the message box growing with its rows and shrinking when sent; a turn shown (thinking that opens and closes, what Claude did, the answer, a code block and its Copy, an answer's Copy, the usage), its files as tabs, the program playing, Cmd-Z undoing Claude's change; the model and thinking menus; the Fast switch (on Claude Opus 5.5 only, a switch to a screen reader) and the Web switch after it; stop; Claude's question as a card (the message box saying so, the options as radio buttons and toggles to a screen reader, a pick that replaces or adds, Send answers waiting for each question, the labels sent, the card then without buttons and the answers in the transcript; one question of one choice answered by its click); pictures (the picture button's file chooser, thumbnails in the box drawn with none missing, a remove button, a drop on the chat's card taken and one on the editor not, a text file no drop, sent before the words and shown above the message, FunkGui's registry holding them until a new chat); Claude's checks as a card (a row each, the sound's picture under its row, drawn; brought up to date when a fix makes them pass; one failing; Clear spoken as a button, forgetting them); new chat; a suggestion into the box, unsent; the wheel and the jump to the end; the chat folded into its rail (the editor wider, the chat's items gone, an answer's dot, the session keeping it) and opened again; the least size with twelve narrowed tabs and a large size, every item inside; the session keeps the size |
+| `gui.dump` | the panel headless to `gui.dump.png`, `.paper.png`, `.error.png`, `.edited.png`, `.files.png`, `.dials.png`, `.dials.small.png`, `.dials.most.png`, `.dials.most.small.png`, `.panel.png`, `.panel.paper.png`, `.panel.small.png`, `.example.png`, `.displays.png`, `.displays.paper.png`, `.random.png`, `.projects.png` and `.export.png`: settles, every glyph, the draft in the editor and a dial for each parameter; typing, Cmd-Return, a syntax error (status, problem line, gutter mark, the click that jumps to it), the EXAMPLES menu and its undo; the files' tabs (+, renaming in place, a taken name refused, Escape, typing into a second file, an `#include` of it that runs, its error's problem and marks, the click that shows its file, closing with and without asking); a dial's drag and double-click; sixteen dials in rows (two at the default and the least size, one when wide; in order, evenly spaced, inside the left column, the editor giving up a row's height; 32 in three rows, every knob small at the least size); sixteen dials in five sections (two rows of frames, titles in order, every dial inside its frame, the rows even, the labels and small knobs asked for, at the least size too; a bad panel line noted on its line); the LIBRARY menu (every file under its heading; a file added as a tab and #included after the program's description, undoable, still running; ticked and not added twice; greyed with twelve tabs); the program Claude's instructions build from the library, its files added through the menu's path and its `panel.gui` in a tab of its own, running with no note, its interface's every dial in a titled section; a program with every display and dial style, coloured, audio through the processor (the synth's a note held: each item in its frame; a meter at the Engine's peak within 0.3 dB, a field's meter, light, number and trace; a button's click chooses its value, the switch flips, a fader's drag raises its dial, the host says an option's name; another program's light dark until the audio thread plays it); RANDOM (a seed's program in place of the text, its library files as tabs, run with no note, Cmd-Z back in one step; the button's another; with twelve tabs, a notice and nothing changed); PROJECTS (the card opened with the program's title, a name typed and saved as a new project: the status and the pill say so, EDITED after an edit; Cmd-S a version, again nothing new; a preset saved in the project open; listed by name, the open one chosen with its versions and presets, another's older version opened over changes after asking; saving into another project asking (Add version); a project and a version deleted, each asking; Escape; EXPORT from Export..., its info pasted, typed and chosen, a package written where the save chooser says and the info kept, Import... adding it back as a project of its own); Escape and Tab |
 | `gui.explorer` | the explorer at the editor's left, headless, to `gui.explorer.png`, `.folded.png`, `.paper.png` and `.small.png`: open at first, its card left of the program's and the chat's at the right; a row a file, the shown one marked, one the errors name dotted until it compiles; a click shows a file, a double click renames it, + makes one, a row's cross closes an empty one (none on the program); every library file under its category's caption, a click adding it as a tab (the program #including it, its row ticked) and a second showing it; an example loaded and run; PRESETS saying to save a project while none is open; two projects (the open one marked, with its version) and its two presets (the applied one marked), a preset's click turning its dial, a project's click opening it (asking first when the editor is edited), the presets following the project, the + of each opening PROJECTS for a preset or a project; a section folding and opening, the explorer folding away (the program's card wider by it and its gap, its button in the program's card's header) and that button opening it, the session keeping the fold; none in the PANEL view; a list to a screen reader, rows as buttons, a row pressed doing what its click does; at the least size with the chat open away (the program's card keeping its room), its button folding the chat to show it; the wheel scrolling it at the least size |
 | `gui.shaders` | a `.gui` file's shaders, built with the build's shaderc: the system prompt's example builds and FunkGui takes it; a program with three (one still, one that moves, one broken) plays, the two good ones built under their bytes' hash and the same again from the cache; the broken one a note on its own line (the name it does not know found in the file); a shader of no file and a fifth one noted; in the panel the built ones registered with FunkGui and drawn over their cells, their inputs following a parameter and the output's level, the still one settling and the moving one not, the broken one saying why (to a screen reader too), to `gui.shaders.png` |
 | `gui.panel` | a `.gui` interface in the Panel, headless, to `gui.panel.code.png`, `gui.panel.png`, `.paper.png`, `.meters.png` and `.small.png`: in the CODE view under the editor, every item inside its area and none over another, the dials' own items hidden; the Panel switch (the editor gone, the interface from the card's header down, fitting; the processor and its state keep the choice); a large log knob's drag, double-click and middle (632 Hz, the host's text); a row of buttons, the switch, the menu (the host's, ticked; chosen), a slider's drag, the pad's two parameters; the envelope's corners; the tabs (one page shown, a click shows the other; a radio group to a screen reader); audio through the processor (the meter, the light, the number, the spectrum's peak at the sine's frequency and level); at the least size the wheel scrolls the interface, and turns a knob under it; a `#pragma panel` program in the PANEL view from the column's top |
-| `gui.styles` | what a `.gui` file can make an interface look like, in the PANEL view, to `gui.styles.png`, `.fx.png`, `.mixer.png` and `.narrow.png`: a defaults line and a class reaching their elements (an element's own property winning); the knobs' nine looks, a small knob's label under it and no value, a face in px; card, inset and plate sections side by side, a frame's own corners, fill and border; a bar of three pages (a click shows the third, the processor keeps its title, its state carries it to another processor whose panel opens on it, an edited interface keeps it), pills and a side list switching their pages; a knob's live= mark at its field's value; at the least size the knobs' row wrapping onto two lines |
-| `lint.layers`, `lint.exports` | Source/dsp, Source/fsdsp and Source/fminus without JUCE or FunkGui, FMinus through its public header only; each bundle exports its entry points and nothing else |
+| `gui.styles` | what a `.gui` file can make an interface look like, in the PANEL view, to `gui.styles.png`, `.fx.png`, `.mixer.png` and `.narrow.png`: a defaults line and a class reaching their elements (an element's own property winning); the knobs' nine looks, a small knob's label under it and no value, a face in px; card, inset and plate sections side by side, a frame's own corners, fill and border; a bar of three pages (a click shows the third, the processor keeps its title, its state carries it to another processor whose panel opens on it, an edited interface keeps it), pills and a side list switching their pages; the synth's keyboard (a press plays its note at its pitch, a drag slides to the next key, letting go is silent) and its wheels (the pitch wheel up reaching the Host block and springing back when let go, the mod wheel staying where it is left); a knob's live= mark at its field's value; at the least size the knobs' row wrapping onto two lines |
+| `lint.layers`, `lint.exports`, `lint.signature` | once, for both products: Source/dsp, Source/fsdsp and Source/fminus without JUCE or FunkGui, FMinus through its public header only; every product's bundles export their entry points and nothing else, and their signatures hold |
 
 A probe is one file in `Tools/probes/<layer>/` whose first line registers it (`// PROBE name=dsp.mytest timeout=60`)
 and whose body uses spec rows (`P.near`, `P.le`, `P.ge`, `P.in`, `P.eq`): each states what must hold, with its
-tolerance. `Tools/probes/common/Audio.h` has the signal helpers, and `Tools/probes/common/Rig.h` runs a program in an
-Engine as the processor does.
+tolerance. It runs for both products (`product::kIsInstrument` says which kind it runs as).
+`Tools/probes/common/Audio.h` has the signal helpers, and `Tools/probes/common/Rig.h` runs a program in an Engine as
+the processor does (the synth's notes at absolute samples).
 
 ## FMinus
 
 [FMinus](https://github.com/Snipet/FMinus) (`~/audio/libraries/FMinus`) comes in through its public API,
 `fminus/FMinus.h` (`fminus::Program`): `Source/fminus/Patch.cpp` compiles a program twice (once to read its module
 and parameters, once with each float parameter bound as a stream and the plugin's calls appended), at `-O2`, flushing
-subnormals.
+subnormals, and in the synth makes 32 instances of Voice.
 
 - **Which FMinus**: the commit `FP_FMINUS_SHA` in `cmake/Deps.cmake`, from `~/audio/libraries/FMinus`. To try a change
   to FMinus before committing it, configure with `-DFETCHCONTENT_SOURCE_DIR_FMINUS=$HOME/audio/libraries/FMinus`:
   the working tree is built as it is. LLVM, Bison and Flex are the ones FMinus's own build put in
   `~/audio/libraries/FMinus/.deps`, read and never rebuilt here: build FMinus once
-  (`cmake --workflow --preset dev` there) before configuring this plugin. A Release build here takes LLVM without
+  (`cmake --workflow --preset dev` there) before configuring this project. A Release build here takes LLVM without
   assertions when FMinus's release preset has made it, and the dev flavor otherwise.
 - **The cost**: LLVM is linked into each binary, about 80 MB more in a Release build, and stays private to it: each
-  bundle exports only its entry points (`lint.exports` checks), so two plugins with LLVM in one host do not share it.
-  A DAW's hardened runtime must allow the JIT's executable memory (`com.apple.security.cs.allow-jit` or
-  `allow-unsigned-executable-memory`; Ableton Live 12 has the second); the Standalone and the probes always do.
-  FMinus's README, "Notes for running inside a plugin", has the rest.
+  bundle exports only its entry points (`lint.exports` checks), so two plugins with LLVM in one host do not share it,
+  nor do the two products. A DAW's hardened runtime must allow the JIT's executable memory
+  (`com.apple.security.cs.allow-jit` or `allow-unsigned-executable-memory`; Ableton Live 12 has the second); the
+  Standalones and the probes always do. FMinus's README, "Notes for running inside a plugin", has the rest.
 
 ## What is where
 
 ```
+products/<key>.cmake     a product's identity: effect.cmake (TestingPlayground, an effect), synth.cmake
+                         (TestingPlaygroundSynth, an instrument): name, kind, version, codes, bundle id, prefixes
 Source/fminus/           Patch: a program compiled for the plugin (the contract, the calls, the instances, the fields
                          its displays read), JUCE-free;
                          PanelSpec (its #pragma panel lines read: sections, dial styles, displays);
                          GuiSpec (a .gui file read: its interface's tree, the controls' tapers and units);
                          Random (RANDOM: a program put together from the library's building blocks);
-                         examples/*.fm, the EXAMPLES (compiled in by CMakeLists.txt as generated/Examples.h);
-                         library/<n>-<category>/*.fm, the LIBRARY (as generated/Library.h)
-Source/dsp/              the audio side, plain C++20 without JUCE: Engine (programs swapped without a click, the dials
-                         glided into streams, the output guard, the levels, fields and scope the displays read),
-                         Compiler (compiles off the audio thread), Controls, Sources (a program's files), Measure (a
-                         program rendered offline and measured, in words and in numbers, for the chat), Goals (checks
-                         and goals on those numbers), Tune (tune_dials' search), SoundView (view_sound's render and
-                         analysis)
+                         examples/<key>/*.fm, a product's EXAMPLES (compiled in as generated/<key>/Examples.h);
+                         library/<n>-<category>/*.fm, the LIBRARY (as generated/<key>/Library.h)
+Source/dsp/              the audio side, plain C++20 without JUCE: Engine (an instrument's voices, programs swapped
+                         without a click, the dials glided into streams, the output guard, the levels, fields and
+                         scope the displays read), Compiler (compiles off the audio thread), Controls, Events, Sources
+                         (a program's files), Measure (a program rendered offline and measured, in words and in
+                         numbers, for the chat), Goals (checks and goals on those numbers), Tune (tune_dials' search),
+                         SoundView (view_sound's render and analysis)
 Source/fsdsp/core/       FSynth's DSP core, vendored at the tag in SEED.tsv (scripts/sync-dsp-core.sh)
-Source/plugin/           the JUCE AudioProcessor: the playhead to the transport, P1 to P32, the program's files and the draft in the session, the
-                         bypass;
+Source/plugin/           the JUCE AudioProcessor: an instrument's MIDI to events, the playhead to the transport, P1 to
+                         P32, the program's files and the draft in the session, the bypass;
                          EditorPort.h, what the editor reaches besides the parameters;
                          the chat: ChatAgent (the conversation, its turns and Claude's tools), ChatPrompt.cpp (Claude's
                          instructions: the panel, the library, a program built from it), ClaudeApi (the Messages API
@@ -562,13 +726,14 @@ Source/plugin/           the JUCE AudioProcessor: the playhead to the transport,
                          ProjectStore (the projects on this Mac: their versions, presets and info),
                          ProjectExport (a project as a source .zip or a compressed .fmpack, and back),
                          McpLink (the instance's socket for the MCP server: Claude Desktop through the chat's tools)
-Source/mcp/              TestingPlaygroundMCP, the MCP server Claude Desktop starts (Main.cpp: JSON-RPC on stdio, the
-                         instances found by their sockets), and McpProtocol.h (the folder, the sockets, the lines)
+Source/mcp/              <Name>MCP, each product's MCP server Claude Desktop starts (Main.cpp: JSON-RPC on stdio, the
+                         instances found by their sockets), McpProtocol.h (the folder, the sockets, the lines), and
+                         icon-<key>.png, each product's extension's icon
 Source/editor/           the FunkGui panel (Panel.cpp: the top bar, the explorer's card (it folds), the program's card
                          with its actions, the files' tabs and TextEditors, the problems and the dials, the chat's card
                          (it folds) and the access dialog; its layout follows the window's size), Explorer (the
-                         explorer's list: files, presets, projects, library, examples), Picture.cpp (view_panel's picture),
-                         DialLayout (the dials' and displays' places: plain rows, or the panel's sections),
+                         explorer's list: files, presets, projects, library, examples), Picture.cpp (view_panel's
+                         picture), DialLayout (the dials' and displays' places: plain rows, or the panel's sections),
                          ProjectBrowser (PROJECTS' card: the projects, the chosen one's versions and presets, the
                          name, Save, Open, Delete, Import, Export), ExportCard (EXPORT: the info, the two exports),
                          Looks (the dial styles and the displays drawn: vintage knobs, faders, switches, buttons, LED
@@ -577,19 +742,24 @@ Source/editor/           the FunkGui panel (Panel.cpp: the top bar, the explorer
                          ChatView (the conversation), ChatItems (the message box, the chat's buttons), ChatStyle.h
                          (the chat's rounded look, its palette from the theme), Items.h, Theme.h;
                          gpu/ starts it in the plugin
-Tools/probes/            tests that measure: fminus/, dsp/, plugin/, gui/ (the panel, headless)
-scripts/                 plugin.py, test.sh, sync-dsp-core.sh, install.sh
-cmake/Product.cmake      the identity: name, kind (an effect), manufacturer and plugin codes, bundle id, namespace
+Tools/probes/            tests that measure, each run for both products: fminus/, dsp/, plugin/, gui/ (the panel,
+                         headless)
+scripts/                 plugin.py (the products' identities: info, add, rename, codesign, notarize), test.sh,
+                         sync-dsp-core.sh, install.sh
+cmake/                   Deps.cmake (the pins), Flags.cmake, Probes.cmake (the probes and lints), Product.h.in, the
+                         lints
 ```
 
-## Make a new plugin
+## A new plugin, or a new product
 
 Start new plugins from FunkPluginTemplate (`../FunkPluginTemplate/scripts/plugin.py clone --name MyPlugin`, effect or
-instrument). This project's own `scripts/plugin.py clone --name MyLab --code Mylb` copies the playground into a new
-project with its own identity; `--type instrument`, `--starter` and `starter-diff` refuse here, because the starters
-live in the template. The clone refuses a plugin code another of your plugins already uses (any project in
-`~/audio/plugins`, or beside the source or the destination): two plugins with one code hide each other in a host.
-`scripts/plugin.py rename` renames this project in place.
+instrument). A new product of this tree, compiled from the same sources, is
+`scripts/plugin.py add --from synth --key bass --name MyBass --code Mbas`: it writes `products/bass.cmake` and copies
+the synth's examples and icon for it to change (it keeps the kind of the product it copies). It refuses a plugin code
+another product here or another of your plugins already uses (any project in `~/audio/plugins`): two plugins with one
+code hide each other in a host. `scripts/plugin.py rename --product effect --name ...` gives a product a new identity
+in place (its file, and its names in the docs); an installed product renamed is a new plugin to hosts, with new
+folders.
 
 ## Update the DSP core
 
@@ -603,7 +773,7 @@ It refuses to overwrite a core file you edited (`--force` overwrites). Build and
 ## Theme, zoom, diagnostics
 
 The theme's button (the top bar) and the zoom's pill (the status bar) are machine-wide preferences, stored by FunkGui in
-`~/Library/Application Support/TestingPlayground/`. Colours are tokens: `Source/editor/Theme.h` shows how to give
-this plugin its own accent; errors use the theme's `signal` colour. `TSTN_UI_THEME=1` opens the Standalone on the
-light theme without saving it, `TSTN_GPU_LOG=1` logs the GPU surface (the prefix is the product's,
-`cmake/Product.cmake`).
+each product's own `~/Library/Application Support/<name>/` (`TestingPlayground/`, `TestingPlaygroundSynth/`). Colours
+are tokens: `Source/editor/Theme.h` shows how to give the plugins their own accent; errors use the theme's `signal`
+colour. `<PREFIX>UI_THEME=1` opens the Standalone on the light theme without saving it, `<PREFIX>GPU_LOG=1` logs the
+GPU surface; the prefix is the product's (`PRODUCT_ENV_PREFIX`: `TSTN_` for the effect, `TSYN_` for the synth).
