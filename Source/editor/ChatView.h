@@ -12,9 +12,8 @@
 //                         several); one question of one choice is answered by its click, more by Send answers; once
 //                         answered, the choices stay marked
 //   while Claude works    three pulsing dots and what it is doing ("Writing osc.fm (12 KB)")
-//   an empty chat         a title, a line, while the chat cannot send yet two buttons (Sign in, Use an API key), and
-//                         suggestions to start from (a click puts one in the message box: nothing is sent until the
-//                         user sends it)
+//   an empty chat         a title, a line, a button for the API key while none is stored, and suggestions to start
+//                         from (a click puts one in the message box: nothing is sent until the user sends it)
 // It scrolls with the wheel (a thin bar while it overflows), follows the end while it is at the end, and a round
 // button jumps back to the end. Each block keeps its layout until its text, its width or its state changes, so a
 // long conversation costs only its streaming end. Text is printable ASCII (asciiText, ChatItems.h).
@@ -42,7 +41,6 @@ namespace playground::ui
         {
             std::function<void(const std::string&)> suggest;   // a suggestion: its text into the message box
             std::function<void()> addKey;                      // the empty chat's API key button
-            std::function<void()> signIn;                      // its Sign in button
             std::function<void(const std::vector<std::string>&)> answer;   // Claude's question answered (ask_user)
             std::function<void()> clearChecks;                 // the checks card's Clear (set_checks)
         };
@@ -66,7 +64,6 @@ namespace playground::ui
         int tiles() const;                                            // the pictures shown in the conversation
         std::optional<funkgui::Point> centreOfSuggestion(int i) const;
         std::optional<funkgui::Point> centreOfAddKey() const;
-        std::optional<funkgui::Point> centreOfSignIn() const;
         std::optional<funkgui::Point> centreOfCopy(int n) const;      // the n-th code block's Copy, while it is in view
         std::optional<funkgui::Point> centreOfAnswerCopy(int n) const;   // the n-th answer's Copy, while in view
         std::optional<funkgui::Point> centreOfThinking(int n) const;  // the n-th thinking row, while it is in view
@@ -172,7 +169,7 @@ namespace playground::ui
         struct EmptyLayout
         {
             std::vector<Span> spans;
-            funkgui::Rect signIn, addKey;             // empty when there are no such buttons
+            funkgui::Rect addKey;                     // empty when there is no key button
             std::vector<funkgui::Rect> chips;
             std::vector<std::string> chipText;
             float h = 0.0f;
@@ -208,7 +205,7 @@ namespace playground::ui
         std::map<int, std::vector<std::vector<bool>>> picks_;   // an open question's picks, by its entry
         EmptyLayout empty_;
         Empty emptyText_;
-        bool ready_ = false;                          // the chat can send (no sign-in or key buttons)
+        bool ready_ = false;                          // the chat can send (no key button)
         bool busy_ = false;
         bool liveText_ = false;                       // the last block streams (thinking or an answer)
         std::string activity_;
