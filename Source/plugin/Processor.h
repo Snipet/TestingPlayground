@@ -44,6 +44,7 @@
 
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
+#include "plugin/McpLink.h"
 #include "plugin/ProjectStore.h"
 
 #include "dsp/Compiler.h"
@@ -273,8 +274,19 @@ namespace testingplayground
         std::vector<float> weight_;
         std::vector<float> dry_;                                 // an effect's input per channel (stride maxBlock_)
 
-        // The chat with Claude. Declared last, destroyed first: its turn calls the members above (ChatHost).
+        // The chat with Claude. Declared after the members its turn calls (ChatHost), destroyed before them.
         ChatAgent chat_{ *this, claude::httpsTransport() };
+
+        // The instance's MCP socket (McpLink.h): Claude Desktop through the chat's tools. Last, so it stops first (a call
+        // in flight finishes before the chat goes). The host's name for the track the plugin is on, for list_instances.
+        std::unique_ptr<McpLink> mcp_;
+        mutable std::mutex trackMutex_;
+        std::string trackName_;
+        juce::var mcpInfo() const;
+    public:
+        void updateTrackProperties(const TrackProperties& properties) override;
+        const McpLink* mcpLink() const noexcept { return mcp_.get(); }   // probes
+    private:
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(Processor)
     };

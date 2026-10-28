@@ -47,3 +47,7 @@ for pair in "AU/$NAME.component:$COMPONENTS" "VST3/$NAME.vst3:$VST3"; do
   echo "installed $dst ($CONFIG)"
 done
 killall -q AudioComponentRegistrar 2>/dev/null || true
+# The MCP server, for Claude Desktop: its extension is installed from Claude Desktop, by opening the .mcpb (once).
+if [[ -f "$BUILD/$NAME.mcpb" ]]; then
+  echo "Claude Desktop: open $BUILD/$NAME.mcpb to add $NAME's MCP server (once; its tools then reach any open instance)"
+fi

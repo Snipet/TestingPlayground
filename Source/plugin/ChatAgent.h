@@ -205,6 +205,21 @@ namespace testingplayground
         static Sources promptExample();
         static juce::var toolDefinitions();
 
+        // MCP (plugin/McpLink.h): an assistant outside the plugin (Claude Desktop, through mcp/Main.cpp) working with the
+        // chat's own tools. mcpTools(): toolDefinitions() but ask_user and ask_planner, in MCP's form ({ name,
+        // description, inputSchema }); mcpGuide(): the system prompt after a word on working from outside. mcpCall() runs
+        // one tool as a turn's would, on the caller's thread: refused while a turn of the chat runs; while it runs the
+        // chat is busy (nothing can be sent; its stop button cancels a search), its activity says so, and what it did
+        // shows in the conversation. Its content is MCP's: text blocks and images ({ type, data, mimeType }).
+        struct McpResult
+        {
+            juce::var content;
+            bool isError = false;
+        };
+        static juce::var mcpTools();
+        static std::string mcpGuide();
+        McpResult mcpCall(const std::string& name, const juce::var& arguments);
+
     private:
         // Where a request goes and what it carries: the server and the token, or Anthropic and the key.
         struct Access
@@ -316,6 +331,7 @@ namespace testingplayground
         uint64_t attachEpoch_ = 0;                                  // a new chat: files read for the old one go
 
         std::atomic<bool> cancel_{ false };
+        bool mcpNoted_ = false;                                      // the conversation says Claude Desktop is at work
         std::thread worker_;
         // Signing in and out: jobs run in order on one thread, started on first use, so the message thread never
         // waits for the network.
