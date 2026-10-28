@@ -174,7 +174,7 @@ namespace testingplayground::ui
     {
         // ---- layout (logical px) ----------------------------------------------------------------------------------
         constexpr float kMargin = 20.0f;
-        // The top bar: the product, the preset, the view, the load and the theme. Under it two cards: the program's
+        // The top bar: the product, the project, the view, the load and the theme. Under it two cards: the program's
         // (its tabs and actions, the editor or the panel, the problems, the dials) and the chat's.
         constexpr float kTopBarY = 10.0f, kTopBarH = 40.0f;
         constexpr float kTopButtonH = 28.0f;             // the top bar's pills
@@ -185,7 +185,7 @@ namespace testingplayground::ui
         constexpr float kTabsY = kActionsY + kActionH + 4.0f;   // its second: the files' tabs, over the editor
         constexpr float kEditorY = kTabsY + 26.0f + 6.0f;
         constexpr float kSegmentW = 84.0f;               // a half of the Code / Panel switch
-        constexpr float kPresetW = 300.0f;               // the preset pill, at most
+        constexpr float kProjectW = 340.0f;              // the project pill, at most
         constexpr float kProblemRowH = 15.0f;
         constexpr float kPlaceW = 150.0f;                // a problem's file, line and column
         constexpr int   kProblemRows = 4;
@@ -1499,7 +1499,7 @@ namespace testingplayground::ui
             return static_cast<int>(items_.size()) - 1;
         };
 
-        // The program's card's actions (Run, Random, Library, Examples) and the top bar's controls (the preset, the
+        // The program's card's actions (Run, Random, Library, Examples) and the top bar's controls (the project, the
         // view), as the chat's buttons are (ChatItems.h).
         using TB = ButtonItem;
         const auto button = [&](TB::Shape shape, chat::Icon icon, std::function<std::string()> label, bool chevron,
@@ -1528,9 +1528,9 @@ namespace testingplayground::ui
         randomItem_ = button(TB::Shape::pill, chat::Icon::dice, [] { return std::string("Random"); }, false,
                              [] { return TB::Look::ghost; }, [this] { makeRandom(nextSeed()); }, "A random program",
                              "RANDOM   A NEW PROGRAM FROM THE LIBRARY'S BUILDING BLOCKS, FOR INSPIRATION");
-        presetsItem_ = button(TB::Shape::pill, chat::Icon::list, [this] { return presetLabel(); }, true,
-                              [] { return TB::Look::outlined; }, [this] { openPresets(); }, "Presets",
-                              "PRESETS   SAVE THE PROGRAM AND ITS DIALS ON THIS MAC, OR LOAD ONE");
+        projectsItem_ = button(TB::Shape::pill, chat::Icon::list, [this] { return projectLabel(); }, true,
+                               [] { return TB::Look::outlined; }, [this] { openProjects(); }, "Projects",
+                               "PROJECTS   SAVE THE PROGRAM ON THIS MAC, A VERSION EACH SAVE (CMD-S); OPEN AN OLDER ONE; ITS PRESETS");
         panelView_ = port_.panelView();
         chatOpen_ = port_.chatOpen();
         explorerOpen_ = port_.explorerOpen();
@@ -1607,7 +1607,7 @@ namespace testingplayground::ui
             idFor(), spec(B::Shape::square, [this] { return chatOpen_ ? chat::Icon::chevronRight : chat::Icon::bubble; }, {},
                           false, {}, {}, [this] { setChatOpen(!chatOpen_); }, "Fold or open the chat",
                           "CHAT   FOLD IT AWAY FOR ROOM; THE RAIL AT THE RIGHT OPENS IT AGAIN")));
-        // The explorer (Explorer.h): its rows act as the tabs, LIBRARY, EXAMPLES and PRESETS do.
+        // The explorer (Explorer.h): its rows act as the tabs, LIBRARY, EXAMPLES and PROJECTS do.
         {
             ExplorerItem::Hooks hooks;
             hooks.open = [this](ExplorerItem::Section s, const ExplorerItem::Row& r) { openFromExplorer(s, r); };
@@ -1631,7 +1631,9 @@ namespace testingplayground::ui
                     dirty_ = true;
                 }
                 else if (s == ExplorerItem::Section::presets)
-                    openPresets();
+                    openProjects(true);
+                else if (s == ExplorerItem::Section::projects)
+                    openProjects(false);
             };
             explorerItem_ = add(std::make_unique<ExplorerItem>(kExplorerA11yBase, std::move(hooks)));
         }
@@ -1789,7 +1791,7 @@ namespace testingplayground::ui
         leftX_ = kMargin + (explorerShown_ ? explorerW + kExplorerGap : 0.0f);
         leftW_ = chatX_ - (chatOpen_ ? kChatGap : kChatRailGap) - leftX_;
 
-        // The top bar: the preset in its middle (clear of the product's name), the view's switch, the load and the
+        // The top bar: the project in its middle (clear of the product's name), the view's switch, the load and the
         // theme at its right.
         const auto at = [this](int i) -> ButtonItem& { return static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(i)]); };
         const float barMid = kTopBarY + 0.5f * kTopBarH;
@@ -1803,9 +1805,9 @@ namespace testingplayground::ui
             const float nameRight = kMargin + 50.0f + std::max(funkgui::text::width(atlas, product::kName, chat::kStrong),
                                                                funkgui::text::width(atlas, subtitle_.c_str(), chat::kSmall));
             const float segLeft = segRight - 3.0f - 2.0f * kSegmentW - 3.0f;
-            const float w = std::min(kPresetW, std::max(120.0f, segLeft - 24.0f - (nameRight + 24.0f)));
+            const float w = std::min(kProjectW, std::max(120.0f, segLeft - 24.0f - (nameRight + 24.0f)));
             const float x = std::clamp(std::round(0.5f * (W - w)), nameRight + 24.0f, std::max(nameRight + 24.0f, segLeft - 24.0f - w));
-            at(presetsItem_).setBounds({ x, barMid - 0.5f * kTopButtonH, w, kTopButtonH });
+            at(projectsItem_).setBounds({ x, barMid - 0.5f * kTopButtonH, w, kTopButtonH });
         }
 
         // The program's card's header: the actions at its right (Run last), the tabs from its left.
@@ -2112,7 +2114,7 @@ namespace testingplayground::ui
 
     bool Panel::filesInterest(const std::vector<std::string>& paths) const
     {
-        if (!chatOpen_ || keyOpen_ || presets_.isOpen())
+        if (!chatOpen_ || keyOpen_ || projects_.isOpen())
             return false;
         return std::any_of(paths.begin(), paths.end(), [](const std::string& p) { return isPictureName(p); });
     }
@@ -2190,7 +2192,7 @@ namespace testingplayground::ui
 
     funkgui::Point Panel::centreOfLibrary() const { return items_[static_cast<std::size_t>(libraryItem_)]->centre(); }
     funkgui::Point Panel::centreOfRandom() const { return items_[static_cast<std::size_t>(randomItem_)]->centre(); }
-    funkgui::Point Panel::centreOfPresets() const { return items_[static_cast<std::size_t>(presetsItem_)]->centre(); }
+    funkgui::Point Panel::centreOfProjects() const { return items_[static_cast<std::size_t>(projectsItem_)]->centre(); }
     funkgui::Point Panel::centreOfProblem(int i) const
     {
         const auto& p = static_cast<const ProblemsItem&>(*items_[static_cast<std::size_t>(problemsItem_)]);
@@ -2238,7 +2240,7 @@ namespace testingplayground::ui
         port_.setExplorerOpen(open);
         if (open)
         {
-            presetsAt_ = -100.0;                         // the presets read again at once
+            projectsAt_ = -100.0;                        // the projects read again at once
             explorerKey_.clear();
         }
         layout();
@@ -2265,20 +2267,23 @@ namespace testingplayground::ui
         ex.setBounds({ r.x + 2.0f, top, r.w - 4.0f, std::max(0.0f, r.bottom() - 6.0f - top) });
     }
 
-    // The explorer's rows from what they show (the tabs, the errors, the library files the program has, the presets),
-    // rebuilt only when that changes. The presets are read again every three seconds while it is open (a preset saved
-    // by the other playground, or by PRESETS, appears).
+    // The explorer's rows from what they show (the tabs, the errors, the library files the program has, the projects
+    // and the open one's presets), rebuilt only when that changes. The projects are read again every three seconds while
+    // it is open (one saved by another instance, or by PROJECTS, appears), the presets when the project open changes.
     void Panel::syncExplorer()
     {
         if (!explorerShown_ || explorerItem_ < 0)
             return;
         const double now = host_ != nullptr ? host_->nowSeconds() : 0.0;
-        if (presetsAt_ < 0.0 || now - presetsAt_ > 3.0)
+        const ProjectState st = port_.project();
+        if (projectsAt_ < 0.0 || now - projectsAt_ > 3.0 || presetsOf_ != st.name)
         {
-            presetList_ = port_.presets();
-            std::sort(presetList_.begin(), presetList_.end(),
-                      [](const PresetEntry& a, const PresetEntry& b) { return a.when != b.when ? a.when > b.when : a.name < b.name; });
-            presetsAt_ = now;
+            projectList_ = port_.projects();
+            std::sort(projectList_.begin(), projectList_.end(),
+                      [](const ProjectEntry& a, const ProjectEntry& b) { return a.when != b.when ? a.when > b.when : a.name < b.name; });
+            presetList_ = st.name.empty() ? std::vector<PresetEntry>() : port_.presets(st.name);
+            presetsOf_ = st.name;
+            projectsAt_ = now;
         }
         const auto erred = [this](const std::string& file) {
             return std::any_of(problems_.begin(), problems_.end(), [&](const Problem& p) { return p.error && p.file == file; });
@@ -2287,8 +2292,11 @@ namespace testingplayground::ui
         for (int i = 0; i < files().count(); ++i)
             key += files().name(i) + (i == files().active() ? "*" : "") + (erred(files().name(i)) ? "!" : "") + '\x1f';
         key += files().count() < static_cast<int>(kMaxFiles) ? "+" : "-";
+        key += '\x1c' + st.name + '\x1d' + st.preset;
+        for (const ProjectEntry& e : projectList_)
+            key += '\x1e' + e.name + '\x1d' + e.when + '\x1d' + std::to_string(e.latest);
         for (const PresetEntry& e : presetList_)
-            key += '\x1e' + e.name + '\x1d' + e.when;
+            key += '\x1b' + e.name + '\x1d' + std::to_string(e.from);
         if (key == explorerKey_)
             return;
         explorerKey_ = std::move(key);
@@ -2315,6 +2323,47 @@ namespace testingplayground::ui
             {
                 g.action = chat::Icon::plus;
                 g.actionTitle = "New file";
+            }
+            groups.push_back(std::move(g));
+        }
+        {
+            ExplorerItem::Group g;
+            g.section = S::presets;
+            g.title = "PRESETS";
+            if (!st.name.empty())
+            {
+                g.action = chat::Icon::plus;
+                g.actionTitle = "Save a preset";
+            }
+            g.empty = st.name.empty() ? "Save the project to keep presets" : "None yet: + saves the dials";
+            for (const PresetEntry& e : presetList_)
+            {
+                ExplorerItem::Row r;
+                r.label = e.name;
+                r.detail = e.from > 0 ? "v" + std::to_string(e.from) : std::string();
+                r.icon = chat::Icon::dial;
+                r.active = e.name == st.preset;
+                r.key = e.name;
+                g.rows.push_back(std::move(r));
+            }
+            groups.push_back(std::move(g));
+        }
+        {
+            ExplorerItem::Group g;
+            g.section = S::projects;
+            g.title = "PROJECTS";
+            g.action = chat::Icon::plus;
+            g.actionTitle = "Save the project";
+            g.empty = "None yet: + saves this program";
+            for (const ProjectEntry& e : projectList_)
+            {
+                ExplorerItem::Row r;
+                r.label = e.name;
+                r.detail = "v" + std::to_string(e.latest);
+                r.icon = chat::Icon::list;
+                r.active = e.name == st.name;
+                r.key = e.name;
+                g.rows.push_back(std::move(r));
             }
             groups.push_back(std::move(g));
         }
@@ -2357,24 +2406,6 @@ namespace testingplayground::ui
             }
             groups.push_back(std::move(g));
         }
-        {
-            ExplorerItem::Group g;
-            g.section = S::presets;
-            g.title = "PRESETS";
-            g.action = chat::Icon::plus;
-            g.actionTitle = "Save a preset";
-            g.empty = "None yet: + saves this one";
-            for (const PresetEntry& e : presetList_)
-            {
-                ExplorerItem::Row r;
-                r.label = e.name;
-                r.detail = e.when.size() >= 10 ? e.when.substr(5, 5) : e.when;   // "10-27"
-                r.icon = chat::Icon::list;
-                r.key = e.name;
-                g.rows.push_back(std::move(r));
-            }
-            groups.push_back(std::move(g));
-        }
         explorer().setContent(std::move(groups));
         dirty_ = true;
     }
@@ -2401,40 +2432,81 @@ namespace testingplayground::ui
                 loadExample(row.index);
                 break;
             case S::presets:
-                loadPresetNamed(row.key);
+                applyPresetNamed(row.key);
+                break;
+            case S::projects:
+                openProjectNamed(row.key);
                 break;
         }
         explorerKey_.clear();                            // what it shows may have changed (a tab, a tick)
         dirty_ = true;
     }
 
-    // A preset from the explorer: as PRESETS' Load, asking first (a menu at the pointer) when the editor's files have
-    // changes no preset holds.
-    void Panel::loadPresetNamed(const std::string& name)
+    // A project from the explorer: its newest version, as PROJECTS' Open, asking first (a menu at the pointer) when the
+    // editor's files have changes no version holds.
+    void Panel::openProjectNamed(const std::string& name)
     {
         const auto load = [this, name] {
             std::string why;
-            if (port_.loadPreset(name, why))
-                notice("PRESET: " + upper(name));
+            if (port_.openProject(name, 0, why))
+                notice("OPENED: " + upper(name) + " V" + std::to_string(port_.project().version));
             else
-                notice("NOT LOADED: " + upper(why));
+                notice("NOT OPENED: " + upper(why));
+            projectsAt_ = -100.0;
             dirty_ = true;
         };
         files().endRename();
         port_.setDraft(files().draft());                 // what "edited" means is what the tabs show
-        if (!port_.presetEdited() || host_ == nullptr)
+        if (!port_.project().edited || host_ == nullptr)
         {
             load();
             return;
         }
         funkgui::MenuRequest request;
-        request.items.push_back({ 1, "Load " + name + " (the editor's changes are lost)" });
+        request.items.push_back({ 1, "Open " + name + " (the editor's changes are lost)" });
         request.anchor = { pointer_.x, pointer_.y, 1.0f, 1.0f };
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
         host_->showMenu(request, [load](int chosen) {
             if (chosen == 1)
                 load();
         });
+    }
+
+    // A preset of the project open, from the explorer: its dials, at once.
+    void Panel::applyPresetNamed(const std::string& name)
+    {
+        const std::string project = port_.project().name;
+        std::string why;
+        if (project.empty())
+            return;
+        if (port_.applyPreset(project, name, why))
+            notice("PRESET: " + upper(name));
+        else
+            notice("NOT APPLIED: " + upper(why));
+        dirty_ = true;
+    }
+
+    void Panel::saveVersion()
+    {
+        files().endRename();
+        port_.setDraft(files().draft());                 // what is saved is what the tabs show
+        const ProjectState st = port_.project();
+        if (st.name.empty())
+        {
+            openProjects();
+            return;
+        }
+        SavedVersion saved;
+        std::string why;
+        if (!port_.saveVersion(st.name, saved, why))
+        {
+            notice("NOT SAVED: " + upper(why));
+            return;
+        }
+        const std::string at = upper(st.name) + " V" + std::to_string(saved.number);
+        notice(saved.unchanged ? "NOTHING NEW TO SAVE: " + at + " HAS IT" : "SAVED: " + at);
+        projectsAt_ = -100.0;
+        dirty_ = true;
     }
 
     void Panel::setChatOpen(bool open)
@@ -2701,13 +2773,20 @@ namespace testingplayground::ui
             edited_ = files().draft().files != running_;
         const std::string statusBefore = status_;
 
-        // The header's preset.
+        // The project open, in words.
         {
-            const std::string name = port_.presetName();
-            std::string text = name.empty() ? std::string() : "PRESET  " + upper(name) + (port_.presetEdited() ? "  EDITED" : "");
-            if (text != presetText_)
+            const ProjectState st = port_.project();
+            std::string text;
+            if (!st.name.empty())
             {
-                presetText_ = std::move(text);
+                text = "PROJECT  " + upper(st.name) + (st.version > 0 ? "  V" + std::to_string(st.version) : "")
+                     + (st.edited || (st.preset.empty() && st.dialsEdited) ? "  EDITED" : "");
+                if (!st.preset.empty())
+                    text += "  PRESET  " + upper(st.preset) + (st.dialsEdited ? "  EDITED" : "");
+            }
+            if (text != projectText_)
+            {
+                projectText_ = std::move(text);
                 dirty_ = true;
             }
         }
@@ -3685,11 +3764,11 @@ namespace testingplayground::ui
         return 1 + static_cast<uint32_t>((ticks / 1000 + static_cast<uint64_t>(randomCount_) * 7919u) % random::kMaxSeed);
     }
 
-    void Panel::openPresets()
+    void Panel::openProjects(bool preset)
     {
-        if (presets_.isOpen() || keyOpen_)
+        if (projects_.isOpen() || keyOpen_)
             return;
-        std::string name = port_.presetName();
+        std::string name = port_.project().name;
         if (name.empty())
         {
             // The program's title: its first line's words after "//", before a colon or "(random".
@@ -3700,26 +3779,27 @@ namespace testingplayground::ui
             {
                 first = first.substr(2);
                 first = first.substr(0, std::min(first.find(':'), first.find(" (random")));
-                name = port_.tidyPresetName(first);
+                name = port_.tidyName(first);
             }
         }
         files().endRename();
         port_.setDraft(files().draft());                 // what Save saves is what the tabs show
-        presets_.open(name);
-        focusBeforePresets_ = focus_;
+        projects_.open(name, preset);
+        focusBeforeProjects_ = focus_;
         setFocus(-1);
         ring_ = false;
         dirty_ = true;
     }
 
-    void Panel::afterPresets(bool wasOpen)
+    void Panel::afterProjects(bool wasOpen)
     {
-        if (const std::string n = presets_.takeNotice(); !n.empty())
+        if (const std::string n = projects_.takeNotice(); !n.empty())
             notice(n);
-        if (wasOpen && !presets_.isOpen())
+        projectsAt_ = -100.0;                            // the explorer reads what it saved, opened or deleted
+        if (wasOpen && !projects_.isOpen())
         {
-            setFocus(focusBeforePresets_ >= 0 ? focusBeforePresets_ : editorItem_);
-            focusBeforePresets_ = -1;
+            setFocus(focusBeforeProjects_ >= 0 ? focusBeforeProjects_ : editorItem_);
+            focusBeforeProjects_ = -1;
         }
         dirty_ = true;
     }
@@ -4021,12 +4101,17 @@ namespace testingplayground::ui
 
     funkgui::Point Panel::centreOfView(bool panel) const { return centreOf(panel ? panelViewItem_ : viewItem_); }
 
-    std::string Panel::presetLabel() const
+    std::string Panel::projectLabel() const
     {
-        const std::string name = port_.presetName();
-        if (name.empty())
-            return "Presets";
-        return asciiText(name) + (port_.presetEdited() ? "  (edited)" : "");
+        const ProjectState st = port_.project();
+        if (st.name.empty())
+            return "Projects";
+        std::string label = asciiText(st.name) + (st.version > 0 ? " v" + std::to_string(st.version) : "");
+        if (st.edited || (st.preset.empty() && st.dialsEdited))
+            label += " (edited)";
+        if (!st.preset.empty())
+            label += "  -  " + asciiText(st.preset) + (st.dialsEdited ? " (edited)" : "");
+        return label;
     }
 
     void Panel::openZoom()
@@ -4199,7 +4284,7 @@ namespace testingplayground::ui
         const float contentW = width_ - 2.0f * kMargin;
 
         const chat::Palette pal = chat::palette(th);
-        // The top bar: the product's mark, its name and kind; the preset, the view's switch, the theme (items); the
+        // The top bar: the product's mark, its name and kind; the project, the view's switch, the theme (items); the
         // load (the CPU's share), red while the output guard acts.
         {
             const funkgui::Canvas::Scope s(c, kHeaderTextTag, false);
@@ -4366,8 +4451,8 @@ namespace testingplayground::ui
                           tab_ == DialogTab::key ? "API KEY   CMD-V PASTES IT   RETURN SAVES IT   ESCAPE CANCELS"
                           : chat_.signedIn       ? "ACCOUNT   SIGNED IN   ESCAPE CLOSES"
                                                  : "ACCOUNT   TAB MOVES TO THE PASSWORD   CMD-V PASTES   RETURN SIGNS IN   ESCAPE CANCELS");
-        else if (presets_.isOpen())
-            std::snprintf(line, sizeof line, "PRESETS   UP AND DOWN CHOOSE   RETURN SAVES A NAME TYPED, ELSE LOADS   ESCAPE CLOSES");
+        else if (projects_.isOpen())
+            std::snprintf(line, sizeof line, "PROJECTS   UP AND DOWN CHOOSE   TAB THE NEXT LIST   RETURN SAVES A NAME TYPED, ELSE OPENS   ESCAPE CLOSES");
         else
         {
             int src = pressed_;
@@ -4403,17 +4488,17 @@ namespace testingplayground::ui
         }
         if (keyOpen_)
             drawKeyDialog(c, th);
-        if (presets_.isOpen())
+        if (projects_.isOpen())
         {
-            const funkgui::Canvas::Scope s(c, kPresetsTag, false);
-            presets_.draw(c, th, width_, height_, pointer_, hasPointer_);
+            const funkgui::Canvas::Scope s(c, kProjectsTag, false);
+            projects_.draw(c, th, width_, height_, pointer_, hasPointer_);
         }
     }
 
     // ---- input --------------------------------------------------------------------------------------------------------
     int Panel::itemAt(funkgui::Point p) const
     {
-        if (keyOpen_ || presets_.isOpen())
+        if (keyOpen_ || projects_.isOpen())
             return -1;                                   // the dialog covers the panel
         for (std::size_t i = 0; i < items_.size(); ++i)
             if (items_[i]->shown() && items_[i]->contains(p))
@@ -4459,11 +4544,11 @@ namespace testingplayground::ui
             keyDialogPointerDown(pointer_);
             return;
         }
-        if (presets_.isOpen())
+        if (projects_.isOpen())
         {
             pressed_ = -1;
-            presets_.pointerDown(pointer_, width_, height_);
-            afterPresets(true);
+            projects_.pointerDown(pointer_, width_, height_);
+            afterProjects(true);
             return;
         }
         pressed_ = itemAt(pointer_);
@@ -4501,10 +4586,10 @@ namespace testingplayground::ui
     {
         if (keyOpen_)
             return;
-        if (presets_.isOpen())
+        if (projects_.isOpen())
         {
-            presets_.doubleClick({ e.x, e.y }, width_, height_);
-            afterPresets(true);
+            projects_.doubleClick({ e.x, e.y }, width_, height_);
+            afterProjects(true);
             return;
         }
         const int i = itemAt({ e.x, e.y });
@@ -4519,9 +4604,9 @@ namespace testingplayground::ui
     bool Panel::wheel(const funkgui::WheelEvent& e)
     {
         dirty_ = true;
-        if (presets_.isOpen())
+        if (projects_.isOpen())
         {
-            presets_.wheel(e, width_, height_);
+            projects_.wheel(e, width_, height_);
             return true;
         }
         const int i = itemAt({ e.x, e.y });
@@ -4567,16 +4652,21 @@ namespace testingplayground::ui
         dirty_ = true;
         if (keyOpen_)
             return keyDialogKey(e);
-        if (presets_.isOpen())
+        if (projects_.isOpen())
         {
-            presets_.key(e, host_, width_, height_);
-            afterPresets(true);
+            projects_.key(e, host_, width_, height_);
+            afterProjects(true);
             return true;
         }
-        // RUN, from anywhere in the panel.
+        // RUN, from anywhere in the panel; Cmd-S, a new version of the project open.
         if (e.key == funkgui::Key::enter && (e.mods.cmd || e.mods.ctrl))
         {
             runNow();
+            return true;
+        }
+        if (e.key == funkgui::Key::character && e.mods.cmd && (e.ch == 's' || e.ch == 'S'))
+        {
+            saveVersion();
             return true;
         }
         // A text field, while it has the caret: every key is its own (Tab indents in the editor), but Escape, which
@@ -4625,8 +4715,8 @@ namespace testingplayground::ui
                              || d.keyTab.contains(pointer_);
             return button ? funkgui::Cursor::pointingHand : funkgui::Cursor::normal;
         }
-        if (presets_.isOpen())
-            return presets_.cursor(pointer_, width_, height_);
+        if (projects_.isOpen())
+            return projects_.cursor(pointer_, width_, height_);
         const int i = pressed_ >= 0 ? pressed_ : (hasPointer_ ? itemAt(pointer_) : -1);
         return i >= 0 ? items_[static_cast<std::size_t>(i)]->cursorAt(pointer_) : funkgui::Cursor::normal;
     }
@@ -4725,9 +4815,9 @@ namespace testingplayground::ui
             button(kKeyExtraId, d.extra, b.extra);
             return;
         }
-        if (presets_.isOpen())
+        if (projects_.isOpen())
         {
-            presets_.accessibility(out, width_, height_);
+            projects_.accessibility(out, width_, height_);
             return;
         }
         for (const auto& item : items_)
@@ -4747,7 +4837,7 @@ namespace testingplayground::ui
                 dials |= 1u << c;
         r ^= dials * 0x27D4EB2Fu;
         r |= (keyOpen_ ? 1u : 0u) << 17;
-        r ^= (presets_.isOpen() ? 0x9E3779B1u : 0u) ^ (presets_.revision() * 0x165667B1u);
+        r ^= (projects_.isOpen() ? 0x9E3779B1u : 0u) ^ (projects_.revision() * 0x165667B1u);
         r |= (chat_.ready() ? 1u : 0u) << 18;
         r ^= (tab_ == DialogTab::account ? 0x6A09E667u : 0u) ^ (chat_.signedIn ? 0xBB67AE85u : 0u)
            ^ (chat_.hasKey ? 0x3C6EF372u : 0u) ^ (chat_.signingIn || awaitingSignIn_ ? 0xA54FF53Au : 0u)
@@ -4792,10 +4882,10 @@ namespace testingplayground::ui
             dirty_ = true;
             return;
         }
-        if (presets_.isOpen())
+        if (projects_.isOpen())
         {
-            presets_.a11yAction(id, a, width_, height_);
-            afterPresets(true);
+            projects_.a11yAction(id, a, width_, height_);
+            afterProjects(true);
             return;
         }
         for (const auto& item : items_)

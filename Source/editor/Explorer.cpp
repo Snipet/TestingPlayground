@@ -387,7 +387,7 @@ namespace testingplayground::ui
         list.role = funkgui::a11yrole::list;
         list.bounds = bounds_;
         list.title = "Explorer";
-        list.help = "The program's files, the library, the examples and the presets";
+        list.help = "The program's files and presets, the projects, the library and the examples";
         out.push_back(list);
         for (const Hit& h : hits_)
         {
@@ -426,7 +426,8 @@ namespace testingplayground::ui
                     it.help = g.section == Section::files      ? "Shows this file; a double click renames it"
                             : g.section == Section::library    ? (row.marked ? "Shows this library file" : "Adds this library file to the program")
                             : g.section == Section::examples   ? "Puts this example in the program and runs it"
-                                                               : "Loads this preset";
+                            : g.section == Section::presets    ? "Applies this preset's dials"
+                                                               : "Opens this project's newest version";
                     if (row.error)
                         it.description = "Has errors";
                     break;
@@ -471,18 +472,20 @@ namespace testingplayground::ui
         const Hit* h = hitAt(pointer_);
         if (h == nullptr)
         {
-            std::snprintf(out, n, "%s", "EXPLORER   THE PROGRAM'S FILES, THE LIBRARY, THE EXAMPLES AND THE PRESETS");
+            std::snprintf(out, n, "%s", "EXPLORER   THE PROGRAM'S FILES AND PRESETS, THE PROJECTS, THE LIBRARY, THE EXAMPLES");
             return;
         }
         const Section s = groups_[static_cast<std::size_t>(h->group)].section;
         const char* line = h->part == Part::header ? "SECTION   SHOW OR HIDE IT"
                          : h->part == Part::close  ? "CLOSE   THE FILE'S TAB GOES (IT ASKS FIRST WHEN THE FILE HAS TEXT)"
-                         : h->part == Part::action ? (s == Section::files ? "NEW FILE   A TAB OF ITS OWN, ITS NAME TO TYPE"
-                                                                          : "PRESETS   SAVE, LOAD AND DELETE PRESETS")
+                         : h->part == Part::action ? (s == Section::files     ? "NEW FILE   A TAB OF ITS OWN, ITS NAME TO TYPE"
+                                                      : s == Section::presets ? "NEW PRESET   THE DIALS AS THEY ARE, UNDER A NAME, IN THE PROJECT OPEN"
+                                                                              : "PROJECTS   SAVE A VERSION, OPEN AN OLDER ONE, DELETE")
                          : s == Section::files     ? "FILE   SHOW IT   DOUBLE-CLICK RENAMES IT"
                          : s == Section::library   ? "LIBRARY   ADD IT AS A TAB (THE PROGRAM INCLUDES IT), OR SHOW IT"
                          : s == Section::examples  ? "EXAMPLE   INTO THE PROGRAM, AND RUN (CMD-Z TAKES IT BACK)"
-                                                   : "PRESET   LOAD IT: ITS FILES AND ITS DIALS";
+                         : s == Section::presets   ? "PRESET   ITS DIALS, AT ONCE (NO CODE CHANGES)"
+                                                   : "PROJECT   OPEN ITS NEWEST VERSION: ITS FILES AND ITS DIALS";
         std::snprintf(out, n, "%s", line);
     }
 }

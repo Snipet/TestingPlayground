@@ -673,12 +673,15 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
             for (const Example& e : kExamples)
                 s += std::string("\n<example title=\"") + e.title + "\">\n" + e.source
                    + (std::string(e.source).empty() || std::string(e.source).back() == '\n' ? "" : "\n") + "</example>\n";
-            s += "\nRANDOM AND PRESETS\n\nThe editor's RANDOM button puts a program together from the library's building blocks, with "
+            s += "\nRANDOM AND PROJECTS\n\nThe editor's RANDOM button puts a program together from the library's building blocks, with "
                  "random settings, a panel and a name, for inspiration; its first line says so, with its seed (\"(random 4821)\"). "
                  "When the user asks you to build on one, it is theirs: keep what they like and change what they ask.\n"
-                 "The PRESETS button keeps programs on this Mac (the editor's files and the dials' values, under a name). Saving "
-                 "and loading presets is the user's: you have no tool for it, so when they ask, tell them to use PRESETS (a "
-                 "name in its field, then Save).\n";
+                 "The PROJECTS button keeps programs on this Mac as projects (the editor's files and the dials' values, under a "
+                 "name): each save is a new version (Cmd-S saves one), and an older version opens again. A project's presets are "
+                 "dial settings for its program, no code, applied at once. Saving and opening projects and presets is the user's: "
+                 "you have no tool for it, so when they ask, tell them to use PROJECTS (a name in its field, then Save) or the "
+                 "explorer's PROJECTS and PRESETS. A preset suits sounds that differ only in their dials; a sound that needs other "
+                 "code is a project of its own.\n";
             return s;
         }
     }
