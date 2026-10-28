@@ -804,7 +804,7 @@ Source/mcp/              <Name>MCP, each product's MCP server Claude Desktop sta
                          icon-<key>.png, each product's extension's icon
 Source/editor/           the FunkGui panel (Panel.cpp: the top bar, the explorer's card (it folds), the program's card
                          with its actions, the files' tabs and TextEditors, the problems and the dials, the chat's card
-                         (it folds) and the access dialog; its layout follows the window's size), CodeAssist (the
+                         (it folds) and the key dialog; its layout follows the window's size), CodeAssist (the
                          tabs' TextEditors as a code editor: the highlighter, the problems' squiggles and marks, the
                          check while typing, completion, signature help, hover cards, Format Document, the find bar,
                          the line commands, go to definition, the status line), Explorer (the

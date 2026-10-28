@@ -13,6 +13,7 @@
 //                                  loses bass as the resonance rises; half of it is made up). x near 0.25 stays clean;
 //                                  louder drives the tanh
 //   filter.clear();                silence (a voice's start)
+
 // tan(pi * fc / rate), the cutoff kept within 5 Hz and 0.45 of the rate: what set computes, as a function with no
 // state.
 float ladderG(float fc, float rate)

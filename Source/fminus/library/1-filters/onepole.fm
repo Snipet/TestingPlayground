@@ -13,6 +13,7 @@
 //   DcBlock dc;                    a high-pass at 10 Hz, for what feedback, folding or asymmetric shaping leave
 //   dc.set(rate);                  in init
 //   y = dc.tick(x);
+
 // tan(pi * fc / rate), the cutoff kept within 1 Hz and 0.49 of the rate: what set computes, as a function with no
 // state.
 float onePoleG(float fc, float rate)
