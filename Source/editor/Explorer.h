@@ -4,10 +4,13 @@
 //   FILES     the program's files, the editor's tabs (the one shown marked, one with errors a red dot): a click shows
 //             it, a double click renames it, the cross on a row closes it (not the program, the first); the header's
 //             + makes a new file
+//   PRESETS   the presets of the project open (dial settings for its program; the one applied marked): a click applies
+//             one; the header's + saves the dials as a new one (PROJECTS, its field a preset's name)
+//   PROJECTS  the projects saved on this Mac, the newest first, each with its newest version (the one open marked): a
+//             click opens its newest version; the header's button opens PROJECTS (to save, or to open an older version)
 //   LIBRARY   the library's building blocks by category, a tick on those the program has: a click adds one as a tab
 //             (and #includes it), or shows it
 //   EXAMPLES  a click puts the example in the program (one edit, Cmd-Z takes it back) and runs it
-//   PRESETS   the presets saved on this Mac, the newest first: a click loads one; the header's button opens PRESETS
 //
 // The Panel builds the sections (setContent) whenever what they show changes, and does what a row asks (Hooks), as
 // the tabs, the LIBRARY and EXAMPLES menus and the presets' card do. The card itself, its title and its fold button
@@ -29,8 +32,8 @@ namespace testingplayground::ui
     class ExplorerItem final : public Item
     {
     public:
-        enum class Section : uint8_t { files, library, examples, presets };
-        static constexpr int kSections = 4;
+        enum class Section : uint8_t { files, presets, projects, library, examples };
+        static constexpr int kSections = 5;
 
         struct Row
         {
@@ -43,7 +46,7 @@ namespace testingplayground::ui
             bool error = false;                       // a file with errors: a red dot
             bool closable = false;                    // a cross under the pointer
             int index = -1;                           // what the Panel acts on: a tab, a library file, an example
-            std::string key;                          // a preset's name
+            std::string key;                          // a preset's or a project's name
         };
 
         struct Group
@@ -125,7 +128,7 @@ namespace testingplayground::ui
         Hooks hooks_;
         funkgui::Rect bounds_;
         std::vector<Group> groups_;
-        std::array<bool, kSections> open_{ true, true, true, true };
+        std::array<bool, kSections> open_{ true, true, true, true, true };
         std::vector<Hit> hits_;                       // every header, header button, row and cross, in the content
         std::vector<float> rowY_;                     // per group: its header's y
         float contentH_ = 0.0f;

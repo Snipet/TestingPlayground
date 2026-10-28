@@ -14,7 +14,7 @@
 //   gui.dump.example.png the program Claude's instructions build from the library (ChatAgent::promptExample)
 //   gui.dump.displays.png a program with every display and every dial style, audio flowing; .displays.paper.png
 //   gui.dump.random.png  a program RANDOM made, running
-//   gui.dump.presets.png the preset browser, three presets saved, one chosen
+//   gui.dump.projects.png PROJECTS: three projects, another than the open one chosen, its older version chosen
 // and checks:
 //   FRAME     the frame settles, every glyph is in the font, the editor shows the processor's draft (the first
 //             example), and the dials are the program's parameters: one for each, the rest not shown
@@ -67,17 +67,20 @@
 //             library's), the program shown and run with no note; Cmd-Z gives the text back in one step; the RANDOM
 //             button makes another, which runs with no note; with twelve tabs of other files, a notice in the status
 //             and the text untouched
-//   PRESETS   (a folder of the probe's own) the PRESETS button opens the browser, the program's title in its field; a
-//             name typed and Return save the program and its dials: the browser closes, the status says so, the
-//             header names it; an edit makes the header say EDITED; opened again, the preset is listed and chosen, and
-//             Load first asks (the files have changes no preset holds), then loads: the text back, EDITED gone; Save
-//             under a name a preset has asks, then replaces; Delete asks, then deletes; Escape closes
+//   PROJECTS  (a folder of the probe's own) the PROJECTS pill opens the card, the program's title in its field; a name
+//             typed and Return save the program and its dials as a new project: the card closes, the status says so,
+//             the pill names it with its version; an edit makes it EDITED; Cmd-S saves version 2, and again nothing
+//             new; two more projects; a preset saved in the one open (the card opened for a preset: its field "Preset
+//             1"); opened again, the projects listed by name, the open one chosen with its versions and presets; another
+//             project and its older version chosen, Open first asks (the files have changes no version holds), then
+//             opens it: the text back, EDITED gone; Save under another project's name asks (Add version), then adds a
+//             version to it; Delete asks, then deletes a project, and a version; Escape closes
 //   KEYS      Escape leaves the editor, after which Tab moves the focus ring (and no key reaches the text)
 #include "Probe.h"
 
 #include "editor/DisplayItem.h"
 #include "editor/Panel.h"
-#include "plugin/PresetStore.h"
+#include "plugin/ProjectStore.h"
 #include "fminus/Random.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
@@ -1098,39 +1101,58 @@ PROBE(gui, dump)
         P.eq("random.back", panel.fileCount() == 1 && port.status().ok ? 1 : 0, 1);
     }
 
-    // PRESETS
+    // PROJECTS
     {
         const juce::File folder = juce::File::getSpecialLocation(juce::File::tempDirectory)
-                                      .getChildFile("gui-presets-" + juce::String(juce::Time::currentTimeMillis()));
+                                      .getChildFile("gui-projects-" + juce::String(juce::Time::currentTimeMillis()));
         folder.deleteRecursively();
-        tp::presetstore::setDirectoryForTests(folder);
+        tp::projectstore::setDirectoryForTests(folder);
         const std::string program = editor.text();
         const float W = static_cast<float>(tp::ui::kDefaultWidth), H = static_cast<float>(tp::ui::kDefaultHeight);
-        tp::ui::PresetBrowser& browser = panel.presetBrowser();
+        using BL = tp::ui::ProjectBrowser::List;
+        tp::ui::ProjectBrowser& browser = panel.projectBrowser();
         const auto click = [&](const funkgui::Rect& r) {
             host.click(r.centreX(), r.centreY());
             host.settle();
         };
-        const funkgui::Point open = panel.centreOfPresets();
+        const auto clickRow = [&](BL l, int i) {
+            const funkgui::Point at = browser.centreOfRow(l, i, W, H);
+            host.click(at.x, at.y);
+            host.settle();
+        };
+        const auto versionsOf = [](const std::string& name) {
+            const std::optional<tp::projectstore::Project> p = tp::projectstore::load(name);
+            return p ? static_cast<int64_t>(p->versions.size()) : int64_t{ -1 };
+        };
+        const funkgui::Point open = panel.centreOfProjects();
         host.click(open.x, open.y);
         host.settle();
-        P.eq("presets.opens", browser.isOpen() ? 1 : 0, 1);
+        P.eq("projects.opens", browser.isOpen() ? 1 : 0, 1);
         const std::string title = program.substr(3, program.find(':') - 3);   // "// <Title>: ..."
-        P.eq("presets.title_in_field", browser.name() == title ? 1 : 0, 1);
-        P.eq("presets.empty_list", browser.entries().empty() ? 1 : 0, 1);
+        P.eq("projects.title_in_field", browser.name() == title && browser.saveLabel() == "Save project" ? 1 : 0, 1);
+        P.eq("projects.empty_list", browser.projectList().empty() ? 1 : 0, 1);
         host.keys("cmd+a");
         typeText(host, "My Patch");
         host.keys("return");
         host.tick(1);
-        P.eq("presets.saved_closes", !browser.isOpen() && tp::presetstore::exists("My Patch") ? 1 : 0, 1);
-        P.eq("presets.status_says", panel.statusText().find("PRESET SAVED: MY PATCH") != std::string::npos ? 1 : 0, 1);
-        P.eq("presets.header_names_it", panel.presetText() == "PRESET  MY PATCH" ? 1 : 0, 1);
-        // An edit: the header says so.
+        P.eq("projects.saved_closes", !browser.isOpen() && tp::projectstore::exists("My Patch") ? 1 : 0, 1);
+        P.eq("projects.status_says", panel.statusText().find("PROJECT SAVED: MY PATCH") != std::string::npos ? 1 : 0, 1);
+        P.eq("projects.pill_names_it", panel.projectText() == "PROJECT  MY PATCH  V1" ? 1 : 0, 1);
+        // An edit: EDITED; Cmd-S, version 2; again, nothing new.
         host.click(editor.bounds().x + 200.0f, editor.bounds().y + 40.0f);
         host.keys("end");
         typeText(host, " ");
         host.tick(2);
-        P.eq("presets.header_edited", panel.presetText() == "PRESET  MY PATCH  EDITED" ? 1 : 0, 1);
+        P.eq("projects.edited", panel.projectText() == "PROJECT  MY PATCH  V1  EDITED" ? 1 : 0, 1);
+        host.keys("cmd+s");
+        host.tick(2);
+        std::printf("cmd-s: %s / %s\n", panel.statusText().c_str(), panel.projectText().c_str());
+        P.eq("projects.cmd_s", panel.statusText().find("SAVED: MY PATCH V2") != std::string::npos
+                                   && panel.projectText() == "PROJECT  MY PATCH  V2" && versionsOf("My Patch") == 2 ? 1 : 0, 1);
+        host.keys("cmd+s");
+        host.tick(2);
+        P.eq("projects.cmd_s_nothing_new", panel.statusText().find("NOTHING NEW TO SAVE: MY PATCH V2") != std::string::npos
+                                               && versionsOf("My Patch") == 2 ? 1 : 0, 1);
         // Two more, for the list.
         for (const char* name : { "Another One", "Zebra Pad" })
         {
@@ -1141,60 +1163,76 @@ PROBE(gui, dump)
             host.keys("return");
             host.tick(1);
         }
-        P.eq("presets.three_saved", static_cast<int64_t>(tp::presetstore::list().size()), 3);
-        // Load "My Patch" over an edit: asked first, then loaded.
+        P.eq("projects.three_saved", static_cast<int64_t>(tp::projectstore::list().size()), 3);
+        // A preset of the project open (Zebra Pad).
+        panel.openProjects(true);
+        host.settle();
+        P.eq("projects.preset_field", browser.isOpen() && browser.presetMode() && browser.name() == "Preset 1"
+                                          && browser.saveLabel() == "Save preset" ? 1 : 0, 1);
+        host.keys("cmd+a");
+        typeText(host, "Warm");
+        host.keys("return");
+        host.tick(1);
+        P.eq("projects.preset_saved", !browser.isOpen() && panel.statusText().find("PRESET SAVED: WARM") != std::string::npos
+                                          && panel.projectText() == "PROJECT  ZEBRA PAD  V1  PRESET  WARM" ? 1 : 0, 1);
+        // Open My Patch's version 1 over an edit: asked first, then opened.
         editor.selectAll();
-        editor.insert("// an edit no preset holds\n" + program);
+        editor.insert("// an edit no version holds\n" + program);
         host.tick(2);
         host.click(open.x, open.y);
         host.settle();
-        P.eq("presets.listed_by_name", browser.entries().size() == 3 && browser.entries()[0].name == "Another One"
-                                           && browser.entries()[2].name == "Zebra Pad" ? 1 : 0, 1);
-        P.eq("presets.current_chosen", browser.chosen() == 2 ? 1 : 0, 1);         // Zebra Pad, saved last
-        const funkgui::Point row1 = browser.centreOfRow(1, W, H);
-        host.click(row1.x, row1.y);
-        host.settle();
-        P.eq("presets.row_chosen", browser.chosen() == 1 && browser.name() == "My Patch" ? 1 : 0, 1);
-        writePng(P, host, "gui.dump.presets.png", "presets");
-        click(browser.places(W, H).load);
-        P.eq("presets.load_asks", browser.isOpen() && browser.why().find("Load anyway") != std::string::npos ? 1 : 0, 1);
-        click(browser.places(W, H).load);
+        const std::vector<tp::ProjectEntry>& list = browser.projectList();
+        P.eq("projects.listed_by_name", list.size() == 3 && list[0].name == "Another One" && list[1].name == "My Patch"
+                                            && list[2].name == "Zebra Pad" ? 1 : 0, 1);
+        P.eq("projects.open_chosen", browser.chosen(BL::projects) == 2 && browser.versionList().size() == 1
+                                         && browser.presetList().size() == 1 && browser.chosen(BL::presets) == 0 ? 1 : 0, 1);
+        clickRow(BL::projects, 1);
+        P.eq("projects.row_chosen", browser.chosen(BL::projects) == 1 && browser.name() == "My Patch"
+                                        && browser.versionList().size() == 2 && browser.versionList()[0].number == 2 ? 1 : 0, 1);
+        clickRow(BL::versions, 1);
+        P.eq("projects.version_chosen", browser.focus() == BL::versions && browser.openLabel() == "Open v1" ? 1 : 0, 1);
+        writePng(P, host, "gui.dump.projects.png", "projects");
+        click(browser.places(W, H).open);
+        P.eq("projects.open_asks", browser.isOpen() && browser.why().find("Open anyway") != std::string::npos ? 1 : 0, 1);
+        click(browser.places(W, H).open);
         processor.settle();
         host.tick(2);
         host.settle();
-        P.eq("presets.loaded", !browser.isOpen() && panel.editor().text() == program ? 1 : 0, 1);   // saved before the edit
-        P.eq("presets.loaded_runs", port.status().ok ? 1 : 0, 1);
-        P.eq("presets.header_after_load", panel.presetText() == "PRESET  MY PATCH" ? 1 : 0, 1);
-        // Save under a name taken: asked, then replaced.
+        P.eq("projects.opened", !browser.isOpen() && panel.editor().text() == program ? 1 : 0, 1);   // saved before the edit
+        P.eq("projects.opened_runs", port.status().ok ? 1 : 0, 1);
+        P.eq("projects.pill_after_open", panel.projectText() == "PROJECT  MY PATCH  V1" ? 1 : 0, 1);
+        // Save under another project's name: asked, then a version added to it.
         host.click(open.x, open.y);
         host.settle();
         host.keys("cmd+a");
         typeText(host, "zebra pad");
         click(browser.places(W, H).save);
-        P.eq("presets.save_asks", browser.isOpen() && browser.why().find("Replace") != std::string::npos ? 1 : 0, 1);
+        P.eq("projects.add_asks", browser.isOpen() && browser.why().find("Add version") != std::string::npos ? 1 : 0, 1);
         click(browser.places(W, H).save);
-        P.eq("presets.replaced", !browser.isOpen() && tp::presetstore::exists("zebra pad")
-                                     && tp::presetstore::list().size() == 3 ? 1 : 0, 1);
-        // Delete: asked, then deleted; Escape closes.
+        P.eq("projects.added", !browser.isOpen() && versionsOf("zebra pad") == 2 && tp::projectstore::list().size() == 3 ? 1 : 0, 1);
+        // Delete: a project, then a version, each asked first; Escape closes.
         host.click(open.x, open.y);
         host.settle();
-        const funkgui::Point row0 = browser.centreOfRow(0, W, H);
-        host.click(row0.x, row0.y);
-        host.settle();
+        clickRow(BL::projects, 0);
         click(browser.places(W, H).remove);
-        P.eq("presets.delete_asks", browser.isOpen() && tp::presetstore::exists("Another One") ? 1 : 0, 1);
+        P.eq("projects.delete_asks", browser.isOpen() && tp::projectstore::exists("Another One") ? 1 : 0, 1);
         click(browser.places(W, H).remove);
-        P.eq("presets.deleted", browser.isOpen() && !tp::presetstore::exists("Another One") && browser.entries().size() == 2
-                                    ? 1 : 0, 1);
+        P.eq("projects.deleted", browser.isOpen() && !tp::projectstore::exists("Another One") && browser.projectList().size() == 2
+                                     ? 1 : 0, 1);
+        clickRow(BL::projects, 0);                       // My Patch
+        clickRow(BL::versions, 0);                       // its v2
+        click(browser.places(W, H).remove);
+        click(browser.places(W, H).remove);
+        P.eq("projects.version_deleted", versionsOf("My Patch") == 1 && browser.versionList().size() == 1 ? 1 : 0, 1);
         host.keys("escape");
         host.settle();
-        P.eq("presets.escape_closes", browser.isOpen() ? 0 : 1, 1);
+        P.eq("projects.escape_closes", browser.isOpen() ? 0 : 1, 1);
         // Back: the program as it was.
         editor.selectAll();
         editor.insert(program);
         host.keys("cmd+return");
         settleRun(processor, host);
-        tp::presetstore::setDirectoryForTests({});
+        tp::projectstore::setDirectoryForTests({});
         folder.deleteRecursively();
     }
 

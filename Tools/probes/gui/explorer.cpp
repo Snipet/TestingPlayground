@@ -3,22 +3,25 @@
 // gui.explorer: the explorer at the editor's left (editor/Explorer.h), headless over a real Processor, to
 // <build>/probe-out/:
 //   gui.explorer.png         the default size: a program of two files (the second's errors marked), a library file
-//                            added, two presets
+//                            added, two projects, the open one's two presets
 //   gui.explorer.folded.png  folded away, the program's card wider, the button that opens it in its header
 //   gui.explorer.paper.png   in PAPER
-//   gui.explorer.small.png   the least size with the chat folded, scrolled to the presets
+//   gui.explorer.small.png   the least size with the chat folded, scrolled to the end
 // and checks:
 //   OPEN      open at first: its card at the left, the program's card after it and the chat's at the right, none
-//             overlapping; the sections FILES, LIBRARY, EXAMPLES and PRESETS; a row a tab, the shown one marked
+//             overlapping; the sections FILES, PRESETS, PROJECTS, LIBRARY and EXAMPLES; a row a tab, the shown one
+//             marked; PRESETS, with no project open, says to save one
 //   FILES     a click on a file's row shows its tab; a double click renames it (its tab's name being edited); the
 //             header's + makes a new file (its name being edited); a row's cross closes a file with no text; a file
 //             the last run's errors name has its mark, and loses it once the program compiles
 //   LIBRARY   every library file, each category under its caption; a click adds one as a tab and the program
 //             #includes it; its row is then ticked; a second click shows it, adding no tab
 //   EXAMPLES  a click puts the example in the program (one edit: Cmd-Z takes it back) and runs it
-//   PRESETS   the presets saved, the newest first, each with its date; a click loads one (its files in the editor);
-//             with the editor's files edited it asks first (a menu), and loads on the menu's choice only; the header's
-//             + opens PRESETS
+//   PROJECTS  the projects saved, each with its newest version, the one open marked; a click opens one (its files in
+//             the editor); with the editor's files edited it asks first (a menu), and opens on the menu's choice only;
+//             the header's + opens PROJECTS to save
+//   PRESETS   the presets of the project open, the one applied marked; a click applies one (its dial at once, no
+//             compile); the header's + opens PROJECTS with a preset's name to save
 //   FOLD      a section's header folds it (its rows gone) and opens it again; the chevron folds the explorer away (its
 //             rows gone, the program's card wider by the explorer and its gap, the program's card's header holding the
 //             button that opens it); the processor keeps it folded, and its state carries that to another processor;
@@ -36,7 +39,7 @@
 #include "editor/Explorer.h"
 #include "editor/Panel.h"
 #include "plugin/EditorPort.h"
-#include "plugin/PresetStore.h"
+#include "plugin/ProjectStore.h"
 #include "plugin/Processor.h"
 
 #include "Examples.h"
@@ -102,6 +105,10 @@ namespace
         host.settle();
     }
 
+    // The program's first dial, level, in its own units.
+    float level(tp::Processor& p) { return tp::plainOf(p.control(0), p.getParameters()[0]->getValue()); }
+    void setLevel(tp::Processor& p, float plain) { p.getParameters()[0]->setValueNotifyingHost(tp::normOf(p.control(0), plain)); }
+
     int find(const tp::ui::ExplorerItem& ex, S s, const std::string& label)
     {
         for (int i = 0; i < ex.rows(s); ++i)
@@ -124,7 +131,7 @@ PROBE(gui, explorer)
     const juce::File folder = juce::File::getSpecialLocation(juce::File::tempDirectory)
                                   .getChildFile("gui-explorer-" + juce::String(juce::Time::currentTimeMillis()));
     folder.deleteRecursively();
-    tp::presetstore::setDirectoryForTests(folder);
+    tp::projectstore::setDirectoryForTests(folder);
 
     tp::Processor processor;
     tp::EditorPort& port = processor.editorPort();
@@ -147,7 +154,9 @@ PROBE(gui, explorer)
     P.eq("open.left_of_program", card.right() <= program.x && program.right() <= chat.x ? 1 : 0, 1);
     P.eq("open.no_overlap", !overlap(card, program) && !overlap(program, chat) ? 1 : 0, 1);
     P.eq("open.files_rows", ex.rows(S::files), 2);
-    P.eq("open.sections", ex.centreOfHeader(S::files) && ex.centreOfHeader(S::library) && ex.centreOfHeader(S::examples)
+    P.eq("open.presets_say", ex.rows(S::presets) == 0 && ex.centreOfAction(S::presets) == std::nullopt ? 1 : 0, 1);
+    P.eq("open.sections", ex.centreOfHeader(S::files) && ex.centreOfHeader(S::presets) && ex.centreOfHeader(S::projects)
+                              && ex.centreOfHeader(S::library) && ex.rows(S::examples) > 0   // EXAMPLES under the library, out of view
                               ? 1 : 0, 1);
     P.eq("open.shown_marked", ex.row(S::files, panel.activeFile()) != nullptr && ex.row(S::files, panel.activeFile())->active
                                   ? 1 : 0, 1);
@@ -205,36 +214,63 @@ PROBE(gui, explorer)
     clickAt(host, ex.centreOfRow(S::library, libRow));
     P.eq("library.again_shows", panel.fileCount() == filesBefore + 1 && panel.fileName(panel.activeFile()) == libName ? 1 : 0, 1);
 
-    // ---- PRESETS (two saved, the second later) -------------------------------------------------------------------------
+    // ---- PROJECTS (two saved) and PRESETS (the open one's, two) ---------------------------------------------------------
     {
         std::string why;
+        tp::SavedVersion saved;
         port.setDraft(panel.fileCount() > 0 ? port.draft() : d);
-        P.eq("presets.saved", port.savePreset("Alpha Pad", why) && port.savePreset("Beta Lead", why) ? 1 : 0, 1);
+        P.eq("projects.saved", port.saveVersion("Alpha Pad", saved, why) && port.saveVersion("Beta Lead", saved, why) ? 1 : 0, 1);
+        setLevel(processor, 0.2f);
+        P.eq("presets.saved", port.savePreset("Soft", why) ? 1 : 0, 1);
+        setLevel(processor, 0.9f);
+        P.eq("presets.saved_two", port.savePreset("Wide", why) ? 1 : 0, 1);
     }
     host.tick(200);                                      // past the explorer's three seconds
     host.settle();
+    P.eq("projects.rows", ex.rows(S::projects), 2);
+    {
+        const int beta = find(ex, S::projects, "Beta Lead");
+        const tp::ui::ExplorerItem::Row* r = beta >= 0 ? ex.row(S::projects, beta) : nullptr;
+        P.eq("projects.open_marked", r != nullptr && r->active && r->detail == "v1" ? 1 : 0, 1);
+    }
     P.eq("presets.rows", ex.rows(S::presets), 2);
-    P.eq("presets.dated", ex.row(S::presets, 0) != nullptr && !ex.row(S::presets, 0)->detail.empty() ? 1 : 0, 1);
+    {
+        const int wide = find(ex, S::presets, "Wide");
+        P.eq("presets.applied_marked", wide >= 0 && ex.row(S::presets, wide)->active ? 1 : 0, 1);
+    }
     writePng(P, host, "gui.explorer.png");
     {
-        // Edited since: a click asks first; the menu's choice loads it.
-        tp::ui::ExplorerItem::Row first = *ex.row(S::presets, 0);
+        // A preset's click: its dial at once.
+        clickAt(host, ex.centreOfRow(S::presets, find(ex, S::presets, "Soft")));
+        host.settle();
+        P.near("presets.applies", static_cast<double>(level(processor)), 0.2, 1e-4);
+        P.eq("presets.applied", port.project().preset == "Soft" ? 1 : 0, 1);
+        // Edited since: a project's click asks first; the menu's choice opens it.
+        tp::ui::ExplorerItem::Row first = *ex.row(S::projects, find(ex, S::projects, "Alpha Pad"));
         panel.editor().setCaret(panel.editor().endPos());
         host.keys("return,/,/,space,e");
         host.settle();
-        ex.scrollTo(ex.contentHeight());
+        const int at = find(ex, S::projects, first.label);
+        if (!ex.centreOfRow(S::projects, at))
+            ex.scrollTo(ex.contentHeight());
         host.settle();
-        const int at = find(ex, S::presets, first.label);
-        clickAt(host, ex.centreOfRow(S::presets, at));
+        clickAt(host, ex.centreOfRow(S::projects, at));
         const bool asked = host.pendingMenu() != nullptr;
-        P.eq("presets.asks_when_edited", asked ? 1 : 0, 1);
+        P.eq("projects.asks_when_edited", asked ? 1 : 0, 1);
         if (asked)
             host.chooseMenuItem(1);
         settleRun(processor, host);
-        P.eq("presets.loaded", port.presetName() == first.label ? 1 : 0, 1);
-        P.eq("presets.files_back", panel.editor().text().find("// e") == std::string::npos ? 1 : 0, 1);
+        P.eq("projects.opened", port.project().name == first.label && port.project().version == 1 ? 1 : 0, 1);
+        P.eq("projects.files_back", panel.editor().text().find("// e") == std::string::npos ? 1 : 0, 1);
+        host.tick(10);
+        host.settle();
+        P.eq("presets.follow_the_project", ex.rows(S::presets) == 0 ? 1 : 0, 1);   // Alpha Pad has none
         clickAt(host, ex.centreOfAction(S::presets));
-        P.eq("presets.plus_opens", panel.presetBrowser().isOpen() ? 1 : 0, 1);
+        P.eq("presets.plus_opens", panel.projectBrowser().isOpen() && panel.projectBrowser().presetMode() ? 1 : 0, 1);
+        host.keys("escape");
+        host.settle();
+        clickAt(host, ex.centreOfAction(S::projects));
+        P.eq("projects.plus_opens", panel.projectBrowser().isOpen() && !panel.projectBrowser().presetMode() ? 1 : 0, 1);
         host.keys("escape");
         host.settle();
     }
@@ -374,7 +410,7 @@ PROBE(gui, explorer)
         writePng(P, host, "gui.explorer.small.png");
     }
 
-    tp::presetstore::setDirectoryForTests({});
+    tp::projectstore::setDirectoryForTests({});
     folder.deleteRecursively();
     return P.finish();
 }
