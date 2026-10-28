@@ -265,7 +265,17 @@ namespace playground::standalone::native
             return {};
         w.titlebarAppearsTransparent = YES;
         w.titleVisibility = NSWindowTitleHidden;
-        w.styleMask |= NSWindowStyleMaskFullSizeContentView;
+        // A new window gets full-size content around the content it has: JUCE's component keeps its place and size,
+        // and the window shrinks onto it. AppKit does so itself (measured on macOS 27, on a window not yet shown); one
+        // that kept the frame instead would grow the content by the title bar, and the editor's saved size with it, at
+        // every launch.
+        if ((w.styleMask & NSWindowStyleMaskFullSizeContentView) == 0)
+        {
+            const NSRect content = [w contentRectForFrameRect:w.frame];
+            w.styleMask |= NSWindowStyleMaskFullSizeContentView;
+            if ((w.styleMask & NSWindowStyleMaskFullScreen) == 0 && !NSEqualRects(w.frame, content))
+                [w setFrame:content display:NO];
+        }
 
         NSButton* close = [w standardWindowButton:NSWindowCloseButton];
         NSButton* zoom = [w standardWindowButton:NSWindowZoomButton];
