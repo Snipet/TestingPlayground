@@ -38,6 +38,18 @@ namespace playground::chatimages
     // The thumbnail's pixels from its encoded bytes (a session's): false when they do not decode.
     bool decodeThumb(ChatPicture& picture);
 
+    // A picture (PNG or JPEG bytes) made to fit `maxBytes` (an MCP tool result's picture, ChatAgent::mcpCall): as it is
+    // when it fits (or does not decode); else scaled down as a PNG; else a JPEG, smaller until it fits.
+    struct Fitted
+    {
+        std::vector<uint8_t> data;
+        std::string mediaType;                               // image/png or image/jpeg
+        int width = 0, height = 0;                           // as sent
+        int fromWidth = 0, fromHeight = 0;                   // as it was
+        bool changed = false;                                // scaled or encoded again
+    };
+    Fitted fit(const std::vector<uint8_t>& picture, std::size_t maxBytes);
+
     // An id no other picture of this process has (the editor draws a thumbnail by it).
     uint32_t nextId();
 }

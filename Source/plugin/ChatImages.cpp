@@ -298,4 +298,37 @@ namespace playground::chatimages
         picture.thumb = pixels(img);
         return true;
     }
+
+    Fitted fit(const std::vector<uint8_t>& picture, std::size_t maxBytes)
+    {
+        Fitted out;
+        out.data = picture;
+        out.mediaType = isJpeg(picture) ? "image/jpeg" : "image/png";
+        const juce::Image img = decode(picture.data(), picture.size());
+        out.width = out.fromWidth = img.isValid() ? img.getWidth() : 0;
+        out.height = out.fromHeight = img.isValid() ? img.getHeight() : 0;
+        if (picture.size() <= maxBytes || !img.isValid())
+            return out;
+        out.changed = true;
+        // A PNG's size goes with its area: the side that should fit, a little under.
+        const double s = std::min(0.95, 0.95 * std::sqrt(static_cast<double>(maxBytes) / static_cast<double>(picture.size())));
+        int edge = std::max(64, static_cast<int>(std::lround(std::max(img.getWidth(), img.getHeight()) * s)));
+        juce::Image smaller = within(img, edge);
+        out.data = encode(smaller, true, 0.0f);
+        out.mediaType = "image/png";
+        // A JPEG at that size, then at a lower quality, then smaller again, until it fits.
+        for (int step = 0; out.data.size() > maxBytes && step < 8; ++step)
+        {
+            if (step >= 2)
+            {
+                edge = std::max(64, edge * 4 / 5);
+                smaller = within(img, edge);
+            }
+            out.data = encode(smaller, false, step == 0 ? 0.85f : 0.7f);
+            out.mediaType = "image/jpeg";
+        }
+        out.width = smaller.getWidth();
+        out.height = smaller.getHeight();
+        return out;
+    }
 }
