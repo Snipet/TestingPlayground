@@ -12,6 +12,8 @@
 //   compiling()       a run is waiting or compiling
 //   status()          the last compile's outcome: FMinus's messages, the dials, the time (CompileStatus)
 //   statusRevision()  bumps with each compile that finishes
+//   check()           the editor's check while typing: Patch::check of `files` on the compiler's thread
+//                     (Compiler::check), nothing played; checkStatus() its outcome (CheckStatus::revision bumps)
 //   running()         the files of the program that plays (none before the first compiles)
 //   controls()        the dials of the program that plays
 //   panel()           its interface: a .gui file's (GuiSpec.h), or how its #pragma panel lines lay its dials out
@@ -180,6 +182,8 @@ namespace playground
         virtual bool compiling() const = 0;
         virtual CompileStatus status() const = 0;
         virtual uint64_t statusRevision() const = 0;
+        virtual void check(const Sources& files) { (void)files; }
+        virtual CheckStatus checkStatus() const { return {}; }
         virtual Sources running() const = 0;
         virtual Controls controls() const = 0;
         virtual PanelSpec panel() const = 0;

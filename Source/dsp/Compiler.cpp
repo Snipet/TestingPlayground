@@ -185,6 +185,22 @@ namespace playground
         tools_ = std::move(tools);
     }
 
+    void Compiler::check(Sources files)
+    {
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            checkQueued_ = std::move(files);
+            hasCheck_ = true;
+        }
+        wake_.notify_all();
+    }
+
+    CheckStatus Compiler::checkStatus() const
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return check_;
+    }
+
     CompileStatus Compiler::status() const
     {
         const std::lock_guard<std::mutex> lock(mutex_);
@@ -208,7 +224,7 @@ namespace playground
         std::unique_lock<std::mutex> lock(mutex_);
         while (!stop_)
         {
-            wake_.wait_for(lock, std::chrono::milliseconds(100), [this] { return hasQueued_ || stop_; });
+            wake_.wait_for(lock, std::chrono::milliseconds(100), [this] { return hasQueued_ || hasCheck_ || stop_; });
             if (stop_)
                 break;
             if (hasQueued_)
@@ -229,6 +245,19 @@ namespace playground
                 compiling_ = false;
                 if (!hasQueued_)
                     idle_.notify_all();
+            }
+            if (hasCheck_ && !hasQueued_ && !stop_)
+            {
+                // The editor's check, once no RUN waits: its messages only.
+                Sources files = std::move(checkQueued_);
+                hasCheck_ = false;
+                lock.unlock();
+                const Patch::Result r = Patch::check(files);
+                lock.lock();
+                check_.revision += 1;
+                check_.errors = r.errors;
+                check_.ms = r.compileMs;
+                check_.sources = std::move(files);
             }
             lock.unlock();
             engine_.collect();                     // what the audio thread handed back

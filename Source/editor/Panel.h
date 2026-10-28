@@ -24,8 +24,9 @@
 //             it, Escape cancels), the + adds a file (its name being edited), a tab's x closes its file (asking first
 //             when it has text). A tab whose file the last run's errors name has a mark before its name
 //   editor    a funkgui::TextEditor for each file, the shown file's drawn (the processor keeps the files and the tab:
-//             EditorPort::draft), FMinus's words highlighted; a mark in the gutter on each line of the shown file the
-//             last run's errors name
+//             EditorPort::draft), made a code editor by CodeAssist.h: FMinus highlighted, the problems' squiggles and
+//             marks (RUN's, and a check while typing), completion, signature help, hover cards, Format Document, the
+//             find bar, the line commands, go to definition, and a status line under it
 //   problems  the last run's messages, a line each (the first four, and how many more), each with its file; a click
 //             on one with a line number shows its file and puts the caret there
 //   dials     the running program's parameters, P1 to P32 (a funkgui::Dial each, labelled with the parameter's name
@@ -113,6 +114,7 @@ namespace playground::ui
     class FilesItem;                                     // the files' tabs and editors (Panel.cpp)
     class ChatView;                                      // the chat's conversation (ChatView.h)
     class InputItem;                                     // the chat's message box (ChatItems.h)
+    class CodeAssist;                                    // the editor's language features (CodeAssist.h)
     class DisplayItem;                                   // a program's display (DisplayItem.h)
     class GuiControlItem;                                // a .gui file's control (GuiItems.h)
 
@@ -124,7 +126,8 @@ namespace playground::ui
     inline constexpr funkgui::Tag kHeaderTextTag = funkgui::tags::firstProduct;       // name, kind and version
     inline constexpr funkgui::Tag kStatusTag = funkgui::tags::firstProduct + 1;       // the toolbar's status
     inline constexpr funkgui::Tag kProblemTag = funkgui::tags::firstProduct + 2;      // the problems' lines
-    inline constexpr funkgui::Tag kMarkTag = funkgui::tags::firstProduct + 3;         // an error's mark in the gutter
+    inline constexpr funkgui::Tag kMarkTag = funkgui::tags::firstProduct + 3;         // unused: the editor's line marks
+                                                                                      // (TextEditor, EDIT_MARK) show errors
     inline constexpr funkgui::Tag kTabTag = funkgui::tags::firstProduct + 4;          // the files' tabs
     inline constexpr funkgui::Tag kChatTag = funkgui::tags::firstProduct + 5;         // the chat's own text
     inline constexpr funkgui::Tag kKeyDialogTag = funkgui::tags::firstProduct + 6;    // the key dialog
@@ -139,6 +142,7 @@ namespace playground::ui
         std::string file;                                // the file it is in ("program.fm")
         int line = 0, column = 0;                        // 1-based; 0: no place (the plugin's own message)
         bool error = true;                               // else a note
+        bool warning = false;                            // a warning (not an error)
         std::string text;                                // the message, without its file and place
     };
 
@@ -162,6 +166,7 @@ namespace playground::ui
 
         // For probes.
         funkgui::TextEditor& editor() noexcept;         // the shown file's
+        CodeAssist& codeAssist() noexcept;               // its completion, hover, find bar, problems (CodeAssist.h)
         int fileCount() const;
         std::string fileName(int i) const;
         int activeFile() const;

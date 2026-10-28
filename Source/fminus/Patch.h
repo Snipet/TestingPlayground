@@ -104,6 +104,12 @@ namespace playground
         static Result compile(const Sources& files, float sampleRate);
         // A program of one file.
         static Result compile(std::string_view source, float sampleRate, std::string_view fileName = kProgramName);
+        // The editor's check while typing (Compiler::check): what compile() would say of `files`, but faster and
+        // without the code or the instances: FMinus's pass over the program as written (-O0, which finds what is
+        // wrong in the text) and the plugin's checks that the main module is there with its methods. What only the
+        // second pass finds (a method the audio thread calls that could allocate, a method declared otherwise than
+        // the plugin calls it) waits for RUN. Off the audio thread; `patch` is always null.
+        static Result check(const Sources& files);
 
         ~Patch();
         Patch(const Patch&) = delete;
