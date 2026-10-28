@@ -134,7 +134,7 @@
 #include <thread>
 #include <vector>
 
-namespace testingplayground
+namespace playground
 {
     // What Claude's tools act on. Every call may come from the agent's worker thread.
     class ChatHost

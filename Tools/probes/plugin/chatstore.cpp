@@ -32,8 +32,8 @@
 #include <cstdlib>
 #include <string>
 
-namespace tp = testingplayground;
-namespace store = testingplayground::chatstore;
+namespace pg = playground;
+namespace store = playground::chatstore;
 
 namespace
 {
@@ -63,7 +63,7 @@ PROBE(plugin, chatstore)
 {
     // SANDBOX, before the probe's own folder replaces it.
     {
-        const std::string var = std::string(tp::product::kEnvPrefix) + "PREFS_DIR";
+        const std::string var = std::string(pg::product::kEnvPrefix) + "PREFS_DIR";
         if (const char* dir = std::getenv(var.c_str()); dir != nullptr && *dir != '\0')
             P.eq("sandbox.default_in_sandbox",
                  store::directory() == juce::File(juce::String::fromUTF8(dir)).getChildFile("chat") ? 1 : 0, 1);

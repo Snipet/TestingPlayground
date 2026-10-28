@@ -12,7 +12,7 @@
 #include <cmath>
 #include <cstdio>
 
-namespace testingplayground::soundpicture
+namespace playground::soundpicture
 {
     namespace
     {

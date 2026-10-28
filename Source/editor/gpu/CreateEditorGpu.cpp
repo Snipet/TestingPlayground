@@ -3,8 +3,9 @@
 // it owns the window surface, the frame clock, input, accessibility and the host's parameter menu, and it implements
 // HostServices for the Panel. The Panel owns no JUCE component and draws the same frames headless (the gui.dump probe).
 //
-// Diagnostics (FunkGui reads them under this product's prefix, cmake/Product.cmake: TSTN_): TSTN_UI_THEME=1 opens on
-// the light theme without saving it, TSTN_GPU_LOG=1 logs the surface's life, TSTN_UI_ZOOM=<percent> pins the zoom.
+// Diagnostics (FunkGui reads them under the product's prefix, PRODUCT_ENV_PREFIX in products/<key>.cmake):
+// <prefix>UI_THEME=1 opens on the light theme without saving it, <prefix>GPU_LOG=1 logs the surface's life,
+// <prefix>UI_ZOOM=<percent> pins the zoom.
 #include "editor/Panel.h"
 #include "plugin/Processor.h"
 
@@ -12,7 +13,7 @@
 
 #include <memory>
 
-namespace testingplayground
+namespace playground
 {
     juce::AudioProcessorEditor* createEditor(Processor& processor)
     {

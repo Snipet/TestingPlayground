@@ -1,6 +1,6 @@
 // Source/fminus/Patch.h: one program, compiled for the plugin and ready to play (JUCE-free). A program is FMinus source
 // whose main module the plugin runs, in the first of its files (Sources.h); the others are what its #includes read,
-// by name. What the plugin asks of the main module depends on the plugin's kind (cmake/Product.cmake):
+// by name. What the plugin asks of the main module depends on the plugin's kind (products/<key>.cmake):
 //
 //   an effect: module Effect
 //       param ...;                                              the dials (Controls.h), at most kMaxControls
@@ -80,7 +80,7 @@ namespace fminus
     class Program;
 }
 
-namespace testingplayground
+namespace playground
 {
     class Patch
     {

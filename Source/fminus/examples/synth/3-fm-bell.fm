@@ -1,0 +1,70 @@
+// FM bell: two-operator frequency modulation. A modulator at RATIO times the note's frequency moves the carrier's
+// phase by up to INDEX radians; both decay, the brightness faster than the level, as a struck bell's partials do.
+// The panel shows the brightness fall (a meter of the field bright) and the wave turn from a clang to a sine (a scope).
+// The pitch wheel bends it up to 2 semitones; the mod wheel adds up to 4 radians of index, held (host.fm).
+#include "host.fm"
+#pragma panel section "OPERATORS" ratio index bright
+#pragma panel section "BELL" decay level wave
+#pragma panel meter bright "BRIGHT"
+#pragma panel scope out as wave "WAVE"
+#pragma panel color "OPERATORS" violet
+module Voice
+{
+    param float ratio [[fminus::range(0.5, 8)]] [[fminus::default(3.5)]];
+    param float index [[fminus::range(0, 10)]] [[fminus::default(4)]];
+    param float decay [[fminus::range(100, 8000)]] [[fminus::default(2500)]];   // ms, to -60 dB
+    param float level [[fminus::range(-36, 0)]] [[fminus::default(-12)]];       // dB
+    Host* host;        // the plugin's: the wheels
+    float rate;
+    float carrier;     // the phases, 0 to 1
+    float modulator;
+    float step;
+    float env;
+    float bright;      // the index's own envelope
+    float velocity;
+    bool held;
+
+    void init(float sampleRate)
+    {
+        rate = sampleRate;
+    }
+
+    void start(float note, float vel)
+    {
+        step = 440 * expf(0.0577622650f * (note - 69)) / rate;
+        velocity = vel;
+        env = 1;
+        bright = 1;
+        held = true;
+    }
+
+    void stop()
+    {
+        held = false;
+    }
+
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        // A released key damps the bell four times faster.
+        const float ms = held ? decay[0] : decay[0] * 0.25f;
+        const float fall = expf(-6907.7553f / (ms * rate));
+        const float dull = fall * fall;
+        const float gain = velocity * expf(0.115129255f * level[0]);
+        const float f = step * expf(0.0577622650f * 2 * host->pitchbend);   // the pitch wheel: 2 semitones
+        const float wheel = 4 * host->modwheel;
+        for (int i = 0; i < n; ++i)
+        {
+            const float m = sinf(6.28318531f * modulator);
+            const float out = gain * env * sinf(6.28318531f * carrier + (index[i] * bright * velocity + wheel) * m);
+            left[i] += out;
+            right[i] += out;
+            carrier += f;
+            carrier -= floorf(carrier);
+            modulator += f * ratio[i];
+            modulator -= floorf(modulator);
+            env *= fall;
+            bright *= dull;
+        }
+        return env > 0.0001f;
+    }
+};

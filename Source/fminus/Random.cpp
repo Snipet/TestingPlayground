@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 
-namespace testingplayground::random
+namespace playground::random
 {
     namespace
     {

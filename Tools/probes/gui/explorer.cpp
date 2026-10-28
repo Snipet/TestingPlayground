@@ -58,15 +58,15 @@
 #include <string>
 #include <vector>
 
-namespace tp = testingplayground;
-using S = tp::ui::ExplorerItem::Section;
+namespace pg = playground;
+using S = pg::ui::ExplorerItem::Section;
 
 namespace
 {
     // A program that #includes lib.fm, which may be broken.
     std::string program()
     {
-        if constexpr (tp::product::kIsInstrument)
+        if constexpr (pg::product::kIsInstrument)
             return "// Two Files: a program and its helper\n#include \"lib.fm\"\nmodule Voice\n{\n"
                    "    param float level [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
                    "    void start(float note, float v) {}\n"
@@ -90,7 +90,7 @@ namespace
         std::printf("wrote %s\n", path.c_str());
     }
 
-    void settleRun(tp::Processor& p, funkgui::HeadlessHost& host)
+    void settleRun(pg::Processor& p, funkgui::HeadlessHost& host)
     {
         p.settle();
         host.tick(4);
@@ -106,10 +106,10 @@ namespace
     }
 
     // The program's first dial, level, in its own units.
-    float level(tp::Processor& p) { return tp::plainOf(p.control(0), p.getParameters()[0]->getValue()); }
-    void setLevel(tp::Processor& p, float plain) { p.getParameters()[0]->setValueNotifyingHost(tp::normOf(p.control(0), plain)); }
+    float level(pg::Processor& p) { return pg::plainOf(p.control(0), p.getParameters()[0]->getValue()); }
+    void setLevel(pg::Processor& p, float plain) { p.getParameters()[0]->setValueNotifyingHost(pg::normOf(p.control(0), plain)); }
 
-    int find(const tp::ui::ExplorerItem& ex, S s, const std::string& label)
+    int find(const pg::ui::ExplorerItem& ex, S s, const std::string& label)
     {
         for (int i = 0; i < ex.rows(s); ++i)
             if (const auto* r = ex.row(s, i); r != nullptr && r->label == label)
@@ -129,24 +129,24 @@ PROBE(gui, explorer)
     funkgui::UiPreferences::get().setBackend(funkgui::UiPreferences::memoryBackend());   // never the user's file
     funkgui::UiPreferences::get().setTheme(0);
     const juce::File folder = juce::File::getSpecialLocation(juce::File::tempDirectory)
-                                  .getChildFile("gui-explorer-" + juce::String(juce::Time::currentTimeMillis()));
+                                  .getChildFile(juce::String(pg::product::kEnvPrefix) + "gui-explorer-" + juce::String(juce::Time::currentTimeMillis()));
     folder.deleteRecursively();
-    tp::projectstore::setDirectoryForTests(folder);
+    pg::projectstore::setDirectoryForTests(folder);
 
-    tp::Processor processor;
-    tp::EditorPort& port = processor.editorPort();
-    tp::Draft d;
+    pg::Processor processor;
+    pg::EditorPort& port = processor.editorPort();
+    pg::Draft d;
     d.files = { { "program.fm", program() }, { "lib.fm", kBadLib } };
     port.setDraft(d);
     port.run(d.files);
     processor.settle();
 
-    tp::ui::Panel panel(processor.ports(), port);
+    pg::ui::Panel panel(processor.ports(), port);
     funkgui::HeadlessHost host(panel, 0, 2.0f);
     host.setZoom({ 100, 125, 150, 200 }, 100);
     host.settle();
     settleRun(processor, host);
-    tp::ui::ExplorerItem& ex = panel.explorer();
+    pg::ui::ExplorerItem& ex = panel.explorer();
 
     // ---- OPEN ----------------------------------------------------------------------------------------------------------
     P.eq("open.at_first", panel.explorerOpen() ? 1 : 0, 1);
@@ -198,9 +198,9 @@ PROBE(gui, explorer)
     int libraryRows = 0, headings = 0;
     for (int i = 0; i < ex.rows(S::library); ++i)
         (ex.row(S::library, i)->heading ? headings : libraryRows) += 1;
-    P.eq("library.every_file", libraryRows, static_cast<int64_t>(std::size(tp::kLibrary)));
+    P.eq("library.every_file", libraryRows, static_cast<int64_t>(std::size(pg::kLibrary)));
     P.ge("library.captions", headings, 3);
-    const std::string libName = tp::kLibrary[0].name;
+    const std::string libName = pg::kLibrary[0].name;
     const int libRow = find(ex, S::library, libName);
     P.eq("library.unticked", libRow >= 0 && !ex.row(S::library, libRow)->marked ? 1 : 0, 1);
     ex.scrollTo(0.0f);
@@ -217,7 +217,7 @@ PROBE(gui, explorer)
     // ---- PROJECTS (two saved) and PRESETS (the open one's, two) ---------------------------------------------------------
     {
         std::string why;
-        tp::SavedVersion saved;
+        pg::SavedVersion saved;
         port.setDraft(panel.fileCount() > 0 ? port.draft() : d);
         P.eq("projects.saved", port.saveVersion("Alpha Pad", saved, why) && port.saveVersion("Beta Lead", saved, why) ? 1 : 0, 1);
         setLevel(processor, 0.2f);
@@ -230,7 +230,7 @@ PROBE(gui, explorer)
     P.eq("projects.rows", ex.rows(S::projects), 2);
     {
         const int beta = find(ex, S::projects, "Beta Lead");
-        const tp::ui::ExplorerItem::Row* r = beta >= 0 ? ex.row(S::projects, beta) : nullptr;
+        const pg::ui::ExplorerItem::Row* r = beta >= 0 ? ex.row(S::projects, beta) : nullptr;
         P.eq("projects.open_marked", r != nullptr && r->active && r->detail == "v1" ? 1 : 0, 1);
     }
     P.eq("presets.rows", ex.rows(S::presets), 2);
@@ -246,7 +246,7 @@ PROBE(gui, explorer)
         P.near("presets.applies", static_cast<double>(level(processor)), 0.2, 1e-4);
         P.eq("presets.applied", port.project().preset == "Soft" ? 1 : 0, 1);
         // Edited since: a project's click asks first; the menu's choice opens it.
-        tp::ui::ExplorerItem::Row first = *ex.row(S::projects, find(ex, S::projects, "Alpha Pad"));
+        pg::ui::ExplorerItem::Row first = *ex.row(S::projects, find(ex, S::projects, "Alpha Pad"));
         panel.editor().setCaret(panel.editor().endPos());
         host.keys("return,/,/,space,e");
         host.settle();
@@ -282,8 +282,8 @@ PROBE(gui, explorer)
     host.settle();
     clickAt(host, ex.centreOfRow(S::examples, 1));
     settleRun(processor, host);
-    P.eq("examples.loads", port.draft().files[0].text == tp::kExamples[1].source ? 1 : 0, 1);
-    P.eq("examples.runs", port.running().front().text == tp::kExamples[1].source ? 1 : 0, 1);
+    P.eq("examples.loads", port.draft().files[0].text == pg::kExamples[1].source ? 1 : 0, 1);
+    P.eq("examples.runs", port.running().front().text == pg::kExamples[1].source ? 1 : 0, 1);
 
     // ---- FOLD ----------------------------------------------------------------------------------------------------------
     ex.setSectionOpen(S::library, true);
@@ -310,7 +310,7 @@ PROBE(gui, explorer)
     {
         juce::MemoryBlock state;
         processor.getStateInformation(state);
-        tp::Processor other;
+        pg::Processor other;
         other.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
         P.eq("fold.state_carries", other.editorPort().explorerOpen() ? 0 : 1, 1);
     }
@@ -366,7 +366,7 @@ PROBE(gui, explorer)
     // ---- PAPER ---------------------------------------------------------------------------------------------------------
     {
         funkgui::UiPreferences::get().setTheme(1);
-        tp::ui::Panel paper(processor.ports(), port);
+        pg::ui::Panel paper(processor.ports(), port);
         funkgui::HeadlessHost paperHost(paper, 1, 2.0f);
         paperHost.settle();
         writePng(P, paperHost, "gui.explorer.paper.png");
@@ -375,7 +375,7 @@ PROBE(gui, explorer)
 
     // ---- NARROW --------------------------------------------------------------------------------------------------------
     {
-        P.eq("narrow.least_size", host.resize(tp::ui::kMinWidth, tp::ui::kMinHeight) ? 1 : 0, 1);
+        P.eq("narrow.least_size", host.resize(pg::ui::kMinWidth, pg::ui::kMinHeight) ? 1 : 0, 1);
         host.settle();
         P.eq("narrow.chat_open", panel.chatOpen() ? 1 : 0, 1);
         P.eq("narrow.still_open", panel.explorerOpen() ? 1 : 0, 1);
@@ -389,14 +389,14 @@ PROBE(gui, explorer)
         panel.setChatOpen(true);
         host.settle();
         P.eq("narrow.chat_back_away", panel.explorerOpen() && !panel.explorerShown() ? 1 : 0, 1);
-        const bool back = host.resize(tp::ui::kDefaultWidth, tp::ui::kDefaultHeight);
+        const bool back = host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
         host.settle();
         P.eq("narrow.default_shows", back && panel.explorerShown() ? 1 : 0, 1);
     }
 
     // ---- SCROLL --------------------------------------------------------------------------------------------------------
     {
-        P.eq("scroll.least_size", host.resize(tp::ui::kMinWidth, tp::ui::kMinHeight) ? 1 : 0, 1);
+        P.eq("scroll.least_size", host.resize(pg::ui::kMinWidth, pg::ui::kMinHeight) ? 1 : 0, 1);
         panel.setChatOpen(false);                    // the least width has room for the explorer beside the chat's rail
         host.settle();
         P.eq("scroll.shown", panel.explorerShown() ? 1 : 0, 1);
@@ -410,7 +410,7 @@ PROBE(gui, explorer)
         writePng(P, host, "gui.explorer.small.png");
     }
 
-    tp::projectstore::setDirectoryForTests({});
+    pg::projectstore::setDirectoryForTests({});
     folder.deleteRecursively();
     return P.finish();
 }

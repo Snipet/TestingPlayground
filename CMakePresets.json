@@ -11,21 +11,25 @@
     },
     {
       "name": "dev",
-      "displayName": "dev: RelWithDebInfo; Standalone, AU, VST3 and the probes",
+      "displayName": "dev: RelWithDebInfo; both products' Standalone, AU, VST3 and probes",
       "inherits": [ "base" ],
       "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
     },
     {
       "name": "release",
-      "displayName": "release: Release, LTO; Standalone, AU, VST3 (scripts/install.sh copies these)",
+      "displayName": "release: Release, LTO; both products' Standalone, AU, VST3 (scripts/install.sh copies these)",
       "inherits": [ "base" ],
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "FP_LTO": "ON" }
     }
   ],
   "buildPresets": [
-    { "name": "dev",        "configurePreset": "dev",     "targets": [ "all", "probes" ], "jobs": 6 },
-    { "name": "dev-probes", "configurePreset": "dev",     "targets": [ "probes" ],        "jobs": 6 },
-    { "name": "release",    "configurePreset": "release", "targets": [ "all" ],           "jobs": 6 }
+    { "name": "dev",           "configurePreset": "dev",     "targets": [ "all", "probes" ], "jobs": 6 },
+    { "name": "dev-probes",    "configurePreset": "dev",     "targets": [ "probes" ],        "jobs": 6 },
+    { "name": "dev-effect",    "configurePreset": "dev",     "targets": [ "effect" ],        "jobs": 6,
+      "displayName": "the effect alone: its plugin, its extension and its probes" },
+    { "name": "dev-synth",     "configurePreset": "dev",     "targets": [ "synth" ],         "jobs": 6,
+      "displayName": "the synth alone: its plugin, its extension and its probes" },
+    { "name": "release",       "configurePreset": "release", "targets": [ "all" ],           "jobs": 6 }
   ],
   "testPresets": [
     {
@@ -40,6 +44,22 @@
       "filter": { "include": { "label": "probe" } },
       "execution": { "jobs": 6, "noTestsAction": "error" },
       "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "dev-effect",
+      "displayName": "the effect's probes (the lints need both products built)",
+      "configurePreset": "dev",
+      "filter": { "include": { "label": "^effect$" } },
+      "execution": { "jobs": 6, "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "dev-synth",
+      "displayName": "the synth's probes (the lints need both products built)",
+      "configurePreset": "dev",
+      "filter": { "include": { "label": "^synth$" } },
+      "execution": { "jobs": 6, "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
     }
   ],
   "workflowPresets": [
@@ -49,6 +69,24 @@
         { "type": "configure", "name": "dev" },
         { "type": "build", "name": "dev" },
         { "type": "test", "name": "dev" }
+      ]
+    },
+    {
+      "name": "effect-verify",
+      "displayName": "the effect alone: configure, build, its probes",
+      "steps": [
+        { "type": "configure", "name": "dev" },
+        { "type": "build", "name": "dev-effect" },
+        { "type": "test", "name": "dev-effect" }
+      ]
+    },
+    {
+      "name": "synth-verify",
+      "displayName": "the synth alone: configure, build, its probes",
+      "steps": [
+        { "type": "configure", "name": "dev" },
+        { "type": "build", "name": "dev-synth" },
+        { "type": "test", "name": "dev-synth" }
       ]
     },
     {

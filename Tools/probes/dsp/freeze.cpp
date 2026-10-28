@@ -45,11 +45,11 @@
 #include <string>
 #include <vector>
 
-namespace tp = testingplayground;
+namespace pg = playground;
 
 namespace
 {
-    constexpr bool kInstrument = tp::product::kIsInstrument;
+    constexpr bool kInstrument = pg::product::kIsInstrument;
     constexpr double kFs = 48000.0;
 
     // The dials, in order: cutoff (Hz), level (dB), shape (an int: sine, saw, square), bright (a bool: the cutoff
@@ -188,11 +188,11 @@ namespace
         return probe::dbFromLin(std::max(static_cast<double>(probe::peak(s.l)), static_cast<double>(probe::peak(s.r))));
     }
 
-    tp::Sources filesOf(const tp::random::Program& p)
+    pg::Sources filesOf(const pg::random::Program& p)
     {
-        tp::Sources s{ { tp::kProgramName, p.text } };
+        pg::Sources s{ { pg::kProgramName, p.text } };
         for (const std::string& name : p.library)
-            if (const tp::LibraryFile* f = tp::findLibraryFile(name))
+            if (const pg::LibraryFile* f = pg::findLibraryFile(name))
                 s.push_back({ name, f->source });
         return s;
     }
@@ -210,7 +210,7 @@ namespace
         std::vector<probe::Note> notes;
         if constexpr (kInstrument)
             for (int k = 0; k < voices; ++k)
-                notes.push_back({ 0, tp::EventKind::noteOn, 40 + 3 * k, 0.8f });
+                notes.push_back({ 0, pg::EventKind::noteOn, 40 + 3 * k, 0.8f });
         return notes;
     }
 
@@ -244,7 +244,7 @@ PROBE(dsp, freeze)
 
     // ---- STILL ---------------------------------------------------------------------------------------------------------
     const probe::Stereo a1 = live.run(input(second, 1), 256, chord(4)), b1 = frozen.run(input(second, 1), 256, chord(4));
-    tp::DialState d;
+    pg::DialState d;
     frozen.engine().dials(d);
     P.eq("still.program", static_cast<int64_t>(d.program), 1);
     // 48000 samples in blocks of 256: the last block, of 128, starts at 47872.
@@ -292,21 +292,21 @@ PROBE(dsp, freeze)
         frozen.norm()[1] = 0.5f;                             // level: the copy goes
         frozen.run(input(1024, 5), 256);
         frozen.engine().dials(d);
-        std::array<float, tp::kMaxControls> other = d.plain;
+        std::array<float, pg::kMaxControls> other = d.plain;
         other[1] += 1.0f;                                    // not the dial's value
         std::string w;
-        std::unique_ptr<tp::Patch::Frozen> f = tp::Patch::freeze(frozen.recipe(), other, w);
+        std::unique_ptr<pg::Patch::Frozen> f = pg::Patch::freeze(frozen.recipe(), other, w);
         P.eq("refused.compiles", f != nullptr ? 1 : 0, 1);
         frozen.engine().offerFrozen(std::move(f));
         frozen.run(input(1024, 6), 256);
         P.eq("refused.other_values", frozen.engine().frozen() ? 0 : 1, 1);
         frozen.engine().collect();
         // A copy of the program before another came.
-        const tp::Patch::Recipe before = frozen.recipe();
+        const pg::Patch::Recipe before = frozen.recipe();
         frozen.load(program());                              // program 2
         frozen.run(input(1024, 7), 256);
         frozen.engine().dials(d);
-        std::unique_ptr<tp::Patch::Frozen> old = tp::Patch::freeze(before, d.plain, w);
+        std::unique_ptr<pg::Patch::Frozen> old = pg::Patch::freeze(before, d.plain, w);
         frozen.engine().offerFrozen(std::move(old));
         frozen.run(input(1024, 8), 256);
         P.eq("refused.other_program", frozen.engine().frozen() ? 0 : 1, 1);
@@ -358,7 +358,7 @@ PROBE(dsp, freeze)
                     100.0 * frozenMs / std::max(liveMs, 1e-9));
     }
     // ---- EXAMPLES ------------------------------------------------------------------------------------------------------
-    for (const tp::Example& e : tp::kExamples)
+    for (const pg::Example& e : pg::kExamples)
     {
         probe::Rig a(kFs, 256), b(kFs, 256);
         if (!a.load(e.source) || !b.load(e.source))
@@ -384,14 +384,14 @@ PROBE(dsp, freeze)
         struct Case
         {
             std::string name;
-            tp::Sources files;
+            pg::Sources files;
         };
         std::vector<Case> cases;
-        for (const tp::Example& e : tp::kExamples)
-            cases.push_back({ e.title, tp::singleFile(e.source) });
+        for (const pg::Example& e : pg::kExamples)
+            cases.push_back({ e.title, pg::singleFile(e.source) });
         for (uint32_t seed = 1; seed <= static_cast<uint32_t>(kLongSeeds); ++seed)
         {
-            const tp::random::Program p = tp::random::make(seed);
+            const pg::random::Program p = pg::random::make(seed);
             cases.push_back({ "random " + std::to_string(seed) + " " + p.title, filesOf(p) });
         }
         const std::size_t length = 10 * second, window = second / 2;
@@ -413,8 +413,8 @@ PROBE(dsp, freeze)
             if constexpr (kInstrument)
                 for (const int n : { 48, 55, 60, 64 })
                 {
-                    on.push_back({ 0, tp::EventKind::noteOn, n, 0.8f });
-                    off.push_back({ 6 * second, tp::EventKind::noteOff, n, 0.0f });
+                    on.push_back({ 0, pg::EventKind::noteOn, n, 0.8f });
+                    off.push_back({ 6 * second, pg::EventKind::noteOff, n, 0.0f });
                 }
             probe::Stereo in(length);
             if constexpr (!kInstrument)

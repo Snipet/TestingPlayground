@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-namespace testingplayground::measure
+namespace playground::measure
 {
     struct Goal
     {

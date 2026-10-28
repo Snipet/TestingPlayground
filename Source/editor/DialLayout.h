@@ -29,7 +29,7 @@
 #include <string>
 #include <vector>
 
-namespace testingplayground::ui
+namespace playground::ui
 {
     struct ItemPlace
     {

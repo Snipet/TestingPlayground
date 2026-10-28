@@ -9,7 +9,7 @@
 #include <cmath>
 #include <limits>
 
-namespace testingplayground::ui
+namespace playground::ui
 {
     namespace
     {

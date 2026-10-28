@@ -148,8 +148,8 @@
 #include <utility>
 #include <vector>
 
-namespace tp = testingplayground;
-namespace claude = testingplayground::claude;
+namespace pg = playground;
+namespace claude = playground::claude;
 
 namespace
 {
@@ -157,7 +157,7 @@ namespace
     std::string levelProgram()
     {
         const std::string param = "    param float level [[fminus::range(0, 2)]] [[fminus::default(1)]];\n";
-        if constexpr (tp::product::kIsInstrument)
+        if constexpr (pg::product::kIsInstrument)
             return "module Voice\n{\n" + param +
                    "    void start(float n, float v) {}\n"
                    "    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n";
@@ -172,7 +172,7 @@ namespace
     // effect's gain (dB).
     std::string soundProgram()
     {
-        if constexpr (tp::product::kIsInstrument)
+        if constexpr (pg::product::kIsInstrument)
             return R"(module Voice
 {
     param float level [[fminus::range(-40, 0)]] [[fminus::default(-20)]];
@@ -321,7 +321,7 @@ namespace
         return true;
     }
 
-    std::string lastText(const tp::ChatState& s, tp::ChatEntry::Kind kind)
+    std::string lastText(const pg::ChatState& s, pg::ChatEntry::Kind kind)
     {
         for (auto it = s.entries.rbegin(); it != s.entries.rend(); ++it)
             if (it->kind == kind)
@@ -332,11 +332,11 @@ namespace
     bool has(const std::string& s, const std::string& part) { return s.find(part) != std::string::npos; }
 
     // The conversation, a line an entry, for the log.
-    void print(const char* what, const tp::ChatState& s)
+    void print(const char* what, const pg::ChatState& s)
     {
         static const char* const names[] = { "user", "assistant", "thinking", "tool", "error", "note", "question", "checks" };
         std::printf("%s:\n", what);
-        for (const tp::ChatEntry& e : s.entries)
+        for (const pg::ChatEntry& e : s.entries)
             std::printf("  %-9s %s\n", names[static_cast<int>(e.kind)], e.text.substr(0, 110).c_str());
     }
 
@@ -348,7 +348,7 @@ PROBE(plugin, chat)
     const funkgui::HeadlessGuiScope gui;
     const juce::File keys = juce::File(juce::String(probe::outPath("chat-keys")));
     keys.deleteRecursively();
-    tp::chatstore::setDirectoryForTests(keys);
+    pg::chatstore::setDirectoryForTests(keys);
 
     // ---- PARSE ---------------------------------------------------------------------------------------------------------
     {
@@ -433,8 +433,8 @@ PROBE(plugin, chat)
         P.eq("parse.invalid_input_empty", in != nullptr && in->getProperties().size() == 0 ? 1 : 0, 1);
     }
 
-    tp::Processor processor;
-    tp::ChatAgent& agent = processor.chatAgent();
+    pg::Processor processor;
+    pg::ChatAgent& agent = processor.chatAgent();
     auto script = std::make_shared<fake::Script>();
     script->models = fake::modelsBody({ { "claude-opus-5-5", "Claude Opus 5.5", true, { "low", "medium", "high", "xhigh", "max" } },
                                         { "claude-sonnet-5-5", "Claude Sonnet 5.5", true, { "low", "medium", "high", "xhigh" } },
@@ -447,8 +447,8 @@ PROBE(plugin, chat)
         P.eq("nokey.state", agent.chatState().hasKey ? 1 : 0, 0);
         agent.send("hello");
         agent.waitIdle();
-        const tp::ChatState s = agent.chatState();
-        P.eq("nokey.asks_for_key", has(lastText(s, tp::ChatEntry::Kind::error), "API key") ? 1 : 0, 1);
+        const pg::ChatState s = agent.chatState();
+        P.eq("nokey.asks_for_key", has(lastText(s, pg::ChatEntry::Kind::error), "API key") ? 1 : 0, 1);
         P.eq("nokey.nothing_sent", static_cast<int64_t>(script->paths.size()), 0);
         P.eq("nokey.idle", s.busy ? 1 : 0, 0);
         agent.newChat();
@@ -474,19 +474,19 @@ PROBE(plugin, chat)
     agent.waitIdle();
     processor.settle();
     {
-        const tp::ChatState s = agent.chatState();
+        const pg::ChatState s = agent.chatState();
         print("turn", s);
-        const tp::Draft d = processor.editorPort().draft();
+        const pg::Draft d = processor.editorPort().draft();
         P.eq("turn.requests", script->postCount(), 3);
         P.eq("turn.models_fetched", !script->paths.empty() && script->paths[0] == "GET /v1/models?limit=100" ? 1 : 0, 1);
         P.eq("turn.draft_written", !d.files.empty() && d.files[0].text == program ? 1 : 0, 1);
         P.eq("turn.plays", processor.editorPort().running() == d.files ? 1 : 0, 1);
         P.eq("turn.dial_named", std::string(processor.control(0).name) == "level" ? 1 : 0, 1);
         P.near("turn.dial_value", processor.getParameters()[0]->getValue(), 0.75, 1e-4);
-        std::vector<tp::ChatEntry::Kind> kinds;
-        for (const tp::ChatEntry& e : s.entries)
+        std::vector<pg::ChatEntry::Kind> kinds;
+        for (const pg::ChatEntry& e : s.entries)
             kinds.push_back(e.kind);
-        using K = tp::ChatEntry::Kind;
+        using K = pg::ChatEntry::Kind;
         const std::vector<K> want{ K::note, K::user, K::thinking, K::assistant, K::tool, K::tool, K::tool, K::assistant };
         P.eq("turn.entries", kinds == want ? 1 : 0, 1);
         P.eq("turn.answer", lastText(s, K::assistant) == "Done: a level control, at 1.5." ? 1 : 0, 1);
@@ -494,7 +494,7 @@ PROBE(plugin, chat)
         P.eq("turn.dial_note", has(lastText(s, K::tool), "level") ? 1 : 0, 1);
         P.eq("turn.models_adaptive", static_cast<int64_t>(s.models.size()), 3);
         bool sonnetLevels = false;
-        for (const tp::ChatModel& m : s.models)
+        for (const pg::ChatModel& m : s.models)
             if (m.id == "claude-sonnet-5-5")
                 sonnetLevels = m.efforts == std::vector<std::string>{ "low", "medium", "high", "xhigh" };
         P.eq("turn.model_levels", sonnetLevels ? 1 : 0, 1);
@@ -520,7 +520,7 @@ PROBE(plugin, chat)
         const juce::Array<juce::var> system = arr(b0.getProperty("system", {}));
         P.eq("request.system_cached_1h",
              system.size() == 1 && str(system[0].getProperty("cache_control", {}), "ttl") == "1h"
-                     && str(system[0], "text") == tp::ChatAgent::systemPrompt() ? 1 : 0, 1);
+                     && str(system[0], "text") == pg::ChatAgent::systemPrompt() ? 1 : 0, 1);
         P.eq("request.auto_cache", str(b0.getProperty("cache_control", {}), "type") == "ephemeral" ? 1 : 0, 1);
         const juce::Array<juce::var> tools = arr(b0.getProperty("tools", {}));
         int eager = 0;
@@ -533,7 +533,7 @@ PROBE(plugin, chat)
             if (str(t, "name") == "add_library_file")
             {
                 const juce::var name = t.getProperty("input_schema", {}).getProperty("properties", {}).getProperty("name", {});
-                libraryEnum = arr(name.getProperty("enum", {})).size() == static_cast<int>(std::size(tp::kLibrary));
+                libraryEnum = arr(name.getProperty("enum", {})).size() == static_cast<int>(std::size(pg::kLibrary));
             }
         P.eq("request.library_enum", libraryEnum ? 1 : 0, 1);
         P.eq("request.fallbacks", str(b0, "fallbacks") == "default" ? 1 : 0, 1);
@@ -582,7 +582,7 @@ PROBE(plugin, chat)
         P.eq("choice.no_compaction", h.hasProperty("context_management") ? 1 : 0, 0);
         P.eq("choice.own_max_tokens", static_cast<int64_t>(static_cast<int>(h.getProperty("max_tokens", 0))), 64000);
         P.eq("choice.no_beta", script->header(static_cast<int>(script->headers.size()) - 1, "anthropic-beta").empty() ? 1 : 0, 1);
-        P.eq("choice.stored", tp::chatstore::loadChoice().model == "claude-haiku-5-5" ? 1 : 0, 1);
+        P.eq("choice.stored", pg::chatstore::loadChoice().model == "claude-haiku-5-5" ? 1 : 0, 1);
 
         // A change during a turn waits for the next: the turn's second request keeps the first's model.
         fake::Response slow = fake::Response::ok(fake::Sse().start().tool("toolu_s", "get_status", input({})).end("tool_use"));
@@ -606,7 +606,7 @@ PROBE(plugin, chat)
         const auto lastBeta = [&] { return script->header(static_cast<int>(script->headers.size()) - 1, "anthropic-beta"); };
         P.eq("fast.off_at_first", agent.chatState().fast ? 1 : 0, 0);
         bool opusFast = false, sonnetFast = true;
-        for (const tp::ChatModel& m : agent.chatState().models)
+        for (const pg::ChatModel& m : agent.chatState().models)
         {
             if (m.id == "claude-opus-5-5")
                 opusFast = m.fast;
@@ -622,7 +622,7 @@ PROBE(plugin, chat)
         P.eq("fast.standard_no_speed", !plain.hasProperty("speed") && plain.hasProperty("fallbacks") ? 1 : 0, 1);
 
         agent.setFast(true);
-        P.eq("fast.chosen", agent.chatState().fast && tp::chatstore::loadChoice().fast ? 1 : 0, 1);
+        P.eq("fast.chosen", agent.chatState().fast && pg::chatstore::loadChoice().fast ? 1 : 0, 1);
         script->add(fake::Response::ok(fake::Sse().start().text("Quick.").end("end_turn", 321, "fast")));
         agent.send("a fast answer");
         agent.waitIdle();
@@ -645,8 +645,8 @@ PROBE(plugin, chat)
         const juce::var third = lastBody();
         P.eq("fast.busy_standard", !third.hasProperty("speed") && third.hasProperty("fallbacks")
                                        && str(claude::parseJson(script->body(before)), "speed") == "fast" ? 1 : 0, 1);
-        P.eq("fast.busy_note", has(lastText(agent.chatState(), tp::ChatEntry::Kind::note), "Fast mode is busy") ? 1 : 0, 1);
-        P.eq("fast.busy_answered", lastText(agent.chatState(), tp::ChatEntry::Kind::assistant) == "At standard speed." ? 1 : 0, 1);
+        P.eq("fast.busy_note", has(lastText(agent.chatState(), pg::ChatEntry::Kind::note), "Fast mode is busy") ? 1 : 0, 1);
+        P.eq("fast.busy_answered", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "At standard speed." ? 1 : 0, 1);
         P.eq("fast.busy_still_chosen", agent.chatState().fast ? 1 : 0, 1);
 
         // Refused: a 400 about the speed. The turn goes on at standard speed, and fast mode is off.
@@ -657,8 +657,8 @@ PROBE(plugin, chat)
         agent.waitIdle();
         P.eq("fast.refused_requests", script->postCount() - before, 2);
         P.eq("fast.refused_standard", !lastBody().hasProperty("speed") ? 1 : 0, 1);
-        P.eq("fast.refused_off", !agent.chatState().fast && !tp::chatstore::loadChoice().fast ? 1 : 0, 1);
-        P.eq("fast.refused_note", has(lastText(agent.chatState(), tp::ChatEntry::Kind::note), "not open") ? 1 : 0, 1);
+        P.eq("fast.refused_off", !agent.chatState().fast && !pg::chatstore::loadChoice().fast ? 1 : 0, 1);
+        P.eq("fast.refused_note", has(lastText(agent.chatState(), pg::ChatEntry::Kind::note), "not open") ? 1 : 0, 1);
 
         // A model that takes no fast mode asks for no speed, chosen or not.
         agent.setFast(true);
@@ -702,10 +702,10 @@ PROBE(plugin, chat)
              results.size() == 1 && static_cast<bool>(results[0].getProperty("is_error", false))
                      && has(str(results[0], "content"), "INVALID_JSON") ? 1 : 0, 1);
         bool wrote = false;
-        for (const tp::SourceFile& f : processor.editorPort().draft().files)
+        for (const pg::SourceFile& f : processor.editorPort().draft().files)
             wrote = wrote || f.name == "x.fm";
         P.eq("invalid.ran_nothing", wrote ? 1 : 0, 0);
-        P.eq("invalid.turn_went_on", lastText(agent.chatState(), tp::ChatEntry::Kind::assistant) == "Sorry, again." ? 1 : 0, 1);
+        P.eq("invalid.turn_went_on", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "Sorry, again." ? 1 : 0, 1);
     }
 
     // ---- LIMIT ---------------------------------------------------------------------------------------------------------
@@ -724,8 +724,8 @@ PROBE(plugin, chat)
         for (const auto& b : arr(m.size() >= 2 ? m[m.size() - 2].getProperty("content", {}) : juce::var()))
             signedThinking = signedThinking || (str(b, "type") == "thinking" && str(b, "signature") == "sig-l1");
         P.eq("limit.reply_kept", signedThinking ? 1 : 0, 1);
-        P.eq("limit.note", has(lastText(agent.chatState(), tp::ChatEntry::Kind::note), "goes on from where it stopped") ? 1 : 0, 1);
-        P.eq("limit.answered", lastText(agent.chatState(), tp::ChatEntry::Kind::assistant) == "Writing it now." ? 1 : 0, 1);
+        P.eq("limit.note", has(lastText(agent.chatState(), pg::ChatEntry::Kind::note), "goes on from where it stopped") ? 1 : 0, 1);
+        P.eq("limit.answered", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "Writing it now." ? 1 : 0, 1);
         P.eq("limit.no_note_at_medium", m.size() >= 3 && says(m[m.size() - 3], "a big synth")
                                             && !says(m[m.size() - 3], "counts toward one limit") ? 1 : 0, 1);
 
@@ -736,7 +736,7 @@ PROBE(plugin, chat)
         agent.send("and the filter");
         agent.waitIdle();
         P.eq("limit.twice_requests", script->postCount() - before, 2);
-        P.eq("limit.twice_note", has(lastText(agent.chatState(), tp::ChatEntry::Kind::note), "twice in a row") ? 1 : 0, 1);
+        P.eq("limit.twice_note", has(lastText(agent.chatState(), pg::ChatEntry::Kind::note), "twice in a row") ? 1 : 0, 1);
         const juce::Array<juce::var> saved = arr(claude::parseJson(agent.saveState()).getProperty("messages", {}));
         P.eq("limit.twice_valid", !saved.isEmpty() && str(saved[saved.size() - 1], "role") == "assistant" && alternates(saved) ? 1 : 0, 1);
         script->add(fake::Response::ok(fake::Sse().start().text("Going on.").end()));
@@ -744,7 +744,7 @@ PROBE(plugin, chat)
         agent.waitIdle();
         const juce::Array<juce::var> next = lastMessages();
         P.eq("limit.continue", alternates(next) && says(next[next.size() - 1], "continue")
-                                   && lastText(agent.chatState(), tp::ChatEntry::Kind::assistant) == "Going on." ? 1 : 0, 1);
+                                   && lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "Going on." ? 1 : 0, 1);
 
         // A tool call cut off twice: error results, and the turn ends with them.
         script->add(fake::Response::ok(fake::Sse().start().toolUse("toolu_c1", "write_file", "{\"name\": \"big.fm\", \"content\": \"// half")
@@ -761,7 +761,7 @@ PROBE(plugin, chat)
                                        && static_cast<bool>(r[0].getProperty("is_error", false))
                                        && has(str(r[0], "content"), "cut off") && alternates(h) ? 1 : 0, 1);
         bool wrote = false;
-        for (const tp::SourceFile& f : processor.editorPort().draft().files)
+        for (const pg::SourceFile& f : processor.editorPort().draft().files)
             wrote = wrote || f.name == "big.fm";
         P.eq("limit.tool_ran_nothing", wrote ? 1 : 0, 0);
 
@@ -784,7 +784,7 @@ PROBE(plugin, chat)
         agent.send("are you there?");
         agent.waitIdle();
         P.eq("retry.asked_twice", script->postCount() - before, 2);
-        P.eq("retry.answered", lastText(agent.chatState(), tp::ChatEntry::Kind::assistant) == "Back." ? 1 : 0, 1);
+        P.eq("retry.answered", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "Back." ? 1 : 0, 1);
         P.eq("retry.same_request", script->body(before) == script->body(before + 1) ? 1 : 0, 1);
     }
 
@@ -795,7 +795,7 @@ PROBE(plugin, chat)
         agent.send("one");
         agent.waitIdle();
         P.eq("error.not_retried", script->postCount() - before, 1);
-        P.eq("error.says_why", has(lastText(agent.chatState(), tp::ChatEntry::Kind::error), "invalid x-api-key") ? 1 : 0, 1);
+        P.eq("error.says_why", has(lastText(agent.chatState(), pg::ChatEntry::Kind::error), "invalid x-api-key") ? 1 : 0, 1);
         script->add(fake::Response::ok(fake::Sse().start().text("Answer.").end()));
         agent.send("two");
         agent.waitIdle();
@@ -816,7 +816,7 @@ PROBE(plugin, chat)
         script->add(fake::Response::ok(fake::Sse().start().thinking("hm", "sig-r").text("I can't help with").end("refusal")));
         agent.send("something it declines");
         agent.waitIdle();
-        P.eq("refusal.error_entry", has(lastText(agent.chatState(), tp::ChatEntry::Kind::error), "declined") ? 1 : 0, 1);
+        P.eq("refusal.error_entry", has(lastText(agent.chatState(), pg::ChatEntry::Kind::error), "declined") ? 1 : 0, 1);
         script->add(fake::Response::ok(fake::Sse().start().text("OK.").end()));
         agent.send("something else");
         agent.waitIdle();
@@ -839,7 +839,7 @@ PROBE(plugin, chat)
                                            .end()));
         agent.send("a long one");
         agent.waitIdle();
-        P.eq("fallback.note", has(lastText(agent.chatState(), tp::ChatEntry::Kind::note), "declined this request") ? 1 : 0, 1);
+        P.eq("fallback.note", has(lastText(agent.chatState(), pg::ChatEntry::Kind::note), "declined this request") ? 1 : 0, 1);
         script->add(fake::Response::ok(fake::Sse().start().text("OK.").end()));
         agent.send("go on");
         agent.waitIdle();
@@ -869,7 +869,7 @@ PROBE(plugin, chat)
         const std::string seen = lastState();
         P.eq("context.seen_file_named", has(seen, "<file name=\"program.fm\" lines=") && has(seen, "unchanged=\"true\"") ? 1 : 0, 1);
         P.eq("context.seen_file_no_text", has(seen, "left[i] *= level[i]") || has(seen, "return false;") ? 0 : 1, 1);
-        tp::Draft d = processor.editorPort().draft();
+        pg::Draft d = processor.editorPort().draft();
         d.files[0].text += "// a comment of the user's\n";
         processor.editorPort().setDraft(d);
         script->add(fake::Response::ok(fake::Sse().start().text("Seen.").end()));
@@ -898,8 +898,8 @@ PROBE(plugin, chat)
         const std::string report = results.isEmpty() ? std::string() : str(results[0], "content");
         std::printf("measure_output, through the agent:\n%s", report.c_str());
         P.eq("measure.report", has(report, "Rendered offline") && has(report, "level 0.5") ? 1 : 0, 1);
-        P.eq("measure.kind", has(report, tp::product::kIsInstrument ? "Note 60" : "Sine 220 Hz") ? 1 : 0, 1);
-        P.eq("measure.entry", lastText(agent.chatState(), tp::ChatEntry::Kind::tool) == "measured the sound" ? 1 : 0, 1);
+        P.eq("measure.kind", has(report, pg::product::kIsInstrument ? "Note 60" : "Sine 220 Hz") ? 1 : 0, 1);
+        P.eq("measure.entry", lastText(agent.chatState(), pg::ChatEntry::Kind::tool) == "measured the sound" ? 1 : 0, 1);
     }
 
     // ---- VIEW ----------------------------------------------------------------------------------------------------------
@@ -946,8 +946,8 @@ PROBE(plugin, chat)
             if (juce::Base64::convertFromBase64(png, juce::String(data)))
                 juce::File(juce::String(probe::outPath(name))).replaceWithData(png.getData(), png.getDataSize());
         }
-        P.eq("view.answer", lastText(agent.chatState(), tp::ChatEntry::Kind::assistant) == "It looks tidy." ? 1 : 0, 1);
-        P.eq("view.entry", lastText(agent.chatState(), tp::ChatEntry::Kind::tool) == "Looked at the editor" ? 1 : 0, 1);
+        P.eq("view.answer", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "It looks tidy." ? 1 : 0, 1);
+        P.eq("view.entry", lastText(agent.chatState(), pg::ChatEntry::Kind::tool) == "Looked at the editor" ? 1 : 0, 1);
         P.eq("view.user_view_kept", processor.editorPort().panelView() == viewBefore ? 1 : 0, 1);
         // The session keeps no picture: a line in its place, and the mark that drops the thinking on load.
         const std::string saved = agent.saveState();
@@ -957,8 +957,8 @@ PROBE(plugin, chat)
 
     // ---- SOUND, CHECKS, TUNE: a processor of their own, playing a program that sounds --------------------------------------------------------------------
     {
-        tp::Processor sp;                                     // its program and its dials stay out of the rest
-        tp::ChatAgent& sa = sp.chatAgent();
+        pg::Processor sp;                                     // its program and its dials stay out of the rest
+        pg::ChatAgent& sa = sp.chatAgent();
         auto ss = std::make_shared<fake::Script>();
         ss->models = script->models;
         sa.setTransport(std::make_unique<fake::Transport>(ss));
@@ -993,10 +993,10 @@ PROBE(plugin, chat)
             return out;
         };
         const int dialSlot = 0;
-        const char* const levelDial = tp::product::kIsInstrument ? "level" : "gain";
+        const char* const levelDial = pg::product::kIsInstrument ? "level" : "gain";
         {
-            tp::Draft d;
-            d.files = tp::singleFile(soundProgram());
+            pg::Draft d;
+            d.files = pg::singleFile(soundProgram());
             sp.editorPort().setDraft(d);
             sp.editorPort().run(d.files);
             sp.settle();
@@ -1005,13 +1005,13 @@ PROBE(plugin, chat)
             // name: the first example has a release).
             for (int c = 0; c < 2; ++c)
                 if (sp.control(c).used)
-                    sp.getParameters()[c]->setValueNotifyingHost(tp::normOf(sp.control(c), sp.control(c).def));
+                    sp.getParameters()[c]->setValueNotifyingHost(pg::normOf(sp.control(c), sp.control(c).def));
             sp.poll();
         }
 
         // ---- SOUND ---------------------------------------------------------------------------------------------------------
         {
-            juce::var in = tp::product::kIsInstrument ? input({ { "notes", juce::Array<juce::var>{ 57 } } }) : input({ { "input", "sine" } });
+            juce::var in = pg::product::kIsInstrument ? input({ { "notes", juce::Array<juce::var>{ 57 } } }) : input({ { "input", "sine" } });
             ss->add(fake::Response::ok(fake::Sse().start().tool("toolu_s1", "view_sound", in).end("tool_use")));
             ss->add(fake::Response::ok(fake::Sse().start().text("It rings cleanly.").end()));
             const int before = turn("show me the sound", 2);
@@ -1027,7 +1027,7 @@ PROBE(plugin, chat)
             std::printf("view_sound: %s\n", about.c_str());
             P.eq("sound.png", data.rfind("iVBORw0KGgo", 0) == 0 && data.size() > 20000 ? 1 : 0, 1);
             P.eq("sound.about", has(about, "A picture of the program's sound") && has(about, "spectrogram")
-                                    && has(about, tp::product::kIsInstrument ? "Note 57" : "A sine of 220") ? 1 : 0, 1);
+                                    && has(about, pg::product::kIsInstrument ? "Note 57" : "A sine of 220") ? 1 : 0, 1);
             {
                 juce::MemoryOutputStream png;
                 if (juce::Base64::convertFromBase64(png, juce::String(data)))
@@ -1035,10 +1035,10 @@ PROBE(plugin, chat)
                 const juce::Image img = juce::ImageFileFormat::loadFrom(png.getData(), png.getDataSize());
                 P.eq("sound.size", img.getWidth() == 1120 && img.getHeight() == 800 ? 1 : 0, 1);
             }
-            const tp::ChatState st = sa.chatState();
-            const tp::ChatEntry* entry = nullptr;
-            for (const tp::ChatEntry& e : st.entries)
-                if (e.kind == tp::ChatEntry::Kind::tool && e.text == "looked at the sound")
+            const pg::ChatState st = sa.chatState();
+            const pg::ChatEntry* entry = nullptr;
+            for (const pg::ChatEntry& e : st.entries)
+                if (e.kind == pg::ChatEntry::Kind::tool && e.text == "looked at the sound")
                     entry = &e;
             P.eq("sound.entry_picture", entry != nullptr && entry->pictures.size() == 1 && entry->pictures[0]->thumbWidth == 480
                                             && !entry->pictures[0]->thumb.empty() ? 1 : 0, 1);
@@ -1046,8 +1046,8 @@ PROBE(plugin, chat)
             P.eq("sound.session_no_png", has(saved, "iVBORw0KGgo") ? 0 : 1, 1);
             P.eq("sound.session_thumbnail", has(saved, "sound.png") ? 1 : 0, 1);
             // A program that does not compile draws nothing, and says why.
-            tp::Draft broken = sp.editorPort().draft();
-            const tp::Draft good = broken;
+            pg::Draft broken = sp.editorPort().draft();
+            const pg::Draft good = broken;
             broken.files[0].text += "this is not FMinus\n";
             sp.editorPort().setDraft(broken);
             ss->add(fake::Response::ok(fake::Sse().start().tool("toolu_s2", "view_sound", input({})).end("tool_use")));
@@ -1061,7 +1061,7 @@ PROBE(plugin, chat)
         {
             // One check that passes and one that fails until a dial moves.
             juce::Array<juce::var> checks;
-            if constexpr (tp::product::kIsInstrument)
+            if constexpr (pg::product::kIsInstrument)
             {
                 checks.add(input({ { "label", "A sensible level" }, { "metric", "rms_db" }, { "min", -40.0 }, { "max", -10.0 },
                                    { "notes", juce::Array<juce::var>{ 57 } } }));
@@ -1073,8 +1073,8 @@ PROBE(plugin, chat)
                 checks.add(input({ { "label", "No boost" }, { "metric", "sine_gain_db" }, { "max", 1.0 } }));
                 checks.add(input({ { "label", "Quieter by 6 dB" }, { "metric", "sine_gain_db" }, { "max", -6.0 } }));
             }
-            const char* fixDial = tp::product::kIsInstrument ? "release" : "gain";
-            const double fixValue = tp::product::kIsInstrument ? 0.1 : -8.0;
+            const char* fixDial = pg::product::kIsInstrument ? "release" : "gain";
+            const double fixValue = pg::product::kIsInstrument ? 0.1 : -8.0;
             ss->add(fake::Response::ok(fake::Sse().start().tool("toolu_c1", "set_checks", input({ { "checks", checks } })).end("tool_use")));
             ss->add(fake::Response::ok(fake::Sse().start().text("Done.").end()));
             ss->add(fake::Response::ok(fake::Sse()
@@ -1095,27 +1095,27 @@ PROBE(plugin, chat)
             const std::string runResult = resultText(before + 4);
             P.eq("checks.after_run", has(runResult, "Compiled in") && has(runResult, "Checks: 2 of 2 pass") ? 1 : 0, 1);
             P.eq("checks.turn_ended", ss->postCount() == before + 5 && !sa.chatState().busy ? 1 : 0, 1);
-            const tp::ChatState st = sa.chatState();
+            const pg::ChatState st = sa.chatState();
             int cards = 0;
-            const tp::ChatEntry* card = nullptr;
-            for (const tp::ChatEntry& e : st.entries)
-                if (e.kind == tp::ChatEntry::Kind::checks)
+            const pg::ChatEntry* card = nullptr;
+            for (const pg::ChatEntry& e : st.entries)
+                if (e.kind == pg::ChatEntry::Kind::checks)
                 {
                     ++cards;
                     card = &e;
                 }
             P.eq("checks.one_card_a_turn", cards, 1);
             P.eq("checks.card_rows", card != nullptr && card->checks.size() == 2 && card->checks[0].pass && card->checks[1].pass
-                                         && card->checks[1].label == (tp::product::kIsInstrument ? "Dies away quickly" : "Quieter by 6 dB") ? 1 : 0, 1);
+                                         && card->checks[1].label == (pg::product::kIsInstrument ? "Dies away quickly" : "Quieter by 6 dB") ? 1 : 0, 1);
             int notes = 0;
-            for (const tp::ChatEntry& e : st.entries)
-                notes += e.kind == tp::ChatEntry::Kind::note && has(e.text, "Claude goes on") ? 1 : 0;
+            for (const pg::ChatEntry& e : st.entries)
+                notes += e.kind == pg::ChatEntry::Kind::note && has(e.text, "Claude goes on") ? 1 : 0;
             P.eq("checks.note", notes, 1);
             P.eq("checks.state", st.checks ? 1 : 0, 1);
 
             // Checks that cannot pass: the turn goes on twice, then ends.
             juce::Array<juce::var> impossible;
-            impossible.add(input({ { "label", "Impossibly loud" }, { "metric", tp::product::kIsInstrument ? "rms_db" : "sine_rms_db" },
+            impossible.add(input({ { "label", "Impossibly loud" }, { "metric", pg::product::kIsInstrument ? "rms_db" : "sine_rms_db" },
                                    { "min", 30.0 } }));
             ss->add(fake::Response::ok(fake::Sse().start().tool("toolu_c4", "set_checks", input({ { "checks", impossible } })).end("tool_use")));
             ss->add(fake::Response::ok(fake::Sse().start().text("Done.").end()));
@@ -1124,7 +1124,7 @@ PROBE(plugin, chat)
             const int b2 = turn("louder", 4);
             P.eq("checks.limit_posts", ss->postCount() - b2, 4);
             P.eq("checks.limit_last_says", says(lastUser(b2 + 3), "will not ask again") ? 1 : 0, 1);
-            P.eq("checks.limit_answer", lastText(sa.chatState(), tp::ChatEntry::Kind::assistant)
+            P.eq("checks.limit_answer", lastText(sa.chatState(), pg::ChatEntry::Kind::assistant)
                                             == "It cannot pass: +30 dBFS is beyond the output." ? 1 : 0, 1);
 
             // A check that cannot be: refused, nothing set.
@@ -1149,7 +1149,7 @@ PROBE(plugin, chat)
             P.eq("checks.session_loads", sa.chatState().checks ? 1 : 0, 1);
             sa.clearChecks();
             P.eq("checks.cleared", sa.chatState().checks ? 0 : 1, 1);
-            P.eq("checks.cleared_note", lastText(sa.chatState(), tp::ChatEntry::Kind::note) == "The checks are cleared: the plugin no longer measures them." ? 1 : 0, 1);
+            P.eq("checks.cleared_note", lastText(sa.chatState(), pg::ChatEntry::Kind::note) == "The checks are cleared: the plugin no longer measures them." ? 1 : 0, 1);
             ss->add(fake::Response::ok(fake::Sse().start().text("Done.").end()));
             const int b4 = turn("thanks", 1);
             P.eq("checks.cleared_no_nudge", ss->postCount() - b4, 1);
@@ -1157,11 +1157,11 @@ PROBE(plugin, chat)
 
         // ---- TUNE ----------------------------------------------------------------------------------------------------------
         {
-            const char* metric = tp::product::kIsInstrument ? "rms_db" : "sine_gain_db";
-            const double goal = tp::product::kIsInstrument ? -30.0 : -6.0;
+            const char* metric = pg::product::kIsInstrument ? "rms_db" : "sine_gain_db";
+            const double goal = pg::product::kIsInstrument ? -30.0 : -6.0;
             juce::var in = input({ { "tune", juce::Array<juce::var>{ juce::var(levelDial) } },
                                    { "goals", juce::Array<juce::var>{ input({ { "metric", metric }, { "target", goal }, { "tolerance", 0.2 } }) } } });
-            if constexpr (tp::product::kIsInstrument)
+            if constexpr (pg::product::kIsInstrument)
                 in.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
             ss->add(fake::Response::ok(fake::Sse().start().tool("toolu_t1", "tune_dials", in).end("tool_use")));
             ss->add(fake::Response::ok(fake::Sse().start().text("Tuned.").end()));
@@ -1169,13 +1169,13 @@ PROBE(plugin, chat)
             const std::string result = resultText(before + 1);
             std::printf("tune_dials:\n%s\n", result.c_str());
             P.eq("tune.result", has(result, "1 of 1 goals met") && has(result, "The dials are set") ? 1 : 0, 1);
-            P.eq("tune.entry", has(lastText(sa.chatState(), tp::ChatEntry::Kind::tool), "tuned " + std::string(levelDial)) ? 1 : 0, 1);
+            P.eq("tune.entry", has(lastText(sa.chatState(), pg::ChatEntry::Kind::tool), "tuned " + std::string(levelDial)) ? 1 : 0, 1);
             // The dial as set measures as the goal asked.
-            tp::measure::Session session(sp.editorPort().draft().files);
-            tp::measure::Request r;
-            if constexpr (tp::product::kIsInstrument)
+            pg::measure::Session session(sp.editorPort().draft().files);
+            pg::measure::Request r;
+            if constexpr (pg::product::kIsInstrument)
                 r.notes = { 57 };
-            const float plain = tp::plainOf(sp.control(dialSlot), sp.getParameters()[dialSlot]->getValue());
+            const float plain = pg::plainOf(sp.control(dialSlot), sp.getParameters()[dialSlot]->getValue());
             r.dials[levelDial] = plain;
             r.want = { metric };
             const double got = session.measure(r).values[metric];
@@ -1248,10 +1248,10 @@ PROBE(plugin, chat)
         const juce::Array<juce::var> results = arr(messagesOf(script->body(before + 3)).getLast().getProperty("content", {}));
         const std::string answer = results.isEmpty() ? std::string() : str(results[0], "content");
         P.eq("planner.answer_is_result", has(answer, "The planner answers:") && has(answer, "A saw: it is brighter.") ? 1 : 0, 1);
-        const tp::ChatState st = agent.chatState();
+        const pg::ChatState st = agent.chatState();
         int plans = 0, answers = 0;
-        for (const tp::ChatEntry& e : st.entries)
-            if (e.kind == tp::ChatEntry::Kind::plan)
+        for (const pg::ChatEntry& e : st.entries)
+            if (e.kind == pg::ChatEntry::Kind::plan)
             {
                 ++(e.answer ? answers : plans);
                 if (!e.answer)
@@ -1269,8 +1269,8 @@ PROBE(plugin, chat)
         agent.send("again");
         agent.waitIdle();
         P.eq("planner.fails_posts", script->postCount() - b2, 2);
-        P.eq("planner.fails_note", has(lastText(agent.chatState(), tp::ChatEntry::Kind::note), "goes on without a plan") ? 1 : 0, 1);
-        P.eq("planner.fails_builder", lastText(agent.chatState(), tp::ChatEntry::Kind::assistant) == "Built it without a plan." ? 1 : 0, 1);
+        P.eq("planner.fails_note", has(lastText(agent.chatState(), pg::ChatEntry::Kind::note), "goes on without a plan") ? 1 : 0, 1);
+        P.eq("planner.fails_builder", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "Built it without a plan." ? 1 : 0, 1);
 
         // No planner: ask_planner is refused, and a message goes straight to the builder.
         agent.setPlanner({});
@@ -1317,15 +1317,15 @@ PROBE(plugin, chat)
         const int before = script->postCount();
         agent.send("make me a synth");
         agent.waitIdle();
-        const auto lastQuestion = [](const tp::ChatState& st) -> const tp::ChatEntry* {
+        const auto lastQuestion = [](const pg::ChatState& st) -> const pg::ChatEntry* {
             for (auto it = st.entries.rbegin(); it != st.entries.rend(); ++it)
-                if (it->kind == tp::ChatEntry::Kind::question)
+                if (it->kind == pg::ChatEntry::Kind::question)
                     return &*it;
             return nullptr;
         };
         {
-            const tp::ChatState st = agent.chatState();
-            const tp::ChatEntry* q = lastQuestion(st);
+            const pg::ChatState st = agent.chatState();
+            const pg::ChatEntry* q = lastQuestion(st);
             P.eq("ask.waits", st.asking && !st.busy ? 1 : 0, 1);
             P.eq("ask.one_request", script->postCount() - before, 1);
             P.eq("ask.entry_open", q != nullptr && q->open && q->questions.size() == 2 ? 1 : 0, 1);
@@ -1333,15 +1333,15 @@ PROBE(plugin, chat)
                                               && q->questions[1].multi && q->questions[1].options[1].description == "Levels, live"
                                               && q->questions[0].header == "Sound" ? 1 : 0, 1);
             P.eq("ask.entry_text", q != nullptr && has(q->text, "What should it sound like?") && has(q->text, "- Bright") ? 1 : 0, 1);
-            P.eq("ask.last_entry", !st.entries.empty() && st.entries.back().kind == tp::ChatEntry::Kind::question ? 1 : 0, 1);
+            P.eq("ask.last_entry", !st.entries.empty() && st.entries.back().kind == pg::ChatEntry::Kind::question ? 1 : 0, 1);
         }
         // Saved while it waits: another processor's chat opens with the question still open.
         {
             const std::string saved = agent.saveState();
-            tp::Processor other;
+            pg::Processor other;
             other.chatAgent().loadState(saved);
-            const tp::ChatState st = other.chatAgent().chatState();
-            const tp::ChatEntry* q = lastQuestion(st);
+            const pg::ChatState st = other.chatAgent().chatState();
+            const pg::ChatEntry* q = lastQuestion(st);
             P.eq("ask.session_waits", st.asking && q != nullptr && q->open && q->questions.size() == 2
                                           && q->questions[1].options.size() == 3 ? 1 : 0, 1);
         }
@@ -1374,10 +1374,10 @@ PROBE(plugin, chat)
             P.eq("ask.answer_result", has(answer, "The user answered:") && has(answer, "What should it sound like? Warm (Recommended)")
                                           && has(answer, "What should the panel show? Knobs, Meters") ? 1 : 0, 1);
             P.eq("ask.second_refused", has(second, "Only one ask_user call") && has(second, "[error]") ? 1 : 0, 1);
-            const tp::ChatState st = agent.chatState();
-            const tp::ChatEntry* q = lastQuestion(st);
+            const pg::ChatState st = agent.chatState();
+            const pg::ChatEntry* q = lastQuestion(st);
             P.eq("ask.answered", !st.asking && q != nullptr && !q->open && q->answers.size() == 2 && q->answers[1] == "Knobs, Meters" ? 1 : 0, 1);
-            P.eq("ask.turn_went_on", lastText(st, tp::ChatEntry::Kind::assistant) == "A warm pad, then." ? 1 : 0, 1);
+            P.eq("ask.turn_went_on", lastText(st, pg::ChatEntry::Kind::assistant) == "A warm pad, then." ? 1 : 0, 1);
         }
         // Answered by a message instead.
         script->add(fake::Response::ok(fake::Sse().start().tool("toolu_a4", "ask_user", one).end("tool_use")));
@@ -1394,8 +1394,8 @@ PROBE(plugin, chat)
             P.eq("ask.typed_result", c.size() >= 2 && str(c[0], "type") == "tool_result" && str(c[0], "tool_use_id") == "toolu_a4"
                                          && has(str(c[0], "content"), "did not choose from the options")
                                          && str(c[1], "text") == "a mono one, please" ? 1 : 0, 1);
-            const tp::ChatState st = agent.chatState();
-            const tp::ChatEntry* q = lastQuestion(st);
+            const pg::ChatState st = agent.chatState();
+            const pg::ChatEntry* q = lastQuestion(st);
             P.eq("ask.typed_entry", !st.asking && q != nullptr && !q->open && q->typed ? 1 : 0, 1);
         }
         // A question of one option: refused in its result; nothing waits.
@@ -1407,8 +1407,8 @@ PROBE(plugin, chat)
         const int badAt = script->postCount();
         const std::size_t questionsBefore = [&] {
             std::size_t n = 0;
-            for (const tp::ChatEntry& e : agent.chatState().entries)
-                n += e.kind == tp::ChatEntry::Kind::question ? 1 : 0;
+            for (const pg::ChatEntry& e : agent.chatState().entries)
+                n += e.kind == pg::ChatEntry::Kind::question ? 1 : 0;
             return n;
         }();
         agent.send("go on");
@@ -1419,8 +1419,8 @@ PROBE(plugin, chat)
             P.eq("ask.bad_refused", !c.isEmpty() && static_cast<bool>(c[0].getProperty("is_error", false))
                                         && has(str(c[0], "content"), "needs 2 to 6 options") ? 1 : 0, 1);
             std::size_t n = 0;
-            for (const tp::ChatEntry& e : agent.chatState().entries)
-                n += e.kind == tp::ChatEntry::Kind::question ? 1 : 0;
+            for (const pg::ChatEntry& e : agent.chatState().entries)
+                n += e.kind == pg::ChatEntry::Kind::question ? 1 : 0;
             P.eq("ask.bad_asks_nothing", n == questionsBefore && !agent.chatState().asking ? 1 : 0, 1);
         }
     }
@@ -1458,22 +1458,22 @@ PROBE(plugin, chat)
         broken.replaceWithText("not a PNG either");
         const auto notes = [&] {
             std::string all;
-            for (const tp::ChatEntry& e : agent.chatState().entries)
-                if (e.kind == tp::ChatEntry::Kind::note)
+            for (const pg::ChatEntry& e : agent.chatState().entries)
+                if (e.kind == pg::ChatEntry::Kind::note)
                     all += e.text + "\n";
             return all;
         };
         agent.attach({ png, jpeg, txt.getFullPathName().toStdString(), broken.getFullPathName().toStdString() });
         agent.waitIdle();
         {
-            const tp::ChatState st = agent.chatState();
+            const pg::ChatState st = agent.chatState();
             P.eq("pictures.attached", static_cast<int64_t>(st.attached.size()), 2);
             P.eq("pictures.read", st.attaching, 0);
             P.eq("pictures.text_refused", has(notes(), "notes.txt is not a picture") ? 1 : 0, 1);
             P.eq("pictures.broken_refused", has(notes(), "broken.png is not a picture this plugin can read") ? 1 : 0, 1);
-            const tp::ChatPicturePtr* kn = nullptr;
-            const tp::ChatPicturePtr* pn = nullptr;
-            for (const tp::ChatPicturePtr& p : st.attached)
+            const pg::ChatPicturePtr* kn = nullptr;
+            const pg::ChatPicturePtr* pn = nullptr;
+            for (const pg::ChatPicturePtr& p : st.attached)
                 (p->name == "knob.png" ? kn : pn) = &p;
             P.eq("pictures.png_size", kn != nullptr && (*kn)->width == 64 && (*kn)->height == 48 && (*kn)->thumbWidth == 64
                                           && (*kn)->thumb.size() == 64u * 48u * 4u ? 1 : 0, 1);
@@ -1519,10 +1519,10 @@ PROBE(plugin, chat)
                 sent = juce::ImageFileFormat::loadFrom(in);
             }
             P.eq("pictures.jpeg_sent", sent.isValid() && sent.getWidth() == 1568 && sent.getHeight() == 784 ? 1 : 0, 1);
-            const tp::ChatState st = agent.chatState();
-            const tp::ChatEntry* user = nullptr;
-            for (const tp::ChatEntry& e : st.entries)
-                if (e.kind == tp::ChatEntry::Kind::user)
+            const pg::ChatState st = agent.chatState();
+            const pg::ChatEntry* user = nullptr;
+            for (const pg::ChatEntry& e : st.entries)
+                if (e.kind == pg::ChatEntry::Kind::user)
                     user = &e;
             P.eq("pictures.entry", user != nullptr && user->pictures.size() == 2 && user->text == "a panel like these" ? 1 : 0, 1);
             P.eq("pictures.box_empty", st.attached.empty() ? 1 : 0, 1);
@@ -1537,14 +1537,14 @@ PROBE(plugin, chat)
                                                 && writeSystemPicture(side, "public.jpeg", 200, 100, 6) ? 1 : 0, 1);
             agent.attach({ tiff, side });
             agent.waitIdle();
-            const tp::ChatState st = agent.chatState();
-            const tp::ChatPicturePtr* t = nullptr;
-            const tp::ChatPicturePtr* s = nullptr;
-            for (const tp::ChatPicturePtr& p : st.attached)
+            const pg::ChatState st = agent.chatState();
+            const pg::ChatPicturePtr* t = nullptr;
+            const pg::ChatPicturePtr* s = nullptr;
+            for (const pg::ChatPicturePtr& p : st.attached)
                 (p->name == "scan.tiff" ? t : s) = &p;
             P.eq("pictures.tiff", t != nullptr && (*t)->width == 120 && (*t)->height == 80 ? 1 : 0, 1);
             P.eq("pictures.upright", s != nullptr && (*s)->width == 100 && (*s)->height == 200 && (*s)->thumbHeight > (*s)->thumbWidth ? 1 : 0, 1);
-            for (const tp::ChatPicturePtr& p : st.attached)
+            for (const pg::ChatPicturePtr& p : st.attached)
                 agent.detach(p->id);
         }
 #endif
@@ -1574,16 +1574,16 @@ PROBE(plugin, chat)
         // The session keeps the thumbnails.
         {
             const std::string saved = agent.saveState();
-            tp::Processor other;
+            pg::Processor other;
             other.chatAgent().loadState(saved);
-            const tp::ChatState st = other.chatAgent().chatState();
-            const tp::ChatEntry* user = nullptr;
-            for (const tp::ChatEntry& e : st.entries)
-                if (e.kind == tp::ChatEntry::Kind::user && e.pictures.size() == 2)
+            const pg::ChatState st = other.chatAgent().chatState();
+            const pg::ChatEntry* user = nullptr;
+            for (const pg::ChatEntry& e : st.entries)
+                if (e.kind == pg::ChatEntry::Kind::user && e.pictures.size() == 2)
                     user = &e;
             bool thumbs = user != nullptr;
             if (user != nullptr)
-                for (const tp::ChatPicturePtr& p : user->pictures)
+                for (const pg::ChatPicturePtr& p : user->pictures)
                     thumbs = thumbs && p->thumbWidth > 0 && p->thumb.size() == static_cast<std::size_t>(p->thumbWidth * p->thumbHeight * 4)
                           && (p->name == "knob.png" || p->name == "panel.jpg");
             P.eq("pictures.session_thumbs", thumbs ? 1 : 0, 1);
@@ -1656,15 +1656,15 @@ PROBE(plugin, chat)
                                   && static_cast<bool>(fetch.getProperty("citations", {}).getProperty("enabled", false))
                                   && search.getProperty("allowed_callers", {}).isVoid() ? 1 : 0, 1);
             P.eq("web.thinking_dropped", has(script->body(at), "sig-web") ? 0 : 1, 1);
-            const tp::ChatState st = agent.chatState();
+            const pg::ChatState st = agent.chatState();
             bool searched = false, read = false;
-            for (const tp::ChatEntry& e : st.entries)
+            for (const pg::ChatEntry& e : st.entries)
             {
-                searched = searched || (e.kind == tp::ChatEntry::Kind::tool && e.text == "Searched the web: LM13700 datasheet");
-                read = read || (e.kind == tp::ChatEntry::Kind::tool && e.text == "Read https://www.ti.com/lit/ds/symlink/lm13700.pdf");
+                searched = searched || (e.kind == pg::ChatEntry::Kind::tool && e.text == "Searched the web: LM13700 datasheet");
+                read = read || (e.kind == pg::ChatEntry::Kind::tool && e.text == "Read https://www.ti.com/lit/ds/symlink/lm13700.pdf");
             }
             P.eq("web.rows", searched && read ? 1 : 0, 1);
-            const std::string answer = lastText(st, tp::ChatEntry::Kind::assistant);
+            const std::string answer = lastText(st, pg::ChatEntry::Kind::assistant);
             P.eq("web.sources", has(answer, "Its gm is set by the bias current.")
                                     && has(answer, "**Sources**\n1. LM13700 Dual OTA -- https://www.ti.com/lit/ds/symlink/lm13700.pdf") ? 1 : 0, 1);
             P.eq("web.footer", has(st.usage, "1 search") ? 1 : 0, 1);
@@ -1698,7 +1698,7 @@ PROBE(plugin, chat)
             const juce::Array<juce::var> m = messagesOf(script->body(at + 1));
             P.eq("web.pause_goes_on", script->postCount() == at + 2 && !m.isEmpty() && str(m[m.size() - 1], "role") == "assistant"
                                           && has(claude::toJson(m[m.size() - 1]), "srvtoolu_w3") ? 1 : 0, 1);
-            P.eq("web.pause_answer", lastText(agent.chatState(), tp::ChatEntry::Kind::assistant) == "Done searching." ? 1 : 0, 1);
+            P.eq("web.pause_answer", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "Done searching." ? 1 : 0, 1);
         }
         // A model that cannot filter: the tools again, called directly.
         script->add(fake::Response::failure(400, "invalid_request_error",
@@ -1720,8 +1720,8 @@ PROBE(plugin, chat)
         agent.waitIdle();
         {
             bool note = false;
-            for (const tp::ChatEntry& e : agent.chatState().entries)
-                note = note || (e.kind == tp::ChatEntry::Kind::note && has(e.text, "Web search is not open to this request"));
+            for (const pg::ChatEntry& e : agent.chatState().entries)
+                note = note || (e.kind == pg::ChatEntry::Kind::note && has(e.text, "Web search is not open to this request"));
             P.eq("web.disabled", script->postCount() == at + 2 && webTool(at + 1, "web_search").isVoid() && note
                                      && !agent.chatState().web ? 1 : 0, 1);
         }
@@ -1741,10 +1741,10 @@ PROBE(plugin, chat)
         const int before = script->postCount();
         agent.send("add a filter");
         agent.waitIdle();
-        const tp::LibraryFile* svf = tp::findLibraryFile("svf.fm");
-        const tp::Draft d = processor.editorPort().draft();
+        const pg::LibraryFile* svf = pg::findLibraryFile("svf.fm");
+        const pg::Draft d = processor.editorPort().draft();
         bool tab = false;
-        for (const tp::SourceFile& f : d.files)
+        for (const pg::SourceFile& f : d.files)
             tab = tab || (f.name == "svf.fm" && svf != nullptr && f.text == svf->source);
         P.eq("library.tab", tab ? 1 : 0, 1);
         // The results: in the request after each tool call.
@@ -1761,12 +1761,12 @@ PROBE(plugin, chat)
                                           ? 1 : 0, 1);
         P.eq("library.again_there", second.size() == 1 && has(str(second[0], "content"), "has svf.fm already") ? 1 : 0, 1);
         int copies = 0;
-        for (const tp::SourceFile& f : d.files)
+        for (const pg::SourceFile& f : d.files)
             copies += f.name == "svf.fm" ? 1 : 0;
         P.eq("library.not_twice", copies, 1);
         bool entry = false;
-        for (const tp::ChatEntry& e : agent.chatState().entries)
-            entry = entry || (e.kind == tp::ChatEntry::Kind::tool && e.text == "added svf.fm from the library");
+        for (const pg::ChatEntry& e : agent.chatState().entries)
+            entry = entry || (e.kind == pg::ChatEntry::Kind::tool && e.text == "added svf.fm from the library");
         P.eq("library.entry", entry ? 1 : 0, 1);
         // Seen: the next state names it without its text.
         processor.getParameters()[0]->setValueNotifyingHost(0.4f);
@@ -1790,14 +1790,14 @@ PROBE(plugin, chat)
         const int before = script->postCount();
         agent.send("tell me");
         agent.waitIdle();
-        const tp::ChatState st = agent.chatState();
+        const pg::ChatState st = agent.chatState();
         P.eq("broken.asked_again", script->postCount() - before, 2);
-        P.eq("broken.answer_once", lastText(st, tp::ChatEntry::Kind::assistant) == "A whole answer." ? 1 : 0, 1);
+        P.eq("broken.answer_once", lastText(st, pg::ChatEntry::Kind::assistant) == "A whole answer." ? 1 : 0, 1);
         bool half = false;
-        for (const tp::ChatEntry& e : st.entries)
+        for (const pg::ChatEntry& e : st.entries)
             half = half || has(e.text, "Half an answ");
         P.eq("broken.half_taken_back", half ? 0 : 1, 1);
-        P.eq("broken.note", has(lastText(st, tp::ChatEntry::Kind::note), "broke off") ? 1 : 0, 1);
+        P.eq("broken.note", has(lastText(st, pg::ChatEntry::Kind::note), "broke off") ? 1 : 0, 1);
     }
 
     // ---- COMPACT -------------------------------------------------------------------------------------------------------
@@ -1809,8 +1809,8 @@ PROBE(plugin, chat)
                                            .endCompacted(160000, 2500, 3000, 120)));
         agent.send("keep going");
         agent.waitIdle();
-        const tp::ChatState st = agent.chatState();
-        P.eq("compact.note", has(lastText(st, tp::ChatEntry::Kind::note), "summarized") ? 1 : 0, 1);
+        const pg::ChatState st = agent.chatState();
+        P.eq("compact.note", has(lastText(st, pg::ChatEntry::Kind::note), "summarized") ? 1 : 0, 1);
         P.eq("compact.usage", has(st.usage, "163K tokens in") && has(st.usage, "summarized") ? 1 : 0, 1);
         script->add(fake::Response::ok(fake::Sse().start().text("Fine.").end()));
         agent.send("next");
@@ -1848,12 +1848,12 @@ PROBE(plugin, chat)
         const std::size_t shown = agent.chatState().entries.size();
         agent.send("put the brass preset back");
         agent.waitIdle();
-        const tp::ChatState st = agent.chatState();
+        const pg::ChatState st = agent.chatState();
         P.eq("midturn.requests", script->postCount() - before, 3);
-        P.eq("midturn.answered", lastText(st, tp::ChatEntry::Kind::assistant) == "Back where it was." ? 1 : 0, 1);
+        P.eq("midturn.answered", lastText(st, pg::ChatEntry::Kind::assistant) == "Back where it was." ? 1 : 0, 1);
         int errors = 0;                            // this turn's
         for (std::size_t i = shown; i < st.entries.size(); ++i)
-            errors += st.entries[i].kind == tp::ChatEntry::Kind::error ? 1 : 0;
+            errors += st.entries[i].kind == pg::ChatEntry::Kind::error ? 1 : 0;
         P.eq("midturn.no_error", errors, 0);
         const juce::Array<juce::var> m = messagesOf(script->body(script->postCount() - 1));
         const juce::Array<juce::var> first = arr(m.isEmpty() ? juce::var() : m[0].getProperty("content", {}));
@@ -1884,7 +1884,7 @@ PROBE(plugin, chat)
         agent.waitIdle();
         const juce::Array<juce::var> m = messagesOf(script->body(script->postCount() - 1));
         P.eq("repair.request", m.size() == 2 && alternates(m) && says(m[1], "go on") ? 1 : 0, 1);
-        P.eq("repair.answered", lastText(agent.chatState(), tp::ChatEntry::Kind::assistant) == "Carrying on." ? 1 : 0, 1);
+        P.eq("repair.answered", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "Carrying on." ? 1 : 0, 1);
         bool gone = true;
         for (const auto& message : m)
             for (const auto& b : arr(message.getProperty("content", {})))
@@ -1943,14 +1943,14 @@ PROBE(plugin, chat)
         while (script->streaming.load() == 0 && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(10))
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         P.eq("stop.streaming", agent.chatState().busy ? 1 : 0, 1);
-        P.eq("stop.partial_shown", lastText(agent.chatState(), tp::ChatEntry::Kind::assistant) == "Halfway" ? 1 : 0, 1);
+        P.eq("stop.partial_shown", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "Halfway" ? 1 : 0, 1);
         const auto s0 = std::chrono::steady_clock::now();
         agent.stop();
         agent.waitIdle();
         P.le("stop.prompt_ms", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s0).count(), 500.0);
-        const tp::ChatState s = agent.chatState();
+        const pg::ChatState s = agent.chatState();
         P.eq("stop.idle", s.busy ? 1 : 0, 0);
-        P.eq("stop.note", lastText(s, tp::ChatEntry::Kind::note) == "Stopped." ? 1 : 0, 1);
+        P.eq("stop.note", lastText(s, pg::ChatEntry::Kind::note) == "Stopped." ? 1 : 0, 1);
         const juce::var saved = claude::parseJson(agent.saveState());
         const juce::Array<juce::var> m = arr(saved.getProperty("messages", {}));
         const juce::Array<juce::var> c = arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {}));
@@ -1962,15 +1962,15 @@ PROBE(plugin, chat)
     {
         juce::MemoryBlock state;
         processor.getStateInformation(state);
-        tp::Processor second;
+        pg::Processor second;
         second.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
-        const tp::ChatState a = agent.chatState(), b = second.chatAgent().chatState();
+        const pg::ChatState a = agent.chatState(), b = second.chatAgent().chatState();
         bool same = a.entries.size() == b.entries.size();
         for (std::size_t i = 0; same && i < a.entries.size(); ++i)
             same = a.entries[i].kind == b.entries[i].kind && a.entries[i].text == b.entries[i].text;
         P.eq("state.entries", same ? 1 : 0, 1);
         P.ge("state.entry_count", static_cast<double>(b.entries.size()), 20.0);
-        const auto history = [](tp::ChatAgent& x) { return claude::toJson(claude::parseJson(x.saveState()).getProperty("messages", {})); };
+        const auto history = [](pg::ChatAgent& x) { return claude::toJson(claude::parseJson(x.saveState()).getProperty("messages", {})); };
         P.eq("state.history", history(agent) == history(second.chatAgent()) ? 1 : 0, 1);
     }
 
@@ -1978,7 +1978,7 @@ PROBE(plugin, chat)
     {
         const std::string server = claude::serverHost();
         const std::string token = fake::fakeToken(), password = fake::fakePassword();
-        const auto lastError = [&] { return lastText(agent.chatState(), tp::ChatEntry::Kind::error); };
+        const auto lastError = [&] { return lastText(agent.chatState(), pg::ChatEntry::Kind::error); };
         P.eq("account.server_default", server == claude::kServerHost ? 1 : 0, 1);
         const std::string betaBefore = script->lastHeader("POST /v1/messages", "anthropic-beta");   // the key's last
         P.eq("account.key_in_use", !agent.chatState().useAccount && agent.chatState().ready() ? 1 : 0, 1);
@@ -1990,9 +1990,9 @@ PROBE(plugin, chat)
         script->logins.push_back(fake::Response::failure(401, "authentication_error", "Wrong username or password."));
         agent.signIn("alice", password);
         agent.waitIdle();
-        tp::ChatState s = agent.chatState();
+        pg::ChatState s = agent.chatState();
         P.eq("account.wrong_password_says", s.signInError == "Wrong username or password." ? 1 : 0, 1);
-        P.eq("account.wrong_password_not_signed_in", s.signedIn || tp::chatstore::hasToken() ? 1 : 0, 0);
+        P.eq("account.wrong_password_not_signed_in", s.signedIn || pg::chatstore::hasToken() ? 1 : 0, 0);
         P.eq("account.wrong_password_key_kept", !s.useAccount && s.ready() ? 1 : 0, 1);
         P.eq("account.login_host", script->lastHost("POST /auth/login") == server ? 1 : 0, 1);
         P.eq("account.login_no_key", script->lastHas("POST /auth/login", "x-api-key") ? 1 : 0, 0);
@@ -2012,12 +2012,12 @@ PROBE(plugin, chat)
         agent.waitIdle();
         s = agent.chatState();
         P.eq("account.signed_in", s.signedIn && s.signInError.empty() && !s.signingIn ? 1 : 0, 1);
-        P.eq("account.token_stored", tp::chatstore::loadToken().value_or("") == token ? 1 : 0, 1);
+        P.eq("account.token_stored", pg::chatstore::loadToken().value_or("") == token ? 1 : 0, 1);
         P.eq("account.username", s.account == "alice" ? 1 : 0, 1);
         P.eq("account.in_use", s.useAccount && s.ready() ? 1 : 0, 1);
         P.eq("account.credit", s.credit == "$5.00 credit left" ? 1 : 0, 1);
-        P.eq("account.note", has(lastText(s, tp::ChatEntry::Kind::note), "Signed in as alice") ? 1 : 0, 1);
-        P.eq("account.choice_stored", tp::chatstore::loadAccount().useAccount && tp::chatstore::loadAccount().username == "alice" ? 1 : 0, 1);
+        P.eq("account.note", has(lastText(s, pg::ChatEntry::Kind::note), "Signed in as alice") ? 1 : 0, 1);
+        P.eq("account.choice_stored", pg::chatstore::loadAccount().useAccount && pg::chatstore::loadAccount().username == "alice" ? 1 : 0, 1);
 
         // A turn through the server: the same request, to the server, with the token as a bearer and no key; the
         // models asked of the server again; the credit asked for after the turn, for the footer.
@@ -2027,7 +2027,7 @@ PROBE(plugin, chat)
         agent.send("hello through the server");
         agent.waitIdle();
         s = agent.chatState();
-        P.eq("account.turn_answered", lastText(s, tp::ChatEntry::Kind::assistant) == "Through the server." ? 1 : 0, 1);
+        P.eq("account.turn_answered", lastText(s, pg::ChatEntry::Kind::assistant) == "Through the server." ? 1 : 0, 1);
         P.eq("account.turn_one_request", script->postCount() - before, 1);
         P.eq("account.turn_host", script->lastHost("POST /v1/messages") == server ? 1 : 0, 1);
         P.eq("account.turn_bearer", script->lastHeader("POST /v1/messages", "authorization") == "Bearer " + token ? 1 : 0, 1);
@@ -2087,7 +2087,7 @@ PROBE(plugin, chat)
         agent.waitIdle();
         s = agent.chatState();
         P.eq("account.expired_says", lastError() == "Your sign-in has expired. Sign in again." ? 1 : 0, 1);
-        P.eq("account.expired_signed_out", s.signedIn || tp::chatstore::hasToken() ? 1 : 0, 0);
+        P.eq("account.expired_signed_out", s.signedIn || pg::chatstore::hasToken() ? 1 : 0, 0);
         P.eq("account.expired_problem", s.accountProblem == "Your sign-in has expired. Sign in again." ? 1 : 0, 1);
         P.eq("account.expired_not_ready", s.useAccount && !s.ready() ? 1 : 0, 1);
         {
@@ -2125,7 +2125,7 @@ PROBE(plugin, chat)
         agent.signOut();
         agent.waitIdle();
         s = agent.chatState();
-        P.eq("account.signed_out", s.signedIn || tp::chatstore::hasToken() ? 1 : 0, 0);
+        P.eq("account.signed_out", s.signedIn || pg::chatstore::hasToken() ? 1 : 0, 0);
         P.eq("account.logout_sent", script->count("POST /auth/logout") == logouts + 1
                                         && script->lastHost("POST /auth/logout") == server
                                         && script->lastHeader("POST /auth/logout", "authorization") == "Bearer " + token ? 1 : 0, 1);
@@ -2133,7 +2133,7 @@ PROBE(plugin, chat)
         P.eq("account.username_kept", s.account == "alice" ? 1 : 0, 1);
 
         // The server's address: <ENV_PREFIX>SERVER_URL, for an https:// address or http:// on this Mac only.
-        const std::string var = std::string(tp::product::kEnvPrefix) + "SERVER_URL";
+        const std::string var = std::string(pg::product::kEnvPrefix) + "SERVER_URL";
         ::setenv(var.c_str(), "http://localhost:8787/", 1);
         P.eq("account.url_local", claude::serverHost() == "http://localhost:8787" ? 1 : 0, 1);
         ::setenv(var.c_str(), "https://tp.example.workers.dev", 1);
@@ -2158,7 +2158,7 @@ PROBE(plugin, chat)
         P.eq("new.history", arr(claude::parseJson(agent.saveState()).getProperty("messages", {})).size(), 0);
     }
 
-    tp::chatstore::setDirectoryForTests(juce::File());
+    pg::chatstore::setDirectoryForTests(juce::File());
     keys.deleteRecursively();
     return P.finish();
 }

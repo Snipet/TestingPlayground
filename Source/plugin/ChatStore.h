@@ -24,7 +24,7 @@ namespace juce
     class File;
 }
 
-namespace testingplayground::chatstore
+namespace playground::chatstore
 {
     // The folder (tests point it elsewhere; an empty path restores the default). Under a probe's preferences sandbox
     // (<ENV_PREFIX>PREFS_DIR set) it is that folder's chat/.

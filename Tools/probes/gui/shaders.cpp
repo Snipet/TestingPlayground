@@ -37,11 +37,11 @@
 #include <string>
 #include <vector>
 
-namespace tp = testingplayground;
+namespace pg = playground;
 
 namespace
 {
-    constexpr bool kInstrument = tp::product::kIsInstrument;
+    constexpr bool kInstrument = pg::product::kIsInstrument;
 
     std::string program()
     {
@@ -92,7 +92,7 @@ namespace
 }
 )GUI";
 
-    void load(tp::Processor& p, const tp::Sources& files)
+    void load(pg::Processor& p, const pg::Sources& files)
     {
         p.editorPort().setDraft({ files, 0 });
         p.editorPort().run(files);
@@ -111,10 +111,10 @@ namespace
         return b == std::string::npos ? std::string() : prompt.substr(a, b + 3 - a);
     }
 
-    tp::ShaderTools tools()
+    pg::ShaderTools tools()
     {
-        tp::ShaderTools t;
-        const char* env = std::getenv((std::string(tp::product::kEnvPrefix) + "SHADERC").c_str());
+        pg::ShaderTools t;
+        const char* env = std::getenv((std::string(pg::product::kEnvPrefix) + "SHADERC").c_str());
         t.shaderc = env != nullptr ? env : "";
         t.prelude = funkgui::shaders::fragmentPrelude();
         t.varyingDef = funkgui::shaders::varyingDef();
@@ -122,11 +122,11 @@ namespace
         return t;
     }
 
-    const tp::ui::GuiShaderItem* shaderShowing(const tp::ui::Panel& panel, const std::string& title)
+    const pg::ui::GuiShaderItem* shaderShowing(const pg::ui::Panel& panel, const std::string& title)
     {
         for (int k = 0; k < 4; ++k)
         {
-            const auto& s = static_cast<const tp::ui::GuiShaderItem&>(panel.guiItem(4, k));
+            const auto& s = static_cast<const pg::ui::GuiShaderItem&>(panel.guiItem(4, k));
             char line[256];
             s.specLine(line, sizeof line);
             if (s.shown() && has(line, title))
@@ -143,26 +143,26 @@ PROBE(gui, shaders)
     funkgui::UiPreferences::get().setTheme(0);
 
     // ---- PROMPT --------------------------------------------------------------------------------------------------------
-    const tp::ShaderTools t = tools();
+    const pg::ShaderTools t = tools();
     P.eq("prompt.shaderc", t.usable() ? 1 : 0, 1);
     {
-        const std::string example = promptExample(tp::ChatAgent::systemPrompt());
+        const std::string example = promptExample(pg::ChatAgent::systemPrompt());
         P.eq("prompt.example_there", example.empty() ? 0 : 1, 1);
-        const tp::ShaderBuild b = tp::buildShader("glow.sc", example, { "cutoff", "out" }, t);
+        const pg::ShaderBuild b = pg::buildShader("glow.sc", example, { "cutoff", "out" }, t);
         if (!b.ok())
             std::printf("the prompt's example:\n%s", b.error.c_str());
         P.eq("prompt.example_builds", b.ok() ? 1 : 0, 1);
         std::string why;
-        P.eq("prompt.example_taken", b.ok() && funkgui::shaders::set(tp::shaderId(b.binary), b.binary.data(),
+        P.eq("prompt.example_taken", b.ok() && funkgui::shaders::set(pg::shaderId(b.binary), b.binary.data(),
                                                                        static_cast<uint32_t>(b.binary.size()), why) ? 1 : 0, 1);
         if (!why.empty())
             std::printf("FunkGui: %s\n", why.c_str());
     }
 
-    tp::Processor processor;
-    tp::EditorPort& port = processor.editorPort();
+    pg::Processor processor;
+    pg::EditorPort& port = processor.editorPort();
     processor.prepareToPlay(48000.0, 256);
-    tp::ui::Panel panel(processor.ports(), port);
+    pg::ui::Panel panel(processor.ports(), port);
     funkgui::HeadlessHost host(panel, 0, 2.0f);
     host.settle();
     {
@@ -172,19 +172,19 @@ PROBE(gui, shaders)
     }
 
     // ---- BUILD and ERRORS ----------------------------------------------------------------------------------------------
-    const tp::Sources files{ { tp::kProgramName, program() }, { "panel.gui", kGui }, { "still.sc", kStill },
+    const pg::Sources files{ { pg::kProgramName, program() }, { "panel.gui", kGui }, { "still.sc", kStill },
                              { "moving.sc", kMoving }, { "broken.sc", kBroken } };
     load(processor, files);
     processor.settle();
     host.tick(2);
     host.settle(60);
-    const tp::CompileStatus s = port.status();
+    const pg::CompileStatus s = port.status();
     std::printf("notes:\n%s", s.notes.c_str());
     P.eq("build.plays", s.ok ? 1 : 0, 1);
     P.eq("build.three", static_cast<int64_t>(s.panel.shaders.size()), 3);
     const bool built = s.panel.shaders.size() == 3 && !s.panel.shaders[0].binary.empty() && !s.panel.shaders[1].binary.empty();
     P.eq("build.binaries", built ? 1 : 0, 1);
-    P.eq("build.ids", built && s.panel.shaders[0].id == tp::shaderId(s.panel.shaders[0].binary) && s.panel.shaders[0].id != 0 ? 1 : 0, 1);
+    P.eq("build.ids", built && s.panel.shaders[0].id == pg::shaderId(s.panel.shaders[0].binary) && s.panel.shaders[0].id != 0 ? 1 : 0, 1);
     P.eq("build.no_note_for_good_ones", has(s.notes, "still.sc") || has(s.notes, "moving.sc") ? 0 : 1, 1);
     P.eq("errors.broken_note", has(s.notes, "broken.sc:5:1: note: the shader does not compile:")
                                    && has(s.notes, "undefinedThing") ? 1 : 0, 1);
@@ -192,27 +192,27 @@ PROBE(gui, shaders)
     {
         load(processor, files);                          // again: the cache's builds, the same ids
         processor.settle();
-        const tp::CompileStatus again = port.status();
+        const pg::CompileStatus again = port.status();
         P.eq("build.cached_same", again.panel.shaders.size() == 3 && built
                                       && again.panel.shaders[0].id == s.panel.shaders[0].id ? 1 : 0, 1);
         host.tick(2);
     }
     {
-        tp::Processor other;
+        pg::Processor other;
         const std::string five = "shader \"a.sc\"\nshader \"a.sc\"\nshader \"a.sc\"\nshader \"a.sc\"\nshader \"a.sc\"\n"
                                  "shader \"nofile.sc\"\nknob cutoff\nknob level\n";
-        load(other, { { tp::kProgramName, program() }, { "panel.gui", five }, { "a.sc", kStill } });
+        load(other, { { pg::kProgramName, program() }, { "panel.gui", five }, { "a.sc", kStill } });
         other.settle();
-        const tp::CompileStatus o = other.editorPort().status();
+        const pg::CompileStatus o = other.editorPort().status();
         P.eq("errors.fifth", has(o.notes, "panel.gui:5:1: note: a panel draws 4 shaders at most") ? 1 : 0, 1);
         P.eq("errors.no_file", has(o.notes, "panel.gui:6:8: note: there is no file nofile.sc") ? 1 : 0, 1);
     }
 
     // ---- PANEL ---------------------------------------------------------------------------------------------------------
     {
-        const tp::ui::GuiShaderItem* still = shaderShowing(panel, "still.sc");
-        const tp::ui::GuiShaderItem* moving = shaderShowing(panel, "moving.sc");
-        const tp::ui::GuiShaderItem* broken = shaderShowing(panel, "broken.sc");
+        const pg::ui::GuiShaderItem* still = shaderShowing(panel, "still.sc");
+        const pg::ui::GuiShaderItem* moving = shaderShowing(panel, "moving.sc");
+        const pg::ui::GuiShaderItem* broken = shaderShowing(panel, "broken.sc");
         P.eq("panel.shown", still != nullptr && moving != nullptr && broken != nullptr ? 1 : 0, 1);
         if (still != nullptr && moving != nullptr && broken != nullptr && built)
         {

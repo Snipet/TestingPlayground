@@ -31,7 +31,7 @@
 #include <string>
 #include <vector>
 
-namespace testingplayground::ui
+namespace playground::ui
 {
     // A parameter as a .gui control shows it: its Control, its label and its values' names.
     class GuiValue

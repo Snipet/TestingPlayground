@@ -11,9 +11,11 @@
 // One probe per file, in Tools/probes/<layer>/ (dsp: Source/dsp only; plugin: the processor and the Panel). The macro
 // registers the subcommand <layer>.<name>, which ProbeMain.cpp dispatches:
 //
-//   build-dev/<Name>_probes dsp.response            run one probe (the harness flags have defaults)
+//   build-dev/<Name>_probes dsp.response            run one probe (the harness flags have defaults; outside CTest
+//                                                   the plugin's stores are the user's own folders: use ctest)
 //   build-dev/<Name>_probes --list                  the probes
-//   ctest --test-dir build-dev -L probe             all of them (scripts/test.sh builds first)
+//   ctest --test-dir build-dev -L probe             all of them, both products (-L effect, -L synth: one product's;
+//                                                   scripts/test.sh builds first)
 //
 // funkgui::test::Probe is FunkGui's Harness (<funkgui/test/Harness.h>): spec rows near/le/ge/in/eq print a line each,
 // and finish() returns the exit code (0 pass, 1 a spec row failed, 4 a harness error). There are no golden files here:

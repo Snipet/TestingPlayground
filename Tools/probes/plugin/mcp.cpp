@@ -47,11 +47,11 @@
 
 extern char** environ;
 
-namespace tp = testingplayground;
+namespace pg = playground;
 
 namespace
 {
-    constexpr bool kInstrument = tp::product::kIsInstrument;
+    constexpr bool kInstrument = pg::product::kIsInstrument;
 
     std::string program()
     {
@@ -79,12 +79,12 @@ namespace
 
     // A request on a link's socket, its reply, the processor's message-thread work done meanwhile (view_panel's
     // picture is drawn there).
-    juce::var ask(tp::Processor& p, tp::mcp::LineReader& r, int id, const char* method, const juce::var& params)
+    juce::var ask(pg::Processor& p, pg::mcp::LineReader& r, int id, const char* method, const juce::var& params)
     {
         std::atomic<bool> done{ false };
         std::string got;
         std::thread t([&] {
-            if (tp::mcp::writeLine(r.fd(), line(object({ { "id", id }, { "method", method }, { "params", params } }))))
+            if (pg::mcp::writeLine(r.fd(), line(object({ { "id", id }, { "method", method }, { "params", params } }))))
                 r.next(got, 20000);
             done.store(true);
         });
@@ -120,7 +120,7 @@ namespace
     {
         pid_t pid = -1;
         int in = -1, out = -1;
-        std::unique_ptr<tp::mcp::LineReader> reader;
+        std::unique_ptr<pg::mcp::LineReader> reader;
         int next = 1;
 
         bool start(const std::string& path)
@@ -141,12 +141,12 @@ namespace
             close(fromChild[1]);
             in = toChild[1];
             out = fromChild[0];
-            reader = std::make_unique<tp::mcp::LineReader>(out);
+            reader = std::make_unique<pg::mcp::LineReader>(out);
             return rc == 0;
         }
 
         // A request and its reply (a notification before it is skipped), the processors' work done meanwhile.
-        juce::var request(std::vector<tp::Processor*> ps, const char* method, const juce::var& params)
+        juce::var request(std::vector<pg::Processor*> ps, const char* method, const juce::var& params)
         {
             const int id = next++;
             std::atomic<bool> done{ false };
@@ -170,7 +170,7 @@ namespace
             });
             while (!done.load())
             {
-                for (tp::Processor* p : ps)
+                for (pg::Processor* p : ps)
                     p->poll();
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
@@ -196,23 +196,23 @@ PROBE(plugin, mcp)
     const funkgui::HeadlessGuiScope gui;
     std::setvbuf(stdout, nullptr, _IONBF, 0);            // its lines as they come (a hang shows where)
     // A folder of the probe's own, short enough for a socket's path.
-    const std::string dir = "/tmp/" + std::string(tp::product::kEnvPrefix) + "mcp-" + std::to_string(getpid());
-    const std::string var = std::string(tp::product::kEnvPrefix) + "MCP_DIR";
+    const std::string dir = "/tmp/" + std::string(pg::product::kEnvPrefix) + "mcp-" + std::to_string(getpid());
+    const std::string var = std::string(pg::product::kEnvPrefix) + "MCP_DIR";
     setenv(var.c_str(), dir.c_str(), 1);
-    const char* serverPath = std::getenv((std::string(tp::product::kEnvPrefix) + "MCP_SERVER").c_str());
+    const char* serverPath = std::getenv((std::string(pg::product::kEnvPrefix) + "MCP_SERVER").c_str());
 
     // ---- LINK ------------------------------------------------------------------------------------------------------------
-    auto a = std::make_unique<tp::Processor>();
-    const tp::McpLink* link = a->mcpLink();
+    auto a = std::make_unique<pg::Processor>();
+    const pg::McpLink* link = a->mcpLink();
     P.eq("link.listening", link != nullptr && link->listening() ? 1 : 0, 1);
     struct stat st{};
     P.eq("link.private", stat(dir.c_str(), &st) == 0 && (st.st_mode & 0777) == 0700 && link != nullptr
                              && stat(link->socketPath().c_str(), &st) == 0 && (st.st_mode & 0777) == 0600 ? 1 : 0, 1);
     const juce::File folder(juce::String::fromUTF8(dir.c_str()));
     P.eq("link.cache", folder.getChildFile("tools.json").existsAsFile() && folder.getChildFile("guide.md").existsAsFile() ? 1 : 0, 1);
-    const int fd = link != nullptr ? tp::mcp::connectTo(link->socketPath()) : -1;
+    const int fd = link != nullptr ? pg::mcp::connectTo(link->socketPath()) : -1;
     P.eq("link.connects", fd >= 0 ? 1 : 0, 1);
-    tp::mcp::LineReader r(fd);
+    pg::mcp::LineReader r(fd);
     std::printf("link: %s, fd %d\n", link != nullptr ? link->socketPath().c_str() : "-", fd);
     const juce::var info = ask(*a, r, 1, "info", {});
     std::printf("info: %s\n", line(info).substr(0, 200).c_str());
@@ -220,13 +220,13 @@ PROBE(plugin, mcp)
     P.eq("names.first", link != nullptr && link->id() == "1" && link->name() == first
                             && juce::File(juce::String::fromUTF8(link->socketPath().c_str())).getFileName() == "1.sock" ? 1 : 0, 1);
     P.eq("link.info", info["result"]["id"].toString() == juce::String(link != nullptr ? link->id() : "") && info["result"]["name"].toString() == juce::String(first)
-                          && info["result"]["plugin"].toString() == tp::product::kName
-                          && info["result"]["kind"].toString() == tp::product::kKind ? 1 : 0, 1);
+                          && info["result"]["plugin"].toString() == pg::product::kName
+                          && info["result"]["kind"].toString() == pg::product::kKind ? 1 : 0, 1);
     const juce::var tools = ask(*a, r, 2, "tools", {})["result"];
     P.eq("link.tools", hasTool(tools, "write_file") && hasTool(tools, "run_program") && hasTool(tools, "view_panel")
                            && !hasTool(tools, "ask_user") && !hasTool(tools, "ask_planner") ? 1 : 0, 1);
     const std::string guide = ask(*a, r, 3, "guide", {})["result"].toString().toStdString();
-    P.eq("link.guide", guide.rfind("WORKING FROM OUTSIDE THE PLUGIN", 0) == 0 && guide.find(tp::ChatAgent::systemPrompt()) != std::string::npos ? 1 : 0, 1);
+    P.eq("link.guide", guide.rfind("WORKING FROM OUTSIDE THE PLUGIN", 0) == 0 && guide.find(pg::ChatAgent::systemPrompt()) != std::string::npos ? 1 : 0, 1);
 
     // ---- CALL ------------------------------------------------------------------------------------------------------------
     const std::string text = program();
@@ -235,10 +235,10 @@ PROBE(plugin, mcp)
     std::printf("write_file: %s\n", firstText(res).c_str());
     P.eq("call.write", !static_cast<bool>(res["isError"]) && a->editorPort().draft().files.front().text == text ? 1 : 0, 1);
     {
-        const tp::ChatState cs = a->chatAgent().chatState();
+        const pg::ChatState cs = a->chatAgent().chatState();
         int notes = 0;
-        for (const tp::ChatEntry& e : cs.entries)
-            notes += e.kind == tp::ChatEntry::Kind::note && e.text.find("Claude Desktop") != std::string::npos ? 1 : 0;
+        for (const pg::ChatEntry& e : cs.entries)
+            notes += e.kind == pg::ChatEntry::Kind::note && e.text.find("Claude Desktop") != std::string::npos ? 1 : 0;
         P.eq("call.noted_once", notes, 1);
     }
     res = ask(*a, r, 5, "call", object({ { "name", "run_program" }, { "arguments", juce::var(new juce::DynamicObject()) } }))["result"];
@@ -248,9 +248,9 @@ PROBE(plugin, mcp)
     {
         // A dial set and read back at once, before the message thread has applied it: the value set (a measurement
         // right after set_dial renders it).
-        tp::ChatAgent& agent = a->chatAgent();
-        const tp::ChatAgent::McpResult set = agent.mcpCall("set_dial", object({ { "name", "level" }, { "value", 0.25 } }));
-        const tp::ChatAgent::McpResult status = agent.mcpCall("get_status", juce::var(new juce::DynamicObject()));
+        pg::ChatAgent& agent = a->chatAgent();
+        const pg::ChatAgent::McpResult set = agent.mcpCall("set_dial", object({ { "name", "level" }, { "value", 0.25 } }));
+        const pg::ChatAgent::McpResult status = agent.mcpCall("get_status", juce::var(new juce::DynamicObject()));
         const std::string said = firstText(object({ { "content", status.content } }));
         std::printf("dial now: %s\n", said.substr(said.find("level"), 60).c_str());
         P.eq("call.dial_now", !set.isError && said.find("now 0.25") != std::string::npos ? 1 : 0, 1);
@@ -328,7 +328,7 @@ PROBE(plugin, mcp)
         P.eq("server.prompt_filled", rep["result"]["messages"][0]["content"]["text"].toString().contains("a warm pad") ? 1 : 0, 1);
 
         // ---- MATCH: a second instance, on a track, with a project ---------------------------------------------------
-        auto b = std::make_unique<tp::Processor>();
+        auto b = std::make_unique<pg::Processor>();
         const std::string second = std::string(kInstrument ? "Synth" : "Effect") + " 2";
         P.eq("names.second", b->mcpLink() != nullptr && b->mcpLink()->name() == second ? 1 : 0, 1);
         juce::AudioProcessor::TrackProperties track;
@@ -336,7 +336,7 @@ PROBE(plugin, mcp)
         b->updateTrackProperties(track);
         {
             std::string why;
-            tp::SavedVersion saved;
+            pg::SavedVersion saved;
             b->editorPort().saveVersion("Moog Bass", saved, why);
         }
         const auto writeTo = [&](const char* instance, const char* file) {
@@ -344,8 +344,8 @@ PROBE(plugin, mcp)
                              object({ { "name", "write_file" },
                                       { "arguments", object({ { "name", file }, { "content", "// a file\n" }, { "instance", instance } }) } }))["result"];
         };
-        const auto has = [](tp::Processor& p, const char* file) {
-            for (const tp::SourceFile& f : p.editorPort().draft().files)
+        const auto has = [](pg::Processor& p, const char* file) {
+            for (const pg::SourceFile& f : p.editorPort().draft().files)
                 if (f.name == file)
                     return true;
             return false;
@@ -396,7 +396,7 @@ PROBE(plugin, mcp)
     }
     {
         // The server gone: a processor no longer counts as connected (its link saw the connection close).
-        auto c = std::make_unique<tp::Processor>();
+        auto c = std::make_unique<pg::Processor>();
         Server t;
         if (serverPath != nullptr && t.start(serverPath))
         {

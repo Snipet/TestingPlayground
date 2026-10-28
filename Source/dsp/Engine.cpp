@@ -10,7 +10,7 @@
 #include <cmath>
 #include <cstring>
 
-namespace testingplayground
+namespace playground
 {
     namespace
     {

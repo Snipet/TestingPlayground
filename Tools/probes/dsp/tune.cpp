@@ -38,12 +38,12 @@
 #include <string>
 #include <vector>
 
-namespace tp = testingplayground;
-namespace ms = testingplayground::measure;
+namespace pg = playground;
+namespace ms = playground::measure;
 
 namespace
 {
-    constexpr bool kInstrument = tp::product::kIsInstrument;
+    constexpr bool kInstrument = pg::product::kIsInstrument;
     constexpr double kInf = std::numeric_limits<double>::infinity();
 
     // The instrument: level (dB), cutoff (Hz, a one-pole low-pass), attack (s, linear), release (s, 60 dB).
@@ -113,7 +113,7 @@ namespace
 };
 )";
 
-    tp::Sources files() { return tp::singleFile(kInstrument ? kVoice : kEffect); }
+    pg::Sources files() { return pg::singleFile(kInstrument ? kVoice : kEffect); }
 
     double at(const ms::Metrics& m, const char* k)
     {
@@ -372,7 +372,7 @@ PROBE(dsp, tune)
             P.eq("checks.text", res[0].text.find(kInstrument ? "dBFS" : "dB") != std::string::npos ? 1 : 0, 1);
         }
         std::string errors;
-        const std::vector<ms::CheckResult> broken = ms::evaluate(tp::singleFile("module Nothing {};\n"), checks, {}, &errors);
+        const std::vector<ms::CheckResult> broken = ms::evaluate(pg::singleFile("module Nothing {};\n"), checks, {}, &errors);
         P.eq("checks.no_compile", std::none_of(broken.begin(), broken.end(), [](const ms::CheckResult& r) { return r.measured; })
                                       && !errors.empty() ? 1 : 0, 1);
     }

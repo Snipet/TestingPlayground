@@ -4,7 +4,7 @@
 // ~/Library/Audio/Presets/Funk/<this plugin's name>/<name>.fmproject, the effect's apart from the synth's (one's
 // programs do not play in the other). A file is JSON:
 //
-//   { "format": "funk-playground-project", "version": 1, "plugin": "TestingPlayground", "kind": "instrument",
+//   { "format": "funk-playground-project", "version": 1, "plugin": "<product name>", "kind": "instrument",
 //     "name": "Glass Bloom",
 //     "versions": [ { "number": 1, "saved": 1761580000000, "note": "first save", "active": 0,
 //                     "files": [ { "name": "program.fm", "text": "..." }, ... ],
@@ -43,7 +43,7 @@ namespace juce
     class File;
 }
 
-namespace testingplayground::projectstore
+namespace playground::projectstore
 {
     inline constexpr std::size_t kMaxName = 40;          // characters
     inline constexpr int kMaxVersions = 100;             // a project's, the newest

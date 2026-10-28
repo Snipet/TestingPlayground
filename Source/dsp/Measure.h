@@ -38,7 +38,7 @@
 #include <string_view>
 #include <vector>
 
-namespace testingplayground::measure
+namespace playground::measure
 {
     struct Request
     {

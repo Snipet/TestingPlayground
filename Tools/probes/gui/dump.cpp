@@ -109,7 +109,7 @@
 #include <thread>
 #include <vector>
 
-namespace tp = testingplayground;
+namespace pg = playground;
 
 namespace
 {
@@ -135,15 +135,15 @@ namespace
     // A program of this plugin's kind with the first `count` of these parameters and no panel line.
     std::string dialsProgram(int count)
     {
-        static_assert(tp::kMaxControls == 32, "the names below");
+        static_assert(pg::kMaxControls == 32, "the names below");
         const char* const names[] = { "shape",   "detune",   "sub",     "noise",  "cutoff", "resonance", "envamount", "keytrack",
                                       "lforate", "lfodepth", "attack",  "decay",  "sustain", "release",  "glide",     "level",
                                       "shape2",  "detune2",  "sub2",    "noise2", "cutoff2", "drive",    "fenvattack", "fenvdecay",
                                       "lfo2rate", "lfo2depth", "pan",   "spread", "chorus", "delaytime", "feedback",  "mix" };
         std::string params;
-        for (int k = 0; k < count && k < tp::kMaxControls; ++k)
+        for (int k = 0; k < count && k < pg::kMaxControls; ++k)
             params += std::string("    param float ") + names[k] + " [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n";
-        if constexpr (tp::product::kIsInstrument)
+        if constexpr (pg::product::kIsInstrument)
             return "module Voice\n{\n" + params + "    float note;\n    void start(float n, float v) { note = n; }\n"
                    "    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n";
         else
@@ -170,10 +170,10 @@ namespace
 
     // The checks of a sectioned layout: `titles` in order and `rows` rows; each dial of `members` (slots by section)
     // inside its frame and in order; no two frames overlapping; all in the left column, under the problems list.
-    void checkSections(funkgui::test::Probe& P, const std::string& key, const tp::ui::Panel& panel,
+    void checkSections(funkgui::test::Probe& P, const std::string& key, const pg::ui::Panel& panel,
                        const std::vector<std::string>& titles, const std::vector<std::vector<int>>& members, int rows)
     {
-        const tp::ui::DialsLayout& L = panel.dialsLayout();
+        const pg::ui::DialsLayout& L = panel.dialsLayout();
         P.eq(key + ".sections", static_cast<int64_t>(L.sections.size()), static_cast<int64_t>(titles.size()));
         P.eq(key + ".rows", panel.dialRows(), rows);
         bool named = L.sections.size() == titles.size(), inside = true, ordered = true, apart = true, column = true;
@@ -193,8 +193,8 @@ namespace
             float lastX = -1.0f, lastY = -1.0f;
             for (const int c : members[k])
             {
-                const tp::ui::ItemPlace& d = L.dials[static_cast<std::size_t>(c)];
-                const float w = d.small ? tp::ui::kSmallDialW : tp::ui::kDialW, h = d.small ? tp::ui::kSmallDialH : tp::ui::kDialH;
+                const pg::ui::ItemPlace& d = L.dials[static_cast<std::size_t>(c)];
+                const float w = d.small ? pg::ui::kSmallDialW : pg::ui::kDialW, h = d.small ? pg::ui::kSmallDialH : pg::ui::kDialH;
                 inside = inside && d.x >= f.x && d.x + w <= f.right() && d.top >= f.y && d.top + h <= f.bottom();
                 ordered = ordered && (d.top > lastY + 20.0f || (std::fabs(d.top - lastY) <= 20.0f && d.x > lastX));
                 lastX = d.x;
@@ -209,7 +209,7 @@ namespace
     }
 
     // The accessibility title of the dial at slot c.
-    std::string dialTitle(const tp::ui::Panel& panel, int c)
+    std::string dialTitle(const pg::ui::Panel& panel, int c)
     {
         std::vector<funkgui::A11yItem> items;
         panel.accessibility(items);
@@ -223,10 +223,10 @@ namespace
     }
 
     // The dials shown, their centres in slot order.
-    std::vector<funkgui::Point> shownDials(const tp::ui::Panel& panel)
+    std::vector<funkgui::Point> shownDials(const pg::ui::Panel& panel)
     {
         std::vector<funkgui::Point> out;
-        for (int c = 0; c < tp::kMaxControls; ++c)
+        for (int c = 0; c < pg::kMaxControls; ++c)
             if (const auto at = panel.centreOfDial(c))
                 out.push_back(*at);
         return out;
@@ -235,7 +235,7 @@ namespace
     // The checks of a layout of `dials` (in slot order) in `rows` rows: the rows' count and their lengths, the order
     // (row by row, left to right), even spacing in each row, no two dials' cells (60 x 80) overlapping, every cell in
     // the left column and under the problems list.
-    void checkRows(funkgui::test::Probe& P, const std::string& key, const tp::ui::Panel& panel,
+    void checkRows(funkgui::test::Probe& P, const std::string& key, const pg::ui::Panel& panel,
                    const std::vector<funkgui::Point>& dials, int rows, bool small = false)
     {
         // funkgui::DialGeom's cells: primary, or compact
@@ -280,11 +280,11 @@ namespace
     }
 
     // Whether every dial has a control in the interface (a .gui file's), each inside a titled section or page.
-    bool everyDialTitled(const tp::PanelSpec& spec, const tp::Controls& controls, int& placed)
+    bool everyDialTitled(const pg::PanelSpec& spec, const pg::Controls& controls, int& placed)
     {
         placed = 0;
         bool titled = !spec.gui.empty();
-        for (const tp::GuiNode& n : spec.gui.nodes)
+        for (const pg::GuiNode& n : spec.gui.nodes)
         {
             if (n.slot < 0)
                 continue;
@@ -292,20 +292,20 @@ namespace
             bool inTitled = false;
             for (int p = n.parent; p >= 0; p = spec.gui.nodes[static_cast<std::size_t>(p)].parent)
             {
-                const tp::GuiNode& up = spec.gui.nodes[static_cast<std::size_t>(p)];
-                if ((up.kind == tp::GuiKind::section || up.kind == tp::GuiKind::page) && !up.text.empty())
+                const pg::GuiNode& up = spec.gui.nodes[static_cast<std::size_t>(p)];
+                if ((up.kind == pg::GuiKind::section || up.kind == pg::GuiKind::page) && !up.text.empty())
                     inTitled = true;
             }
             titled = titled && inTitled;
         }
         int used = 0;
-        for (const tp::Control& c : controls)
+        for (const pg::Control& c : controls)
             used += c.used ? 1 : 0;
         return titled && placed == used;
     }
 
     // Lets a run finish: the compiler, the processor's poll, the panel's next frames.
-    void settleRun(tp::Processor& p, funkgui::HeadlessHost& host)
+    void settleRun(pg::Processor& p, funkgui::HeadlessHost& host)
     {
         p.settle();
         host.tick(2);
@@ -317,10 +317,10 @@ PROBE(gui, dump)
 {
     const funkgui::HeadlessGuiScope gui;
     funkgui::UiPreferences::get().setBackend(funkgui::UiPreferences::memoryBackend());   // never the user's file
-    tp::Processor processor;
-    tp::EditorPort& port = processor.editorPort();
+    pg::Processor processor;
+    pg::EditorPort& port = processor.editorPort();
     int params = 0;
-    for (const tp::Control& c : port.controls())
+    for (const pg::Control& c : port.controls())
         params += c.used ? 1 : 0;
 
     // FRAME, in both themes.
@@ -328,25 +328,25 @@ PROBE(gui, dump)
     {
         const std::string tag = theme == 0 ? "graphite" : "paper";
         funkgui::UiPreferences::get().setTheme(theme);
-        tp::ui::Panel panel(processor.ports(), port);
+        pg::ui::Panel panel(processor.ports(), port);
         funkgui::HeadlessHost host(panel, theme, 2.0f);
         host.setZoom({ 100, 125, 150, 200 }, 100);
         P.le(tag + ".settle_frames", host.settle(), 599.0);
         const funkgui::PrimList& frame = host.draw();
         P.eq(tag + ".missing_glyphs", static_cast<int64_t>(frame.missingGlyphs), 0);
-        const tp::Draft draft = port.draft();
+        const pg::Draft draft = port.draft();
         P.eq(tag + ".editor_shows_draft",
              panel.editor().text() == draft.files[static_cast<std::size_t>(draft.active)].text ? 1 : 0, 1);
         P.eq(tag + ".tabs_are_files", panel.fileCount(), static_cast<int64_t>(draft.files.size()));
         int dials = 0;
-        for (int c = 0; c < tp::kMaxControls; ++c)
+        for (int c = 0; c < pg::kMaxControls; ++c)
             dials += panel.centreOfDial(c).has_value() ? 1 : 0;
         P.eq(tag + ".dials_are_params", dials, params);
         writePng(P, host, theme == 0 ? "gui.dump.png" : "gui.dump.paper.png", tag);
     }
 
     funkgui::UiPreferences::get().setTheme(0);
-    tp::ui::Panel panel(processor.ports(), port);
+    pg::ui::Panel panel(processor.ports(), port);
     funkgui::HeadlessHost host(panel, 0, 2.0f);
     host.setZoom({ 100, 125, 150, 200 }, 100);
     panel.setExplorerOpen(false);                    // the rows and sections below measure the program's card as wide as
@@ -368,7 +368,7 @@ PROBE(gui, dump)
     // RUN
     host.keys("cmd+return");
     settleRun(processor, host);
-    P.eq("run.plays_text", port.running() == tp::singleFile(typed) ? 1 : 0, 1);
+    P.eq("run.plays_text", port.running() == pg::singleFile(typed) ? 1 : 0, 1);
     P.eq("run.status_running", panel.statusText().rfind("RUNNING", 0) == 0 ? 1 : 0, 1);
     std::printf("status: %s\n", panel.statusText().c_str());
 
@@ -378,17 +378,17 @@ PROBE(gui, dump)
     host.keys("cmd+return");
     settleRun(processor, host);
     std::printf("status: %s\n", panel.statusText().c_str());
-    for (const tp::ui::Problem& p : panel.problems())
+    for (const pg::ui::Problem& p : panel.problems())
         std::printf("problem %d:%d %s %s\n", p.line, p.column, p.error ? "error" : "note", p.text.c_str());
     P.eq("error.status", panel.statusText().rfind("1 ERROR", 0) == 0 ? 1 : 0, 1);
     P.eq("error.listed", panel.problems().empty() ? 0 : 1, 1);
     P.eq("error.line", panel.problems().empty() ? 0 : panel.problems()[0].line, 3);
-    P.eq("error.previous_plays", port.running() == tp::singleFile(typed) ? 1 : 0, 1);
+    P.eq("error.previous_plays", port.running() == pg::singleFile(typed) ? 1 : 0, 1);
     P.eq("error.file", panel.problems().empty() ? 0 : (panel.problems()[0].file == "program.fm" ? 1 : 0), 1);
     {
         const funkgui::PrimList& frame = host.draw();
-        P.ge("error.gutter_mark", countTag(frame, tp::ui::kMarkTag), 1.0);
-        P.ge("error.problem_drawn", countTag(frame, tp::ui::kProblemTag), 1.0);
+        P.ge("error.gutter_mark", countTag(frame, pg::ui::kMarkTag), 1.0);
+        P.ge("error.problem_drawn", countTag(frame, pg::ui::kProblemTag), 1.0);
         P.eq("error.missing_glyphs", static_cast<int64_t>(frame.missingGlyphs), 0);
         writePng(P, host, "gui.dump.error.png", "error");
     }
@@ -406,23 +406,23 @@ PROBE(gui, dump)
     P.eq("examples.menu", menu != nullptr ? 1 : 0, 1);
     if (menu != nullptr)
     {
-        P.eq("examples.items", static_cast<int64_t>(menu->items.size()), static_cast<int64_t>(std::size(tp::kExamples)));
+        P.eq("examples.items", static_cast<int64_t>(menu->items.size()), static_cast<int64_t>(std::size(pg::kExamples)));
         P.eq("examples.chosen", host.chooseMenuItem(2) ? 1 : 0, 1);
         while (port.compiling())                                // the compile, without the processor's poll
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         host.tick(2);
         P.eq("examples.running_before_poll", panel.statusText().rfind("RUNNING", 0) == 0 ? 1 : 0, 1);
-        const tp::CompileStatus compiled = port.status();
+        const pg::CompileStatus compiled = port.status();
         int wanted = 0, shown = 0;
-        for (int c = 0; c < tp::kMaxControls; ++c)
+        for (int c = 0; c < pg::kMaxControls; ++c)
         {
             wanted += compiled.controls[static_cast<std::size_t>(c)].used ? 1 : 0;
             shown += panel.centreOfDial(c).has_value() ? 1 : 0;
         }
         P.eq("examples.dials_before_poll", shown, wanted);
         settleRun(processor, host);
-        P.eq("examples.replaces_text", editor.text() == tp::kExamples[1].source ? 1 : 0, 1);
-        P.eq("examples.runs_it", port.running() == tp::singleFile(tp::kExamples[1].source) ? 1 : 0, 1);
+        P.eq("examples.replaces_text", editor.text() == pg::kExamples[1].source ? 1 : 0, 1);
+        P.eq("examples.runs_it", port.running() == pg::singleFile(pg::kExamples[1].source) ? 1 : 0, 1);
         P.eq("examples.status_running", panel.statusText().rfind("RUNNING", 0) == 0 ? 1 : 0, 1);
         writePng(P, host, "gui.dump.edited.png", "examples");
         P.eq("examples.undo_one_step", editor.undo() && editor.text() == before ? 1 : 0, 1);
@@ -446,8 +446,8 @@ PROBE(gui, dump)
             P.near("dial.drag_up_60px", static_cast<double>(p.value01() - 0.25f), 0.25, 0.02);
             host.doubleClick(at->x, at->y);
             host.settle();
-            const tp::Control c = processor.control(0);
-            P.near("dial.double_click_default", static_cast<double>(p.value01()), static_cast<double>(tp::normOf(c, c.def)),
+            const pg::Control c = processor.control(0);
+            P.near("dial.double_click_default", static_cast<double>(p.value01()), static_cast<double>(pg::normOf(c, c.def)),
                    1e-6);
         }
     }
@@ -499,7 +499,7 @@ PROBE(gui, dump)
         host.click(tab0.x, tab0.y);                               // the program shown while it runs
         host.keys("cmd+return");
         settleRun(processor, host);
-        for (const tp::ui::Problem& p : panel.problems())
+        for (const pg::ui::Problem& p : panel.problems())
             std::printf("problem %s:%d:%d %s\n", p.file.c_str(), p.line, p.column, p.text.c_str());
         P.eq("files.error_listed", panel.problems().empty() ? 0 : 1, 1);
         P.eq("files.error_names_file", !panel.problems().empty() && panel.problems()[0].file == "filters.fm" &&
@@ -508,8 +508,8 @@ PROBE(gui, dump)
              1);
         {
             const funkgui::PrimList& frame = host.draw();
-            P.eq("files.no_gutter_mark_in_program", countTag(frame, tp::ui::kMarkTag), 0);
-            P.ge("files.tabs_drawn", countTag(frame, tp::ui::kTabTag), 2.0);
+            P.eq("files.no_gutter_mark_in_program", countTag(frame, pg::ui::kMarkTag), 0);
+            P.ge("files.tabs_drawn", countTag(frame, pg::ui::kTabTag), 2.0);
         }
         const funkgui::Point inFile = panel.centreOfProblem(0);
         host.click(inFile.x, inFile.y);
@@ -518,7 +518,7 @@ PROBE(gui, dump)
         P.eq("files.problem_caret_line", panel.editor().caret().line, 2);
         {
             const funkgui::PrimList& frame = host.draw();
-            P.ge("files.gutter_mark_in_file", countTag(frame, tp::ui::kMarkTag), 1.0);
+            P.ge("files.gutter_mark_in_file", countTag(frame, pg::ui::kMarkTag), 1.0);
             P.eq("files.missing_glyphs", static_cast<int64_t>(frame.missingGlyphs), 0);
             writePng(P, host, "gui.dump.files.png", "files");
         }
@@ -571,34 +571,34 @@ PROBE(gui, dump)
             P.eq("rows.missing_glyphs", static_cast<int64_t>(frame.missingGlyphs), 0);
             writePng(P, host, "gui.dump.dials.png", "rows");
         }
-        host.resize(tp::ui::kMinWidth, tp::ui::kMinHeight);
+        host.resize(pg::ui::kMinWidth, pg::ui::kMinHeight);
         host.settle();
         checkRows(P, "rows.least", panel, shownDials(panel), 2);
         writePng(P, host, "gui.dump.dials.small.png", "rows.least");
         host.resize(1900, 1100);
         host.settle();
         checkRows(P, "rows.wide", panel, shownDials(panel), 1);
-        host.resize(tp::ui::kDefaultWidth, tp::ui::kDefaultHeight);
+        host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
         host.settle();
         // The most, 32: full-size rows at the default size; at the least size every one small, still in rows.
         editor.selectAll();
-        editor.insert(dialsProgram(tp::kMaxControls));
+        editor.insert(dialsProgram(pg::kMaxControls));
         host.keys("cmd+return");
         settleRun(processor, host);
         dials = shownDials(panel);
-        P.eq("rows.most_shown", static_cast<int64_t>(dials.size()), tp::kMaxControls);
+        P.eq("rows.most_shown", static_cast<int64_t>(dials.size()), pg::kMaxControls);
         std::printf("32 dials: %d rows, %s\n", panel.dialRows(), panel.dialsLayout().allSmall ? "small" : "full size");
         P.eq("rows.most_full_size", panel.dialsLayout().allSmall ? 0 : 1, 1);
         checkRows(P, "rows.most", panel, dials, panel.dialRows());
         P.in("rows.most_rows", static_cast<double>(panel.dialRows()), 3.0, 4.0);
         writePng(P, host, "gui.dump.dials.most.png", "rows.most");
-        host.resize(tp::ui::kMinWidth, tp::ui::kMinHeight);
+        host.resize(pg::ui::kMinWidth, pg::ui::kMinHeight);
         host.settle();
         std::printf("32 dials at the least size: %d rows, %s\n", panel.dialRows(), panel.dialsLayout().allSmall ? "small" : "full size");
         P.eq("rows.most_least_small", panel.dialsLayout().allSmall ? 1 : 0, 1);
         checkRows(P, "rows.most_least", panel, shownDials(panel), panel.dialRows(), true);
         writePng(P, host, "gui.dump.dials.most.small.png", "rows.most_least");
-        host.resize(tp::ui::kDefaultWidth, tp::ui::kDefaultHeight);
+        host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
         host.settle();
         // Back to three dials: one row, and the editor's height back.
         editor.selectAll();
@@ -629,7 +629,7 @@ PROBE(gui, dump)
         const std::vector<std::string> titles{ "OSCILLATORS", "FILTER", "LFO", "ENVELOPE", "OUTPUT" };
         const std::vector<std::vector<int>> members{ { 0, 1, 2, 3 }, { 4, 5, 6, 7 }, { 8, 9 }, { 10, 11, 12, 13 }, { 14, 15 } };
         checkSections(P, "panel.default", panel, titles, members, 2);
-        const tp::ui::DialsLayout& L = panel.dialsLayout();
+        const pg::ui::DialsLayout& L = panel.dialsLayout();
         if (L.sections.size() == 5)
         {
             const float row1 = L.sections[2].r.right() - L.sections[0].r.x, row2 = L.sections[4].r.right() - L.sections[3].r.x;
@@ -642,25 +642,25 @@ PROBE(gui, dump)
         P.eq("panel.label_name", dialTitle(panel, 4) == "CUTOFF" ? 1 : 0, 1);
         {
             const funkgui::PrimList& frame = host.draw();
-            P.ge("panel.frames_drawn", countTag(frame, tp::ui::kSectionTag), 5.0);
+            P.ge("panel.frames_drawn", countTag(frame, pg::ui::kSectionTag), 5.0);
             P.eq("panel.missing_glyphs", static_cast<int64_t>(frame.missingGlyphs), 0);
             writePng(P, host, "gui.dump.panel.png", "panel");
         }
         {
             // PAPER: another panel over the same processor, which shows the program that plays.
             funkgui::UiPreferences::get().setTheme(1);
-            tp::ui::Panel paper(processor.ports(), port);
+            pg::ui::Panel paper(processor.ports(), port);
             funkgui::HeadlessHost paperHost(paper, 1, 2.0f);
             paperHost.settle();
             P.eq("panel.paper.sections", static_cast<int64_t>(paper.dialsLayout().sections.size()), 5);
             writePng(P, paperHost, "gui.dump.panel.paper.png", "panel.paper");
             funkgui::UiPreferences::get().setTheme(0);
         }
-        host.resize(tp::ui::kMinWidth, tp::ui::kMinHeight);
+        host.resize(pg::ui::kMinWidth, pg::ui::kMinHeight);
         host.settle();
         checkSections(P, "panel.least", panel, titles, members, panel.dialRows());
         writePng(P, host, "gui.dump.panel.small.png", "panel.least");
-        host.resize(tp::ui::kDefaultWidth, tp::ui::kDefaultHeight);
+        host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
         host.settle();
         // A line that names no dial: a note on its line; the rest of the panel stands.
         editor.selectAll();
@@ -668,7 +668,7 @@ PROBE(gui, dump)
         host.keys("cmd+return");
         settleRun(processor, host);
         bool noted = false;
-        for (const tp::ui::Problem& p : panel.problems())
+        for (const pg::ui::Problem& p : panel.problems())
             noted = noted || (!p.error && p.line == 11 && p.text.find("no dial nosuch") != std::string::npos);
         P.eq("panel.bad_line_noted", noted ? 1 : 0, 1);
         P.eq("panel.stands", static_cast<int64_t>(panel.dialsLayout().sections.size()), 5);
@@ -695,22 +695,22 @@ PROBE(gui, dump)
             int files = 0, headings = 0;
             for (const funkgui::MenuItem& it : libMenu->items)
             {
-                files += it.id > 0 && it.id <= static_cast<int>(std::size(tp::kLibrary)) ? 1 : 0;
-                headings += it.id > static_cast<int>(std::size(tp::kLibrary)) && !it.enabled ? 1 : 0;
+                files += it.id > 0 && it.id <= static_cast<int>(std::size(pg::kLibrary)) ? 1 : 0;
+                headings += it.id > static_cast<int>(std::size(pg::kLibrary)) && !it.enabled ? 1 : 0;
             }
-            P.eq("library.every_file", files, static_cast<int64_t>(std::size(tp::kLibrary)));
+            P.eq("library.every_file", files, static_cast<int64_t>(std::size(pg::kLibrary)));
             P.ge("library.headings", static_cast<double>(headings), 4.0);
             int svf = 0;
-            for (std::size_t i = 0; i < std::size(tp::kLibrary); ++i)
-                if (std::string(tp::kLibrary[i].name) == "svf.fm")
+            for (std::size_t i = 0; i < std::size(pg::kLibrary); ++i)
+                if (std::string(pg::kLibrary[i].name) == "svf.fm")
                     svf = static_cast<int>(i) + 1;
             P.eq("library.chosen", host.chooseMenuItem(svf) ? 1 : 0, 1);
             host.settle();
             const int tab = panel.fileCount() - 1;
             P.eq("library.tab_added", panel.fileCount() == 2 && panel.fileName(tab) == "svf.fm" ? 1 : 0, 1);
             P.eq("library.tab_shown", panel.activeFile(), tab);
-            P.eq("library.library_text", panel.editor().text() == tp::findLibraryFile("svf.fm")->source ? 1 : 0, 1);
-            const tp::Draft d = port.draft();
+            P.eq("library.library_text", panel.editor().text() == pg::findLibraryFile("svf.fm")->source ? 1 : 0, 1);
+            const pg::Draft d = port.draft();
             P.eq("library.in_draft", d.files.size() == 2 && d.files[1].name == "svf.fm" ? 1 : 0, 1);
             // The program includes it, after its description.
             const std::string with = d.files.empty() ? std::string() : d.files[0].text;
@@ -742,7 +742,7 @@ PROBE(gui, dump)
             panel.editor().redo();
             host.settle();
             // With no room for another tab, the files the program lacks are greyed.
-            while (panel.fileCount() < static_cast<int>(tp::kMaxFiles))
+            while (panel.fileCount() < static_cast<int>(pg::kMaxFiles))
             {
                 const funkgui::Point plus = panel.centreOfNewTab();
                 host.click(plus.x, plus.y);
@@ -754,7 +754,7 @@ PROBE(gui, dump)
             int open = 0;
             if (libMenu != nullptr)
                 for (const funkgui::MenuItem& it : libMenu->items)
-                    open += it.id > 0 && it.id <= static_cast<int>(std::size(tp::kLibrary)) && it.enabled ? 1 : 0;
+                    open += it.id > 0 && it.id <= static_cast<int>(std::size(pg::kLibrary)) && it.enabled ? 1 : 0;
             P.eq("library.full_greyed", open, 1);                  // svf.fm alone, which is there
             host.cancelMenu();
             // Back: the extra tabs closed (empty, at once), svf.fm closed (it asks), the program as before.
@@ -780,7 +780,7 @@ PROBE(gui, dump)
     // DISPLAYS: every display and dial style, with audio running.
     {
         const std::string program = editor.text();
-        constexpr bool kInstrument = tp::product::kIsInstrument;
+        constexpr bool kInstrument = pg::product::kIsInstrument;
         const std::string lines = std::string(kInstrument ? "" : "#pragma panel meter in \"IN\"\n")
                                   + "#pragma panel meter out as bars \"OUT\"\n"
                                     "#pragma panel vu out \"OUTPUT\"\n"
@@ -862,39 +862,39 @@ PROBE(gui, dump)
         }
         int displays = 0;
         bool framed = true;
-        const tp::ui::DialsLayout& L = panel.dialsLayout();
-        for (int d = 0; d < tp::kMaxDisplays; ++d)
+        const pg::ui::DialsLayout& L = panel.dialsLayout();
+        for (int d = 0; d < pg::kMaxDisplays; ++d)
         {
-            const tp::ui::DisplayItem& item = panel.displayItem(d);
+            const pg::ui::DisplayItem& item = panel.displayItem(d);
             if (!item.shown())
                 continue;
             ++displays;
-            const tp::ui::ItemPlace& p = L.displays[static_cast<std::size_t>(d)];
+            const pg::ui::ItemPlace& p = L.displays[static_cast<std::size_t>(d)];
             bool inside = false;
-            for (const tp::ui::SectionFrame& f : L.sections)
+            for (const pg::ui::SectionFrame& f : L.sections)
                 inside = inside || (p.x >= f.r.x && p.x + p.w <= f.r.right() && p.top >= f.r.y && p.top + p.h <= f.r.bottom());
             framed = framed && inside;
         }
         P.eq("displays.shown", displays, kInstrument ? 7 : 8);
-        const tp::ui::DisplayItem* trace = nullptr;
-        for (int d = 0; d < tp::kMaxDisplays; ++d)
+        const pg::ui::DisplayItem* trace = nullptr;
+        for (int d = 0; d < pg::kMaxDisplays; ++d)
             if (panel.displayItem(d).shown() && panel.displayItem(d).display().name == "trace")
                 trace = &panel.displayItem(d);
         P.eq("displays.inside_frames", framed ? 1 : 0, 1);
-        const auto byName = [&](const std::string& source, tp::DisplayKind kind) -> const tp::ui::DisplayItem* {
-            for (int d = 0; d < tp::kMaxDisplays; ++d)
+        const auto byName = [&](const std::string& source, pg::DisplayKind kind) -> const pg::ui::DisplayItem* {
+            for (int d = 0; d < pg::kMaxDisplays; ++d)
             {
-                const tp::ui::DisplayItem& item = panel.displayItem(d);
+                const pg::ui::DisplayItem& item = panel.displayItem(d);
                 if (item.shown() && item.display().source == source && item.display().kind == kind)
                     return &item;
             }
             return nullptr;
         };
-        const tp::ui::DisplayItem* outMeter = byName("out", tp::DisplayKind::meter);
-        const tp::ui::DisplayItem* grMeter = byName("gr", tp::DisplayKind::meter);
-        const tp::ui::DisplayItem* envLed = byName("env", tp::DisplayKind::led);
-        const tp::ui::DisplayItem* lfoNumber = byName("lfo", tp::DisplayKind::number);
-        const tp::ui::DisplayItem* vu = byName("out", tp::DisplayKind::vu);
+        const pg::ui::DisplayItem* outMeter = byName("out", pg::DisplayKind::meter);
+        const pg::ui::DisplayItem* grMeter = byName("gr", pg::DisplayKind::meter);
+        const pg::ui::DisplayItem* envLed = byName("env", pg::DisplayKind::led);
+        const pg::ui::DisplayItem* lfoNumber = byName("lfo", pg::DisplayKind::number);
+        const pg::ui::DisplayItem* vu = byName("out", pg::DisplayKind::vu);
         if (outMeter != nullptr)
         {
             std::printf("out meter: %s dBFS (level %.3f)\n", outMeter->readout().c_str(), static_cast<double>(outMeter->level()));
@@ -908,12 +908,12 @@ PROBE(gui, dump)
             P.eq("displays.field_number", lfoNumber->readout() == "0.500" ? 1 : 0, 1);
         if (vu != nullptr)
             P.in("displays.vu_needle", static_cast<double>(vu->level()), 0.3, 1.0);   // -15 dBFS RMS: +3 VU, full
-        P.eq("displays.field_trace", trace != nullptr && trace->traceSize() == tp::ui::DisplayItem::kHistory ? 1 : 0, 1);
+        P.eq("displays.field_trace", trace != nullptr && trace->traceSize() == pg::ui::DisplayItem::kHistory ? 1 : 0, 1);
         P.eq("displays.missing_glyphs", static_cast<int64_t>(host.draw().missingGlyphs), 0);
         writePng(P, host, "gui.dump.displays.png", "displays");
         {
             funkgui::UiPreferences::get().setTheme(1);
-            tp::ui::Panel paper(processor.ports(), port);
+            pg::ui::Panel paper(processor.ports(), port);
             funkgui::HeadlessHost paperHost(paper, 1, 2.0f);
             push(8, false);
             paperHost.tick(60);
@@ -929,7 +929,7 @@ PROBE(gui, dump)
         host.click(saw.x, saw.y);
         host.settle();
         P.near("displays.button_chooses", static_cast<double>(processor.control(2).min) + 2.0,
-               static_cast<double>(tp::plainOf(processor.control(2), wave.value01())), 1e-4);
+               static_cast<double>(pg::plainOf(processor.control(2), wave.value01())), 1e-4);
         P.eq("displays.host_option_name", processor.getParameters()[2]->getCurrentValueAsText() == "SAW" ? 1 : 0, 1);
         const auto sw = panel.centreOfDial(3);
         const float invertBefore = invert.value01();
@@ -957,7 +957,7 @@ PROBE(gui, dump)
             host.keys("cmd+return");
             settleRun(processor, host);
             host.tick(30);
-            const tp::ui::DisplayItem* lit = byName("lit", tp::DisplayKind::led);
+            const pg::ui::DisplayItem* lit = byName("lit", pg::DisplayKind::led);
             P.near("displays.next_program_waits", lit != nullptr ? static_cast<double>(lit->level()) : -1.0, 0.0, 1e-6);
             push(1, true);
             for (int k = 0; k < 30; ++k)
@@ -977,7 +977,7 @@ PROBE(gui, dump)
     // EXAMPLE: the program Claude's instructions show, as the editor builds it.
     {
         const std::string program = editor.text();
-        const tp::Sources example = tp::ChatAgent::promptExample();
+        const pg::Sources example = pg::ChatAgent::promptExample();
         editor.selectAll();
         editor.insert(example.front().text);
         int added = 0;
@@ -1004,7 +1004,7 @@ PROBE(gui, dump)
             std::printf("%s", port.status().notes.c_str());
         int placed = 0, used = 0;
         const bool titled = everyDialTitled(port.panel(), port.controls(), placed);
-        for (const tp::Control& c : port.controls())
+        for (const pg::Control& c : port.controls())
             used += c.used ? 1 : 0;
         P.eq("example.has_interface", panel.hasGui() && port.draft().files.size() == example.size() ? 1 : 0, 1);
         P.eq("example.sections_titled", titled ? 1 : 0, 1);
@@ -1029,7 +1029,7 @@ PROBE(gui, dump)
     {
         const std::string program = editor.text();
         const int tabsBefore = panel.fileCount();
-        const tp::random::Program want = tp::random::make(4242);
+        const pg::random::Program want = pg::random::make(4242);
         P.eq("random.made", panel.makeRandom(4242) ? 1 : 0, 1);
         settleRun(processor, host);
         P.eq("random.text", panel.editor().text() == want.text ? 1 : 0, 1);
@@ -1041,12 +1041,12 @@ PROBE(gui, dump)
             return -1;
         };
         bool tabs = true;
-        const tp::Draft d = port.draft();
+        const pg::Draft d = port.draft();
         for (const std::string& f : want.library)
         {
             const int i = tabOf(f);
             tabs = tabs && i > 0 && static_cast<std::size_t>(i) < d.files.size()
-                && d.files[static_cast<std::size_t>(i)].text == tp::findLibraryFile(f)->source;
+                && d.files[static_cast<std::size_t>(i)].text == pg::findLibraryFile(f)->source;
         }
         P.eq("random.library_tabs", tabs ? 1 : 0, 1);
         P.eq("random.tab_count", panel.fileCount(), tabsBefore + static_cast<int64_t>(want.library.size()));
@@ -1079,7 +1079,7 @@ PROBE(gui, dump)
         host.click(tab0.x, tab0.y);
         panel.editor().selectAll();
         panel.editor().insert(program);
-        while (panel.fileCount() < static_cast<int>(tp::kMaxFiles))
+        while (panel.fileCount() < static_cast<int>(pg::kMaxFiles))
         {
             const funkgui::Point plus = panel.centreOfNewTab();
             host.click(plus.x, plus.y);
@@ -1090,7 +1090,7 @@ PROBE(gui, dump)
         P.eq("random.no_room", panel.makeRandom(77) ? 0 : 1, 1);
         host.tick(1);
         P.eq("random.no_room_says_so", panel.statusText().find("RANDOM NEEDS ROOM") != std::string::npos ? 1 : 0, 1);
-        P.eq("random.no_room_text_untouched", panel.editor().text() == program && panel.fileCount() == static_cast<int>(tp::kMaxFiles)
+        P.eq("random.no_room_text_untouched", panel.editor().text() == program && panel.fileCount() == static_cast<int>(pg::kMaxFiles)
                                                   ? 1 : 0, 1);
         while (panel.fileCount() > 1)
         {
@@ -1107,13 +1107,13 @@ PROBE(gui, dump)
     // PROJECTS
     {
         const juce::File folder = juce::File::getSpecialLocation(juce::File::tempDirectory)
-                                      .getChildFile("gui-projects-" + juce::String(juce::Time::currentTimeMillis()));
+                                      .getChildFile(juce::String(pg::product::kEnvPrefix) + "gui-projects-" + juce::String(juce::Time::currentTimeMillis()));
         folder.deleteRecursively();
-        tp::projectstore::setDirectoryForTests(folder);
+        pg::projectstore::setDirectoryForTests(folder);
         const std::string program = editor.text();
-        const float W = static_cast<float>(tp::ui::kDefaultWidth), H = static_cast<float>(tp::ui::kDefaultHeight);
-        using BL = tp::ui::ProjectBrowser::List;
-        tp::ui::ProjectBrowser& browser = panel.projectBrowser();
+        const float W = static_cast<float>(pg::ui::kDefaultWidth), H = static_cast<float>(pg::ui::kDefaultHeight);
+        using BL = pg::ui::ProjectBrowser::List;
+        pg::ui::ProjectBrowser& browser = panel.projectBrowser();
         const auto click = [&](const funkgui::Rect& r) {
             host.click(r.centreX(), r.centreY());
             host.settle();
@@ -1124,7 +1124,7 @@ PROBE(gui, dump)
             host.settle();
         };
         const auto versionsOf = [](const std::string& name) {
-            const std::optional<tp::projectstore::Project> p = tp::projectstore::load(name);
+            const std::optional<pg::projectstore::Project> p = pg::projectstore::load(name);
             return p ? static_cast<int64_t>(p->versions.size()) : int64_t{ -1 };
         };
         const funkgui::Point open = panel.centreOfProjects();
@@ -1138,7 +1138,7 @@ PROBE(gui, dump)
         typeText(host, "My Patch");
         host.keys("return");
         host.tick(1);
-        P.eq("projects.saved_closes", !browser.isOpen() && tp::projectstore::exists("My Patch") ? 1 : 0, 1);
+        P.eq("projects.saved_closes", !browser.isOpen() && pg::projectstore::exists("My Patch") ? 1 : 0, 1);
         P.eq("projects.status_says", panel.statusText().find("PROJECT SAVED: MY PATCH") != std::string::npos ? 1 : 0, 1);
         P.eq("projects.pill_names_it", panel.projectText() == "PROJECT  MY PATCH  V1" ? 1 : 0, 1);
         // An edit: EDITED; Cmd-S, version 2; again, nothing new.
@@ -1166,7 +1166,7 @@ PROBE(gui, dump)
             host.keys("return");
             host.tick(1);
         }
-        P.eq("projects.three_saved", static_cast<int64_t>(tp::projectstore::list().size()), 3);
+        P.eq("projects.three_saved", static_cast<int64_t>(pg::projectstore::list().size()), 3);
         // A preset of the project open (Zebra Pad).
         panel.openProjects(true);
         host.settle();
@@ -1184,7 +1184,7 @@ PROBE(gui, dump)
         host.tick(2);
         host.click(open.x, open.y);
         host.settle();
-        const std::vector<tp::ProjectEntry>& list = browser.projectList();
+        const std::vector<pg::ProjectEntry>& list = browser.projectList();
         P.eq("projects.listed_by_name", list.size() == 3 && list[0].name == "Another One" && list[1].name == "My Patch"
                                             && list[2].name == "Zebra Pad" ? 1 : 0, 1);
         P.eq("projects.open_chosen", browser.chosen(BL::projects) == 2 && browser.versionList().size() == 1
@@ -1212,15 +1212,15 @@ PROBE(gui, dump)
         click(browser.places(W, H).save);
         P.eq("projects.add_asks", browser.isOpen() && browser.why().find("Add version") != std::string::npos ? 1 : 0, 1);
         click(browser.places(W, H).save);
-        P.eq("projects.added", !browser.isOpen() && versionsOf("zebra pad") == 2 && tp::projectstore::list().size() == 3 ? 1 : 0, 1);
+        P.eq("projects.added", !browser.isOpen() && versionsOf("zebra pad") == 2 && pg::projectstore::list().size() == 3 ? 1 : 0, 1);
         // Delete: a project, then a version, each asked first; Escape closes.
         host.click(open.x, open.y);
         host.settle();
         clickRow(BL::projects, 0);
         click(browser.places(W, H).remove);
-        P.eq("projects.delete_asks", browser.isOpen() && tp::projectstore::exists("Another One") ? 1 : 0, 1);
+        P.eq("projects.delete_asks", browser.isOpen() && pg::projectstore::exists("Another One") ? 1 : 0, 1);
         click(browser.places(W, H).remove);
-        P.eq("projects.deleted", browser.isOpen() && !tp::projectstore::exists("Another One") && browser.projectList().size() == 2
+        P.eq("projects.deleted", browser.isOpen() && !pg::projectstore::exists("Another One") && browser.projectList().size() == 2
                                      ? 1 : 0, 1);
         clickRow(BL::projects, 0);                       // My Patch
         clickRow(BL::versions, 0);                       // its v2
@@ -1237,9 +1237,9 @@ PROBE(gui, dump)
             host.settle();
             clickRow(BL::projects, 0);                   // My Patch
             click(browser.places(W, H).exportIt);
-            tp::ui::ExportCard& card = panel.exportCard();
+            pg::ui::ExportCard& card = panel.exportCard();
             P.eq("export.opens", card.isOpen() && !browser.isOpen() && card.project() == "My Patch" ? 1 : 0, 1);
-            const tp::ui::ExportCard::Places spots = card.places(W, H);
+            const pg::ui::ExportCard::Places spots = card.places(W, H);
             click(spots.description);
             host.setClipboard("A patch for the probe, bright and short.");   // pasted: the keys' list takes no comma
             host.keys("cmd+v");
@@ -1251,12 +1251,12 @@ PROBE(gui, dump)
             click(spots.categories[1]);
             click(spots.genres[0]);
             click(spots.genres[4]);
-            const tp::ProjectInfo entered = card.info();
+            const pg::ProjectInfo entered = card.info();
             std::printf("export info: [%s] [%s] [%s] %zu tags, %zu genres\n", entered.description.c_str(), entered.author.c_str(),
                         entered.category.c_str(), entered.tags.size(), entered.genres.size());
             P.eq("export.info", entered.description == "A patch for the probe, bright and short." && entered.author == "Probe"
                                     && entered.tags == std::vector<std::string>{ "bright", "short" }
-                                    && entered.category == tp::ui::ExportCard::categories()[1] && entered.genres.size() == 2 ? 1 : 0, 1);
+                                    && entered.category == pg::ui::ExportCard::categories()[1] && entered.genres.size() == 2 ? 1 : 0, 1);
             writePng(P, host, "gui.dump.export.png", "export");
             click(card.places(W, H).package);
             const funkgui::FileRequest* asked = host.pendingFiles();
@@ -1281,7 +1281,7 @@ PROBE(gui, dump)
             host.returnFiles({ target.getFullPathName().toStdString() });
             host.settle();
             const int chosen = browser.chosen(BL::projects);
-            P.eq("import.added", tp::projectstore::exists("My Patch 2") && browser.isOpen() && chosen >= 0
+            P.eq("import.added", pg::projectstore::exists("My Patch 2") && browser.isOpen() && chosen >= 0
                                      && browser.projectList()[static_cast<std::size_t>(chosen)].name == "My Patch 2"
                                      && panel.statusText().find("IMPORTED: MY PATCH 2") != std::string::npos ? 1 : 0, 1);
             P.eq("import.info_with_it", port.projectInfo("My Patch 2").tags == entered.tags ? 1 : 0, 1);
@@ -1293,7 +1293,7 @@ PROBE(gui, dump)
         editor.insert(program);
         host.keys("cmd+return");
         settleRun(processor, host);
-        tp::projectstore::setDirectoryForTests({});
+        pg::projectstore::setDirectoryForTests({});
         folder.deleteRecursively();
     }
 

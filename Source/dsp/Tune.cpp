@@ -10,7 +10,7 @@
 #include <cstdio>
 #include <numeric>
 
-namespace testingplayground::measure
+namespace playground::measure
 {
     namespace
     {

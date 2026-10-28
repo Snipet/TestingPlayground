@@ -34,7 +34,7 @@ namespace juce
     class File;
 }
 
-namespace testingplayground::projectexport
+namespace playground::projectexport
 {
     inline constexpr const char* kSourceExtension = ".zip";
     inline constexpr const char* kPackageExtension = ".fmpack";

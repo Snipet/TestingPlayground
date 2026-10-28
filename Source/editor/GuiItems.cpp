@@ -14,7 +14,7 @@
 #include <cstdio>
 #include <utility>
 
-namespace testingplayground::ui
+namespace playground::ui
 {
     namespace
     {

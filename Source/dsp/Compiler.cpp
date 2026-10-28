@@ -8,7 +8,7 @@
 #include <chrono>
 #include <utility>
 
-namespace testingplayground
+namespace playground
 {
     namespace
     {

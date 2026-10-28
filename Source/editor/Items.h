@@ -19,7 +19,7 @@
 #include <string_view>
 #include <vector>
 
-namespace testingplayground::ui
+namespace playground::ui
 {
     class Item
     {

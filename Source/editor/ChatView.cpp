@@ -12,7 +12,7 @@
 #include <cmath>
 #include <cstdio>
 
-namespace testingplayground::ui
+namespace playground::ui
 {
     namespace
     {

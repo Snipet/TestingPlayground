@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-namespace testingplayground::ui::looks
+namespace playground::ui::looks
 {
     // A colour by its name, for this theme; `fallback` for "" or a name it does not know.
     funkgui::Col panelColor(const std::string& name, const funkgui::Theme& th, funkgui::Col fallback);

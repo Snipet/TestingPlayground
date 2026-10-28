@@ -15,7 +15,7 @@
 
 #include <funkgui/core/Theme.h>
 
-namespace testingplayground::ui
+namespace playground::ui
 {
     inline funkgui::Theme productTheme(const funkgui::Theme& host)
     {

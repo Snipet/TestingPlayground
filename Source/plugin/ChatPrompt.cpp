@@ -17,7 +17,7 @@
 #include <algorithm>
 #include <string>
 
-namespace testingplayground
+namespace playground
 {
     namespace
     {

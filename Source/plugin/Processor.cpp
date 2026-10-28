@@ -17,7 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 
-namespace testingplayground
+namespace playground
 {
     namespace
     {
@@ -582,7 +582,7 @@ namespace testingplayground
 
     juce::AudioProcessorEditor* Processor::createEditor()
     {
-        return testingplayground::createEditor(*this);
+        return playground::createEditor(*this);
     }
 
     int Processor::getNumPrograms() { return 1; }
@@ -1343,5 +1343,5 @@ namespace testingplayground
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter();
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
-    return new testingplayground::Processor();
+    return new playground::Processor();
 }

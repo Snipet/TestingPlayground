@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-namespace testingplayground
+namespace playground
 {
     // What building a shader needs, from the plugin: FunkGui's texts (ShaderLibrary.h) and shaderc, the pinned bgfx's.
     struct ShaderTools

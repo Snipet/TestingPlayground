@@ -28,7 +28,7 @@
 
 namespace fake
 {
-    namespace claude = testingplayground::claude;
+    namespace claude = playground::claude;
 
     class Sse
     {

@@ -20,7 +20,7 @@
 #include <mutex>
 #include <vector>
 
-namespace testingplayground::chatstore
+namespace playground::chatstore
 {
     namespace
     {

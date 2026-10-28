@@ -57,7 +57,7 @@
 #include <string_view>
 #include <utility>
 
-namespace testingplayground::ui
+namespace playground::ui
 {
 
     namespace

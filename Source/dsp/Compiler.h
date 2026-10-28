@@ -38,7 +38,7 @@
 #include <string>
 #include <thread>
 
-namespace testingplayground
+namespace playground
 {
     class Engine;
 

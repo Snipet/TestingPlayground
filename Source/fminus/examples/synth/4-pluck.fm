@@ -1,0 +1,75 @@
+// Pluck: Karplus-Strong. A burst of noise, as long as one period of the note, circulates in a delay line through a
+// gentle low-pass, which makes it a decaying string. Each voice's line comes from calloc in init (long enough for
+// 20 Hz) and goes back with free in end, both off the audio thread.
+module Voice
+{
+    param float brightness [[fminus::range(0, 1)]] [[fminus::default(0.6)]];
+    param float decay [[fminus::range(100, 10000)]] [[fminus::default(3000)]];   // ms, to -60 dB
+    param float level [[fminus::range(-36, 0)]] [[fminus::default(-9)]];         // dB
+    float* line;
+    int capacity;     // samples the line holds
+    int length;       // the note's period, in samples
+    int at;
+    int seed;         // the noise's state, 1 to 65536
+    float rate;
+    float loss;       // the gain a pass through the line
+    float peak;       // the output's decaying peak, which ends the voice
+    bool held;
+
+    void init(float sampleRate)
+    {
+        rate = sampleRate;
+        capacity = (int)(sampleRate / 20) + 2;
+        line = calloc(capacity, sizeof(float));
+        if (!line)
+            capacity = 0;
+        seed = 1;
+    }
+
+    void start(float note, float velocity)
+    {
+        if (capacity == 0)
+            return;
+        const float hz = 440 * expf(0.0577622650f * (note - 69));
+        length = (int)fminf(fmaxf(rate / hz, 2), (float)capacity);
+        for (int i = 0; i < length; ++i)
+        {
+            seed = seed * 75 % 65537;            // a Lehmer generator: 75 is a primitive root of 65537
+            line[i] = velocity * ((float)seed / 32768.0f - 1);
+        }
+        at = 0;
+        peak = velocity;
+        held = true;
+    }
+
+    void stop()
+    {
+        held = false;
+    }
+
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        if (capacity == 0 || length == 0)
+            return false;
+        const float ms = held ? decay[0] : 150.0f;          // a released key mutes the string
+        loss = expf(-6907.7553f * (float)length / (ms * rate));
+        const float gain = expf(0.115129255f * level[0]);
+        const float s = 0.5f * brightness[0];               // 0.5: the plain average; less is brighter
+        for (int i = 0; i < n; ++i)
+        {
+            const int next = at + 1 == length ? 0 : at + 1;
+            const float y = line[at];
+            line[at] = loss * (y + (0.5f - s) * (line[next] - y));
+            at = next;
+            left[i] += gain * y;
+            right[i] += gain * y;
+            peak = fmaxf(fabsf(y), peak * 0.9999f);
+        }
+        return peak > 0.0001f;
+    }
+
+    void end()
+    {
+        free(line);
+    }
+};

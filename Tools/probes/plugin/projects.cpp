@@ -44,14 +44,14 @@
 #include <string>
 #include <vector>
 
-namespace tp = testingplayground;
+namespace pg = playground;
 
 namespace
 {
-    constexpr bool kInstrument = tp::product::kIsInstrument;
+    constexpr bool kInstrument = pg::product::kIsInstrument;
 
     // A program of two files: its two dials, level and tone, and a function from gain.fm.
-    tp::Sources twoFiles()
+    pg::Sources twoFiles()
     {
         const std::string params = "    param float level [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
                                    "    param float tone [[fminus::range(100, 10000)]] [[fminus::default(1000)]];\n";
@@ -65,23 +65,23 @@ namespace
                   + "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
                     "        for (int i = 0; i < n; ++i) { left[i] = half(left[i]) * level[i]; right[i] = half(right[i]) * level[i]; }\n"
                     "    }\n};\n";
-        return { { tp::kProgramName, program }, { "gain.fm", "float half(float x) { return 0.5f * x; }\n" } };
+        return { { pg::kProgramName, program }, { "gain.fm", "float half(float x) { return 0.5f * x; }\n" } };
     }
 
     // A dial's value in the program's units.
-    float dial(tp::Processor& p, int slot)
+    float dial(pg::Processor& p, int slot)
     {
-        return tp::plainOf(p.control(slot), p.getParameters()[slot]->getValue());
+        return pg::plainOf(p.control(slot), p.getParameters()[slot]->getValue());
     }
 
-    void setDial(tp::Processor& p, int slot, float plain)
+    void setDial(pg::Processor& p, int slot, float plain)
     {
-        p.getParameters()[slot]->setValueNotifyingHost(tp::normOf(p.control(slot), plain));
+        p.getParameters()[slot]->setValueNotifyingHost(pg::normOf(p.control(slot), plain));
     }
 
-    std::optional<tp::ProjectEntry> listed(tp::EditorPort& port, const std::string& name)
+    std::optional<pg::ProjectEntry> listed(pg::EditorPort& port, const std::string& name)
     {
-        for (const tp::ProjectEntry& e : port.projects())
+        for (const pg::ProjectEntry& e : port.projects())
             if (e.name == name)
                 return e;
         return std::nullopt;
@@ -108,17 +108,17 @@ namespace
 PROBE(plugin, projects)
 {
     const funkgui::HeadlessGuiScope gui;
-    namespace ps = tp::projectstore;
+    namespace ps = pg::projectstore;
 
     // FOLDER: the sandbox under CTest (the probe is never run outside it).
-    const std::string sandbox = std::string(tp::product::kEnvPrefix) + "PREFS_DIR";
+    const std::string sandbox = std::string(pg::product::kEnvPrefix) + "PREFS_DIR";
     const char* prefs = std::getenv(sandbox.c_str());
     P.eq("folder.sandbox", prefs != nullptr && *prefs != '\0'
                                && ps::directory() == juce::File(juce::String::fromUTF8(prefs)).getChildFile("presets")
                                ? 1 : 0, 1);
     // A folder of the probe's own for the rest.
     const juce::File dir = juce::File::getSpecialLocation(juce::File::tempDirectory)
-                               .getChildFile("projects-probe-" + juce::String(juce::Time::currentTimeMillis()));
+                               .getChildFile(juce::String(pg::product::kEnvPrefix) + "projects-probe-" + juce::String(juce::Time::currentTimeMillis()));
     dir.deleteRecursively();
     ps::setDirectoryForTests(dir);
 
@@ -129,9 +129,9 @@ PROBE(plugin, projects)
     P.eq("names.nothing_left", ps::tidyName(" /:: ").empty() ? 1 : 0, 1);
 
     // SAVE
-    const tp::Sources files = twoFiles();
-    tp::Processor a;
-    tp::EditorPort& pa = a.editorPort();
+    const pg::Sources files = twoFiles();
+    pg::Processor a;
+    pg::EditorPort& pa = a.editorPort();
     pa.setDraft({ files, 1 });
     pa.run(files);
     a.settle();
@@ -139,26 +139,26 @@ PROBE(plugin, projects)
     setDial(a, 0, 0.8f);
     setDial(a, 1, 2500.0f);
     std::string why;
-    tp::SavedVersion saved;
+    pg::SavedVersion saved;
     P.eq("save.saved", pa.saveVersion("Glass Bloom", saved, why) && saved.created && saved.number == 1 ? 1 : 0, 1);
     if (!why.empty())
         std::printf("save: %s\n", why.c_str());
-    const std::optional<tp::ProjectEntry> entry = listed(pa, "Glass Bloom");
+    const std::optional<pg::ProjectEntry> entry = listed(pa, "Glass Bloom");
     P.eq("save.listed", entry.has_value() && entry->latest == 1 && entry->versions == 1 && pa.projects().size() == 1 ? 1 : 0, 1);
     const std::string when = entry ? entry->when : std::string();
     std::printf("listed: Glass Bloom, %s\n", when.c_str());
     P.eq("save.dated", when.size() == 16 && when[4] == '-' && when[13] == ':' ? 1 : 0, 1);
     const juce::File file = dir.getChildFile("Glass Bloom.fmproject");
     const juce::var json = juce::JSON::parse(file.loadFileAsString());
-    P.eq("save.json", json["format"].toString() == "funk-playground-project" && json["plugin"].toString() == tp::product::kName
-                          && json["kind"].toString() == tp::product::kKind && json["versions"].size() == 1 ? 1 : 0, 1);
-    tp::ProjectState st = pa.project();
+    P.eq("save.json", json["format"].toString() == "funk-playground-project" && json["plugin"].toString() == pg::product::kName
+                          && json["kind"].toString() == pg::product::kKind && json["versions"].size() == 1 ? 1 : 0, 1);
+    pg::ProjectState st = pa.project();
     P.eq("save.open_now", st.name == "Glass Bloom" && st.version == 1 && st.latest == 1 && !st.edited && !st.dialsEdited ? 1 : 0, 1);
 
     // VERSIONS
     P.eq("versions.unchanged", pa.saveVersion("Glass Bloom", saved, why) && saved.unchanged && saved.number == 1
                                    && pa.versions("Glass Bloom").size() == 1 ? 1 : 0, 1);
-    tp::Draft edited = pa.draft();
+    pg::Draft edited = pa.draft();
     edited.files[0].text += "// an edit\n";
     pa.setDraft(edited);
     P.eq("versions.edit_noticed", pa.project().edited ? 1 : 0, 1);
@@ -168,15 +168,15 @@ PROBE(plugin, projects)
     P.eq("versions.dial_noticed", pa.project().dialsEdited ? 1 : 0, 1);
     P.eq("versions.third", pa.saveVersion("Glass Bloom", saved, why) && saved.number == 3 ? 1 : 0, 1);
     {
-        const std::vector<tp::VersionEntry> vs = pa.versions("Glass Bloom");
-        for (const tp::VersionEntry& v : vs)
+        const std::vector<pg::VersionEntry> vs = pa.versions("Glass Bloom");
+        for (const pg::VersionEntry& v : vs)
             std::printf("v%d  %s  %s\n", v.number, v.when.c_str(), v.note.c_str());
         P.eq("versions.newest_first", vs.size() == 3 && vs[0].number == 3 && vs[1].number == 2 && vs[2].number == 1 ? 1 : 0, 1);
         P.eq("versions.notes", vs.size() == 3 && vs[2].note == "first save" && vs[1].note == "program.fm +1 -0" && vs[0].note == "1 dial"
                                    ? 1 : 0, 1);
     }
-    tp::Processor b;
-    tp::EditorPort& pb = b.editorPort();
+    pg::Processor b;
+    pg::EditorPort& pb = b.editorPort();
     const uint64_t before = pb.draftRevision();
     P.eq("versions.open_first", pb.openProject("Glass Bloom", 1, why) ? 1 : 0, 1);
     P.eq("versions.first_draft", pb.draft().files == files && pb.draft().active == 1 && pb.draftRevision() > before ? 1 : 0, 1);
@@ -199,7 +199,7 @@ PROBE(plugin, projects)
     // PRESETS: a is at version 3 (level 0.3, tone 2500).
     P.eq("presets.saved", pa.savePreset("Bright", why) ? 1 : 0, 1);
     {
-        const std::vector<tp::PresetEntry> ps = pa.presets("Glass Bloom");
+        const std::vector<pg::PresetEntry> ps = pa.presets("Glass Bloom");
         P.eq("presets.listed", ps.size() == 1 && ps[0].name == "Bright" && ps[0].from == 3 ? 1 : 0, 1);
     }
     P.eq("presets.applied_now", pa.project().preset == "Bright" && !pa.project().dialsEdited ? 1 : 0, 1);
@@ -209,8 +209,8 @@ PROBE(plugin, projects)
     P.near("presets.dial_back", static_cast<double>(dial(a, 0)), 0.3, 1e-4);
     P.eq("presets.not_edited", !pa.project().dialsEdited && pa.project().preset == "Bright" ? 1 : 0, 1);
     {
-        tp::Processor c;
-        tp::EditorPort& pc = c.editorPort();
+        pg::Processor c;
+        pg::EditorPort& pc = c.editorPort();
         why.clear();
         P.eq("presets.needs_a_project", !pc.savePreset("Loose", why) && why.find("save the project first") != std::string::npos ? 1 : 0, 1);
         P.eq("presets.apply_opens", pc.applyPreset("Glass Bloom", "Bright", why) ? 1 : 0, 1);
@@ -237,7 +237,7 @@ PROBE(plugin, projects)
                                                                                 dialVar("level", 0.25) });
             root.getDynamicObject()->setProperty("versions", juce::Array<juce::var>{ v1 });
         });
-        tp::Processor c;
+        pg::Processor c;
         P.eq("byname.opened", c.editorPort().openProject("Reordered", 0, why) ? 1 : 0, 1);
         c.settle();
         P.near("byname.level", static_cast<double>(dial(c, 0)), 0.25, 1e-4);
@@ -255,7 +255,7 @@ PROBE(plugin, projects)
     {
         juce::MemoryBlock state;
         a.getStateInformation(state);
-        tp::Processor d;
+        pg::Processor d;
         d.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
         st = d.editorPort().project();
         std::printf("session: %s v%d, preset %s\n", st.name.c_str(), st.version, st.preset.c_str());
@@ -272,7 +272,7 @@ PROBE(plugin, projects)
             program->setAttribute("preset", "Old Sound");
             juce::MemoryBlock old;
             juce::AudioProcessor::copyXmlToBinary(*xml, old);
-            tp::Processor e;
+            pg::Processor e;
             e.setStateInformation(old.getData(), static_cast<int>(old.getSize()));
             P.eq("session.old_preset_a_project", e.editorPort().project().name == "Old Sound" && e.editorPort().project().version == 0
                                                      ? 1 : 0, 1);
@@ -284,12 +284,12 @@ PROBE(plugin, projects)
         auto* root = new juce::DynamicObject();
         root->setProperty("format", "funk-playground-preset");
         root->setProperty("version", 1);
-        root->setProperty("plugin", tp::product::kName);
-        root->setProperty("kind", tp::product::kKind);
+        root->setProperty("plugin", pg::product::kName);
+        root->setProperty("kind", pg::product::kKind);
         root->setProperty("name", "Old Sound");
         root->setProperty("active", 1);
         juce::Array<juce::var> fs;
-        for (const tp::SourceFile& f : files)
+        for (const pg::SourceFile& f : files)
         {
             auto* o = new juce::DynamicObject();
             o->setProperty("name", juce::String(f.name));
@@ -300,14 +300,14 @@ PROBE(plugin, projects)
         root->setProperty("dials", juce::Array<juce::var>{ dialVar("level", 0.6), dialVar("tone", 3000.0) });
         const juce::File legacy = dir.getChildFile("Old Sound.fmpreset");
         legacy.replaceWithText(juce::JSON::toString(juce::var(root)));
-        const std::optional<tp::ProjectEntry> old = listed(pa, "Old Sound");
+        const std::optional<pg::ProjectEntry> old = listed(pa, "Old Sound");
         P.eq("migrate.listed", old.has_value() && old->latest == 1 && old->versions == 1 ? 1 : 0, 1);
         P.eq("migrate.moved_aside", !legacy.exists() && dir.getChildFile(ps::kMigratedFolder).getChildFile("Old Sound.fmpreset").exists()
                                         ? 1 : 0, 1);
-        const std::vector<tp::VersionEntry> vs = pa.versions("Old Sound");
+        const std::vector<pg::VersionEntry> vs = pa.versions("Old Sound");
         std::printf("migrated: %s\n", vs.empty() ? "-" : vs[0].note.c_str());
         P.eq("migrate.note", vs.size() == 1 && vs[0].note.rfind("the preset saved ", 0) == 0 ? 1 : 0, 1);
-        tp::Processor c;
+        pg::Processor c;
         P.eq("migrate.opens", c.editorPort().openProject("Old Sound", 0, why) ? 1 : 0, 1);
         c.settle();
         P.eq("migrate.files", c.editorPort().draft().files == files && c.editorPort().draft().active == 1 ? 1 : 0, 1);
@@ -317,17 +317,17 @@ PROBE(plugin, projects)
 
     // CAP: the newest 100 versions.
     {
-        tp::Processor c;
-        tp::EditorPort& pc = c.editorPort();
+        pg::Processor c;
+        pg::EditorPort& pc = c.editorPort();
         bool all = true;
-        tp::Draft d{ files, 0 };
+        pg::Draft d{ files, 0 };
         for (int k = 0; k < 101 && all; ++k)
         {
             d.files[1].text = "float half(float x) { return 0.5f * x; }\n// " + std::to_string(k) + "\n";
             pc.setDraft(d);
             all = pc.saveVersion("Capped", saved, why);
         }
-        const std::vector<tp::VersionEntry> vs = pc.versions("Capped");
+        const std::vector<pg::VersionEntry> vs = pc.versions("Capped");
         P.eq("cap.saved", all ? 1 : 0, 1);
         P.eq("cap.kept", static_cast<int64_t>(vs.size()), static_cast<int64_t>(ps::kMaxVersions));
         P.eq("cap.numbers_go_on", !vs.empty() && vs.front().number == 101 && vs.back().number == 2 ? 1 : 0, 1);
@@ -340,8 +340,8 @@ PROBE(plugin, projects)
             root.getDynamicObject()->setProperty("plugin", "OtherPlayground");
         });
         dir.getChildFile("Broken.fmproject").replaceWithText("{ not json");
-        tp::Processor e;
-        const tp::Draft untouched = e.editorPort().draft();
+        pg::Processor e;
+        const pg::Draft untouched = e.editorPort().draft();
         why.clear();
         P.eq("refuse.other_kind", !e.editorPort().openProject("Other Kind", 0, why) && why.find(kInstrument ? "effect" : "instrument")
                                                                                        != std::string::npos ? 1 : 0, 1);

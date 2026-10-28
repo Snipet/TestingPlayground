@@ -19,7 +19,7 @@
 #include <string>
 #include <vector>
 
-namespace testingplayground::measure
+namespace playground::measure
 {
     inline constexpr int kMaxTuned = 8;           // dials one search tunes
     inline constexpr int kMaxGoals = 8;

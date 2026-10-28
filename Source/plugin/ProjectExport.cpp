@@ -13,7 +13,7 @@
 #include <compression.h>
 #endif
 
-namespace testingplayground::projectexport
+namespace playground::projectexport
 {
     namespace
     {

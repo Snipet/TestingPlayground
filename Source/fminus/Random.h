@@ -17,7 +17,7 @@
 #include <string>
 #include <vector>
 
-namespace testingplayground::random
+namespace playground::random
 {
     inline constexpr uint32_t kMaxSeed = 99999;
 

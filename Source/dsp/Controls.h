@@ -22,7 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 
-namespace testingplayground
+namespace playground
 {
     inline constexpr int kMaxControls = 32;
     inline constexpr int kFirstControls = 16;          // the parameters of the plugin's first version (P1 to P16)

@@ -75,7 +75,7 @@
 #include <string_view>
 #include <vector>
 
-namespace testingplayground
+namespace playground
 {
     inline constexpr int kMaxGuiNodes = 400;             // elements a .gui file may have
     inline constexpr int kMaxGuiDepth = 12;              // containers in containers

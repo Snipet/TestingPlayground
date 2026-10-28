@@ -42,7 +42,7 @@
 #include <string_view>
 #include <vector>
 
-namespace testingplayground
+namespace playground
 {
     // A question of Claude's (its ask_user tool), answered with a click.
     struct ChatOption
@@ -147,7 +147,7 @@ namespace testingplayground
         int64_t requests = 0;                 // this month's (UTC) requests through the server, their cost and tokens
         double costUsd = 0.0;
         int64_t inputTokens = 0, outputTokens = 0;
-        std::string client;                   // what signed in ("TestingPlayground 0.1.0 (instrument)")
+        std::string client;                   // what signed in ("<product name> 0.1.0 (instrument)")
         std::string since, expires;           // the sign-in's start and end, ISO 8601 (UTC)
         bool refreshing = false;              // a refresh is waiting for the server
         std::string error;                    // why the last refresh failed ("" when it did not)

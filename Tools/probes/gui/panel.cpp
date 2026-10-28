@@ -48,11 +48,11 @@
 #include <string>
 #include <vector>
 
-namespace tp = testingplayground;
+namespace pg = playground;
 
 namespace
 {
-    constexpr bool kInstrument = tp::product::kIsInstrument;
+    constexpr bool kInstrument = pg::product::kIsInstrument;
     enum Slot : int { cutoff, resonance, attack, decay, sustain, release, wave, syncSlot, mode, voices, level, pan };
 
     std::string program()
@@ -128,7 +128,7 @@ panel accent=orange {
 )GUI";
 
     // The editor's files as a session restores them (the editor shows them: draftRevision bumps), then run.
-    void load(tp::Processor& p, const tp::Sources& files)
+    void load(pg::Processor& p, const pg::Sources& files)
     {
         p.editorPort().setDraft({ files, 0 });
         juce::MemoryBlock state;
@@ -137,7 +137,7 @@ panel accent=orange {
         p.editorPort().run(files);
     }
 
-    void settleRun(tp::Processor& p, funkgui::HeadlessHost& host)
+    void settleRun(pg::Processor& p, funkgui::HeadlessHost& host)
     {
         p.settle();
         host.tick(2);
@@ -165,19 +165,19 @@ panel accent=orange {
     }
 
     // The interface's items shown, with their places: the controls', the pads', the envelopes', the displays'.
-    std::vector<funkgui::Rect> shownCells(const tp::ui::Panel& panel)
+    std::vector<funkgui::Rect> shownCells(const pg::ui::Panel& panel)
     {
         std::vector<funkgui::Rect> out;
-        for (int c = 0; c < tp::kMaxControls; ++c)
+        for (int c = 0; c < pg::kMaxControls; ++c)
             if (panel.guiControl(c).shown())
                 out.push_back(panel.guiControl(c).cell());
         for (int k = 0; k < 8; ++k)
         {
-            const auto& pad = static_cast<const tp::ui::GuiXyItem&>(panel.guiItem(0, k));
+            const auto& pad = static_cast<const pg::ui::GuiXyItem&>(panel.guiItem(0, k));
             if (pad.shown())
                 out.push_back(pad.pad());
         }
-        for (int d = 0; d < tp::kMaxDisplays; ++d)
+        for (int d = 0; d < pg::kMaxDisplays; ++d)
             if (panel.displayItem(d).shown())
                 out.push_back(panel.displayItem(d).cell());
         return out;
@@ -185,7 +185,7 @@ panel accent=orange {
 
     float hzOfPoint(int k)
     {
-        return 20.0f * std::pow(1000.0f, static_cast<float>(k) / static_cast<float>(tp::ui::DisplayItem::kSpectrumPoints - 1));
+        return 20.0f * std::pow(1000.0f, static_cast<float>(k) / static_cast<float>(pg::ui::DisplayItem::kSpectrumPoints - 1));
     }
 }
 
@@ -194,14 +194,14 @@ PROBE(gui, panel)
     const funkgui::HeadlessGuiScope gui;
     funkgui::UiPreferences::get().setBackend(funkgui::UiPreferences::memoryBackend());
     funkgui::UiPreferences::get().setTheme(0);
-    tp::Processor processor;
-    tp::EditorPort& port = processor.editorPort();
-    tp::ui::Panel panel(processor.ports(), port);
+    pg::Processor processor;
+    pg::EditorPort& port = processor.editorPort();
+    pg::ui::Panel panel(processor.ports(), port);
     funkgui::HeadlessHost host(panel, 0, 2.0f);
     host.settle();
 
     // ---- CODE ----------------------------------------------------------------------------------------------------------
-    load(processor, { { tp::kProgramName, program() }, { "panel.gui", kGui } });
+    load(processor, { { pg::kProgramName, program() }, { "panel.gui", kGui } });
     settleRun(processor, host);
     P.eq("code.compiles", port.status().ok ? 1 : 0, 1);
     if (!port.status().notes.empty() || !port.status().errors.empty())
@@ -209,7 +209,7 @@ PROBE(gui, panel)
     P.eq("code.no_notes", port.status().notes.empty() ? 1 : 0, 1);
     P.eq("code.has_gui", panel.hasGui() ? 1 : 0, 1);
     P.eq("code.dials_give_way", panel.centreOfDial(cutoff).has_value() ? 0 : 1, 1);
-    const tp::ui::GuiLayout* L = &panel.guiLayout();
+    const pg::ui::GuiLayout* L = &panel.guiLayout();
     const funkgui::Rect chat = panel.chatCard();
     P.eq("code.area_left_of_chat", L->area.right() <= chat.x ? 1 : 0, 1);
     P.ge("code.area_under_editor", static_cast<double>(L->area.y), 300.0);
@@ -257,7 +257,7 @@ PROBE(gui, panel)
         writePng(P, host, "gui.panel.png", "view");
         {
             funkgui::UiPreferences::get().setTheme(1);
-            tp::ui::Panel paper(processor.ports(), port);
+            pg::ui::Panel paper(processor.ports(), port);
             funkgui::HeadlessHost paperHost(paper, 1, 2.0f);
             paperHost.settle();
             P.eq("view.kept_by_processor", paper.panelView() ? 1 : 0, 1);
@@ -266,7 +266,7 @@ PROBE(gui, panel)
         }
         juce::MemoryBlock state;
         processor.getStateInformation(state);
-        tp::Processor second;
+        pg::Processor second;
         second.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
         P.eq("view.in_session", second.editorPort().panelView() ? 1 : 0, 1);
     }
@@ -274,7 +274,7 @@ PROBE(gui, panel)
     // ---- CONTROLS ------------------------------------------------------------------------------------------------------
     {
         funkgui::ParamPort& cut = *processor.ports()[cutoff];
-        const tp::ui::GuiControlItem& knob = panel.guiControl(cutoff);
+        const pg::ui::GuiControlItem& knob = panel.guiControl(cutoff);
         P.eq("controls.knob_large", knob.shown() && knob.cell().w >= 86.0f && knob.cell().h >= 106.0f ? 1 : 0, 1);   // 86 x 106
         const float before = cut.value01();      // 1000 Hz: 0.57 on its log taper
         const funkgui::Point k = knob.centre();
@@ -283,7 +283,7 @@ PROBE(gui, panel)
         P.near("controls.knob_drag", static_cast<double>(cut.value01() - before), 0.25, 0.02);
         host.doubleClick(k.x, k.y);
         host.settle();
-        P.near("controls.knob_default", static_cast<double>(tp::plainOf(processor.control(cutoff), cut.value01())), 1000.0, 1.0);
+        P.near("controls.knob_default", static_cast<double>(pg::plainOf(processor.control(cutoff), cut.value01())), 1000.0, 1.0);
         processor.getParameters()[cutoff]->setValueNotifyingHost(0.5f);
         host.settle();
         const std::string middle = processor.getParameters()[cutoff]->getCurrentValueAsText().toStdString();
@@ -291,11 +291,11 @@ PROBE(gui, panel)
         P.eq("controls.log_middle_text", middle == "632 Hz" ? 1 : 0, 1);
 
         // A row of buttons: the third chooses TRI.
-        const tp::ui::GuiControlItem& buttons = panel.guiControl(wave);
+        const pg::ui::GuiControlItem& buttons = panel.guiControl(wave);
         const funkgui::Rect b = buttons.cell();
         host.click(b.x + b.w * 5.0f / 6.0f, b.y + 26.0f);
         host.settle();
-        P.near("controls.buttons", static_cast<double>(tp::plainOf(processor.control(wave), processor.ports()[wave]->value01())), 2.0, 1e-4);
+        P.near("controls.buttons", static_cast<double>(pg::plainOf(processor.control(wave), processor.ports()[wave]->value01())), 2.0, 1e-4);
         P.eq("controls.buttons_host_name", processor.getParameters()[wave]->getCurrentValueAsText() == "TRI" ? 1 : 0, 1);
         const funkgui::Point sw = panel.guiControl(syncSlot).centre();
         host.click(sw.x, sw.y);
@@ -310,7 +310,7 @@ PROBE(gui, panel)
         P.near("controls.menu_chooses", static_cast<double>(processor.ports()[mode]->value01()), 1.0, 1e-4);
         // A slider: a drag up from its cap raises it.
         funkgui::ParamPort& dec = *processor.ports()[decay];
-        const tp::ui::GuiControlItem& slider = panel.guiControl(decay);
+        const pg::ui::GuiControlItem& slider = panel.guiControl(decay);
         const funkgui::Rect tr = slider.track();
         const float y0 = tr.bottom() - tr.h * dec.value01();
         const float d0 = dec.value01();
@@ -318,7 +318,7 @@ PROBE(gui, panel)
         host.settle();
         P.near("controls.slider_drag", static_cast<double>(dec.value01() - d0), 0.25, 0.03);
         // The pad, on the first page: a drag to its top right corner's quarter.
-        const auto& pad = static_cast<const tp::ui::GuiXyItem&>(panel.guiItem(0, 0));
+        const auto& pad = static_cast<const pg::ui::GuiXyItem&>(panel.guiItem(0, 0));
         P.eq("controls.pad_shown", pad.shown() ? 1 : 0, 1);
         const funkgui::Rect r = pad.pad();
         host.drag(r.x + 0.5f * r.w, r.y + 0.5f * r.h, r.x + 0.75f * r.w, r.y + 0.25f * r.h, 6);
@@ -329,7 +329,7 @@ PROBE(gui, panel)
 
     // ---- ENVELOPE ------------------------------------------------------------------------------------------------------
     {
-        const auto& env = static_cast<const tp::ui::GuiEnvelopeItem&>(panel.guiItem(1, 0));
+        const auto& env = static_cast<const pg::ui::GuiEnvelopeItem&>(panel.guiItem(1, 0));
         P.eq("envelope.shown", env.shown() ? 1 : 0, 1);
         const std::array<funkgui::Point, 5> p = env.corners();
         bool ordered = true;
@@ -343,12 +343,12 @@ PROBE(gui, panel)
 
     // ---- TABS ----------------------------------------------------------------------------------------------------------
     {
-        const auto& tabs = static_cast<const tp::ui::GuiTabsItem&>(panel.guiItem(2, 0));
+        const auto& tabs = static_cast<const pg::ui::GuiTabsItem&>(panel.guiItem(2, 0));
         P.eq("tabs.two", tabs.shown() && tabs.tabs().size() == 2 ? 1 : 0, 1);
         int displaysShown = 0;
-        for (int d = 0; d < tp::kMaxDisplays; ++d)
+        for (int d = 0; d < pg::kMaxDisplays; ++d)
             displaysShown += panel.displayItem(d).shown() ? 1 : 0;
-        P.eq("tabs.first_page", displaysShown == 0 && static_cast<const tp::ui::GuiXyItem&>(panel.guiItem(0, 0)).shown() ? 1 : 0, 1);
+        P.eq("tabs.first_page", displaysShown == 0 && static_cast<const pg::ui::GuiXyItem&>(panel.guiItem(0, 0)).shown() ? 1 : 0, 1);
         uint32_t group = 0;
         int buttons = 0;
         const std::vector<funkgui::A11yItem> a11y = host.accessibility();
@@ -365,9 +365,9 @@ PROBE(gui, panel)
             host.settle();
         }
         displaysShown = 0;
-        for (int d = 0; d < tp::kMaxDisplays; ++d)
+        for (int d = 0; d < pg::kMaxDisplays; ++d)
             displaysShown += panel.displayItem(d).shown() ? 1 : 0;
-        P.eq("tabs.second_page", displaysShown == 6 && !static_cast<const tp::ui::GuiXyItem&>(panel.guiItem(0, 0)).shown() ? 1 : 0, 1);
+        P.eq("tabs.second_page", displaysShown == 6 && !static_cast<const pg::ui::GuiXyItem&>(panel.guiItem(0, 0)).shown() ? 1 : 0, 1);
     }
 
     // ---- AUDIO ---------------------------------------------------------------------------------------------------------
@@ -399,22 +399,22 @@ PROBE(gui, panel)
             push(1, false);
             host.tick(1);
         }
-        const tp::ui::DisplayItem* spectrum = nullptr;
-        const tp::ui::DisplayItem* meter = nullptr;
-        const tp::ui::DisplayItem* number = nullptr;
-        const tp::ui::DisplayItem* light = nullptr;
-        for (int d = 0; d < tp::kMaxDisplays; ++d)
+        const pg::ui::DisplayItem* spectrum = nullptr;
+        const pg::ui::DisplayItem* meter = nullptr;
+        const pg::ui::DisplayItem* number = nullptr;
+        const pg::ui::DisplayItem* light = nullptr;
+        for (int d = 0; d < pg::kMaxDisplays; ++d)
         {
-            const tp::ui::DisplayItem& item = panel.displayItem(d);
+            const pg::ui::DisplayItem& item = panel.displayItem(d);
             if (!item.shown())
                 continue;
-            if (item.display().kind == tp::DisplayKind::spectrum)
+            if (item.display().kind == pg::DisplayKind::spectrum)
                 spectrum = &item;
-            if (item.display().kind == tp::DisplayKind::meter)
+            if (item.display().kind == pg::DisplayKind::meter)
                 meter = &item;
-            if (item.display().kind == tp::DisplayKind::number)
+            if (item.display().kind == pg::DisplayKind::number)
                 number = &item;
-            if (item.display().kind == tp::DisplayKind::led)
+            if (item.display().kind == pg::DisplayKind::led)
                 light = &item;
         }
         const double outDb = kInstrument ? -12.04 : -6.02;
@@ -444,7 +444,7 @@ PROBE(gui, panel)
         host.click(code.x, code.y);
         host.settle();
         P.eq("scroll.code_view", !panel.panelView() ? 1 : 0, 1);
-        host.resize(tp::ui::kMinWidth, tp::ui::kMinHeight);
+        host.resize(pg::ui::kMinWidth, pg::ui::kMinHeight);
         host.settle();
         L = &panel.guiLayout();
         std::printf("least size: the interface's area %g tall, content %g\n", static_cast<double>(L->area.h), static_cast<double>(L->contentH));
@@ -472,14 +472,14 @@ PROBE(gui, panel)
         host.wheel(L->area.right() - 6.0f, L->area.y + 10.0f, -5.0f);
         host.settle();
         writePng(P, host, "gui.panel.small.png", "scroll");
-        host.resize(tp::ui::kDefaultWidth, tp::ui::kDefaultHeight);
+        host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
         host.settle();
     }
 
     // ---- PRAGMAS -------------------------------------------------------------------------------------------------------
     {
         const std::string pragmas = "#pragma panel section \"ONE\" cutoff resonance\n" + program();
-        load(processor, { { tp::kProgramName, pragmas } });
+        load(processor, { { pg::kProgramName, pragmas } });
         settleRun(processor, host);
         P.eq("pragmas.no_gui", !panel.hasGui() ? 1 : 0, 1);
         const funkgui::Point at = panel.centreOfView(true);

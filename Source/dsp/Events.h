@@ -5,7 +5,7 @@
 
 #include <cstdint>
 
-namespace testingplayground
+namespace playground
 {
     enum class EventKind : uint8_t
     {

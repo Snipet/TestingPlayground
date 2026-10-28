@@ -102,12 +102,12 @@ namespace funkgui
     struct Theme;
 }
 
-namespace testingplayground
+namespace playground
 {
     class EditorPort;
 }
 
-namespace testingplayground::ui
+namespace playground::ui
 {
     class Item;                                          // one control or view on the panel (Panel.cpp)
     class FilesItem;                                     // the files' tabs and editors (Panel.cpp)

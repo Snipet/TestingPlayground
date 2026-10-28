@@ -23,7 +23,7 @@
 #include <string>
 #include <vector>
 
-namespace testingplayground::measure
+namespace playground::measure
 {
     enum class ViewInput : uint8_t { sweep, noise, impulse, sine, silence };   // an effect's
 
