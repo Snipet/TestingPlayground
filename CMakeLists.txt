@@ -368,13 +368,17 @@ file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/mcpb/manifest.json @ONLY CONTENT [=[{
   "compatibility": { "platforms": ["darwin"] }
 }
 ]=])
-add_custom_command(TARGET ${FP_MCP} POST_BUILD
+# The extension, packed again whenever the server, its manifest or its icon changes.
+add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/mcpb/server
     COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${FP_MCP}> ${CMAKE_BINARY_DIR}/mcpb/server/${FP_MCP}
     COMMAND ${CMAKE_COMMAND} -E copy ${FP_SOURCE_ROOT}/mcp/icon.png ${CMAKE_BINARY_DIR}/mcpb/icon.png
+    COMMAND ${CMAKE_COMMAND} -E rm -f ${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb
     COMMAND ${CMAKE_COMMAND} -E chdir ${CMAKE_BINARY_DIR}/mcpb ${CMAKE_COMMAND} -E tar cf ${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb
             --format=zip manifest.json icon.png server/${FP_MCP}
+    DEPENDS ${FP_MCP} ${CMAKE_BINARY_DIR}/mcpb/manifest.json ${FP_SOURCE_ROOT}/mcp/icon.png
     VERBATIM)
+add_custom_target(${FP_MCP}_mcpb ALL DEPENDS ${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb)
 
 # ---- the probes (cmake/Probes.cmake) ---------------------------------------------------------------------------------
 enable_testing()
