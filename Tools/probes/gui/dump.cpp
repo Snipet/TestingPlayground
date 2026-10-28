@@ -15,6 +15,7 @@
 //   gui.dump.displays.png a program with every display and every dial style, audio flowing; .displays.paper.png
 //   gui.dump.random.png  a program RANDOM made, running
 //   gui.dump.projects.png PROJECTS: three projects, another than the open one chosen, its older version chosen
+//   gui.dump.export.png  EXPORT: a project's info typed and chosen
 // and checks:
 //   FRAME     the frame settles, every glyph is in the font, the editor shows the processor's draft (the first
 //             example), and the dials are the program's parameters: one for each, the rest not shown
@@ -74,7 +75,9 @@
 //             1"); opened again, the projects listed by name, the open one chosen with its versions and presets; another
 //             project and its older version chosen, Open first asks (the files have changes no version holds), then
 //             opens it: the text back, EDITED gone; Save under another project's name asks (Add version), then adds a
-//             version to it; Delete asks, then deletes a project, and a version; Escape closes
+//             version to it; Delete asks, then deletes a project, and a version; Escape closes. EXPORT (from Export...)
+//             takes a description, an author, tags, a category and genres, asks where (a save chooser), writes the
+//             package and keeps the info; Import... (an open chooser) adds it as a project of its own, chosen
 //   KEYS      Escape leaves the editor, after which Tab moves the focus ring (and no key reaches the text)
 #include "Probe.h"
 
@@ -1227,6 +1230,64 @@ PROBE(gui, dump)
         host.keys("escape");
         host.settle();
         P.eq("projects.escape_closes", browser.isOpen() ? 0 : 1, 1);
+        // EXPORT: the card from PROJECTS' Export..., its info typed and chosen, a package written where the chooser
+        // says, the info kept; Import... brings it back as a project of its own.
+        {
+            host.click(open.x, open.y);
+            host.settle();
+            clickRow(BL::projects, 0);                   // My Patch
+            click(browser.places(W, H).exportIt);
+            tp::ui::ExportCard& card = panel.exportCard();
+            P.eq("export.opens", card.isOpen() && !browser.isOpen() && card.project() == "My Patch" ? 1 : 0, 1);
+            const tp::ui::ExportCard::Places spots = card.places(W, H);
+            click(spots.description);
+            host.setClipboard("A patch for the probe, bright and short.");   // pasted: the keys' list takes no comma
+            host.keys("cmd+v");
+            host.keys("tab");
+            typeText(host, "Probe");
+            host.keys("tab");
+            host.setClipboard("bright, short");
+            host.keys("cmd+v");
+            click(spots.categories[1]);
+            click(spots.genres[0]);
+            click(spots.genres[4]);
+            const tp::ProjectInfo entered = card.info();
+            std::printf("export info: [%s] [%s] [%s] %zu tags, %zu genres\n", entered.description.c_str(), entered.author.c_str(),
+                        entered.category.c_str(), entered.tags.size(), entered.genres.size());
+            P.eq("export.info", entered.description == "A patch for the probe, bright and short." && entered.author == "Probe"
+                                    && entered.tags == std::vector<std::string>{ "bright", "short" }
+                                    && entered.category == tp::ui::ExportCard::categories()[1] && entered.genres.size() == 2 ? 1 : 0, 1);
+            writePng(P, host, "gui.dump.export.png", "export");
+            click(card.places(W, H).package);
+            const funkgui::FileRequest* asked = host.pendingFiles();
+            P.eq("export.asks_where", asked != nullptr && asked->mode == funkgui::FileRequest::Mode::save
+                                          && asked->suggestedName == "My Patch.fmpack" ? 1 : 0, 1);
+            const juce::File target = folder.getChildFile("out").getChildFile("My Patch.fmpack");
+            host.returnFiles({ target.getFullPathName().toStdString() });
+            host.settle();
+            std::printf("export: %s\n", card.why().c_str());
+            P.eq("export.written", target.existsAsFile() && card.why().find("Exported My Patch.fmpack") != std::string::npos ? 1 : 0, 1);
+            P.eq("export.info_kept", port.projectInfo("My Patch").author == "Probe" ? 1 : 0, 1);
+            host.keys("escape");
+            host.settle();
+            P.eq("export.escape_closes", card.isOpen() ? 0 : 1, 1);
+            // Import: a project of its own, chosen in PROJECTS.
+            host.click(open.x, open.y);
+            host.settle();
+            click(browser.places(W, H).importIt);
+            asked = host.pendingFiles();
+            P.eq("import.asks", asked != nullptr && asked->mode == funkgui::FileRequest::Mode::openMany
+                                    && asked->pattern.find("*.fmpack") != std::string::npos ? 1 : 0, 1);
+            host.returnFiles({ target.getFullPathName().toStdString() });
+            host.settle();
+            const int chosen = browser.chosen(BL::projects);
+            P.eq("import.added", tp::projectstore::exists("My Patch 2") && browser.isOpen() && chosen >= 0
+                                     && browser.projectList()[static_cast<std::size_t>(chosen)].name == "My Patch 2"
+                                     && panel.statusText().find("IMPORTED: MY PATCH 2") != std::string::npos ? 1 : 0, 1);
+            P.eq("import.info_with_it", port.projectInfo("My Patch 2").tags == entered.tags ? 1 : 0, 1);
+            host.keys("escape");
+            host.settle();
+        }
         // Back: the program as it was.
         editor.selectAll();
         editor.insert(program);

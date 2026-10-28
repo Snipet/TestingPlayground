@@ -250,6 +250,7 @@ endif()
 target_link_libraries(${PRODUCT_NAME} PRIVATE FunkGui::core FunkGui::gpu)
 if(APPLE)
   target_link_libraries(${PRODUCT_NAME} PRIVATE "-framework ImageIO" "-framework CoreGraphics")   # ChatImages.cpp
+  target_link_libraries(${PRODUCT_NAME} PRIVATE compression)   # ProjectExport.cpp: a package's xz (libcompression)
 endif()
 funkgui_configure_product(${PRODUCT_NAME} PRODUCT ${PRODUCT_NAME} OBJC_PREFIX ${PRODUCT_OBJC_PREFIX}
                           ENV_PREFIX ${PRODUCT_ENV_PREFIX} PREFS_FOLDER ${PRODUCT_NAME})
