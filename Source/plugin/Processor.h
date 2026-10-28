@@ -62,6 +62,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <condition_variable>
 #include <mutex>
@@ -112,6 +113,16 @@ namespace playground
         int editorWidth() const noexcept { return editorW_.load(); }
         int editorHeight() const noexcept { return editorH_.load(); }
         void setEditorSize(int w, int h) noexcept;
+        // The Standalone's own window (plugin/standalone/), which the editor reaches through EditorPort::windowButtons,
+        // placeWindowButtons and dragWindow: its buttons' size, and what it does with their place and a drag. Set by
+        // the window (and the probes), message thread; never set in a host's window.
+        struct WindowHooks
+        {
+            WindowButtons buttons;
+            std::function<void(float x, float middle)> place;
+            std::function<void(int clicks)> drag;
+        };
+        void setWindowHooks(WindowHooks hooks);
         Engine& engine() noexcept { return engine_; }
         Compiler& compiler() noexcept { return compiler_; }   // for the probes
         // The most samples one Engine::process call got since prepareToPlay (never more than it announced).
@@ -189,6 +200,9 @@ namespace playground
         void playWheel(bool pitch, float value) override;
         std::vector<std::string> guiPages() const override;
         void setGuiPages(const std::vector<std::string>& titles) override;
+        WindowButtons windowButtons() const override { return windowHooks_.buttons; }
+        void placeWindowButtons(float x, float middle) override;
+        void dragWindow(int clicks) override;
 
         // ChatHost: Claude's tools (ChatAgent.h), from the agent's worker thread.
         Draft chatDraft() const override;
@@ -256,6 +270,7 @@ namespace playground
         std::atomic<bool> explorerOpen_{ true };                     // its explorer open, in the session
         mutable std::mutex pagesMutex_;
         std::vector<std::string> guiPages_;                      // its interface's pages (guiPages), in the session
+        WindowHooks windowHooks_;                                // the Standalone's window (message thread)
         double alertsAt_ = 0.0;                                  // when alerts_ last gained a bit (ms)
 
         std::array<float, kMaxControls> values_{};               // audio thread: the last good normalised values

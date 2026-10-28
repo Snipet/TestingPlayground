@@ -420,6 +420,20 @@ namespace playground
         guiPages_ = titles;
     }
 
+    void Processor::setWindowHooks(WindowHooks hooks) { windowHooks_ = std::move(hooks); }
+
+    void Processor::placeWindowButtons(float x, float middle)
+    {
+        if (windowHooks_.place)
+            windowHooks_.place(x, middle);
+    }
+
+    void Processor::dragWindow(int clicks)
+    {
+        if (windowHooks_.drag)
+            windowHooks_.drag(clicks);
+    }
+
     void Processor::pushUiEvent(const Event& e)
     {
         const uint32_t head = uiNoteHead_.load(std::memory_order_relaxed);

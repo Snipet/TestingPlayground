@@ -48,6 +48,7 @@
 //   importProject()   a .zip or a .fmpack exported by this plugin, added as a new project (its name, or "<name> 2"); it is
 //                     not opened
 //   chat()            the chat with Claude (ChatPort.h)
+//   windowButtons()   the Standalone's own window: its buttons over the top bar, their place, its drag (below)
 #pragma once
 
 #include <cctype>
@@ -160,6 +161,12 @@ namespace playground
         std::string method;                      // "xz", "zlib" or "stored" (a package's), "zip"
     };
 
+    // The Standalone window's close, minimise and zoom buttons, together (EditorPort::windowButtons).
+    struct WindowButtons
+    {
+        float width = 0.0f, height = 0.0f;       // window points; 0 x 0: none over the editor
+    };
+
     struct SavedVersion
     {
         int number = 0;
@@ -238,5 +245,17 @@ namespace playground
         virtual void playNote(int note, float velocity) = 0;
         // The keyboard's wheels: the pitch wheel (`pitch`, -1..1) or the mod wheel (0..1), as MIDI's would be.
         virtual void playWheel(bool pitch, float value) = 0;
+
+        // The Standalone's own window (plugin/standalone/) draws no title bar: its close, minimise and zoom buttons sit
+        // over the top bar, which keeps them room. In a host's window none of this applies: windowButtons() is 0 x 0
+        // and the other two do nothing.
+        //   windowButtons()       the three buttons' size together, in window points (the editor's px at 100 %)
+        //   placeWindowButtons()  where the top bar keeps their room, in the editor's logical px: its left edge and its
+        //                         middle's height (the window places them there, at the editor's zoom)
+        //   dragWindow()          a press on the top bar where nothing is (`clicks` 2: a double-click's second press):
+        //                         the window drags, or zooms or minimises as the system's setting says
+        virtual WindowButtons windowButtons() const { return {}; }
+        virtual void placeWindowButtons(float x, float middle) { (void)x; (void)middle; }
+        virtual void dragWindow(int clicks) { (void)clicks; }
     };
 }

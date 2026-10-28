@@ -179,6 +179,9 @@ namespace playground::ui
         constexpr float kTopBarY = 10.0f, kTopBarH = 40.0f;
         constexpr float kTopButtonH = 28.0f;             // the top bar's pills
         constexpr float kMainY = kTopBarY + kTopBarH + 10.0f;   // the cards' top
+        // The Standalone window's buttons (EditorPort::windowButtons) sit inside the top bar's left end, the product's
+        // mark after them and this gap.
+        constexpr float kButtonsX = kMargin + 10.0f, kButtonsGap = 12.0f;
         constexpr float kInset = 10.0f;                  // inside the program's card
         constexpr float kActionH = 28.0f;                // its header's first row: the status and the actions
         constexpr float kActionsY = kMainY + 6.0f;
@@ -1768,6 +1771,11 @@ namespace playground::ui
 
     void Panel::layout()
     {
+        // The Standalone window's buttons: their room, and where they go, told once while they are there.
+        buttonsRoom_ = buttonsRoomNow();
+        if (buttonsRoom_ > 0.0f && !buttonsPlaced_)
+            port_.placeWindowButtons(kButtonsX, kTopBarY + 0.5f * kTopBarH);
+        buttonsPlaced_ = buttonsRoom_ > 0.0f;
         const float W = width_, H = height_;
         const float footerTop = H - kFooterH;
         const float bottom = footerTop - kBottomGap;     // the dials' and the message box's bottom
@@ -1802,7 +1810,7 @@ namespace playground::ui
         at(viewItem_).setBounds({ segRight - 3.0f - 2.0f * kSegmentW, barMid - 0.5f * (kTopButtonH - 6.0f), kSegmentW, kTopButtonH - 6.0f });
         {
             const funkgui::FontAtlasSdf& atlas = funkgui::FontService::get().atlas();
-            const float nameRight = kMargin + 50.0f + std::max(funkgui::text::width(atlas, product::kName, chat::kStrong),
+            const float nameRight = kMargin + 50.0f + buttonsRoom_ + std::max(funkgui::text::width(atlas, product::kName, chat::kStrong),
                                                                funkgui::text::width(atlas, subtitle_.c_str(), chat::kSmall));
             const float segLeft = segRight - 3.0f - 2.0f * kSegmentW - 3.0f;
             const float w = std::min(kProjectW, std::max(120.0f, segLeft - 24.0f - (nameRight + 24.0f)));
@@ -4303,6 +4311,7 @@ namespace playground::ui
     void Panel::tick(float dt)
     {
         refresh(host_ != nullptr ? host_->nowSeconds() : 0.0);
+        syncWindowButtons();
         syncExplorer();
         // The message box follows its text, one row to eight: the conversation gives it the room.
         if (std::fabs(inputItem().desiredHeight(inputItem().box().w, kBarH) - composerH_) > 0.5f)
@@ -4423,7 +4432,7 @@ namespace playground::ui
             const funkgui::Rect bar{ kMargin, kTopBarY, contentW, kTopBarH };
             c.rrect(bar.x, bar.y, bar.w, bar.h, 12.0f, pal.card, 1.0f, pal.cardEdge);
             const float mid = bar.centreY();
-            const float mx = bar.x + 10.0f;
+            const float mx = bar.x + 10.0f + buttonsRoom_;     // after the Standalone window's buttons
             c.rrect(mx, mid - 13.0f, 26.0f, 26.0f, 8.0f, pal.accent.withAlpha(0.16f));
             chat::drawIcon(c, chat::Icon::wave, mx + 13.0f, mid, 12.0f, pal.accent);
             c.text(product::kName, mx + 36.0f, c.capCentreTop(mid - 7.0f, chat::kStrong), chat::kStrong, pal.text);
@@ -4712,6 +4721,26 @@ namespace playground::ui
                 reshowChat();                            // a thinking row opened or closed
         }
         dirty_ = true;
+        // The Standalone's window has no title bar: a press on the top bar where nothing is drags it instead.
+        if (pressed_ < 0 && !e.popup && buttonsRoom_ > 0.0f && pointer_.y < kMainY)
+            port_.dragWindow(e.clicks);
+    }
+
+    // ---- the Standalone window's buttons over the top bar (EditorPort::windowButtons) -------------------------------
+    float Panel::buttonsRoomNow() const
+    {
+        const WindowButtons b = port_.windowButtons();
+        if (b.width <= 0.0f)
+            return 0.0f;
+        // The buttons keep their size in window points whatever the zoom: their logical width shrinks as it grows.
+        const float zoom = host_ != nullptr ? static_cast<float>(std::max(host_->zoomPercent(), 25)) * 0.01f : 1.0f;
+        return std::ceil(b.width / zoom) + kButtonsGap;
+    }
+
+    void Panel::syncWindowButtons()
+    {
+        if (buttonsRoomNow() != buttonsRoom_)           // the buttons came or went, or the zoom changed
+            layout();
     }
 
     void Panel::pointerDrag(const funkgui::PointerEvent& e)
