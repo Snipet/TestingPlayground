@@ -2,12 +2,14 @@
 // program Claude Desktop starts) find and talk to each other.
 //
 //   the folder   one per user and plugin, private (0700): <the user's temp folder>/Funk-<plugin>-mcp/, or
-//                <ENV_PREFIX>MCP_DIR when set (the probes' own). In it each instance's socket, <pid>-<n>.sock, and what
-//                the newest instance wrote for a server that finds none running: tools.json and guide.md
+//                <ENV_PREFIX>MCP_DIR when set (the probes' own). In it each instance's socket, <n>.sock: the lowest
+//                number free when it started, its name to the user ("Synth 2", shown in the plugin while Claude Desktop
+//                talks to it); and what the newest instance wrote for a server that finds none running: tools.json and
+//                guide.md
 //   a request    one JSON object a line: { "id": 1, "method": "info" | "tools" | "guide" | "call", "params": { ... } }
 //   a reply      one line: { "id": 1, "result": ... } or { "id": 1, "error": "why" }
-//                  info   the instance: { id, kind, plugin, host, track, project, version, preset, edited, files,
-//                         compiled, busy }
+//                  info   the instance: { id, name, kind, plugin, host, track, project, version, preset, edited,
+//                         files, compiled, busy }
 //                  tools  the tools, as MCP lists them ({ name, description, inputSchema })
 //                  guide  what the plugin's own chat works from, for an assistant that drives it from outside
 //                  call   { name, arguments } -> { content: [ MCP content ], isError }
@@ -102,6 +104,27 @@ namespace testingplayground::mcp
         return fd;
     }
 
+    // A listening socket at `path` when no file is there (another instance's, or one left by an instance gone, which
+    // claim() clears first), or -1.
+    inline int listenFresh(const std::string& path)
+    {
+        if (!fits(path))
+            return -1;
+        const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0)
+            return -1;
+        sockaddr_un addr{};
+        addr.sun_family = AF_UNIX;
+        std::strncpy(addr.sun_path, path.c_str(), sizeof addr.sun_path - 1);
+        if (bind(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof addr) != 0 || listen(fd, 8) != 0)
+        {
+            close(fd);
+            return -1;
+        }
+        chmod(path.c_str(), 0600);
+        return fd;
+    }
+
     // A connection to the socket at `path`, or -1.
     inline int connectTo(const std::string& path)
     {
@@ -120,6 +143,35 @@ namespace testingplayground::mcp
             return -1;
         }
         return fd;
+    }
+
+    // An instance's socket: the lowest number free in `dir` (a socket nothing listens on, left by an instance gone, is
+    // cleared and taken). Its listening descriptor, its number and its path; -1 when none can be had.
+    inline int claim(const std::string& dir, int& number, std::string& path)
+    {
+        for (int k = 1; k < 1000; ++k)
+        {
+            const std::string p = dir + "/" + std::to_string(k) + ".sock";
+            struct stat st{};
+            if (lstat(p.c_str(), &st) == 0)
+            {
+                if (const int fd = connectTo(p); fd >= 0)
+                {
+                    close(fd);                               // an instance listens there
+                    continue;
+                }
+                if (errno != ECONNREFUSED && errno != ENOENT)
+                    continue;
+                unlink(p.c_str());                           // left by an instance gone
+            }
+            if (const int fd = listenFresh(p); fd >= 0)
+            {
+                number = k;
+                path = p;
+                return fd;
+            }
+        }
+        return -1;
     }
 
     // `line` and a line feed, all of it; false when the other end is gone.

@@ -175,6 +175,8 @@ namespace testingplayground
                            std::string& why) override;
         bool importProject(const std::string& path, std::string& name, std::string& why) override;
         std::string exportFolder() const override;
+        std::string desktopName() const override { return mcp_ != nullptr ? mcp_->name() : std::string(); }
+        bool desktopConnected() const override { return mcp_ != nullptr && mcp_->connected(); }
         ChatPort& chat() override { return chat_; }
         bool panelView() const override { return panelView_.load(); }
         void setPanelView(bool on) override { panelView_.store(on); }

@@ -2998,6 +2998,14 @@ namespace testingplayground::ui
             activity_ = a;
             dirty_ = true;
         }
+        // Claude Desktop's name for this instance, while it talks to it (the chat card's subtitle says so).
+        const std::string desktop = port_.desktopConnected() ? port_.desktopName() : std::string();
+        if (desktop != desktop_)
+        {
+            desktop_ = desktop;
+            dirty_ = true;
+            ++chatA11y_;
+        }
     }
 
     void Panel::reshowChat()
@@ -4489,7 +4497,9 @@ namespace testingplayground::ui
             const float pillW = chat_.signedIn ? static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(accountItem_)]).bounds().w + 6.0f
                                                : 0.0f;
             const float subRoom = card_.right() - kCardPad - 3.0f * kIconButton - 16.0f - pillW - sub;
-            const std::string kind = product::kIsInstrument ? "builds and edits your synth" : "builds and edits your effect";
+            const std::string kind = !desktop_.empty()             ? "Claude Desktop calls this " + desktop_
+                                   : product::kIsInstrument          ? "builds and edits your synth"
+                                                                     : "builds and edits your effect";
             if (subRoom > 60.0f)
                 c.text(fitText(c, kind, chat::kSmall, subRoom).c_str(), sub, c.capCentreTop(ty, chat::kSmall), chat::kSmall, p.faint);
             const funkgui::Rect box = inputItem().box();

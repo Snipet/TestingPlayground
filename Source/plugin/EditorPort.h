@@ -210,6 +210,10 @@ namespace testingplayground
                                    Exported& out, std::string& why) = 0;
         virtual bool importProject(const std::string& path, std::string& name, std::string& why) = 0;
         virtual std::string exportFolder() const = 0;
+        // Claude Desktop (plugin/McpLink.h): this instance's name to it ("Synth 2"; "" when there is no link), and
+        // whether Claude Desktop is talking to it now.
+        virtual std::string desktopName() const = 0;
+        virtual bool desktopConnected() const = 0;
         virtual ChatPort& chat() = 0;
 
         virtual bool panelView() const = 0;

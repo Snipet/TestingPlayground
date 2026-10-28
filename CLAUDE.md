@@ -196,7 +196,11 @@ from FunkPluginTemplate.
   plugin with the chat's own tools, so a tool changed or added reaches it with no change elsewhere; ask_user and
   ask_planner stay the chat's. A call runs on the link's thread as the chat's worker would, the chat busy meanwhile,
   and is refused while a chat turn runs. The server is juce_core only; it finds the instances by their sockets
-  (`<pid>-<n>.sock`) and falls back on the tools.json and guide.md the newest left. `plugin.mcp` checks both.
+  (`<n>.sock`, the lowest number free: the instance's name, "Synth 2", shown in the chat card while connected) and
+  falls back on the tools.json and guide.md the newest left. It is for someone who never sees a tool: its
+  instructions keep tools and ids from the user, each tool has a title in words (`ChatAgent::mcpTools`' table: a
+  new tool gets one there), an instance is matched by name, number, track or project words, and an unclear one makes
+  Claude ask in the user's words. `plugin.mcp` checks both sides.
 - **tune_dials** (`dsp/Tune.h`): Nelder-Mead over the named float dials' normalised ranges, from the dials as they
   are and a Halton spread, restarted when it settles with a goal unmet, until every goal is met, the budget (150, at
   most 400 renders) is spent or the stop button cancels; deterministic. The best values go on the dials through

@@ -475,6 +475,7 @@ namespace testingplayground::ui
         double busySince_ = -1.0;                        // when the turn under way began
         ChatState chat_;
         std::string activity_;                           // the line under the message box
+        std::string desktop_;                            // Claude Desktop's name for this instance, while connected
         uint32_t chatA11y_ = 0;                          // bumps when the conversation's items change
         std::string pendingSend_;                        // a message waiting for a key or a sign-in
 
