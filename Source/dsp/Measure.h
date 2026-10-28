@@ -14,7 +14,8 @@
 //                  lowest note's frequency), the largest step between two samples, the envelope (when it reaches its
 //                  loudest, and when it falls 60 dB from there), when the sound falls 60 dB below its held level
 //                  after the release and when the last voice ended (process returned false), the output guard's
-//                  alerts, and the CPU time. With one note, the strongest component that is no harmonic of it
+//                  alerts, and the CPU time (the notes while held, and sixteen voices at once: a render of sixteen
+//                  notes held, the least of two). With one note, the strongest component that is no harmonic of it
 //                  (aliasing, or the sound's own: detuning, FM, noise), and a chord (the note, a third, a fifth and an
 //                  octave above) is rendered too, for the summed level.
 //   an effect      a sine of 220 Hz at -12 dBFS and noise at -18 dBFS RMS, each for holdSeconds, an impulse followed
@@ -23,7 +24,9 @@
 //                  peak, delay and decay (60 dB), what comes out of silence, the alerts and the CPU time.
 //
 // Off the audio thread only (it compiles and allocates). Deterministic: the same files and request give the same
-// report and numbers but for the CPU times.
+// report and numbers but for the CPU times, which are the rendering thread's own time (not the wall clock's) in the
+// Engine as the audio thread runs it with no editor open (flush-to-zero, no meters), of the program's own code (with
+// the dials still the plugin plays a frozen copy instead: Patch.h).
 #pragma once
 
 #include "dsp/Controls.h"

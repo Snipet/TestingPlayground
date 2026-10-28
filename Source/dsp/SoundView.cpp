@@ -34,61 +34,140 @@ namespace playground::measure
 
         [[maybe_unused]] double noteHz(int n) { return 440.0 * std::exp2((n - 69) / 12.0); }
 
-        // The power spectrum of a Blackman-Harris-windowed frame of `size` (a power of two) of the mono sum about
-        // `centre`: bins 0 to size / 2.
-        std::vector<double> power(const std::vector<float>& l, const std::vector<float>& r, long centre, std::size_t size)
+        // Power spectra of Blackman-Harris-windowed frames of one size (a power of two, at least 4) of the mono sum:
+        // the window, the FFT's tables and its buffer are made once, for every frame. The real frame goes through a
+        // complex FFT of half its size (its even samples the real parts, its odd ones the imaginary), whose bins are
+        // then split into the real frame's.
+        class Spectra
         {
-            std::vector<std::complex<double>> a(size);
-            const long half = static_cast<long>(size / 2);
-            for (std::size_t i = 0; i < size; ++i)
+        public:
+            explicit Spectra(std::size_t size)
+                : size_(size), half_(size / 2), window_(size), z_(size / 2), twiddle_(size / 4), split_(size / 2 + 1),
+                  reverse_(size / 2)
             {
-                const long at = centre - half + static_cast<long>(i);
-                const double x = at >= 0 && at < static_cast<long>(l.size())
-                                     ? 0.5 * (static_cast<double>(l[static_cast<std::size_t>(at)]) + r[static_cast<std::size_t>(at)])
-                                     : 0.0;
                 // A four-term Blackman-Harris window: its sidelobes under -92 dB, so a pure tone shows as one line.
-                const double t = 2.0 * std::numbers::pi * static_cast<double>(i) / static_cast<double>(size);
-                const double w = 0.35875 - 0.48829 * std::cos(t) + 0.14128 * std::cos(2.0 * t) - 0.01168 * std::cos(3.0 * t);
-                a[i] = { x * w, 0.0 };
+                for (std::size_t i = 0; i < size_; ++i)
+                {
+                    const double t = 2.0 * std::numbers::pi * static_cast<double>(i) / static_cast<double>(size_);
+                    window_[i] = 0.35875 - 0.48829 * std::cos(t) + 0.14128 * std::cos(2.0 * t) - 0.01168 * std::cos(3.0 * t);
+                }
+                for (std::size_t k = 0; k < twiddle_.size(); ++k)     // e^(-2 pi i k / half), the half-size FFT's
+                {
+                    const double a = -2.0 * std::numbers::pi * static_cast<double>(k) / static_cast<double>(half_);
+                    twiddle_[k] = { std::cos(a), std::sin(a) };
+                }
+                for (std::size_t k = 0; k < split_.size(); ++k)       // e^(-2 pi i k / size), the split's
+                {
+                    const double a = -2.0 * std::numbers::pi * static_cast<double>(k) / static_cast<double>(size_);
+                    split_[k] = { std::cos(a), std::sin(a) };
+                }
+                for (std::size_t i = 1, j = 0; i < half_; ++i)
+                {
+                    std::size_t bit = half_ >> 1;
+                    for (; (j & bit) != 0; bit >>= 1)
+                        j ^= bit;
+                    j ^= bit;
+                    reverse_[i] = j;
+                }
             }
-            fft(a);
-            std::vector<double> p(size / 2 + 1);
-            for (std::size_t k = 0; k < p.size(); ++k)
-                p[k] = std::norm(a[k]);
-            return p;
-        }
 
-        // A power spectrum onto `count` cells of a log axis from lo to hi: each cell the largest bin in its range, or
-        // the spectrum read between bins where the range is narrower than a bin. In dB (power), unnormalised.
-        std::vector<float> onAxis(const std::vector<double>& p, double rate, std::size_t size, double lo, double hi, int count)
-        {
-            std::vector<float> out(static_cast<std::size_t>(std::max(count, 0)));
-            const double hzPerBin = rate / static_cast<double>(size);
-            const double ratio = std::log(hi / lo);
-            for (int c = 0; c < count; ++c)
+            // The frame about `centre` (0 outside the signal) into `p`: bins 0 to size / 2.
+            void power(const std::vector<float>& l, const std::vector<float>& r, long centre, std::vector<double>& p)
             {
-                const double f0 = lo * std::exp(ratio * static_cast<double>(c) / count);
-                const double f1 = lo * std::exp(ratio * static_cast<double>(c + 1) / count);
-                const double b0 = f0 / hzPerBin, b1 = f1 / hzPerBin;
-                double v = 0.0;
-                if (std::floor(b1) - std::ceil(b0) >= 0.0)
+                const long from = centre - static_cast<long>(half_);
+                const auto x = [&](std::size_t i) {
+                    const long at = from + static_cast<long>(i);
+                    return at >= 0 && at < static_cast<long>(l.size())
+                               ? 0.5 * (static_cast<double>(l[static_cast<std::size_t>(at)]) + r[static_cast<std::size_t>(at)])
+                                     * window_[i]
+                               : 0.0;
+                };
+                for (std::size_t m = 0; m < half_; ++m)               // in bit-reversed order, for the FFT in place
+                    z_[reverse_[m]] = { x(2 * m), x(2 * m + 1) };
+                for (std::size_t len = 2; len <= half_; len <<= 1)
                 {
-                    const auto first = static_cast<std::size_t>(std::ceil(b0)), last = static_cast<std::size_t>(std::floor(b1));
-                    for (std::size_t k = first; k <= last && k < p.size(); ++k)
-                        v = std::max(v, p[k]);
+                    const std::size_t stride = half_ / len;
+                    for (std::size_t i = 0; i < half_; i += len)
+                        for (std::size_t k = 0; k < len / 2; ++k)
+                        {
+                            const std::complex<double> u = z_[i + k], v = z_[i + k + len / 2] * twiddle_[k * stride];
+                            z_[i + k] = u + v;
+                            z_[i + k + len / 2] = u - v;
+                        }
                 }
-                else
+                p.resize(half_ + 1);
+                for (std::size_t k = 0; k <= half_; ++k)
                 {
-                    const double b = 0.5 * (b0 + b1);
-                    const auto k = static_cast<std::size_t>(std::floor(b));
-                    const double t = b - std::floor(b);
-                    if (k + 1 < p.size())
-                        v = (1.0 - t) * p[k] + t * p[k + 1];
+                    // X[k] = E[k] + e^(-2 pi i k / size) O[k], E and O the even and odd samples' spectra, from Z = E + iO.
+                    const std::complex<double> zk = z_[k % half_], zc = std::conj(z_[(half_ - k) % half_]);
+                    const std::complex<double> even = 0.5 * (zk + zc), odd = std::complex<double>(0.0, -0.5) * (zk - zc);
+                    p[k] = std::norm(even + split_[k] * odd);
                 }
-                out[static_cast<std::size_t>(c)] = static_cast<float>(v > 1e-30 ? 10.0 * std::log10(v) : -300.0);
             }
-            return out;
-        }
+
+        private:
+            std::size_t size_, half_;
+            std::vector<double> window_;
+            std::vector<std::complex<double>> z_, twiddle_, split_;
+            std::vector<std::size_t> reverse_;
+        };
+
+        // A log axis of `count` cells from lo to hi over the bins of a spectrum of `size` points: each cell the
+        // largest bin in its range, or the spectrum read between bins where the range is narrower than a bin. Its
+        // edges are worked out once, for every frame.
+        class Axis
+        {
+        public:
+            Axis(double rate, std::size_t size, double lo, double hi, int count) : cells_(static_cast<std::size_t>(std::max(count, 0)))
+            {
+                const double hzPerBin = rate / static_cast<double>(size);
+                const double ratio = std::log(hi / lo);
+                for (int c = 0; c < count; ++c)
+                {
+                    const double f0 = lo * std::exp(ratio * static_cast<double>(c) / count);
+                    const double f1 = lo * std::exp(ratio * static_cast<double>(c + 1) / count);
+                    const double b0 = f0 / hzPerBin, b1 = f1 / hzPerBin;
+                    Cell& cell = cells_[static_cast<std::size_t>(c)];
+                    cell.span = std::floor(b1) - std::ceil(b0) >= 0.0;
+                    if (cell.span)
+                    {
+                        cell.first = static_cast<std::size_t>(std::ceil(b0));
+                        cell.last = static_cast<std::size_t>(std::floor(b1));
+                    }
+                    else
+                    {
+                        const double b = 0.5 * (b0 + b1);
+                        cell.first = static_cast<std::size_t>(std::floor(b));
+                        cell.t = b - std::floor(b);
+                    }
+                }
+            }
+
+            // A power spectrum onto the cells, in dB (power), unnormalised.
+            void place(const std::vector<double>& p, float* out) const
+            {
+                for (std::size_t c = 0; c < cells_.size(); ++c)
+                {
+                    const Cell& cell = cells_[c];
+                    double v = 0.0;
+                    if (cell.span)
+                        for (std::size_t k = cell.first; k <= cell.last && k < p.size(); ++k)
+                            v = std::max(v, p[k]);
+                    else if (cell.first + 1 < p.size())
+                        v = (1.0 - cell.t) * p[cell.first] + cell.t * p[cell.first + 1];
+                    out[c] = static_cast<float>(v > 1e-30 ? 10.0 * std::log10(v) : -300.0);
+                }
+            }
+
+        private:
+            struct Cell
+            {
+                bool span = false;                    // a range of bins (first to last), else between first and first + 1
+                std::size_t first = 0, last = 0;
+                double t = 0.0;
+            };
+            std::vector<Cell> cells_;
+        };
 
         void normalise(std::vector<float>& db)
         {
@@ -270,15 +349,20 @@ namespace playground::measure
         v.rows = std::max(32, request.rows);
         v.cells.assign(static_cast<std::size_t>(v.rows) * static_cast<std::size_t>(cols), static_cast<float>(kFloorDb));
         constexpr std::size_t kFrame = 4096;
-        std::vector<float> all;
-        all.reserve(v.cells.size());
-        for (int c = 0; c < cols && total > 0; ++c)
         {
-            const long centre = static_cast<long>((static_cast<double>(c) + 0.5) / cols * static_cast<double>(total));
-            const std::vector<float> col = onAxis(power(L, R, centre, kFrame), rate, kFrame, v.loHz, v.hiHz, v.rows);
-            for (int r = 0; r < v.rows; ++r)
-                v.cells[static_cast<std::size_t>(r) * static_cast<std::size_t>(cols) + static_cast<std::size_t>(c)] =
-                    col[static_cast<std::size_t>(r)];
+            Spectra spectra(kFrame);
+            const Axis axis(rate, kFrame, v.loHz, v.hiHz, v.rows);
+            std::vector<double> p;
+            std::vector<float> col(static_cast<std::size_t>(v.rows));
+            for (int c = 0; c < cols && total > 0; ++c)
+            {
+                const long centre = static_cast<long>((static_cast<double>(c) + 0.5) / cols * static_cast<double>(total));
+                spectra.power(L, R, centre, p);
+                axis.place(p, col.data());
+                for (int r = 0; r < v.rows; ++r)
+                    v.cells[static_cast<std::size_t>(r) * static_cast<std::size_t>(cols) + static_cast<std::size_t>(c)] =
+                        col[static_cast<std::size_t>(r)];
+            }
         }
         normalise(v.cells);
 
@@ -287,18 +371,21 @@ namespace playground::measure
             constexpr std::size_t kWelch = 8192;
             const std::size_t settle = std::min(holdN / 2, static_cast<std::size_t>(0.05 * rate));
             const std::size_t from = v.heldUntil > 0.0 ? settle : 0, to = v.heldUntil > 0.0 ? holdN : total;
-            std::vector<double> sum(kWelch / 2 + 1, 0.0);
+            std::vector<double> sum(kWelch / 2 + 1, 0.0), p;
+            Spectra spectra(kWelch);
             int frames = 0;
             for (std::size_t a = from; a + kWelch <= to || frames == 0; a += kWelch / 2)
             {
-                const std::vector<double> p = power(L, R, static_cast<long>(a + kWelch / 2), kWelch);
+                spectra.power(L, R, static_cast<long>(a + kWelch / 2), p);
                 for (std::size_t k = 0; k < sum.size(); ++k)
                     sum[k] += p[k];
                 ++frames;
                 if (a + kWelch > to)
                     break;
             }
-            v.spectrum = onAxis(sum, rate, kWelch, v.loHz, v.hiHz, std::max(32, request.spectrumColumns));
+            const int columns = std::max(32, request.spectrumColumns);
+            v.spectrum.assign(static_cast<std::size_t>(columns), 0.0f);
+            Axis(rate, kWelch, v.loHz, v.hiHz, columns).place(sum, v.spectrum.data());
             normalise(v.spectrum);
         }
 

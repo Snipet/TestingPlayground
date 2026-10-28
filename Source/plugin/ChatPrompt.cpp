@@ -205,13 +205,13 @@ DSP PRACTICE IN THIS PLUGIN
 
 - Coefficients that depend on the sample rate: compute in init from its rate argument, or per sample from a parameter (cheap ones), or once a call (expensive ones from param[0]).
 - Oscillators: phase accumulators in [0, 1), phase += freq / rate, wrap with if (phase >= 1) phase -= 1. Band-limit saw and square waves (osc.fm does, with polyBLEP); a plain sinf per sample is fine for sines. Wavetables: wavetable.fm band-limits each frame with the FFT into copies a half octave apart, so nothing aliases at any pitch; build the table once in a module Shared. Frequency of a MIDI note: 440 * expf(0.0577622650f * (note - 69)) (noteToHz in util.fm).
-- Filters: a topology-preserving filter stays stable under modulation (svf.fm, ladder.fm, onepole.fm); g = tan(pi * fc / rate) as sinf(w) / cosf(w) with w kept below about 1.5. biquad.fm for an equalizer's bells and shelves set once a call.
+- Filters: a topology-preserving filter stays stable under modulation (svf.fm, ladder.fm, onepole.fm); g = tan(pi * fc / rate) as sinf(w) / cosf(w) with w kept below about 1.5 (svfG, ladderG and onePoleG compute it, for a cutoff that moves every sample: Cost, below). biquad.fm for an equalizer's bells and shelves set once a call.
 - Envelopes: exponential segments (env *= coefficient, or env += a * (target - env)) per sample (adsr.fm). A release must reach silence so process can return false.
 - Noise: without bitwise operators, Park-Miller with Schrage's method (noise.fm: white, pink, brown).
 - Delays: a ring buffer from calloc in init, freed in end (delay.fm, reverb.fm), or a fixed array field; read between samples for modulated delays.
 - Saturation: tanhf; for gentler curves x / (1 + fabsf(x)) (shaper.fm has these and more).
 - Level: keep peaks near 1 (an instrument's voice near 0.2 to 0.3). Make dial ranges musical, and defaults that sound good at once.
-- Cost: process runs on the audio thread for every sample of every voice. sinf, expf and tanhf per sample are fine in moderation; avoid recomputing per-sample what can be done per call.
+- Cost: process runs on the audio thread for every sample of every voice, and its math calls (sinf, cosf, expf, logf, tanhf) are most of what it costs. In a loop that carries state from one sample to the next (a filter, an envelope, a phase, a smoother) each call computes one sample at the price of four; in a loop with no state the compiler makes one call for four samples. So SIMD the math, scalar the state: put the math in a loop of its own. Work in parts of the call (for (int at = 0; at < n; at += 16), arrays of 16; a voice gets 16 samples a call at most): first a loop of the sources that carry state and of the dials, into arrays (env[i] = amp.tick(); fc[i] = cutoff[at + i];), with the cheap arithmetic of the routing; then a loop that reads only those arrays and values fixed for the call, and writes arrays (a cutoff's expf, a filter's coefficient: g[i] = svfG(fc[i], rate)): a dial read there (cutoff[i]) keeps it from running four samples a call, since a dial may come as samples or as one value; then the oscillators and filters (filter.setG(g[i], resonance[at + i]); filter.tick(x)).%COSTEXAMPLE% Where a loop with state needs a sine and a cosine of one value, take both in one call: float2 sc = sinf((float2)(w, 1.57079637f - w - 4.37113883e-8f)) is (sin w, cos w). lfo.fm's sine is a cheap polynomial; an audio-rate sine keeps sinf. What does not change during a call, compute once a call.
 )";
 
         const char* const kChecking = R"(
@@ -249,7 +249,7 @@ A full synthesizer or a rich effect is a few hundred lines in several files. Wor
 - Plan in a sentence or two (the structure, the modulation, the dials and their panel), then make the files: the library files you need (add_library_file, several side by side), your own blocks and the program (write_file, the included files first and the program last), then run_program once. Fix what it reports and run again until it compiles; then measure_output; then set the dials.
 - One reply of yours holds about 128,000 tokens, your thinking included; a reply that reaches that is cut off (the plugin then asks you to go on). So think a block through and write its file, then the next, a few files to a reply, rather than working the whole program out in your thinking before writing any of it, and never write a file out in full in your thinking first.
 - One building block a file. The library's come first (THE LIBRARY); your own, for what it lacks, are modules too (their state as fields, their work as methods that take what they need as arguments) or plain functions. The program's file holds the main module, which holds the blocks as fields (Osc osc1; Svf filter; Osc unison[4];) and wires them. The parameters of a module the main module holds stay at their defaults, so give the blocks arguments instead.
-- Modulation: in the sample loop compute the sources first (envelopes, LFOs, velocity, the note), then each destination from them in musical units (octaves for a frequency, dB for a level) so amounts add: fc = cutoff[i] * expf(0.693147181f * octaves). Keep the routing small and explicit, at the top of the loop, a comment a route. An expensive coefficient (a filter's tan) may be computed every 16 samples from the modulated value when per sample costs too much; measure_output reports the cost.
+- Modulation: compute the sources first (envelopes, LFOs, velocity, the note), then each destination from them in musical units (octaves for a frequency, dB for a level) so amounts add: fc = cutoff[i] * expf(0.693147181f * octaves); the sources in a loop of their own, the destinations' math in the next (Cost, in DSP PRACTICE). Keep the routing small and explicit, a comment a route. An expensive coefficient (a filter's tan) may be computed every 16 samples from the modulated value when per sample costs too much; measure_output reports the cost.
 - 32 dials at most (the main module's first 32 parameters), and a dozen to twenty read best: give a player the controls they reach for (an oscillator's shape and tuning; a cutoff, a resonance, an envelope amount; an LFO's rate and depth; an envelope's attack, decay, sustain and release; a mix; a level), declared in the order the panel shows them, and make the rest named, commented constants in the code, which you change when asked. A 33rd parameter is ignored, with a note. An int parameter with a few values can choose a mode (a waveform, a routing). Then give them an interface (THE INTERFACE).
 - An instrument's main module is one voice: sixteen can sound at once and their sum must not clip, so a voice peaks near 0.2 to 0.3. Reset a voice's state in start only when it was silent, so a note played again while it sounds does not click.
 - Later changes: edit_file for a passage (exactly as it is now), write_file for a rewrite. A file marked unchanged in <plugin_state> is as you last saw it.
@@ -358,7 +358,7 @@ The plugin carries ready-made building blocks, tested and tuned: band-limited, s
         // A program built from the library, for each kind (ChatAgent::promptExample), and the library files it includes
         // in their order: plugin.chatexample compiles and plays it.
         [[maybe_unused]] const char* const kInstrumentProgram = R"FM(// Modular voice: two detuned oscillators, a resonant low-pass, an amplitude envelope, a filter envelope and an
-// LFO, wired by the routing at the top of the sample loop; the pitch wheel bends it, the mod wheel deepens the LFO.
+// LFO, wired by the routing beside its sources; the pitch wheel bends it, the mod wheel deepens the LFO.
 // Its building blocks are the library's; its interface is panel.gui's.
 #include "osc.fm"
 #include "svf.fm"
@@ -433,30 +433,58 @@ module Voice
         const float keytrack = 0.5f * (note - 60) / 12;            // octaves: the cutoff follows the keyboard halfway
         const float gain = velocity * expf(0.115129255f * level[0]);
         const float lfoStep = lforate[0] / rate;
-        float fc = cutoff[0];
-        for (int i = 0; i < n; ++i)
+        const float wheel = host->modwheel;
+        // A part's samples, from one loop to the next.
+        float a[16];        // the amplitude envelope
+        float l[16];        // the LFO
+        float depth[16];    // the LFO's depth, the mod wheel's added
+        float octaves[16];  // the cutoff's modulation
+        float fc[16];       // the cutoff, Hz
+        float g[16];        // the filter's coefficient
+        float step[16];     // the pitch, cycles a sample
+        float last = cutoff[0];
+        // In parts of 16 samples (the plugin calls a voice for 16 at most), each in three loops: the sources, which
+        // carry state from sample to sample, and the dials; the math, which carries none and reads only what the first
+        // wrote, so it runs four samples a math call; then the oscillators and the filter, which carry state again.
+        for (int at = 0; at < n; at += 16)
         {
-            // The sources.
-            const float a = amp.tick();
-            const float f = fenv.tick();
-            const float l = lfo.triangle(0);
-            lfo.advance(lfoStep);
+            const int m = n - at < 16 ? n - at : 16;
+            // The sources, and the routing in octaves: filter envelope, LFO, velocity and the keyboard to the cutoff;
+            // the LFO to the pitch (vibrato of a few cents). The mod wheel takes the LFO's depth up to all of it.
+            for (int i = 0; i < m; ++i)
+            {
+                const int j = at + i;
+                a[i] = amp.tick();
+                const float e = fenv.tick();
+                l[i] = lfo.triangle(0);
+                lfo.advance(lfoStep);
+                depth[i] = lfodepth[j] + wheel * (1 - lfodepth[j]);
+                octaves[i] = envamount[j] * e + 1.5f * depth[i] * l[i] + 0.5f * (velocity - 0.5f) + keytrack;
+                fc[i] = cutoff[j];
+            }
 
-            // The routing, in octaves: filter envelope, LFO, velocity and the keyboard to the cutoff; the LFO to the
-            // pitch (vibrato of a few cents). The mod wheel takes the LFO's depth up to all of it.
-            const float depth = lfodepth[i] + host->modwheel * (1 - lfodepth[i]);
-            const float octaves = envamount[i] * f + 1.5f * depth * l + 0.5f * (velocity - 0.5f) + keytrack;
-            fc = cutoff[i] * expf(0.693147181f * octaves);
-            filter.set(fc, resonance[i], rate);
-            const float pitch = expf(0.693147181f * 0.004f * depth * l);
+            // The math: the cutoff's and the vibrato's expf, the filter's coefficient (svfG: a sinf and a cosf).
+            for (int i = 0; i < m; ++i)
+            {
+                fc[i] = fc[i] * expf(0.693147181f * octaves[i]);
+                g[i] = svfG(fc[i], rate);
+                step[i] = base * expf(0.693147181f * 0.004f * depth[i] * l[i]);
+            }
 
-            const float s = 0.5f * (osc1.morph(base * pitch, shape[i]) + osc2.morph(base * pitch * spread, shape[i]));
-            const float out = gain * a * filter.tick(s);
-            left[i] += out;
-            right[i] += out;
+            // The oscillators and the filter.
+            for (int i = 0; i < m; ++i)
+            {
+                const int j = at + i;
+                filter.setG(g[i], resonance[j]);
+                const float s = 0.5f * (osc1.morph(step[i], shape[j]) + osc2.morph(step[i] * spread, shape[j]));
+                const float out = gain * a[i] * filter.tick(s);
+                left[j] += out;
+                right[j] += out;
+            }
+            last = fc[m - 1];
         }
         lfolight = 0.5f * (1 + lfo.triangle(0));
-        cutoffnow = fc;
+        cutoffnow = last;
         return amp.active();
     }
 };
@@ -625,7 +653,7 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
             s += instrument ? kInstrumentContract : kEffectContract;
             s += replaceAll(instrument ? kHostInstrument : kHostEffect, "%HOST%", std::string(Patch::hostSource()));
             s += kLanguage;
-            s += kCraft;
+            s += replaceAll(kCraft, "%COSTEXAMPLE%", instrument ? " The Modular voice below is built so." : "");
             {
                 std::string metrics;
                 for (const measure::MetricInfo& m : measure::metrics())

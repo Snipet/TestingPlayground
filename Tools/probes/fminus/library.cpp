@@ -6,6 +6,9 @@
 //             each compiles alone with no message, and all of them together (no names clash)
 //   SVF       low-pass: -3 dB at the cutoff with resonance 0.3 (Butterworth), below -38 dB a decade above; high-pass
 //             the mirror; band-pass 0 dB at the cutoff; notch below -60 dB there; resonance 1 peaks 20 to 30 dB
+//   G         svfG, ladderG and onePoleG are tan(pi fc / rate), clamped as set clamps the cutoff; each filter swept from
+//             30 Hz to 20 kHz through setG (g in a loop of its own) plays what set (sin and cos in one call) plays,
+//             within 1e-6 of the peak
 //   LADDER    -12 dB at the cutoff, below -80 dB a decade above, 0 dB a decade below; at resonance 1 it sings on its
 //             own after an impulse, a sine at the cutoff (within 1 %), bounded (below 0.5); at 0.9 it dies away
 //   ONEPOLE   low- and high-pass -3 dB at the cutoff; the DC blocker takes a DC offset out and passes 100 Hz
@@ -29,7 +32,8 @@
 //             outweighs the top more from white to pink to brown; two seeds differ
 //   ADSR      the attack reaches 1 in its time (within 0.1 ms), the decay settles on the sustain, the release ends
 //             within 1.4 times its time; a gate while it sounds rises from where it is, without a step
-//   LFO       every shape stays in -1..1; the square flips twice a cycle; the random step changes once a cycle;
+//   LFO       every shape stays in -1..1; the sine (a polynomial) within 0.0011 of sin at its phase; the square flips
+//             twice a cycle; the random step changes once a cycle;
 //             follow() takes its phase from the song's position (120 BPM from beat 3, a cycle a half note)
 //   FOLLOWER  63 % of a step in the attack time, 37 % left after the release time; the compressor's gain curve: 0 under
 //             the threshold, -(1 - 1/ratio) of the excess over it, the soft knee's middle
@@ -184,6 +188,58 @@ void onepoleRun(float* x, float* y, int n, float fc, int mode)
     dc.set(48000);
     for (int i = 0; i < n; ++i)
         y[i] = mode == 0 ? f.lowpass(x[i]) : (mode == 1 ? f.highpass(x[i]) : dc.tick(x[i]));
+}
+
+// A cutoff swept from 30 Hz to 20 kHz over n samples through one filter (0 the Svf, 1 the Ladder, 2 the OnePole) twice:
+// its coefficient in a loop of its own (svfG, ladderG, onePoleG), then setG, into y; set beside tick into z.
+float gOf(float fc, int which)
+{
+    return which == 0 ? svfG(fc, 48000) : (which == 1 ? ladderG(fc, 48000) : onePoleG(fc, 48000));
+}
+
+void gRun(float* x, float* y, float* z, int n, int which)
+{
+    Svf sa;
+    Svf sb;
+    Ladder la;
+    Ladder lb;
+    OnePole oa;
+    OnePole ob;
+    float fc[16];
+    float g[16];
+    for (int at = 0; at < n; at += 16)
+    {
+        const int m = n - at < 16 ? n - at : 16;
+        for (int i = 0; i < m; ++i)
+            fc[i] = 30 * expf(6.5f * (float)(at + i) / n);
+        for (int i = 0; i < m; ++i)
+            g[i] = gOf(fc[i], which);
+        for (int i = 0; i < m; ++i)
+        {
+            const int j = at + i;
+            if (which == 0)
+            {
+                sa.setG(g[i], 0.5f);
+                y[j] = sa.tick(x[j]);
+                sb.set(fc[i], 0.5f, 48000);
+                z[j] = sb.tick(x[j]);
+            }
+            else if (which == 1)
+            {
+                la.setG(g[i], 0.5f);
+                y[j] = la.tick(x[j]);
+                lb.set(fc[i], 0.5f, 48000);
+                z[j] = lb.tick(x[j]);
+            }
+            else
+            {
+                oa.setG(g[i]);
+                y[j] = oa.lowpass(x[j]);
+                ob.set(fc[i], 48000);
+                z[j] = ob.lowpass(x[j]);
+            }
+        }
+    }
 }
 
 void biquadRun(float* x, float* y, int n, float fc, float q, float db, int mode)
@@ -513,6 +569,8 @@ PROBE(fminus, library)
         auto* ladder = function<void(float*, float*, int, float, float)>(p.get(), "ladderRun");
         auto* onepole = function<void(float*, float*, int, float, int)>(p.get(), "onepoleRun");
         auto* biquad = function<void(float*, float*, int, float, float, float, int)>(p.get(), "biquadRun");
+        auto* gOf = function<float(float, int)>(p.get(), "gOf");
+        auto* gRun = function<void(float*, float*, float*, int, int)>(p.get(), "gRun");
         std::vector<float> y(n);
         const auto tone = [&](double hz) { return probe::sine(hz, 0.25, kFs, n); };
         if (svf != nullptr)
@@ -566,6 +624,29 @@ PROBE(fminus, library)
             const std::vector<float> late(y.begin() + static_cast<std::ptrdiff_t>(n / 2), y.end());
             P.le("onepole.dcblock_takes_dc", std::fabs(mean(late)), 0.002);
             P.near("onepole.dcblock_passes_100hz", probe::dbFromLin(rms(late)), probe::dbFromLin(0.25 / std::sqrt(2.0)), 0.1);
+        }
+        if (gOf != nullptr && gRun != nullptr)
+        {
+            const char* names[] = { "svf", "ladder", "onepole" };
+            const double top[] = { 0.49, 0.45, 0.49 }, low[] = { 5.0, 5.0, 1.0 };
+            std::vector<float> x = probe::noise(n, 0.25).l;
+            std::vector<float> z(n);
+            for (int which = 0; which < 3; ++which)
+            {
+                const std::string name = names[which];
+                const auto tanOf = [](double fc) { return std::tan(std::numbers::pi * fc / kFs); };
+                P.near(name + ".g_is_tan", static_cast<double>(gOf(1000.0f, which)) / tanOf(1000.0), 1.0, 1e-6);
+                P.near(name + ".g_clamps_high", static_cast<double>(gOf(30000.0f, which)) / tanOf(top[which] * kFs), 1.0, 1e-5);
+                P.near(name + ".g_clamps_low", static_cast<double>(gOf(0.1f, which)) / tanOf(low[which]), 1.0, 1e-5);
+                gRun(x.data(), y.data(), z.data(), N, which);
+                double worst = 0.0;
+                for (std::size_t i = 0; i < n; ++i)
+                    worst = std::max(worst, std::fabs(static_cast<double>(y[i]) - static_cast<double>(z[i])));
+                std::printf("%s: setG against set, swept: the largest difference %.3g (peak %.3g)\n", names[which], worst,
+                            static_cast<double>(probe::peak(z)));
+                P.le(name + ".setg_plays_as_set", worst, 1e-6 * static_cast<double>(probe::peak(z)));
+                P.ge(name + ".swept_audible", static_cast<double>(probe::peak(z)), 0.05);
+            }
         }
         if (biquad != nullptr)
         {
@@ -862,6 +943,21 @@ PROBE(fminus, library)
                 inRange = inRange && probe::peak(s) <= 1.0f;
             }
             P.eq("lfo.in_range", inRange ? 1 : 0, 1);
+            // The sine against sin at the phase the Lfo reads (its float phase, followed here as it advances).
+            lfo(s.data(), N, 2.0f / kRate, 0, 0.25f);
+            double worst = 0.0;
+            float phase = 0.0f;
+            for (std::size_t i = 0; i < n; ++i)
+            {
+                const float read = phase + 0.25f;
+                const double at = static_cast<double>(read - std::floor(read));
+                worst = std::max(worst, std::fabs(static_cast<double>(s[i]) - std::sin(2.0 * std::numbers::pi * at)));
+                phase += 2.0f / kRate;
+                if (phase >= 1.0f || phase < 0.0f)
+                    phase -= std::floor(phase);
+            }
+            std::printf("lfo: the sine's largest difference from sin %.5f\n", worst);
+            P.le("lfo.sine_within_0.0011", worst, 0.0011);
             lfo(s.data(), N, 2.0f / kRate, 3, 0.0f);
             int flips = 0, changes = 0;
             for (std::size_t i = 1; i < n; ++i)

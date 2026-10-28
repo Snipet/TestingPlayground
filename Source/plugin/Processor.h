@@ -121,6 +121,13 @@ namespace playground
         void poll();
         void settle();
 
+        // Who reads the meters and the scopes (Engine::readers): the audio thread measures them only while someone does.
+        // The editor's Panel is a reader while it lives (EditorPort); a tool that listens to the plugin (Claude
+        // Desktop's) adds itself while it listens and removes itself after. Any thread.
+        void addMeterReader() noexcept override { engine_.addReader(); }
+        void removeMeterReader() noexcept override { engine_.removeReader(); }
+        int meterReaders() const noexcept override { return engine_.readers(); }
+
         // Slot c's dial as the program that plays has it (ControlParameter's name and text).
         Control control(int c) const;
         std::vector<std::string> controlOptions(int c) const;   // its values' names (#pragma panel options), maybe none

@@ -23,6 +23,8 @@
 //   meters()          the last block's levels and the program's taps, for the panel's displays (Engine::Meters); false
 //                     while the audio thread publishes (keep the last)
 //   scope()           the last n samples of the input or the output (Engine::scope)
+//   addMeterReader()  meters() and scope() are measured only while someone reads them (Engine::readers): a Panel adds
+//   removeMeterReader() itself in its constructor and removes itself in its destructor; meterReaders() how many now
 //   load()            the audio thread's busiest recent block, as a share of its time (Engine::load)
 //   alerts()          the output guard's alerts of the last two seconds (Engine::Alert bits)
 //   projects()        the projects saved on this Mac (ProjectStore.h), by name: each a program and its dials, kept as
@@ -186,6 +188,9 @@ namespace playground
         virtual uint64_t program() const = 0;
         virtual bool meters(Meters& out) const = 0;
         virtual void scope(bool input, float* out, int n) const = 0;
+        virtual void addMeterReader() = 0;
+        virtual void removeMeterReader() = 0;
+        virtual int meterReaders() const = 0;
 
         virtual float load() const = 0;
         virtual uint32_t alerts() const = 0;

@@ -9,11 +9,13 @@
 #include <funkgui/text/FontService.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <system_error>
+#include <thread>
 
 namespace playground
 {
@@ -45,6 +47,26 @@ namespace playground
             std::filesystem::remove(file, ec);
             return bytes;
         }
+
+        // The meters are measured only while someone reads them (EditorPort::addMeterReader). When the picture's Panel
+        // is the only reader (no editor open), wait for two blocks measured (the one under way may have begun before
+        // it), so its displays show the sound playing now: 100 ms at most, for an audio thread that is not running.
+        void waitForMeters(EditorPort& port)
+        {
+            if (port.meterReaders() > 1)
+                return;
+            Meters m;
+            for (int k = 0; k < 10 && !port.meters(m); ++k)
+                std::this_thread::yield();
+            const uint32_t from = m.frame;
+            const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+            while (std::chrono::steady_clock::now() < until)
+            {
+                if (port.meters(m) && m.frame - from >= 2)
+                    return;
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+        }
     }
 
     PanelPicture picturePanel(std::span<funkgui::ParamPort* const> ports, EditorPort& port, int width, int height,
@@ -57,6 +79,7 @@ namespace playground
         const std::vector<std::string> pages = port.guiPages();
         {
             ui::Panel panel(ports, port);
+            waitForMeters(port);
             funkgui::HeadlessHost host(panel, funkgui::UiPreferences::get().theme(), kDpi);
             host.resize(std::max(width > 0 ? width : ui::kDefaultWidth, ui::kMinWidth),
                         std::max(height > 0 ? height : ui::kDefaultHeight, ui::kMinHeight));

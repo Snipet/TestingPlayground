@@ -4,6 +4,7 @@
 #include "Product.h"
 
 #include "fsdsp/core/Sanitize.h"
+#include "fsdsp/core/ScopedFtz.h"
 
 #include <algorithm>
 #include <chrono>
@@ -313,6 +314,7 @@ namespace playground
         const bool snap = fedPatch_ != current_;
         fedPatch_ = current_;
         moved_ = false;
+        bool streaming = false;
         for (int c = 0; c < kMaxControls; ++c)
         {
             const Control& info = cs[static_cast<std::size_t>(c)];
@@ -336,7 +338,14 @@ namespace playground
             for (int i = 0; i < n; ++i)
                 buf[i] = g.tick();
             streaming_[static_cast<std::size_t>(c)] = true;
+            streaming = true;
         }
+        // What feed() writes changes with a new program, a dial that moved, and a stream that starts, runs or ends
+        // (its pointer goes back to null).
+        if (snap || moved_ || streaming || streamedLast_)
+            ++feedGen_;
+        streamingNow_ = streaming;
+        streamedLast_ = streaming;
     }
 
     void Engine::feed(Patch& p, int offset, int instance) noexcept
@@ -365,6 +374,7 @@ namespace playground
     // ---- the audio thread: a block ---------------------------------------------------------------------------------------
     void Engine::process(float* const* channels, int numChannels, int numSamples, std::span<const Event> events) noexcept
     {
+        const fsdsp::ScopedFtz ftz;                  // the programs' mode, offline too (Engine.h)
         if (numChannels <= 0 || channels == nullptr)
             return;
         const int n = std::min(numSamples, maxBlock_);
@@ -396,12 +406,26 @@ namespace playground
         takePending();
         glideControls(n);
         updateFrozen();
-        measureIn(channels, numChannels, n);
+        const bool metering = readers_.load(std::memory_order_relaxed) > 0;
+        if (metering && !metering_)                  // a reader came: the levels start again, the scopes from silence
+        {
+            for (int c = 0; c < 2; ++c)
+                frame_.inPeak[c] = frame_.inRms[c] = frame_.outPeak[c] = frame_.outRms[c] = 0.0f;
+            for (int i = 0; i < kScopeLength; ++i)
+            {
+                scopeIn_[static_cast<std::size_t>(i)].store(0.0f, std::memory_order_relaxed);
+                scopeOut_[static_cast<std::size_t>(i)].store(0.0f, std::memory_order_relaxed);
+            }
+        }
+        const bool fresh = metering && !metering_;
+        metering_ = metering;
+        if (metering)
+            measureIn(channels, numChannels, n, fresh);
         if constexpr (kInstrument)
             processInstrument(channels, numChannels, n, events);
         else
             processEffect(channels, numChannels, n);
-        publish(channels, numChannels, n);
+        publish(channels, numChannels, n, metering, fresh);
         samples_ += static_cast<uint64_t>(n);
         if (running_)                                // the song's position at the next call's first sample
             beat_ += static_cast<double>(n) * bpm_ / (60.0 * static_cast<double>(fs_));
@@ -416,8 +440,8 @@ namespace playground
     {
         // A channel's levels after n more samples (what is not finite counts as 0): its peak, which falls 20 dB a
         // second between louder ones (so that a reader at a lower rate sees every peak), and its RMS, smoothed over
-        // 50 ms.
-        void levels(const float* x, int n, float fs, float& peak, float& rms) noexcept
+        // 50 ms; `fresh`: the first block measured since no one read them, its own levels.
+        void levels(const float* x, int n, float fs, float& peak, float& rms, bool fresh) noexcept
         {
             float p = 0.0f;
             double s = 0.0;
@@ -431,7 +455,7 @@ namespace playground
             peak = std::max(p, peak * std::exp(-2.30258509f * seconds));
             const float keep = std::exp(-seconds / 0.05f);
             const float block = static_cast<float>(s / static_cast<double>(std::max(n, 1)));
-            rms = std::sqrt(keep * rms * rms + (1.0f - keep) * block);
+            rms = fresh ? std::sqrt(block) : std::sqrt(keep * rms * rms + (1.0f - keep) * block);
             if (peak < 1.0e-9f)
                 peak = 0.0f;
             if (rms < 1.0e-9f)
@@ -439,21 +463,17 @@ namespace playground
         }
     }
 
-    void Engine::measureIn(float* const* channels, int numChannels, int n) noexcept
+    void Engine::measureIn(float* const* channels, int numChannels, int n, bool fresh) noexcept
     {
-        const uint32_t at = scopeAt_.load(std::memory_order_relaxed);
-        if constexpr (kInstrument)
-        {
+        if constexpr (kInstrument)                   // no input: its scope's ring stays at 0, as it starts
             frame_.inPeak[0] = frame_.inPeak[1] = frame_.inRms[0] = frame_.inRms[1] = 0.0f;
-            for (int i = 0; i < n; ++i)
-                scopeIn_[(at + static_cast<uint32_t>(i)) & (kScopeLength - 1)].store(0.0f, std::memory_order_relaxed);
-        }
         else
         {
+            const uint32_t at = scopeAt_.load(std::memory_order_relaxed);
             const float* l = channels[0];
             const float* r = numChannels > 1 ? channels[1] : channels[0];
-            levels(l, n, fs_, frame_.inPeak[0], frame_.inRms[0]);
-            levels(r, n, fs_, frame_.inPeak[1], frame_.inRms[1]);
+            levels(l, n, fs_, frame_.inPeak[0], frame_.inRms[0], fresh);
+            levels(r, n, fs_, frame_.inPeak[1], frame_.inRms[1], fresh);
             for (int i = 0; i < n; ++i)
             {
                 const float v = 0.5f * (l[i] + r[i]);
@@ -463,16 +483,23 @@ namespace playground
         }
     }
 
-    void Engine::publish(float* const* channels, int numChannels, int n) noexcept
+    void Engine::publish(float* const* channels, int numChannels, int n, bool metering, bool fresh) noexcept
     {
-        const float* l = channels[0];
-        const float* r = numChannels > 1 ? channels[1] : channels[0];
-        levels(l, n, fs_, frame_.outPeak[0], frame_.outRms[0]);
-        levels(r, n, fs_, frame_.outPeak[1], frame_.outRms[1]);
-        const uint32_t at = scopeAt_.load(std::memory_order_relaxed);
-        for (int i = 0; i < n; ++i)
-            scopeOut_[(at + static_cast<uint32_t>(i)) & (kScopeLength - 1)].store(0.5f * (l[i] + r[i]), std::memory_order_relaxed);
-        scopeAt_.store(at + static_cast<uint32_t>(n), std::memory_order_release);
+        if (metering)
+        {
+            const float* l = channels[0];
+            const float* r = numChannels > 1 ? channels[1] : channels[0];
+            levels(l, n, fs_, frame_.outPeak[0], frame_.outRms[0], fresh);
+            levels(r, n, fs_, frame_.outPeak[1], frame_.outRms[1], fresh);
+            const uint32_t at = scopeAt_.load(std::memory_order_relaxed);
+            for (int i = 0; i < n; ++i)
+                scopeOut_[(at + static_cast<uint32_t>(i)) & (kScopeLength - 1)].store(0.5f * (l[i] + r[i]),
+                                                                                     std::memory_order_relaxed);
+            scopeAt_.store(at + static_cast<uint32_t>(n), std::memory_order_release);
+        }
+        else                                         // no one reads them: the levels read 0, the scopes stand still
+            for (int c = 0; c < 2; ++c)
+                frame_.inPeak[c] = frame_.inRms[c] = frame_.outPeak[c] = frame_.outRms[c] = 0.0f;
 
         // The program's taps: an effect's instance, an instrument's newest voice that sounds.
         for (float& t : frame_.taps)
@@ -525,11 +552,13 @@ namespace playground
         if (current_ == nullptr)
             return;                                  // no program yet: the input, as it came
         syncHost(0);
-        if (!xfading_)
+        if (streamingNow_ || effectFed_ != feedGen_)  // the dials as they are now, unless the instance has them
         {
             feed(*current_, 0, -1);
-            current_->process(left, right, n);
+            effectFed_ = feedGen_;
         }
+        if (!xfading_)
+            current_->process(left, right, n);
         else
         {
             // The old program (or the dry input, before the first) on copies of the input, the new one in place.
@@ -537,7 +566,6 @@ namespace playground
             std::copy(right, right + n, dryR_.data());
             if (old_ != nullptr)
                 old_->process(dryL_.data(), dryR_.data(), n);
-            feed(*current_, 0, -1);
             current_->process(left, right, n);
             guard(dryL_.data(), n);
             guard(dryR_.data(), n);
@@ -691,6 +719,7 @@ namespace playground
                 v.key = key;
                 v.age = ++noteCount_;
                 feed(*current_, 0, instance);
+                v.fed = feedGen_;
                 current_->start(instance, static_cast<float>(key), std::clamp(velocity, 0.0f, 1.0f));
                 return;
             }
@@ -803,8 +832,11 @@ namespace playground
                 continue;
             std::fill(voiceL_.begin(), voiceL_.begin() + len, 0.0f);
             std::fill(voiceR_.begin(), voiceR_.begin() + len, 0.0f);
-            if (v.patch == current_)
+            if (v.patch == current_ && (streamingNow_ || v.fed != feedGen_))   // else it has the dials already
+            {
                 feed(*current_, from, v.instance);
+                v.fed = feedGen_;
+            }
             const bool sounding = v.patch->render(v.instance, voiceL_.data(), voiceR_.data(), len);
             bool finite = true;
             for (int i = 0; i < len && finite; ++i)
