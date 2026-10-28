@@ -254,9 +254,10 @@ namespace playground
         apply(s, true);
         startTimerHz(20);
         mcp_ = std::make_unique<McpLink>(McpLink::Hooks{ [this] { return mcpInfo(); },
-                                                         [this](const std::string& name, const juce::var& arguments) {
-                                                             return chat_.mcpCall(name, arguments);
-                                                         } });
+                                                         [this](const std::string& name, const juce::var& arguments, uint64_t call) {
+                                                             return chat_.mcpCall(name, arguments, call);
+                                                         },
+                                                         [this](uint64_t call) { chat_.mcpCancel(call); } });
     }
 
     void Processor::updateTrackProperties(const TrackProperties& properties)

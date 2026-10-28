@@ -6,13 +6,20 @@
 //                number free when it started, its name to the user ("Synth 2", shown in the plugin while Claude Desktop
 //                talks to it); and what the newest instance wrote for a server that finds none running: tools.json and
 //                guide.md
-//   a request    one JSON object a line: { "id": 1, "method": "info" | "tools" | "guide" | "call", "params": { ... } }
-//   a reply      one line: { "id": 1, "result": ... } or { "id": 1, "error": "why" }
-//                  info   the instance: { id, name, kind, plugin, host, track, project, version, preset, edited,
-//                         files, compiled, busy }
-//                  tools  the tools, as MCP lists them ({ name, description, inputSchema })
-//                  guide  what the plugin's own chat works from, for an assistant that drives it from outside
-//                  call   { name, arguments } -> { content: [ MCP content ], isError }
+//   a request    one JSON object a line: { "id": 1, "method": "info" | "tools" | "guide" | "call" | "cancel",
+//                "params": { ... } }; several may be in flight on one connection
+//   a reply      one line: { "id": 1, "result": ... } or { "id": 1, "error": "why" }, exactly one a request, in the
+//                order they are ready (a quick one may pass a long call's)
+//                  info    the instance: { id, name, kind, plugin, host, track, project, version, preset, edited,
+//                          files, compiled, busy }
+//                  tools   the tools, as MCP lists them ({ name, title, description, inputSchema, annotations })
+//                  guide   { part } -> a part of what the plugin's own chat works from, for an assistant that drives it
+//                          from outside (mcp/McpGuide.h; "start" when no part is named; an error for one that is not)
+//                  call    { name, arguments } -> { content: [ MCP content ], isError }: one at a time, in order, but
+//                          for the live reads (ChatAgent::mcpLive), which answer at once
+//                  cancel  { id } -> { cancelled }: stop the call request `id` made on this connection (one waiting
+//                          is answered "stopped before it started"; the one running stops as soon as it can, and
+//                          still answers)
 // POSIX: Unix-domain sockets, no JUCE, so the server stays small.
 #pragma once
 
