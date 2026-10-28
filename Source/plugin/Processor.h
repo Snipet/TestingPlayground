@@ -166,6 +166,8 @@ namespace playground
         bool compiling() const override;
         CompileStatus status() const override;
         uint64_t statusRevision() const override;
+        void check(const Sources& files) override;
+        CheckStatus checkStatus() const override;
         Sources running() const override;
         Controls controls() const override;
         PanelSpec panel() const override;

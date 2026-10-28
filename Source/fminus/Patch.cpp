@@ -840,4 +840,49 @@ module Host
         }
         return 0.0f;
     }
+
+    // The front of compile()'s pass 1, kept in step with it: FMinus over the program as written (its messages), then the
+    // main module and its required methods. Nothing appended, no second pass, no instance.
+    Patch::Result Patch::check(const Sources& files)
+    {
+        const auto t0 = std::chrono::steady_clock::now();
+        Result r;
+        if (files.empty())
+        {
+            r.errors = std::string(kProgramName) + ": error: there is no program\n";
+            return r;
+        }
+        const std::string file = files.front().name;
+        const fminus::Program::IncludeResolver include =
+            [&files](std::string_view name, std::string_view) -> std::optional<fminus::Program::IncludedFile> {
+            if (const SourceFile* f = findFile(files, name))
+                return fminus::Program::IncludedFile{ f->name, f->text };
+            if (name == kHostFileName)
+                return fminus::Program::IncludedFile{ kHostFileName, kHostFile };
+            return std::nullopt;
+        };
+        fminus::Program::Options read;
+        read.optimisation = 0;
+        read.knobVersions = 0;
+        read.fileName = file;
+        read.include = include;
+        const std::unique_ptr<fminus::Program> first = fminus::Program::compile(files.front().text, r.errors, read);
+        if (first)
+        {
+            const fminus::Program::Module* main = first->module(kModule);
+            if (main == nullptr)
+                r.errors = file + ": error: the plugin plays a module " + kModule + " (README.md, \"Writing a program\")\n";
+            else
+                for (std::size_t k = 0; k < callCount(); ++k)
+                {
+                    const Call& c = calls()[k];
+                    const std::string name = std::string(kModule) + "::" + c.method;
+                    if (c.required && std::find(main->methods.begin(), main->methods.end(), name) == main->methods.end())
+                        r.errors += file + ": error: " + kModule + " needs a method `" + c.declaration + "`" +
+                                    (audioThread(c) ? ", which the plugin calls on the audio thread" : "") + "\n";
+                }
+        }
+        r.compileMs = msSince(t0);
+        return r;
+    }
 }

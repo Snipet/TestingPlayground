@@ -4,6 +4,9 @@
 //                       A request made while another compiles replaces any still waiting: the last one wins.
 //   compileNow(files)   the same on the calling thread, for the processor's construction and a host's state load,
 //                       which want the program playing when they return (and the probes, which want determinism)
+//   check(files)        the editor's check while typing: Patch::check on the compiler's thread, after any RUN waiting,
+//                       its messages in checkStatus(); nothing is offered, the program that plays plays on. A check
+//                       asked while another waits replaces it
 //
 // The files are the program's (Sources.h): the first plays, and the others are what its #includes read.
 //
@@ -56,6 +59,15 @@ namespace playground
         Sources     sources;                   // the files compiled
     };
 
+    // The last check's outcome (Compiler::check).
+    struct CheckStatus
+    {
+        uint64_t    revision = 0;              // 0 before the first check; bumps with each one that finishes
+        std::string errors;                    // as CompileStatus::errors
+        double      ms = 0.0;
+        Sources     sources;                   // the files checked
+    };
+
     class Compiler
     {
     public:
@@ -69,6 +81,9 @@ namespace playground
 
         uint64_t request(Sources files);
         CompileStatus compileNow(Sources files);
+
+        void check(Sources files);
+        CheckStatus checkStatus() const;
 
         CompileStatus status() const;
         uint64_t revision() const noexcept { return revision_.load(std::memory_order_acquire); }
@@ -101,6 +116,9 @@ namespace playground
         uint64_t queuedId_ = 0, nextId_ = 0;
         CompileStatus status_;
         std::atomic<uint64_t> revision_{ 0 };
+        Sources checkQueued_;                  // the check waiting (mutex_)
+        bool hasCheck_ = false;
+        CheckStatus check_;
         // The freezer's: the recipe of the program last offered, whether to freeze and after how long, the values
         // tried for which program.
         Patch::Recipe recipe_;                 // mutex_
