@@ -1,7 +1,7 @@
 // Source/plugin/Processor.cpp: see Processor.h.
 #include "plugin/Processor.h"
 
-#include "plugin/PresetStore.h"
+#include "plugin/ProjectStore.h"
 
 #include "Examples.h"
 #include "Product.h"
@@ -24,7 +24,8 @@ namespace testingplaygroundsynth
         // play) and <DRAFT> (the editor's), each of <FILE name=".." text=".."/>s. The version before files saved
         // <PROGRAM source=".." draft=".."/>, one file each.
         const juce::Identifier kProgramTag{ "PROGRAM" }, kRunTag{ "RUN" }, kDraftTag{ "DRAFT" }, kFileTag{ "FILE" };
-        const juce::Identifier kActive{ "active" }, kName{ "name" }, kText{ "text" }, kPreset{ "preset" };
+        const juce::Identifier kActive{ "active" }, kName{ "name" }, kText{ "text" }, kPreset{ "preset" },
+                               kProject{ "project" }, kProjectVersion{ "projectVersion" }, kProjectPreset{ "projectPreset" };
         const juce::Identifier kSource{ "source" }, kDraft{ "draft" };   // the version before files
         const juce::Identifier kChatTag{ "CHAT" }, kJson{ "json" };      // the chat with Claude (ChatAgent::saveState)
         const juce::Identifier kEditorTag{ "EDITOR" }, kWidth{ "w" }, kHeight{ "h" };   // the editor's size
@@ -244,7 +245,7 @@ namespace testingplaygroundsynth
 
         // The first example plays from the start (fminus.examples checks it compiles), its dials at their defaults.
         draft_.files = singleFile(kExamples[0].source);
-        presetFiles_ = draft_.files;                             // nothing to lose yet: no preset load asks first
+        projectFiles_ = draft_.files;                            // nothing to lose yet: no project's open asks first
         compiler_.setShaderTools(shaderTools());
         const CompileStatus s = compiler_.compileNow(draft_.files);
         jassert(s.ok);
@@ -638,24 +639,14 @@ namespace testingplaygroundsynth
             seen_ = s.revision;
             const uint64_t run = editorRun_.load();
             apply(s, run != 0 && s.request == run);
-            // A preset's program: its dials, by name, once it compiled (an older request's result waits for its own).
-            if (presetRequest_ != 0 && s.request >= presetRequest_)
+            // A version's program (or a preset's): its dials, by name, once it compiled (an older request's result
+            // waits for its own).
+            if (dialsRequest_ != 0 && s.request >= dialsRequest_)
             {
-                if (s.ok && s.request == presetRequest_)
-                    for (const auto& [name, plain] : presetDials_)
-                        for (int c = 0; c < kMaxControls; ++c)
-                        {
-                            const Control& k = s.controls[static_cast<std::size_t>(c)];
-                            if (!k.used || name != k.name)
-                                continue;
-                            juce::RangedAudioParameter& p = *params_[static_cast<std::size_t>(c)];
-                            p.beginChangeGesture();
-                            p.setValueNotifyingHost(normOf(k, plain));
-                            p.endChangeGesture();
-                            break;
-                        }
-                presetDials_.clear();
-                presetRequest_ = 0;
+                if (s.ok && s.request == dialsRequest_)
+                    setDialsByName(s.controls, projectDials_);
+                projectDials_.clear();
+                dialsRequest_ = 0;
             }
         }
         // Dials Claude set, after the compile that may have brought them: host gestures, on this thread.
@@ -709,8 +700,13 @@ namespace testingplaygroundsynth
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
             program.setProperty(kActive, draft_.active, nullptr);
-            if (!presetName_.empty())
-                program.setProperty(kPreset, juce::String::fromUTF8(presetName_.c_str()), nullptr);
+            if (!projectName_.empty())
+            {
+                program.setProperty(kProject, juce::String::fromUTF8(projectName_.c_str()), nullptr);
+                program.setProperty(kProjectVersion, projectVersion_, nullptr);
+                if (!projectPreset_.empty())
+                    program.setProperty(kProjectPreset, juce::String::fromUTF8(projectPreset_.c_str()), nullptr);
+            }
             program.appendChild(filesTree(kRunTag, running_), nullptr);
             program.appendChild(filesTree(kDraftTag, draft_.files), nullptr);
         }
@@ -796,8 +792,22 @@ namespace testingplaygroundsynth
         }
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
-            presetName_ = presetstore::tidyName(program.getProperty(kPreset).toString().toStdString());
-            presetFiles_ = draft.files;                          // the session's files are its preset's, as saved
+            // The project open; a session from before projects names a preset, now a project of that name.
+            if (program.hasProperty(kProject))
+            {
+                projectName_ = projectstore::tidyName(program.getProperty(kProject).toString().toStdString());
+                projectVersion_ = std::max(0, static_cast<int>(program.getProperty(kProjectVersion, 0)));
+                projectPreset_ = projectstore::tidyName(program.getProperty(kProjectPreset).toString().toStdString());
+            }
+            else
+            {
+                projectName_ = projectstore::tidyName(program.getProperty(kPreset).toString().toStdString());
+                projectVersion_ = 0;
+                projectPreset_.clear();
+            }
+            projectLatest_ = projectVersion_;
+            projectFiles_ = draft.files;                         // the session's files are its version's, as saved
+            baseDials_.clear();
             draft_ = std::move(draft);
             ++draftRevision_;
         }
@@ -864,96 +874,300 @@ namespace testingplaygroundsynth
     bool Processor::frozen() const { return engine_.frozen(); }
     uint32_t Processor::alerts() const { return alerts_.load(); }
 
-    // ---- presets ---------------------------------------------------------------------------------------------------------
-    std::vector<PresetEntry> Processor::presets() const
+    // ---- projects --------------------------------------------------------------------------------------------------------
+    namespace
     {
-        std::vector<PresetEntry> out;
-        for (const presetstore::Entry& e : presetstore::list())
-            out.push_back({ e.name, juce::Time(e.modifiedMs).formatted("%Y-%m-%d %H:%M").toStdString() });
+        std::string whenOf(int64_t ms) { return juce::Time(static_cast<juce::int64>(ms)).formatted("%Y-%m-%d %H:%M").toStdString(); }
+
+        // `over`'s dials, then `dials` over them, by name.
+        std::vector<projectstore::Dial> overlay(std::vector<projectstore::Dial> over, const std::vector<projectstore::Dial>& dials)
+        {
+            for (const projectstore::Dial& d : dials)
+            {
+                const auto it = std::find_if(over.begin(), over.end(), [&](const projectstore::Dial& o) { return o.name == d.name; });
+                if (it != over.end())
+                    it->value = d.value;
+                else
+                    over.push_back(d);
+            }
+            return over;
+        }
+    }
+
+    std::vector<ProjectEntry> Processor::projects() const
+    {
+        std::vector<ProjectEntry> out;
+        const std::vector<projectstore::Entry> list = projectstore::list();
+        for (const projectstore::Entry& e : list)
+            out.push_back({ e.name, whenOf(e.savedMs), e.latest, e.versions, static_cast<int>(e.presets.size()) });
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        for (const projectstore::Entry& e : list)
+            if (projectstore::sameName(e.name, projectName_))
+                projectLatest_ = e.latest;               // another instance may have saved one since
         return out;
     }
 
-    std::string Processor::presetFolder() const
+    std::string Processor::projectFolder() const
     {
-        const juce::String path = presetstore::directory().getFullPathName();
+        const juce::String path = projectstore::directory().getFullPathName();
         const juce::String home = juce::File::getSpecialLocation(juce::File::userHomeDirectory).getFullPathName();
         return (path.startsWith(home + "/") ? "~" + path.substring(home.length()) : path).toStdString();
     }
 
-    bool Processor::savePreset(const std::string& name, std::string& why)
+    ProjectState Processor::project() const
     {
-        presetstore::Preset p;
-        p.name = presetstore::tidyName(name);
+        ProjectState st;
+        std::vector<projectstore::Dial> base;
         Controls cs;
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
-            p.files = draft_.files;
-            p.active = draft_.active;
+            st.name = projectName_;
+            st.version = projectVersion_;
+            st.latest = std::max(projectLatest_, projectVersion_);
+            st.preset = projectPreset_;
+            st.edited = !projectName_.empty() && draft_.files != projectFiles_;
+            base = baseDials_;
             cs = controls_;
         }
+        // The dials against the ones the version or the preset set (not while its compile is on its way).
+        if (dialsRequest_ == 0)
+            for (int c = 0; c < kMaxControls && !st.dialsEdited; ++c)
+            {
+                const Control& k = cs[static_cast<std::size_t>(c)];
+                if (!k.used)
+                    continue;
+                const auto it = std::find_if(base.begin(), base.end(), [&](const projectstore::Dial& d) { return d.name == k.name; });
+                if (it == base.end())
+                    continue;
+                const float norm = raw_[static_cast<std::size_t>(c)]->load();
+                const float plain = std::isfinite(norm) ? plainOf(k, norm) : k.def;
+                st.dialsEdited = std::fabs(plain - it->value) > 1.0e-4f * std::max(1.0e-6f, std::fabs(k.max - k.min));
+            }
+        return st;
+    }
+
+    std::vector<VersionEntry> Processor::versions(const std::string& project) const
+    {
+        std::vector<VersionEntry> out;
+        if (const std::optional<projectstore::Project> p = projectstore::load(project))
+            for (auto it = p->versions.rbegin(); it != p->versions.rend(); ++it)
+                out.push_back({ it->number, whenOf(it->savedMs), it->note });
+        return out;
+    }
+
+    std::vector<PresetEntry> Processor::presets(const std::string& project) const
+    {
+        std::vector<PresetEntry> out;
+        if (const std::optional<projectstore::Project> p = projectstore::load(project))
+            for (const projectstore::Preset& pr : p->presets)
+                out.push_back({ pr.name, whenOf(pr.savedMs), pr.from });
+        return out;
+    }
+
+    std::vector<projectstore::Dial> Processor::dialsNow() const
+    {
+        Controls cs;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            cs = controls_;
+        }
+        std::vector<projectstore::Dial> out;
         for (int c = 0; c < kMaxControls; ++c)
             if (const Control& k = cs[static_cast<std::size_t>(c)]; k.used)
             {
                 const float norm = raw_[static_cast<std::size_t>(c)]->load();
-                p.dials.push_back({ k.name, std::isfinite(norm) ? plainOf(k, norm) : k.def });
+                out.push_back({ k.name, std::isfinite(norm) ? plainOf(k, norm) : k.def });
             }
-        if (!presetstore::save(p, &why))
-            return false;
-        const std::lock_guard<std::mutex> lock(programMutex_);
-        presetName_ = p.name;
-        presetFiles_ = p.files;
-        return true;
+        return out;
     }
 
-    bool Processor::loadPreset(const std::string& name, std::string& why)
+    // Host gestures, on the message thread: each dial on the parameter of its name (a name the program lacks: none).
+    void Processor::setDialsByName(const Controls& cs, const std::vector<projectstore::Dial>& dials)
     {
-        std::optional<presetstore::Preset> p = presetstore::load(name, &why);
-        if (!p)
-            return false;
+        for (const projectstore::Dial& d : dials)
+            for (int c = 0; c < kMaxControls; ++c)
+            {
+                const Control& k = cs[static_cast<std::size_t>(c)];
+                if (!k.used || d.name != k.name)
+                    continue;
+                juce::RangedAudioParameter& p = *params_[static_cast<std::size_t>(c)];
+                p.beginChangeGesture();
+                p.setValueNotifyingHost(normOf(k, d.value));
+                p.endChangeGesture();
+                break;
+            }
+    }
+
+    bool Processor::openVersion(const projectstore::Project& p, const projectstore::Version& v, std::string& why)
+    {
         Draft d;
-        d.files = tidyFiles(std::move(p->files));
+        d.files = tidyFiles(v.files);
         if (d.files.empty())
         {
-            why = "\"" + p->name + "\" has no program";
+            why = "\"" + p.name + "\" version " + std::to_string(v.number) + " has no program";
             return false;
         }
-        d.active = std::clamp(p->active, 0, static_cast<int>(d.files.size()) - 1);
+        d.active = std::clamp(v.active, 0, static_cast<int>(d.files.size()) - 1);
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
             draft_ = d;
-            ++draftRevision_;                                    // the editor shows the preset's files
-            presetName_ = p->name;
-            presetFiles_ = d.files;
+            ++draftRevision_;                                    // the editor shows the version's files
+            projectName_ = p.name;
+            projectVersion_ = v.number;
+            projectLatest_ = p.latest().number;
+            projectPreset_.clear();
+            projectFiles_ = d.files;
+            baseDials_ = v.dials;
         }
-        presetDials_.clear();
-        for (const presetstore::Dial& dial : p->dials)
-            presetDials_.emplace_back(dial.name, dial.value);
+        projectDials_ = v.dials;
         const uint64_t id = compiler_.request(d.files);
-        presetRequest_ = id;
+        dialsRequest_ = id;
         editorRun_.store(id);
         return true;
     }
 
-    bool Processor::deletePreset(const std::string& name, std::string& why)
+    bool Processor::openProject(const std::string& name, int version, std::string& why)
     {
-        if (!presetstore::remove(name, &why))
+        const std::optional<projectstore::Project> p = projectstore::load(name, &why);
+        if (!p)
             return false;
+        const projectstore::Version* v = version <= 0 ? &p->latest() : p->version(version);
+        if (v == nullptr)
+        {
+            why = "\"" + p->name + "\" keeps no version " + std::to_string(version);
+            return false;
+        }
+        return openVersion(*p, *v, why);
+    }
+
+    bool Processor::saveVersion(const std::string& name, SavedVersion& saved, std::string& why)
+    {
+        Sources files;
+        int active = 0;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            files = draft_.files;
+            active = draft_.active;
+        }
+        const std::vector<projectstore::Dial> dials = dialsNow();
+        const std::optional<projectstore::Saved> r = projectstore::saveVersion(name, files, active, dials, &why);
+        if (!r)
+            return false;
+        saved = { r->number, r->unchanged, r->created };
         const std::lock_guard<std::mutex> lock(programMutex_);
-        if (juce::String(presetName_).equalsIgnoreCase(juce::String(name)))
-            presetName_.clear();
+        const std::string tidy = projectstore::tidyName(name);
+        // The preset applied stays named while the dials are still its.
+        bool keep = projectstore::sameName(tidy, projectName_) && !projectPreset_.empty();
+        for (const projectstore::Dial& d : dials)
+            for (const projectstore::Dial& b : baseDials_)
+                if (b.name == d.name && b.value != d.value)
+                    keep = false;
+        if (!keep)
+            projectPreset_.clear();
+        projectName_ = tidy;
+        projectVersion_ = r->number;
+        projectLatest_ = r->number;
+        projectFiles_ = files;
+        baseDials_ = dials;
         return true;
     }
 
-    std::string Processor::presetName() const
+    bool Processor::deleteProject(const std::string& name, std::string& why)
     {
+        if (!projectstore::remove(name, &why))
+            return false;
         const std::lock_guard<std::mutex> lock(programMutex_);
-        return presetName_;
+        if (projectstore::sameName(projectName_, name))
+        {
+            projectName_.clear();
+            projectVersion_ = projectLatest_ = 0;
+            projectPreset_.clear();
+            baseDials_.clear();
+        }
+        return true;
     }
 
-    bool Processor::presetEdited() const
+    bool Processor::deleteVersion(const std::string& name, int version, std::string& why)
     {
+        if (!projectstore::removeVersion(name, version, &why))
+            return false;
         const std::lock_guard<std::mutex> lock(programMutex_);
-        return draft_.files != presetFiles_;
+        if (projectstore::sameName(projectName_, name) && projectVersion_ == version)
+            projectVersion_ = 0;                                 // the files stay, as a version no more kept
+        return true;
+    }
+
+    bool Processor::savePreset(const std::string& preset, std::string& why)
+    {
+        std::string project;
+        int version = 0;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            project = projectName_;
+            version = projectVersion_;
+        }
+        if (project.empty())
+        {
+            why = "save the project first: a preset is kept in its project";
+            return false;
+        }
+        if (!projectstore::exists(project))
+        {
+            why = "\"" + project + "\" is not on this Mac any more: save it again first";
+            return false;
+        }
+        const std::vector<projectstore::Dial> dials = dialsNow();
+        if (!projectstore::savePreset(project, preset, dials, version, &why))
+            return false;
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        projectPreset_ = projectstore::tidyName(preset);
+        baseDials_ = dials;
+        return true;
+    }
+
+    bool Processor::applyPreset(const std::string& project, const std::string& preset, std::string& why)
+    {
+        const std::optional<projectstore::Project> p = projectstore::load(project, &why);
+        if (!p)
+            return false;
+        const projectstore::Preset* pr = p->preset(preset);
+        if (pr == nullptr)
+        {
+            why = "\"" + p->name + "\" has no preset named \"" + preset + "\"";
+            return false;
+        }
+        bool open = false;
+        Controls cs;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            open = projectstore::sameName(projectName_, p->name);
+            cs = controls_;
+        }
+        if (!open)
+        {
+            // Its project's latest version first; the preset's dials over the version's once it compiled.
+            if (!openVersion(*p, p->latest(), why))
+                return false;
+            projectDials_ = overlay(p->latest().dials, pr->dials);
+        }
+        else if (dialsRequest_ != 0)
+            projectDials_ = overlay(projectDials_, pr->dials);   // a compile on its way: after it
+        else
+            setDialsByName(cs, pr->dials);
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        projectPreset_ = pr->name;
+        baseDials_ = open ? overlay(baseDials_, pr->dials) : overlay(p->latest().dials, pr->dials);
+        return true;
+    }
+
+    bool Processor::deletePreset(const std::string& project, const std::string& preset, std::string& why)
+    {
+        if (!projectstore::removePreset(project, preset, &why))
+            return false;
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        if (projectstore::sameName(projectName_, project) && projectstore::sameName(projectPreset_, preset))
+            projectPreset_.clear();
+        return true;
     }
 
     // ---- ChatHost (the agent's thread) -----------------------------------------------------------------------------------

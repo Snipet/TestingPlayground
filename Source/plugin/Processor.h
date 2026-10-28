@@ -44,7 +44,7 @@
 
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
-#include "plugin/PresetStore.h"
+#include "plugin/ProjectStore.h"
 
 #include "dsp/Compiler.h"
 #include "dsp/Controls.h"
@@ -155,14 +155,19 @@ namespace testingplaygroundsynth
         float load() const override;
         bool frozen() const override;
         uint32_t alerts() const override;
-        std::vector<PresetEntry> presets() const override;
-        std::string presetFolder() const override;
-        std::string tidyPresetName(const std::string& typed) const override { return presetstore::tidyName(typed); }
-        bool savePreset(const std::string& name, std::string& why) override;
-        bool loadPreset(const std::string& name, std::string& why) override;
-        bool deletePreset(const std::string& name, std::string& why) override;
-        std::string presetName() const override;
-        bool presetEdited() const override;
+        std::vector<ProjectEntry> projects() const override;
+        std::string projectFolder() const override;
+        std::string tidyName(const std::string& typed) const override { return projectstore::tidyName(typed); }
+        ProjectState project() const override;
+        std::vector<VersionEntry> versions(const std::string& project) const override;
+        std::vector<PresetEntry> presets(const std::string& project) const override;
+        bool saveVersion(const std::string& name, SavedVersion& saved, std::string& why) override;
+        bool openProject(const std::string& name, int version, std::string& why) override;
+        bool deleteProject(const std::string& name, std::string& why) override;
+        bool deleteVersion(const std::string& name, int version, std::string& why) override;
+        bool savePreset(const std::string& preset, std::string& why) override;
+        bool applyPreset(const std::string& project, const std::string& preset, std::string& why) override;
+        bool deletePreset(const std::string& project, const std::string& preset, std::string& why) override;
         ChatPort& chat() override { return chat_; }
         bool panelView() const override { return panelView_.load(); }
         void setPanelView(bool on) override { panelView_.store(on); }
@@ -197,11 +202,21 @@ namespace testingplaygroundsynth
         Controls controls_{};
         PanelSpec panel_;                                        // the running program's (programMutex_)
         uint64_t program_ = 0;                                   // its compile (CompileStatus::request)
-        std::string presetName_;                                 // the preset loaded or saved last (programMutex_)
-        Sources presetFiles_;                                    // the draft's files then: presetEdited() compares
-        // A preset's dials, by name, for when its program's compile lands (poll; message thread).
-        std::vector<std::pair<std::string, float>> presetDials_;
-        uint64_t presetRequest_ = 0;
+        // The project open (ProjectStore.h; programMutex_): the one opened or saved last, its version, the preset
+        // applied last; the version's files (project().edited compares the draft's) and the dials it or the preset set
+        // (project().dialsEdited compares the dials').
+        std::string projectName_;
+        int projectVersion_ = 0;
+        mutable int projectLatest_ = 0;                          // its newest, as last read
+        std::string projectPreset_;
+        Sources projectFiles_;
+        std::vector<projectstore::Dial> baseDials_;
+        // A version's or a preset's dials, by name, for when its program's compile lands (poll; message thread).
+        std::vector<projectstore::Dial> projectDials_;
+        uint64_t dialsRequest_ = 0;
+        std::vector<projectstore::Dial> dialsNow() const;        // the program's dials, by name, in its own units
+        void setDialsByName(const Controls& cs, const std::vector<projectstore::Dial>& dials);
+        bool openVersion(const projectstore::Project& p, const projectstore::Version& v, std::string& why);
 
         juce::AudioProcessorValueTreeState apvts_;
         std::array<std::atomic<float>*, kMaxControls> raw_{};   // the normalised values the audio thread reads

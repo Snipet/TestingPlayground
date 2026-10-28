@@ -25,17 +25,23 @@
 //   scope()           the last n samples of the input or the output (Engine::scope)
 //   load()            the audio thread's busiest recent block, as a share of its time (Engine::load)
 //   alerts()          the output guard's alerts of the last two seconds (Engine::Alert bits)
-//   presets()         the presets saved on this Mac (PresetStore.h), by name, with when each was last saved
-//   presetFolder()    where they are, "~/..." for the home folder
-//   tidyPresetName()  a typed name as savePreset would save it ("" when nothing is left of it)
-//   savePreset()      the editor's files (the draft) and the dials as they are now, by name, under `name` (over one of
-//                     that name); false, with why, when it cannot
-//   loadPreset()      a preset's files become the draft (the editor shows them: draftRevision bumps) and run; its dials
-//                     are set by name once they compile. False, with why, when there is none, or it is not this
-//                     plugin's, or its file is damaged
-//   deletePreset()    its file deleted
-//   presetName()      the preset loaded or saved last ("" for none), kept in the session
-//   presetEdited()    whether the draft has changed since (a new instance's first files count as saved)
+//   projects()        the projects saved on this Mac (ProjectStore.h), by name: each a program and its dials, kept as
+//                     versions (every save adds one), with presets (dial settings for it)
+//   projectFolder()   where they are, "~/..." for the home folder
+//   tidyName()        a typed project's or preset's name as it would be saved ("" when nothing is left of it)
+//   project()         the project open (the one opened or saved last; none at first), its version, the preset applied,
+//                     and whether the editor's files and the dials have changed since; kept in the session
+//   versions()        a project's versions, the newest first; presets() its presets, by name
+//   saveVersion()     the editor's files (the draft) and the dials as they are now, by name, as a new version of the
+//                     project `name` (a new project when there is none): it is then the project open. No new version
+//                     when nothing changed since the latest (Saved::unchanged). False, with why, when it cannot
+//   openProject()     a version's files (0: the latest) become the draft (the editor shows them: draftRevision bumps)
+//                     and run; its dials are set by name once they compile
+//   deleteProject()   its file deleted; deleteVersion() one version (never the only one)
+//   savePreset()      the dials as they are now, by name, as a preset of the project open (over one of that name)
+//   applyPreset()     a preset's dials, by name: at once when its project is open, else after its latest version is
+//                     opened and compiled
+//   deletePreset()    a preset deleted
 //   chat()            the chat with Claude (ChatPort.h)
 #pragma once
 
@@ -83,10 +89,44 @@ namespace testingplaygroundsynth
         friend bool operator==(const Draft&, const Draft&) = default;
     };
 
+    struct ProjectEntry
+    {
+        std::string name;
+        std::string when;                        // its latest version's save, "2026-10-25 14:02" (local time)
+        int latest = 0;                          // its latest version's number
+        int versions = 0;                        // how many it keeps
+        int presets = 0;
+    };
+
+    struct VersionEntry
+    {
+        int number = 0;
+        std::string when;
+        std::string note;                        // what changed since the version before ("program.fm +12 -3, 2 dials")
+    };
+
     struct PresetEntry
     {
         std::string name;
-        std::string when;                        // its last save, "2026-10-25 14:02" (local time)
+        std::string when;
+        int from = 0;                            // the version it was saved with
+    };
+
+    struct ProjectState
+    {
+        std::string name;                        // "" for none
+        int version = 0;                         // the version opened or saved last (0: none kept)
+        int latest = 0;                          // the project's newest
+        std::string preset;                      // the preset applied last ("" for none)
+        bool edited = false;                     // the editor's files differ from that version's
+        bool dialsEdited = false;                // a dial moved from the preset's (or the version's) value
+    };
+
+    struct SavedVersion
+    {
+        int number = 0;
+        bool unchanged = false;                  // nothing changed since the latest: no version added
+        bool created = false;                    // a new project
     };
 
     class EditorPort
@@ -113,14 +153,19 @@ namespace testingplaygroundsynth
         virtual uint32_t alerts() const = 0;
         virtual bool frozen() const = 0;                 // the dials are frozen into the code (Patch.h)
 
-        virtual std::vector<PresetEntry> presets() const = 0;
-        virtual std::string presetFolder() const = 0;
-        virtual std::string tidyPresetName(const std::string& typed) const = 0;
-        virtual bool savePreset(const std::string& name, std::string& why) = 0;
-        virtual bool loadPreset(const std::string& name, std::string& why) = 0;
-        virtual bool deletePreset(const std::string& name, std::string& why) = 0;
-        virtual std::string presetName() const = 0;
-        virtual bool presetEdited() const = 0;
+        virtual std::vector<ProjectEntry> projects() const = 0;
+        virtual std::string projectFolder() const = 0;
+        virtual std::string tidyName(const std::string& typed) const = 0;
+        virtual ProjectState project() const = 0;
+        virtual std::vector<VersionEntry> versions(const std::string& project) const = 0;
+        virtual std::vector<PresetEntry> presets(const std::string& project) const = 0;
+        virtual bool saveVersion(const std::string& name, SavedVersion& saved, std::string& why) = 0;
+        virtual bool openProject(const std::string& name, int version, std::string& why) = 0;
+        virtual bool deleteProject(const std::string& name, std::string& why) = 0;
+        virtual bool deleteVersion(const std::string& name, int version, std::string& why) = 0;
+        virtual bool savePreset(const std::string& preset, std::string& why) = 0;
+        virtual bool applyPreset(const std::string& project, const std::string& preset, std::string& why) = 0;
+        virtual bool deletePreset(const std::string& project, const std::string& preset, std::string& why) = 0;
         virtual ChatPort& chat() = 0;
 
         virtual bool panelView() const = 0;
