@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # scripts/install.sh [--dry-run] [build-dir] [product...]: copy the built AU and VST3 of every product (or of the ones
-# named) into ~/Library/Audio/Plug-Ins, where hosts find them.
+# named) into ~/Library/Audio/Plug-Ins, where hosts find them, and its Standalone app into /Applications (or
+# ~/Applications when /Applications is not writable: it says which).
 #
 #   cmake --workflow --preset release-build && scripts/install.sh     both products, the release build (build-release)
 #   scripts/install.sh synth                                           one product: its key (products/<key>.cmake)
 #   scripts/install.sh <Name>                                          or its name (PRODUCT_NAME)
 #   scripts/install.sh build-dev effect                                a dev build instead
 #   scripts/install.sh --dry-run                                       check the bundles, say what would be copied
+#
+# For other Macs, scripts/package.sh makes an installer (.pkg) of the same parts, which installs for every user
+# (/Library/Audio/Plug-Ins): a Mac with both has each plugin twice, so keep one.
 #
 # A deliberate step, never part of a build (CMakeLists.txt sets COPY_PLUGIN_AFTER_BUILD FALSE). It replaces the
 # installed bundles of the products named only (a bundle whose signature does not hold is refused: a host would not
@@ -82,8 +86,14 @@ fi
 
 COMPONENTS="$HOME/Library/Audio/Plug-Ins/Components"
 VST3="$HOME/Library/Audio/Plug-Ins/VST3"
+# The Standalone apps: /Applications when this user may write there (an administrator), else ~/Applications.
+if [[ -w /Applications ]]; then
+  APPS="/Applications"
+else
+  APPS="$HOME/Applications"
+fi
 
-# Check every bundle first, so that a missing one installs nothing.
+# Check every bundle first, so that a missing one, or an installed one this user cannot replace, installs nothing.
 SOURCES=()
 TARGETS=()
 CONFIGS=()
@@ -99,7 +109,7 @@ for i in "${WANT[@]}"; do
     echo "install.sh: no $CONFIG build of $NAME in $ART (build first: cmake --workflow --preset release-build)" >&2
     exit 1
   fi
-  for pair in "AU/$NAME.component:$COMPONENTS" "VST3/$NAME.vst3:$VST3"; do
+  for pair in "AU/$NAME.component:$COMPONENTS" "VST3/$NAME.vst3:$VST3" "Standalone/$NAME.app:$APPS"; do
     src="$ART/$CONFIG/${pair%%:*}"
     if [[ ! -d "$src" ]]; then
       echo "install.sh: $src is missing" >&2
@@ -109,8 +119,14 @@ for i in "${WANT[@]}"; do
       echo "install.sh: $src: its signature does not hold, and hosts refuse such a bundle (build it again)" >&2
       exit 1
     fi
+    dst="${pair##*:}/$(basename "$src")"
+    # Another user's (the .pkg installs as root: its app in /Applications): removing it would fail halfway.
+    if [[ -e "$dst" && ! -O "$dst" ]]; then
+      echo "install.sh: $dst is $(stat -L -f %Su "$dst")'s, not $(id -un)'s (the .pkg's?), and cannot be replaced: remove it first (Finder asks for an administrator's password)" >&2
+      exit 1
+    fi
     SOURCES+=("$src")
-    TARGETS+=("${pair##*:}/$(basename "$src")")
+    TARGETS+=("$dst")
     CONFIGS+=("$CONFIG")
   done
 done
@@ -119,9 +135,10 @@ if [[ $DRY -eq 1 ]]; then
   for i in "${!SOURCES[@]}"; do
     echo "would install ${TARGETS[$i]} (${CONFIGS[$i]}) from ${SOURCES[$i]}"
   done
+  [[ "$APPS" == "/Applications" ]] || echo "(the apps to ~/Applications: /Applications is not writable for $(id -un))"
   exit 0
 fi
-mkdir -p "$COMPONENTS" "$VST3"
+mkdir -p "$COMPONENTS" "$VST3" "$APPS"
 for i in "${!SOURCES[@]}"; do
   src="${SOURCES[$i]}"
   dst="${TARGETS[$i]}"
@@ -133,6 +150,7 @@ for i in "${!SOURCES[@]}"; do
   echo "installed $dst (${CONFIGS[$i]})"
 done
 killall -q AudioComponentRegistrar 2>/dev/null || true
+[[ "$APPS" == "/Applications" ]] || echo "the apps went to ~/Applications: /Applications is not writable for $(id -un)"
 # The MCP servers, for Claude Desktop: each product's extension is installed from Claude Desktop, by opening its .mcpb
 # (once).
 for i in "${WANT[@]}"; do

@@ -291,7 +291,20 @@ namespace playground::ui
         void  filesDragExit() override;
         void  filesDropped(const std::vector<std::string>& paths) override;
 
+        // The Standalone's window (EditorPort::windowButtons): the room the top bar keeps at its left for the window's
+        // buttons (logical px at the host's zoom; 0 in a host's window), where the product's mark then starts. A press
+        // on the top bar where nothing is drags that window (EditorPort::dragWindow).
+        float windowButtonsRoom() const noexcept { return buttonsRoom_; }
+
     private:
+        float buttonsRoomNow() const;                    // the room for the port's buttons now (layout() keeps it)
+        void syncWindowButtons();                        // each frame: a new room lays out again (layout() tells
+                                                         // the port where they go)
+        float buttonsRoom_ = 0.0f;
+        bool buttonsPlaced_ = false;                     // the port was told where they go (while they are there)
+        bool windowPress_ = false;                       // the last press went to the window (dragWindow): its
+                                                         // double-click is none of the panel's
+
         int  itemAt(funkgui::Point) const;               // the item under p, -1 for none
         bool moveFocus(int dir);
         void setFocus(int item);

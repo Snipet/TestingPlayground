@@ -111,6 +111,16 @@ file(GLOB_RECURSE FP_EDITOR_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/editor/*
 list(FILTER FP_EDITOR_SOURCES EXCLUDE REGEX "/Source/editor/gpu/")
 file(GLOB FP_EDITOR_GPU_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/editor/gpu/*.cpp ${FP_SOURCE_ROOT}/editor/gpu/*.mm)
 file(GLOB FP_FMINUS_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/fminus/*.cpp)
+# The Standalone app (Source/plugin/standalone/, its Standalone target only): our sources' warnings, and ARC for its
+# Objective-C++.
+file(GLOB FP_STANDALONE_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/plugin/standalone/*.cpp
+                                                  ${FP_SOURCE_ROOT}/plugin/standalone/*.mm)
+fp_warn_sources(${FP_STANDALONE_SOURCES})
+foreach(_f IN LISTS FP_STANDALONE_SOURCES)
+  if(_f MATCHES "\\.mm$")
+    set_property(SOURCE ${_f} DIRECTORY ${PROJECT_SOURCE_DIR} APPEND PROPERTY COMPILE_OPTIONS -fobjc-arc)
+  endif()
+endforeach()
 
 # The editor's LIBRARY (Source/fminus/library/<n>-<category>/*.fm, in folder and then file-name order), compiled into
 # every product: building blocks a program takes as tabs of its own and #includes (the LIBRARY menu, Claude's
@@ -328,6 +338,15 @@ namespace @FP_NAMESPACE@
                             ENV_PREFIX ${PRODUCT_ENV_PREFIX} PREFS_FOLDER ${PRODUCT_NAME})
   funkgui_compile_shaders(${PRODUCT_NAME})
   funkgui_add_font(${PRODUCT_NAME})                       # the font's and bgfx's licences into each bundle
+
+  # The Standalone is our own app (Source/plugin/standalone/): JUCE's custom standalone hook leaves JUCE's out (its
+  # drawn title bar and Options button) for macOS's window, the editor's top bar under its buttons, and a menu bar. The
+  # AU and the VST3 are unchanged.
+  if(TARGET ${PRODUCT_NAME}_Standalone)
+    target_sources(${PRODUCT_NAME}_Standalone PRIVATE ${FP_STANDALONE_SOURCES})
+    target_compile_definitions(${PRODUCT_NAME}_Standalone PRIVATE JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1)
+    target_link_libraries(${PRODUCT_NAME}_Standalone PRIVATE fp_flags)
+  endif()
 
   # Each bundle exports its entry points and nothing else: the AU its factories, the VST3 its three functions, what
   # JUCE exports. Everything else stays private, LLVM above all (linked statically, with FMinus): exported, its weak

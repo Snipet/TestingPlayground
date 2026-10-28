@@ -442,6 +442,13 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   loads as a program of one file.
 - **The window** resizes in both directions, from 1000 x 600 (logical px, before the zoom) up: the editor and the chat's
   conversation take the height, the chat about a third of the width. The session keeps the size.
+- **The Standalone** (each product's app) is a Mac window of its own kind: no title bar over the editor, its close,
+  minimise and zoom buttons sit at the left end of the top bar, which keeps them room, and the top bar's empty parts
+  drag the window (a double-click there zooms or minimises it, as System Settings, Desktop & Dock, has it). The menu
+  bar holds what JUCE's Options button held: **Settings…** (Cmd-,) in the app menu picks the audio and MIDI devices;
+  **File** loads a saved state, saves the state as a file, or resets to the default state; **Edit** undoes, redoes,
+  cuts, copies, pastes and selects all in the text field you are typing in (its shortcuts work there as always, as do
+  Cmd-Return and Cmd-S); **Window** minimises and zooms. The plugins in a host have the host's window, as before.
 - The theme (the top bar's moon or sun: Graphite or Paper) and the zoom (the status bar's pill) are machine-wide
   preferences, each product's own.
 
@@ -541,8 +548,9 @@ are in `Source/plugin/ChatPrompt.cpp`).
 **Claude Desktop as the AI (MCP).** Claude Desktop can do what the chat does, on your Claude plan instead of an API
 key, and you talk to it as you would to the chat: "a tape delay with a little wow", "make a warm pad", "darker,
 please", "what does the third dial do?". Install it once for each product: open `build-release/TestingPlayground.mcpb`
-(the effect's) or `build-release/TestingPlaygroundSynth.mcpb` (the synth's), and Claude Desktop offers to add the
-extension (each product has its own, with its own icon). Then open the plugin in your DAW or as its Standalone and
+(the effect's) or `build-release/TestingPlaygroundSynth.mcpb` (the synth's), or, after the installer (below), the copy
+in `/Library/Application Support/Funk/<name>/`, and Claude Desktop offers to add the extension (each product has its
+own, with its own icon). Then open the plugin in your DAW or as its Standalone and
 ask Claude in Desktop for an effect or a sound; its **+** menu also has ready-made requests (Make an effect or Make a
 sound, Improve the sound, Explain the sound). Each open instance has a name, the lowest number free: "Effect 1",
 "Effect 2", or "Synth 1", "Synth 2"; while Claude Desktop is connected the chat card's subtitle shows it ("Claude
@@ -591,18 +599,46 @@ open build-dev/TestingPlaygroundSynth_artefacts/RelWithDebInfo/Standalone/Testin
 `dev-effect` and `dev-synth`, and the targets `effect` and `synth`, build one (`cmake --build build-dev --target
 synth`).
 
-In the effect's Standalone, the Options button in the title bar picks the audio input and output; it starts with its
-input muted (JUCE's guard against feedback): unmute it there, with headphones on. In the synth's, it picks the audio
-output and the MIDI input. For a host:
+In the effect's Standalone, **Settings…** (Cmd-, in the app menu) picks the audio input and output; it starts with its
+input muted (JUCE's guard against feedback, which a bar under the editor says): unmute it there, with headphones on. In
+the synth's, it picks the audio output and the MIDI input. The settings, the plugin's state and the window's place
+are kept where JUCE's Standalone kept them (`~/Library/Application Support/<name>.settings`). For a host:
 
 ```sh
 cmake --workflow --preset release-build  # Release with LTO, both products (build-release/)
-scripts/install.sh                       # copy both products' AU and VST3 into ~/Library/Audio/Plug-Ins
+scripts/install.sh                       # both products' AU, VST3 (~/Library/Audio/Plug-Ins) and apps (/Applications)
 scripts/install.sh synth                 # or one product's (its key, or its name)
 ```
 
 Builds never install anything by themselves; `scripts/install.sh build-dev` installs a dev build instead, and
-`--dry-run` says what it would copy. Each product's plugin code (`products/<key>.cmake`; `scripts/plugin.py info`
+`--dry-run` says what it would copy. The apps go to `/Applications`, or to `~/Applications` when you may not write
+there (it says which). A bundle it may not replace (an app the `.pkg` installed is root's) stops it before it copies
+anything: remove that one first.
+
+For another Mac, `scripts/package.sh` (after the release build, or with `--build`) makes one installer of both products,
+`build-release/dist/TestingPlayground-<version>.pkg`, in which each product is a choice of its own (**Customize**) made
+of four: the Audio Unit (into `/Library/Audio/Plug-Ins/Components`), the VST3 (`/Library/Audio/Plug-Ins/VST3`), the
+app (`/Applications`) and the Claude Desktop extension (`/Library/Application Support/Funk/<name>/<name>.mcpb`; the
+installer's last page says to double-click it, which adds it to Claude Desktop: an installer never opens Claude Desktop
+itself). It installs for every user, beside what `install.sh` put in your own `~/Library`: keep one or the other.
+`scripts/package.sh synth` packages one product. Look inside without installing: `pkgutil --payload-files <pkg>`,
+`pkgutil --expand <pkg> <folder>` (its `Distribution` is the choices).
+
+The installer is unsigned for now: the bundles keep the build's ad hoc signatures and the .pkg is not signed, so macOS
+asks before it opens (Control-click it, **Open**). Signing is ready and off unless asked for:
+
+```sh
+scripts/package.sh --sign "Developer ID Application: <you> (<team>)" \
+                   --sign-installer "Developer ID Installer: <you> (<team>)" \
+                   --notarize <profile>      # a profile stored once: xcrun notarytool store-credentials <profile>
+```
+
+(or the environment's `DEVELOPER_ID_APPLICATION`, `DEVELOPER_ID_INSTALLER`, `NOTARY_PROFILE`). Every bundle and binary
+(the plugins, the apps, the shaderc inside each, each extension's server) is signed with the hardened runtime and a
+timestamp, on copies under `build-release/dist/stage/`; each app with `scripts/entitlements/<kind>.plist`
+(`com.apple.security.cs.allow-unsigned-executable-memory`, which FMinus's JIT needs: below; the effect's also
+`com.apple.security.device.audio-input`). Then `productbuild --sign`, `notarytool submit --wait` and `stapler staple`
+on the .pkg. Each product's plugin code (`products/<key>.cmake`; `scripts/plugin.py info`
 prints both identities) is its own, so the two load in one host beside each other and your other plugins. A host that
 keeps keys for itself (some do for the space bar or the arrows, or play notes from the computer keyboard) may need its
 "keyboard to plugin" option on for typing in the editor.
@@ -652,6 +688,7 @@ a probe would find the user's own folders.
 | `gui.shaders` | a `.gui` file's shaders, built with the build's shaderc: the system prompt's example builds and FunkGui takes it; a program with three (one still, one that moves, one broken) plays, the two good ones built under their bytes' hash and the same again from the cache; the broken one a note on its own line (the name it does not know found in the file); a shader of no file and a fifth one noted; in the panel the built ones registered with FunkGui and drawn over their cells, their inputs following a parameter and the output's level, the still one settling and the moving one not, the broken one saying why (to a screen reader too), to `gui.shaders.png` |
 | `gui.panel` | a `.gui` interface in the Panel, headless, to `gui.panel.code.png`, `gui.panel.png`, `.paper.png`, `.meters.png` and `.small.png`: in the CODE view under the editor, every item inside its area and none over another, the dials' own items hidden; the Panel switch (the editor gone, the interface from the card's header down, fitting; the processor and its state keep the choice); a large log knob's drag, double-click and middle (632 Hz, the host's text); a row of buttons, the switch, the menu (the host's, ticked; chosen), a slider's drag, the pad's two parameters; the envelope's corners; the tabs (one page shown, a click shows the other; a radio group to a screen reader); audio through the processor (the meter, the light, the number, the spectrum's peak at the sine's frequency and level); at the least size the wheel scrolls the interface, and turns a knob under it; a `#pragma panel` program in the PANEL view from the column's top |
 | `gui.styles` | what a `.gui` file can make an interface look like, in the PANEL view, to `gui.styles.png`, `.fx.png`, `.mixer.png` and `.narrow.png`: a defaults line and a class reaching their elements (an element's own property winning); the knobs' nine looks, a small knob's label under it and no value, a face in px; card, inset and plate sections side by side, a frame's own corners, fill and border; a bar of three pages (a click shows the third, the processor keeps its title, its state carries it to another processor whose panel opens on it, an edited interface keeps it), pills and a side list switching their pages; the synth's keyboard (a press plays its note at its pitch, a drag slides to the next key, letting go is silent) and its wheels (the pitch wheel up reaching the Host block and springing back when let go, the mod wheel staying where it is left); a knob's live= mark at its field's value; at the least size the knobs' row wrapping onto two lines |
+| `gui.window` | the Standalone's own window, as far as it is checked without opening one, to `gui.window.png` and `.host.png`: its menu bar as data (the app menu with About, Settings… Cmd-, , Services, Hide, Hide Others, Show All and Quit; File's Load State…, Save State As… and Reset to Default State; Edit's Undo Cmd-Z, Redo Cmd-Shift-Z, Cut, Copy, Paste and Select All; Window's Minimize Cmd-M, Zoom and Bring All to Front; every shortcut its own, none the editor's: Cmd-Return, Cmd-S); in a host's window no room and no drag; with the window's buttons (60 x 14 points) the top bar keeps them room (the product's mark after them, the project's pill clear), says once where they go (its left inner edge, its middle), keeps them their size in points at 200 % and none in full screen; a press on the top bar where nothing is drags the window and a double-click's second press asks for its double-click action (whose release and double-click, wherever a zoom then puts them, leave the panel alone: a dial keeps its value), a press on a button, a right-click, one under the top bar or with PROJECTS open drags nothing; each Edit item's shortcut, sent to the focused component as the app sends it, does its work in the editor's text field (Select All, Copy, Cut, Paste, Undo, Redo) and nothing with no text field focused |
 | `lint.layers`, `lint.exports`, `lint.signature` | once, for both products: Source/dsp, Source/fsdsp and Source/fminus without JUCE or FunkGui, FMinus through its public header only; every product's bundles export their entry points and nothing else, and their signatures hold |
 
 A probe is one file in `Tools/probes/<layer>/` whose first line registers it (`// PROBE name=dsp.mytest timeout=60`)
@@ -675,9 +712,12 @@ subnormals, and in the synth makes 32 instances of Voice.
   assertions when FMinus's release preset has made it, and the dev flavor otherwise.
 - **The cost**: LLVM is linked into each binary, about 80 MB more in a Release build, and stays private to it: each
   bundle exports only its entry points (`lint.exports` checks), so two plugins with LLVM in one host do not share it,
-  nor do the two products. A DAW's hardened runtime must allow the JIT's executable memory
-  (`com.apple.security.cs.allow-jit` or `allow-unsigned-executable-memory`; Ableton Live 12 has the second); the
-  Standalones and the probes always do. FMinus's README, "Notes for running inside a plugin", has the rest.
+  nor do the two products. A DAW's hardened runtime must allow the JIT's executable memory: FMinus's LLVM maps its code
+  without `MAP_JIT` (JITLink's in-process memory manager), so it needs
+  `com.apple.security.cs.allow-unsigned-executable-memory` (Ableton Live 12 has it); `com.apple.security.cs.allow-jit`
+  alone is not enough (measured: a hardened binary with only that is killed at its first compile). The Standalones
+  signed by `scripts/package.sh` have it; unsigned builds and the probes have no hardened runtime. FMinus's README,
+  "Notes for running inside a plugin", has the rest.
 
 ## What is where
 
@@ -708,7 +748,11 @@ Source/plugin/           the JUCE AudioProcessor: an instrument's MIDI to events
                          SoundPicture (view_sound's picture, drawn with JUCE);
                          ProjectStore (the projects on this Mac: their versions, presets and info),
                          ProjectExport (a project as a source .zip or a compressed .fmpack, and back),
-                         McpLink (the instance's socket for the MCP server: Claude Desktop through the chat's tools)
+                         McpLink (the instance's socket for the MCP server: Claude Desktop through the chat's tools);
+                         StandaloneMenu (the Standalone's menu bar, as data);
+                         standalone/, the Standalone app, its target only: App.cpp (JUCE's custom standalone hook:
+                         the app, its window, the devices and the state through StandalonePluginHolder) and
+                         NativeWindow.mm (the Mac window's look, its buttons over the top bar, its drag, the menu bar)
 Source/mcp/              <Name>MCP, each product's MCP server Claude Desktop starts (Main.cpp: JSON-RPC on stdio, the
                          instances found by their sockets), McpProtocol.h (the folder, the sockets, the lines), and
                          icon-<key>.png, each product's extension's icon
@@ -728,7 +772,8 @@ Source/editor/           the FunkGui panel (Panel.cpp: the top bar, the explorer
 Tools/probes/            tests that measure, each run for both products: fminus/, dsp/, plugin/, gui/ (the panel,
                          headless)
 scripts/                 plugin.py (the products' identities: info, add, rename, codesign, notarize), test.sh,
-                         sync-dsp-core.sh, install.sh
+                         sync-dsp-core.sh, install.sh, package.sh (the installer .pkg), entitlements/ (the
+                         Standalones' hardened runtime, by kind)
 cmake/                   Deps.cmake (the pins), Flags.cmake, Probes.cmake (the probes and lints), Product.h.in, the
                          lints
 ```
