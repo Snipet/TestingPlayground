@@ -1315,6 +1315,14 @@ namespace testingplayground
         if (slot < 0 || slot >= kMaxControls)
             return 0.0f;
         const Control c = chatDials()[static_cast<std::size_t>(slot)];
+        {
+            // A value Claude set that poll() has not applied yet is the dial's now: a measurement right after set_dial
+            // renders it (as the parameter will hold it: through its range and steps).
+            const std::lock_guard<std::mutex> lock(dialMutex_);
+            for (auto it = pendingDials_.rbegin(); it != pendingDials_.rend(); ++it)
+                if (it->first == slot)
+                    return plainOf(c, normOf(c, it->second));
+        }
         const float norm = raw_[static_cast<std::size_t>(slot)]->load();
         return std::isfinite(norm) ? plainOf(c, norm) : c.def;
     }
