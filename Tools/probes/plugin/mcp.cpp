@@ -4,7 +4,8 @@
 //   LINK     a processor listens on a private socket in the folder (0600, the folder 0700) and leaves tools.json and
 //            guide.md there; info names its kind, plugin and files; tools are the chat's, but ask_user and
 //            ask_planner, each MCP description its first sentence or paragraph (tools.json's size printed, with the
-//            full descriptions for comparison); the guide's start says it is driven from outside
+//            full descriptions for comparison); the guide's start says it is driven from outside; a guide request
+//            naming no part (a 0.2.0 server's) gets the whole guide
 //   GUIDE    the guide in parts (mcp/McpGuide.h): start (working from outside, FMINUS, DSP PRACTICE, CHECKING, the
 //            notes of the tools it uses and the other parts named; its size printed, in bytes and about tokens),
 //            large-program (with THREADS), interface, library (a line a file), examples, projects, all (the system prompt whole);
@@ -492,6 +493,9 @@ PROBE(plugin, mcp)
     }
     const std::string guide = ask(*a, r, 3, "guide", object({ { "part", "start" } }))["result"].toString().toStdString();
     P.eq("link.guide", guide.rfind("WORKING FROM OUTSIDE THE PLUGIN", 0) == 0 ? 1 : 0, 1);
+    // A 0.2.0 server asks for the guide with no part, and has no way to ask for the others: it gets all of it.
+    const std::string unnamed = ask(*a, r, 10, "guide", {})["result"].toString().toStdString();
+    P.eq("link.guide_unnamed_whole", unnamed == pg::ChatAgent::mcpGuide() && unnamed != guide ? 1 : 0, 1);
 
     // ---- GUIDE -----------------------------------------------------------------------------------------------------------
     std::string interfacePart;

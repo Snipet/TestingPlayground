@@ -897,7 +897,8 @@ namespace
         // A part of the guide (mcp/McpGuide.h): from an instance, else cut from the guide.md the last one left.
         void guide(const std::string& part, Then then)
         {
-            firstOf("guide", part.empty() ? juce::var() : object({ { "part", str(part) } }), [](const juce::var& g) { return g.isString(); },
+            // The part always named: a plugin answers a guide request without one (a 0.2.0 server's) with all of it.
+            firstOf("guide", object({ { "part", str(part.empty() ? std::string("start") : part) } }), [](const juce::var& g) { return g.isString(); },
                     [part, then](Got g, const juce::var& r, const std::string& why) {
                         if (g == Got::result)
                         {

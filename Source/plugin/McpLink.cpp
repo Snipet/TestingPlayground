@@ -227,8 +227,12 @@ namespace playground
             o.setProperty("result", ChatAgent::mcpTools());
         else if (method == "guide")
         {
+            // No part named: a 0.2.0 server, which knows no parts and has no way to ask for the others (where the tools'
+            // short descriptions send Claude), so all of it.
+            const juce::DynamicObject* p = params.getDynamicObject();
+            const std::string part = p != nullptr && p->hasProperty("part") ? params["part"].toString().toStdString() : "all";
             bool found = true;
-            const std::string text = ChatAgent::mcpGuidePart(params["part"].toString().toStdString(), found);
+            const std::string text = ChatAgent::mcpGuidePart(part, found);
             o.setProperty(found ? "result" : "error", juce::String::fromUTF8(text.c_str()));
         }
         else if (method == "cancel")

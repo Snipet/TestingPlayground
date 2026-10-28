@@ -17,7 +17,8 @@
 //                          files, compiled, busy }
 //                  tools   the tools, as MCP lists them ({ name, title, description, inputSchema, annotations })
 //                  guide   { part } -> a part of what the plugin's own chat works from, for an assistant that drives it
-//                          from outside (mcp/McpGuide.h; "start" when no part is named; an error for one that is not)
+//                          from outside (mcp/McpGuide.h; an error for a part that is not). Without `part` (a 0.2.0
+//                          server, which knows no parts): the whole guide
 //                  call    { name, arguments } -> { content: [ MCP content ], isError }: one at a time, in order, but
 //                          for the live reads (ChatAgent::mcpLive), which answer at once
 //                  cancel  { id } -> { cancelled }: stop the call request `id` made on this connection (one waiting

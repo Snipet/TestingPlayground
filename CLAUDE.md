@@ -255,7 +255,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   Neither end ever waits to write: the server's and the link's sockets are non-blocking, what a socket cannot take
   yet waits in that connection's outbox (sent on `POLLOUT`), and each end keeps reading meanwhile, so a large request
   and a large reply crossing each other (more than the 8 KB a Unix socket holds on macOS) cannot leave both waiting
-  for the other to read, and the link always stops at once. Keep it so: no blocking `send` on either side.
+  for the other to read, and the link always stops at once. Keep it so: no blocking `send` on either side. Mixed
+  versions: a `guide` request naming no part (a 0.2.0 server's) gets the whole guide; the server always names one.
   A cancel stops the call running (`ChatAgent::mcpCancel`, by the call's number: it sets `cancel_`, which tune's
   progress reads, and a tune cancelled so applies nothing) or drops one waiting; a connection closing cancels its
   calls, and the link going (the plugin closing) cancels and waits for the one running.
