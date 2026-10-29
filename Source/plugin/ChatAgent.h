@@ -105,6 +105,7 @@
 // of their own, so the message thread never waits for them.
 #pragma once
 
+#include "plugin/Capture.h"
 #include "plugin/ChatPort.h"
 #include "plugin/ClaudeApi.h"
 #include "plugin/EditorPort.h"
@@ -147,6 +148,10 @@ namespace playground
         virtual uint32_t chatAlerts() const = 0;
         // A picture of the panel (view_panel), made on the message thread; this thread waits for it (10 s at most).
         virtual PanelPicture chatPicture(bool window, const std::string& page) = 0;
+        // The recorder (plugin/Capture.h; the capture tool): arm a recording (the program's own code plays while it is
+        // armed), stop it (its take kept), take (the take kept), status, forget (all of it freed, off the audio thread).
+        // stop and status are live (CLAUDE.md, "A live tool"): the recorder's own mutex and atomics only.
+        virtual capture::Reply chatCapture(capture::Action action, const capture::Options& options) = 0;
     };
 
     class ChatAgent final : public ChatPort

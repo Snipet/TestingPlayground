@@ -43,6 +43,7 @@
 // and the probes call themselves; it also clears the alerts after two seconds.
 #pragma once
 
+#include "plugin/Capture.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
 #include "plugin/McpLink.h"
@@ -125,6 +126,7 @@ namespace playground
         void setWindowHooks(WindowHooks hooks);
         Engine& engine() noexcept { return engine_; }
         Compiler& compiler() noexcept { return compiler_; }   // for the probes
+        capture::Recorder& recorder() noexcept { return capture_; }   // the capture tool's recorder (the probes)
         // The most samples one Engine::process call got since prepareToPlay (never more than it announced).
         int largestEngineCall() const noexcept { return largestCall_; }
         // The compiler's outcome to the message thread (the timer's call); settle() waits for a run first. It also makes
@@ -225,6 +227,7 @@ namespace playground
         float chatLoad() const override;
         uint32_t chatAlerts() const override;
         PanelPicture chatPicture(bool window, const std::string& page) override;
+        capture::Reply chatCapture(capture::Action action, const capture::Options& options) override;
 
         // The program: what plays, the editor's draft, the dials. Message thread, and a host's state calls. Declared
         // before the parameters, whose names and texts read controls_ (control()).
@@ -260,6 +263,8 @@ namespace playground
 
         Engine engine_;
         Compiler compiler_{ engine_ };                           // after engine_: stops before the Engine goes
+        // What the host plays, recorded for Claude (Capture.h; the audio thread writes it in hostBlock and play).
+        capture::Recorder capture_;
         // Dial values Claude set (slot, plain), applied by poll() on the message thread as host gestures.
         mutable std::mutex dialMutex_;
         // Claude's view_panel: a picture asked for (the agent's thread waits), made by poll() on the message thread.
