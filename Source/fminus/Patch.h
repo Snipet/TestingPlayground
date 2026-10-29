@@ -57,7 +57,14 @@
 // not the same bits; a result may move in its last bits (a few ulp), and while the copy plays it may depend on where
 // the host's blocks end. No fast-math flags: no reassociation, NaN and infinity kept as IEEE has them.
 //
-// Threads: compile(), freeze() and reset() run off the audio thread (or while it is stopped), the calls marked
+// The IR. What FMinus made of a program, as LLVM's textual IR (a .ll file: fminus::Program::Options::keepIr), for the
+// editor's IR view: as the code generator wrote it (lowered) and as the JIT made the machine code from it (optimised,
+// FMinus's -O2 pipeline). Kept only when asked (compile()'s `keepIr`, freeze()'s `ir`), since printing it costs time and
+// the Program holds the text while it lives; ir() and frozenIr() compile a recipe's program again for its text alone
+// (no code generated, no instance), with the options compile()'s second pass or freeze() gave it, so the text is the
+// one the code that plays came from. The appended calls are in it too (playground_process, ...).
+//
+// Threads: compile(), freeze(), ir() and reset() run off the audio thread (or while it is stopped), the calls marked
 // noexcept on it. init and end run in flush-to-zero (fsdsp::ScopedFtz), the mode the program is compiled for, on
 // whatever thread resets or destroys it.
 // The audio thread never destroys a Patch; the Engine hands it back (Engine.h).
@@ -94,6 +101,13 @@ namespace playground
         static constexpr int kVoices = 16;
         static constexpr int kInstances = 32;
 
+        // A program's LLVM IR as text (above, "The IR"): empty where it was not kept.
+        struct Ir
+        {
+            std::string lowered;              // as the code generator wrote it, before any pass ran
+            std::string optimised;            // what the JIT made the machine code from
+        };
+
         struct Result
         {
             std::unique_ptr<Patch> patch;     // null when the program does not compile or does not fit the plugin
@@ -101,11 +115,13 @@ namespace playground
                                               // the plugin's (what the program lacks), empty on success
             std::string notes;                // what the plugin wants known though the program plays (one a line)
             double compileMs = 0.0;
+            Ir ir;                            // the program's IR, when compile() was asked to keep it and it compiled
         };
 
         // Compiles `files` (the first the program, each named in the messages as it is called) for this plugin's
         // kind and creates its instances at `sampleRate`: zeroed, their parameters at their defaults, init run.
-        static Result compile(const Sources& files, float sampleRate);
+        // `keepIr`: the program's IR in Result::ir too, both texts (above, "The IR").
+        static Result compile(const Sources& files, float sampleRate, bool keepIr = false);
         // A program of one file.
         static Result compile(std::string_view source, float sampleRate, std::string_view fileName = kProgramName);
         // The editor's check while typing (Compiler::check): what compile() would say of `files`, but faster and
@@ -143,6 +159,7 @@ namespace playground
             Sources files;
             std::string source;                        // the program with the plugin's calls appended
             std::array<std::string, kMaxControls> names{};   // each control's parameter, qualified ("" for none)
+            std::array<bool, kMaxControls> streams{};        // bound as a stream (a float), else a knob
             Controls controls{};
             uint64_t program = 0;                      // Patch::program
             std::size_t size = 0, alignment = 0;       // the main module's, which the copy must keep
@@ -152,9 +169,18 @@ namespace playground
         // The frozen copy of the recipe's program at the dials' plain values (each used control's, Controls.h): off
         // the audio thread. Null, with why, when it does not compile or its main module's layout is not the program's.
         // `exactMath`: in the program's own Math::Vector rather than the copy's Math::Fast, for dsp.freeze, which
-        // measures what exact math would cost (the plugin never asks for it).
+        // measures what exact math would cost (the plugin never asks for it). `ir`: the copy's optimised IR there too
+        // (above, "The IR").
         static std::unique_ptr<Frozen> freeze(const Recipe& recipe, const std::array<float, kMaxControls>& plain,
-                                              std::string& why, bool exactMath = false);
+                                              std::string& why, bool exactMath = false, std::string* ir = nullptr);
+
+        // ---- the IR alone (above, "The IR") ------------------------------------------------------------------------
+        // The recipe's program's IR, both texts, as compile()'s second pass made its code: false, with why, when it
+        // does not compile. No code is generated and no instance made.
+        static bool ir(const Recipe& recipe, Ir& out, std::string& why);
+        // Its frozen copy's at the dials' plain values (freeze()'s options), optimised, into `out`.
+        static bool frozenIr(const Recipe& recipe, const std::array<float, kMaxControls>& plain, std::string& out,
+                             std::string& why);
 
         // ---- the audio thread ------------------------------------------------------------------------------------
         // The frozen copy's code for the calls that follow (null: the program's own). It must be of this program

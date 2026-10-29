@@ -176,6 +176,10 @@ namespace playground
         uint64_t statusRevision() const override;
         void check(const Sources& files) override;
         CheckStatus checkStatus() const override;
+        void addIrViewer() override;
+        void removeIrViewer() override;
+        IrStatus ir() const override { return compiler_.ir(); }
+        uint64_t irRevision() const override { return compiler_.irRevision(); }
         Sources running() const override;
         Controls controls() const override;
         PanelSpec panel() const override;
@@ -303,6 +307,7 @@ namespace playground
         std::vector<std::string> guiPages_;                      // its interface's pages (guiPages), in the session
         WindowHooks windowHooks_;                                // the Standalone's window (message thread)
         uint64_t settingsAsked_ = 0;                             // showSettings()'s count (message thread)
+        int irViewers_ = 0;                                      // the editors' IR views open (message thread)
         double alertsAt_ = 0.0;                                  // when alerts_ last gained a bit (ms)
 
         std::array<float, kMaxControls> values_{};               // audio thread: the last good normalised values

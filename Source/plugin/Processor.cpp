@@ -954,6 +954,20 @@ namespace playground
     void Processor::check(const Sources& files) { compiler_.check(files); }
     CheckStatus Processor::checkStatus() const { return compiler_.checkStatus(); }
 
+    // The IR is kept only while someone looks (Compiler::setIrWanted): the first view opened asks for it, the last
+    // closed lets it go.
+    void Processor::addIrViewer()
+    {
+        if (irViewers_++ == 0)
+            compiler_.setIrWanted(true);
+    }
+
+    void Processor::removeIrViewer()
+    {
+        if (irViewers_ > 0 && --irViewers_ == 0)
+            compiler_.setIrWanted(false);
+    }
+
     Sources Processor::running() const
     {
         const std::lock_guard<std::mutex> lock(programMutex_);

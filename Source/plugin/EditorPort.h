@@ -15,6 +15,10 @@
 //   check()           the editor's check while typing: Patch::check of `files` on the compiler's thread
 //                     (Compiler::check), nothing played; checkStatus() its outcome (CheckStatus::revision bumps)
 //   running()         the files of the program that plays (none before the first compiles)
+//   addIrViewer()     the IR view (the editor's IR tab, Compiler.h's "The IR"): the program's LLVM IR as text, kept only
+//   removeIrViewer()  while someone looks: a Panel adds itself while its IR tab is open and removes itself when it
+//                     closes (or the Panel goes); ir() what there is, irRevision() bumps when it changes. The IR is never
+//                     one of the program's files: not in the draft, the session, a project or an export
 //   controls()        the dials of the program that plays
 //   panel()           its interface: a .gui file's (GuiSpec.h), or how its #pragma panel lines lay its dials out
 //                     (PanelSpec.h)
@@ -206,6 +210,10 @@ namespace playground
         virtual uint64_t statusRevision() const = 0;
         virtual void check(const Sources& files) { (void)files; }
         virtual CheckStatus checkStatus() const { return {}; }
+        virtual void addIrViewer() {}
+        virtual void removeIrViewer() {}
+        virtual IrStatus ir() const { return {}; }
+        virtual uint64_t irRevision() const { return 0; }
         virtual Sources running() const = 0;
         virtual Controls controls() const = 0;
         virtual PanelSpec panel() const = 0;
