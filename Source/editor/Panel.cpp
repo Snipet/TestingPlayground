@@ -1499,6 +1499,74 @@ namespace playground::ui
             void setHidden(bool hidden) { hidden_ = hidden; }
             bool shown() const override { return !hidden_; }
         };
+
+        // ---- the top bar's load: the snowflake while the frozen copy plays ---------------------------------------------
+        // The load's text ends left of the theme's button; the snowflake sits just left of it while the dials are
+        // frozen into the code (EditorPort::frozen), and the alerts' words further left.
+        constexpr float kFrozenIcon = 11.0f;             // the snowflake's box
+        constexpr float kFrozenGap = 6.0f;               // between it and the load's text
+        constexpr float kAlertsGap = 9.0f;               // between it and the alerts' words
+
+        struct MeterPlaces
+        {
+            float loadRight = 0.0f;                      // the load's text ends here
+            float flakeX = 0.0f;                         // the snowflake's centre
+            float alertsRight = 0.0f;                    // the alerts' words end here
+        };
+
+        // `loadW` and `spaces` measured with Canvas::textWidth (text::width, which layout uses, is the same measure).
+        MeterPlaces meterPlaces(float themeX, float loadW, bool frozen, float spaces)
+        {
+            MeterPlaces m;
+            m.loadRight = themeX - 10.0f;
+            const float left = m.loadRight - loadW;
+            m.flakeX = left - kFrozenGap - 0.5f * kFrozenIcon;
+            m.alertsRight = frozen ? left - kFrozenGap - kFrozenIcon - kAlertsGap : left - spaces;
+            return m;
+        }
+
+        // The snowflake as a readout: drawn in the accent, its line in the status bar and its title for VoiceOver.
+        class FrozenItem final : public Item
+        {
+        public:
+            explicit FrozenItem(uint32_t id) : id_(id) {}
+
+            void place(float cx, float cy) { bounds_ = { cx - 9.0f, cy - 11.0f, 18.0f, 22.0f }; }
+            void setShown(bool shown) { shown_ = shown; }
+
+            void tick(float, bool, bool, funkgui::Point) override {}
+            void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool) const override
+            {
+                const funkgui::Canvas::Scope s(c, kFrozenTag, false);
+                chat::drawIcon(c, chat::Icon::snowflake, bounds_.centreX(), bounds_.centreY(), kFrozenIcon,
+                               chat::palette(th).accent);
+            }
+            bool contains(funkgui::Point p) const override { return bounds_.contains(p); }
+            void pointerDown(const funkgui::PointerEvent&, funkgui::GestureController&, funkgui::HostServices&) override {}
+            void accessibility(std::vector<funkgui::A11yItem>& out) const override
+            {
+                funkgui::A11yItem it;
+                it.id = id_;
+                it.role = funkgui::A11yRole::image;
+                it.bounds = bounds_;
+                it.title = "Frozen: the dials are compiled into the code while they hold still";
+                it.readOnly = true;
+                out.push_back(std::move(it));
+            }
+            bool a11yAction(uint32_t, funkgui::A11yAction, double, funkgui::GestureController&) override { return false; }
+            void specLine(char* out, std::size_t n) const override
+            {
+                std::snprintf(out, n, "FROZEN   THE DIALS ARE COMPILED INTO THE CODE WHILE THEY HOLD STILL");
+            }
+            funkgui::Point centre() const override { return { bounds_.centreX(), bounds_.centreY() }; }
+            bool shown() const override { return shown_; }
+            bool focusable() const override { return false; }
+
+        private:
+            uint32_t id_;
+            funkgui::Rect bounds_;
+            bool shown_ = false;
+        };
     }
 
     // ---- construction ---------------------------------------------------------------------------------------------------
@@ -1750,6 +1818,7 @@ namespace playground::ui
             sp.spec = "THEME   GRAPHITE (DARK) OR PAPER (LIGHT), FOR EVERY PLAYGROUND EDITOR ON THIS MAC";
             themeItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
         }
+        frozenItem_ = add(std::make_unique<FrozenItem>(idFor()));   // left of the load, while the dials are frozen
 
         // The zoom (the status bar's right corner): a pill of the zoom in use, its menu the host's steps; shown when the
         // host offers zoom steps (the plugin's editor does).
@@ -1948,9 +2017,23 @@ namespace playground::ui
             const float w = z.preferredWidth();
             z.setBounds({ right - w, H - kFooterH + 4.0f, w, kFooterH - 8.0f });
         }
+        placeMeter();
         ++layoutRevision_;
         dirty_ = true;
     }
+
+    void Panel::placeMeter()
+    {
+        const funkgui::FontAtlasSdf& atlas = funkgui::FontService::get().atlas();
+        const funkgui::Rect theme = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(themeItem_)]).bounds();
+        const MeterPlaces m = meterPlaces(theme.x, funkgui::text::width(atlas, meterLoad_.c_str(), chat::kSmall), frozenShown_,
+                                          funkgui::text::width(atlas, "   ", chat::kSmall));
+        auto& flake = static_cast<FrozenItem&>(*items_[static_cast<std::size_t>(frozenItem_)]);
+        flake.place(m.flakeX, kTopBarY + 0.5f * kTopBarH);
+        flake.setShown(frozenShown_);
+    }
+
+    funkgui::Point Panel::centreOfFrozen() const { return centreOf(frozenItem_); }
 
     // The chat's card: the header, the conversation, the message box (as tall as its text), its bar's buttons (as wide
     // as their labels) and the usage line.
@@ -2803,20 +2886,25 @@ namespace playground::ui
         if (status_ != statusBefore)
             dirty_ = true;
 
-        // The meter, four times a second at most: a frame for it when it changed.
-        if (meterAt_ < 0.0 || nowSec - meterAt_ >= 0.25 || nowSec < meterAt_)
+        // The meter, four times a second at most: a frame for it when it changed. The snowflake (the dials compiled in,
+        // while they hold still) comes and goes with the frame after the change.
+        const bool frozen = port_.frozen();
+        if (meterAt_ < 0.0 || nowSec - meterAt_ >= 0.25 || nowSec < meterAt_ || frozen != frozenShown_)
         {
             meterAt_ = nowSec;
-            char meter[64];
             const uint32_t a = port_.alerts();
-            std::snprintf(meter, sizeof meter, "%s%s%sCPU %.1f%%",
-                          (a & Engine::nonFinite) != 0 ? "NAN REPLACED   " : "",
-                          (a & Engine::clipped) != 0 ? "CLIPPED   " : "",
-                          port_.frozen() ? "FROZEN   " : "",       // the dials compiled in, while they hold still
-                          static_cast<double>(port_.load()) * 100.0);
-            if (meter_ != meter)
+            std::string alerts = (a & Engine::nonFinite) != 0 ? "NAN REPLACED" : "";
+            if ((a & Engine::clipped) != 0)
+                alerts += (alerts.empty() ? "" : "   ") + std::string("CLIPPED");
+            char load[32];
+            std::snprintf(load, sizeof load, "CPU %.1f%%", static_cast<double>(port_.load()) * 100.0);
+            if (meterAlerts_ != alerts || meterLoad_ != load || frozen != frozenShown_)
             {
-                meter_ = meter;
+                meterAlerts_ = std::move(alerts);
+                meterLoad_ = load;
+                frozenShown_ = frozen;
+                meter_ = meterAlerts_.empty() ? meterLoad_ : meterAlerts_ + "   " + meterLoad_;
+                placeMeter();
                 dirty_ = true;
             }
         }
@@ -4093,10 +4181,16 @@ namespace playground::ui
             const funkgui::Rect panel = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(panelViewItem_)]).bounds();
             c.rrect(code.x - 3.0f, code.y - 3.0f, panel.right() - code.x + 6.0f, code.h + 6.0f, 0.5f * (code.h + 6.0f), pal.raised,
                     1.0f, pal.cardEdge);
+            // The load, the snowflake left of it while the dials are frozen (an item: FrozenItem), the alerts left of that.
             const funkgui::Rect theme = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(themeItem_)]).bounds();
             const bool alarm = port_.alerts() != 0;
-            c.text(meter_.c_str(), theme.x - 10.0f, c.capCentreTop(mid, chat::kSmall), chat::kSmall, alarm ? pal.danger : pal.faint,
-                   funkgui::Align::right);
+            const funkgui::Col ink = alarm ? pal.danger : pal.faint;
+            const MeterPlaces m = meterPlaces(theme.x, c.textWidth(meterLoad_.c_str(), chat::kSmall), frozenShown_,
+                                              c.textWidth("   ", chat::kSmall));
+            const float top = c.capCentreTop(mid, chat::kSmall);
+            c.text(meterLoad_.c_str(), m.loadRight, top, chat::kSmall, ink, funkgui::Align::right);
+            if (!meterAlerts_.empty())
+                c.text(meterAlerts_.c_str(), m.alertsRight, top, chat::kSmall, ink, funkgui::Align::right);
         }
 
         // The program's card: its header's status (a light, and what the last run did), left of its actions.
@@ -4648,7 +4742,8 @@ namespace playground::ui
         r ^= gui * 0x2C1B3C6Du;
         // The counters times odd constants: a change in any one of them changes the revision.
         return r ^ (files().layoutRevision() * 0x85EBCA77u) ^ (layoutRevision_ * 0xC2B2AE3Du) ^ (chatA11y_ * 2654435761u)
-             ^ (explorer().revision() * 0x27220A95u) ^ (explorerShown_ ? 0x1B873593u : 0u);
+             ^ (explorer().revision() * 0x27220A95u) ^ (explorerShown_ ? 0x1B873593u : 0u)
+             ^ (frozenShown_ ? 0x68E31DA4u ^ std::bit_cast<uint32_t>(centreOfFrozen().x) : 0u);   // it moves with the load's text
     }
 
     void Panel::a11yAction(uint32_t id, funkgui::A11yAction a, double value)

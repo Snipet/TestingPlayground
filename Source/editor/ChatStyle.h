@@ -72,7 +72,8 @@ namespace playground::ui::chat
     enum class Icon : uint8_t
     {
         none, plus, key, chevronDown, chevronRight, chevronUp, arrowUp, stop, copy, check, file, play, dial, wave, alert,
-        pencil, bolt, chevronLeft, bubble, dice, blocks, list, sun, moon, code, book, question, globe, image, cross
+        pencil, bolt, chevronLeft, bubble, dice, blocks, list, sun, moon, code, book, question, globe, image, cross,
+        snowflake
     };
 
     inline void drawIcon(funkgui::Canvas& c, Icon icon, float cx, float cy, float size, funkgui::Col ink)
@@ -321,6 +322,28 @@ namespace playground::ui::chat
                 c.segment(cx, cy - s * 0.42f, cx, cy + s * 0.1f, w * 1.2f, ink);
                 c.disc(cx, cy + s * 0.38f, w * 0.75f, ink);
                 break;
+            case Icon::snowflake:
+            {
+                // Six arms (three strokes through the centre, 60 degrees apart, one of them vertical), each with a V of
+                // two short branches at 60% of its length, opening outward: frozen dials.
+                // A finer stroke than the other icons': at 10 to 12 px the Vs stay apart.
+                const float sw = std::fmax(1.0f, size * 0.085f);
+                const float arm = s * 0.96f, at = arm * 0.6f, branch = arm * 0.3f;
+                for (int k = 0; k < 3; ++k)
+                {
+                    const float a = 1.5707963f + 1.0471976f * static_cast<float>(k);
+                    const float dx = std::cos(a), dy = -std::sin(a);
+                    c.segment(cx - dx * arm, cy - dy * arm, cx + dx * arm, cy + dy * arm, sw, ink);
+                }
+                for (int k = 0; k < 6; ++k)
+                {
+                    const float a = 1.5707963f + 1.0471976f * static_cast<float>(k);
+                    const float px = cx + std::cos(a) * at, py = cy - std::sin(a) * at;
+                    for (const float turn : { -0.8726646f, 0.8726646f })   // 50 degrees off the arm
+                        c.segment(px, py, px + std::cos(a + turn) * branch, py - std::sin(a + turn) * branch, sw, ink);
+                }
+                break;
+            }
         }
     }
 }

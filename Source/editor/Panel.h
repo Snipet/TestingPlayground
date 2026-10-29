@@ -18,7 +18,8 @@
 //   toolbar   RUN (Cmd-Return in the editor too), EXAMPLES (a menu: the example replaces the text, undoably, and
 //             runs), LIBRARY (a menu of ready-made building blocks, Library.h: one becomes a tab and the program
 //             #includes it), the status (running, edited, compiling, the errors' count, the compile time) and, at
-//             the right, the audio thread's load and the output guard's alerts (NaN replaced, clipped)
+//             the right, the audio thread's load, a snowflake left of it while the frozen copy plays (the dials compiled
+//             in, Patch.h) and the output guard's alerts further left (NaN replaced, clipped)
 //   files     a tab for each of the program's files (Sources.h; at most kMaxFiles): the program's first, then the
 //             files it can #include by name. A click shows a file, a double-click edits its name in place (Return keeps
 //             it, Escape cancels), the + adds a file (its name being edited), a tab's x closes its file (asking first
@@ -131,6 +132,7 @@ namespace playground::ui
     inline constexpr funkgui::Tag kSectionTag = funkgui::tags::firstProduct + 7;      // the dials' sections
     inline constexpr funkgui::Tag kExplorerTag = funkgui::tags::firstProduct + 9;     // the explorer's card
     inline constexpr funkgui::Tag kExportTag = funkgui::tags::firstProduct + 10;      // EXPORT's card
+    inline constexpr funkgui::Tag kFrozenTag = funkgui::tags::firstProduct + 11;      // the top bar's snowflake
 
     // One message of the last run, as the problems list shows it.
     struct Problem
@@ -217,6 +219,11 @@ namespace playground::ui
         funkgui::Point centreOfProblem(int i) const;
         const std::vector<Problem>& problems() const noexcept { return problems_; }
         const std::string& statusText() const noexcept { return status_; }
+        // The top bar's load at its right: the alerts' words and the CPU's share ("CLIPPED   CPU 4.2%"), and the
+        // snowflake left of the share while the frozen copy plays (EditorPort::frozen), its place.
+        const std::string& meterText() const noexcept { return meter_; }
+        bool frozenShown() const noexcept { return frozenShown_; }
+        funkgui::Point centreOfFrozen() const;
         void runNow();                                   // RUN
         // The chat.
         funkgui::TextEditor& chatInput() noexcept;       // the message box
@@ -417,6 +424,10 @@ namespace playground::ui
         float width_ = 0.0f, height_ = 0.0f;
         uint32_t layoutRevision_ = 0;                    // bumps with each layout()
         std::string title_, subtitle_, status_, meter_;
+        std::string meterAlerts_, meterLoad_;            // meter_'s two parts, drawn either side of the snowflake
+        bool frozenShown_ = false;                       // the snowflake: the frozen copy plays
+        int frozenItem_ = -1;
+        void placeMeter();                               // the snowflake's place, left of the load's text
         std::string projectText_;                        // the project open, its version, the preset applied, in words
         ProjectBrowser projects_{ port_ };
         ExportCard export_{ port_ };
