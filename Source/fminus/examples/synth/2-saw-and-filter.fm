@@ -59,6 +59,9 @@ module Voice
     {
         step = 440 * expf(0.0577622650f * (note - 69)) / rate;
         velocity = vel;
+        env = 0;         // an instance a stolen voice left is still at its level and its filter's: start from 0
+        ic1 = 0;
+        ic2 = 0;
         rising = true;
         held = true;
     }

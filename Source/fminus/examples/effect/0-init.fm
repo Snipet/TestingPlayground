@@ -1,0 +1,47 @@
+// Init: a clean start. An input level, a dry/wet mix and an output level around an empty place for your processing:
+// with every dial at its default the sound passes through untouched, the very same samples. Write your processing
+// between the two marked lines, then press RUN (or Cmd-Return).
+//
+// The plugin plays a module Effect. Its params are the dials under the editor, up to 32, in the order they are
+// declared: a float is read sample by sample, input[i], and glides when its dial turns, so a level never clicks; an
+// int or a bool is read once a call. process gets n samples of both channels and changes them in place. A dial of
+// your own is a param line; the #pragma panel lines put the dials in sections.
+#pragma panel section "INPUT" input in
+#pragma panel section "OUTPUT" mix output out
+#pragma panel label input "GAIN"
+#pragma panel label output "GAIN"
+#pragma panel meter in "IN"
+#pragma panel meter out "OUT"
+module Effect
+{
+    param float input [[fminus::range(-24, 24)]] [[fminus::default(0)]];    // dB, into your processing
+    param float mix [[fminus::range(0, 100)]] [[fminus::default(100)]];     // %: 0 the dry input, 100 the processed
+    param float output [[fminus::range(-24, 24)]] [[fminus::default(0)]];   // dB, after the mix
+    float rate;                                                             // the sample rate, for what you add
+
+    void init(float sampleRate)
+    {
+        rate = sampleRate;
+    }
+
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            const float dryL = left[i];                             // the input as it came: the mix's dry side
+            const float dryR = right[i];
+            const float gain = expf(0.115129255f * input[i]);       // 10^(dB / 20): exactly 1 at 0 dB
+            float l = gain * dryL;
+            float r = gain * dryR;
+
+            // ---- your processing: l and r in, l and r out ----
+
+            // ---- the end of your processing ----
+
+            const float wet = mix[i] / 100;                         // exactly 1 at 100 %: the dry side adds 0
+            const float level = expf(0.115129255f * output[i]);
+            left[i] = level * ((1 - wet) * dryL + wet * l);
+            right[i] = level * ((1 - wet) * dryR + wet * r);
+        }
+    }
+};

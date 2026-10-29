@@ -30,6 +30,7 @@ module Voice
     {
         step = 440 * expf(0.0577622650f * (note - 69)) / rate;   // 2^((note - 69) / 12)
         velocity = vel;
+        env = 0;          // an instance a stolen voice left is still at its level: every note starts at 0
         held = true;
     }
 

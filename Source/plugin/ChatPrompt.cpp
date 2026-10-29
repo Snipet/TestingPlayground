@@ -722,7 +722,8 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
             s += "\" uses=\"" + uses + "\">\n" + example.front().text + "</example_program>\n";
             s += "\nIts interface, beside it in the editor:\n\n<example_interface name=\"panel.gui\">\n" + example[1].text
                  + "</example_interface>\n";
-            s += "\nTHIS PLUGIN'S EXAMPLES (the editor's EXAMPLES menu; the first is the program a new instance plays)\n";
+            s += "\nTHIS PLUGIN'S EXAMPLES (the editor's EXAMPLES menu; the first, Init, is the program a new instance plays: "
+                 "the classic init patch, a neutral start to build on, its comments saying where)\n";
             for (const Example& e : kExamples)
                 s += std::string("\n<example title=\"") + e.title + "\">\n" + e.source
                    + (std::string(e.source).empty() || std::string(e.source).back() == '\n' ? "" : "\n") + "</example>\n";

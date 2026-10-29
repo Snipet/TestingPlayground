@@ -567,8 +567,9 @@ PROBE(plugin, capture)
             const bool built = cap::replayOf(*taken.take, 0.0, -1.0, rp, why);
             const cap::Fidelity f = built ? cap::nullTest(*taken.take, rp) : cap::Fidelity{};
             std::printf("notfresh: %s\n", f.line.c_str());
-            // The synth's voices sounded on: it differs, and says why. The effect's default program (a gain and a pan) keeps
-            // no state, so even this take replays bit for bit: the line is measured, not assumed.
+            // The synth's voices sounded on: it differs, and says why. The effect's default program (Init: levels and a
+            // mix, nothing between) keeps no state, so even this take replays bit for bit: the line is measured, not
+            // assumed.
             P.eq("notfresh.measured", f.rendered && (kInstrument ? !f.identical && has(f.line, "mode last") : f.identical) ? 1 : 0, 1);
         }
 

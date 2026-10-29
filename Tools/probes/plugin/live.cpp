@@ -411,6 +411,12 @@ PROBE(plugin, live)
         q.setRateAndBufferSizeDetails(kFs, kBlock);
         q.prepareToPlay(kFs, kBlock);
         P.eq("since.program_compiles", load(q, unitsProgram()) ? 1 : 0, 1);
+        // The dials at the program's defaults: a run keeps a dial's value when the program before had one of its name
+        // in that slot (the effect's default program, Init, has a mix at 100 %).
+        for (int c = 0; c < pg::kMaxControls; ++c)
+            if (const pg::Control k = q.control(c); k.used)
+                q.getParameters()[c]->setValueNotifyingHost(pg::normOf(k, k.def));
+        q.poll();
         block(q);
         pg::ChatAgent& a = q.chatAgent();
         const juce::var none(new juce::DynamicObject());

@@ -1,13 +1,17 @@
 // PROBE name=plugin.process timeout=180
 //
 // plugin.process: the processor as a host drives it, at 48 kHz in blocks of 256, playing its default program (the first
-// of the EXAMPLES: an effect's Gain and pan, an instrument's Sine). An effect gets a 1 kHz sine at -12 dBFS on the left
-// and a 3 kHz sine at -18 dBFS on the right; an instrument plays A4 (440 Hz) at full velocity.
-//   NAMES   P1 to P32 are the program's dials to a host: P1's name is "1 gain" (an instrument's "1 attack"), its text
-//           the plain value; an unused slot's name is its number alone (P8, and the last, P32)
-//   HOST    a value written through the host (setValueNotifyingHost) reaches the program: an effect's gain at +6 dB
-//           puts the left out at -6 dBFS and the right at -12 dBFS; an instrument's level at -6 dB puts the note at
-//           -6 dBFS; within 0.05 dB, once the dial's 20 ms glide is over
+// of the EXAMPLES, Init: an effect's input, mix and output levels around nothing, an instrument's sawtooth through a
+// low-pass wide open). An effect gets a 1 kHz sine at -12 dBFS on the left and a 3 kHz sine at -18 dBFS on the right; an
+// instrument plays A4 (440 Hz) at full velocity.
+//   DEFAULT a new processor plays the first example, Init, its dials at their defaults: an effect gives its input back
+//           bit for bit; an instrument's A4 sounds at 440 Hz, within a cent
+//   NAMES   P1 to P32 are the program's dials to a host: P1's name is "1 input" (an instrument's "1 wave"), its text
+//           the plain value (an instrument's its option's name, SAW); an unused slot's name is its number alone (the
+//           first after the program's dials, and the last, P32)
+//   HOST    a value written through the host (setValueNotifyingHost) reaches the program: an effect's input at +6 dB
+//           puts the left out at -6 dBFS and the right at -12 dBFS; an instrument's wave at SINE and its volume at
+//           -6 dB put the note at -6 dBFS; within 0.05 dB, once the dial's 20 ms glide is over
 //   NAN     a NaN written by a host is ignored: the output stays finite at the last good value's level, and the
 //           host's text for it is a dash
 //   EMPTY   a block of 0 samples between two blocks changes nothing (an instrument's note-on in it still plays)
@@ -31,6 +35,7 @@
 
 #include "plugin/Processor.h"
 
+#include "Examples.h"
 #include "Product.h"
 
 #include <funkgui/panel/HeadlessGuiScope.h>
@@ -138,18 +143,46 @@ PROBE(plugin, process)
     if constexpr (kInstrument)
         a4.push_back({ 0, noteOn(69, 127) });
 
+    // DEFAULT
+    {
+        pg::Processor p;
+        P.eq("default.first_example_init", static_cast<int64_t>(std::string(pg::kExamples[0].title) == "Init"), 1);
+        P.eq("default.plays_it", p.editorPort().running() == pg::singleFile(pg::kExamples[0].source) ? 1 : 0, 1);
+        bool atDefaults = true;
+        for (int c = 0; c < pg::kMaxControls; ++c)
+            if (const pg::Control k = p.control(c); k.used)
+                atDefaults = atDefaults && p.getParameters()[c]->getValue() == pg::normOf(k, k.def);
+        P.eq("default.dials_at_defaults", atDefaults ? 1 : 0, 1);
+        HostPlan plan;
+        plan.blocks = blocksOf(n, kBlock);
+        plan.midi = a4;
+        const probe::Stereo out = hostRun(in, plan);
+        if constexpr (kInstrument)
+        {
+            const double hz = probe::frequencyHz(out.l, kFs, static_cast<std::size_t>(0.1 * kFs), static_cast<std::size_t>(0.8 * kFs));
+            std::printf("a new instrument's A4: %.4f Hz\n", hz);
+            P.near("default.a4_cents", 1200.0 * std::log2(std::max(hz, 1.0) / 440.0), 0.0, 1.0);
+        }
+        else
+            P.eq("default.passes_input_bits", probe::sameBits(out.l, in.l) && probe::sameBits(out.r, in.r) ? 1 : 0, 1);
+    }
+
     // NAMES
     {
         pg::Processor p;
+        int used = 0;
+        for (int c = 0; c < pg::kMaxControls; ++c)
+            used += p.control(c).used ? 1 : 0;
         const juce::String name = p.getParameters()[0]->getName(100);
-        std::printf("P1 is \"%s\", its default's text \"%s\"; P8 is \"%s\"\n", name.toRawUTF8(),
-                    p.getParameters()[0]->getCurrentValueAsText().toRawUTF8(), p.getParameters()[7]->getName(100).toRawUTF8());
-        P.eq("names.p1", name == (kInstrument ? "1 attack" : "1 gain") ? 1 : 0, 1);
-        P.eq("names.p8_unused", p.getParameters()[7]->getName(100) == "8" ? 1 : 0, 1);
+        const juce::String unused = p.getParameters()[used]->getName(100);
+        std::printf("P1 is \"%s\", its default's text \"%s\"; P%d is \"%s\"\n", name.toRawUTF8(),
+                    p.getParameters()[0]->getCurrentValueAsText().toRawUTF8(), used + 1, unused.toRawUTF8());
+        P.eq("names.p1", name == (kInstrument ? "1 wave" : "1 input") ? 1 : 0, 1);
+        P.eq("names.first_unused", used < pg::kMaxControls && unused == juce::String(used + 1) ? 1 : 0, 1);
         P.eq("names.params", static_cast<int64_t>(p.getParameters().size()) >= pg::kMaxControls ? 1 : 0, 1);
         P.eq("names.last_unused",
              p.getParameters()[pg::kMaxControls - 1]->getName(100) == juce::String(pg::kMaxControls) ? 1 : 0, 1);
-        P.eq("names.p1_text", p.getParameters()[0]->getCurrentValueAsText() == (kInstrument ? "5.00" : "0.00") ? 1 : 0,
+        P.eq("names.p1_text", p.getParameters()[0]->getCurrentValueAsText() == (kInstrument ? "SAW" : "0.00") ? 1 : 0,
              1);
     }
 
@@ -158,7 +191,10 @@ PROBE(plugin, process)
         pg::Processor p;
         p.setRateAndBufferSizeDetails(kFs, kBlock);
         p.prepareToPlay(kFs, kBlock);
-        const int slot = kInstrument ? 2 : 0;                   // level, gain
+        const int slot = kInstrument ? 8 : 0;                   // volume, input
+        if constexpr (kInstrument)
+            setPlain(p, 0, 3.0f);                               // wave: SINE
+        P.eq("host.slot", std::string(p.control(slot).name) == (kInstrument ? "volume" : "input") ? 1 : 0, 1);
         setPlain(p, slot, kInstrument ? -6.0f : 6.0f);
         probe::Stereo out(n);
         juce::MidiBuffer midi;
