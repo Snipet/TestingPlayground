@@ -95,6 +95,7 @@ namespace playground::measure
     };
     Sound renderSound(const Sources& files, const ViewRequest& request);
     Sound renderSound(Session& session, const ViewRequest& request);   // one compile, rendered again (at its rate)
+    Sound renderSound(Session& session, const ViewRequest& request, RenderHooks* hooks);   // its calls watched (Measure.h)
     // A sound's analysis for the picture (columns, rows, spectrum columns and the close-up from `shape`): a render's or
     // a recording's. heldUntil in seconds, -1 for none (then the whole is "held").
     View analyse(const std::vector<float>& l, const std::vector<float>& r, double rate, double heldUntil,

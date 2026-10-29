@@ -197,6 +197,20 @@ namespace playground
         bool swapping() const noexcept { return old_ != nullptr || pending_.load() != nullptr; }
         int activeVoices() const noexcept;
 
+        // Offline only (a Session's Engine, Measure.h; never the one that plays), between process calls: for a tool
+        // that watches the program as it plays (dsp/Debug.h). The program that plays, and the voices that sound (an
+        // instrument's): each one's instance, key, when it started (a count of note-ons), and whether it is released,
+        // fading (stolen) or ending (its process returned false: free at the next multiple of kGrid).
+        const Patch* playingPatch() const noexcept { return current_; }
+        struct VoiceInfo
+        {
+            int instance = 0;
+            int key = -1;
+            uint64_t age = 0;
+            bool released = false, fading = false, ending = false;
+        };
+        void voices(std::vector<VoiceInfo>& out) const;
+
     private:
         // A value that moves to its target over a fixed time, linearly, landing on it exactly.
         struct Glide

@@ -68,6 +68,9 @@
 //            its part; a check that would play the recording is refused
 //   COMPARE  compare through the agent: the editor against itself with a trial edit that halves the level shows a
 //            gain of 0.5; version:N with no project open says so; dials "current" keeps a {dials} side's own
+//   TRACE    trace through the agent (dsp/Debug.h): the program that sounds has nothing to find; a trial edit that makes
+//            its gain a NaN finds it at the first sample, in a local, the editor untouched; the recording, which there is
+//            none of yet, and a find it does not know are errors that say so
 //   PLANNER  a planning model (setPlanner): none at first, one the models do not list refused; chosen, a message's
 //            first request goes to it (its model, tool_choice none, the tools defined, no thinking block in its
 //            history, the brief after the user's words), its plan streams into a plan entry, and the builder's first
@@ -534,8 +537,8 @@ PROBE(plugin, chat)
         int eager = 0;
         for (const auto& t : tools)
             eager += static_cast<bool>(t.getProperty("eager_input_streaming", false)) ? 1 : 0;
-        P.eq("request.tools", tools.size(), 18);               // 16, and listen and compare
-        P.eq("request.tools_eager", eager, 18);
+        P.eq("request.tools", tools.size(), 19);               // 16, and listen, compare and trace
+        P.eq("request.tools_eager", eager, 19);
         bool libraryEnum = false;
         for (const auto& t : tools)
             if (str(t, "name") == "add_library_file")
@@ -1348,6 +1351,38 @@ PROBE(plugin, chat)
             const juce::Image img = juce::ImageFileFormat::loadFrom(png.getData(), png.getDataSize());
             P.eq("compare.picture", img.getWidth() == 1120 && img.getHeight() == 560 && has(words, "Best fit") ? 1 : 0, 1);
         }
+
+        // ---- TRACE ---------------------------------------------------------------------------------------------------------
+        {
+            const pg::Sources before = sp.editorPort().draft().files;
+            juce::Array<juce::var> nanEdit;
+            nanEdit.add(input({ { "file", "program.fm" },
+                                { "old_text", "const float g = expf(0.115129255f * " },
+                                { "new_text", "const float g = 0.0f / 0.0f + expf(0.115129255f * " } }));
+            ss->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .tool("toolu_t1", "trace", input({ { "find", "any" } }))
+                                           .tool("toolu_t2", "trace", input({ { "find", "nan" }, { "try_edits", nanEdit } }))
+                                           .tool("toolu_t3", "trace", input({ { "source", "capture" } }))
+                                           .tool("toolu_t4", "trace", input({ { "find", "boom" } }))
+                                           .end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("Traced.").end()));
+            const int at = turn("where does it go wrong?", 2);
+            const std::string clean = resultText(at + 1, 0), nan = resultText(at + 1, 1), capture = resultText(at + 1, 2),
+                              unknown = resultText(at + 1, 3);
+            std::printf("trace:\n%s\n%s\n%s\n%s\n", clean.c_str(), nan.c_str(), capture.c_str(), unknown.c_str());
+            P.eq("trace.clean", clean.rfind("Traced offline (nothing that plays changed): the editor's files.\n", 0) == 0
+                                    && has(clean, "Nothing found; checked: ") && has(clean, "gave the same bits") ? 1 : 0, 1);
+            P.eq("trace.trial_nan", nan.rfind("With 1 trial edit; nothing in the plugin changed.\n", 0) == 0
+                                        && has(nan, "Not a number at 0.000 s (sample 0)") && has(nan, "lives in a local") ? 1 : 0, 1);
+            P.eq("trace.editor_untouched", sp.editorPort().draft().files == before ? 1 : 0, 1);
+            const juce::Array<juce::var> results = arr(lastUser(at + 1).getProperty("content", {}));
+            P.eq("trace.capture_refused", results.size() == 4 && static_cast<bool>(results[2].getProperty("is_error", false))
+                                              && has(capture, "nothing recorded yet") ? 1 : 0, 1);
+            P.eq("trace.find_refused", results.size() == 4 && static_cast<bool>(results[3].getProperty("is_error", false))
+                                           && has(unknown, "find is one of") ? 1 : 0, 1);
+            P.eq("trace.entry", has(lastText(sa.chatState(), pg::ChatEntry::Kind::tool), "traced the sound") ? 1 : 0, 1);
+        }
     }
 
     // ---- PLANNER -------------------------------------------------------------------------------------------------------
@@ -1766,7 +1801,7 @@ PROBE(plugin, chat)
         int at = script->postCount();
         agent.send("hello");
         agent.waitIdle();
-        P.eq("web.off_no_tools", toolsOf(at).size() == 18 && webTool(at, "web_search").isVoid() ? 1 : 0, 1);
+        P.eq("web.off_no_tools", toolsOf(at).size() == 19 && webTool(at, "web_search").isVoid() ? 1 : 0, 1);
         agent.setWeb(true);
         P.eq("web.on", agent.chatState().web ? 1 : 0, 1);
         const juce::var result = input({ { "type", "web_search_tool_result" },
@@ -1805,7 +1840,7 @@ PROBE(plugin, chat)
         agent.waitIdle();
         {
             const juce::var search = webTool(at, "web_search"), fetch = webTool(at, "web_fetch");
-            P.eq("web.tools", toolsOf(at).size() == 20 && str(search, "type") == "web_search_20260209"
+            P.eq("web.tools", toolsOf(at).size() == 21 && str(search, "type") == "web_search_20260209"
                                   && static_cast<int>(search.getProperty("max_uses", 0)) == 5
                                   && str(fetch, "type") == "web_fetch_20260209"
                                   && static_cast<int>(fetch.getProperty("max_content_tokens", 0)) > 0

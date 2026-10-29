@@ -164,6 +164,14 @@ namespace playground
         return n;
     }
 
+    void Engine::voices(std::vector<VoiceInfo>& out) const
+    {
+        out.clear();
+        for (const Voice& v : voices_)
+            if (v.patch != nullptr)
+                out.push_back({ v.instance, v.key, v.age, v.released, v.fading, v.ending });
+    }
+
     // ---- the audio thread: programs ------------------------------------------------------------------------------------
     void Engine::retire(Patch*& p) noexcept
     {

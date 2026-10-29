@@ -1176,6 +1176,7 @@ namespace playground::measure
 
     bool Session::compiled() const noexcept { return impl_->ok; }
     const Controls& Session::controls() const noexcept { return impl_->controls; }
+    const Patch* Session::patch() const noexcept { return impl_->ok ? impl_->engine.playingPatch() : nullptr; }
 
     Session::Render Session::render(const Request& request, const std::vector<float>* inputL,
                                     const std::vector<float>* inputR, std::size_t length, RenderHooks* hooks)
