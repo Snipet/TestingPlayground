@@ -13,6 +13,16 @@
 #
 #   cmake --workflow --preset release-build && scripts/package.sh       both products, unsigned
 #   scripts/package.sh --build synth                                   build first, the synth alone
+#   scripts/package.sh --installer                                     the GUI installer's disk image instead (below)
+#
+# --installer: the disk image of the GUI installer (Source/installer/), build-release/dist/<Project>-Installer-<version>.dmg
+# (UDZO): "<Project> Installer.app", which the release build made with every product inside it (its payload), and a
+# short Read Me. No Applications link: the installer installs itself nowhere; it is opened from the image. With --sign,
+# a copy of the app is signed under dist/stage-installer/ (its payload's bundles inside out, as the .pkg's, the apps with
+# their entitlements, each extension's server; then the installer app itself, the hardened runtime and a timestamp),
+# and the disk image too; with --notarize, the disk image is notarized and stapled (--sign-installer is not used).
+# Without them the app keeps the build's ad hoc signature. Product names are not taken: the installer holds what the
+# build built.
 #
 # Options:
 #   --build                 run `cmake --workflow --preset release-build` first (else the build must be there)
@@ -23,7 +33,8 @@
 #   --sign-installer <id>   sign the .pkg with this Developer ID Installer identity (env DEVELOPER_ID_INSTALLER)
 #   --notarize <profile>    submit the signed .pkg to Apple's notary service with this notarytool keychain profile
 #                           (`xcrun notarytool store-credentials <profile>`), wait, and staple the ticket to it (env
-#                           NOTARY_PROFILE). Needs both identities.
+#                           NOTARY_PROFILE). Needs both identities (--installer: --sign alone, and the .dmg's)
+#   --installer             the GUI installer's disk image instead of the .pkg (above)
 #
 # Unsigned by default: the bundles keep the build's ad hoc signatures, and the .pkg is not signed, so Gatekeeper asks
 # before it opens (Control-click it, Open). Signing works on copies under build-release/dist/stage/; the build's own
@@ -36,6 +47,7 @@ die() { echo "package.sh: $*" >&2; exit 1; }
 
 # ---- the arguments -----------------------------------------------------------------------------------------------------
 BUILD_FIRST=0
+INSTALLER=0
 BUILD=""
 APP_ID="${DEVELOPER_ID_APPLICATION:-}"
 PKG_ID="${DEVELOPER_ID_INSTALLER:-}"
@@ -44,6 +56,7 @@ ASKED=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --build)          BUILD_FIRST=1 ;;
+    --installer)      INSTALLER=1 ;;
     --build-dir)      BUILD="${2:?--build-dir needs a directory}"; shift ;;
     --sign)           APP_ID="${2:?--sign needs an identity}"; shift ;;
     --sign-installer) PKG_ID="${2:?--sign-installer needs an identity}"; shift ;;
@@ -54,7 +67,10 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
-if [[ -n "$NOTARY" && ( -z "$APP_ID" || -z "$PKG_ID" ) ]]; then
+if [[ $INSTALLER -eq 1 ]]; then
+  [[ -z "$NOTARY" || -n "$APP_ID" ]] || die "--notarize needs --sign (Apple notarizes only signed code)"
+  [[ ${#ASKED[@]} -eq 0 ]] || die "--installer takes no product: the installer holds every product the build built"
+elif [[ -n "$NOTARY" && ( -z "$APP_ID" || -z "$PKG_ID" ) ]]; then
   die "--notarize needs --sign and --sign-installer (Apple notarizes only signed code)"
 fi
 BUILD="${BUILD:-build-release}"
@@ -97,31 +113,6 @@ else
 fi
 [[ ${#WANT[@]} -gt 0 ]] || die "$BUILD has none of the products built"
 
-# ---- staging: copies of the built bundles, checked ------------------------------------------------------------------------
-DIST="$BUILD/dist"
-STAGE="$DIST/stage"
-rm -rf "$STAGE"
-mkdir -p "$STAGE/components" "$STAGE/resources"
-
-# The installer's parts: "<key>|<part>|<source>|<install location>|<package file>", one a line.
-PARTS=()
-for k in "${WANT[@]}"; do
-  NAME="$(value "$k" NAME)"
-  COMPANY="$(value "$k" COMPANY)"
-  ART="$BUILD/${NAME}_artefacts/$TYPE"
-  for pair in "au:AU/$NAME.component:/Library/Audio/Plug-Ins/Components" \
-              "vst3:VST3/$NAME.vst3:/Library/Audio/Plug-Ins/VST3" \
-              "app:Standalone/$NAME.app:/Applications"; do
-    part="${pair%%:*}"; rest="${pair#*:}"
-    src="$ART/${rest%%:*}"
-    [[ -d "$src" ]] || die "$src is missing (build first: cmake --workflow --preset release-build)"
-    codesign --verify --strict "$src" 2>/dev/null || die "$src: its signature does not hold (build it again)"
-    PARTS+=("$k|$part|$src|${rest#*:}|$k-$part.pkg")
-  done
-  [[ -f "$BUILD/$NAME.mcpb" ]] || die "$BUILD/$NAME.mcpb is missing (build first)"
-  PARTS+=("$k|mcpb|$BUILD/$NAME.mcpb|/Library/Application Support/$COMPANY/$NAME|$k-mcpb.pkg")
-done
-
 # ---- signing (optional): inside out, every Mach-O, the hardened runtime and a timestamp -----------------------------------
 sign() {   # sign <path> [entitlements]
   local args=(--force --options runtime --timestamp --sign "$APP_ID")
@@ -149,6 +140,101 @@ sign_mcpb() {   # sign_mcpb <file.mcpb>: its server, signed inside a copy of the
   (cd "$dir" && cmake -E tar cf "$mcpb" --format=zip manifest.json icon.png "server/$(ls server)")
   rm -rf "$dir"
 }
+
+# ---- --installer: the GUI installer's disk image ---------------------------------------------------------------------------
+if [[ $INSTALLER -eq 1 ]]; then
+  APPNAME="$(sed -n 's/^FP_INSTALLER_NAME:INTERNAL=//p' "$CACHE")"
+  IVERSION="$(sed -n 's/^FP_INSTALLER_VERSION:INTERNAL=//p' "$CACHE")"
+  [[ -n "$APPNAME" && -n "$IVERSION" ]] || die "$CACHE names no installer (configure it again with its preset)"
+  SRC="$BUILD/Installer_artefacts/$TYPE/$APPNAME.app"
+  PAYLOAD="Contents/Resources/payload"
+  [[ -f "$SRC/$PAYLOAD/payload.json" ]] || die "$SRC has no payload (build first: cmake --workflow --preset release-build)"
+  codesign --verify --strict "$SRC" 2>/dev/null || die "$SRC: its signature does not hold (build it again)"
+  DIST="$BUILD/dist"
+  STAGE="$DIST/stage-installer"
+  rm -rf "$STAGE"
+  mkdir -p "$STAGE/image"
+  APP="$STAGE/image/$APPNAME.app"
+  ditto "$SRC" "$APP"
+  if [[ -n "$APP_ID" ]]; then
+    # The payload inside out (each product's bundles, its apps with their entitlements, its extension's server), then
+    # the installer app alone: its seal covers the payload as resources, signed already.
+    for k in "${KEYS[@]}"; do
+      [[ "$BUILT" == *" $k "* ]] || continue
+      NAME="$(value "$k" NAME)"
+      sign_bundle "$APP/$PAYLOAD/$NAME.component"
+      sign_bundle "$APP/$PAYLOAD/$NAME.vst3"
+      sign_bundle "$APP/$PAYLOAD/$NAME.app" "$ROOT/scripts/entitlements/$(value "$k" KIND).plist"
+      sign_mcpb "$APP/$PAYLOAD/$NAME.mcpb"
+    done
+    chmod -R u+w "$APP"
+    sign "$APP"
+    codesign --verify --strict --deep "$APP" || die "$APP: the signature does not verify"
+  fi
+  # The Read Me: what the installer does, in a few lines.
+  WHAT=""
+  for k in "${KEYS[@]}"; do
+    [[ "$BUILT" == *" $k "* ]] || continue
+    [[ "$(value "$k" KIND)" == "instrument" ]] && kind="a synth" || kind="an effect"
+    WHAT+="${WHAT:+, }$(value "$k" NAME) ($kind)"
+  done
+  {
+    echo "$APPNAME $IVERSION"
+    echo
+    echo "Open \"$APPNAME\" and follow it. It installs $WHAT: their Audio Unit and VST3 plugins, their apps"
+    echo "and their Claude Desktop extensions, the parts you choose, just for you (no password) or for every user of this Mac"
+    echo "(macOS asks for an administrator's password; the installer never sees it). It can also move them to the Trash"
+    echo "(Uninstall...). Nothing changes until you click Install."
+    echo
+    echo "The installer installs itself nowhere: eject this disk image when you are done."
+    [[ -z "$APP_ID" ]] && { echo; echo "This build is not signed by a developer: if macOS will not open the installer, Control-click it and choose Open."; }
+  } > "$STAGE/image/Read Me.txt"
+  OUT="$DIST/${APPNAME// /-}-$IVERSION.dmg"
+  rm -f "$OUT"
+  hdiutil create -quiet -volname "$APPNAME" -srcfolder "$STAGE/image" -fs HFS+ -format UDZO -ov "$OUT" \
+    || die "hdiutil could not make $OUT"
+  if [[ -n "$APP_ID" ]]; then
+    codesign --force --timestamp --sign "$APP_ID" "$OUT" || die "codesign failed for $OUT"
+  fi
+  if [[ -n "$NOTARY" ]]; then
+    xcrun notarytool submit "$OUT" --keychain-profile "$NOTARY" --wait || die "notarytool refused $OUT (xcrun notarytool log <id> says why)"
+    xcrun stapler staple "$OUT" || die "stapler failed for $OUT"
+    spctl --assess --type open --context context:primary-signature -vv "$OUT" || die "Gatekeeper refuses $OUT"
+  fi
+  echo "wrote $OUT ($(du -h "$OUT" | cut -f1 | tr -d ' ')): $APPNAME.app and Read Me.txt"
+  if [[ -z "$APP_ID" ]]; then
+    echo "unsigned: the installer keeps the build's ad hoc signature (Gatekeeper asks before it opens)"
+  else
+    echo "signed: the installer and its payload by $APP_ID${NOTARY:+; the disk image notarized and stapled}"
+  fi
+  echo "inspect without installing: hdiutil attach -readonly -nobrowse \"$OUT\", then look in the volume"
+  exit 0
+fi
+
+# ---- staging: copies of the built bundles, checked ------------------------------------------------------------------------
+DIST="$BUILD/dist"
+STAGE="$DIST/stage"
+rm -rf "$STAGE"
+mkdir -p "$STAGE/components" "$STAGE/resources"
+
+# The installer's parts: "<key>|<part>|<source>|<install location>|<package file>", one a line.
+PARTS=()
+for k in "${WANT[@]}"; do
+  NAME="$(value "$k" NAME)"
+  COMPANY="$(value "$k" COMPANY)"
+  ART="$BUILD/${NAME}_artefacts/$TYPE"
+  for pair in "au:AU/$NAME.component:/Library/Audio/Plug-Ins/Components" \
+              "vst3:VST3/$NAME.vst3:/Library/Audio/Plug-Ins/VST3" \
+              "app:Standalone/$NAME.app:/Applications"; do
+    part="${pair%%:*}"; rest="${pair#*:}"
+    src="$ART/${rest%%:*}"
+    [[ -d "$src" ]] || die "$src is missing (build first: cmake --workflow --preset release-build)"
+    codesign --verify --strict "$src" 2>/dev/null || die "$src: its signature does not hold (build it again)"
+    PARTS+=("$k|$part|$src|${rest#*:}|$k-$part.pkg")
+  done
+  [[ -f "$BUILD/$NAME.mcpb" ]] || die "$BUILD/$NAME.mcpb is missing (build first)"
+  PARTS+=("$k|mcpb|$BUILD/$NAME.mcpb|/Library/Application Support/$COMPANY/$NAME|$k-mcpb.pkg")
+done
 
 for p in "${PARTS[@]}"; do
   IFS='|' read -r k part src _ _ <<<"$p"
