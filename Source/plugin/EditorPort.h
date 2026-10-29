@@ -83,19 +83,29 @@ namespace playground
     class EditorPort;
 
     // A picture of the editor, for the chat's view_panel tool: a Panel of its own over the processor's ports and its
-    // EditorPort, laid out at the editor's size and drawn headless (FunkGui's SoftRaster: a shader as a placeholder),
-    // as PNG bytes. `window`: the whole editor as the user has it; else the program's panel in the PANEL view, cropped
-    // to it. `page`: a tabs element's page to show, by its title ("" for the user's). The view, the chat's fold and
-    // the pages the user has stay as they were. Message thread only. Defined in Source/editor/Picture.cpp.
+    // EditorPort, laid out at the editor's size and drawn headless on the GPU, shaders as the screen draws them
+    // (editor/Picture.h; where the GPU cannot, with SoftRaster, a shader as a striped placeholder, and `about` says so
+    // and why), as PNG bytes. `window`: the whole editor as the user has it; else the program's panel in the PANEL
+    // view, cropped to it. `page`: a tabs element's page to show, by its title ("" for the user's). The view, the chat's
+    // fold and the pages the user has stay as they were. Message thread only. Defined in Source/editor/Picture.cpp.
     struct PanelPicture
     {
         std::string png;                         // the PNG's bytes ("" when it could not be made: `why`)
         int width = 0, height = 0;               // its pixels
-        std::string about;                       // what it shows (the view, its size, the pages there are)
+        std::string about;                       // what it shows (the view, its size, the pages there are, the shaders)
         std::string why;
+        bool gpu = false;                        // drawn by the GPU; false: SoftRaster (`about` says why)
     };
     PanelPicture picturePanel(std::span<funkgui::ParamPort* const> ports, EditorPort& port, int width, int height,
                               bool window, const std::string& page);
+
+    // The pictures' GPU context. With no editor open in the process, a picture starts bgfx headless and FunkGui holds
+    // it for the next (funkgui/gpu/GpuPicture.h, "The context"). A plugin lives in its host's process, so the hold is
+    // let go once no picture has been drawn for `seconds` (kPictureHoldSeconds: a burst of pictures, as Claude Desktop
+    // takes a page after a page, starts bgfx once, and none is kept for longer). The processor's timer calls it
+    // (message thread only); nothing to do while nothing is held. Defined in Source/editor/Picture.cpp.
+    inline constexpr double kPictureHoldSeconds = 10.0;
+    void picturesIdle(double seconds = kPictureHoldSeconds);
     // The editor's files, a tab each (the first the program), and the tab it shows.
     struct Draft
     {

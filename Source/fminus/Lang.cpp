@@ -36,6 +36,8 @@ namespace playground::lang
             { "sinf", "float", "float x", "The sine of x, in radians, by the program's math mode: one result for a float "
                                           "wherever it is computed. A float vector too." },
             { "cosf", "float", "float x", "The cosine of x, in radians, by the math mode. A float vector too." },
+            { "tanf", "float", "float x", "The tangent of x, in radians, by the math mode: a filter's prewarp, "
+                                          "tanf(3.14159265f * fc / rate). A float vector too." },
             { "expf", "float", "float x", "e to the power x, by the math mode: expf(0.115129255f * dB) is a level's gain. "
                                           "A float vector too." },
             { "logf", "float", "float x", "The natural logarithm, by the math mode. A float vector too." },

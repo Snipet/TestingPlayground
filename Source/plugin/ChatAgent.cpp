@@ -1778,9 +1778,10 @@ namespace playground
                        "overlaps, text cut off, ragged rows, sizes and colours that do not read, a page left empty; "
                        "then fix what you see. view \"window\" shows the whole editor instead (the code and the "
                        "chat). page names a tabs element's page to show (the text says which pages there are). "
-                       "Shaders show as a striped placeholder (the GPU draws them) and the displays show the sound "
-                       "playing now. A picture costs about 2,000 input tokens: look once or twice for a new interface, "
-                       "not after every small change.",
+                       "Shaders are drawn as the user's screen draws them (a striped placeholder only where the GPU "
+                       "cannot draw the picture, which its text then says) and the displays show the sound playing "
+                       "now. A picture costs about 2,000 input tokens: look once or twice for a new interface, not "
+                       "after every small change.",
                        claude::object({ { "view", claude::object({ { "type", "string" },
                                                                    { "enum", juce::Array<juce::var>{ "panel", "window" } },
                                                                    { "description", "panel (the default): the program's "

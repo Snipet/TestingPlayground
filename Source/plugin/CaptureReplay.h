@@ -12,9 +12,10 @@
 // the pedal as they stood, always (the mod and pitch wheels as the request's, pressure and the pedal as events at its
 // first sample); an effect's input as it reached the Engine. A part (from, to: seconds of the take) starts and ends on
 // its host blocks. Rendered with the files of the program that played at its start (compiled at the take's rate), it
-// gives what played bit for bit when the program started from its fresh state there and its own code played; a frozen
-// copy (Math::Fast), a state left by what played before (voices still sounding, a tail, an LFO's phase) or a program
-// swapped in the middle make it differ, and the null test says where from and why.
+// gives what played bit for bit when the program started from its fresh state there (its frozen copy, Patch.h, plays
+// the program's bits, though none plays while a recording is armed); a state left by what played before (voices still
+// sounding, a tail, an LFO's phase) or a program swapped in the middle make it differ, and the null test says where
+// from and why.
 //
 // Off the audio thread only: nullTest compiles and renders (a compile, and about as long as the take plays at the
 // program's cost); the rest copies and counts (the live stop and status call them).
@@ -44,7 +45,6 @@ namespace playground::capture
         const Sources* files = nullptr;                     // its files (null: not known), in the take
         const Controls* controls = nullptr;                 // its dials, in the take
         double swappedAt = -1.0;                            // seconds into it where another program came (-1: none)
-        double frozenFrom = -1.0;                           // where the frozen copy first played in it (-1: never)
         bool fromStart = true;                              // it starts where the take does
     };
 

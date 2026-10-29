@@ -1,5 +1,8 @@
 // Source/editor/Picture.cpp: picturePanel (plugin/EditorPort.h), the chat's view_panel tool's picture: a Panel of its
-// own, headless, at the editor's size, its frame rasterised by FunkGui's SoftRaster and written as a PNG.
+// own, headless, at the editor's size, its frame drawn on the GPU (FunkGui's renderGpuPicture: shaders as on screen),
+// else with FunkGui's SoftRaster (editor/Picture.h), and written as a PNG; and the GPU context it holds (picturesIdle).
+#include "editor/Picture.h"
+
 #include "editor/Panel.h"
 #include "plugin/EditorPort.h"
 
@@ -7,8 +10,12 @@
 #include <funkgui/panel/HeadlessHost.h>
 #include <funkgui/prefs/UiPreferences.h>
 #include <funkgui/text/FontService.h>
+#if defined(FUNKGUI_HAS_BGFX) && FUNKGUI_HAS_BGFX
+#include <funkgui/gpu/GpuPicture.h>
+#endif
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -22,6 +29,17 @@ namespace playground
     namespace
     {
         constexpr float kDpi = 1.5f;             // the picture's pixels a logical px: the panel's text stays legible
+
+        std::atomic<bool> softForTests{ false };  // picture::forceSoftRasterForTests
+        // When the last picture was drawn (steady_clock, ms), for picturesIdle. Written and read on the message thread;
+        // atomic all the same, as cheap.
+        [[maybe_unused]] std::atomic<int64_t> lastPictureMs{ 0 };
+
+        [[maybe_unused]] int64_t nowMs()
+        {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+                .count();
+        }
 
         // The PNG of `img` cropped to `crop` (physical px), its bytes.
         std::string pngOf(const funkgui::Image& img, int x0, int y0, int w, int h)
@@ -69,6 +87,62 @@ namespace playground
         }
     }
 
+    namespace picture
+    {
+        void forceSoftRasterForTests(bool on) { softForTests.store(on); }
+
+        Drawn draw(const funkgui::PrimList& frame)
+        {
+            Drawn out;
+            if (softForTests.load())
+                out.why = "forced by a test";
+            else
+            {
+#if defined(FUNKGUI_HAS_BGFX) && FUNKGUI_HAS_BGFX
+                if (!funkgui::gpuPicturesSupported())
+                    out.why = "no GPU pictures on this platform";
+                else
+                {
+                    // On the message thread it draws at once, on an open editor's bgfx or a headless one it starts and
+                    // holds (picturesIdle lets that go).
+                    funkgui::GpuPicture pic = funkgui::renderGpuPicture(frame);
+                    lastPictureMs.store(nowMs());
+                    if (pic.ok() && pic.image.w > 0 && pic.image.h > 0)
+                    {
+                        out.image = std::move(pic.image);
+                        out.gpu = true;
+                        return out;
+                    }
+                    out.why = funkgui::toString(pic.status);
+                }
+#else
+                out.why = "this build has no GPU";
+#endif
+            }
+            // SoftRaster at one sample a pixel, as gpu/GpuPicture.h compares the GPU's picture with it.
+            out.image = funkgui::rasterise(frame, funkgui::FontService::get().atlas(), 1);
+            return out;
+        }
+    }
+
+    // The hold (EditorPort.h): let go `seconds` after the last picture. Releasing it shuts a headless bgfx down (an
+    // editor's goes on: nothing restarts while one is open); the next picture starts it again, its shaders' programs
+    // and the font's texture built again at their first draw. Keeping it would leave a GPU device, bgfx's buffers and
+    // one of BgfxContext's window slots alive in a host whose user closed the editor long ago; letting go after each
+    // picture would start bgfx for each of a burst (Claude Desktop looking at a page, then the next).
+    void picturesIdle(double seconds)
+    {
+#if defined(FUNKGUI_HAS_BGFX) && FUNKGUI_HAS_BGFX
+        if (!funkgui::gpuPictureContextHeld())
+            return;
+        if (static_cast<double>(nowMs() - lastPictureMs.load()) < seconds * 1000.0)
+            return;
+        funkgui::releaseGpuPictureContext();
+#else
+        static_cast<void>(seconds);
+#endif
+    }
+
     PanelPicture picturePanel(std::span<funkgui::ParamPort* const> ports, EditorPort& port, int width, int height,
                               bool window, const std::string& page)
     {
@@ -108,8 +182,9 @@ namespace playground
                 allPages += (allPages.empty() ? "" : "; ") + these;
             }
             host.settle(120);
-            const funkgui::PrimList& frame = host.draw();
-            const funkgui::Image img = funkgui::rasterise(frame, funkgui::FontService::get().atlas(), 1);
+            const picture::Drawn drawn = picture::draw(host.draw());
+            const funkgui::Image& img = drawn.image;
+            out.gpu = drawn.gpu;
             if (img.w <= 0 || img.h <= 0)
                 out.why = "the editor drew nothing";
             else
@@ -135,8 +210,10 @@ namespace playground
                           + (allPages.empty() ? std::string() : ". Its pages: " + allPages)
                           + (shownPage.empty() ? (page.empty() ? std::string() : ". There is no page " + page + "; the first pages are shown")
                                                : ". Shown: page " + shownPage)
-                          + ". Shaders show as a striped placeholder (the GPU draws them), and the displays show the sound "
-                            "playing now.";
+                          + (drawn.gpu ? std::string(". Drawn by the GPU as the user's screen draws it, shaders included")
+                                       : ". Drawn without the GPU (" + drawn.why + "): each shader shows as a striped "
+                                         "placeholder here, though the user's screen draws it")
+                          + "; the displays show the sound playing now.";
             }
         }
         port.setPanelView(view);

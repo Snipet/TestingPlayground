@@ -11,12 +11,13 @@
 //   COMPLETE  a typed prefix offers what it names first (a field, `fi` -> filter), with its type; after `.` a module's
 //             members (methods and fields), after `->` the Host's fields; after `[[` the attributes; in #include's
 //             quotes the files (the program's, host.fm, the library's); a local in its scope (and not after it), the
-//             loop's variable in the loop; a builtin with its signature; a keyword; a library module the program does
+//             loop's variable in the loop; a builtin with its signature (tanhf, and tanf, FMinus's builtin since
+//             c75caab); a keyword; a library module the program does
 //             not read, which adds its #include (lfo.fm); nothing in a comment
 //   SIGNATURE in a call: a method's (receiver's type resolved), a builtin's, a function's of another file, a vector
 //             literal's lanes; the parameter the place is in, and its place in the label
 //   HOVER     a method (its declaration and the usage header's line for it), a Host field (host.fm's line), a module
-//             (its file's header), a local (const float y), a param (its range), a keyword, a builtin
+//             (its file's header), a local (const float y), a param (its range), a keyword, a builtin (tanhf, tanf)
 //   DEFINE    a function of another file, a field, a module of the library's file, an #include's file
 //   OCCUR     a field's uses in its file (the declaration, the calls); a loop variable's, not another loop's
 //   UNCLOSED  a module whose `{` has no partner (a closer missing in a method, the file cut short) holds the rest of
@@ -30,7 +31,8 @@
 //             its library files) the same, until every library file this product's RANDOM uses has been through it;
 //             the other library files formatted compile alone with the same modules, fields and methods
 //   CHECK     Patch::check: every example is clean; a syntax error, an undeclared name, an #include of no file and a
-//             missing method give compile()'s messages word for word; its time (FMinus's pass at -O0) against RUN's
+//             missing method give compile()'s messages word for word; its time (FMinus's pass at -O0) against RUN's;
+//             a call of tanf compiles clean, and a program's own tanf is FMinus's error, the check's as RUN's
 #include "Probe.h"
 
 #include "dsp/Measure.h"
@@ -449,6 +451,8 @@ PROBE(fminus, lang)
         c = s.complete(0, posOf(tan, "tan\n", 3));
         const lg::Completion* tanh = item(c, "tanhf");
         P.eq("complete.builtin", tanh != nullptr && tanh->kind == lg::Kind::builtin && tanh->detail == "float tanhf(float x)" ? 1 : 0, 1);
+        const lg::Completion* tanf = item(c, "tanf");
+        P.eq("complete.builtin_tanf", tanf != nullptr && tanf->kind == lg::Kind::builtin && tanf->detail == "float tanf(float x)" ? 1 : 0, 1);
 
         const std::string lfo = replaced(program, "            right[i] = y;\n", "            Lf\n");
         s.setFiles(programFiles(lfo));
@@ -511,6 +515,10 @@ PROBE(fminus, lang)
         s.setFiles(programFiles(calls));
         h = s.hover(0, posOf(calls, "tanhf", 2));
         P.eq("hover.builtin", h && h->code == "float tanhf(float x)" ? 1 : 0, 1);
+        const std::string tangent = replaced(program, "            right[i] = y;\n", "            right[i] = tanf(y);\n");
+        s.setFiles(programFiles(tangent));
+        h = s.hover(0, posOf(tangent, "tanf", 2));
+        P.eq("hover.builtin_tanf", h && h->code == "float tanf(float x)" && h->doc.find("prewarp") != std::string::npos ? 1 : 0, 1);
     }
 
     // ---- DEFINE and OCCUR -------------------------------------------------------------------------------------------
@@ -734,6 +742,18 @@ PROBE(fminus, lang)
             const pg::Patch::Result full = pg::Patch::compile(files, 48000.0f);
             std::printf("check %s: %s", name.c_str(), c.errors.c_str());
             P.eq("check." + name + "_as_compile", !c.errors.empty() && c.errors == full.errors ? 1 : 0, 1);
+        }
+
+        // tanf, FMinus's builtin since c75caab (Lang's table has it): a call compiles with no message; a program's own
+        // function of that name is FMinus's error, the check's as RUN's.
+        {
+            const pg::Sources call = pg::singleFile(base + "float prewarp(float fc) { return tanf(3.14159265f * fc / 48000.0f); }\n");
+            const pg::Patch::Result c = pg::Patch::compile(call, 48000.0f);
+            P.eq("check.tanf_builtin", c.patch != nullptr && c.errors.empty() && pg::Patch::check(call).errors.empty() ? 1 : 0, 1);
+            const pg::Sources own = pg::singleFile(base + "float tanf(float x) { return sinf(x) / cosf(x); }\n");
+            const pg::Patch::Result o = pg::Patch::check(own), full = pg::Patch::compile(own, 48000.0f);
+            std::printf("check own tanf: %s", o.errors.c_str());
+            P.eq("check.tanf_own_refused", o.errors.find("'tanf' is a builtin") != std::string::npos && o.errors == full.errors ? 1 : 0, 1);
         }
     }
     return P.finish();
