@@ -926,23 +926,34 @@ namespace playground::ui
         {
             return ir_.open && view >= 0 && view < irview::kViews ? ir_.editors[static_cast<std::size_t>(view)].get() : nullptr;
         }
-        // A view's text, made from `key` (what it shows: the Panel's), unless it is already: the caret and the scroll stay
-        // where they can. False when nothing changed.
-        bool setIrText(int view, const std::string& key, const std::string& text)
+        // A view's text, made from `key` (what it shows: the Panel's) with LLVM's text `from` starting on line `body`,
+        // unless it is already: the selection (the caret and its anchor) and the scroll stay where they were in LLVM's
+        // text, moved by as many lines as the comment lines above it grew or shrank. False when nothing changed.
+        bool setIrText(int view, const std::string& key, const std::string& text, std::shared_ptr<const IrText> from, int body)
         {
             funkgui::TextEditor* e = irEditor(view);
-            if (e == nullptr || ir_.made[static_cast<std::size_t>(view)] == key)
+            const std::size_t v = static_cast<std::size_t>(view);
+            if (e == nullptr || ir_.made[v] == key)
                 return false;
-            const bool had = !ir_.made[static_cast<std::size_t>(view)].empty();
-            const funkgui::TextPos caret = e->caret();
+            const bool had = !ir_.made[v].empty();
+            const int moved = body - ir_.body[v];
+            const auto follow = [&](funkgui::TextPos p) {
+                if (p.line >= ir_.body[v])
+                    p.line = std::max(0, p.line + moved);
+                return p;
+            };
+            const funkgui::TextPos caret = follow(e->caret()), anchor = follow(e->anchor());
             const funkgui::Point scroll = e->scroll();
+            const int top = static_cast<int>(scroll.y / std::max(1.0f, e->rowHeight()));
             e->setText(text);
             if (had)
             {
-                e->setCaret(caret);
-                e->setScroll(scroll.x, scroll.y);
+                e->select(anchor, caret);
+                e->setScroll(scroll.x, top >= ir_.body[v] ? scroll.y + static_cast<float>(moved) * e->rowHeight() : scroll.y);
             }
-            ir_.made[static_cast<std::size_t>(view)] = key;
+            ir_.made[v] = key;
+            ir_.from[v] = std::move(from);
+            ir_.body[v] = body;
             return true;
         }
 
@@ -1569,6 +1580,10 @@ namespace playground::ui
             int view = 0;                            // an irview::View
             std::array<std::unique_ptr<funkgui::TextEditor>, irview::kViews> editors;
             std::array<std::string, irview::kViews> made;
+            // The IrText each view's text was made from: held, so that no other text takes its address while `made`
+            // names it; and the line LLVM's text starts on (after the comment lines and the blank line).
+            std::array<std::shared_ptr<const IrText>, irview::kViews> from;
+            std::array<int, irview::kViews> body{};
         };
         IrTab ir_;
         funkgui::Theme irTheme_ = funkgui::Theme::graphite();
@@ -3015,11 +3030,19 @@ namespace playground::ui
         if (!files().irShown())
             return;
         const int view = files().irView();
+        const irview::View v = static_cast<irview::View>(view);
         const bool frozen = port_.frozen();
-        const std::string key = std::to_string(port_.irRevision()) + '/' + std::to_string(seenStatus_) + '/'
-                              + (frozen ? 'f' : '-') + (edited_ ? 'e' : '-') + '/' + files().name(0);
-        if (key == files().irMade(view))
+        // What can change the view's text, read without a lock: the IR's revision, the last compile, the frozen copy
+        // playing (the frozen view's alone), the files edited since, the program's name. Unchanged, nothing to do.
+        const std::string seen = std::to_string(view) + '/' + std::to_string(port_.irRevision()) + '/'
+                               + std::to_string(seenStatus_) + '/' + (v == irview::View::frozen && frozen ? 'f' : '-')
+                               + (edited_ ? 'e' : '-') + '/' + files().name(0);
+        if (seen == irSeen_ && !files().irMade(view).empty())
             return;
+        irSeen_ = seen;
+        // What the text reads: its comment lines and LLVM's text (by its address: setIrText holds it). The revision
+        // bumps for anything of the IR, the frozen copy's too, which the program's views do not show: they keep their
+        // text, its selection and its scroll.
         const IrStatus ir = port_.ir();
         const CompileStatus st = port_.status();
         irview::Source from;
@@ -3028,7 +3051,15 @@ namespace playground::ui
         from.frozenPlays = frozen;
         from.edited = edited_;
         from.controls = &controls_;
-        files().setIrText(view, key, irview::text(static_cast<irview::View>(view), files().name(0), from));
+        const std::string head = irview::header(v, files().name(0), from);
+        const std::shared_ptr<const IrText>& shown = irview::shown(v, ir);
+        char id[32];
+        std::snprintf(id, sizeof id, "%p", static_cast<const void*>(shown.get()));
+        const std::string key = head + '\n' + id;
+        if (key == files().irMade(view))
+            return;
+        const int body = static_cast<int>(std::count(head.begin(), head.end(), '\n')) + 1;
+        files().setIrText(view, key, irview::text(head, shown.get()), shown, body);
         dirty_ = true;
     }
 

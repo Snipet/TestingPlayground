@@ -164,13 +164,18 @@ namespace playground::ui::irview
         return "optimised";
     }
 
-    std::string text(View v, std::string_view programFile, const Source& from)
+    const std::shared_ptr<const IrText>& shown(View v, const IrStatus& ir)
+    {
+        return v == View::lowered ? ir.lowered : v == View::frozen ? ir.frozen : ir.optimised;
+    }
+
+    std::string header(View v, std::string_view programFile, const Source& from)
     {
         const IrStatus none;
         const CompileStatus unknown;
         const IrStatus& ir = from.ir != nullptr ? *from.ir : none;
         const CompileStatus& st = from.status != nullptr ? *from.status : unknown;
-        const std::shared_ptr<const IrText>& t = v == View::lowered ? ir.lowered : v == View::frozen ? ir.frozen : ir.optimised;
+        const std::shared_ptr<const IrText>& t = shown(v, ir);
         std::string out;
         // What it is.
         switch (v)
@@ -242,22 +247,30 @@ namespace playground::ui::irview
                 comment(out, "RUN (Cmd-Return) compiles the program, and its IR shows here.");
         }
         if (t && t->cut())
-        {
-            std::size_t shown = static_cast<std::size_t>(std::count(t->text.begin(), t->text.end(), '\n'));
             comment(out, "Cut: the IR is " + counted(t->lines) + " lines (" + sizeOf(t->bytes) + "); this view holds the first "
-                         + counted(shown) + " (" + sizeOf(t->text.size()) + ").");
-        }
+                         + counted(t->shownLines) + " (" + sizeOf(t->text.size()) + ").");
+        return out;
+    }
+
+    std::string text(const std::string& head, const IrText* t)
+    {
+        std::string out;
+        out.reserve(head.size() + 1 + (t != nullptr ? t->text.size() + 64 : 0));
+        out += head;
         out += "\n";
-        if (t)
+        if (t != nullptr)
         {
             out += t->text;
             if (t->cut())
-            {
-                const std::size_t shown = static_cast<std::size_t>(std::count(t->text.begin(), t->text.end(), '\n'));
-                out += "; ... cut here: " + counted(t->lines > shown ? t->lines - shown : 0) + " more lines\n";
-            }
+                out += "; ... cut here: " + counted(t->lines > t->shownLines ? t->lines - t->shownLines : 0) + " more lines\n";
         }
         return out;
+    }
+
+    std::string text(View v, std::string_view programFile, const Source& from)
+    {
+        const IrStatus none;
+        return text(header(v, programFile, from), shown(v, from.ir != nullptr ? *from.ir : none).get());
     }
 
     void configure(funkgui::TextEditor& e, const funkgui::Theme& theme)

@@ -33,8 +33,10 @@
 //   NOTFILE   the IR is none of the program's files: not in the draft, the session's state, a project's saved files
 //             or its source export; an #include of its name finds no file
 //   SWITCH    a file's tab shows the file (the IR tab stays open); the IR tab's click shows it again, its caret kept
-//   FROZEN    blocks played with the dials still: the frozen copy plays, its row shows, its view holds the copy's IR
-//             (its define of playground_process) and says it plays
+//   FROZEN    the lowered view shown with a selection, blocks played with the dials still: the frozen copy plays and
+//             its IR is kept, the lowered view's text, selection and scroll untouched (nothing of it changed); its row
+//             shows, its view holds the copy's IR (its define of playground_process) and says it plays; a dial moved:
+//             the view says the copy stopped, a comment line more, the selection on the same text of LLVM's
 //   CLOSE     the tab's close box: the file under it shown again, the processor wants nothing, the compiler holds
 //             nothing; a RUN then keeps nothing; a Panel that goes with its IR tab open leaves nothing wanted
 #include "Probe.h"
@@ -621,12 +623,9 @@ PROBE(gui, ir)
             constexpr bool kInstrument = pg::product::kIsInstrument;
             constexpr double kRate = 48000.0;
             constexpr int kBlock = 256;
-            processor.compiler().setFreezing(true, 0.25);
-            processor.prepareToPlay(kRate, kBlock);
             juce::AudioBuffer<float> buffer(2, kBlock);
             double phase = 0.0;
-            for (int k = 0; k < 400 && !processor.engine().frozen(); ++k)
-            {
+            const auto play = [&](int k) {
                 juce::MidiBuffer midi;
                 if (kInstrument && k == 0)
                     midi.addEvent(juce::MidiMessage::noteOn(1, 57, static_cast<juce::uint8>(100)), 0);
@@ -638,11 +637,30 @@ PROBE(gui, ir)
                     buffer.setSample(1, i, v);
                 }
                 processor.processBlock(buffer, midi);
+            };
+            // The program's view shown, a selection in it: the frozen copy coming (its IR kept, the IR's revision
+            // moving) leaves its text, its selection and its scroll alone, as nothing of it changed.
+            const bool loweredShown = panel.irShown() && panel.irView() == static_cast<int>(pg::ui::irview::View::lowered);
+            P.eq("frozen.lowered_shown", loweredShown ? 1 : 0, 1);
+            panel.editor().select({ 14, 2 }, { 16, 5 });
+            const std::string selected = panel.editor().selectedText();
+            const uint32_t textRevision = panel.editor().revision();
+            const uint64_t irRevision = processor.compiler().irRevision();
+            processor.compiler().setFreezing(true, 0.25);
+            processor.prepareToPlay(kRate, kBlock);
+            for (int k = 0; k < 400 && !processor.engine().frozen(); ++k)
+            {
+                play(k);
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
             P.eq("frozen.plays", processor.engine().frozen() ? 1 : 0, 1);
+            const bool held = waitFor(host, [&] { return processor.compiler().ir().frozen != nullptr; });
             host.tick(2);
             host.settle();
+            P.eq("frozen.ir_kept", held && processor.compiler().irRevision() > irRevision ? 1 : 0, 1);
+            P.eq("frozen.program_view_untouched", static_cast<int64_t>(panel.editor().revision()), static_cast<int64_t>(textRevision));
+            P.eq("frozen.selection_kept", !selected.empty() && panel.editor().selectedText() == selected
+                                              && panel.editor().selectionStart() == funkgui::TextPos{ 14, 2 } ? 1 : 0, 1);
             const int row = rowOf(ex, S::ir, frozenName);
             P.eq("frozen.row_shown", row, 3);
             clickAt(host, ex.centreOfRow(S::ir, row));
@@ -658,8 +676,28 @@ PROBE(gui, ir)
             host.move(10.0f, 10.0f);
             host.settle();
             writePng(P, host, "gui.ir.frozen.png", "frozen");
+            // A dial moves: the copy stops playing and the view says so in a comment line more, its text made again;
+            // the selection stays on the same text of LLVM's, moved down with it.
+            {
+                funkgui::TextEditor& fe = panel.editor();
+                const int body = [&] {
+                    for (int l = 0; l < fe.lineCount(); ++l)
+                        if (fe.line(l).rfind("; ModuleID", 0) == 0)
+                            return l;
+                    return -1;
+                }();
+                fe.select({ body + 6, 0 }, { body + 7, 4 });
+                const std::string before = fe.selectedText();
+                const uint32_t revision = fe.revision();
+                processor.compiler().setFreezing(false);
+                processor.getParameters()[0]->setValueNotifyingHost(0.7f);
+                play(1);
+                const bool stopped = waitFor(host, [&] { return panel.editor().revision() != revision; });
+                P.eq("frozen.stopped", stopped && !processor.engine().frozen() ? 1 : 0, 1);
+                P.eq("frozen.says_stopped", panel.editor().text().find("It does not play now") != std::string::npos ? 1 : 0, 1);
+                P.eq("frozen.selection_follows", body > 0 && !before.empty() && panel.editor().selectedText() == before ? 1 : 0, 1);
+            }
             processor.releaseResources();
-            processor.compiler().setFreezing(false);
         }
 
         // ---- PAPER ---------------------------------------------------------------------------------------------------

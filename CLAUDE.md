@@ -275,8 +275,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
   code, nothing offered); `compileNow` never prints it (it may run on the message thread), the audio thread never
   sees it, and the texts are cut past `Compiler::kIrMaxBytes` before they reach the editor, which takes them shared
   (`IrText`); with nobody looking, nothing is printed and what the compiler held is let go (a program compiled while
-  someone looked keeps FMinus's own copy in its `fminus::Program` until it is replaced). A new view is a row in the explorer's
-  LLVM IR section, a `View`, its text in `irview::text`, its texts in `IrStatus`, and `gui.ir` rows.
+  someone looked keeps FMinus's own copy in its `fminus::Program` until it is replaced). A view's text is made again
+  only when what it reads changes (`Panel::syncIr`: its comment lines, `irview::header`, and its `IrText`), not with
+  each move of the IR's revision (the frozen copy's moves it too, which the program's views do not show), and its
+  selection and scroll follow LLVM's text. A new view is a row in the explorer's LLVM IR section, a `View`, its text in
+  `irview::header` and `irview::shown`, its texts in `IrStatus`, and `gui.ir` rows.
 
 ## The chat (Claude)
 

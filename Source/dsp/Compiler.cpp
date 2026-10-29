@@ -155,11 +155,15 @@ namespace playground
         t->bytes = text.size();
         t->lines = static_cast<std::size_t>(std::count(text.begin(), text.end(), '\n')) + (text.back() == '\n' ? 0 : 1);
         if (text.size() <= kIrMaxBytes)
+        {
             t->text = text;
+            t->shownLines = t->lines;
+        }
         else
         {
             const std::size_t end = text.rfind('\n', kIrMaxBytes - 1);
             t->text = text.substr(0, end == std::string::npos ? kIrMaxBytes : end + 1);
+            t->shownLines = static_cast<std::size_t>(std::count(t->text.begin(), t->text.end(), '\n'));
         }
         return t;
     }

@@ -87,6 +87,7 @@ namespace playground
         std::string text;                      // LLVM's text, whole, or cut at a line's end past Compiler::kIrMaxBytes
         std::size_t bytes = 0;                 // the whole text's size and lines
         std::size_t lines = 0;
+        std::size_t shownLines = 0;            // the lines `text` holds (lines, when it is whole)
         bool cut() const noexcept { return text.size() < bytes; }
     };
 

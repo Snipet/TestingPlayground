@@ -439,6 +439,7 @@ namespace playground::ui
         // The IR view: this Panel is an IR viewer while its IR tab is open (EditorPort::addIrViewer), and the view shown
         // has its text made from what there is (refresh(); a view shown again catches up then).
         bool irViewing_ = false;
+        std::string irSeen_;                             // what syncIr last looked at
         void syncIr();
         void openProjectNamed(const std::string& name);  // its newest version, asking first over unsaved edits
         void applyPresetNamed(const std::string& name);  // a preset of the project open

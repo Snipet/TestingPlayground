@@ -12,11 +12,12 @@
 //
 // Each view is a funkgui::TextEditor of its own, read only (it moves, selects, copies, finds and goes to a line; typing,
 // pasting, undo and the line commands change nothing), highlighted as LLVM IR (IrHighlighter, in the code's palette),
-// its caret and scroll kept while the tab is open; FMinus's language features (completion, signature help, hover,
+// its selection and scroll kept while the tab is open; FMinus's language features (completion, signature help, hover,
 // squiggles, Format, the check while typing) are off in it (CodeAssist.h). Its text is a few comment lines saying what
 // it is and how the program stands (nothing compiled yet, its IR being made, the last RUN failed, the editor's files
 // changed since, the frozen copy not playing, the text cut), then LLVM's text, brought up to date after each RUN that
-// compiles and whenever the frozen copy changes. While the tab is open its Panel is an IR viewer
+// compiles and, the frozen view, whenever the frozen copy changes; made again only when one of the two changes (the
+// selection and the scroll following LLVM's text). While the tab is open its Panel is an IR viewer
 // (EditorPort::addIrViewer): the next compile keeps the IR, or the compiler's thread makes it for the program that
 // plays; closed, nothing is kept.
 #pragma once
@@ -29,6 +30,7 @@
 #include <funkgui/widgets/TextEditor.h>
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -53,8 +55,15 @@ namespace playground::ui::irview
         bool edited = false;
         const Controls* controls = nullptr;          // the dials of the program that plays (the frozen copy's values)
     };
-    // The view's text (above): its comment lines, then LLVM's text.
+    // The view's text (above): its comment lines (header), a blank line, then LLVM's text (shown), with a last comment
+    // line when it is cut. The same header and the same IrText make the same text: what a view shows is keyed on the
+    // two (Panel::syncIr), so a change elsewhere (the frozen copy's, for the program's views) leaves it as it is.
     std::string text(View v, std::string_view programFile, const Source& from);
+    std::string text(const std::string& header, const IrText* shown);
+    // The comment lines alone: what the view is and how the program stands (a line each, "; ..."; no blank line after).
+    std::string header(View v, std::string_view programFile, const Source& from);
+    // LLVM's text the view shows (null: none).
+    const std::shared_ptr<const IrText>& shown(View v, const IrStatus& ir);
 
     // A view's editor made one (read only, the code's font, line numbers, the bracket pair, the minimap, its
     // highlighter), in the code's palette for `theme`.
