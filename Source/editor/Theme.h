@@ -15,22 +15,26 @@
 // errors (signal). The effect's is FunkGui's signal, as it always was; the instrument's a teal (#4EC9B0, PAPER
 // #0F7A68), as its signal's orange is the effect's accent and its accent is blue.
 //
+// The colours are a kind's (kindTheme, kindCodeSecond: effect or instrument), so the installer (Source/installer/),
+// which is no product's, draws each product's mark in its own accent. productTheme() and codeSecond() are the product's
+// kind's, defined in Theme.cpp: this header names no product (no Product.h), so code built for no product includes it.
+//
 // Tools/logo/logo.swift reads the instrument's accent from the `t.accent = dark ? funkgui::Col{...} : ...` line below
 // (keep its shape): change it, run the script, and the icons follow.
 //
 // Leave textGamma alone: the host records the theme's text gamma into the frame before the Panel draws.
 #pragma once
 
+#include <funkgui/core/Col.h>
 #include <funkgui/core/Theme.h>
-
-#include "Product.h"
 
 namespace playground::ui
 {
-    inline funkgui::Theme productTheme(const funkgui::Theme& host)
+    // The theme of a product of that kind (an instrument's when `instrument`, else an effect's).
+    inline funkgui::Theme kindTheme(const funkgui::Theme& host, bool instrument)
     {
         funkgui::Theme t = host;
-        if constexpr (product::kIsInstrument)
+        if (instrument)
         {
             const bool dark = host.ground.r < 128;
             t.accent = dark ? funkgui::Col{ 0x4F, 0xC3, 0xF7 } : funkgui::Col{ 0x0B, 0x6E, 0x99 };
@@ -40,13 +44,16 @@ namespace playground::ui
         return t;
     }
 
-    // The code's types and a note's marks (above), for the theme productTheme() made.
-    inline funkgui::Col codeSecond(const funkgui::Theme& th)
+    // The code's types and a note's marks (above), for the theme kindTheme() made for that kind.
+    inline funkgui::Col kindCodeSecond(const funkgui::Theme& th, bool instrument)
     {
         const bool dark = th.ground.r < 128;
-        if constexpr (product::kIsInstrument)
+        if (instrument)
             return dark ? funkgui::Col{ 0x4E, 0xC9, 0xB0 } : funkgui::Col{ 0x0F, 0x7A, 0x68 };
-        else
-            return dark ? funkgui::Col{ 0x7F, 0xD4, 0xE8 } : funkgui::Col{ 0x1E, 0x7E, 0x96 };
+        return dark ? funkgui::Col{ 0x7F, 0xD4, 0xE8 } : funkgui::Col{ 0x1E, 0x7E, 0x96 };
     }
+
+    // The product's: kindTheme() and kindCodeSecond() for its kind (Theme.cpp, compiled into each product).
+    funkgui::Theme productTheme(const funkgui::Theme& host);
+    funkgui::Col codeSecond(const funkgui::Theme& th);
 }
