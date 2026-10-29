@@ -5,10 +5,11 @@
 #                         its commit and those of its submodules bgfx, bx and bimg are asserted
 #   shaderc               the prebuilt ${FP_DEPS_DIR}/tools/shaderc-<tag>/shaderc when its stamp names the pinned
 #                         bgfx.cmake commit, else built from bgfx.cmake (slow: about 2,000 CPU-seconds)
-#   FunkGui v0.23.0       FetchContent at the pinned tag from FP_FUNKGUI_REPO: this machine's local repository
+#   FunkGui v0.23.1       FetchContent at the pinned tag from FP_FUNKGUI_REPO: this machine's local repository
 #                         (~/audio/libraries/FunkGui) when it exists, else GitHub; the commit is asserted. v0.17.0
 #                         brought the TextEditor, v0.18.0 resizable Panels, v0.19.0 custom shaders, v0.20.0 images,
-#                         v0.22.0 the TextEditor's code-editor hooks, v0.23.0 GPU pictures (view_panel's)
+#                         v0.22.0 the TextEditor's code-editor hooks, v0.23.0 GPU pictures (view_panel's), v0.23.1
+#                         their hold keeping no editor's slot
 #   FMinus                FetchContent at the pinned commit from FP_FMINUS_REPO (~/audio/libraries/FMinus, else
 #                         GitHub): the JIT compiler, its library and runtime only. Its LLVM, Bison and Flex are the
 #                         ones FMinus's own builds put in its deps cache (FP_FMINUS_DEPS_DIR), read, never built here
@@ -31,9 +32,9 @@ set(FP_BGFX_API          153)
 set(FP_BGFX_SUB_SHAS     bgfx=c7684e20da1e385edc439ef39cdb42b8c661016f
                          bx=0b001f5f36579e8aea07efa5af139ca18dad9505
                          bimg=3b4baab0128ac499c5c3bc37202781bf54084049)
-set(FP_FUNKGUI_TAG       v0.23.0)
-set(FP_FUNKGUI_SHA       bcd2dac34548e674eaaa866d791b20b57daf1a65)
-set(FP_FUNKGUI_VERSION   0.23.0)
+set(FP_FUNKGUI_TAG       v0.23.1)
+set(FP_FUNKGUI_SHA       913dafae2df9047589f31cb1e7bf92af1c1f5f45)
+set(FP_FUNKGUI_VERSION   0.23.1)
 set(FP_FMINUS_SHA        c75caab36b5eada528a0d772f93e5547a5731a53)   # FMinus has no tags: a commit of its main
 set(FP_FMINUS_LLVM       23.1.3)                                     # the LLVM that commit pins (cmake/FMinusPins.cmake)
 
