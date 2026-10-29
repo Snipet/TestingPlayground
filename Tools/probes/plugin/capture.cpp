@@ -18,7 +18,10 @@
 //             there, its take whole up to there, the Engine's clock counted from the last prepare
 //   OVERFLOW  blocks of one sample: next ends when its blocks fill (flagged), what it kept bit for bit; last keeps fewer
 //             than its seconds (flagged), bit for bit; an instrument's block of 40,000 events ends next before that
-//             block (flagged); the processing never waits, its output a processor's that never records, bit for bit
+//             block (flagged); the processing never waits, its output a processor's that never records, bit for bit;
+//             a host announcing blocks of 65,536 at 44.1 kHz (more than last's second): its newest block kept whole
+//   RACE      status copied on another thread while blocks of 16 samples play (the blocks' ring wrapping): every take
+//             holds together (its blocks back to back, its samples and events theirs)
 //   FREEZE    a frozen copy playing (Compiler::freezeNow) stops the block after arm, one offered while armed is refused,
 //             and after forget one plays again
 //   SIZE      20 s at 48 kHz: what an armed recording holds (at most 25 MB), and the live status and stop each within
@@ -60,6 +63,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -67,6 +71,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace pg = playground;
@@ -419,6 +424,26 @@ namespace
                 "    }\n};\n");
     }
 
+    // A take that holds together: its blocks back to back from 0, its samples and events theirs, each event in its block.
+    bool whole(const cap::Take& t)
+    {
+        if (t.blocks.empty())
+            return t.samples() == 0 && t.events.empty();
+        uint64_t s = 0, e = 0;
+        for (const cap::Block& b : t.blocks)
+        {
+            if (b.sample != s || b.event != e || e + b.events > t.events.size())
+                return false;
+            for (uint64_t k = e; k < e + b.events; ++k)
+                if (t.events[k].sample < b.sample || t.events[k].sample > b.sample + b.size)
+                    return false;
+            s += b.size;
+            e += b.events;
+        }
+        return t.out[0].size() == s && t.out[1].size() == s && e == t.events.size()
+            && (!t.input || (t.in[0].size() == s && t.in[1].size() == s));
+    }
+
     bool hasImage(const pg::ChatAgent::McpResult& r)
     {
         if (const juce::Array<juce::var>* c = r.content.getArray())
@@ -729,6 +754,78 @@ PROBE(plugin, capture)
         P.eq("overflow.events_flagged", ok && (s.take->trimmed & cap::eventsLimit) != 0 && s.take->blocks.size() == 3 ? 1 : 0, 1);
         P.eq("overflow.events_bits", ok && matchTake(*s.take, r, 2).all() ? 1 : 0, 1);
         P.eq("overflow.events_changes_nothing", r.sameAsRef ? 1 : 0, 1);
+    }
+    {
+        // A host that announces blocks larger than last's whole ring (65,536 samples at 44.1 kHz, a second asked): the
+        // Engine's calls fit it, and the take keeps the newest block whole, bit for bit.
+        constexpr double kRate = 44100.0;
+        constexpr int kHuge = 65536;
+        pg::Processor p;
+        p.compiler().setFreezing(false);
+        p.setRateAndBufferSizeDetails(kRate, kHuge);
+        p.prepareToPlay(kRate, kHuge);
+        p.recorder().act(cap::Action::arm, { cap::Mode::last, 1.0, false });
+        juce::AudioBuffer<float> b(2, kHuge);
+        std::array<std::vector<float>, 2> got;
+        for (int k = 0; k < 3; ++k)
+        {
+            juce::MidiBuffer midi;
+            for (int c = 0; c < 2; ++c)
+                for (int i = 0; i < kHuge; ++i)
+                    b.setSample(c, i, kInstrument ? 0.0f : sine(c, static_cast<uint64_t>(k * kHuge + i)));
+            if (kInstrument)
+                midi.addEvent(juce::MidiMessage::noteOn(1, 60 + k, static_cast<juce::uint8>(100)), 100);
+            p.processBlock(b, midi);
+            for (int c = 0; c < 2; ++c)
+                got[static_cast<std::size_t>(c)].assign(b.getReadPointer(c), b.getReadPointer(c) + kHuge);
+        }
+        const cap::Reply s = p.recorder().act(cap::Action::stop, {});
+        const bool ok = s.take != nullptr && s.take->blocks.size() == 1 && s.take->samples() == static_cast<uint64_t>(kHuge);
+        std::printf("overflow, huge blocks: %s, %zu blocks, %.3f s\n", ok ? "kept" : "not kept",
+                    s.take != nullptr ? s.take->blocks.size() : 0, s.take != nullptr ? s.take->seconds() : 0.0);
+        P.eq("overflow.huge_block_kept", ok && sameFloats(s.take->out[0], got[0].data(), got[0].size())
+                                             && sameFloats(s.take->out[1], got[1].data(), got[1].size()) ? 1 : 0, 1);
+    }
+
+    // ---- RACE: status copied on another thread while the host plays blocks of 16 samples, the blocks' ring wrapping
+    // every 0.6 s: every take holds together (its blocks back to back, its samples and events theirs) --------------------
+    {
+        pg::Processor p;
+        p.compiler().setFreezing(false);
+        p.setRateAndBufferSizeDetails(kFs, kPrepared);
+        p.prepareToPlay(kFs, kPrepared);
+        p.recorder().act(cap::Action::arm, { cap::Mode::last, 1.0, false });
+        std::atomic<bool> playing{ true };
+        int takes = 0, broken = 0;
+        std::thread reader([&] {
+            while (playing.load())
+                if (const cap::Reply st = p.recorder().act(cap::Action::status, {}); st.take != nullptr && !st.take->blocks.empty())
+                {
+                    ++takes;
+                    broken += whole(*st.take) ? 0 : 1;
+                }
+        });
+        juce::AudioBuffer<float> b(2, 16);
+        for (uint64_t k = 0; k < 12000; ++k)
+        {
+            juce::MidiBuffer midi;
+            for (int c = 0; c < 2; ++c)
+                for (int i = 0; i < 16; ++i)
+                    b.setSample(c, i, kInstrument ? 0.0f : sine(c, k * 16 + static_cast<uint64_t>(i)));
+            if (kInstrument && k % 40 == 0)
+                midi.addEvent(juce::MidiMessage::noteOn(1, 48 + static_cast<int>(k / 40 % 24), static_cast<juce::uint8>(90)), 3);
+            if (kInstrument && k % 40 == 20)
+                midi.addEvent(juce::MidiMessage::noteOff(1, 48 + static_cast<int>(k / 40 % 24)), 5);
+            p.processBlock(b, midi);
+        }
+        playing.store(false);
+        reader.join();
+        const cap::Reply s = p.recorder().act(cap::Action::stop, {});
+        std::printf("race: %d takes copied while it played, %d broken; the last %.3f s\n", takes, broken,
+                    s.take != nullptr ? s.take->seconds() : 0.0);
+        P.ge("race.takes", static_cast<double>(takes), 20.0);
+        P.eq("race.takes_whole", broken, 0);
+        P.eq("race.stop_whole", s.take != nullptr && !s.take->blocks.empty() && whole(*s.take) ? 1 : 0, 1);
     }
 
     // ---- REPLAY ---------------------------------------------------------------------------------------------------------

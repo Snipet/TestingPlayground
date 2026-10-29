@@ -45,9 +45,16 @@ namespace playground::capture
             return v;
         }
 
-        // n samples into a ring of `frames` from sample `at` (it wraps).
+        // n samples into a ring of `frames` from sample `at` (it wraps; of more than it holds, the last `frames`).
         void putSamples(std::atomic<float>* ring, uint64_t frames, uint64_t at, const float* x, int n) noexcept
         {
+            if (static_cast<uint64_t>(n) > frames)
+            {
+                const uint64_t skip = static_cast<uint64_t>(n) - frames;
+                x += skip;
+                at += skip;
+                n = static_cast<int>(frames);
+            }
             const uint64_t i0 = at % frames;
             const uint64_t first = std::min<uint64_t>(static_cast<uint64_t>(n), frames - i0);
             for (uint64_t i = 0; i < first; ++i)
@@ -518,7 +525,10 @@ namespace playground::capture
         r->input = !product::kIsInstrument;
         r->freshFrom = o.mode == Mode::next && o.restart ? o.freshFrom : 0;
         const auto asked = static_cast<uint64_t>(std::ceil(r->options.seconds * static_cast<double>(rate)));
-        r->frames = asked + (o.mode == Mode::last ? kLastSlack : 0);
+        // last: room past `seconds` for the block being written while a reader copies (two of the Engine's calls at
+        // least: a host may announce very large blocks).
+        const uint64_t slack = std::max<uint64_t>(kLastSlack, 2 * static_cast<uint64_t>(std::max(r->part, 0)));
+        r->frames = asked + (o.mode == Mode::last ? slack : 0);
         r->blockCap = r->frames / kAverageBlock + 64;
         r->eventCap = product::kIsInstrument ? static_cast<uint64_t>(kEventCapacity) : 0;
         // Allocated and zeroed here (every page touched), so the audio thread never faults one in.
@@ -633,17 +643,29 @@ namespace playground::capture
 
         // The blocks the ring still holds, then those the take keeps: last's `seconds`, what the samples' and the
         // events' rings hold.
-        const uint64_t first = done > r.blockCap ? done - r.blockCap : 0;
+        uint64_t first = done > r.blockCap ? done - r.blockCap : 0;
         std::vector<Block> blocks(static_cast<std::size_t>(done - first));
         for (std::size_t k = 0; k < blocks.size(); ++k)
             blocks[k] = getWords<Block>(&r.blocks[((first + k) % r.blockCap) * kBlockWords]);
+        // A slot the audio thread wrote again while this copied (once the ring has wrapped, the oldest is the one it
+        // writes next) is left out before any of its fields is read: it may hold a newer block, or half of one.
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (const uint64_t ba = r.blocksAnnounced.load(std::memory_order_relaxed); ba > r.blockCap && ba - r.blockCap > first)
+        {
+            const uint64_t drop = std::min<uint64_t>(ba - r.blockCap - first, blocks.size());
+            blocks.erase(blocks.begin(), blocks.begin() + static_cast<std::ptrdiff_t>(drop));
+            first += drop;
+        }
+        if (blocks.empty())
+            return t;
         const uint64_t sEnd = blocks.back().sample + blocks.back().size;
         const uint64_t eEnd = blocks.back().event + blocks.back().events;
         const auto keep = static_cast<uint64_t>(std::llround(r.options.seconds * static_cast<double>(r.rate)));
         std::size_t from = 0;
+        // (last keeps its newest block whole, even one longer than `seconds`: a host's very large block.)
         while (from < blocks.size()
-               && ((r.options.mode == Mode::last && sEnd - blocks[from].sample > keep) || sEnd - blocks[from].sample > r.frames
-                   || (r.eventCap > 0 && eEnd - blocks[from].event > r.eventCap)))
+               && ((r.options.mode == Mode::last && from + 1 < blocks.size() && sEnd - blocks[from].sample > keep)
+                   || sEnd - blocks[from].sample > r.frames || (r.eventCap > 0 && eEnd - blocks[from].event > r.eventCap)))
             ++from;
         if (r.options.mode == Mode::last && from == 0 && first > 0 && sEnd - blocks.front().sample < std::min(keep, sEnd))
             t->trimmed = static_cast<uint8_t>(t->trimmed | blocksLimit);   // the blocks' ring did not reach back so far
@@ -678,6 +700,8 @@ namespace playground::capture
         if (keepFrom == blocks.size())
             return t;
         const uint64_t base = blocks[keepFrom].sample, eBase = blocks[keepFrom].event;
+        if (base < s0 || eBase < e0)                         // never, with the blocks checked above: nothing kept
+            return t;
         for (std::size_t c = 0; c < 4; ++c)
             if (!audio[c].empty())
                 audio[c].erase(audio[c].begin(), audio[c].begin() + static_cast<std::ptrdiff_t>(base - s0));
