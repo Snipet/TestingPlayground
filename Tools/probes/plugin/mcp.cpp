@@ -28,8 +28,8 @@
 //   NAMES    the first processor is "Synth 1" ("Effect 1"), its socket 1.sock; a second one "Synth 2"
 //   SERVER   the server program (<Name>MCP) over stdio, as Claude Desktop runs it: initialize (its protocol version,
 //            2025-11-25 too, tools with listChanged, prompts, instructions that keep tools and ids from the user),
-//            tools/list (list_instances, playground_guide and the chat's tools, each with `instance` and a title in
-//            words, the ones that only look marked read-only), list_instances naming this processor by its name,
+//            tools/list (list_instances, playground_guide, gui_sandbox and the chat's tools, each with `instance` and a
+//            title in words, the ones that only look marked read-only), list_instances naming this processor by its name,
 //            get_status and write_file routed to it, playground_guide (its start, and a part); the processor then knows
 //            Claude Desktop is connected, and its port says so with its name; the prompts (Make a sound, Improve the
 //            sound, Explain the sound, Fix what I hear), one filled in with the user's words, fix_what_i_hear naming no
@@ -732,13 +732,14 @@ PROBE(plugin, mcp)
         int pluginTools = 0;
         if (const juce::Array<juce::var>* t = list.getArray())
             for (const juce::var& tool : *t)
-                if (tool["name"].toString() != "list_instances" && tool["name"].toString() != "playground_guide")
+                if (tool["name"].toString() != "list_instances" && tool["name"].toString() != "playground_guide"
+                    && tool["name"].toString() != "gui_sandbox")   // the server's own (plugin.sandbox)
                 {
                     ++pluginTools;
                     instanceArg = instanceArg && tool["inputSchema"]["properties"].hasProperty("instance");
                 }
         std::printf("tools/list: %d of the plugin's, %d bytes in all\n", pluginTools, juce::JSON::toString(list, false).length());
-        P.eq("server.tools", hasTool(list, "list_instances") && hasTool(list, "playground_guide") && hasTool(list, "write_file")
+        P.eq("server.tools", hasTool(list, "list_instances") && hasTool(list, "playground_guide") && hasTool(list, "gui_sandbox") && hasTool(list, "write_file")
                                  && !hasTool(list, "ask_user") && pluginTools == tools.size() && instanceArg ? 1 : 0, 1);
         {
             juce::var measure, write;

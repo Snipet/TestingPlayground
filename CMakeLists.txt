@@ -17,6 +17,8 @@
 #   Source/editor/**/*.cpp       the FunkGui Panel, minus gpu/                     -> the plugin and the probes
 #   Source/editor/gpu/*.cpp      the EditorHost factory (GPU)                      -> the plugin only
 #   Source/mcp/                  the MCP server; icon-<key>.png its extension's    -> <Name>MCP and <Name>.mcpb
+#   Source/sandbox/              the GUI sandbox's helper, with the editor's .gui  -> <Name>GuiSandbox (in the .mcpb)
+#                                code and no plugin code (FP_SANDBOX_SHARED)
 #   Tools/probes/**/*.cpp        probes on FunkGui's Harness, self-registered      -> <Name>_probes, tests <key>:<probe>
 # Every list is a CONFIGURE_DEPENDS glob: a new source file needs no CMake edit. Nothing outside products/ (and the
 # docs) names a product: the C++ namespace is `playground` in both, and every product-specific value comes from the
@@ -111,6 +113,15 @@ file(GLOB_RECURSE FP_EDITOR_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/editor/*
 list(FILTER FP_EDITOR_SOURCES EXCLUDE REGEX "/Source/editor/gpu/")
 file(GLOB FP_EDITOR_GPU_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/editor/gpu/*.cpp ${FP_SOURCE_ROOT}/editor/gpu/*.mm)
 file(GLOB FP_FMINUS_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/fminus/*.cpp)
+# The GUI sandbox's helper (Source/sandbox/): its own sources, and the editor's .gui code and the .gui and program
+# reading it shares with the plugin, by name: nothing that compiles a program (Patch.cpp, FMinus, LLVM), plays one
+# (Source/dsp) or is the plugin's (Source/plugin). A file added to this list must keep that so.
+file(GLOB FP_SANDBOX_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/sandbox/*.cpp)
+set(FP_SANDBOX_SHARED "")
+foreach(_f editor/GuiView editor/GuiItems editor/GuiLayout editor/Looks editor/DisplayItem editor/Items editor/PictureDraw
+           fminus/GuiSpec fminus/PanelSpec fminus/Lang fminus/HostFile fminus/Shaders)
+  list(APPEND FP_SANDBOX_SHARED ${FP_SOURCE_ROOT}/${_f}.cpp)
+endforeach()
 # The Standalone app (Source/plugin/standalone/, its Standalone target only): our sources' warnings, and ARC for its
 # Objective-C++.
 file(GLOB FP_STANDALONE_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/plugin/standalone/*.cpp
@@ -156,7 +167,7 @@ endforeach()
 # The extension's own version (every product's .mcpb): Claude Desktop updates an installed extension only to a newer
 # one, so this goes up with every change to the server, its manifest or what the plugin tells it (the tools, the
 # guide's preamble).
-set(FP_MCP_VERSION "0.3.0")
+set(FP_MCP_VERSION "0.4.0")
 
 # The probes (cmake/Probes.cmake): `probes` builds every product's.
 enable_testing()
@@ -420,6 +431,26 @@ namespace @FP_NAMESPACE@
   target_compile_definitions(${FP_MCP} PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
   target_link_libraries(${FP_MCP} PRIVATE fp_flags juce::juce_core juce::juce_recommended_config_flags)
   set_target_properties(${FP_MCP} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+  # ---- the GUI sandbox's helper (Source/sandbox): <Name>GuiSandbox, beside the server, which starts it ---------------
+  # The editor's .gui code and FunkGui, headless on JUCE's message thread; no FMinus, no LLVM, no audio, no plugin
+  # code (FP_SANDBOX_SHARED above). The .mcpb carries it beside the server.
+  set(FP_SANDBOX ${PRODUCT_NAME}GuiSandbox)
+  juce_add_console_app(${FP_SANDBOX} PRODUCT_NAME "${FP_SANDBOX}" VERSION ${PRODUCT_VERSION})
+  set(_fp_sandbox_own ${FP_SANDBOX_SOURCES} ${FP_SANDBOX_SHARED})
+  target_sources(${FP_SANDBOX} PRIVATE ${_fp_sandbox_own})
+  fp_warn_sources(${_fp_sandbox_own})
+  target_include_directories(${FP_SANDBOX} PRIVATE ${FP_SOURCE_ROOT} ${FP_GENERATED_DIR})
+  target_compile_definitions(${FP_SANDBOX} PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+  target_link_libraries(${FP_SANDBOX} PRIVATE fp_flags fp_lto FunkGui::core FunkGui::gpu juce::juce_recommended_config_flags)
+  if(FP_LTO)
+    target_link_libraries(${FP_SANDBOX} PRIVATE juce::juce_recommended_lto_flags)
+  endif()
+  target_link_options(${FP_SANDBOX} PRIVATE "LINKER:-dead_strip")
+  funkgui_configure_product(${FP_SANDBOX} PRODUCT ${PRODUCT_NAME} OBJC_PREFIX ${PRODUCT_OBJC_PREFIX}
+                            ENV_PREFIX ${PRODUCT_ENV_PREFIX} PREFS_FOLDER ${PRODUCT_NAME})
+  funkgui_compile_shaders(${FP_SANDBOX})                  # FunkGui::gpu's own shaders (the UI's, the pictures')
+  set_target_properties(${FP_SANDBOX} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
   string(TOLOWER ${PRODUCT_NAME} FP_MCP_ID)
   set(_icon ${FP_SOURCE_ROOT}/mcp/icon-${key}.png)
   if(NOT EXISTS ${_icon})
@@ -445,7 +476,7 @@ namespace @FP_NAMESPACE@
   "display_name": "@PRODUCT_NAME@",
   "version": "@FP_MCP_VERSION@",
   "description": "Ask Claude for @FP_MCP_ASK@ in words: it builds it in @PRODUCT_NAME@, listens to it and sets its dials.",
-  "long_description": "Open @PRODUCT_NAME@ in your DAW (on @FP_MCP_TRACK@) or as its own app, then talk to Claude about the sound you want. Claude writes the @FP_MCP_WHAT@'s program, runs it, measures and looks at the result, fixes what is off and leaves the dials at good settings; you hear it right away, and the plugin's window shows what Claude did. Try: @FP_MCP_EXAMPLES@\n\nWith more than one open, say which you mean by its track or project (each also shows its name, such as \"@FP_MCP_NAME@ 2\", while Claude is connected). Claude Desktop's + menu also has ready-made requests: Make a sound, Improve the sound, Explain the sound, Fix what I hear.\n\nNothing leaves your Mac except your conversation with Claude: the extension talks to the plugin through a private local connection.",
+  "long_description": "Open @PRODUCT_NAME@ in your DAW (on @FP_MCP_TRACK@) or as its own app, then talk to Claude about the sound you want. Claude writes the @FP_MCP_WHAT@'s program, runs it, measures and looks at the result, fixes what is off and leaves the dials at good settings; you hear it right away, and the plugin's window shows what Claude did. Try: @FP_MCP_EXAMPLES@\n\nWith more than one open, say which you mean by its track or project (each also shows its name, such as \"@FP_MCP_NAME@ 2\", while Claude is connected). Claude Desktop's + menu also has ready-made requests: Make a sound, Improve the sound, Explain the sound, Fix what I hear.\n\nClaude can also design the plugin's panel with you, even with the plugin closed: it sketches the interface in a sandbox, sees it drawn exactly as the plugin draws it, and puts it into the plugin only when you ask. The extension carries a second program for that, @FP_SANDBOX@ (beside the server), which draws panels and nothing else.\n\nNothing leaves your Mac except your conversation with Claude: the extension talks to the plugin through a private local connection.",
   "author": { "name": "@PRODUCT_COMPANY@" },
   "icon": "icon.png",
   "server": {
@@ -455,22 +486,25 @@ namespace @FP_NAMESPACE@
   },
   "tools": [
     { "name": "list_instances", "description": "Find the open @FP_MCP_WHAT@s" },
-    { "name": "playground_guide", "description": "Read the guide to the @FP_MCP_WHAT@ and its language" }
+    { "name": "playground_guide", "description": "Read the guide to the @FP_MCP_WHAT@ and its language" },
+    { "name": "gui_sandbox", "description": "Design the @FP_MCP_WHAT@'s panel and see it drawn, with or without the plugin open" }
   ],
   "tools_generated": true,
   "prompts_generated": true,
   "compatibility": { "platforms": ["darwin"] }
 }
 ]=])
-  # The extension, packed again whenever the server, its manifest or its icon changes.
+  # The extension, packed again whenever the server, the sandbox's helper, its manifest or its icon changes: the
+  # server finds the helper beside itself (server/<Name>GuiSandbox).
   add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb
       COMMAND ${CMAKE_COMMAND} -E make_directory ${_mcpb}/server
       COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${FP_MCP}> ${_mcpb}/server/${FP_MCP}
+      COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${FP_SANDBOX}> ${_mcpb}/server/${FP_SANDBOX}
       COMMAND ${CMAKE_COMMAND} -E copy ${_icon} ${_mcpb}/icon.png
       COMMAND ${CMAKE_COMMAND} -E rm -f ${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb
       COMMAND ${CMAKE_COMMAND} -E chdir ${_mcpb} ${CMAKE_COMMAND} -E tar cf ${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb
-              --format=zip manifest.json icon.png server/${FP_MCP}
-      DEPENDS ${FP_MCP} ${_mcpb}/manifest.json ${_icon}
+              --format=zip manifest.json icon.png server/${FP_MCP} server/${FP_SANDBOX}
+      DEPENDS ${FP_MCP} ${FP_SANDBOX} ${_mcpb}/manifest.json ${_icon}
       VERBATIM)
   add_custom_target(${FP_MCP}_mcpb ALL DEPENDS ${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb)
 

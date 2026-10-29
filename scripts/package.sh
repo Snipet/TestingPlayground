@@ -140,13 +140,18 @@ sign_bundle() {   # sign_bundle <bundle> [entitlements]: its nested binaries (sh
   sign "$bundle" "${2:-}"
   codesign --verify --strict --deep "$bundle" || die "$bundle: the signature does not verify"
 }
-sign_mcpb() {   # sign_mcpb <file.mcpb>: its server, signed inside a copy of the archive, packed again as the build packs it
-  local mcpb="$1" dir
+sign_mcpb() {   # sign_mcpb <file.mcpb>: its programs (the server and the GUI sandbox's helper beside it, server/*), each
+                #   signed as the bundles' binaries are, inside a copy of the archive, packed again as the build packs it
+  local mcpb="$1" dir f
+  local files=()
   dir="$(mktemp -d "$STAGE/mcpb.XXXXXX")"
   ditto -x -k "$mcpb" "$dir"
-  sign "$dir/server/$(ls "$dir/server")"
+  for f in "$dir"/server/*; do
+    sign "$f"
+    files+=("server/$(basename "$f")")
+  done
   rm -f "$mcpb"
-  (cd "$dir" && cmake -E tar cf "$mcpb" --format=zip manifest.json icon.png "server/$(ls server)")
+  (cd "$dir" && cmake -E tar cf "$mcpb" --format=zip manifest.json icon.png "${files[@]}")
   rm -rf "$dir"
 }
 

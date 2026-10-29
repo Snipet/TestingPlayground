@@ -30,6 +30,7 @@
 // its MCP logs).
 #include "mcp/McpGuide.h"
 #include "mcp/McpProtocol.h"
+#include "sandbox/SandboxProtocol.h"
 
 #include "Library.h"
 #include "Product.h"
@@ -42,6 +43,8 @@
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
+#include <deque>
 #include <functional>
 #include <iostream>
 #include <list>
@@ -53,6 +56,11 @@
 #include <vector>
 
 #include <dirent.h>
+#include <fcntl.h>
+#include <spawn.h>
+#include <sys/wait.h>
+
+extern char** environ;
 
 namespace pg = playground;
 
@@ -63,6 +71,8 @@ namespace
     constexpr int kQuickMs = 5000;                      // info, tools, guide, a prompt's state: answered beside a call
     constexpr int kCallMs = 200000;                     // a tool call: under Claude Desktop's 240 s (its docs), above
                                                         // tune_dials' own limit (170 s at most)
+    constexpr std::size_t kPictureBytes = 75000;         // a picture's bytes at most in a result: ChatAgent::kMcpPictureBytes's
+                                                        // own copy (100,000 base64 characters), the same rule
     constexpr bool kInstrument = pg::product::kIsInstrument;
     const char* const kThing = kInstrument ? "synth" : "effect";          // what the user calls it
     const char* const kThings = kInstrument ? "synths" : "effects";
@@ -143,6 +153,98 @@ namespace
         if (const char* v = std::getenv(var.c_str()); v != nullptr && std::atoi(v) > 0)
             return std::atoi(v);
         return kCallMs;
+    }
+
+    // A sandbox request's deadline, in ms: sandbox::kDeadlineMs, or <ENV_PREFIX>SANDBOX_DEADLINE_MS (the probes').
+    int sandboxDeadlineMs()
+    {
+        const std::string var = std::string(pg::product::kEnvPrefix) + "SANDBOX_DEADLINE_MS";
+        if (const char* v = std::getenv(var.c_str()); v != nullptr && std::atoi(v) > 0)
+            return std::atoi(v);
+        return pg::sandbox::kDeadlineMs;
+    }
+
+    // What of `pending` the non-blocking pipe `fd` takes now, written and removed from it (the rest waits for POLLOUT);
+    // false when its reader is gone.
+    bool flushPipe(int fd, std::string& pending)
+    {
+        std::size_t sent = 0;
+        bool open = true;
+        while (sent < pending.size())
+        {
+            const ssize_t n = write(fd, pending.data() + sent, pending.size() - sent);
+            if (n > 0)
+            {
+                sent += static_cast<std::size_t>(n);
+                continue;
+            }
+            if (n < 0 && errno == EINTR)
+                continue;
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+                break;
+            open = false;
+            sent = pending.size();
+        }
+        pending.erase(0, sent);
+        return open;
+    }
+
+    // Lines added and removed between two texts, as a multiset of lines (what a summary says).
+    std::pair<int, int> lineChanges(const std::string& before, const std::string& after)
+    {
+        const auto lines = [](const std::string& t) {
+            std::vector<std::string> out;
+            std::size_t from = 0;
+            while (from < t.size())
+            {
+                const std::size_t nl = t.find('\n', from);
+                out.push_back(t.substr(from, nl == std::string::npos ? std::string::npos : nl - from));
+                if (nl == std::string::npos)
+                    break;
+                from = nl + 1;
+            }
+            return out;
+        };
+        std::map<std::string, int> count;
+        for (const std::string& l : lines(before))
+            ++count[l];
+        int added = 0, removed = 0;
+        for (const std::string& l : lines(after))
+            if (auto it = count.find(l); it != count.end() && it->second > 0)
+                --it->second;
+            else
+                ++added;
+        for (const auto& entry : count)
+            removed += entry.second;
+        return { added, removed };
+    }
+
+    int lineCount(const std::string& t)
+    {
+        if (t.empty())
+            return 0;
+        return static_cast<int>(std::count(t.begin(), t.end(), '\n')) + (t.back() == '\n' ? 0 : 1);
+    }
+
+    // The files get_status lists with files "all" ("<file name=\"x\">\n...\n</file>\n"), in order.
+    std::vector<std::pair<std::string, std::string>> filesIn(const std::string& status)
+    {
+        std::vector<std::pair<std::string, std::string>> out;
+        const std::size_t list = status.find("The files:\n");
+        if (list == std::string::npos)
+            return out;
+        for (std::size_t p = status.find("<file name=\"", list); p != std::string::npos; p = status.find("<file name=\"", p + 1))
+        {
+            const std::size_t q = status.find("\">\n", p);
+            if (q == std::string::npos)
+                break;
+            const std::size_t end = status.find("\n</file>\n", q + 2);
+            if (end == std::string::npos)
+                break;
+            out.push_back({ status.substr(p + 12, q - p - 12), status.substr(q + 3, end + 1 - (q + 3)) });
+            p = end;
+        }
+        return out;
     }
 
     struct Instance
@@ -240,6 +342,19 @@ namespace
                     fds.push_back({ entry.second.fd, events, 0 });
                     order.push_back({ entry.first, entry.second.serial });
                 }
+                // The sandbox's helper: its replies, and room for what it has not taken yet.
+                std::size_t sbRead = 0, sbWrite = 0;
+                if (sbOut_ >= 0)
+                {
+                    fds.push_back({ sbOut_, POLLIN, 0 });
+                    sbRead = fds.size() - 1;
+                }
+                if (sbIn_ >= 0 && !sbOutbox_.empty())
+                {
+                    fds.push_back({ sbIn_, POLLOUT, 0 });
+                    sbWrite = fds.size() - 1;
+                }
+                const uint64_t helper = sbSerial_;
                 const int r = poll(fds.data(), static_cast<nfds_t>(fds.size()), msToNextDeadline());
                 if (r < 0)
                 {
@@ -258,6 +373,10 @@ namespace
                 for (std::size_t k = 0; k < order.size(); ++k)
                     if (fds[k + 1].revents != 0)
                         onInstance(order[k].first, order[k].second, fds[k + 1].revents);
+                if (sbWrite != 0 && fds[sbWrite].revents != 0 && helper == sbSerial_ && sbIn_ >= 0 && !flushPipe(sbIn_, sbOutbox_))
+                    helperGone("stopped reading");
+                if (sbRead != 0 && fds[sbRead].revents != 0 && helper == sbSerial_)
+                    onHelper();
                 expire();
             }
             // Nobody waits for what is still running: the plugin need not finish it (a cancel the socket cannot take now
@@ -267,6 +386,11 @@ namespace
                     stop(a.instance, a.number);
             for (auto& entry : instances_)
                 close(entry.second.fd);
+            // The sandbox's helper reads the end of its stdin and quits by itself.
+            if (sbIn_ >= 0)
+                close(sbIn_);
+            if (sbOut_ >= 0)
+                close(sbOut_);
             return 0;
         }
 
@@ -392,7 +516,10 @@ namespace
                   "Each open " + thing + " has a name the plugin shows (\"" + (kInstrument ? "Synth" : "Effect") + " 1\", \""
                 + (kInstrument ? "Synth" : "Effect") + " 2\"). When only one is open, use it. When several are, work out from "
                   "what the user said which one they mean (its track, its project, its name) and pass that as `instance`; if "
-                  "you cannot tell, ask them in their words, describing each by its track and project.";
+                  "you cannot tell, ask them in their words, describing each by its track and project.\n"
+                  "To design or rework a panel (the plugin's interface, panel.gui), with or without the plugin open, use "
+                  "gui_sandbox (read the guide's \"interface\" part first): it draws the panel as the plugin would and never "
+                  "touches what the plugin plays or shows; apply its design to the plugin only when the user asks.";
             return object({ { "protocolVersion", version },
                             { "capabilities", object({ { "tools", object({ { "listChanged", true } }) },
                                                        { "prompts", object({ { "listChanged", false } }) } }) },
@@ -561,9 +688,9 @@ namespace
 
         int msToNextDeadline() const
         {
-            if (asks_.empty())
+            if (asks_.empty() && !sbBusy_)
                 return -1;
-            Clock::time_point first = asks_.front().deadline;
+            Clock::time_point first = sbBusy_ ? sbDeadline_ : asks_.front().deadline;
             for (const Ask& a : asks_)
                 first = std::min(first, a.deadline);
             const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(first - Clock::now()).count();
@@ -591,6 +718,11 @@ namespace
                     stop(a.instance, a.number);
                 }
                 a.done(Got::late, juce::var(), "it did not answer in time");
+            }
+            if (sbBusy_ && sbDeadline_ <= now)
+            {
+                std::cerr << "deadline: the sandbox's helper did not answer in " << sbMs_ << " ms: stopped" << std::endl;
+                helperGone("did not answer in " + std::to_string((sbMs_ + 500) / 1000) + " s, so it was stopped", true);
             }
         }
 
@@ -767,6 +899,7 @@ namespace
                                                                          "interface, library, library:<file>, "
                                                                          "library:<file>:code, debugging, examples, "
                                                                          "projects or all" } }) } })));
+            out.add(sandboxDefinition());
             listedPlain_ = tools.isVoid();
             if (const juce::Array<juce::var>* a = tools.getArray())
                 for (const juce::var& t : *a)
@@ -789,6 +922,53 @@ namespace
             return out;
         }
 
+        // gui_sandbox: the server's own, as list_instances is (listed with no instance open, routed to none but for apply).
+        // Its schema is lean: what each setting does in full is in the guide's interface part (ChatAgent::mcpGuide).
+        static juce::var sandboxDefinition()
+        {
+            const auto prop = [](const char* type, const char* description) {
+                return object({ { "type", type }, { "description", description } });
+            };
+            const auto choice = [](std::initializer_list<const char*> words, const char* description) {
+                juce::Array<juce::var> e;
+                for (const char* w : words)
+                    e.add(w);
+                return description == nullptr ? object({ { "type", "string" }, { "enum", e } })
+                                              : object({ { "type", "string" }, { "enum", e }, { "description", description } });
+            };
+            juce::var edit = object({ { "type", "object" },
+                                      { "properties", object({ { "old_text", object({ { "type", "string" } }) },
+                                                               { "new_text", object({ { "type", "string" } }) } }) },
+                                      { "required", juce::Array<juce::var>{ "old_text", "new_text" } } });
+            const juce::var properties = object({
+                { "action", choice({ "open", "edit", "render", "apply", "close" }, nullptr) },
+                { "from", choice({ "blank", "instance", "file" }, "open: a blank panel, the open plugin's, or a file the user named (text alone: that .gui)") },
+                { "path", prop("string", "open from file: a .gui file or a program's folder, as the user named it") },
+                { "text", prop("string", "open, edit: the .gui's whole text") },
+                { "edits", object({ { "type", "array" }, { "items", edit }, { "description", "edit: replacements in the .gui, each old_text found exactly once" } }) },
+                { "dials", object({ { "type", "array" }, { "items", object({ { "type", "object" } }) },
+                                    { "description", "open, edit: dials to mock: {name, range: [lo, hi], default, type, unit, options, style}" } }) },
+                { "width", prop("integer", "render: the panel's width in px (853, the plugin's PANEL view)") },
+                { "height", prop("integer", "render: its height in px (612)") },
+                { "theme", choice({ "graphite", "paper" }, nullptr) },
+                { "page", prop("string", "render: a tabs page to show, by its title") },
+                { "values", object({ { "type", "object" }, { "description", "render: dials at these values, by name" } }) },
+                { "detail", choice({ "high" }, "render: the picture whole; open, edit: the whole report") },
+                { "instance", prop("string", "open from instance, apply: which plugin, when several are open") },
+            });
+            const std::string title = "Design a panel";
+            return object({ { "name", "gui_sandbox" },
+                            { "title", str(title) },
+                            { "description", "A sandbox to design a plugin's interface (its panel.gui) and see it drawn exactly as the plugin "
+                                             "draws it, with or without the plugin open, never touching what an open plugin plays or shows. "
+                                             "open, then edit and render as often as needed; apply only when the user asks for the design to "
+                                             "go into the plugin." },
+                            { "inputSchema", object({ { "type", "object" }, { "properties", properties },
+                                                      { "required", juce::Array<juce::var>{ "action" } } }) },
+                            { "annotations", object({ { "title", str(title) }, { "readOnlyHint", false }, { "destructiveHint", false },
+                                                      { "openWorldHint", false } }) } });
+        }
+
         void call(const juce::var& id, const juce::var& params)
         {
             const std::string name = params["name"].toString().toStdString();
@@ -805,9 +985,21 @@ namespace
                 guide(args["part"].toString().toStdString(), [this, id](const juce::var& r) { reply(id, r); });
                 return;
             }
-            const std::string thing = kThing;
+            if (name == "gui_sandbox")
+            {
+                sandboxTool(id, args);
+                return;
+            }
             const std::string wanted = args["instance"].toString().toStdString();
             args.getDynamicObject()->removeProperty("instance");
+            withInstance(id, wanted, [this, id, name, args](const std::string& instance) { callTool(id, instance, name, args); });
+        }
+
+        // The instance `wanted` names (its name, number, track or project), else the one used last, else the only one
+        // open, to `go`; when none is open, or it is not clear which, the client is answered (for Claude to ask the user).
+        void withInstance(const juce::var& id, const std::string& wanted, std::function<void(const std::string&)> go)
+        {
+            const std::string thing = kThing;
             if (instances_.empty())
             {
                 reply(id, textContent("No " + thing + " is open (" + pg::product::kName + "). Ask the user to open it in their DAW ("
@@ -817,12 +1009,12 @@ namespace
             }
             if (!wanted.empty())
             {
-                gather([this, id, name, args, wanted](std::vector<Seen> all) {
+                gather([this, id, wanted, go](std::vector<Seen> all) {
                     const std::string thing2 = kThing;
                     const std::vector<const Seen*> found = matching(all, wanted);
                     if (found.size() == 1)
                     {
-                        callTool(id, found.front()->id, name, args);
+                        go(found.front()->id);
                         return;
                     }
                     std::string list;
@@ -840,9 +1032,9 @@ namespace
                 return;
             }
             if (instances_.count(chosen_) != 0)
-                callTool(id, chosen_, name, args);
+                go(chosen_);
             else if (instances_.size() == 1)
-                callTool(id, instances_.begin()->first, name, args);
+                go(instances_.begin()->first);
             else
                 gather([this, id](std::vector<Seen> all) {
                     std::string list;
@@ -928,6 +1120,444 @@ namespace
                                                                       found);
                         then(textContent(text, !found));
                     });
+        }
+
+        // ---- the GUI sandbox (sandbox/SandboxProtocol.h) ----------------------------------------------------------------
+        // One sandbox for the server, in a helper process started on the first call: Claude Desktop runs one server for
+        // the extension, so its conversations share it (each answer names it, "Sandbox #3"; an open replaces it). Its
+        // requests go one at a time, queued, each with a deadline (sbMs_): past it the helper is killed and the call says
+        // so. The server keeps what the helper last said the sandbox is (sbState_), so a helper that died, or quit after
+        // its idle minutes, is started again with the panel as it was. Never a blocking write: what the helper has not
+        // taken waits in sbOutbox_ (POLLOUT), as an instance's does.
+        using SandboxDone = std::function<void(bool ok, const juce::var& reply, const std::string& why)>;
+
+        struct SandboxJob
+        {
+            juce::var msg;                               // the request (its id set when sent)
+            std::string client;                          // the client's request it serves (key(id)); "" for the server's own
+            SandboxDone done;
+        };
+
+        std::string helperPath() const
+        {
+            const std::string var = std::string(pg::product::kEnvPrefix) + "GUI_SANDBOX";
+            if (const char* v = std::getenv(var.c_str()); v != nullptr && *v != '\0')
+                return v;
+            return juce::File::getSpecialLocation(juce::File::currentExecutableFile).getSiblingFile(str(pg::sandbox::helperName()))
+                .getFullPathName()
+                .toStdString();
+        }
+
+        // The helper started, on two pipes (its stdin and stdout; its stderr is ours), holding none of our other
+        // descriptors (an instance's socket kept open by it would outlive our closing it).
+        bool startHelper(std::string& why)
+        {
+            const std::string path = helperPath();
+            if (access(path.c_str(), X_OK) != 0)
+            {
+                why = "its helper is not there (" + path + ")";
+                return false;
+            }
+            int toChild[2], fromChild[2];
+            if (pipe(toChild) != 0)
+            {
+                why = "no pipe";
+                return false;
+            }
+            if (pipe(fromChild) != 0)
+            {
+                close(toChild[0]);
+                close(toChild[1]);
+                why = "no pipe";
+                return false;
+            }
+            posix_spawn_file_actions_t fa;
+            posix_spawn_file_actions_init(&fa);
+            posix_spawn_file_actions_adddup2(&fa, toChild[0], 0);
+            posix_spawn_file_actions_adddup2(&fa, fromChild[1], 1);
+            posix_spawnattr_t attr;
+            posix_spawnattr_init(&attr);
+#if defined(POSIX_SPAWN_CLOEXEC_DEFAULT)
+            posix_spawn_file_actions_addinherit_np(&fa, 2);
+            posix_spawnattr_setflags(&attr, POSIX_SPAWN_CLOEXEC_DEFAULT);
+#endif
+            char* argv[] = { const_cast<char*>(path.c_str()), nullptr };
+            pid_t pid = -1;
+            const int rc = posix_spawn(&pid, path.c_str(), &fa, &attr, argv, environ);
+            posix_spawn_file_actions_destroy(&fa);
+            posix_spawnattr_destroy(&attr);
+            close(toChild[0]);
+            close(fromChild[1]);
+            if (rc != 0)
+            {
+                close(toChild[1]);
+                close(fromChild[0]);
+                why = "its helper did not start (" + std::string(std::strerror(rc)) + ")";
+                return false;
+            }
+            for (const int fd : { toChild[1], fromChild[0] })
+            {
+                pg::mcp::nonBlocking(fd);
+                fcntl(fd, F_SETFD, FD_CLOEXEC);
+            }
+            sbPid_ = pid;
+            sbIn_ = toChild[1];
+            sbOut_ = fromChild[0];
+            sbReader_ = std::make_unique<pg::mcp::LineReader>(sbOut_);
+            sbOutbox_.clear();
+            ++sbSerial_;
+            std::cerr << "sandbox: started its helper, pid " << pid << std::endl;
+            return true;
+        }
+
+        // The helper is gone (it closed its end, stopped reading, or is killed here: `kill`); the request it had fails
+        // with `why`, and the next one starts it again.
+        void helperGone(const std::string& why, bool kill = false)
+        {
+            if (sbPid_ > 0)
+            {
+                int status = 0;
+                pid_t r = kill ? 0 : waitpid(sbPid_, &status, WNOHANG);
+                if (r == 0)
+                {
+                    ::kill(sbPid_, SIGKILL);     // hung, or closed its end and lingers: of no use either way
+                    r = waitpid(sbPid_, &status, 0);
+                }
+                const bool quit = r == sbPid_ && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+                std::cerr << "sandbox: its helper ended (" << why << (quit ? ", exit 0" : "") << ")" << std::endl;
+                if (!quit && !sbState_.isVoid())
+                    sbNote_ = "(The sandbox's helper had stopped; it started again, with the panel as it was.)";
+            }
+            if (sbIn_ >= 0)
+                close(sbIn_);
+            if (sbOut_ >= 0)
+                close(sbOut_);
+            sbPid_ = -1;
+            sbIn_ = sbOut_ = -1;
+            sbReader_.reset();
+            sbOutbox_.clear();
+            ++sbSerial_;
+            if (sbBusy_)
+            {
+                SandboxJob job = std::move(*sbBusy_);
+                sbBusy_.reset();
+                sbNote_.clear();
+                job.done(false, juce::var(), "the sandbox's helper " + why + "; it starts again, with the panel as it was, on the next call");
+            }
+            pumpSandbox();
+        }
+
+        // Its replies: the one it owes, then the next request.
+        void onHelper()
+        {
+            if (!sbReader_ || !sbReader_->readSome())
+            {
+                helperGone("closed its end (it quit or crashed)");
+                return;
+            }
+            std::string line;
+            while (sbReader_ && sbReader_->take(line))
+            {
+                const juce::var r = juce::JSON::parse(str(line));
+                if (!sbBusy_ || static_cast<int>(r["id"]) != sbBusyId_)
+                    continue;                            // a reply nobody waits for
+                SandboxJob job = std::move(*sbBusy_);
+                sbBusy_.reset();
+                if (r.hasProperty("state"))
+                    sbState_ = r["state"];
+                job.done(static_cast<bool>(r["ok"]), r, {});
+                pumpSandbox();
+                return;
+            }
+        }
+
+        // A request for the helper, answered to `done` (never twice); `client`: the client's request (dropped when it
+        // is cancelled before it is sent).
+        void sandboxAsk(const juce::var& msg, const std::string& client, SandboxDone done)
+        {
+            sbQueue_.push_back({ msg, client, std::move(done) });
+            pumpSandbox();
+        }
+
+        void pumpSandbox()
+        {
+            while (!sbBusy_ && !sbQueue_.empty())
+            {
+                if (!sbQueue_.front().client.empty() && open_.count(sbQueue_.front().client) == 0)
+                {
+                    sbQueue_.pop_front();                // cancelled meanwhile
+                    continue;
+                }
+                const bool opening = sbQueue_.front().msg["op"].toString() == "open";
+                if (sbPid_ < 0)
+                {
+                    std::string why;
+                    if (!startHelper(why))
+                    {
+                        std::deque<SandboxJob> failed;
+                        failed.swap(sbQueue_);
+                        for (SandboxJob& j : failed)
+                            j.done(false, juce::var(), why);
+                        return;
+                    }
+                    // The sandbox as it was, in the new helper, before what is asked of it now.
+                    if (!sbState_.isVoid() && !opening)
+                    {
+                        juce::var restore = juce::JSON::parse(juce::JSON::toString(sbState_));
+                        if (juce::DynamicObject* o = restore.getDynamicObject())
+                        {
+                            o->setProperty("op", "open");
+                            o->setProperty("from", "files");
+                            o->setProperty("restore", true);
+                        }
+                        sbQueue_.push_front({ restore, {}, [this](bool made, const juce::var&, const std::string& whyNot) {
+                                                 if (!made)
+                                                 {
+                                                     std::cerr << "sandbox: could not make it again: " << whyNot << std::endl;
+                                                     sbState_ = juce::var();
+                                                 }
+                                             } });
+                    }
+                }
+                SandboxJob job = std::move(sbQueue_.front());
+                sbQueue_.pop_front();
+                sbBusyId_ = sbNext_++;
+                if (juce::DynamicObject* o = job.msg.getDynamicObject())
+                    o->setProperty("id", sbBusyId_);
+                sbOutbox_ += juce::JSON::toString(job.msg, true).toStdString() + "\n";
+                sbDeadline_ = Clock::now() + std::chrono::milliseconds(sbMs_);
+                sbBusy_ = std::move(job);
+                if (!flushPipe(sbIn_, sbOutbox_))
+                {
+                    helperGone("could not be written to");
+                    return;
+                }
+            }
+        }
+
+        // The files of instance `instance`'s program, read through its get_status (files "all": read only, live), to
+        // `then` (false, and why, when it could not).
+        void instanceFiles(const std::string& instance, const std::string& client,
+                           std::function<void(bool, std::vector<std::pair<std::string, std::string>>, const std::string&)> then)
+        {
+            ask(instance, "call", object({ { "name", "get_status" }, { "arguments", object({ { "files", "all" } }) } }), 20000, false, client,
+                [then](Got g, const juce::var& r, const std::string& why) {
+                    if (g != Got::result || static_cast<bool>(r["isError"]))
+                    {
+                        then(false, {}, g == Got::result ? firstText(r) : why);
+                        return;
+                    }
+                    std::string all;
+                    if (const juce::Array<juce::var>* c = r["content"].getArray())
+                        for (const juce::var& b : *c)
+                            if (b["type"].toString() == "text")
+                                all += b["text"].toString().toStdString() + "\n";
+                    then(true, filesIn(all), {});
+                });
+        }
+
+        // A sandbox reply as the tool's result: its picture (render's) and its text, the note of a helper started again
+        // first.
+        juce::var sandboxResult(bool ok, const juce::var& r, const std::string& why)
+        {
+            juce::Array<juce::var> content;
+            std::string text = r.isVoid() ? "The sandbox could not do it: " + why + "." : r["text"].toString().toStdString();
+            if (!sbNote_.empty() && ok)
+            {
+                text = sbNote_ + "\n" + text;
+                sbNote_.clear();
+            }
+            if (ok && r.hasProperty("png"))
+                content.add(object({ { "type", "image" }, { "data", r["png"] }, { "mimeType", "image/png" } }));
+            content.add(object({ { "type", "text" }, { "text", str(text) } }));
+            return object({ { "content", content }, { "isError", !ok } });
+        }
+
+        std::string instanceName(const std::string& instance) const { return std::string(kInstrument ? "Synth " : "Effect ") + instance; }
+
+        void sandboxTool(const juce::var& id, const juce::var& args)
+        {
+            const std::string action = args["action"].toString().toStdString();
+            const std::string wanted = args["instance"].toString().trim().toStdString();
+            const juce::var detail = args["detail"];
+            const auto answer = [this, id](bool ok, const juce::var& r, const std::string& why) { reply(id, sandboxResult(ok, r, why)); };
+            const auto copy = [&](juce::DynamicObject& o, std::initializer_list<const char*> keys) {
+                for (const char* k : keys)
+                    if (args.hasProperty(k))
+                        o.setProperty(k, args[k]);
+            };
+            if (action == "open")
+            {
+                const std::string from = args["from"].toString().toStdString();
+                if (from == "instance")
+                {
+                    withInstance(id, wanted, [this, id, args, answer](const std::string& instance) {
+                        instanceFiles(instance, key(id), [this, id, args, instance, answer](bool ok, std::vector<std::pair<std::string, std::string>> files,
+                                                                                           const std::string& why) {
+                            if (!ok)
+                            {
+                                reply(id, textContent("Could not read the " + std::string(kThing) + "'s program: " + why, true));
+                                return;
+                            }
+                            chosen_ = instance;
+                            juce::Array<juce::var> list;
+                            for (const auto& [name, text] : files)
+                                list.add(object({ { "name", str(name) }, { "text", str(text) } }));
+                            juce::var msg = object({ { "op", "open" }, { "from", "files" }, { "files", list }, { "number", ++sbOpens_ },
+                                                     { "origin", str("the program of " + instanceName(instance) + " (read only)") } });
+                            for (const char* k : { "dials", "detail" })
+                                if (args.hasProperty(k))
+                                    msg.getDynamicObject()->setProperty(k, args[k]);
+                            sandboxAsk(msg, key(id), answer);
+                        });
+                    });
+                    return;
+                }
+                if (!from.empty() && from != "blank" && from != "file")
+                {
+                    reply(id, textContent("from is blank, instance or file (or give text alone: that .gui).", true));
+                    return;
+                }
+                juce::var msg = object({ { "op", "open" }, { "number", ++sbOpens_ } });
+                juce::DynamicObject& o = *msg.getDynamicObject();
+                o.setProperty("from", from == "file" ? "file" : (args.hasProperty("text") && from.empty() ? "text" : "blank"));
+                copy(o, { "path", "text", "dials", "detail" });
+                sandboxAsk(msg, key(id), answer);
+                return;
+            }
+            if (action == "edit" || action == "render")
+            {
+                juce::var msg = object({ { "op", str(action) } });
+                juce::DynamicObject& o = *msg.getDynamicObject();
+                if (action == "edit")
+                    copy(o, { "text", "edits", "dials", "detail" });
+                else
+                {
+                    copy(o, { "width", "height", "theme", "page", "values" });
+                    o.setProperty("cap", detail.toString() == "high" ? 0 : static_cast<int>(kPictureBytes));
+                }
+                if (sbState_.isVoid() && sbPid_ < 0)
+                {
+                    reply(id, textContent("Nothing is open in the sandbox: open it first (a blank panel, the open plugin's, a file "
+                                          "the user named, or a .gui as text).", true));
+                    return;
+                }
+                sandboxAsk(msg, key(id), answer);
+                return;
+            }
+            if (action == "apply")
+            {
+                if (sbState_.isVoid())
+                {
+                    reply(id, textContent("Nothing is open in the sandbox: there is nothing to apply.", true));
+                    return;
+                }
+                if (instances_.empty())
+                {
+                    discover();
+                    if (instances_.empty())
+                    {
+                        const juce::var st = sbState_;
+                        const std::string guiName = st["gui"].toString().toStdString();
+                        std::string text;
+                        if (const juce::Array<juce::var>* f = st["files"].getArray())
+                            for (const juce::var& x : *f)
+                                if (x["name"].toString().toStdString() == guiName)
+                                    text = x["text"].toString().toStdString();
+                        reply(id, textContent("No " + std::string(kThing) + " is open (" + pg::product::kName + "), so nothing was applied. "
+                                              "The sandbox's " + guiName + " (sandbox #" + std::to_string(static_cast<int>(st["number"]))
+                                              + ") is below. Tell the user how to use it: open " + pg::product::kName
+                                              + " and ask you again to apply it, or paste it into a new tab named " + guiName
+                                              + " beside the program in the plugin's editor and press RUN.\n\n" + text, false));
+                        return;
+                    }
+                }
+                withInstance(id, wanted, [this, id](const std::string& instance) { applyTo(id, instance); });
+                return;
+            }
+            if (action == "close")
+            {
+                sbState_ = juce::var();
+                sbNote_.clear();
+                if (sbPid_ < 0)
+                {
+                    reply(id, textContent("The sandbox is closed."));
+                    return;
+                }
+                sandboxAsk(object({ { "op", "quit" } }), key(id), [this, id](bool, const juce::var&, const std::string&) {
+                    reply(id, textContent("The sandbox is closed (its helper ended)."));
+                    helperGone("was closed");
+                });
+                return;
+            }
+            reply(id, textContent("action is open, edit, render, apply or close.", true));
+        }
+
+        // apply: the sandbox's .gui written into instance `instance`'s program (into its own .gui file when it has one,
+        // else as the sandbox names it), and run there, so that it shows; what changed said.
+        void applyTo(const juce::var& id, const std::string& instance)
+        {
+            const juce::var st = sbState_;
+            const std::string guiName = st["gui"].toString().toStdString();
+            std::string text;
+            if (const juce::Array<juce::var>* f = st["files"].getArray())
+                for (const juce::var& x : *f)
+                    if (x["name"].toString().toStdString() == guiName)
+                        text = x["text"].toString().toStdString();
+            const int number = static_cast<int>(st["number"]);
+            instanceFiles(instance, key(id), [this, id, instance, guiName, text, number](bool ok, std::vector<std::pair<std::string, std::string>> files,
+                                                                                         const std::string& why) {
+                if (!ok)
+                {
+                    reply(id, textContent("Could not read the " + std::string(kThing) + "'s program, so nothing was applied: " + why, true));
+                    return;
+                }
+                std::string target = guiName, before;
+                bool had = false;
+                for (const auto& [name, t] : files)
+                    if (name.size() > 4 && name.compare(name.size() - 4, 4, ".gui") == 0)
+                    {
+                        target = name;                   // the interface is the program's first .gui file
+                        before = t;
+                        had = true;
+                        break;
+                    }
+                const std::string thing = kThing;
+                ask(instance, "call", object({ { "name", "write_file" }, { "arguments", object({ { "name", str(target) }, { "content", str(text) } }) } }),
+                    callMs_, true, key(id),
+                    [this, id, instance, target, text, before, had, number, thing](Got g, const juce::var& w, const std::string& why2) {
+                        if (g != Got::result || static_cast<bool>(w["isError"]))
+                        {
+                            reply(id, textContent("The " + thing + " did not take it, so nothing was applied: "
+                                                  + (g == Got::result ? firstText(w) : why2), true));
+                            return;
+                        }
+                        ask(instance, "call", object({ { "name", "run_program" }, { "arguments", juce::var(new juce::DynamicObject()) } }), callMs_, true,
+                            key(id), [this, id, instance, target, text, before, had, number, thing](Got g3, const juce::var& run, const std::string& why3) {
+                                chosen_ = instance;
+                                const auto [added, removed] = lineChanges(before, text);
+                                std::string said = "Applied sandbox #" + std::to_string(number) + " to " + instanceName(instance) + ": wrote "
+                                                 + target + " into its program (" + std::to_string(lineCount(text)) + " lines; "
+                                                 + (!had ? std::string("it had no .gui file")
+                                                         : before == text ? std::string("the same as it was")
+                                                                          : "it had " + std::to_string(lineCount(before)) + ": +" + std::to_string(added)
+                                                                                + " -" + std::to_string(removed) + " lines")
+                                                 + ") and ran it, so the user sees it in the plugin's PANEL view. ";
+                                if (g3 != Got::result)
+                                    said += "The run did not answer: " + why3 + ".";
+                                else
+                                {
+                                    std::string runText;
+                                    if (const juce::Array<juce::var>* c = run["content"].getArray())
+                                        for (const juce::var& b : *c)
+                                            if (b["type"].toString() == "text")
+                                                runText += b["text"].toString().toStdString() + "\n";
+                                    said += "The run:\n" + runText;
+                                }
+                                reply(id, textContent(said, g3 != Got::result || static_cast<bool>(run["isError"])));
+                            });
+                    });
+            });
         }
 
         // ---- the prompts: requests the user picks in Claude Desktop ------------------------------------------------------
@@ -1058,6 +1688,21 @@ namespace
         std::string chosen_;
         bool listedPlain_ = false;                       // the last tools/list had none of the plugin's tools
         const int callMs_ = callDeadlineMs();
+        // The GUI sandbox's helper (above): its process and pipes (non-blocking), its connection's number (a helper
+        // started again is another), the requests waiting and the one it works on, and the sandbox as it last said it is.
+        pid_t sbPid_ = -1;
+        int sbIn_ = -1, sbOut_ = -1;
+        uint64_t sbSerial_ = 0;
+        std::unique_ptr<pg::mcp::LineReader> sbReader_;
+        std::string sbOutbox_;
+        std::deque<SandboxJob> sbQueue_;
+        std::optional<SandboxJob> sbBusy_;
+        int sbBusyId_ = 0, sbNext_ = 1;
+        int sbOpens_ = 0;                                // the sandbox's number: opens so far
+        Clock::time_point sbDeadline_;
+        juce::var sbState_;
+        std::string sbNote_;                             // said first in the next answer: the helper was started again
+        const int sbMs_ = sandboxDeadlineMs();
     };
 }
 

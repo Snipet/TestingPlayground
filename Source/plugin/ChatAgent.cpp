@@ -2981,6 +2981,46 @@ namespace playground
         }
     }
 
+    // What the MCP server's gui_sandbox (mcp/Main.cpp; its helper, Source/sandbox/) does past its short description: the
+    // guide's interface part carries it with the plugin's own tools' notes (mcpGuide), so that it reaches Claude Desktop
+    // from a plugin open or from the guide.md one left. The plugin's own chat has no sandbox (it has view_panel and its
+    // live panel), and its prompt says nothing of one.
+    namespace
+    {
+        constexpr const char* kSandboxNotes =
+            "The sandbox, the server's own tool, works with or without the plugin open. Use it to design or rework a panel: a "
+            "new one before the program has one, another look for the user's, a panel for a program the user named on disk, "
+            "trying a design out before the user commits to it. view_panel is for what the user has now: the panel of the "
+            "program that plays, as they see it. Nothing the sandbox does changes what the plugin plays or shows, until apply.\n"
+            "- open: from \"blank\" (a small panel of the dials you give), \"instance\" (the open plugin's panel.gui and "
+            "program files, read only; a program without a .gui starts from a blank panel of its dials), \"file\" (path: a "
+            ".gui file or a program's folder the user named, its .fm, .gui and .sc files, read only, 256 KB a file), or text "
+            "alone (that .gui). The dials come from the program's param declarations (read, never compiled: their ranges and "
+            "defaults) and from the dials you give, yours replacing a declaration of the same name: [{ name, range: [lo, hi], "
+            "default, type: float, int or bool, unit, options: the names of an int's values, style: knob, slider, switch, "
+            "buttons or menu, the control a blank panel gives it }]. With no program, the fields the displays name are mocked "
+            "as floats. It answers as edit does, after a line of what it opened.\n"
+            "- edit: text (the .gui whole), or edits ([{ old_text, new_text }], each old_text found exactly once, all or "
+            "none), and dials to change. It answers with the plugin's notes on the .gui, by line, and a layout report: the "
+            "natural size against the area (render's last size, else the PANEL view at the plugin's default size, 853 x 612), "
+            "a line an element (its line in the file, kind and name, x,y wxh in the area), then overlaps, what sticks out "
+            "of its container, text cut, what scrolls, controls that name no dial and dials no control names; detail "
+            "\"high\" lists every line.\n"
+            "- render: a PNG of the panel as the plugin's PANEL view draws it (the same layout, controls, looks, fonts and "
+            "shaders, drawn by the GPU), width x height px (853 x 612 unless said; 160 to 2400), theme graphite or paper, "
+            "a tabs page by its title, and the dials at the values you give ({ \"cutoff\": 2000, \"wave\": \"SAW\" }: "
+            "numbers in their units, an int's or a bool's by its names), the rest at their defaults. The displays show "
+            "demo values (a steady tone, fields moving across their ranges, a live= mark under its knob), not the user's "
+            "sound. The picture is made smaller to fit, unless detail \"high\".\n"
+            "- apply: only when the user asks for the design in their plugin. It writes the .gui into the open plugin's "
+            "program (its own .gui file when it has one, else panel.gui) and runs it there, which the user sees at once; "
+            "it says what changed and what the run said. With no plugin open it gives the .gui's text back: tell the user "
+            "to open the plugin and ask again, or to paste it into a tab of that name.\n"
+            "- close: when you are done. One sandbox serves all of Claude Desktop's conversations (each answer names it, "
+            "Sandbox #n), and open replaces it. Its helper quits after ten idle minutes, and comes back on the next call "
+            "with the panel as it was.";
+    }
+
     juce::var ChatAgent::mcpTools()
     {
         juce::Array<juce::var> out;
@@ -3029,6 +3069,8 @@ namespace playground
                 const Face* f = faceOf(name);
                 notes += "<tool name=\"" + name.toStdString() + "\" part=\"" + (f != nullptr ? f->part : "start") + "\">" + rest + "</tool>\n";
             }
+        // gui_sandbox, the MCP server's own tool (mcp/Main.cpp, Source/sandbox/): its notes go with the interface's.
+        notes += std::string("<tool name=\"gui_sandbox\" part=\"interface\">") + kSandboxNotes + "</tool>\n";
         return std::string(mcp::guide::kOutside) + "\n\n" + "You are driving " + product::kName + " (an " + (kInstrument ? "instrument" : "effect")
              + " plugin) through MCP, from Claude Desktop, as its own chat would: the tools are the chat's, but ask_user and "
                "ask_planner (ask the user here instead) and the web tools (use your own). The user hears the plugin in "
