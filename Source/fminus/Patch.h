@@ -185,12 +185,37 @@ namespace playground
         int taps() const noexcept { return static_cast<int>(taps_.size()); }
         float tap(int t, int i) const noexcept;
 
+        // ---- the fields, for a tool that watches the program (dsp/Debug.h) ---------------------------------------
+        // Offline only (a Session's Engine, Measure.h; never the one that plays), between calls. The main module's
+        // scalar fields as paths, in declaration order: "phase", a held module's "filter.ic2", an array's elements (of
+        // at most 16) "osc[1].phase", a vector's lanes "v.x" (float8 and poly float: "v.s5"), the module Shared's through
+        // the main module's Shared* field "shared->gain" and Host's through its Host* "host->bpm". Parameters (the
+        // dials) are left out, and pointers never followed.
+        struct Field
+        {
+            enum class Type : uint8_t { real, integer, boolean };
+            enum class Home : uint8_t { instance, shared, host };   // each instance's, or the one Shared's or Host's
+            std::string path;
+            std::string module, name;                  // the module that declares it and its name there: "Svf", "ic2"
+            std::size_t offset = 0;                    // in bytes, from its home's address
+            Type type = Type::real;
+            Home home = Home::instance;
+        };
+        const std::vector<Field>& fieldMap() const noexcept { return fields_; }
+        // What the map leaves out, a line each ("buffer: float *, a pointer, not followed").
+        const std::vector<std::string>& unmapped() const noexcept { return unmapped_; }
+        const void* instance(int i) const noexcept;    // null when there is none
+        // A field's value as it is (a NaN or an infinity kept, where tap gives 0; an int's number, a bool's 0 or 1), in
+        // instance i (a Shared or Host field: its one).
+        double read(const Field& f, int i) const noexcept;
+
     private:
         struct Compiled;                               // the Program and the function pointers
         Patch();
         void endInstances() noexcept;                  // the main module's end in every instance, then Shared's
         void freeInstances() noexcept;
         void setDefaults(void* instance, std::string_view moduleName, int depth) const;
+        void mapFields();                              // fields_ and unmapped_, from the compiled program
 
         const Compiled& code() const noexcept { return active_ != nullptr ? *active_ : *s_; }
 
@@ -209,7 +234,9 @@ namespace playground
             Type type = Type::real;
         };
         std::vector<Tap> taps_;
-        std::vector<const void*> params_;              // per control: its fminus::Program::Parameter (null: unused)
+        std::vector<Field> fields_;
+        std::vector<std::string> unmapped_;
+        std::vector<const void*> params_;             // per control: its fminus::Program::Parameter (null: unused)
         // Per control, where its parameter's slot is in an instance (fminus::Program::Parameter's offsets: the stream's
         // pointer, then the value) and the value's type; `none` for a control the program does not have.
         struct Slot

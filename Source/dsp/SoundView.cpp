@@ -195,7 +195,9 @@ namespace playground::measure
         return renderSound(session, request);
     }
 
-    Sound renderSound(Session& session, const ViewRequest& request)
+    Sound renderSound(Session& session, const ViewRequest& request) { return renderSound(session, request, nullptr); }
+
+    Sound renderSound(Session& session, const ViewRequest& request, RenderHooks* hooks)
     {
         Sound out;
         out.rate = session.rate();
@@ -235,7 +237,7 @@ namespace playground::measure
                 out.cycleHz = noteHz(*std::min_element(notes.begin(), notes.end()));
                 out.harmonics = notes.size() == 1;
                 r.notes = notes;
-                played = session.render(r, nullptr, nullptr, total);
+                played = session.render(r, nullptr, nullptr, total, hooks);
             }
             else
             {
@@ -248,7 +250,7 @@ namespace playground::measure
                         lowest = std::min(lowest, static_cast<int>(e.note));
                 out.title = "A scenario: " + scenario + ", then " + fmt("%.2f s", tail);
                 out.cycleHz = lowest <= 127 && lowest >= 0 && !tl.events.empty() ? noteHz(lowest) : 0.0;
-                played = session.render(r, nullptr, nullptr, total);
+                played = session.render(r, nullptr, nullptr, total, hooks);
                 out.heldUntil = static_cast<double>(played.heldUntil) / rate;
             }
         }
@@ -319,7 +321,7 @@ namespace playground::measure
                 }
             if (!scenario.empty() && request.render.input == nullptr)
                 out.title += "; " + scenario;
-            played = session.render(request.render, &in, &in, total);
+            played = session.render(request.render, &in, &in, total, hooks);
         }
         out.dials = played.dials;
         out.values = played.values;

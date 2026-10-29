@@ -58,6 +58,7 @@
 namespace playground
 {
     class Engine;
+    class Patch;
 }
 
 namespace playground::measure
@@ -271,6 +272,9 @@ namespace playground::measure
         const std::string& errors() const noexcept { return errors_; }   // the compiler's messages when it did not
         const Controls& controls() const noexcept;
         double rate() const noexcept { return rate_; }
+        // The program as its Engine plays it (its fields, between a render's calls: dsp/Debug.h); null when it did not
+        // compile.
+        const Patch* patch() const noexcept;
 
         Result measure(const Request& request);
 
