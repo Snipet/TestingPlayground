@@ -494,17 +494,31 @@ namespace @FP_NAMESPACE@
   "compatibility": { "platforms": ["darwin"] }
 }
 ]=])
-  # The extension, packed again whenever the server, the sandbox's helper, its manifest or its icon changes: the
-  # server finds the helper beside itself (server/<Name>GuiSandbox).
+  # The licences of what the sandbox's helper holds, as each bundle carries them (funkgui_add_font): bgfx's, bx's,
+  # bimg's and bgfx.cmake's (FunkGui's GPU) and the bundled font's (OFL), in licences/ of the extension.
+  get_property(_fp_funkgui_root GLOBAL PROPERTY FUNKGUI_SOURCE_DIR)
+  get_property(_fp_licence_files GLOBAL PROPERTY FUNKGUI_LICENCE_FILES)
+  set(_fp_licence_files "${_fp_funkgui_root}/fonts/JetBrainsMono-LICENSE.txt" ${_fp_licence_files})
+  set(_fp_licences "")
+  foreach(_l IN LISTS _fp_licence_files)
+    if(NOT EXISTS "${_l}")
+      message(FATAL_ERROR "${_l} is missing: the extension carries it beside the sandbox's helper")
+    endif()
+    get_filename_component(_n "${_l}" NAME)
+    list(APPEND _fp_licences licences/${_n})
+  endforeach()
+  # The extension, packed again whenever the server, the sandbox's helper, its manifest, its icon or a licence changes:
+  # the server finds the helper beside itself (server/<Name>GuiSandbox).
   add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb
-      COMMAND ${CMAKE_COMMAND} -E make_directory ${_mcpb}/server
+      COMMAND ${CMAKE_COMMAND} -E make_directory ${_mcpb}/server ${_mcpb}/licences
       COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${FP_MCP}> ${_mcpb}/server/${FP_MCP}
       COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${FP_SANDBOX}> ${_mcpb}/server/${FP_SANDBOX}
+      COMMAND ${CMAKE_COMMAND} -E copy ${_fp_licence_files} ${_mcpb}/licences/
       COMMAND ${CMAKE_COMMAND} -E copy ${_icon} ${_mcpb}/icon.png
       COMMAND ${CMAKE_COMMAND} -E rm -f ${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb
       COMMAND ${CMAKE_COMMAND} -E chdir ${_mcpb} ${CMAKE_COMMAND} -E tar cf ${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb
-              --format=zip manifest.json icon.png server/${FP_MCP} server/${FP_SANDBOX}
-      DEPENDS ${FP_MCP} ${FP_SANDBOX} ${_mcpb}/manifest.json ${_icon}
+              --format=zip manifest.json icon.png server/${FP_MCP} server/${FP_SANDBOX} ${_fp_licences}
+      DEPENDS ${FP_MCP} ${FP_SANDBOX} ${_mcpb}/manifest.json ${_icon} ${_fp_licence_files}
       VERBATIM)
   add_custom_target(${FP_MCP}_mcpb ALL DEPENDS ${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb)
 

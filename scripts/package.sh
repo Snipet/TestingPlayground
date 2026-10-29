@@ -142,6 +142,7 @@ sign_bundle() {   # sign_bundle <bundle> [entitlements]: its nested binaries (sh
 }
 sign_mcpb() {   # sign_mcpb <file.mcpb>: its programs (the server and the GUI sandbox's helper beside it, server/*), each
                 #   signed as the bundles' binaries are, inside a copy of the archive, packed again as the build packs it
+                #   (with its licences/)
   local mcpb="$1" dir f
   local files=()
   dir="$(mktemp -d "$STAGE/mcpb.XXXXXX")"
@@ -149,6 +150,9 @@ sign_mcpb() {   # sign_mcpb <file.mcpb>: its programs (the server and the GUI sa
   for f in "$dir"/server/*; do
     sign "$f"
     files+=("server/$(basename "$f")")
+  done
+  for f in "$dir"/licences/*; do
+    if [[ -f "$f" ]]; then files+=("licences/$(basename "$f")"); fi
   done
   rm -f "$mcpb"
   (cd "$dir" && cmake -E tar cf "$mcpb" --format=zip manifest.json icon.png "${files[@]}")
