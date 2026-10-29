@@ -87,8 +87,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - An example added or changed is checked by its product's `fminus.examples` (compiles with no message, plays, the same
   bits in blocks of 64 and 333; the synth's voices end). The first, Init, is the program a new instance plays, and
   `fminus.init` checks what it promises (the effect's input back bit for bit at its defaults, the synth's pitch and
-  envelope), `plugin.process` DEFAULT that a new processor plays it. A change to the contract (Patch.h) changes `fminus.contract`,
-  the README's "Writing a program", the examples' comments and the placeholder text with it, for the kind it touches.
+  envelope, a stolen voice's instance starting afresh), `plugin.process` DEFAULT that a new processor plays it. A change
+  to the contract (Patch.h) changes `fminus.contract`, the README's "Writing a program", the examples' comments and the
+  placeholder text with it, for the kind it touches.
 - Projects live in `~/Library/Audio/Presets/Funk/<name>/`, each product's own (`Source/plugin/ProjectStore`, which the
   processor uses through `EditorPort`): a project is a program and its dials kept as versions (each save one, the
   newest 100 kept), with presets (dial settings, applied by name). Probes never touch the user's: under CTest the

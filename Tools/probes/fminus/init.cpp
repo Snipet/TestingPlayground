@@ -20,10 +20,17 @@
 //             0.5 holds it 6.02 dB down (within 0.1 dB), and a 200 ms ATTACK is still 6 dB down at 50 ms; after the
 //             release the level falls to -60 dB in RELEASE (100 ms, within 10 ms), the voice ends, its last sample more
 //             than 70 dB under the held peak, and silence follows
+//   STEAL     a note on an instance that a stolen voice left (eighteen keys held 50 ms apart: the 17th steals the 1st's
+//             voice, which fades out at its full level, and the 18th gets its instance once it has) starts as a fresh
+//             note does: its first 50 ms the same bits as F4's alone (the first seventeen at velocity 0, so that the
+//             18th is all that sounds), and its first 12 samples under half its held peak (no attack skipped)
 //   VELOCITY  a note at velocity 0.5 is 6.02 dB quieter than one at 1 (within 0.05 dB); VOLUME at -6 dB 6 dB louder
 //             than at its default, -12
 //   CUTOFF    the cutoff turned down darkens it: at 6 (20 Hz times 2^6, 1.28 kHz) a held A3's spectral centroid (its
-//             partials, weighted by amplitude) is under half of its centroid wide open (10)
+//             partials, weighted by amplitude) is under half of its centroid wide open (11, its default)
+//   SWEEP     the header's sweep: with CUTOFF at 4 and ENV AMOUNT at 4, SUSTAIN at 0.3 makes the A3's centroid over its
+//             first 50 ms (from 5 ms) at least 1.5 times that from 600 ms; at full SUSTAIN (the default) it holds, within
+//             5 % (the one envelope then holds the cutoff where it rose)
 #include "Probe.h"
 
 #include "Rig.h"
@@ -304,6 +311,30 @@ PROBE(fminus, init)
                    0.0, 0.1);
         }
 
+        // STEAL: keys 48 to 65 (F4), 50 ms apart (on the 16-sample grid), all held
+        {
+            constexpr int kKeys = 18;
+            const std::size_t gap = static_cast<std::size_t>(0.05 * kFs), at = gap * (kKeys - 1);
+            std::vector<probe::Note> notes;
+            for (int k = 0; k < kKeys; ++k)
+                notes.push_back({ gap * static_cast<std::size_t>(k), pg::EventKind::noteOn, 48 + k, k == kKeys - 1 ? 1.0f : 0.0f });
+            probe::Rig rig(kFs, 512);
+            rig.load(init.source);
+            const probe::Stereo out = rig.run(probe::Stereo(at + gap), 256, notes);
+            const Played fresh = play(48 + kKeys - 1, 1.0f, 0.1, 0, defaults);
+            const std::vector<float> stolen(out.l.begin() + static_cast<std::ptrdiff_t>(at), out.l.end());
+            const std::vector<float> alone(fresh.out.begin(), fresh.out.begin() + static_cast<std::ptrdiff_t>(gap));
+            double worst = 0.0;
+            for (std::size_t i = 0; i < gap; ++i)
+                worst = std::max(worst, std::fabs(static_cast<double>(stolen[i]) - static_cast<double>(alone[i])));
+            const double peak = peakOver(alone, gap / 2, gap / 2);
+            std::printf("the 18th note, on a stolen voice's instance: the first 12 samples' peak %.3f of the held peak; "
+                        "the largest difference from a fresh note's %.2e\n", peakOver(stolen, 0, 12) / peak, worst);
+            P.eq("steal.like_a_fresh_note", probe::sameBits(stolen, alone) ? 1 : 0, 1);
+            P.le("steal.first_samples_rise", peakOver(stolen, 0, 12), 0.5 * peak);
+            P.eq("steal.no_alerts", static_cast<int64_t>(rig.engine().takeAlerts()), 0);
+        }
+
         // VELOCITY and VOLUME
         {
             const std::size_t from = static_cast<std::size_t>(0.2 * kFs), count = static_cast<std::size_t>(0.5 * kFs);
@@ -323,6 +354,24 @@ PROBE(fminus, init)
             std::printf("A3's centroid: %.0f Hz wide open, %.0f Hz at a cutoff of 6\n", a, b);
             P.ge("cutoff.open_centroid_hz", a, 2000.0);
             P.le("cutoff.darker_centroid", b / std::max(a, 1.0), 0.5);
+
+            // SWEEP: 50 ms windows (11 cycles) from 5 ms and from 600 ms
+            const auto sweep = [](float sustain) {
+                return play(57, 1.0f, 1.0, 0, [sustain](probe::Rig& r) {
+                    setPlain(r, "cutoff", 4.0f);
+                    setPlain(r, "amount", 4.0f);
+                    setPlain(r, "sustain", sustain);
+                });
+            };
+            const std::size_t early = static_cast<std::size_t>(0.005 * kFs), late = static_cast<std::size_t>(0.6 * kFs),
+                              window = static_cast<std::size_t>(0.05 * kFs);
+            const Played swept = sweep(0.3f), held = sweep(1.0f);
+            const double s0 = centroidHz(swept.out, 220.0, early, window), s1 = centroidHz(swept.out, 220.0, late, window);
+            const double h0 = centroidHz(held.out, 220.0, early, window), h1 = centroidHz(held.out, 220.0, late, window);
+            std::printf("CUTOFF 4, ENV AMOUNT 4: SUSTAIN 0.3 %.0f Hz from 5 ms, %.0f Hz from 600 ms; SUSTAIN 1 %.0f and %.0f Hz\n",
+                        s0, s1, h0, h1);
+            P.ge("sweep.sustain_down_sweeps", s0 / std::max(s1, 1.0), 1.5);
+            P.near("sweep.full_sustain_holds", h0 / std::max(h1, 1.0), 1.0, 0.05);
         }
     }
     return P.finish();
