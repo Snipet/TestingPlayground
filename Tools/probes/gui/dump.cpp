@@ -17,9 +17,18 @@
 //   gui.dump.projects.png PROJECTS: three projects, another than the open one chosen, its older version chosen
 //   gui.dump.export.png  EXPORT: a project's info typed and chosen
 //   gui.dump.frozen.png  the frozen copy playing: the snowflake left of the load in the top bar; .frozen.paper.png
+//   gui.dump.1x.png      the default program at 1x (a screen that is not Retina): the top bar's mark hinted for it
 // and checks:
 //   FRAME     the frame settles, every glyph is in the font, the editor shows the processor's draft (the first
 //             example), and the dials are the program's parameters: one for each, the rest not shown
+//   MARK      the top bar's mark (editor/LogoMark.h, the product's kind's) at 2x and at 1x, and the 2x drawing at the
+//             scales a zoom makes (1.25, 1.5, 2.5, 3): drawn under kLogoTag, an AREA column a pair of the wave's
+//             points and one primitive for the caret. Hinted for 1x and 2x: the caret's stem with its edges on whole
+//             device px (the 1x one's ends too), the crest's top and the trough's bottom on whole device px; the
+//             effect's floor at least 3 px long, flat (points along it at the trough's depth), the instrument's trough
+//             one point. And in the pixels (SoftRaster, a sample a pixel, as the GPU): beside each of those edges
+//             at most 0.2 of the accent outside, at least 0.8 inside, nothing a pixel further; the bottom row solid
+//             (0.8) for at least 3 px along the effect's floor, at most 2 px at the instrument's trough
 //   TYPE      typed keys go to the editor, which has the caret when the panel opens; the processor's draft follows
 //             the text; the status says the text is edited
 //   RUN       Cmd-Return runs the text: the processor plays it, the status says it runs
@@ -86,7 +95,9 @@
 #include "Probe.h"
 
 #include "editor/DisplayItem.h"
+#include "editor/LogoMark.h"
 #include "editor/Panel.h"
+#include "editor/Theme.h"
 #include "plugin/ProjectStore.h"
 #include "fminus/Random.h"
 #include "plugin/ChatAgent.h"
@@ -99,9 +110,11 @@
 
 #include <funkgui/canvas/Prim.h>
 #include <funkgui/canvas/PrimList.h>
+#include <funkgui/canvas/SoftRaster.h>
 #include <funkgui/panel/HeadlessGuiScope.h>
 #include <funkgui/panel/HeadlessHost.h>
 #include <funkgui/prefs/UiPreferences.h>
+#include <funkgui/text/FontService.h>
 #include <funkgui/widgets/TextEditor.h>
 
 #include <algorithm>
@@ -347,6 +360,102 @@ PROBE(gui, dump)
             dials += panel.centreOfDial(c).has_value() ? 1 : 0;
         P.eq(tag + ".dials_are_params", dials, params);
         writePng(P, host, theme == 0 ? "gui.dump.png" : "gui.dump.paper.png", tag);
+    }
+
+    // MARK, at 2x and at 1x (its numbers, and its pixels: SoftRaster at one sample a pixel, as the GPU draws them),
+    // and at the scales a zoom makes (the 2x drawing).
+    for (const float dpi : { 2.0f, 1.0f, 1.25f, 1.5f, 2.5f, 3.0f })
+    {
+        char name[24];
+        std::snprintf(name, sizeof name, "mark.%gx", static_cast<double>(dpi));
+        const std::string tag = name;
+        const bool hinted = dpi == 1.0f || dpi == 2.0f;
+        funkgui::UiPreferences::get().setTheme(0);
+        pg::ui::Panel panel(processor.ports(), port);
+        funkgui::HeadlessHost host(panel, 0, dpi);
+        host.settle();
+        const funkgui::PrimList& frame = host.draw();
+        namespace logo = pg::ui::logo;
+        const bool inst = pg::product::kIsInstrument;
+        const logo::Mark& m = logo::mark(inst, dpi);
+        const logo::Mark& want = dpi == 1.0f ? (inst ? logo::kInstrument1x : logo::kEffect1x)
+                                             : (inst ? logo::kInstrument2x : logo::kEffect2x);
+        P.eq(tag + ".drawing", &m == &want ? 1 : 0, 1);                 // the 1x drawing at exactly 1, else the 2x
+        P.eq(tag + ".prims", countTag(frame, pg::ui::kLogoTag), m.wave.n);   // a column a pair of points, the caret
+        if (!hinted)
+            continue;
+        const logo::Strip& w = m.wave;
+        const logo::Stem& st = m.caret;
+        const auto whole = [dpi](float x) { return std::fabs(x * dpi - std::round(x * dpi)) < 1e-3f ? 1 : 0; };
+        P.eq(tag + ".stem_left_whole", whole(st.x0), 1);
+        P.eq(tag + ".stem_right_whole", whole(st.x1), 1);
+        if (!st.round)
+            P.eq(tag + ".stem_ends_whole", whole(st.y0) * whole(st.y1), 1);
+        const int crest = static_cast<int>(std::min_element(w.tops, w.tops + w.n) - w.tops);
+        const int trough = static_cast<int>(std::max_element(w.bottoms, w.bottoms + w.n) - w.bottoms);
+        P.eq(tag + ".crest_top_whole", whole(w.tops[crest]), 1);
+        P.eq(tag + ".trough_bottom_whole", whole(w.bottoms[trough]), 1);
+        float floorL = 1e9f, floorR = -1e9f;
+        int deepest = 0;
+        for (int k = 0; k < w.n; ++k)
+            if (w.bottoms[k] > w.bottoms[trough] - 1e-4f)
+            {
+                floorL = std::min(floorL, w.xs[k]);
+                floorR = std::max(floorR, w.xs[k]);
+                ++deepest;
+            }
+        if constexpr (pg::product::kIsInstrument)
+            P.eq(tag + ".trough_points", deepest, 1);
+        else
+            P.ge(tag + ".floor_px", floorR - floorL, 3.0);
+
+        // The pixels: each hinted edge shows FunkGui's crispest (about 0.16 outside, 0.84 inside), nothing past it.
+        const funkgui::Image img = funkgui::rasterise(frame, funkgui::FontService::get().atlas(), 1);
+        const funkgui::Point o = panel.markTile();
+        const funkgui::Col acc = pg::ui::productTheme(funkgui::Theme::graphite()).accent;
+        const auto at = [&](int x, int y, int ch) {
+            if (x < 0 || y < 0 || x >= img.w || y >= img.h)
+                return 0.0;
+            const auto i = (static_cast<std::size_t>(y) * static_cast<std::size_t>(img.w) + static_cast<std::size_t>(x)) * 4u;
+            return static_cast<double>(img.rgba[i + static_cast<std::size_t>(ch)]);
+        };
+        // The device px holding the tile's point at x (or y) px from its corner at o.
+        const auto dev = [&](float tileX, float o0) { return static_cast<int>(std::floor((o0 + tileX) * dpi + 1e-3f)); };
+        const int gx = dev(13.0f, o.x), gy = dev(3.0f, o.y);           // the tile's own colour, clear of the mark
+        const double ar[3] = { acc.r - at(gx, gy, 0), acc.g - at(gx, gy, 1), acc.b - at(gx, gy, 2) };
+        const auto cover = [&](int x, int y) {
+            double num = 0.0, den = 0.0;
+            for (int ch = 0; ch < 3; ++ch)
+            {
+                num += (at(x, y, ch) - at(gx, gy, ch)) * ar[ch];
+                den += ar[ch] * ar[ch];
+            }
+            return num / den;
+        };
+        const int sl = dev(st.x0, o.x), sr = dev(st.x1, o.x), sy = dev(0.5f * (st.y0 + st.y1), o.y);
+        P.le(tag + ".stem_outside", std::max(cover(sl - 1, sy), cover(sr, sy)), 0.2);
+        P.ge(tag + ".stem_inside", std::min(cover(sl, sy), cover(sr - 1, sy)), 0.8);
+        P.le(tag + ".stem_clear", std::max(cover(sl - 2, sy), cover(sr + 1, sy)), 0.02);
+        const int cx = dev(w.xs[crest] + 0.25f / dpi, o.x), ct = dev(w.tops[crest], o.y);
+        P.le(tag + ".crest_outside", cover(cx, ct - 1), 0.2);
+        P.ge(tag + ".crest_inside", cover(cx, ct), 0.8);
+        P.le(tag + ".crest_clear", cover(cx, ct - 2), 0.02);
+        const int tx = dev(w.xs[trough] + 0.25f / dpi, o.x), tb = dev(w.bottoms[trough], o.y);
+        P.ge(tag + ".trough_inside", cover(tx, tb - 1), 0.8);
+        P.le(tag + ".trough_outside", cover(tx, tb), 0.2);
+        P.le(tag + ".trough_clear", cover(tx, tb + 1), 0.02);
+        // The bottom row's solid run: the effect's floor at least 3 px, the instrument's round trough at most 2.
+        int run = 0;
+        for (int x = tx; cover(x, tb - 1) >= 0.8; --x)
+            ++run;
+        for (int x = tx + 1; cover(x, tb - 1) >= 0.8; ++x)
+            ++run;
+        if constexpr (pg::product::kIsInstrument)
+            P.le(tag + ".trough_run_px", static_cast<double>(run) / static_cast<double>(dpi), 2.0);
+        else
+            P.ge(tag + ".floor_run_px", static_cast<double>(run) / static_cast<double>(dpi), 3.0);
+        if (dpi == 1.0f)
+            writePng(P, host, "gui.dump.1x.png", tag);
     }
 
     funkgui::UiPreferences::get().setTheme(0);

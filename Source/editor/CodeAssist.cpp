@@ -3,6 +3,7 @@
 
 #include "editor/ChatStyle.h"
 #include "editor/Items.h"
+#include "editor/Theme.h"
 
 #include <funkgui/canvas/Tags.h>
 #include <funkgui/core/TypeScale.h>
@@ -329,7 +330,7 @@ namespace playground::ui
         std::vector<funkgui::text::HighlightStyle> p(csCount);
         p[csPlain] = ink(Ink::ink100);
         p[csKeyword] = ink(Ink::accent, 0.02f);
-        p[csType] = ink(Ink::signal);
+        p[csType] = custom(codeSecond(th));              // the product's second colour (Theme.h), not an error's
         p[csComment] = dark ? custom({ 0x76, 0x8E, 0x6F, 255 }) : custom({ 0x5B, 0x7A, 0x55, 255 });
         p[csNumber] = dark ? custom({ 0xB5, 0xCE, 0xA8, 255 }) : custom({ 0x2E, 0x7D, 0x32, 255 });
         p[csOperator] = ink(Ink::ink70);
@@ -361,6 +362,7 @@ namespace playground::ui
         o.minimapWidth = 72.0f;
         o.markColumn = true;
         o.highlightLine = true;
+        o.inks.info = custom(note_);                     // a note's squiggle and ring: Theme.h's codeSecond, not signal
         e.setOptions(o);
         if (fmName(fileName))
         {
@@ -385,9 +387,16 @@ namespace playground::ui
         hasTheme_ = true;
         themeDark_ = dark;
         palette_ = codePalette(th);
+        note_ = codeSecond(th);
         for (int i = 0; i < tabs_.count(); ++i)
+        {
+            funkgui::TextEditor& e = tabs_.editor(i);
+            funkgui::TextEditorOptions o = e.options();
+            o.inks.info = custom(note_);
+            e.setOptions(o);
             if (fmFile(i))
-                tabs_.editor(i).setPalette(palette_);
+                e.setPalette(palette_);
+        }
     }
 
     void CodeAssist::setLibrary(const Sources& library)
@@ -2116,7 +2125,7 @@ namespace playground::ui
                 constexpr Col kRed{ 0xE5, 0x48, 0x4D, 0xFF }, kAmber{ 0xE2, 0xA3, 0x36, 0xFF };
                 const bool err = l.rfind("error: ", 0) == 0, warn = l.rfind("warning: ", 0) == 0;
                 if (err || warn || l.rfind("note: ", 0) == 0)
-                    c.disc(x + kPad + 4.0f, dy + 6.0f, 3.5f, err ? kRed : warn ? kAmber : th.signal);
+                    c.disc(x + kPad + 4.0f, dy + 6.0f, 3.5f, err ? kRed : warn ? kAmber : codeSecond(th));
                 c.text(l.c_str(), x + kPad + 14.0f, dy, chat::kSmall, p.text);
                 dy += 14.0f;
             }

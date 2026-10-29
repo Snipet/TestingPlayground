@@ -19,6 +19,7 @@
 #   Source/mcp/                  the MCP server; icon-<key>.png its extension's    -> <Name>MCP and <Name>.mcpb
 #   Source/sandbox/              the GUI sandbox's helper, with the editor's .gui  -> <Name>GuiSandbox (in the .mcpb)
 #                                code and no plugin code (FP_SANDBOX_SHARED)
+#   Assets/logo/<kind>/          the app icon (Tools/logo/logo.swift writes it)   -> each bundle's Icon.icns
 #   Tools/probes/**/*.cpp        probes on FunkGui's Harness, self-registered      -> <Name>_probes, tests <key>:<probe>
 # Every list is a CONFIGURE_DEPENDS glob: a new source file needs no CMake edit. Nothing outside products/ (and the
 # docs) names a product: the C++ namespace is `playground` in both, and every product-specific value comes from the
@@ -313,7 +314,15 @@ namespace @FP_NAMESPACE@
                         AU_MAIN_TYPE kAudioUnitType_Effect MICROPHONE_PERMISSION_ENABLED TRUE
                         MICROPHONE_PERMISSION_TEXT "${PRODUCT_NAME} processes the audio input.")
   endif()
+  # The app icon, the kind's (Assets/logo/<kind>/, written by Tools/logo/logo.swift): JUCE makes each bundle's
+  # Resources/Icon.icns (the Info.plist's CFBundleIconFile) from ICON_BIG at configure time, with only the sizes it is
+  # given; ours replaces it below, every size drawn for itself (16 and 32 px set on their own grids).
+  set(_fp_logo ${PROJECT_SOURCE_DIR}/Assets/logo/${PRODUCT_KIND})
+  if(NOT EXISTS ${_fp_logo}/icon.icns OR NOT EXISTS ${_fp_logo}/installer-1024.png)
+    message(FATAL_ERROR "Assets/logo/${PRODUCT_KIND}/ has no icon.icns: run `swift Tools/logo/logo.swift`")
+  endif()
   juce_add_plugin(${PRODUCT_NAME}
+      ICON_BIG                 ${_fp_logo}/installer-1024.png
       COMPANY_NAME             "${PRODUCT_COMPANY}"
       PLUGIN_MANUFACTURER_CODE ${PRODUCT_MFR_CODE}
       PLUGIN_CODE              ${PRODUCT_CODE}
@@ -325,6 +334,8 @@ namespace @FP_NAMESPACE@
       IS_MIDI_EFFECT           FALSE
       ${_fp_plugin_kind}
       COPY_PLUGIN_AFTER_BUILD  FALSE)                    # scripts/install.sh copies them, deliberately
+  get_target_property(_fp_icns ${PRODUCT_NAME} JUCE_ICON_FILE)
+  configure_file(${_fp_logo}/icon.icns ${_fp_icns} COPYONLY)
 
   set(_fp_plugin_own ${FP_PLUGIN_SOURCES} ${FP_EDITOR_SOURCES} ${FP_EDITOR_GPU_SOURCES})
   target_sources(${PRODUCT_NAME} PRIVATE ${_fp_plugin_own})
