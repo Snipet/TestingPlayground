@@ -489,7 +489,9 @@ PROBE(plugin, mcp)
                       + " (" + std::to_string(juce::JSON::toString(tool["inputSchema"], false).length()) + ")";
         std::printf("tools.json by tool, bytes (its schema's):%s\n", each.c_str());
         P.eq("link.tools_short", leads ? 1 : 0, 1);
-        P.le("link.tools_bytes", static_cast<double>(size), kInstrument ? 22000.0 : 20500.0);
+        // Lane A's 21000 / 19500, the live lane's listen and since (about 1 KB), the renders lane's compare, scenario
+        // and try_edits (about 1.7 KB): the wave's integration sets the last.
+        P.le("link.tools_bytes", static_cast<double>(size), kInstrument ? 23800.0 : 22300.0);
     }
     const std::string guide = ask(*a, r, 3, "guide", object({ { "part", "start" } }))["result"].toString().toStdString();
     P.eq("link.guide", guide.rfind("WORKING FROM OUTSIDE THE PLUGIN", 0) == 0 ? 1 : 0, 1);
@@ -513,7 +515,7 @@ PROBE(plugin, mcp)
                                 && guide == text("start") ? 1 : 0, 1);
         std::printf("guide: start %zu bytes (about %zu tokens); all %zu bytes (about %zu tokens)\n", guide.size(), guide.size() / 4,
                     all.size(), all.size() / 4);
-        P.le("guide.start_tokens", static_cast<double>(guide.size() / 4), 8500.0);
+        P.le("guide.start_tokens", static_cast<double>(guide.size() / 4), 8900.0);   // 8500, and the renders lane's ~400
         const std::string large = text("large-program");
         interfacePart = text("interface");
         const std::string library = text("library"), examples = text("examples"), projects = text("projects");

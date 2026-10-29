@@ -3,6 +3,8 @@
 
 #include "plugin/ChatImages.h"
 
+#include "dsp/Compare.h"
+
 #include "Product.h"
 
 #include <juce_graphics/juce_graphics.h>
@@ -337,6 +339,39 @@ namespace playground::soundpicture
         }
     }
 
+    namespace
+    {
+        // The chat's thumbnail of a picture: 480 px wide.
+        ChatPicturePtr thumbnail(const juce::Image& img, const char* name)
+        {
+            auto pic = std::make_shared<ChatPicture>();
+            pic->id = chatimages::nextId();
+            pic->name = name;
+            pic->width = img.getWidth();
+            pic->height = img.getHeight();
+            const juce::Image thumb = img.rescaled(480, 480 * img.getHeight() / img.getWidth(), juce::Graphics::highResamplingQuality);
+            pic->thumbWidth = thumb.getWidth();
+            pic->thumbHeight = thumb.getHeight();
+            {
+                const juce::Image::BitmapData bd(thumb, juce::Image::BitmapData::readOnly);
+                pic->thumb.resize(static_cast<std::size_t>(bd.width) * static_cast<std::size_t>(bd.height) * 4u);
+                std::size_t i = 0;
+                for (int y = 0; y < bd.height; ++y)
+                    for (int x = 0; x < bd.width; ++x)
+                    {
+                        const juce::Colour c = bd.getPixelColour(x, y);
+                        pic->thumb[i++] = c.getRed();
+                        pic->thumb[i++] = c.getGreen();
+                        pic->thumb[i++] = c.getBlue();
+                        pic->thumb[i++] = 255;
+                    }
+            }
+            pic->thumbData = encode(thumb, false, 0.85f);
+            pic->thumbType = "image/jpeg";
+            return pic;
+        }
+    }
+
     measure::ViewRequest request()
     {
         measure::ViewRequest r;
@@ -373,33 +408,8 @@ namespace playground::soundpicture
             closeUp(g, v);
         }
         out.png = encode(img, true, 0.0f);
+        out.thumb = thumbnail(img, "sound.png");
 
-        // The chat's thumbnail: 480 px wide.
-        auto pic = std::make_shared<ChatPicture>();
-        pic->id = chatimages::nextId();
-        pic->name = "sound.png";
-        pic->width = kWidth;
-        pic->height = kHeight;
-        const juce::Image thumb = img.rescaled(480, 480 * kHeight / kWidth, juce::Graphics::highResamplingQuality);
-        pic->thumbWidth = thumb.getWidth();
-        pic->thumbHeight = thumb.getHeight();
-        {
-            const juce::Image::BitmapData bd(thumb, juce::Image::BitmapData::readOnly);
-            pic->thumb.resize(static_cast<std::size_t>(bd.width) * static_cast<std::size_t>(bd.height) * 4u);
-            std::size_t i = 0;
-            for (int y = 0; y < bd.height; ++y)
-                for (int x = 0; x < bd.width; ++x)
-                {
-                    const juce::Colour c = bd.getPixelColour(x, y);
-                    pic->thumb[i++] = c.getRed();
-                    pic->thumb[i++] = c.getGreen();
-                    pic->thumb[i++] = c.getBlue();
-                    pic->thumb[i++] = 255;
-                }
-        }
-        pic->thumbData = encode(thumb, false, 0.85f);
-        pic->thumbType = "image/jpeg";
-        out.thumb = std::move(pic);
 
         const double seconds = static_cast<double>(v.length) / v.rate;
         out.about = "A picture of the program's sound, rendered offline from the editor's files (nothing that plays "
@@ -426,6 +436,140 @@ namespace playground::soundpicture
                   + (kInstrument ? " while held" : "") + "; the output guard's alerts: "
                   + (v.alerts == 0 ? std::string("none") : "NaN, infinite or clipped samples (" + std::to_string(v.alerts) + ")")
                   + ".";
+        return out;
+    }
+
+    Drawn drawPair(const measure::View& a, const measure::View& b, const std::vector<float>& difference,
+                   const std::vector<double>& bandsDb, const std::string& head, const std::string& about)
+    {
+        Drawn out;
+        constexpr int kLevelTop = 52, kLevelH = 220, kSpecTop2 = 312, kSpecH2 = 200;
+        const juce::Colour kA = kWaveL, kB = kWaveR, kDiff = kMarker;
+        juce::Image img(juce::Image::RGB, kWidth, kPairHeight, true);
+        {
+            juce::Graphics g(img);
+            g.fillAll(kBg);
+            g.setColour(kText);
+            g.setFont(juce::FontOptions(14.0f, juce::Font::bold));
+            g.drawText(js(head), kLeft, 6, kPlotW, 18, juce::Justification::centredLeft);
+            g.setFont(juce::FontOptions(12.0f));
+            g.setColour(kA);
+            g.drawText("A", kLeft, 26, 20, 16, juce::Justification::centredLeft);
+            g.setColour(kB);
+            g.drawText("B", kLeft + 120, 26, 20, 16, juce::Justification::centredLeft);
+            g.setColour(kDiff);
+            g.drawText("A - B", kLeft + 240, 26, 60, 16, juce::Justification::centredLeft);
+            g.setColour(kDim);
+            g.drawText("blue", kLeft + 14, 26, 90, 16, juce::Justification::centredLeft);
+            g.drawText("orange", kLeft + 134, 26, 90, 16, juce::Justification::centredLeft);
+            g.drawText("pink (where they differ)", kLeft + 282, 26, 300, 16, juce::Justification::centredLeft);
+
+            // The levels over time: 0 dBFS at the top, -120 at the bottom.
+            g.setColour(kPanel);
+            g.fillRect(kLeft, kLevelTop, kPlotW, kLevelH);
+            const auto yLevel = [&](float db) {
+                return static_cast<float>(kLevelTop) + 2.0f + std::clamp(-db / 120.0f, 0.0f, 1.0f) * (kLevelH - 4.0f);
+            };
+            g.setFont(juce::FontOptions(10.5f));
+            for (const int db : { 0, -30, -60, -90, -120 })
+            {
+                g.setColour(kGrid);
+                g.drawHorizontalLine(static_cast<int>(yLevel(static_cast<float>(db))), static_cast<float>(kLeft),
+                                     static_cast<float>(kLeft + kPlotW));
+                g.setColour(kDim);
+                g.drawText(js(std::to_string(db)), 4, static_cast<int>(yLevel(static_cast<float>(db))) - 7, kLeft - 10, 14,
+                           juce::Justification::centredRight);
+            }
+            const auto curve = [&](const std::vector<float>& db, juce::Colour colour, float width) {
+                juce::Path p;
+                bool started = false;
+                for (std::size_t c = 0; c < db.size() && c < static_cast<std::size_t>(kPlotW); ++c)
+                {
+                    if (db[c] < -200.0f)                     // nothing there (no difference): a gap
+                    {
+                        started = false;
+                        continue;
+                    }
+                    const float x = static_cast<float>(kLeft) + static_cast<float>(c) + 0.5f, y = yLevel(db[c]);
+                    if (!started)
+                        p.startNewSubPath(x, y);
+                    else
+                        p.lineTo(x, y);
+                    started = true;
+                }
+                g.setColour(colour);
+                g.strokePath(p, juce::PathStrokeType(width));
+            };
+            curve(a.levelDb, kA, 1.5f);
+            curve(b.levelDb, kB.withAlpha(0.85f), 1.5f);
+            curve(difference, kDiff, 1.2f);
+            title(g, "Level over time (dBFS, RMS over 10 ms)", kLeft + 6, kLevelTop + 2);
+            timeAxis(g, static_cast<double>(std::max(a.length, b.length)) / a.rate, kLevelTop + kLevelH + 2);
+
+            // The average spectra, on one scale: dB under the louder of the two.
+            g.setColour(kPanel);
+            g.fillRect(kLeft, kSpecTop2, kPlotW, kSpecH2);
+            const float top = std::max(a.spectrumTop, b.spectrumTop);
+            const auto ySpec = [&](float db) {
+                return static_cast<float>(kSpecTop2) + 18.0f + std::clamp(-db / 120.0f, 0.0f, 1.0f) * (kSpecH2 - 22.0f);
+            };
+            const auto xOf = [&](double hz) {
+                return static_cast<float>(kLeft) + static_cast<float>(std::log(hz / a.loHz) / std::log(a.hiHz / a.loHz)) * kPlotW;
+            };
+            for (const int db : { 0, -40, -80, -120 })
+            {
+                g.setColour(kGrid);
+                g.drawHorizontalLine(static_cast<int>(ySpec(static_cast<float>(db))), static_cast<float>(kLeft),
+                                     static_cast<float>(kLeft + kPlotW));
+                g.setColour(kDim);
+                g.drawText(js(std::to_string(db)), 4, static_cast<int>(ySpec(static_cast<float>(db))) - 7, kLeft - 10, 14,
+                           juce::Justification::centredRight);
+            }
+            for (const double hz : { 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0, 20000.0 })
+            {
+                if (hz > a.hiHz)
+                    continue;
+                const float x = xOf(hz);
+                g.setColour(kGrid);
+                g.drawVerticalLine(static_cast<int>(x), static_cast<float>(kSpecTop2 + 18), static_cast<float>(kSpecTop2 + kSpecH2));
+                g.setColour(kDim);
+                g.drawText(js(hz >= 1000.0 ? fmt("%.0fk", hz / 1000.0) : fmt("%.0f", hz)), static_cast<int>(x) - 20,
+                           kSpecTop2 + kSpecH2 + 2, 40, 14, juce::Justification::centred);
+            }
+            const auto spectrumCurve = [&](const measure::View& v, juce::Colour colour) {
+                juce::Path p;
+                const float shift = v.spectrumTop - top;
+                for (std::size_t c = 0; c < v.spectrum.size(); ++c)
+                {
+                    const float x = static_cast<float>(kLeft) + (static_cast<float>(c) + 0.5f) * kPlotW / static_cast<float>(v.spectrum.size());
+                    const float y = ySpec(v.spectrum[c] + shift);
+                    if (c == 0)
+                        p.startNewSubPath(x, y);
+                    else
+                        p.lineTo(x, y);
+                }
+                g.setColour(colour);
+                g.strokePath(p, juce::PathStrokeType(1.3f));
+            };
+            spectrumCurve(a, kA);
+            spectrumCurve(b, kB.withAlpha(0.85f));
+            title(g, "Average spectrum (dB under the louder)", kLeft + 6, kSpecTop2 + 1);
+
+            // The octave bands, B against A, along the foot.
+            std::string bands = "Octave bands, B against A:";
+            for (std::size_t k = 0; k < bandsDb.size() && k < measure::Comparison::kBands.size(); ++k)
+                if (std::isfinite(bandsDb[k]))
+                {
+                    const double hz = measure::Comparison::kBands[k];
+                    bands += "  " + (hz >= 1000.0 ? fmt("%.0fk", hz / 1000.0) : fmt("%.0f", hz)) + fmt(" %+.1f", bandsDb[k]);
+                }
+            g.setColour(kText);
+            g.setFont(juce::FontOptions(12.0f));
+            g.drawText(js(bands + " dB"), kLeft, kPairHeight - 30, kPlotW, 18, juce::Justification::centredLeft);
+        }
+        out.png = encode(img, true, 0.0f);
+        out.thumb = thumbnail(img, "compare.png");
+        out.about = about;
         return out;
     }
 }

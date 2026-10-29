@@ -661,6 +661,17 @@ namespace playground
         updateHostDisplay(juce::AudioProcessor::ChangeDetails().withParameterInfoChanged(true));
     }
 
+    // A render's "host" (ChatScenario.h): the Engine's rate, and the host's block as it announced it (the largest it
+    // may send; JUCE's own value, set before prepareToPlay).
+    double Processor::chatHostRate() const { return static_cast<double>(engine_.rate()); }
+    int Processor::chatHostBlock() const { return getBlockSize(); }
+
+    std::string Processor::chatProject() const
+    {
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        return projectName_;
+    }
+
     PanelPicture Processor::chatPicture(bool window, const std::string& page)
     {
         std::unique_lock<std::mutex> lock(pictureMutex_);

@@ -232,6 +232,9 @@ namespace playground
         void chatListening(bool on) override;
         Changes chatChanges(const std::string& since, bool issue) override;
         std::array<std::vector<std::string>, kMaxControls> chatDialOptions() const override;
+        double chatHostRate() const override;
+        int chatHostBlock() const override;
+        std::string chatProject() const override;
 
         // The program: what plays, the editor's draft, the dials. Message thread, and a host's state calls. Declared
         // before the parameters, whose names and texts read controls_ (control()).

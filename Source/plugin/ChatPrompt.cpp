@@ -217,10 +217,13 @@ DSP PRACTICE IN THIS PLUGIN
         const char* const kChecking = R"(
 CHECKING YOUR WORK
 
-You cannot hear the plugin, but three tools check what you build against what was asked, so you need not trust it:
+You cannot hear the plugin, but these tools check what you build against what was asked, so you need not trust it:
 - view_sound draws the sound: the waveform and the level over time, a spectrogram (frequency against time), the average spectrum and a close-up of a few cycles. Look when the shape matters: an envelope, a sweep, a filter's slope, aliasing (lines folding back down the spectrogram), a click (a spike, a thin vertical line), a wave's shape, a tail, a modulation's motion. The user sees the picture too. About 1,200 input tokens a picture: once for a new sound, and again after a change you need to see.
 - set_checks states what the work must pass, as numbers the plugin measures: a metric with min, max or a target, each in a render of its own (measure_output's settings: %RENDER%; the defaults when left out). Write them from the request, before you build, for what a number can show: %EXAMPLES%. A few checks that matter beat many. The plugin measures them after every run_program (the results follow its own) and when you end a turn in which you changed something (the files, the dials or the checks); while one fails, that turn goes on with the results (twice at most): fix the program, or change a check that asks for the wrong thing, or say why it cannot pass. The user sees them as a checklist, and can clear them.
 - tune_dials finds dial values for goals by rendering many times (tens to a few hundred renders, a few seconds), instead of guessing and measuring by hand: once the program does the right thing and only its settings are off (%TUNING%). Name the float dials it may move (up to eight) and the goals; it sets the best values on the dials, and says how close each goal came. It cannot make a program do what it cannot: a goal that stays unmet means the program needs changing, or another dial matters.
+- scenario: how the user plays it, in measure_output, view_sound, a check (which keeps it), tune_dials and compare: {%SCENARIO% rate: Hz or "host", block: 1 to 8192 or "host"}; times up to 10 s, then the tail. A dial moves once a host block, as a host's automation does, so its sound depends on the block size.%SCENARIOUSE%
+- try_edits: [{file, old_text, new_text} or {name, content}] on a copy of the files, in measure_output, view_sound and compare (on b): nothing in the plugin changes. Edit for real once a trial works.
+- compare: two sources rendered alike: identical bits, or how and where they differ ({a: "version:3", b: "editor"}; a fix: both "editor", try_edits on b).
 
 The metrics, the names checks and goals use (a value that never comes, as a release that does not end within the tail, is infinity, which only "at least" meets):
 %METRICS%A target's tolerance is the metric's own unless one is given (1 dB for levels, 5 % of a frequency, 10 % of a time).
@@ -661,8 +664,8 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
                              + ": " + m.what + "\n";
                 std::string c = replaceAll(kChecking, "%METRICS%", metrics);
                 c = replaceAll(c, "%RENDER%",
-                               instrument ? "notes, velocity, hold_seconds, tail_seconds, dials, the host and the wheels"
-                                          : "hold_seconds, tail_seconds, dials and the host");
+                               instrument ? "notes, velocity, hold_seconds, tail_seconds, dials, the host, the wheels and a scenario"
+                                          : "hold_seconds, tail_seconds, dials, the host and a scenario");
                 c = replaceAll(c, "%EXAMPLES%",
                                instrument ? "\"a short pluck\": decay_s at most 1; \"bright\": centroid_hz at least 2000; "
                                             "\"no aliasing\": inharmonic_db at most -70 at note 96; \"no clicks\": click at "
@@ -672,6 +675,23 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
                                             "up; \"unity gain\": sine_gain_db near 0; \"a dark tone\": centroid_out_hz "
                                             "at most 3000; \"a long tail\": impulse_decay_s at least 2; \"quiet when idle\": "
                                             "silence_db at most -90; and for every effect alerts at most 0");
+                c = replaceAll(c, "%SCENARIO%",
+                               instrument ? "phrase: [{note, at, len, vel}] (up to 256, seconds; len 0.5, vel 0.8 by default; it "
+                                            "replaces notes and hold_seconds, held until its last note-off), automate: [{dial, at, "
+                                            "to, over}] (up to 32: a float glides to `to` over `over` s, an int or a bool steps), "
+                                            "wheels: [{wheel: mod|bend|pressure|sustain, at, value}] (up to 64), host: {bpm, "
+                                            "stop_at, jump_to_beat, jump_at},"
+                                          : "automate: [{dial, at, to, over}] (up to 32, seconds: a float glides to `to` over "
+                                            "`over` s, an int or a bool steps), host: {bpm, stop_at, jump_to_beat, jump_at}, input: "
+                                            "sweep|noise|impulse|sine|silence (view_sound's and compare's),");
+                c = replaceAll(c, "%SCENARIOUSE%",
+                               instrument ? " A phrase and the wheels give the same bits at any block size. Try retriggers, fast "
+                                            "notes, a 17th note (a steal), legato, the pedal, automation, 96 kHz, a block of 32. "
+                                            "The step line names each large step's nearest event (\"0.41 at 0.300 s, 0.4 ms after "
+                                            "note-on 52\"): at a note-on a voice that starts with a jump, at a steal the 2 ms fade, "
+                                            "at a block's start a dial's step."
+                                          : " Try automation, an int switched while the input plays, 96 kHz, a block of 32. The "
+                                            "step line names each large step's nearest event: at a block's start a dial's step.");
                 c = replaceAll(c, "%TUNING%",
                                instrument ? "\"the release at 1.2 s\", \"the level at -18 dBFS RMS\", \"the centroid at "
                                             "1500 Hz\""

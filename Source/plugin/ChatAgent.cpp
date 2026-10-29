@@ -2,6 +2,7 @@
 #include "plugin/ChatAgent.h"
 
 #include "plugin/ChatImages.h"
+#include "plugin/ChatScenario.h"
 
 #include "plugin/ChatStore.h"
 
@@ -401,8 +402,8 @@ namespace playground
         bool isNumber(const juce::var& v) { return v.isDouble() || v.isInt() || v.isInt64(); }
 
         // A render's settings from a tool's input (measure_output's, view_sound's, a check's, tune_dials's): the notes,
-        // the velocity, the times, the host and the dials asked for.
-        measure::Request renderOf(const juce::var& input)
+        // the velocity, the times, the host, the dials asked for and the scenario (ChatScenario.h: why, when it cannot be).
+        measure::Request renderOf(const juce::var& input, std::string* why = nullptr)
         {
             measure::Request req;
             const auto numberArg = [&](const char* k, float& out) {
@@ -426,6 +427,7 @@ namespace playground
                 for (const auto& kv : o->getProperties())
                     if (isNumber(kv.value) || kv.value.isBool())
                         req.dials[kv.name.toString().toStdString()] = static_cast<float>(static_cast<double>(kv.value));
+            scenario::read(input, req, why);
             return req;
         }
 
@@ -455,6 +457,7 @@ namespace playground
                                                                       "the parameter's own units. Dials not named keep the "
                                                                       "values they have now." } }));
             o->setProperty("bpm", prop("number", "The host's tempo for a program that reads it (host.fm); default 120"));
+            o->setProperty("scenario", scenario::schema());
         }
 
         // The metrics' names, for a schema's enum (Measure.h).
@@ -1300,6 +1303,8 @@ namespace playground
                 o->setProperty("bpm", r.bpm);
                 o->setProperty("modwheel", r.modwheel);
                 o->setProperty("pitchbend", r.pitchbend);
+                if (const juce::var sc = scenario::toVar(r); !sc.isVoid())
+                    o->setProperty("scenario", sc);
                 if (!r.dials.empty())
                 {
                     juce::var dials = claude::object({});
@@ -1760,7 +1765,9 @@ namespace playground
                                             { "modwheel", prop("number", "An instrument's mod wheel, 0 to 1, from the "
                                                                          "start (default 0)") },
                                             { "pitchbend", prop("number", "An instrument's pitch wheel, -1 to 1, from "
-                                                                          "the start (default 0)") } }),
+                                                                          "the start (default 0)") },
+                                            { "scenario", scenario::schema() },
+                                            { "try_edits", scenario::trialSchema() } }),
                            {}));
         }
         tools.add(tool("view_panel",
@@ -1800,6 +1807,7 @@ namespace playground
                                                                                  "the held sound)"));
             props.getDynamicObject()->setProperty("to_seconds", prop("number", "The close-up's end (at most 2 s after "
                                                                                "its start)"));
+            props.getDynamicObject()->setProperty("try_edits", scenario::trialSchema());
             tools.add(tool("view_sound",
                            kInstrument
                                ? "See the sound: a picture (PNG) of the program rendered offline as measure_output "
@@ -1889,6 +1897,7 @@ namespace playground
                            "and after. Dials not tuned keep their values (or those in dials). It changes no file.",
                            props, { "tune", "goals" }));
         }
+        tools.add(compareDefinition());
         {
             juce::var option = claude::object(
                 { { "type", "object" },
@@ -2823,7 +2832,7 @@ namespace playground
             return {};
         setActivity("Checking");
         std::string errors;
-        const std::vector<measure::CheckResult> results = measure::evaluate(host_.chatDraft().files, checks, currentDials(), &errors);
+        const std::vector<measure::CheckResult> results = scenario::evaluate(host_.chatDraft().files, checks, currentDials(), host_, &errors);
         std::vector<ChatCheck> rows;
         int pass = 0;
         std::string lines;
@@ -2897,6 +2906,7 @@ namespace playground
             { "view_sound", "Look at the sound", true, false },   { "set_checks", "Set checks on the sound", false, false },
             { "tune_dials", "Tune the dials", false, false },     { "get_status", "Check the plugin", true, false },
             { "listen", "Listen live", true, false },
+            { "compare", "Compare two sounds", true, false },
         };
 
         const Face* faceOf(const juce::String& name)
@@ -3152,6 +3162,8 @@ namespace playground
         const juce::var input = use.getProperty("input", juce::var());
         if (name == "listen" || name == "get_status")   // a turn's (Live.cpp); MCP's come through mcpCall
             return liveTool(use, {});
+        if (name == "compare")
+            return compareTool(use);
         if (name == "view_panel")
         {
             // A picture of the panel: an image block and a line of what it shows (the tool_result's content).
@@ -3183,7 +3195,8 @@ namespace playground
             // A picture of the sound: an image block and what it shows; the chat shows the picture too.
             setActivity("Drawing the sound");
             measure::ViewRequest vr = soundpicture::request();
-            vr.render = renderOf(input);
+            std::string why;
+            vr.render = renderOf(input, &why);
             vr.render.current = currentDials();
             if constexpr (!kInstrument)
             {
@@ -3203,12 +3216,23 @@ namespace playground
                 vr.from = static_cast<float>(static_cast<double>(from));
                 vr.to = static_cast<float>(static_cast<double>(to));
             }
-            const measure::View v = measure::view(host_.chatDraft().files, vr);
+            Sources files = host_.chatDraft().files;   // a copy: the trial edits (ChatScenario.h) go there
+            int trials = 0;
+            if (why.empty() && scenario::resolve(vr.render, host_, why))
+                scenario::tryEdits(input, files, trials, why);
             juce::var block = claude::object({ { "type", "tool_result" }, { "tool_use_id", use.getProperty("id", "") } });
+            if (!why.empty())
+            {
+                block.getDynamicObject()->setProperty("content", juce::String::fromUTF8(why.c_str()));
+                block.getDynamicObject()->setProperty("is_error", true);
+                return block;
+            }
+            const measure::View v = measure::view(files, vr);
             if (!v.compiled)
             {
                 block.getDynamicObject()->setProperty(
-                    "content", juce::String::fromUTF8(("It did not compile, so nothing was drawn:\n" + capped(v.errors)).c_str()));
+                    "content", juce::String::fromUTF8((scenario::trialLine(trials) + "It did not compile, so nothing was drawn:\n"
+                                                       + capped(v.errors)).c_str()));
                 block.getDynamicObject()->setProperty("is_error", true);
                 const std::lock_guard<std::mutex> lock(mutex_);
                 addEntry(ChatEntry::Kind::tool, "looked at the sound: it did not compile");
@@ -3221,7 +3245,7 @@ namespace playground
                                          { "source", claude::object({ { "type", "base64" },
                                                                       { "media_type", "image/png" },
                                                                       { "data", juce::Base64::toBase64(d.png.data(), d.png.size()) } }) } }));
-            content.add(claude::object({ { "type", "text" }, { "text", juce::String::fromUTF8(d.about.c_str()) } }));
+            content.add(claude::object({ { "type", "text" }, { "text", juce::String::fromUTF8((scenario::trialLine(trials) + d.about).c_str()) } }));
             block.getDynamicObject()->setProperty("content", content);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
@@ -3508,12 +3532,17 @@ namespace playground
         if (name == "measure_output")
         {
             setActivity("Measuring the sound");
-            measure::Request req = renderOf(input);
+            std::string why;
+            measure::Request req = renderOf(input, &why);
             req.current = currentDials();
-            const std::string report = measure::run(host_.chatDraft().files, req);
+            Sources files = host_.chatDraft().files;   // a copy: the trial edits (ChatScenario.h) go there
+            int trials = 0;
+            if (!why.empty() || !scenario::resolve(req, host_, why) || !scenario::tryEdits(input, files, trials, why))
+                return fail(why);
+            const std::string report = measure::run(files, req);
             note(report.rfind("It did not compile", 0) == 0 ? "measured the sound: it did not compile"
                                                              : "measured the sound");
-            return report;
+            return scenario::trialLine(trials) + report;
         }
         if (name == "set_checks")
         {
@@ -3534,7 +3563,12 @@ namespace playground
                 k.label = str(c, "label");
                 if (k.label.empty())
                     k.label = k.goal.metric;
-                k.request = renderOf(c);
+                k.request = renderOf(c, &why);
+                if (!why.empty())
+                    return fail("Check " + std::to_string(i + 1) + ": " + why + " Nothing was set.");
+                if (k.request.fromCapture)                   // gone after a reload: it could never pass again
+                    return fail("Check " + std::to_string(i + 1) + ": a check cannot play the recording (\"capture\"), which "
+                                "the plugin does not keep: give it a phrase or an input of its own. Nothing was set.");
                 checks.push_back(std::move(k));
             }
             {
@@ -3557,8 +3591,11 @@ namespace playground
         if (name == "tune_dials")
         {
             measure::TuneRequest q;
-            q.render = renderOf(input);
+            std::string unfit;
+            q.render = renderOf(input, &unfit);
             q.render.current = currentDials();
+            if (!unfit.empty() || !scenario::resolve(q.render, host_, unfit))
+                return fail(unfit);
             if (const auto* tune = input.getProperty("tune", juce::var()).getArray())
                 for (const auto& t : *tune)
                     if (t.isString())
