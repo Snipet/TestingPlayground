@@ -45,7 +45,8 @@
 //   SEEN     the chat's Claude and Claude Desktop (MCP) keep their own records of the files they saw: a file Claude
 //            Desktop wrote, and one it read after the user edited it, go to the chat with their text (the chat's Claude
 //            never saw them); a file the chat's Claude wrote is new to Claude Desktop: get_status since shows the plugin's
-//            own chat editing it, and the lines it added; what Claude Desktop wrote itself is no change to it
+//            own chat editing it, and the lines it added since the token (what Claude Desktop read before it is no
+//            change); with the next token, nothing
 //   MEASURE  measure_output through the agent: its result is the render's report, with the dials asked for
 //   VIEW     view_panel through the agent: its result a PNG of the panel (and one of the whole editor) and a line of
 //            what it shows, drawn on the message thread; the user's view stays; the saved session keeps no picture
@@ -922,7 +923,7 @@ PROBE(plugin, chat)
         P.eq("seen.chat_write_new_to_desktop", !token.empty() && has(since, "the plugin's own chat edited program.fm")
                                                    && has(since, "+// the chat's own") && !has(since, "+// the user's second") ? 1 : 0, 1);
         const std::string after = firstText(agent.mcpCall("get_status", input({ { "since", juce::String(tokenOf(since)) } })));
-        P.eq("seen.then_as_desktop_saw_it", has(after, "Nothing changed since your last look") && has(after, "The files are as you last saw them") ? 1 : 0, 1);
+        P.eq("seen.then_as_desktop_saw_it", has(after, "Nothing changed since your last look") && has(after, "The files are as they were at that token") ? 1 : 0, 1);
     }
 
     // ---- MEASURE -------------------------------------------------------------------------------------------------------

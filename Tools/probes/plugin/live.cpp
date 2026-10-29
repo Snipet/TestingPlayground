@@ -16,10 +16,16 @@
 //           that stops the listen at once (its reply says it stopped early), the readers back to none
 //   SINCE   get_status's dial lines in their units (a frequency in kHz, a scaled percentage with its number, an int by
 //           its option's name) and its token; with since: the editor's drag of a dial, one line in its units; the
-//           host's automation; a typed edit, and its diff against the text Claude Desktop last read; RUN; a version and
-//           a preset saved and the preset applied (its dials no move); the host's bypass and its end, its transport
-//           starting, a new sample rate; the next call with the new token: nothing; another instance's token: the whole
-//           state; another tool's result starts with the hint while changes wait, and not when none do
+//           host's automation; a typed edit, and its diff against the file at the token; RUN; a version and a preset
+//           saved and the preset applied (its dials no move); the host's bypass and its end, its transport starting, a
+//           new sample rate; the next call with the new token: nothing; another instance's token: the whole state;
+//           another tool's result starts with the hint while changes wait, and not when none do; each token handed out
+//           its own, two tokens from before an edit both shown it (one conversation's look moves nothing of another's),
+//           Claude Desktop's own write no change but in the diff; a host move just before a preset that leaves that
+//           dial alone still a move; a bypass ending after a token: that token's reader reads the end, an older
+//           token's one line, never "still"
+//   CANCEL  two cancels before a listen starts: the first one's listen still stops at once
+//   NEWCHAT New chat while a call of Claude Desktop's runs: the chat stays busy until it ends
 #include "Probe.h"
 
 #include "Audio.h"
@@ -466,12 +472,84 @@ PROBE(plugin, live)
         P.eq("since.bypass", has(since, "the host bypassed the plugin, until ") ? 1 : 0, 1);
         P.eq("since.transport", has(since, "the host started playing, at 100.0 BPM, bar 2\n") ? 1 : 0, 1);
         P.eq("since.rate", has(since, "the host changed the sample rate: 48 kHz -> 44.1 kHz\n") ? 1 : 0, 1);
-        P.eq("since.diff", has(since, "program.fm (+1 -0), against the text you last saw:\n") && has(since, "\n+// typed\n") ? 1 : 0, 1);
+        P.eq("since.diff", has(since, "The files against their text at that token") && has(since, "program.fm (+1 -0):\n")
+                               && has(since, "\n+// typed\n") ? 1 : 0, 1);
         P.eq("since.no_whole_state", has(since, "Dials:\n") ? 0 : 1, 1);
         const std::string again = textOf(a.mcpCall("get_status", object({ { "since", juce::String(tokenOf(since)) } })));
-        P.eq("since.then_nothing", has(again, "Nothing changed since your last look.\n") && has(again, "The files are as you last saw them.\n") ? 1 : 0, 1);
+        P.eq("since.then_nothing", has(again, "Nothing changed since your last look.\n") && has(again, "The files are as they were at that token.\n") ? 1 : 0, 1);
         const std::string other = textOf(a.mcpCall("get_status", object({ { "since", "abc-1" } })));
         P.eq("since.unknown_token_whole_state", has(other, "That token is not this instance's") && has(other, "Dials:\n") ? 1 : 0, 1);
+
+        // Each token's files are its own: two conversations of one server hold a token each from before an edit; the
+        // first to ask moves nothing of the other's. What Claude Desktop wrote itself is no change, but in the diff.
+        const std::string tokenA = tokenOf(textOf(a.mcpCall("get_status", none)));
+        const std::string tokenB = tokenOf(textOf(a.mcpCall("get_status", none)));
+        P.eq("since.tokens_own", !tokenA.empty() && tokenA != tokenB ? 1 : 0, 1);
+        d = q.editorPort().draft();
+        d.files[0].text += "// typed again\n";
+        q.editorPort().setDraft(d);
+        const std::string sinceB = textOf(a.mcpCall("get_status", object({ { "since", juce::String(tokenB) } })));
+        const std::string sinceA = textOf(a.mcpCall("get_status", object({ { "since", juce::String(tokenA) } })));
+        P.eq("since.per_token", has(sinceB, "\n+// typed again\n") && count(sinceA, "you edited program.fm\n") == 1
+                                    && has(sinceA, "\n+// typed again\n") ? 1 : 0, 1);
+        d = q.editorPort().draft();
+        const pg::ChatAgent::McpResult wrote = a.mcpCall("write_file", object({ { "name", "program.fm" },
+                                                                                { "content", juce::String(d.files[0].text + "// Desktop's own\n") } }));
+        const std::string own = textOf(a.mcpCall("get_status", object({ { "since", juce::String(tokenOf(sinceA)) } })));
+        P.eq("since.own_edit_in_the_diff", !wrote.isError && has(own, "Nothing changed since your last look.\n")
+                                               && has(own, "edits made through MCP since are in it too") && has(own, "\n+// Desktop's own\n") ? 1 : 0, 1);
+
+        // A move just before a preset that leaves that dial alone is a move still: the preset's own dials are seen.
+        P.eq("since.preset_cutoff_only", pg::projectstore::savePreset("Live probe", "Cutoff only", { { "cutoff", 5000.0f } }, saved.number, &why) ? 1 : 0, 1);
+        const std::string beforePreset = tokenOf(own);
+        q.getParameters()[mix]->setValueNotifyingHost(0.55f);   // the host's, with no poll before the preset
+        P.eq("since.preset_applied_again", q.editorPort().applyPreset("Live probe", "Cutoff only", why) ? 1 : 0, 1);
+        q.poll();
+        const std::string preset = textOf(a.mcpCall("get_status", object({ { "since", juce::String(beforePreset) } })));
+        std::printf("get_status since, a host move then a preset:\n%s", preset.c_str());
+        P.eq("since.move_before_preset", has(preset, "the host moved mix ") && has(preset, "-> 55 %\n") && !has(preset, "moved cutoff")
+                                             && has(preset, "you applied preset \"Cutoff only\"") ? 1 : 0, 1);
+
+        // A bypass that ends after a token was handed out: that token's reader reads its end, an older one's one line.
+        const std::string beforeBypass = tokenOf(preset);
+        block(q, true);
+        const std::string whileBypassed = tokenOf(textOf(a.mcpCall("get_status", none)));
+        block(q);
+        const std::string bypassOld = textOf(a.mcpCall("get_status", object({ { "since", juce::String(beforeBypass) } })));
+        const std::string bypassNew = textOf(a.mcpCall("get_status", object({ { "since", juce::String(whileBypassed) } })));
+        P.eq("since.bypass_ended", has(bypassOld, "the host bypassed the plugin, until ") && !has(bypassOld, "it still is")
+                                       && !has(bypassOld, "un-bypassed") ? 1 : 0, 1);
+        P.eq("since.unbypass_after_token", has(bypassNew, "the host un-bypassed the plugin\n") && !has(bypassNew, "bypassed the plugin,") ? 1 : 0, 1);
+
+        // Cancels that come before a listen starts, two of them: each stops its own listen at once.
+        a.mcpCancel(9001);
+        a.mcpCancel(9002);
+        const auto cancelledAt = std::chrono::steady_clock::now();
+        const std::string early = resultOf(a.mcpCall("listen", object({ { "seconds", 3 } }), 9001));
+        const double earlyS = std::chrono::duration<double>(std::chrono::steady_clock::now() - cancelledAt).count();
+        P.eq("cancel.before_start_kept", has(early, "(stopped early)") ? 1 : 0, 1);
+        P.le("cancel.before_start_quick_s", earlyS, 1.0);
+
+        // New chat while a call of Claude Desktop's runs (view_panel, drawn at the next poll): the chat stays busy
+        // until the call ends, so no turn of its own can start beside it.
+        std::atomic<bool> drawn{ false };
+        std::thread desktop([&] {
+            a.mcpCall("view_panel", none, 9003);
+            drawn.store(true);
+        });
+        for (int i = 0; i < 400 && !a.mcpWorking() && !drawn.load(); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        const bool working = a.mcpWorking();
+        a.newChat();
+        const bool busyAfterNew = a.chatState().busy;
+        while (!drawn.load())
+        {
+            q.poll();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        desktop.join();
+        P.eq("newchat.busy_while_desktop_works", working && busyAfterNew ? 1 : 0, 1);
+        P.eq("newchat.idle_after", !a.chatState().busy && !a.mcpWorking() ? 1 : 0, 1);
     }
 
     owned.reset();
