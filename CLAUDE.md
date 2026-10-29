@@ -312,9 +312,10 @@ place (its `products/<key>.cmake`, and its names in the docs).
   said), and its description's first sentence (or first paragraph, when it has several) must stand alone: that is
   all MCP's copy keeps (tools.json sits in every Desktop conversation), the rest goes in the guide's THE TOOLS: WHAT
   THEIR SHORT DESCRIPTIONS LEAVE OUT, in that part. MCP's copy of the schemas also leaves out a property's description
-  an earlier property of the same name has word for word (`dropRepeated`: a check's and tune_dials' render settings
-  are view_sound's; the guide says so). tools.json stays at most 24,000 bytes as the link writes it (pretty-printed;
-  Desktop gets it compact): `plugin.mcp` checks. Each product has its own server, extension and socket folder.
+  an earlier property of the same name has word for word (`dropRepeated`: a goal's words in tune_dials are
+  set_checks'; the guide says so), except a description with a number in it (a range, a default, a cap), which
+  every copy keeps: Desktop may load or switch on one tool without the one that described it first. tools.json
+  stays at most 25,000 bytes as the link writes it (pretty-printed; Desktop gets it compact): `plugin.mcp` checks. Each product has its own server, extension and socket folder.
   The server is juce_core only; it finds the instances by their sockets (`<n>.sock`, the lowest number free: the
   instance's name, "Effect 2" or "Synth 2", shown in the chat card while connected) and falls back on the tools.json
   and guide.md the newest left. It is for someone who never sees a tool: its instructions keep tools and ids from the

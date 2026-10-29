@@ -217,7 +217,8 @@ namespace
             { "improve_the_sound", "Improve the sound", true, { "get_status", "measure_output", "edit_file", "run_program" } },
             { "explain_the_sound", "Explain the sound", true, { "get_status", "read_file", "measure_output" } },
             { "fix_what_i_hear", "Fix what I hear", true,
-              { "get_status", "measure_output", "view_sound", "edit_file", "run_program", "set_checks" } },
+              { "get_status", "listen", "capture", "trace", "compare", "measure_output", "view_sound", "edit_file", "run_program",
+                "set_checks" } },
         };
         return all;
     }

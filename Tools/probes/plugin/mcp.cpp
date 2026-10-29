@@ -492,7 +492,8 @@ PROBE(plugin, mcp)
                       + " (" + std::to_string(juce::JSON::toString(tool["inputSchema"], false).length()) + ")";
         std::printf("tools.json by tool, bytes (its schema's):%s\n", each.c_str());
         P.eq("link.tools_short", leads ? 1 : 0, 1);
-        // A setting described once: view_sound's hold_seconds keeps its words, a check's and tune_dials' leave them out.
+        // A setting described once: a goal's min keeps its words in set_checks and leaves them out in tune_dials; one
+        // with a number in its words (hold_seconds: a default and a cap) keeps them in every copy.
         juce::var viewSound, setChecks, tuneDials;
         if (const juce::Array<juce::var>* t = tools.getArray())
             for (const juce::var& tool : *t)
@@ -507,14 +508,14 @@ PROBE(plugin, mcp)
             }
         P.eq("link.tools_described_once",
              viewSound["inputSchema"]["properties"]["hold_seconds"].hasProperty("description")
-                     && !tuneDials["inputSchema"]["properties"]["hold_seconds"].hasProperty("description")
-                     && !setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["hold_seconds"].hasProperty("description")
+                     && tuneDials["inputSchema"]["properties"]["hold_seconds"].hasProperty("description")
+                     && setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["hold_seconds"].hasProperty("description")
                      && !tuneDials["inputSchema"]["properties"]["goals"]["items"]["properties"]["min"].hasProperty("description")
                      && setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["min"].hasProperty("description")
                  ? 1 : 0, 1);
         // The first MCP wave's budget (tools.json as the link writes it, pretty-printed; Desktop gets it compact).
         std::printf("tools.json compact: %d bytes\n", juce::JSON::toString(tools, true).length());
-        P.le("link.tools_bytes", static_cast<double>(size), 24000.0);
+        P.le("link.tools_bytes", static_cast<double>(size), 25000.0);
     }
     const std::string guide = ask(*a, r, 3, "guide", object({ { "part", "start" } }))["result"].toString().toStdString();
     P.eq("link.guide", guide.rfind("WORKING FROM OUTSIDE THE PLUGIN", 0) == 0 ? 1 : 0, 1);

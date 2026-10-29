@@ -2948,6 +2948,8 @@ namespace playground
         // MCP's copy of the schemas leaves out a property's description that an earlier property of the same name has
         // word for word (tools.json sits in every Desktop conversation; the guide says so): the render settings
         // view_sound describes, again in a check's and in tune_dials'; a goal's, set_checks', again in tune_dials'.
+        // A description with a number in it (a range, a default, a cap) stays in every copy: Desktop may load or
+        // switch on one tool without the one that described it first, and a missing range is a wrong value.
         void dropRepeated(const juce::var& node, std::set<std::pair<juce::String, juce::String>>& seen)
         {
             if (juce::DynamicObject* o = node.getDynamicObject())
@@ -2955,8 +2957,11 @@ namespace playground
                 if (juce::DynamicObject* props = o->getProperty("properties").getDynamicObject())
                     for (const auto& kv : props->getProperties())
                         if (juce::DynamicObject* p = kv.value.getDynamicObject(); p != nullptr && p->hasProperty("description"))
-                            if (!seen.insert({ kv.name.toString(), p->getProperty("description").toString() }).second)
+                        {
+                            const juce::String text = p->getProperty("description").toString();
+                            if (!text.containsAnyOf("0123456789") && !seen.insert({ kv.name.toString(), text }).second)
                                 p->removeProperty("description");
+                        }
                 for (const auto& kv : o->getProperties())
                     dropRepeated(kv.value, seen);
             }
@@ -3033,8 +3038,9 @@ namespace playground
                "This guide comes in parts (playground_guide's part): \"start\" is what every piece of work needs, and its end "
                "names the others and when to read them; a section it calls \"below\" that is not in the part you read is in "
                "another part. The tools' descriptions here are short: what they leave out is in " + mcp::guide::kNotes
-             + ", at the end of the part that needs it; and a setting described in one tool's schema is not described again "
-               "in a later one's (a check's and tune_dials' render settings are as view_sound's, their goals as set_checks'). "
+             + ", at the end of the part that needs it; and a setting described in one tool's schema without a number is "
+               "not described again in a later one's (a check's and tune_dials' render settings are as view_sound's, their "
+               "goals as set_checks'). "
                "What follows is the guide the plugin's chat works from.\n\n"
              + systemPrompt() + "\n" + mcp::guide::kNotes + "\n\n" + notes;
     }
