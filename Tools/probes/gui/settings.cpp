@@ -634,14 +634,16 @@ PROBE(gui, settings)
     }
     {
         // A double-click outside the card closes it, and its second press and doubleClick reach nothing either: the
-        // dial under it keeps its value (a double-click there would set it back to its default). The next one does.
+        // dial under it keeps its value (a double-click there would set it back to its default). The next one does. A
+        // knob's (a real one's: the synth's first dial, its wave, is buttons, which a click chooses).
         processor.showSettings();
         settle();
         const funkgui::Rect box = card.places(W(), H()).box;
         int slot = -1;
         funkgui::Point dial{};
         for (int c = 0; c < pg::kMaxControls && slot < 0; ++c)
-            if (const auto at = panel.centreOfDial(c); at && !box.contains(*at))
+            if (const auto at = panel.centreOfDial(c);
+                at && !box.contains(*at) && processor.control(c).type == pg::ControlType::real)
             {
                 slot = c;
                 dial = *at;
