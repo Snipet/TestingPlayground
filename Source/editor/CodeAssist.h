@@ -35,6 +35,7 @@
 // items); the find bar and the status line with the editor. Message thread only.
 #pragma once
 
+#include "editor/Theme.h"
 #include "fminus/Lang.h"
 
 #include <funkgui/canvas/Canvas.h>
@@ -270,6 +271,7 @@ namespace playground::ui
         bool themeDark_ = true;
         bool hasTheme_ = false;
         std::vector<funkgui::text::HighlightStyle> palette_;
+        funkgui::Col note_ = codeSecond(funkgui::Theme::graphite());   // a note's ink, the theme's (setTheme)
         bool focused_ = false;
         mutable float panelW_ = 0.0f, panelH_ = 0.0f;    // the last overlays' bounds (drawOverlays keeps them)
         Sources library_;

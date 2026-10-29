@@ -472,7 +472,7 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   places in the file.
 - **Problems.** The last run's messages are listed under the text, with their file, line and column; a click on one
   shows its file and puts the caret there. In the text they are squiggles (errors red, warnings amber, notes in the
-  theme's signal) with a mark in the margin, and the status line counts them (a click there goes to the next). They
+  colour of the types) with a mark in the margin, and the status line counts them (a click there goes to the next). They
   come from RUN, and from a check while you type: 0.6 s after the last edit the files go to the compiler's thread,
   which reads them as far as finding what is wrong (FMinus's pass over the text at -O0 and the main module's methods,
   a few milliseconds; no code is made and nothing plays: the program that plays plays on). The squiggles move with the
@@ -951,6 +951,8 @@ The theme's button (the top bar) and the zoom's pill (the status bar) are machin
 each product's own `~/Library/Application Support/<name>/` (`TestingPlayground/`, `TestingPlaygroundSynth/`). Colours
 are tokens, and each product has its own accent, which its mark's caret, RUN and the editor's caret share
 (`Source/editor/Theme.h`): the effect's is FunkGui's orange and its errors (the theme's `signal`) cyan; the synth's is
-a blue and its errors orange, so an error never reads as the accent. `<PREFIX>UI_THEME=1` opens the Standalone on the
+a blue and its errors orange, so an error never reads as the accent. The code's types and its notes take a colour of
+their own (`codeSecond`): the effect's cyan, as its errors, the synth's a teal, apart from its blue keywords and its
+orange errors. `<PREFIX>UI_THEME=1` opens the Standalone on the
 light theme without saving it, `<PREFIX>GPU_LOG=1` logs the GPU surface; the prefix is the product's
 (`PRODUCT_ENV_PREFIX`: `TSTN_` for the effect, `TSYN_` for the synth).
