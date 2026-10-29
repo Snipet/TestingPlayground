@@ -305,7 +305,9 @@ namespace playground::scenario
         return o->getProperties().isEmpty() ? juce::var() : out;
     }
 
-    bool resolve(measure::Request& r, ChatHost& host, std::string& why)
+    bool resolve(measure::Request& r, ChatHost& host, std::string& why) { return resolve(r, host, why, nullptr); }
+
+    bool resolve(measure::Request& r, ChatHost& host, std::string& why, const Captured* recording)
     {
         if (r.hostRate)
             if (const double rate = host.chatHostRate(); rate > 1000.0)
@@ -316,16 +318,27 @@ namespace playground::scenario
         if (r.fromCapture)
         {
             Captured c;
-            if (!captured(host, c, why))
-                return false;
-            const measure::Request& k = c.request;
+            if (recording == nullptr)
+            {
+                if (!captured(host, c, why))
+                    return false;
+                recording = &c;
+            }
+            const measure::Request& k = recording->request;
             r.rate = k.rate;
             r.block = k.block;
             r.blocks = k.blocks;
             r.events = k.events;
             r.transport = k.transport;
+            const auto bySample = [](const auto& x, const auto& y) { return x.first < y.first; };
+            std::stable_sort(r.events.begin(), r.events.end(), bySample);
+            std::stable_sort(r.transport.begin(), r.transport.end(), bySample);
             r.input = k.input;
             r.phrase.clear();
+            std::map<std::string, float> dials = k.dials;          // the recording's at its start, under the request's own
+            for (const auto& [name, x] : r.dials)
+                dials[name] = x;
+            r.dials = std::move(dials);
             std::vector<measure::DialMove> moves = k.automate;   // the recording's, then the request's own
             moves.insert(moves.end(), r.automate.begin(), r.automate.end());
             r.automate = std::move(moves);

@@ -60,9 +60,9 @@
 //   TRIAL    try_edits (ChatScenario.h): measure_output with a passage edited and a file added on a copy says so in
 //            its first line and renders it, the editor's files untouched; an edit whose text is not there is an error
 //            that names it; a scenario through the agent is in the report, and one that cannot be is refused naming
-//            its part
+//            its part; a check that would play the recording is refused
 //   COMPARE  compare through the agent: the editor against itself with a trial edit that halves the level shows a
-//            gain of 0.5; version:N with no project open says so
+//            gain of 0.5; version:N with no project open says so; dials "current" keeps a {dials} side's own
 //   PLANNER  a planning model (setPlanner): none at first, one the models do not list refused; chosen, a message's
 //            first request goes to it (its model, tool_choice none, the tools defined, no thinking block in its
 //            history, the brief after the user's words), its plan streams into a plan entry, and the builder's first
@@ -1214,6 +1214,7 @@ PROBE(plugin, chat)
             juce::Array<juce::var> moves;
             moves.add(input({ { "dial", levelDial }, { "at", 0.2 }, { "to", -30.0 }, { "over", 0.2 } }));
             const juce::var played = pg::product::kIsInstrument ? input({ { "phrase", phrase } }) : input({ { "automate", moves } });
+            const juce::var recorded = input({ { pg::product::kIsInstrument ? "phrase" : "input", "capture" } });
             ss->add(fake::Response::ok(fake::Sse()
                                            .start()
                                            .tool("toolu_x1", "measure_output", input({ { "try_edits", good } }))
@@ -1225,6 +1226,10 @@ PROBE(plugin, chat)
                                                                                                      { "metric", "alerts" },
                                                                                                      { "max", 0.5 },
                                                                                                      { "scenario", played } }) } } }))
+                                           .tool("toolu_x6", "set_checks",
+                                                 input({ { "checks", juce::Array<juce::var>{ input({ { "metric", "alerts" },
+                                                                                                     { "max", 0.5 },
+                                                                                                     { "scenario", recorded } }) } } }))
                                            .end("tool_use")));
             ss->add(fake::Response::ok(fake::Sse().start().text("Tried.").end()));
             const int at = turn("would halving the level help?", 2);
@@ -1234,13 +1239,16 @@ PROBE(plugin, chat)
             P.eq("trial.first_line", tried.rfind("With 2 trial edits; nothing in the plugin changed.\n", 0) == 0
                                          && has(tried, "Rendered offline") ? 1 : 0, 1);
             const juce::Array<juce::var> results = arr(lastUser(at + 1).getProperty("content", {}));
-            P.eq("trial.refused_names_it", results.size() == 5 && static_cast<bool>(results[1].getProperty("is_error", false))
+            P.eq("trial.refused_names_it", results.size() == 6 && static_cast<bool>(results[1].getProperty("is_error", false))
                                                 && has(refused, "Trial edit 1 (program.fm): old_text does not occur") ? 1 : 0, 1);
             P.eq("trial.editor_untouched", sp.editorPort().draft().files == before ? 1 : 0, 1);
             P.eq("trial.turn_ended", ss->postCount() == at + 2 && !sa.chatState().busy ? 1 : 0, 1);
             P.eq("scenario.through_agent", has(scenario, "Scenario: ") ? 1 : 0, 1);
-            P.eq("scenario.refused_names_it", results.size() == 5 && static_cast<bool>(results[3].getProperty("is_error", false))
+            P.eq("scenario.refused_names_it", results.size() == 6 && static_cast<bool>(results[3].getProperty("is_error", false))
                                                   && has(unfit, "scenario.rate: rate is 8000 to 192000") ? 1 : 0, 1);
+            // A check cannot play the recording (gone after a reload, it would fail for ever); the checks stay as set.
+            P.eq("scenario.check_no_capture", static_cast<bool>(results[5].getProperty("is_error", false))
+                                                  && has(resultText(at + 1, 5), "a check cannot play the recording") ? 1 : 0, 1);
             // A check keeps its scenario: measured in it, saved with it, loaded with it.
             const std::string saved = sa.saveState();
             P.eq("scenario.check_kept", has(resultText(at + 1, 4), "Checks: 1 of 1 pass") && has(saved, "\"scenario\"")
@@ -1262,6 +1270,10 @@ PROBE(plugin, chat)
                                                  input({ { "a", "editor" },
                                                          { "b", input({ { "dials", input({ { levelDial, pg::product::kIsInstrument ? -32.0 : -6.0 } }) } }) },
                                                          { "picture", true } }))
+                                           .tool("toolu_y4", "compare",
+                                                 input({ { "a", "editor" },
+                                                         { "b", input({ { "dials", input({ { levelDial, pg::product::kIsInstrument ? -32.0 : -6.0 } }) } }) },
+                                                         { "dials", "current" } }))
                                            .end("tool_use")));
             ss->add(fake::Response::ok(fake::Sse().start().text("Compared.").end()));
             const int at = turn("what would halving change?", 2);
@@ -1272,6 +1284,9 @@ PROBE(plugin, chat)
             P.eq("compare.source_line", has(halved, "Source, B against A: program.fm +1 -1; the same dials") ? 1 : 0, 1);
             P.eq("compare.no_project", has(noProject, "no project is open") ? 1 : 0, 1);
             P.eq("compare.entry", has(lastText(sa.chatState(), pg::ChatEntry::Kind::tool), "compared two sounds") ? 1 : 0, 1);
+            // dials "current" keeps a {dials} side's own: B is still quieter.
+            const std::string current = resultText(at + 1, 3);
+            P.eq("compare.current_keeps_given", has(current, "Best fit: B = ") && !has(current, "Identical bits") ? 1 : 0, 1);
             // The picture: both levels and spectra, a PNG of 1120 x 560 with the words after it.
             std::string data, words;
             const juce::Array<juce::var> results = arr(lastUser(at + 1).getProperty("content", {}));

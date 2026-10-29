@@ -3522,6 +3522,9 @@ namespace playground
                 k.request = renderOf(c, &why);
                 if (!why.empty())
                     return fail("Check " + std::to_string(i + 1) + ": " + why + " Nothing was set.");
+                if (k.request.fromCapture)                   // gone after a reload: it could never pass again
+                    return fail("Check " + std::to_string(i + 1) + ": a check cannot play the recording (\"capture\"), which "
+                                "the plugin does not keep: give it a phrase or an input of its own. Nothing was set.");
                 checks.push_back(std::move(k));
             }
             {

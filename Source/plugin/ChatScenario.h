@@ -45,8 +45,11 @@ namespace playground::scenario
     bool read(const juce::var& input, measure::Request& request, std::string* why);
     // A request's scenario as read() takes it (void: none), for the session.
     juce::var toVar(const measure::Request& request);
-    // "host" and "capture" filled in: false with why ("nothing recorded yet") when the recording is not there.
+    struct Captured;
+    // "host" and "capture" filled in: false with why ("nothing recorded yet") when the recording is not there. With
+    // `recording` given, that one (compare reads the recording once for both its sides), else captured()'s.
     bool resolve(measure::Request& request, ChatHost& host, std::string& why);
+    bool resolve(measure::Request& request, ChatHost& host, std::string& why, const Captured* recording);
     // The checks measured as measure::evaluate measures them, each resolved first (one that cannot be is not measured,
     // saying why).
     std::vector<measure::CheckResult> evaluate(const Sources& files, const std::vector<measure::Check>& checks,
@@ -63,9 +66,11 @@ namespace playground::scenario
 
     // ---- the recording (the capture lane's seam) --------------------------------------------------------------------
     // What the user played, recorded in the processor per host block (the events, the dials' values, the transport,
-    // the input and the output), as a render: `request` replays it (its rate, its blocks, its MIDI by sample, its dials
-    // as DialMoves over 0 s at each block that changed them, its transport, an effect's input), `l` and `r` are what
-    // played. ChatCaptured.cpp: the capture lane fills it in.
+    // the input and the output), as a render: `request` replays it (its rate, its blocks, its MIDI by sample, every
+    // dial's value at its start in `dials` and as DialMoves over 0 s at each block that changed one after, its
+    // transport, an effect's input), `l` and `r` are what played (compare renders the replay as long). The events and
+    // the transport by sample (resolve() sorts them, keeping the order within a sample). ChatCaptured.cpp: the capture
+    // lane fills it in.
     struct Captured
     {
         measure::Request request;
