@@ -771,7 +771,7 @@ PROBE(dsp, tune)
             const std::string near = steps.empty() ? std::string() : ms::nearestMark(mute.timeline(q), steps.front().at, 48000.0);
             std::printf("mute: the largest step at %zu, %s\n", steps.empty() ? 0 : steps.front().at, near.c_str());
             P.eq("scenario.locator_step_at_block", !steps.empty() && steps.front().at % 256 == 0 ? 1 : 0, 1);
-            P.eq("scenario.locator_names_dial", near.find("mute steps to 1") != std::string::npos
+            P.eq("scenario.locator_names_dial", near.rfind("at mute steps to 1", 0) == 0
                                                     && near.find("at a block's start") != std::string::npos ? 1 : 0, 1);
         }
     }

@@ -761,6 +761,18 @@ namespace playground::measure
             tl.block = std::clamp(req.block, 1, kMaxBlock);
             for (const int b : req.blocks)
                 tl.blocks.push_back(std::clamp(b, 1, kMaxBlock));
+            // Where a dial's move or the transport's edit lands: the first host block at or after it (the marks say so).
+            const auto landing = [&tl](std::size_t at) {
+                std::size_t start = 0;
+                for (const int b : tl.blocks)
+                {
+                    if (start >= at)
+                        return start;
+                    start += static_cast<std::size_t>(b);
+                }
+                const auto block = static_cast<std::size_t>(tl.block);
+                return start >= at ? start : start + (at - start + block - 1) / block * block;
+            };
             Transport t;                                     // the host plays from the song's start, at the tempo asked
             t.known = true;
             t.bpm = std::clamp(static_cast<double>(req.bpm), 20.0, 400.0);
@@ -783,14 +795,14 @@ namespace playground::measure
                     j.beat = e.jumpToBeat;
                     j.playing = !(e.stopAt >= 0.0 && e.stopAt <= e.jumpAt);
                     tl.transport.push_back({ sampleOf(e.jumpAt, rate), j, false });
-                    tl.marks.push_back({ sampleOf(e.jumpAt, rate), "the playhead jumps to beat " + fmt("%g", e.jumpToBeat), -1, false });
+                    tl.marks.push_back({ landing(sampleOf(e.jumpAt, rate)), "the playhead jumps to beat " + fmt("%g", e.jumpToBeat), -1, false });
                 }
                 if (e.stopAt >= 0.0 && sampleOf(e.stopAt, rate) > 0)
                 {
                     Transport st = t;
                     st.playing = false;
                     tl.transport.push_back({ sampleOf(e.stopAt, rate), st, true });
-                    tl.marks.push_back({ sampleOf(e.stopAt, rate), "the host stops", -1, false });
+                    tl.marks.push_back({ landing(sampleOf(e.stopAt, rate)), "the host stops", -1, false });
                 }
                 std::stable_sort(tl.transport.begin(), tl.transport.end(),
                                  [](const Timeline::Send& x, const Timeline::Send& y) { return x.at < y.at; });
@@ -825,7 +837,7 @@ namespace playground::measure
                 std::stable_sort(tl.moves.begin(), tl.moves.end(), [](const Timeline::Move& x, const Timeline::Move& y) {
                     return x.slot != y.slot ? x.slot < y.slot : x.a < y.a;
                 });
-                tl.marks.push_back({ mv.a,
+                tl.marks.push_back({ landing(mv.a),
                                      std::string(k.name) + (glide ? " moves to " + plainText(mv.to) + " over " + seconds(m.over)
                                                                   : (k.type == ControlType::real ? " set to " : " steps to ")
                                                                         + plainText(mv.to)),
@@ -1518,13 +1530,13 @@ namespace playground::measure
                 std::string where, near;
             };
             std::vector<Found> found;
-            const auto through = [&](const Stereo& in, const char* name, std::size_t ends = 0) {
+            const auto through = [&](const Stereo& in, const char* name, std::size_t ends = 0, bool starts = false) {
                 Timeline tl = impl_->plan(dials, request, in.size());
                 if (ends > 0)
-                {
                     tl.marks.push_back({ ends, std::string(name) + "'s end", -1, false });
-                    sortMarks(tl);
-                }
+                if (starts)
+                    tl.marks.push_back({ 0, name, -1, false });
+                sortMarks(tl);
                 Rendered r = impl_->render(dials, &in, tl, 0);
                 cpu += r.cpuMs;
                 audio += static_cast<double>(r.cpuSamples) / rate;
@@ -1591,7 +1603,7 @@ namespace playground::measure
             {
                 const std::size_t impulseN = static_cast<std::size_t>(0.01 * rate) + tailN;
                 const Stereo impulse = signal(impulseN, [&](std::size_t i) { return i == 0 ? 0.5f : 0.0f; });
-                const Stereo o = through(impulse, "the impulse");
+                const Stereo o = through(impulse, "the impulse", 0, true);
                 std::size_t at = 0;
                 double pk = 0.0;
                 for (std::size_t i = 0; i < o.size(); ++i)

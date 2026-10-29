@@ -34,4 +34,11 @@ namespace playground::soundpicture
 
     // A ViewRequest sized for this picture.
     measure::ViewRequest request();
+
+    // compare's picture (ChatCompare.cpp), 1120 x 560: two sounds' levels over time (RMS over 10 ms, A blue, B orange)
+    // with their difference's level (pink, `difference` one value a column, dBFS), and their average spectra on one
+    // scale; the octave bands' differences (B against A, dB, NaN for none) along its foot.
+    inline constexpr int kPairHeight = 560;
+    Drawn drawPair(const measure::View& a, const measure::View& b, const std::vector<float>& difference,
+                   const std::vector<double>& bandsDb, const std::string& title, const std::string& about);
 }

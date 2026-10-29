@@ -225,6 +225,9 @@ namespace playground
         float chatLoad() const override;
         uint32_t chatAlerts() const override;
         PanelPicture chatPicture(bool window, const std::string& page) override;
+        double chatHostRate() const override;
+        int chatHostBlock() const override;
+        std::string chatProject() const override;
 
         // The program: what plays, the editor's draft, the dials. Message thread, and a host's state calls. Declared
         // before the parameters, whose names and texts read controls_ (control()).

@@ -14,7 +14,7 @@
 //            thinking, each with its levels
 //   REQUEST  each request has the model, max_tokens (the model's own limit, from /v1/models), stream, adaptive
 //            thinking (summarized), the effort, the system prompt cached for an hour, the automatic cache breakpoint,
-//            the sixteen tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
+//            the seventeen tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
 //            and instructions) with their beta headers for a model that takes them, the API version and the key, and
 //            no temperature, top_p or top_k; it goes to api.anthropic.com with no other credential; the first message
 //            carries the plugin's state; the history is append-only
@@ -57,6 +57,12 @@
 //            and a turn after it goes on no more
 //   TUNE     tune_dials: a level for an RMS (an instrument) or a gain for a gain (an effect): the goal met, the dial
 //            set (measured afterwards, it gives the goal); an unknown dial an error result
+//   TRIAL    try_edits (ChatScenario.h): measure_output with a passage edited and a file added on a copy says so in
+//            its first line and renders it, the editor's files untouched; an edit whose text is not there is an error
+//            that names it; a scenario through the agent is in the report, and one that cannot be is refused naming
+//            its part
+//   COMPARE  compare through the agent: the editor against itself with a trial edit that halves the level shows a
+//            gain of 0.5; version:N with no project open says so
 //   PLANNER  a planning model (setPlanner): none at first, one the models do not list refused; chosen, a message's
 //            first request goes to it (its model, tool_choice none, the tools defined, no thinking block in its
 //            history, the brief after the user's words), its plan streams into a plan entry, and the builder's first
@@ -523,8 +529,8 @@ PROBE(plugin, chat)
         int eager = 0;
         for (const auto& t : tools)
             eager += static_cast<bool>(t.getProperty("eager_input_streaming", false)) ? 1 : 0;
-        P.eq("request.tools", tools.size(), 16);
-        P.eq("request.tools_eager", eager, 16);
+        P.eq("request.tools", tools.size(), 17);
+        P.eq("request.tools_eager", eager, 17);
         bool libraryEnum = false;
         for (const auto& t : tools)
             if (str(t, "name") == "add_library_file")
@@ -1191,6 +1197,97 @@ PROBE(plugin, chat)
             const int b2 = turn("tune nothing", 2);
             P.eq("tune.unknown_dial", has(resultText(b2 + 1), "no dial 'nothing'") ? 1 : 0, 1);
         }
+
+        // ---- TRIAL ---------------------------------------------------------------------------------------------------------
+        const juce::var halve = input({ { "file", "program.fm" },
+                                        { "old_text", "const float g = expf(0.115129255f * " },
+                                        { "new_text", "const float g = 0.5f * expf(0.115129255f * " } });
+        {
+            const pg::Sources before = sp.editorPort().draft().files;
+            juce::Array<juce::var> good, bad;
+            good.add(halve);
+            good.add(input({ { "name", "extra.fm" }, { "content", "// a file of the trial's\n" } }));
+            bad.add(input({ { "file", "program.fm" }, { "old_text", "no such passage" }, { "new_text", "x" } }));
+            juce::Array<juce::var> phrase;
+            phrase.add(input({ { "note", 57 }, { "at", 0.1 }, { "len", 0.3 } }));
+            phrase.add(input({ { "note", 57 }, { "at", 0.3 }, { "len", 0.3 } }));
+            juce::Array<juce::var> moves;
+            moves.add(input({ { "dial", levelDial }, { "at", 0.2 }, { "to", -30.0 }, { "over", 0.2 } }));
+            const juce::var played = pg::product::kIsInstrument ? input({ { "phrase", phrase } }) : input({ { "automate", moves } });
+            ss->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .tool("toolu_x1", "measure_output", input({ { "try_edits", good } }))
+                                           .tool("toolu_x2", "measure_output", input({ { "try_edits", bad } }))
+                                           .tool("toolu_x3", "measure_output", input({ { "scenario", played } }))
+                                           .tool("toolu_x4", "measure_output", input({ { "scenario", input({ { "rate", 5.0 } }) } }))
+                                           .tool("toolu_x5", "set_checks",
+                                                 input({ { "checks", juce::Array<juce::var>{ input({ { "label", "No alerts as played" },
+                                                                                                     { "metric", "alerts" },
+                                                                                                     { "max", 0.5 },
+                                                                                                     { "scenario", played } }) } } }))
+                                           .end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("Tried.").end()));
+            const int at = turn("would halving the level help?", 2);
+            const std::string tried = resultText(at + 1, 0), refused = resultText(at + 1, 1), scenario = resultText(at + 1, 2),
+                              unfit = resultText(at + 1, 3);
+            std::printf("try_edits:\n%s\n%s\nscenario:\n%s\n%s\n", tried.c_str(), refused.c_str(), scenario.c_str(), unfit.c_str());
+            P.eq("trial.first_line", tried.rfind("With 2 trial edits; nothing in the plugin changed.\n", 0) == 0
+                                         && has(tried, "Rendered offline") ? 1 : 0, 1);
+            const juce::Array<juce::var> results = arr(lastUser(at + 1).getProperty("content", {}));
+            P.eq("trial.refused_names_it", results.size() == 5 && static_cast<bool>(results[1].getProperty("is_error", false))
+                                                && has(refused, "Trial edit 1 (program.fm): old_text does not occur") ? 1 : 0, 1);
+            P.eq("trial.editor_untouched", sp.editorPort().draft().files == before ? 1 : 0, 1);
+            P.eq("trial.turn_ended", ss->postCount() == at + 2 && !sa.chatState().busy ? 1 : 0, 1);
+            P.eq("scenario.through_agent", has(scenario, "Scenario: ") ? 1 : 0, 1);
+            P.eq("scenario.refused_names_it", results.size() == 5 && static_cast<bool>(results[3].getProperty("is_error", false))
+                                                  && has(unfit, "scenario.rate: rate is 8000 to 192000") ? 1 : 0, 1);
+            // A check keeps its scenario: measured in it, saved with it, loaded with it.
+            const std::string saved = sa.saveState();
+            P.eq("scenario.check_kept", has(resultText(at + 1, 4), "Checks: 1 of 1 pass") && has(saved, "\"scenario\"")
+                                            && has(saved, pg::product::kIsInstrument ? "\"phrase\"" : "\"automate\"") ? 1 : 0, 1);
+            sa.loadState(saved);
+            P.eq("scenario.check_loads", sa.saveState() == saved ? 1 : 0, 1);
+            sa.clearChecks();
+        }
+
+        // ---- COMPARE -------------------------------------------------------------------------------------------------------
+        {
+            juce::Array<juce::var> edits;
+            edits.add(halve);
+            ss->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .tool("toolu_y1", "compare", input({ { "a", "editor" }, { "b", "editor" }, { "try_edits", edits } }))
+                                           .tool("toolu_y2", "compare", input({ { "a", "version:1" }, { "b", "editor" } }))
+                                           .tool("toolu_y3", "compare",
+                                                 input({ { "a", "editor" },
+                                                         { "b", input({ { "dials", input({ { levelDial, pg::product::kIsInstrument ? -32.0 : -6.0 } }) } }) },
+                                                         { "picture", true } }))
+                                           .end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("Compared.").end()));
+            const int at = turn("what would halving change?", 2);
+            const std::string halved = resultText(at + 1, 0), noProject = resultText(at + 1, 1);
+            std::printf("compare:\n%s\n%s\n", halved.c_str(), noProject.c_str());
+            P.eq("compare.trial_gain", halved.rfind("With 1 trial edit; nothing in the plugin changed.\n", 0) == 0
+                                           && has(halved, "Best fit: B = 0.500 x A (-6.0 dB), no delay") ? 1 : 0, 1);
+            P.eq("compare.source_line", has(halved, "Source, B against A: program.fm +1 -1; the same dials") ? 1 : 0, 1);
+            P.eq("compare.no_project", has(noProject, "no project is open") ? 1 : 0, 1);
+            P.eq("compare.entry", has(lastText(sa.chatState(), pg::ChatEntry::Kind::tool), "compared two sounds") ? 1 : 0, 1);
+            // The picture: both levels and spectra, a PNG of 1120 x 560 with the words after it.
+            std::string data, words;
+            const juce::Array<juce::var> results = arr(lastUser(at + 1).getProperty("content", {}));
+            for (const juce::var& b : arr(results.size() > 2 ? results[2].getProperty("content", {}) : juce::var()))
+            {
+                if (str(b, "type") == "image")
+                    data = str(b.getProperty("source", {}), "data");
+                if (str(b, "type") == "text")
+                    words = str(b, "text");
+            }
+            juce::MemoryOutputStream png;
+            juce::Base64::convertFromBase64(png, juce::String(data));
+            juce::File(juce::String(probe::outPath("plugin.chat.compare.png"))).replaceWithData(png.getData(), png.getDataSize());
+            const juce::Image img = juce::ImageFileFormat::loadFrom(png.getData(), png.getDataSize());
+            P.eq("compare.picture", img.getWidth() == 1120 && img.getHeight() == 560 && has(words, "Best fit") ? 1 : 0, 1);
+        }
     }
 
     // ---- PLANNER -------------------------------------------------------------------------------------------------------
@@ -1609,7 +1706,7 @@ PROBE(plugin, chat)
         int at = script->postCount();
         agent.send("hello");
         agent.waitIdle();
-        P.eq("web.off_no_tools", toolsOf(at).size() == 16 && webTool(at, "web_search").isVoid() ? 1 : 0, 1);
+        P.eq("web.off_no_tools", toolsOf(at).size() == 17 && webTool(at, "web_search").isVoid() ? 1 : 0, 1);
         agent.setWeb(true);
         P.eq("web.on", agent.chatState().web ? 1 : 0, 1);
         const juce::var result = input({ { "type", "web_search_tool_result" },
@@ -1648,7 +1745,7 @@ PROBE(plugin, chat)
         agent.waitIdle();
         {
             const juce::var search = webTool(at, "web_search"), fetch = webTool(at, "web_fetch");
-            P.eq("web.tools", toolsOf(at).size() == 18 && str(search, "type") == "web_search_20260209"
+            P.eq("web.tools", toolsOf(at).size() == 19 && str(search, "type") == "web_search_20260209"
                                   && static_cast<int>(search.getProperty("max_uses", 0)) == 5
                                   && str(fetch, "type") == "web_fetch_20260209"
                                   && static_cast<int>(fetch.getProperty("max_content_tokens", 0)) > 0

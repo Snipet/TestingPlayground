@@ -147,6 +147,11 @@ namespace playground
         virtual uint32_t chatAlerts() const = 0;
         // A picture of the panel (view_panel), made on the message thread; this thread waits for it (10 s at most).
         virtual PanelPicture chatPicture(bool window, const std::string& page) = 0;
+        // For a render's "host" (ChatScenario.h): the host's sample rate and its largest block (0: not known); and the
+        // project open in the editor (compare's version:N and preset:Name; "" for none).
+        virtual double chatHostRate() const { return 0.0; }
+        virtual int chatHostBlock() const { return 0; }
+        virtual std::string chatProject() const { return {}; }
     };
 
     class ChatAgent final : public ChatPort
@@ -193,6 +198,7 @@ namespace playground
         // The program in several files the system prompt shows, for this plugin's kind (the program first).
         static Sources promptExample();
         static juce::var toolDefinitions();
+        static juce::var compareDefinition();                       // compare's (ChatCompare.cpp)
 
         // MCP (plugin/McpLink.h): an assistant outside the plugin (Claude Desktop, through mcp/Main.cpp) working with the
         // chat's own tools. mcpTools(): toolDefinitions() but ask_user and ask_planner, in MCP's form ({ name, title,
@@ -235,6 +241,7 @@ namespace playground
         juce::var buildRequest(std::string& beta) const;
         std::string contextBlock();                                 // the plugin's state, when it changed
         juce::var runTool(const juce::var& toolUse);               // a tool_result block
+        juce::var compareTool(const juce::var& toolUse);           // compare's (ChatCompare.cpp)
         std::string toolText(const std::string& name, const juce::var& input, bool& isError);
         // The checks measured on the editor's files and the plugin's dials: their entry brought up to date, and the
         // results in words for Claude ("" with no checks). The worker's.
