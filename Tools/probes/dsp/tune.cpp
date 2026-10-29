@@ -22,9 +22,22 @@
 //            it; the same request gives the same dials
 //   VIEW     view_sound's analysis: a 440 Hz tone (an instrument's note 69; an effect's sine) is the spectrogram's
 //            loudest row and the spectrum's loudest column, within a row; the close-up four of its cycles; the waveform
-//            and the level as rendered; an effect's sweep rises through the rows; the note-off where it was
+//            and the level as rendered; an effect's sweep rises through the rows; the note-off where it was; analyse()
+//            of a render's samples gives the view's own
+//   SCENARIO a scenario's render (Measure.h): an instrument's phrase (a retrigger, fast notes, a 17th note that
+//            steals, legato) with the wheels, the pedal and a stop, an effect's host edits: the same bits in blocks of 64
+//            and 333, and again; with a dial moving (a float glide, an int step), the same bits again at each block size,
+//            and not the still render's; its length and held part as planned; a block above 256; sameRender tells
+//            scenarios apart; the click locator names the note-on that clicks (an instrument's voice that starts at
+//            full level) or the dial that steps at a block's start (an effect's mute), and the retrigger and the steal
+//            in its words; a RenderHooks that cuts every call to 16 samples sees every sample once, on its host
+//            blocks, and leaves the bits as they were
+//   COMPARE  compare (Compare.h): a program against itself gives identical bits, and a recording of it against it
+//            too; a gain dial shows as that gain (no delay, nothing left; every octave band and the level metric
+//            moved), a delay dial as that lag (the gain 1); the detail's 32 parts
 #include "Probe.h"
 
+#include "dsp/Compare.h"
 #include "dsp/Goals.h"
 #include "dsp/Measure.h"
 #include "dsp/SoundView.h"
@@ -115,6 +128,134 @@ namespace
 )";
 
     pg::Sources files() { return pg::singleFile(kInstrument ? kVoice : kEffect); }
+
+    // The click locator's programs: an instrument's sine that starts at its peak with no attack (a click at every
+    // note-on); an effect that passes its input but for a bool that mutes it at once.
+    [[maybe_unused]] const char* kClickVoice = R"(module Voice
+{
+    param float level [[fminus::range(-40, 0)]] [[fminus::default(-12)]];
+    float rate, ph, step, env;
+    bool held;
+    void init(float r) { rate = r; }
+    void start(float note, float v) { step = 440 * expf(0.0577622650f * (note - 69)) / rate; ph = 0.25f; held = true; env = 1; }
+    void stop() { held = false; }
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        const float g = expf(0.115129255f * level[0]);
+        for (int i = 0; i < n; ++i)
+        {
+            if (!held) env = fmaxf(0, env - 1 / (0.05f * rate));
+            const float out = g * env * sinf(6.28318531f * ph);
+            ph += step;
+            if (ph >= 1) ph -= 1;
+            left[i] += out;
+            right[i] += out;
+        }
+        return held || env > 0;
+    }
+};
+)";
+
+    [[maybe_unused]] const char* kMuteEffect = R"(module Effect
+{
+    param bool mute [[fminus::default(0)]];
+    float rate;
+    void init(float r) { rate = r; }
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            left[i] = mute[0] ? 0.0f : left[i];
+            right[i] = mute[0] ? 0.0f : right[i];
+        }
+    }
+};
+)";
+
+    // compare's: a gain (dB) and a delay (samples, through a ring) on a sine voice, or on the effect's input.
+    const char* kCompareVoice = R"(module Voice
+{
+    param float gain [[fminus::range(-24, 0)]] [[fminus::default(0)]];
+    param int delay [[fminus::range(0, 256)]] [[fminus::default(0)]];
+    float rate, ph, step, env;
+    float ring[512];
+    int w;
+    bool held;
+    void init(float r) { rate = r; }
+    void start(float note, float v) { step = 440 * expf(0.0577622650f * (note - 69)) / rate; held = true; env = 0; }
+    void stop() { held = false; }
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        const float g = expf(0.115129255f * gain[0]);
+        const int d = delay[0];
+        for (int i = 0; i < n; ++i)
+        {
+            if (held) env = fminf(1, env + 0.001f); else env *= 0.999f;
+            ring[w] = 0.2f * env * sinf(6.28318531f * ph);
+            ph += step;
+            if (ph >= 1) ph -= 1;
+            int r = w - d;
+            if (r < 0) r += 512;
+            const float out = g * ring[r];
+            w = w + 1;
+            if (w >= 512) w = 0;
+            left[i] += out;
+            right[i] += out;
+        }
+        return held || env > 0.00001f;
+    }
+};
+)";
+
+    const char* kCompareEffect = R"(module Effect
+{
+    param float gain [[fminus::range(-24, 24)]] [[fminus::default(0)]];
+    param int delay [[fminus::range(0, 256)]] [[fminus::default(0)]];
+    float rate;
+    float ringL[512], ringR[512];
+    int w;
+    void init(float r) { rate = r; }
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        const int d = delay[0];
+        for (int i = 0; i < n; ++i)
+        {
+            const float g = expf(0.115129255f * gain[i]);
+            ringL[w] = left[i];
+            ringR[w] = right[i];
+            int r = w - d;
+            if (r < 0) r += 512;
+            left[i] = g * ringL[r];
+            right[i] = g * ringR[r];
+            w = w + 1;
+            if (w >= 512) w = 0;
+        }
+    }
+};
+)";
+
+    bool sameBits(const ms::Session::Render& a, const ms::Session::Render& b)
+    {
+        return a.l.size() == b.l.size() && a.l == b.l && a.r == b.r;
+    }
+
+    // A tool's hooks (the trace lane's seam): every call cut to 16 samples; what the calls cover, checked.
+    struct Sixteen final : ms::RenderHooks
+    {
+        std::size_t next = 0, calls = 0, crossings = 0, longest = 0;
+        bool inOrder = true;
+        int callLength(std::size_t) override { return 16; }
+        bool afterCall(const ms::CallInfo& c) override
+        {
+            inOrder = inOrder && c.at == next;
+            next = c.at + static_cast<std::size_t>(c.length);
+            longest = std::max(longest, static_cast<std::size_t>(c.length));
+            // A call never crosses its host block's end (the dials and the transport come once a block).
+            crossings += c.at + static_cast<std::size_t>(c.length) > c.hostBlock + static_cast<std::size_t>(c.timeline.block) ? 1 : 0;
+            ++calls;
+            return true;
+        }
+    };
 
     double at(const ms::Metrics& m, const char* k)
     {
@@ -529,6 +670,157 @@ PROBE(dsp, tune)
         zoom.to = 0.51f;
         const ms::View z = ms::view(files(), zoom);
         P.eq("view.close_up_asked", z.zoomFrom == 24000 && z.zoomTo == 24480 ? 1 : 0, 1);
+        // analyse() of a render's samples: the view's own (what a recording gets).
+        const ms::Sound sound = ms::renderSound(files(), vr);
+        const ms::View again = ms::analyse(sound.l, sound.r, sound.rate, sound.heldUntil, vr, sound.cycleHz, sound.harmonics, sound.fromStart);
+        P.eq("view.analyse_is_view", again.cells == v.cells && again.spectrum == v.spectrum && again.levelDb == v.levelDb
+                                         && again.zoomFrom == v.zoomFrom && again.harmonics == v.harmonics ? 1 : 0, 1);
+    }
+
+    // ---- SCENARIO ------------------------------------------------------------------------------------------------------
+    {
+        ms::Request sc;
+        sc.holdSeconds = 1.0f;
+        sc.tailSeconds = 0.5f;
+        if constexpr (kInstrument)
+        {
+            // A retrigger (52 again while held), fast notes, legato (60 into 62), seventeen at once (a steal); the
+            // wheels and the pedal; the host stops.
+            sc.phrase = { { 52, 0.0, 0.4, 0.8f }, { 52, 0.2, 0.3, 0.7f }, { 55, 0.5, 0.05, 0.9f }, { 57, 0.56, 0.05, 0.9f },
+                          { 59, 0.62, 0.05, 0.9f }, { 60, 0.7, 0.3, 0.8f }, { 62, 0.95, 0.3, 0.8f } };
+            for (int k = 0; k < 17; ++k)
+                sc.phrase.push_back({ 36 + 2 * k, 1.1, 0.3, 0.6f });
+            sc.wheels = { { ms::Wheel::mod, 0.1, 0.5f }, { ms::Wheel::bend, 0.3, -0.5f }, { ms::Wheel::pressure, 0.4, 0.3f },
+                          { ms::Wheel::sustain, 0.6, 1.0f }, { ms::Wheel::sustain, 0.9, 0.0f } };
+            sc.hostEdits.stopAt = 1.2;
+        }
+        else
+        {
+            sc.hostEdits.stopAt = 0.4;
+            sc.hostEdits.jumpAt = 0.6;
+            sc.hostEdits.jumpToBeat = 8.0;
+        }
+        ms::Session played(files());
+        std::vector<float> in(static_cast<std::size_t>(3.0 * 48000.0));
+        uint32_t seed = 777;
+        for (float& x : in)
+        {
+            seed = seed * 1664525u + 1013904223u;
+            x = 0.25f * (static_cast<float>(seed >> 8) / 8388608.0f - 1.0f);
+        }
+        const auto render = [&](const ms::Request& r, int block, ms::RenderHooks* hooks = nullptr) {
+            ms::Request q = r;
+            q.block = block;
+            return played.render(q, &in, &in, played.lengthOf(q), hooks);
+        };
+        const ms::Session::Render r64 = render(sc, 64), r333 = render(sc, 333);
+        std::printf("scenario: %s; %zu samples, held until %zu\n", ms::scenarioText(sc).c_str(), r64.l.size(), r64.heldUntil);
+        P.eq("scenario.blocks_64_333_same_bits", sameBits(r64, r333) ? 1 : 0, 1);
+        P.eq("scenario.again_same_bits", sameBits(r64, render(sc, 64)) ? 1 : 0, 1);
+        P.eq("scenario.block_above_256", sameBits(r64, render(sc, 1024)) ? 1 : 0, 1);
+        P.eq("scenario.audible", ms::largestSteps(r64.l, r64.r, 1, 48000.0).empty() ? 0 : 1, 1);
+        ms::Request moving = sc;
+        moving.automate = kInstrument ? std::vector<ms::DialMove>{ { "cutoff", 0.2, 6000.0f, 0.5 }, { "wave", 0.8, 1.0f, 0.0 } }
+                                      : std::vector<ms::DialMove>{ { "gain", 0.2, -12.0f, 0.5 }, { "mode", 0.8, 1.0f, 0.0 } };
+        const ms::Session::Render m64 = render(moving, 64), m333 = render(moving, 333);
+        P.eq("scenario.moving_again_64", sameBits(m64, render(moving, 64)) ? 1 : 0, 1);
+        P.eq("scenario.moving_again_333", sameBits(m333, render(moving, 333)) ? 1 : 0, 1);
+        P.eq("scenario.moving_moves", sameBits(m64, r64) ? 0 : 1, 1);
+        P.eq("scenario.length", static_cast<int64_t>(played.lengthOf(sc)), kInstrument ? (67200 + 24000) : (48000 + 24000));
+        P.eq("scenario.held_until", static_cast<int64_t>(r64.heldUntil), kInstrument ? 67200 : 48000);
+        P.eq("scenario.same_render", sc.sameRender(sc) && !sc.sameRender(ms::Request{}) && !sc.sameRender(moving) ? 1 : 0, 1);
+        P.eq("scenario.text", ms::scenarioText(sc).find(kInstrument ? "a phrase of 24 notes" : "the host stops at") != std::string::npos
+                                      ? 1 : 0, 1);
+        Sixteen hooks;
+        const ms::Session::Render h = render(sc, 333, &hooks);
+        std::printf("hooks: %zu calls of 16 samples at most, %zu samples\n", hooks.calls, hooks.next);
+        P.eq("scenario.hooks_same_bits", sameBits(h, r333) ? 1 : 0, 1);
+        P.eq("scenario.hooks_every_sample", hooks.inOrder && hooks.next == h.l.size() ? 1 : 0, 1);
+        P.eq("scenario.hooks_sixteen", static_cast<int64_t>(hooks.longest), 16);
+        P.eq("scenario.hooks_host_blocks", static_cast<int64_t>(hooks.crossings), 0);
+        if constexpr (kInstrument)
+        {
+            // The click locator: the voice that starts at its peak clicks at its note-on, again when the key comes back.
+            ms::Session clicks(pg::singleFile(kClickVoice));
+            ms::Request q;
+            q.tailSeconds = 0.3f;
+            q.phrase = { { 52, 0.3, 0.4, 0.8f }, { 52, 0.5, 0.2, 0.8f } };
+            const ms::Result m = clicks.measure(q);
+            std::printf("%s", m.report.c_str());
+            P.eq("scenario.locator_note_on", m.report.find("0.300 s, at note-on 52") != std::string::npos ? 1 : 0, 1);
+            P.eq("scenario.locator_retrigger", m.report.find("the same key again while held") != std::string::npos ? 1 : 0, 1);
+            P.eq("scenario.click", static_cast<int64_t>(at(m.values, "click")), 1);
+            const ms::Timeline tl = played.timeline(sc);
+            bool stolen = false;
+            for (const ms::Mark& mk : tl.marks)
+                stolen = stolen || mk.what.find("stolen") != std::string::npos;
+            P.eq("scenario.locator_steal", stolen ? 1 : 0, 1);
+        }
+        else
+        {
+            // The click locator: a mute that steps at a block's start.
+            ms::Session mute(pg::singleFile(kMuteEffect));
+            ms::Request q;
+            q.tailSeconds = 0.2f;
+            q.automate = { { "mute", 0.5, 1.0f, 0.0 } };
+            std::vector<float> sine(48000);
+            for (std::size_t i = 0; i < sine.size(); ++i)
+                sine[i] = 0.25f * static_cast<float>(std::sin(2.0 * 3.14159265358979 * 220.0 * static_cast<double>(i) / 48000.0));
+            const ms::Session::Render o = mute.render(q, &sine, &sine, mute.lengthOf(q));
+            const std::vector<ms::Step> steps = ms::largestSteps(o.l, o.r, 3, 48000.0);
+            const std::string near = steps.empty() ? std::string() : ms::nearestMark(mute.timeline(q), steps.front().at, 48000.0);
+            std::printf("mute: the largest step at %zu, %s\n", steps.empty() ? 0 : steps.front().at, near.c_str());
+            P.eq("scenario.locator_step_at_block", !steps.empty() && steps.front().at % 256 == 0 ? 1 : 0, 1);
+            P.eq("scenario.locator_names_dial", near.find("mute steps to 1") != std::string::npos
+                                                    && near.find("at a block's start") != std::string::npos ? 1 : 0, 1);
+        }
+    }
+
+    // ---- COMPARE -------------------------------------------------------------------------------------------------------
+    {
+        const pg::Sources prog = pg::singleFile(kInstrument ? kCompareVoice : kCompareEffect);
+        ms::Request r;
+        r.holdSeconds = 0.5f;
+        r.tailSeconds = 0.5f;
+        if constexpr (kInstrument)
+            r.notes = { 57 };
+        const ms::CompareSide a{ prog, r, nullptr, nullptr };
+        const ms::Comparison self = ms::compare(a, a);
+        if (!self.error.empty())
+            std::printf("%s\n", self.error.c_str());
+        P.eq("compare.compiles", self.error.empty() ? 1 : 0, 1);
+        P.eq("compare.self_identical", self.identical ? 1 : 0, 1);
+        const ms::CompareSide recording{ {}, r, &self.a.l, &self.a.r };
+        const ms::Comparison recorded = ms::compare(recording, a);
+        P.eq("compare.recording_identical", recorded.identical ? 1 : 0, 1);
+        ms::CompareSide quieter = a;
+        quieter.request.dials = { { "gain", -6.0f } };
+        const ms::Comparison gain = ms::compare(a, quieter);
+        for (const std::string& line : gain.lines)
+            std::printf("gain: %s\n", line.c_str());
+        P.near("compare.gain", gain.gain, std::pow(10.0, -6.0 / 20.0), 0.002);
+        P.eq("compare.gain_no_lag", static_cast<int64_t>(gain.lag), 0);
+        P.le("compare.gain_nothing_left", gain.residualDb, -60.0);
+        int bands = 0;
+        for (const double d : gain.bandsDb)
+            bands += std::isfinite(d) && std::fabs(d + 6.0206) < 0.5 ? 1 : 0;
+        P.ge("compare.gain_bands", static_cast<double>(bands), kInstrument ? 1.0 : 9.0);
+        bool level = false;
+        for (const ms::Comparison::Differs& m : gain.metrics)
+            level = level || m.metric == (kInstrument ? "rms_db" : "sine_rms_db");
+        P.eq("compare.gain_level_metric", level ? 1 : 0, 1);
+        P.le("compare.lines", static_cast<double>(gain.lines.size()), 7.0);
+        ms::CompareSide later = a;
+        later.request.dials = { { "delay", 64.0f } };
+        const ms::Comparison lag = ms::compare(a, later);
+        for (const std::string& line : lag.lines)
+            std::printf("delay: %s\n", line.c_str());
+        P.eq("compare.lag", static_cast<int64_t>(lag.lag), 64);
+        P.near("compare.lag_gain", lag.gain, 1.0, 0.01);
+        P.le("compare.lag_little_left", lag.residualDb, -40.0);
+        ms::CompareOptions detail;
+        detail.detail = true;
+        P.eq("compare.detail_parts", static_cast<int64_t>(ms::compare(a, quieter, detail).envelopeDb.size()), 32);
     }
     return P.finish();
 }

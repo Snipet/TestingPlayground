@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 
 namespace playground::measure
 {
@@ -103,13 +104,20 @@ namespace playground::measure
         std::vector<CheckResult> out(checks.size());
         if (checks.empty())
             return out;
-        Session session(files, checks.front().request.rate);
-        if (!session.compiled())
+        // One compile a sample rate the checks render at (a check's scenario may name one).
+        std::map<double, std::unique_ptr<Session>> sessions;
+        const auto sessionFor = [&](double rate) -> Session& {
+            std::unique_ptr<Session>& s = sessions[rate];
+            if (!s)
+                s = std::make_unique<Session>(files, rate);
+            return *s;
+        };
+        if (Session& first = sessionFor(checks.front().request.rate); !first.compiled())
         {
             for (CheckResult& r : out)
                 r.text = "not measured: the program does not compile";
             if (errors != nullptr)
-                *errors = session.errors();
+                *errors = first.errors();
             return out;
         }
         // The checks that share a render, measured together, each group once with the metrics its checks want.
@@ -133,7 +141,7 @@ namespace playground::measure
                     done[j] = true;
                 }
             }
-            const Result m = session.measure(r);
+            const Result m = sessionFor(r.rate).measure(r);
             for (const std::size_t j : group)
             {
                 const Goal& g = checks[j].goal;
