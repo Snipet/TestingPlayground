@@ -1,12 +1,12 @@
-// PROBE name=dsp.freeze timeout=180
+// PROBE name=dsp.freeze timeout=300
 //
 // dsp.freeze: frozen dials (Patch.h, Engine.h): the program compiled again with its dials as constants, in FMinus's
 // Math::Fast, which runs the same instances. Two Engines play the same program (a filter whose coefficients a voice
 // computes each call, a level, an int's choice of wave and a bool), one of them frozen, at 48 kHz in blocks of 256.
 // The frozen copy's math is not the program's (Math::Vector), so its output is compared with the unfrozen Engine's,
 // both finite, as "the same samples" (the difference's energy kSameDb under the signal's) or, where a voice's pitch
-// comes from a math function that moved an ulp (its phase then drifts: an FM sound's samples part by -60 dB in ten
-// seconds), as "the same spectrum" (each octave band's level, 63 Hz to 16 kHz, every half second, within kBandDb):
+// comes from a math function that moved an ulp (its phase then drifts: the worst FM sound's samples part by -97 dB in
+// ten seconds), as "the same spectrum" (each octave band's level, 63 Hz to 16 kHz, every half second, within kBandDb):
 //   STILL    dials() says the program, how long the dials have held still (from the program's arrival to the last
 //            block's start), their values, and that nothing is frozen yet; the same bits while nothing is
 //   FROZEN   the copy offered at the dials as they stand plays from the next block; the same samples as the unfrozen
@@ -18,12 +18,17 @@
 //   BLOCKS   the frozen copy in blocks of 64 and of 333: the same samples as each other and as the unfrozen program
 //   SPEED    sixteen voices for two seconds, live and frozen: the time each takes (printed)
 //   EXAMPLES each example, frozen at its defaults (an instrument's with eight voices): it plays, the same spectrum as
-//            unfrozen; the time each takes (the best of five) and both differences (printed)
+//            unfrozen; the time each takes (the best of five) and both differences (printed), and the time a copy in
+//            exact math (the program's Math::Vector, which the plugin does not use) would take, and whether it plays
+//            the program's bits (printed)
 //   LONG     no copy runs away: each example and RANDOM's programs of seeds 1 to kLongSeeds, ten seconds (an
 //            instrument's chord held six and released; an effect's noise and a sine), the frozen copy in blocks of
 //            irregular sizes against the unfrozen program in blocks of 256: finite; every half second's level within
 //            0.1 dB of the unfrozen one's (where it is above -80 dBFS); the peak within 0.1 dB; the same spectrum
-//            (the worst of each printed); and the time the frozen copy takes against the program's (printed)
+//            (the worst of each printed); and the time the frozen copy takes against the program's, and the programs
+//            more than 5% slower frozen, by name (printed); the same for a copy in exact math, and how many of those
+//            play the program's bits in the irregular blocks (printed: FMinus's kernels fold a frozen dial's math
+//            exactly since c75caab)
 #include "Probe.h"
 
 #include "Rig.h"
@@ -214,22 +219,21 @@ namespace
         return notes;
     }
 
-    // The time a and b each take to play `in` in blocks of 256, the best of `tries` (taken in turn); an instrument's
+    // The time each rig takes to play `in` in blocks of 256, the best of `tries` (taken in turn); an instrument's
     // notes struck again at the start of each.
-    std::pair<double, double> timeBoth(probe::Rig& a, probe::Rig& b, const probe::Stereo& in,
-                                       const std::vector<probe::Note>& notes, int tries)
+    std::vector<double> timeEach(const std::vector<probe::Rig*>& rigs, const probe::Stereo& in,
+                                 const std::vector<probe::Note>& notes, int tries)
     {
-        double ta = 1e9, tb = 1e9;
+        std::vector<double> best(rigs.size(), 1e9);
         for (int k = 0; k < tries; ++k)
-            for (probe::Rig* r : { &a, &b })
+            for (std::size_t r = 0; r < rigs.size(); ++r)
             {
                 const auto t0 = std::chrono::steady_clock::now();
-                r->run(in, 256, notes);
+                rigs[r]->run(in, 256, notes);
                 const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-                double& best = r == &a ? ta : tb;
-                best = std::min(best, ms);
+                best[r] = std::min(best[r], ms);
             }
-        return { ta, tb };
+        return best;
     }
 }
 
@@ -360,18 +364,22 @@ PROBE(dsp, freeze)
     // ---- EXAMPLES ------------------------------------------------------------------------------------------------------
     for (const pg::Example& e : pg::kExamples)
     {
-        probe::Rig a(kFs, 256), b(kFs, 256);
-        if (!a.load(e.source) || !b.load(e.source))
+        probe::Rig a(kFs, 256), b(kFs, 256), c(kFs, 256);   // c: a copy in exact math, measured only
+        if (!a.load(e.source) || !b.load(e.source) || !c.load(e.source))
             continue;
         const int voices = kInstrument ? 8 : 1;
         a.run(input(4096, 12), 256, chord(voices));
         b.run(input(4096, 12), 256, chord(voices));
+        c.run(input(4096, 12), 256, chord(voices));
         b.freeze();
+        c.freeze(nullptr, true);
         const probe::Stereo in = input(2 * second, 13);
-        const probe::Stereo oa = a.run(in, 256), ob = b.run(in, 256);
-        const auto [la, lb] = timeBoth(a, b, in, chord(voices), 5);
-        std::printf("example %-16s live %7.2f ms, frozen %7.2f ms (%3.0f%%), the difference %.1f dB, bands %.4f dB\n",
-                    e.title, la, lb, 100.0 * lb / std::max(la, 1e-9), differenceDb(oa, ob), bandsDb(oa, ob));
+        const probe::Stereo oa = a.run(in, 256), ob = b.run(in, 256), oc = c.run(in, 256);
+        const std::vector<double> t = timeEach({ &a, &b, &c }, in, chord(voices), 5);
+        std::printf("example %-16s live %7.2f ms, frozen %7.2f ms (%3.0f%%), the difference %.1f dB, bands %.4f dB; "
+                    "exact math %7.2f ms (%3.0f%%), %s\n",
+                    e.title, t[0], t[1], 100.0 * t[1] / std::max(t[0], 1e-9), differenceDb(oa, ob), bandsDb(oa, ob), t[2],
+                    100.0 * t[2] / std::max(t[0], 1e-9), same(oa, oc) ? "the same bits" : "other bits");
         std::string key = std::string("examples.") + e.title;
         for (char& ch : key)
             ch = ch == ' ' ? '_' : static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
@@ -398,12 +406,17 @@ PROBE(dsp, freeze)
         int loaded = 0, frozenCount = 0, finiteCount = 0, levelCount = 0, peakCount = 0, soundCount = 0;
         double logRatio = 0.0, slowest = 0.0, fastest = 1e9;
         int timed = 0, slower = 0;
+        std::string slowerNames;
+        // A copy in exact math (Math::Vector, the program's own), timed and compared, never asserted: what the plugin
+        // would gain or lose with it.
+        double exactLog = 0.0, exactSlowest = 0.0, exactFastest = 1e9;
+        int exactTimed = 0, exactSame = 0, exactSlower = 0;
         double worst = -300.0, worstLevel = 0.0, worstPeak = 0.0, worstBands = 0.0;
         std::string worstName, worstBandsName;
         for (const Case& c : cases)
         {
-            probe::Rig a(kFs, 512), b(kFs, 512);
-            if (!a.load(c.files) || !b.load(c.files))
+            probe::Rig a(kFs, 512), b(kFs, 512), x(kFs, 512);
+            if (!a.load(c.files) || !b.load(c.files) || !x.load(c.files))
             {
                 std::printf("long: %s does not compile\n", c.name.c_str());
                 continue;
@@ -429,12 +442,19 @@ PROBE(dsp, freeze)
             }
             a.run(probe::Stereo(1024), 256, on);
             b.run(probe::Stereo(1024), 256, on);
+            x.run(probe::Stereo(1024), 256, on);
             if (!b.freeze())
             {
                 std::printf("long: %s does not freeze\n", c.name.c_str());
                 continue;
             }
+            const bool exact = x.freeze(nullptr, true);
             const probe::Stereo oa = a.run(in, 256, off), ob = b.run(in, 256, off, { 333, 64, 512, 97, 256, 1 });
+            if (exact)
+            {
+                const probe::Stereo ox = x.run(in, 256, off, { 333, 64, 512, 97, 256, 1 });
+                exactSame += same(oa, ox) && x.engine().frozen() ? 1 : 0;
+            }
             frozenCount += b.engine().frozen() ? 1 : 0;
             const bool fin = finite(oa) && finite(ob);
             finiteCount += fin ? 1 : 0;
@@ -449,13 +469,29 @@ PROBE(dsp, freeze)
                 probe::Stereo slice(2 * second);             // the input's first two seconds
                 std::copy_n(in.l.begin(), slice.size(), slice.l.begin());
                 std::copy_n(in.r.begin(), slice.size(), slice.r.begin());
-                const auto [ta, tb] = timeBoth(a, b, slice, on, 3);
-                const double ratio = tb / std::max(ta, 1e-9);
+                const std::vector<double> t = timeEach(exact ? std::vector<probe::Rig*>{ &a, &b, &x } : std::vector<probe::Rig*>{ &a, &b },
+                                                       slice, on, 3);
+                const double ratio = t[1] / std::max(t[0], 1e-9);
                 logRatio += std::log(ratio);
                 slowest = std::max(slowest, ratio);
                 fastest = std::min(fastest, ratio);
-                slower += ratio > 1.05 ? 1 : 0;
+                if (ratio > 1.05)
+                {
+                    ++slower;
+                    char line[160];
+                    std::snprintf(line, sizeof line, "%s%s %.0f%%", slowerNames.empty() ? "" : ", ", c.name.c_str(), 100.0 * ratio);
+                    slowerNames += line;
+                }
                 ++timed;
+                if (exact)
+                {
+                    const double r = t[2] / std::max(t[0], 1e-9);
+                    exactLog += std::log(r);
+                    exactSlowest = std::max(exactSlowest, r);
+                    exactFastest = std::min(exactFastest, r);
+                    exactSlower += r > 1.05 ? 1 : 0;
+                    ++exactTimed;
+                }
             }
             const double pk = std::fabs(peakDb(oa) - peakDb(ob));
             const double diff = differenceDb(oa, ob), bands = fin ? bandsDb(oa, ob) : 1e9;
@@ -482,8 +518,12 @@ PROBE(dsp, freeze)
                     "peak %.4f dB\n", loaded, worstBands, worstBandsName.c_str(), worst, worstName.c_str(), worstLevel,
                     worstPeak);
         std::printf("long: the time frozen against live (two seconds, the best of three): %.0f%% (the geometric mean), "
-                    "%.0f%% to %.0f%%, %d of %d more than 5%% slower\n", 100.0 * std::exp(logRatio / std::max(timed, 1)),
-                    100.0 * fastest, 100.0 * slowest, slower, timed);
+                    "%.0f%% to %.0f%%, %d of %d more than 5%% slower%s%s\n", 100.0 * std::exp(logRatio / std::max(timed, 1)),
+                    100.0 * fastest, 100.0 * slowest, slower, timed, slowerNames.empty() ? "" : ": ", slowerNames.c_str());
+        std::printf("long: a copy in exact math (Math::Vector) against live: %.0f%% (the geometric mean), %.0f%% to %.0f%%, "
+                    "%d of %d more than 5%% slower; %d of %d the program's bits in irregular blocks\n",
+                    100.0 * std::exp(exactLog / std::max(exactTimed, 1)), 100.0 * exactFastest, 100.0 * exactSlowest,
+                    exactSlower, exactTimed, exactSame, exactTimed);
         const auto all = static_cast<int64_t>(cases.size());
         P.eq("long.compile", loaded, all);
         P.eq("long.frozen", frozenCount, all);

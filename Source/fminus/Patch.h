@@ -151,8 +151,10 @@ namespace playground
         Recipe recipe() const;
         // The frozen copy of the recipe's program at the dials' plain values (each used control's, Controls.h): off
         // the audio thread. Null, with why, when it does not compile or its main module's layout is not the program's.
+        // `exactMath`: in the program's own Math::Vector rather than the copy's Math::Fast, for dsp.freeze, which
+        // measures what exact math would cost (the plugin never asks for it).
         static std::unique_ptr<Frozen> freeze(const Recipe& recipe, const std::array<float, kMaxControls>& plain,
-                                              std::string& why);
+                                              std::string& why, bool exactMath = false);
 
         // ---- the audio thread ------------------------------------------------------------------------------------
         // The frozen copy's code for the calls that follow (null: the program's own). It must be of this program
