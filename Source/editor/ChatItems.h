@@ -9,9 +9,8 @@
 //               which turns into stop). It acts on press, as the panel's other buttons do, and on Return or Space
 //               when focused.
 //
-// asciiText() turns text into what the chat's font draws (printable ASCII: the common typographic characters as ASCII,
-// the rest '?'); transcriptText() is the conversation as plain text (YOU and CLAUDE above the turns), what the probes
-// read.
+// transcriptText() is the conversation as plain text (YOU and CLAUDE above the turns), what the probes read; the text
+// it holds goes through asciiText() (Items.h), what the panel's font draws.
 #pragma once
 
 #include "editor/ChatStyle.h"
@@ -29,7 +28,6 @@
 
 namespace playground::ui
 {
-    std::string asciiText(std::string_view utf8);
     std::string transcriptText(const std::vector<ChatEntry>& entries);
 
     class InputItem final : public Item

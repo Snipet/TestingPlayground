@@ -53,6 +53,10 @@ namespace playground::ui
 
     inline constexpr funkgui::TextStyle kStatusStyle{ 10.0f, 1.4f, 0.03f, false };
 
+    // `utf8` as the panel's font draws it: printable ASCII, the common typographic characters as ASCII ("--", "...",
+    // "->"), the rest '?' (Items.cpp).
+    std::string asciiText(std::string_view utf8);
+
     // FMinus's words, for the chat's code blocks (the editor has its own highlighter, CodeAssist.h): C's that FMinus has,
     // and its own (module, param, parallel, the vector types). It has no strings, and of the preprocessor only #include
     // and #pragma: a line that starts with # is one preprocessor span.

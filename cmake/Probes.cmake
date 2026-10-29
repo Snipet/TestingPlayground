@@ -86,7 +86,8 @@ function(fp_add_probes key)
   # At the top of the build tree (build-dev/<Name>_probes), not in JUCE's artefacts folder.
   set_target_properties(${FP_PROBES} PROPERTIES EXCLUDE_FROM_ALL TRUE RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
   add_dependencies(probes ${FP_PROBES})                    # `probes` builds every product's (the presets name it)
-  add_dependencies(${FP_PROBES} ${FP_MCP})                # plugin.mcp runs the product's MCP server
+  add_dependencies(${FP_PROBES} ${FP_MCP} ${FP_SANDBOX})  # plugin.mcp and plugin.sandbox run the product's MCP server,
+                                                          # and the sandbox's helper beside it
 
   set(_p ${PRODUCT_ENV_PREFIX})
   foreach(_name IN LISTS FP_PROBE_NAMES)
