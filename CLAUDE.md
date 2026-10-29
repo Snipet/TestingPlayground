@@ -207,17 +207,27 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - **Never install from a test.** The probes (`Tools/probes/installer/`) drive the engine with `Places::under(<root>)`, a
   folder of their own under CTest's sandbox, and a `System` stand-in (`Fixture.h`'s `FakeSystem`: ditto for real, inside
   that root; the Trash a folder of it; the AU registrar, the running apps and the administrator prompt pretended, the
-  prompt running the engine's script with `/bin/sh` as the user in the root). Never `MacSystem`, `Places::thisMac` or the
+  prompt running the engine's script's text with `/bin/sh -c` as the user in the root). Never `MacSystem`, `Places::thisMac` or the
   app in a probe, and never the installer app itself in a session: it writes `~/Library/Audio`, `/Applications`,
   `/Library`.
 - **An administrator only through macOS.** "All users" is one script the engine writes (`adminScript`, every path through
   `shellQuote`; `installer.engine` checks that each path it names appears only quoted, in a root whose name has spaces and
-  both quotes), run as root by osascript's `do shell script ... with administrator privileges`, its path and prompt passed
-  as arguments, never spliced into AppleScript. The app never asks for, sees or keeps a password; nothing else runs as
-  root, and the AU registrar is restarted by the app afterwards, never by the script.
+  both quotes), run as root by osascript's `do shell script ... with administrator privileges`, its text and prompt passed
+  as arguments, never spliced into AppleScript and never a file: root runs nothing this user could change while the
+  prompt waits. The app never asks for, sees or keeps a password; nothing else runs as root, and the AU registrar is
+  restarted by the app afterwards, never by the script.
+- **Root writes no path the user could swap.** The script's status file is in a folder it makes itself (`mkdir`, which
+  fails on anything there, a link too) in `Places::scratch` (`/private/tmp`: root's, sticky), and gives back to the user
+  as it ends; before a step moves anything it checks every folder on the way for a link and pins the folder (`cd -P`, then
+  `pwd -P` against its real path), working by names from there; the Trash it moves into is pinned the same way; every
+  rename is `mv -h` (a link where a copy goes is never followed). `installer.engine` runs the scripts against a planted
+  status folder, a parent folder swapped for a link after the engine looked, and a Trash that is a link.
 - **Nothing is deleted.** A replaced copy, an uninstalled one and a half-made staging copy go to the Trash (the user's,
-  through NSFileManager: Put Back works; the script `mv`s into it); only an empty staging folder is removed (`rmdir`). No
-  `rm -rf` in the engine or its scripts (`installer.engine` checks the scripts).
+  through NSFileManager; the script `mv`s into it; the pages never promise Finder's Put Back, which works only for what
+  Finder trashed); only an empty staging folder is removed (`rmdir`), and the script's status folder, the installer's
+  own. A staging folder an earlier run left (holding only that part, or `old`) goes to the Trash before the part is
+  installed again: JUCE's VST3 scan looks into hidden folders. No `rm` in the engine or its scripts (`installer.engine`
+  checks the scripts).
 - **The known folders only.** The engine writes only into the parts' folders (Engine.h's table), below `Places::home`
   and `Places::root`; every folder on the way must be a real one, so a link (a plugin folder on another disk, a linked
   bundle) is refused in words and never followed, and a scan does not look through it. A part is replaced in one rename
@@ -225,6 +235,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
   not changed.
 - **No product named.** The payload names the products (`payload.json`, the build's); the app's name comes from
   `Installer.h` (generated). A part, a scope or a page added changes Engine.h's table, the Panel's layout and both probes.
+- **One press, one action.** Return presses one button: its repeats while held (`AppPort::returnHeld`, JUCE's keys
+  down), and a Return or a click in the first `Panel::kHold` seconds of a page, press nothing (a double-click on Continue
+  is not Install). A run that failed or stopped is never a dead end: Done has Back. The notes (an app or a host open, a
+  product in both scopes) come first on Choose and Uninstall, one line each, whole in their accessibility titles; the
+  rows close up to make room. Errors are a red that is neither accent (Theme.h's rule), never ChatStyle's `danger`.
 
 ## The code editor
 
