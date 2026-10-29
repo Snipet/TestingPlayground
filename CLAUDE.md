@@ -323,19 +323,24 @@ place (its `products/<key>.cmake`, and its names in the docs).
   the live line reserved above: a call that takes seconds (`ChatAgent::mcpLiveWaits`), so the link runs each on a
   thread of its own (`McpLink::listen`, four at once at most; a cancel or the connection closing stops it, the link
   going cancels and joins them), never on the poll thread; it raises the meters' reader count while it listens
-  (`ChatHost::chatListening`, lowered on every exit) and polls `ChatHost::chatLive` about 25 times a second. get_status
-  ends with a token of the processor's journal (`plugin/Journal.h`: about 256 changes, drags merged, under its own
-  mutex; what Claude Desktop does itself is not kept, `ChatAgent::mcpWorking`), and `since` lists what changed after
-  it, the files as diffs (`dsp/TextDiff.h`) against the texts Claude Desktop saw (`mcpSeen_`, under `liveMutex_`).
-  The two Claudes keep their own records of what they saw: an MCP call never marks the chat's `seen_` (`markSeen`
-  sends Claude Desktop's to `mcpSeen_`), so the plugin's chat is sent a file Claude Desktop wrote. Every other MCP
-  result starts with a line when something changed since the last (`ChatAgent::mcpHint`). The journal learns who: the
+  (`ChatHost::chatListening`, lowered on every exit) and polls `ChatHost::chatLive` about 25 times a second; a cancel
+  that comes before it starts is kept (`mcpStopped_`, every one, not only the last). get_status ends with a token of the
+  processor's journal (`plugin/Journal.h`: about 256 changes, drags merged, under its own mutex; what Claude Desktop
+  does itself is not kept, `ChatAgent::mcpWorking`; each token handed out is a new one), and `since` lists what changed
+  after it, the files as diffs (`dsp/TextDiff.h`) against their texts at that token (`mcpMarks_`, the newest 16
+  tokens', under `liveMutex_`). One server may serve several conversations and its calls name none: what is kept
+  for Claude Desktop is kept by token, never as one record of what "it" saw, which one conversation's look would move
+  for all. The two Claudes keep their own records: an MCP call never marks the chat's `seen_` (`markSeen`), so the
+  plugin's chat is sent a file Claude Desktop wrote; a chat turn never runs beside a call of Claude Desktop's (New
+  chat and a session load keep `busy_` while one runs). Every other MCP result starts with a line when something
+  changed since the last MCP call (`ChatAgent::mcpHint`, one cursor for the instance). The journal learns who: the
   editor's ports are `GesturePort`s (a dial moved between polls with one of them is the user's, else the host's),
   `setDraft` is the editor's and `chatSetDraft`, `chatRun`, `chatSetDial` the plugin chat's (or Claude Desktop's);
-  `poll()` compares the dials, the bypass and the transport once a poll and takes what it set itself as seen
-  (`syncDials`). The tools' dial lines say each value as the panel does (`dialText`, Controls.h: its unit, its option's
-  name, the number after a scaled one). `plugin.live` checks both tools, `dsp.meters` LISTEN the fields, `plugin.chat`
-  SEEN the two records.
+  `poll()` compares the dials, the bypass and the transport once a poll and takes as seen only the dials it set itself
+  (`ownDials_`, `syncOwnDials`: a run's, a version's or a preset's, Claude's), so a move made meanwhile is journalled.
+  The tools' dial lines say each value as the panel does (`dialText`, Controls.h: its unit, its option's name, the
+  number after a scaled one). `plugin.live` checks both tools, `dsp.meters` LISTEN the fields, `plugin.chat` SEEN the
+  two records.
 - **MCP results** stay small: a picture is at most `kMcpPictureBytes` (75,000 bytes, 100,000 base64 characters:
   the PNG when it fits, else scaled down, else a JPEG, `chatimages::fit`), the text after it saying what was sent;
   view_panel and view_sound take MCP's own `detail: "high"` for the whole picture. The plugin's own chat keeps its
