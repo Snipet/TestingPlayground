@@ -53,12 +53,15 @@
 //                     not opened
 //   chat()            the chat with Claude (ChatPort.h)
 //   windowButtons()   the Standalone's own window: its buttons over the top bar, their place, its drag (below)
+//   devices()         the Standalone's audio and MIDI devices (DevicePort.h), for the settings card; null in a host
+//   settingsAsked()   bumps each time the Standalone asks for the settings card (its menu's Settings..., Cmd-,)
 #pragma once
 
 #include <cctype>
 #include <string_view>
 
 #include "plugin/ChatPort.h"
+#include "plugin/DevicePort.h"
 
 #include "dsp/Compiler.h"
 #include "dsp/Controls.h"
@@ -266,5 +269,16 @@ namespace playground
         virtual WindowButtons windowButtons() const { return {}; }
         virtual void placeWindowButtons(float x, float middle) { (void)x; (void)middle; }
         virtual void dragWindow(int clicks) { (void)clicks; }
+
+        // The Standalone's audio and MIDI settings, a card of the editor's own (editor/SettingsCard.h) in place of JUCE's
+        // dialog. In a host's window there are none: devices() is null (no card, no muted notice) and settingsAsked()
+        // never moves.
+        //   devices()        the devices, the choices and the actions (DevicePort.h); the window hands it over with its
+        //                    buttons (Processor::WindowHooks), so ask again rather than keep it
+        //   settingsAsked()  a count the app raises each time it asks for the card (Settings... in its menu, Cmd-,): the
+        //                    editor opens the card when the count moves (a Panel polls it, starting from the count it
+        //                    found when it was made)
+        virtual DevicePort* devices() { return nullptr; }
+        virtual uint64_t settingsAsked() const { return 0; }
     };
 }

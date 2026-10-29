@@ -73,7 +73,7 @@ namespace playground::ui::chat
     {
         none, plus, key, chevronDown, chevronRight, chevronUp, arrowUp, stop, copy, check, file, play, dial, wave, alert,
         pencil, bolt, chevronLeft, bubble, dice, blocks, list, sun, moon, code, book, question, globe, image, cross,
-        snowflake
+        snowflake, gear
     };
 
     inline void drawIcon(funkgui::Canvas& c, Icon icon, float cx, float cy, float size, funkgui::Col ink)
@@ -341,6 +341,18 @@ namespace playground::ui::chat
                     const float px = cx + std::cos(a) * at, py = cy - std::sin(a) * at;
                     for (const float turn : { -0.8726646f, 0.8726646f })   // 50 degrees off the arm
                         c.segment(px, py, px + std::cos(a + turn) * branch, py - std::sin(a + turn) * branch, sw, ink);
+                }
+                break;
+            }
+            case Icon::gear:
+            {
+                // A gear: a thick ring (its hole the middle) with eight short, broad teeth: settings.
+                c.disc(cx, cy, s * 0.62f, ink.withAlpha(0.0f), s * 0.3f, ink);   // the ring lies inside the radius
+                for (int k = 0; k < 8; ++k)
+                {
+                    const float a = 0.3926991f + 0.7853982f * static_cast<float>(k);
+                    const float ca = std::cos(a), sa = std::sin(a);
+                    c.segment(cx + ca * s * 0.62f, cy + sa * s * 0.62f, cx + ca * s * 0.72f, cy + sa * s * 0.72f, s * 0.3f, ink);
                 }
                 break;
             }

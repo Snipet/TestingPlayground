@@ -50,6 +50,10 @@
 //   key       a dialog over the panel for the Anthropic API key: a masked field (Cmd-V pastes), Save, Cancel and, when a
 //             key is stored, Remove key. It opens from the header's key, the empty chat's button, and when a message
 //             is sent before any key is stored (the message goes once a key is saved)
+//   settings  the Standalone's only (EditorPort::devices): SETTINGS, the audio and MIDI devices in a card over the panel
+//             (SettingsCard.h), opened by the app's Settings... (Cmd-,: EditorPort::settingsAsked, polled each frame)
+//             and by the muted notice's button; while an effect's input is muted (JUCE's guard against a feedback loop)
+//             the status bar says so at its right, beside that button
 //   footer    the spec line of the control under the hand (or focused, or last touched), and the ZOOM cells
 //
 // Keys go to a text field while it has the caret (the editor: Tab indents there; the chat's message box and its
@@ -63,6 +67,7 @@
 #include "editor/Explorer.h"
 #include "editor/ExportCard.h"
 #include "editor/ProjectBrowser.h"
+#include "editor/SettingsCard.h"
 
 #include <funkgui/a11y/A11yItem.h>
 #include <funkgui/canvas/Tags.h>
@@ -133,6 +138,8 @@ namespace playground::ui
     inline constexpr funkgui::Tag kExplorerTag = funkgui::tags::firstProduct + 9;     // the explorer's card
     inline constexpr funkgui::Tag kExportTag = funkgui::tags::firstProduct + 10;      // EXPORT's card
     inline constexpr funkgui::Tag kFrozenTag = funkgui::tags::firstProduct + 11;      // the top bar's snowflake
+    inline constexpr funkgui::Tag kSettingsTag = funkgui::tags::firstProduct + 12;    // SETTINGS' card
+    inline constexpr funkgui::Tag kMutedTag = funkgui::tags::firstProduct + 13;       // the muted input's notice
 
     // One message of the last run, as the problems list shows it.
     struct Problem
@@ -269,6 +276,12 @@ namespace playground::ui
         funkgui::Point centreOfKeySave() const;
         funkgui::Point centreOfKeyCancel() const;
         std::optional<funkgui::Point> centreOfKeyRemove() const;      // nullopt while no key is stored
+        // SETTINGS (the Standalone's: EditorPort::devices; nothing in a host): the card, opened (false with no devices or
+        // while another card is open); the notice while an effect's input is muted, and its Settings... button.
+        bool openSettings();
+        SettingsCard& settingsCard() noexcept { return settings_; }
+        bool mutedNoticeShown() const noexcept { return mutedShown_; }
+        funkgui::Point centreOfMutedSettings() const;
 
         // funkgui::Panel
         void  attach(funkgui::HostServices&) override;
@@ -407,7 +420,7 @@ namespace playground::ui
         void afterProjects(bool wasOpen);                // the card's notice to the status, the focus back
         void afterExport(bool wasOpen);                  // its notice; an export asked for: the save chooser, the file
         void importFiles(const std::vector<std::string>& paths);
-        bool dialogOpen() const noexcept { return keyOpen_ || projects_.isOpen() || export_.isOpen(); }
+        bool dialogOpen() const noexcept { return keyOpen_ || projects_.isOpen() || export_.isOpen() || settings_.isOpen(); }
         std::string projectLabel() const;                // the top bar's pill: "Name v3 - Preset", "edited", or Projects
         bool unread_ = false;                            // folded, and the conversation grew since
         // Pictures: the ids this Panel has in FunkGui's registry (images::set, counted across Panels: Picture.cpp
@@ -432,6 +445,16 @@ namespace playground::ui
         ProjectBrowser projects_{ port_ };
         ExportCard export_{ port_ };
         int focusBeforeProjects_ = -1;
+        // SETTINGS: the card; the app's requests seen (EditorPort::settingsAsked); the muted notice and its button.
+        SettingsCard settings_{ port_ };
+        uint64_t seenSettingsAsk_ = 0;
+        uint32_t seenSettingsRev_ = 0;
+        int focusBeforeSettings_ = -1;
+        int mutedItem_ = -1;
+        bool mutedShown_ = false;
+        void syncSettings();                             // refresh(): the devices, the app's request, the notice
+        void afterSettings(bool wasOpen);                // the card closed: the focus back
+        void placeMutedNotice();                         // its button, left of the zoom in the status bar
         std::string notice_;                             // RANDOM's or PROJECTS' word in the status, until noticeUntil_
         double noticeUntil_ = -1.0;
         uint32_t randomCount_ = 0;

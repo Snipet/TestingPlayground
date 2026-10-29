@@ -1575,6 +1575,7 @@ namespace playground::ui
     Panel::Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& port) : port_(port)
     {
         port_.addMeterReader();                      // the displays read the meters and the scopes while it lives
+        seenSettingsAsk_ = port_.settingsAsked();        // the app's requests from now on open SETTINGS
         title_ = upper(product::kName);
         subtitle_ = std::string(product::kIsInstrument ? "Instrument" : "Effect") + "  v" + product::kVersion + "  FMinus";
         width_ = static_cast<float>(kDefaultWidth);
@@ -1841,6 +1842,21 @@ namespace playground::ui
             zoomItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
         }
 
+        // The Standalone's muted input (an effect's: JUCE's guard against a feedback loop): a notice in the status bar,
+        // left of the zoom, and this button, which opens SETTINGS.
+        {
+            TB::Spec sp;
+            sp.shape = TB::Shape::pill;
+            sp.icon = [] { return chat::Icon::gear; };
+            sp.label = [] { return std::string("Settings..."); };
+            sp.look = [] { return TB::Look::outlined; };
+            sp.shown = [this] { return mutedShown_; };
+            sp.act = [this] { openSettings(); };
+            sp.a11yTitle = "Settings: the audio input is muted, to avoid a feedback loop";
+            sp.spec = "INPUT MUTED   A LOOP THROUGH THE SPEAKERS WOULD FEED BACK: UNMUTE IT IN SETTINGS, WITH HEADPHONES ON";
+            mutedItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
+        }
+
         layout();
 
         // The processor's files and status, and the chat.
@@ -2017,6 +2033,7 @@ namespace playground::ui
             const float w = z.preferredWidth();
             z.setBounds({ right - w, H - kFooterH + 4.0f, w, kFooterH - 8.0f });
         }
+        placeMutedNotice();
         placeMeter();
         ++layoutRevision_;
         dirty_ = true;
@@ -2908,6 +2925,7 @@ namespace playground::ui
                 dirty_ = true;
             }
         }
+        syncSettings();
         refreshChat(nowSec);
     }
 
@@ -3639,6 +3657,84 @@ namespace playground::ui
         dirty_ = true;
     }
 
+    // ---- SETTINGS: the Standalone's audio and MIDI devices (SettingsCard.h; EditorPort::devices) ------------------------
+    namespace
+    {
+        constexpr const char* kMutedText = "Input muted to avoid a feedback loop";
+    }
+
+    bool Panel::openSettings()
+    {
+        if (dialogOpen() || port_.devices() == nullptr)
+            return false;
+        files().endRename();
+        if (!settings_.open())
+            return false;
+        focusBeforeSettings_ = focus_;
+        setFocus(-1);
+        ring_ = false;
+        dirty_ = true;
+        return true;
+    }
+
+    void Panel::afterSettings(bool wasOpen)
+    {
+        if (wasOpen && !settings_.isOpen())
+        {
+            const int back = focusBeforeSettings_;
+            setFocus(back >= 0 && items_[static_cast<std::size_t>(back)]->shown() ? back : editorItem_);
+            focusBeforeSettings_ = -1;
+        }
+        dirty_ = true;
+    }
+
+    // Each refresh: the devices (read again when their serial moved), the app's Settings... (its count moved), and the
+    // muted notice with its button.
+    void Panel::syncSettings()
+    {
+        const bool wasOpen = settings_.isOpen();
+        settings_.sync();
+        if (wasOpen && !settings_.isOpen())
+            afterSettings(true);                         // the window let go of its devices
+        if (const uint64_t asked = port_.settingsAsked(); asked != seenSettingsAsk_)
+        {
+            seenSettingsAsk_ = asked;
+            openSettings();
+        }
+        if (settings_.revision() != seenSettingsRev_)
+        {
+            seenSettingsRev_ = settings_.revision();
+            dirty_ = true;
+        }
+        if (const bool muted = settings_.inputMuted(); muted != mutedShown_)
+        {
+            mutedShown_ = muted;
+            dirty_ = true;
+        }
+        placeMutedNotice();
+    }
+
+    // The notice's button, left of the zoom's pill in the status bar (the zoom shows once a host offers steps).
+    void Panel::placeMutedNotice()
+    {
+        auto& b = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(mutedItem_)]);
+        const auto& zoom = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(zoomItem_)]);
+        const float y = height_ - kFooterH + 4.0f, h = kFooterH - 8.0f;
+        const funkgui::Rect before = b.bounds();
+        b.setBounds({ 0.0f, y, 10.0f, h });
+        const float w = b.preferredWidth();
+        const float right = zoom.shown() ? zoom.bounds().x - 10.0f : width_ - kMargin;
+        b.setBounds({ right - w, y, w, h });
+        const funkgui::Rect now = b.bounds();
+        if (now.x != before.x || now.y != before.y || now.w != before.w || now.h != before.h)
+        {
+            ++layoutRevision_;                           // its accessibility item moved
+            dirty_ = true;
+        }
+    }
+
+    funkgui::Point Panel::centreOfMutedSettings() const { return centreOf(mutedItem_); }
+
     void Panel::chooseImport()
     {
         if (host_ == nullptr)
@@ -4333,7 +4429,9 @@ namespace playground::ui
         // Footer: the spec line of the control under the hand, else the focused one, else the last one touched; the
         // dialog's own while it is open.
         char line[256] = {};
-        if (keyOpen_)
+        if (settings_.isOpen())
+            std::snprintf(line, sizeof line, "SETTINGS   TAB THE NEXT CONTROL   RETURN OR SPACE CHOOSES   ESCAPE OR DONE CLOSES");
+        else if (keyOpen_)
             std::snprintf(line, sizeof line, "API KEY   CMD-V PASTES IT   RETURN SAVES IT   ESCAPE CANCELS");
         else if (export_.isOpen())
             std::snprintf(line, sizeof line, "EXPORT   TAB THE NEXT FIELD   A PILL TOGGLES   ESCAPE KEEPS THE INFO AND CLOSES");
@@ -4349,11 +4447,22 @@ namespace playground::ui
             if (src >= 0)
                 items_[static_cast<std::size_t>(src)]->specLine(line, sizeof line);
         }
+        // The muted input's notice at the status bar's right (an effect's, in the Standalone), before its button.
+        float noticeW = 0.0f;
+        if (mutedShown_)
+        {
+            const funkgui::Canvas::Scope s(c, kMutedTag, false);
+            const funkgui::Rect b = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(mutedItem_)]).bounds();
+            const float tx = b.x - 10.0f - c.textWidth(kMutedText, chat::kSmall);
+            chat::drawIcon(c, chat::Icon::alert, tx - 11.0f, b.centreY(), 12.0f, pal.accent);
+            c.text(kMutedText, tx, c.capCentreTop(b.centreY(), chat::kSmall), chat::kSmall, pal.soft);
+            noticeW = b.right() - (tx - 18.0f) + 12.0f;
+        }
         if (line[0] != '\0')
         {
             const ButtonItem& zoom = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(zoomItem_)]);
             const float zoomW = zoom.shown() ? zoom.bounds().w + 12.0f : 0.0f;
-            const std::string shown = fitFields(c, line, contentW - zoomW - 8.0f);
+            const std::string shown = fitFields(c, line, contentW - zoomW - noticeW - 8.0f);
             const funkgui::Canvas::Scope s(c, funkgui::tags::hint, false);
             c.text(shown.c_str(), kMargin + 8.0f, c.capCentreTop(height_ - 0.5f * kFooterH, funkgui::type::kMicro),
                    funkgui::type::kMicro, th.ink52);
@@ -4383,6 +4492,11 @@ namespace playground::ui
         {
             const funkgui::Canvas::Scope s(c, kExportTag, false);
             export_.draw(c, th, width_, height_, pointer_, hasPointer_);
+        }
+        if (settings_.isOpen())
+        {
+            const funkgui::Canvas::Scope s(c, kSettingsTag, false);
+            settings_.draw(c, th, width_, height_, pointer_, hasPointer_);
         }
     }
 
@@ -4430,6 +4544,13 @@ namespace playground::ui
         pointer_ = { e.x, e.y };
         hasPointer_ = true;
         windowPress_ = false;
+        if (settings_.isOpen())
+        {
+            pressed_ = -1;
+            settings_.pointerDown(pointer_, width_, height_, host_);
+            afterSettings(true);
+            return;
+        }
         if (keyOpen_)
         {
             pressed_ = -1;
@@ -4508,7 +4629,7 @@ namespace playground::ui
         // its release, and so this, comes where the pointer now is over the panel, and is no click of the panel's.
         if (windowPress_)
             return;
-        if (keyOpen_)
+        if (keyOpen_ || settings_.isOpen())
             return;
         if (export_.isOpen())
             return;
@@ -4530,6 +4651,11 @@ namespace playground::ui
     bool Panel::wheel(const funkgui::WheelEvent& e)
     {
         dirty_ = true;
+        if (settings_.isOpen())
+        {
+            settings_.wheel(e, width_, height_);
+            return true;
+        }
         if (export_.isOpen())
             return true;
         if (projects_.isOpen())
@@ -4578,6 +4704,12 @@ namespace playground::ui
     bool Panel::key(const funkgui::KeyEvent& e)
     {
         dirty_ = true;
+        if (settings_.isOpen())
+        {
+            settings_.key(e, host_, width_, height_);
+            afterSettings(true);
+            return true;
+        }
         if (keyOpen_)
             return keyDialogKey(e);
         if (export_.isOpen())
@@ -4638,6 +4770,8 @@ namespace playground::ui
 
     funkgui::Cursor Panel::cursor() const
     {
+        if (settings_.isOpen())
+            return settings_.cursor(pointer_, width_, height_);
         if (keyOpen_)
         {
             const KeyDialog d = keyDialog();
@@ -4664,6 +4798,11 @@ namespace playground::ui
 
     void Panel::accessibility(std::vector<funkgui::A11yItem>& out) const
     {
+        if (settings_.isOpen())
+        {
+            settings_.accessibility(out, width_, height_);
+            return;
+        }
         if (keyOpen_)
         {
             // Never the key: its length only.
@@ -4728,6 +4867,7 @@ namespace playground::ui
         r |= (keyOpen_ ? 1u : 0u) << 17;
         r ^= (projects_.isOpen() ? 0x9E3779B1u : 0u) ^ (projects_.revision() * 0x165667B1u);
         r ^= (export_.isOpen() ? 0x85EBCA77u : 0u) ^ (export_.revision() * 0xC2B2AE3Du);
+        r ^= (settings_.isOpen() ? 0x27D4EB2Du : 0u) ^ (settings_.revision() * 0x9E3779B1u) ^ (mutedShown_ ? 0x165667B1u : 0u);
         r |= (chat_.ready() ? 1u : 0u) << 18;
         static_assert(kMaxDisplays <= 32, "the displays' mask");
         uint32_t displays = 0;                                // the displays shown, one bit each, mixed in
@@ -4750,6 +4890,12 @@ namespace playground::ui
     {
         if (!gestures_)
             return;
+        if (settings_.isOpen())
+        {
+            settings_.a11yAction(id, a, width_, height_, host_);
+            afterSettings(true);
+            return;
+        }
         if (keyOpen_)
         {
             if (id == kKeySaveId)
