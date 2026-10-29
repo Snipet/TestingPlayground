@@ -7,7 +7,7 @@
 //     through. A run that brings a parameter the program did not have in that slot moves it to its default;
 //   - the program: the files of the one that plays, and the editor's draft (its files, a tab each, and the tab it
 //     shows), both kept in the session (a <PROGRAM active=".."> beside the parameters, with a <RUN> and a <DRAFT> of
-//     <FILE name=".." text=".."/>s). A new instance plays the first of the EXAMPLES; a session loads its program
+//     <FILE name=".." text=".."/>s). A new instance plays the first of the EXAMPLES (Init); a session loads its program
 //     (compiled at once, on the host's thread) and its dials as it saved them. A session of the version before files
 //     (<PROGRAM source=".." draft=".."/>) loads as a program of one file;
 //   - effect or instrument (the product's KIND, products/<key>.cmake: product::kIsInstrument): an effect has a

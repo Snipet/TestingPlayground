@@ -831,8 +831,23 @@ PROBE(gui, dump)
             const std::string with = d.files.empty() ? std::string() : d.files[0].text;
             const std::size_t inc = with.find("#include \"svf.fm\"\n");
             P.eq("library.program_includes", inc != std::string::npos ? 1 : 0, 1);
-            P.eq("library.after_description", inc != std::string::npos && with.compare(0, 2, "//") == 0
-                                                  && with.substr(0, inc).find("module") == std::string::npos ? 1 : 0, 1);
+            // After the comment lines it starts with (its description, which may name a module) and before its first
+            // line of code: every line above the #include a comment, a blank or a directive.
+            std::size_t described = 0;
+            while (described < with.size() && with.compare(described, 2, "//") == 0)
+            {
+                const std::size_t eol = with.find('\n', described);
+                described = eol == std::string::npos ? with.size() : eol + 1;
+            }
+            bool noCode = true;
+            for (std::size_t at = 0; inc != std::string::npos && at < inc;)
+            {
+                const std::size_t eol = std::min(with.find('\n', at), inc);
+                const std::size_t first = with.find_first_not_of(" \t", at);
+                noCode = noCode && (first >= eol || with[first] == '#' || with.compare(first, 2, "//") == 0);
+                at = eol + 1;
+            }
+            P.eq("library.after_description", inc != std::string::npos && described > 0 && inc >= described && noCode ? 1 : 0, 1);
             host.keys("cmd+return");
             settleRun(processor, host);
             P.eq("library.still_runs", port.status().ok && port.running().size() == 2 ? 1 : 0, 1);

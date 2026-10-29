@@ -245,7 +245,8 @@ namespace playground
             ports_.push_back(portStore_.back().get());
         }
 
-        // The first example plays from the start (fminus.examples checks it compiles), its dials at their defaults.
+        // The first example, Init, plays from the start (fminus.examples and fminus.init check it), its dials at their
+        // defaults.
         draft_.files = singleFile(kExamples[0].source);
         projectFiles_ = draft_.files;                            // nothing to lose yet: no project's open asks first
         compiler_.setShaderTools(shaderTools());
