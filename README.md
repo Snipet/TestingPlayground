@@ -487,11 +487,18 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   conversation take the height, the chat about a third of the width. The session keeps the size.
 - **The Standalone** (each product's app) is a Mac window of its own kind: no title bar over the editor, its close,
   minimise and zoom buttons sit at the left end of the top bar, which keeps them room, and the top bar's empty parts
-  drag the window (a double-click there zooms or minimises it, as System Settings, Desktop & Dock, has it). The menu
-  bar holds what JUCE's Options button held: **Settings…** (Cmd-,) in the app menu picks the audio and MIDI devices;
-  **File** loads a saved state, saves the state as a file, or resets to the default state; **Edit** undoes, redoes,
-  cuts, copies, pastes and selects all in the text field you are typing in (its shortcuts work there as always, as do
-  Cmd-Return and Cmd-S); **Window** minimises and zooms. The plugins in a host have the host's window, as before.
+  drag the window (a double-click there zooms or minimises it, as System Settings, Desktop & Dock, has it). The menu bar
+  holds what JUCE's Options button held: **Settings…** (Cmd-,) in the app menu opens the editor's **Settings** card over
+  the window (the rest dimmed; Done, Escape or a click beside it closes it): **Output**, the device (a pill whose menu
+  lists them), **Test** (a tone through it) and its channels in pairs, a switch each, when it has more than one pair;
+  **Input** (the effect's), its device (or None), its pairs and **Mute input**; **Audio**, the sample rate, the buffer
+  size with its milliseconds and the latency the device reports (the device type too, where there are several); **MIDI**
+  (the synth's), each input with a switch. A choice the device refuses says why under its section, a device plugged in
+  or out shows at once, Tab and Return reach every control, and the choices are kept as JUCE's dialog kept them, saved
+  as soon as they change. **File** loads a saved state, saves the state as a file, or resets to the default state;
+  **Edit** undoes, redoes, cuts, copies, pastes and selects all in the text field you are typing in (its shortcuts work
+  there as always, as do Cmd-Return and Cmd-S); **Window** minimises and zooms. The plugins in a host have the host's
+  window, as before, and no Settings card.
 - The theme (the top bar's moon or sun: Graphite or Paper) and the zoom (the status bar's pill) are machine-wide
   preferences, each product's own.
 
@@ -694,9 +701,11 @@ open build-dev/TestingPlaygroundSynth_artefacts/RelWithDebInfo/Standalone/Testin
 synth`).
 
 In the effect's Standalone, **Settings…** (Cmd-, in the app menu) picks the audio input and output; it starts with its
-input muted (JUCE's guard against feedback, which a bar under the editor says): unmute it there, with headphones on. In
-the synth's, it picks the audio output and the MIDI input. The settings, the plugin's state and the window's place
-are kept where JUCE's Standalone kept them (`~/Library/Application Support/<name>.settings`). For a host:
+input muted (JUCE's guard against a feedback loop through the speakers, which the status bar says at its right, beside a
+**Settings…** button): unmute it there, with headphones on. In the synth's, it picks the audio output and the MIDI
+inputs. The settings, the plugin's state and the window's place are kept where JUCE's Standalone kept them
+(`~/Library/Application Support/<name>.settings`, its keys `audioSetup` and `shouldMuteInput` for the devices). For
+a host:
 
 ```sh
 cmake --workflow --preset release-build  # Release with LTO, both products (build-release/)
@@ -787,6 +796,7 @@ a probe would find the user's own folders.
 | `gui.shaders` | a `.gui` file's shaders, built with the build's shaderc: the system prompt's example builds and FunkGui takes it; a program with three (one still, one that moves, one broken) plays, the two good ones built under their bytes' hash and the same again from the cache; the broken one a note on its own line (the name it does not know found in the file); a shader of no file and a fifth one noted; in the panel the built ones registered with FunkGui and drawn over their cells, their inputs following a parameter and the output's level, the still one settling and the moving one not, the broken one saying why (to a screen reader too), to `gui.shaders.png` |
 | `gui.panel` | a `.gui` interface in the Panel, headless, to `gui.panel.code.png`, `gui.panel.png`, `.paper.png`, `.meters.png` and `.small.png`: in the CODE view under the editor, every item inside its area and none over another, the dials' own items hidden; the Panel switch (the editor gone, the interface from the card's header down, fitting; the processor and its state keep the choice); a large log knob's drag, double-click and middle (632 Hz, the host's text); a row of buttons, the switch, the menu (the host's, ticked; chosen), a slider's drag, the pad's two parameters; the envelope's corners; the tabs (one page shown, a click shows the other; a radio group to a screen reader); audio through the processor (the meter, the light, the number, the spectrum's peak at the sine's frequency and level); at the least size the wheel scrolls the interface, and turns a knob under it; a `#pragma panel` program in the PANEL view from the column's top |
 | `gui.styles` | what a `.gui` file can make an interface look like, in the PANEL view, to `gui.styles.png`, `.fx.png`, `.mixer.png` and `.narrow.png`: a defaults line and a class reaching their elements (an element's own property winning); the knobs' nine looks, a small knob's label under it and no value, a face in px; card, inset and plate sections side by side, a frame's own corners, fill and border; a bar of three pages (a click shows the third, the processor keeps its title, its state carries it to another processor whose panel opens on it, an edited interface keeps it), pills and a side list switching their pages; the synth's keyboard (a press plays its note at its pitch, a drag slides to the next key, letting go is silent) and its wheels (the pitch wheel up reaching the Host block and springing back when let go, the mod wheel staying where it is left); a knob's live= mark at its field's value; at the least size the knobs' row wrapping onto two lines |
+| `gui.settings` | the Standalone's Settings card (`editor/SettingsCard.h`) over a real processor whose window hooks hand it a made-up `DevicePort` (every call recorded), to `gui.settings.png`, `.paper.png`, `.small.png`, `.error.png` and `.muted.png`: in a host (no devices) no card and no notice, the app's request doing nothing; the effect's muted notice in the status bar, clear of the zoom, its button opening the card (the synth has none); the app's request opening it, modal; at the default size, the least and a large one every control inside the card and none over another or over a text, each with an accessibility title; the effect's Input section and no MIDI, the synth's MIDI and no Input; Tab over every control in order, Return on Test; a pair's switch, a MIDI input's, the mute's (the notice gone when unmuted) and Test calling the port; the output device, the rate and the buffer chosen through the host's menus (the current one ticked) calling it with those values and shown; a device plugged in while open listed; an error under its section, spoken; at the least size with more than it holds, the scroll (Done in the card, Tab scrolling to its control, the wheel); Done, Escape and a click outside closing it, the click reaching nothing under it; a second editor in PAPER; the hooks let go: no card, no notice |
 | `gui.window` | the Standalone's own window, as far as it is checked without opening one, to `gui.window.png` and `.host.png`: its menu bar as data (the app menu with About, Settings… Cmd-, , Services, Hide, Hide Others, Show All and Quit; File's Load State…, Save State As… and Reset to Default State; Edit's Undo Cmd-Z, Redo Cmd-Shift-Z, Cut, Copy, Paste and Select All; Window's Minimize Cmd-M, Zoom and Bring All to Front; every shortcut its own, none the editor's: Cmd-Return, Cmd-S); in a host's window no room and no drag; with the window's buttons (60 x 14 points) the top bar keeps them room (the product's mark after them, the project's pill clear), says once where they go (its left inner edge, its middle), keeps them their size in points at 200 % and none in full screen; a press on the top bar where nothing is drags the window and a double-click's second press asks for its double-click action (whose release and double-click, wherever a zoom then puts them, leave the panel alone: a dial keeps its value), a press on a button, a right-click, one under the top bar or with PROJECTS open drags nothing; each Edit item's shortcut, sent to the focused component as the app sends it, does its work in the editor's text field (Select All, Copy, Cut, Paste, Undo, Redo) and nothing with no text field focused |
 | `lint.layers`, `lint.exports`, `lint.signature` | once, for both products: Source/dsp, Source/fsdsp and Source/fminus without JUCE or FunkGui, FMinus through its public header only; every product's bundles export their entry points and nothing else, and their signatures hold |
 
@@ -842,7 +852,8 @@ Source/dsp/              the audio side, plain C++20 without JUCE: Engine (an in
 Source/fsdsp/core/       FSynth's DSP core, vendored at the tag in SEED.tsv (scripts/sync-dsp-core.sh)
 Source/plugin/           the JUCE AudioProcessor: an instrument's MIDI to events, the playhead to the transport, P1 to
                          P32, the program's files and the draft in the session, the bypass;
-                         EditorPort.h, what the editor reaches besides the parameters;
+                         EditorPort.h, what the editor reaches besides the parameters; DevicePort.h, the
+                         Standalone's audio and MIDI devices as the Settings card sees them (plain data, its actions);
                          the chat: ChatAgent (the conversation, its turns and Claude's tools), ChatPrompt.cpp (Claude's
                          instructions: the panel, the library, a program built from it), ClaudeApi (the Messages API
                          over HTTPS, to Anthropic),
@@ -858,8 +869,10 @@ Source/plugin/           the JUCE AudioProcessor: an instrument's MIDI to events
                          a call at a time on its worker, quick reads beside it);
                          StandaloneMenu (the Standalone's menu bar, as data);
                          standalone/, the Standalone app, its target only: App.cpp (JUCE's custom standalone hook:
-                         the app, its window, the devices and the state through StandalonePluginHolder) and
-                         NativeWindow.mm (the Mac window's look, its buttons over the top bar, its drag, the menu bar)
+                         the app, its window, the devices and the state through StandalonePluginHolder), Devices
+                         (the DevicePort over the holder's AudioDeviceManager and its input's mute, saved on change)
+                         and NativeWindow.mm (the Mac window's look, its buttons over the top bar, its drag, the menu
+                         bar)
 Source/mcp/              <Name>MCP, each product's MCP server Claude Desktop starts (Main.cpp: JSON-RPC on stdio, one
                          loop over stdin and the instances' sockets, found by their sockets), McpProtocol.h (the
                          folder, the sockets, the lines), McpGuide.h (the guide in parts), and icon-<key>.png, each
@@ -874,6 +887,7 @@ Source/editor/           the FunkGui panel (Panel.cpp: the top bar, the explorer
                          picture), DialLayout (the dials' and displays' places: plain rows, or the panel's sections),
                          ProjectBrowser (PROJECTS' card: the projects, the chosen one's versions and presets, the
                          name, Save, Open, Delete, Import, Export), ExportCard (EXPORT: the info, the two exports),
+                         SettingsCard (the Standalone's Settings: its devices, rates, buffers, channels, MIDI inputs),
                          Looks (the dial styles and the displays drawn: vintage knobs, faders, switches, buttons, LED
                          meters, a VU, lights, readouts, a scope), DisplayItem (a display's motion: VU ballistics,
                          peak hold),
