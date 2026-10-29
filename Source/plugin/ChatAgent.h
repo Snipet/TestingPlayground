@@ -199,6 +199,7 @@ namespace playground
         static Sources promptExample();
         static juce::var toolDefinitions();
         static juce::var compareDefinition();                       // compare's (ChatCompare.cpp)
+        static juce::var traceDefinition();                         // trace's (ChatTrace.cpp)
 
         // MCP (plugin/McpLink.h): an assistant outside the plugin (Claude Desktop, through mcp/Main.cpp) working with the
         // chat's own tools. mcpTools(): toolDefinitions() but ask_user and ask_planner, in MCP's form ({ name, title,
@@ -242,6 +243,7 @@ namespace playground
         std::string contextBlock();                                 // the plugin's state, when it changed
         juce::var runTool(const juce::var& toolUse);               // a tool_result block
         juce::var compareTool(const juce::var& toolUse);           // compare's (ChatCompare.cpp)
+        juce::var traceTool(const juce::var& toolUse);             // trace's (ChatTrace.cpp)
         std::string toolText(const std::string& name, const juce::var& input, bool& isError);
         // The checks measured on the editor's files and the plugin's dials: their entry brought up to date, and the
         // results in words for Claude ("" with no checks). The worker's.

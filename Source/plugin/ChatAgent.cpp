@@ -1876,6 +1876,7 @@ namespace playground
                            props, { "tune", "goals" }));
         }
         tools.add(compareDefinition());
+        tools.add(traceDefinition());
         {
             juce::var option = claude::object(
                 { { "type", "object" },
@@ -2887,6 +2888,7 @@ namespace playground
             { "view_sound", "Look at the sound", true, false },   { "set_checks", "Set checks on the sound", false, false },
             { "tune_dials", "Tune the dials", false, false },     { "get_status", "Check the plugin", true, false },
             { "compare", "Compare two sounds", true, false },
+            { "trace", "Trace a problem", true, false },
         };
 
         const Face* faceOf(const juce::String& name)
@@ -3122,6 +3124,8 @@ namespace playground
         const juce::var input = use.getProperty("input", juce::var());
         if (name == "compare")
             return compareTool(use);
+        if (name == "trace")
+            return traceTool(use);
         if (name == "view_panel")
         {
             // A picture of the panel: an image block and a line of what it shows (the tool_result's content).
