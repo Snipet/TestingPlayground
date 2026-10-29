@@ -1,6 +1,7 @@
 // Source/plugin/ChatAgent.cpp: see ChatAgent.h.
 #include "plugin/ChatAgent.h"
 
+#include "plugin/ChatCapture.h"
 #include "plugin/ChatImages.h"
 
 #include "plugin/ChatStore.h"
@@ -1925,6 +1926,7 @@ namespace playground
                        "compile, the dials and their values, the CPU load and the output guard's alerts (NaN or inf "
                        "replaced, samples clipped). Use it when debugging what the user hears.",
                        claude::object({}), {}));
+        tools.add(captureToolDefinition());                       // ChatCapture.cpp
         return juce::var(tools);
     }
 
@@ -2877,6 +2879,7 @@ namespace playground
             { "measure_output", "Measure the sound", true, false }, { "view_panel", "Look at the panel", true, false, "interface" },
             { "view_sound", "Look at the sound", true, false },   { "set_checks", "Set checks on the sound", false, false },
             { "tune_dials", "Tune the dials", false, false },     { "get_status", "Check the plugin", true, false },
+            { "capture", "Record what you play", true, false },
         };
 
         const Face* faceOf(const juce::String& name)
@@ -3612,6 +3615,8 @@ namespace playground
                 return fail("The planner did not answer: " + why + ". Decide yourself.");
             return "The planner answers:\n" + answer;
         }
+        if (name == "capture")
+            return captureToolText(host_, input, isError, note);  // ChatCapture.cpp
         if (name == "get_status")
         {
             const Draft d = host_.chatDraft();

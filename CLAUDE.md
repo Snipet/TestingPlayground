@@ -65,7 +65,7 @@ place (its `products/<key>.cmake`, and its names in the docs).
 ## Build and test
 
 - `cmake --workflow --preset dev-verify`: configure, build (both products' Standalone, AU, VST3, MCP server and
-  probes) and run every test in `build-dev`: each of the 28 probes once for each product (`effect:fminus.examples`,
+  probes) and run every test in `build-dev`: each of the 29 probes once for each product (`effect:fminus.examples`,
   `synth:fminus.examples`, ...), and the lints once. Done means it exits 0 with no warning from our sources (they build
   with `-Werror`). While working on one product, `cmake --workflow --preset effect-verify` (or `synth-verify`) builds
   and tests it alone (the build preset and target `<key>`, the test preset `dev-<key>`: label `<key>`); the gate is
@@ -139,7 +139,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   the program that plays at exactly the dials' values, through the same instances (`Patch::useFrozen`), and drops it
   the block a dial moves; copies go back through four retired slots for `collect`. The copy compiles in FMinus's
   Math::Fast (the user's choice, 2026-10-27: faster, the same sound), so it is not the same bits as the program's
-  Math::Vector: its last bits move, and while it plays the output may depend on where the host's blocks end. Never
+  Math::Vector: its last bits move, and while it plays the output may depend on where the host's blocks end (while a
+  recording is armed none plays: `Engine::setOwnCode`). Never
   add fast-math flags or anything else that changes more than a math function's last bits. `dsp.freeze` (its own
   program: the same samples, finite and the difference 80 dB under the signal; the examples, and in LONG 64 RANDOM
   programs for ten seconds: the same spectrum, every octave band, level and peak within 0.1 dB, since an FM voice's
@@ -303,7 +304,7 @@ place (its `products/<key>.cmake`, and its names in the docs).
   A cancel stops the call running (`ChatAgent::mcpCancel`, by the call's number: it sets `cancel_`, which tune's
   progress reads, and a tune cancelled so applies nothing) or drops one waiting; a connection closing cancels its
   calls, and the link going (the plugin closing) cancels and waits for the one running.
-- **A live tool** (`ChatAgent::mcpLive`, one line a tool: get_status now; listen, and capture's status and stop,
+- **A live tool** (`ChatAgent::mcpLive`, one line a tool: get_status and capture's status and stop now; listen
   reserved) runs on the link's poll thread while a call may be running on its worker, without `busy_`, never refused.
   Such a tool's handler is called concurrently with a running call (a tune, a render, a compile) from another thread,
   so it reads only atomics, seqlock copies (`Engine::Meters`) or data under its own mutex (ChatHost's locked getters
@@ -318,6 +319,17 @@ place (its `products/<key>.cmake`, and its names in the docs).
   CHECKING YOUR WORK, the tools' notes, the other parts named), large-program (with THREADS), interface, library (a
   line a file), library:<file> (its header), library:<file>:code (its whole text, adding nothing to the editor),
   examples, projects, all. A heading renamed in ChatPrompt.cpp is a part lost: `plugin.mcp` GUIDE fails.
+- **capture** (`plugin/Capture.h`, `plugin/ChatCapture.cpp`, `ChatHost::chatCapture`): the recorder of what the host
+  plays. `Processor::hostBlock` and `play` call its audio side (begin, the input before each Engine call, the output
+  after it, each event the Engine gets, end); a recording crosses by atomic pointers, armed announce-then-claim and
+  handed back for `Recorder::housekeep` (from `poll`) to free, as the Engine's programs do. The audio thread only
+  copies into rings the arming thread allocated and touched, and never frees or waits: a full ring wraps (last) or
+  ends the recording (next), with a flag. A reader copies what was published and leaves out what may have been
+  overwritten meanwhile, so stop and status (live) never wait for the audio thread. While a recording is armed the
+  program's own code plays (`Engine::setOwnCode`: the frozen copy is dropped, none is taken, the freezer waits), so a
+  replay of a take can match it bit for bit. The user's audio and MIDI stay in memory: never on disk, in the session or a project,
+  never returned as samples (the tool reports numbers); freed on forget, the next arm, or ten minutes without a call.
+  `plugin.capture` checks it.
 - **tune_dials** (`dsp/Tune.h`): Nelder-Mead over the named float dials' normalised ranges, from the dials as they
   are and a Halton spread, restarted when it settles with a goal unmet, until every goal is met, the budget (150, at
   most 400 renders) is spent, its time limit passes (`seconds`: 120, at most 170, under the MCP server's deadline)

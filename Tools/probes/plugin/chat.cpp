@@ -14,7 +14,7 @@
 //            thinking, each with its levels
 //   REQUEST  each request has the model, max_tokens (the model's own limit, from /v1/models), stream, adaptive
 //            thinking (summarized), the effort, the system prompt cached for an hour, the automatic cache breakpoint,
-//            the sixteen tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
+//            the seventeen tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
 //            and instructions) with their beta headers for a model that takes them, the API version and the key, and
 //            no temperature, top_p or top_k; it goes to api.anthropic.com with no other credential; the first message
 //            carries the plugin's state; the history is append-only
@@ -523,8 +523,8 @@ PROBE(plugin, chat)
         int eager = 0;
         for (const auto& t : tools)
             eager += static_cast<bool>(t.getProperty("eager_input_streaming", false)) ? 1 : 0;
-        P.eq("request.tools", tools.size(), 16);
-        P.eq("request.tools_eager", eager, 16);
+        P.eq("request.tools", tools.size(), 17);
+        P.eq("request.tools_eager", eager, 17);
         bool libraryEnum = false;
         for (const auto& t : tools)
             if (str(t, "name") == "add_library_file")
@@ -1609,7 +1609,7 @@ PROBE(plugin, chat)
         int at = script->postCount();
         agent.send("hello");
         agent.waitIdle();
-        P.eq("web.off_no_tools", toolsOf(at).size() == 16 && webTool(at, "web_search").isVoid() ? 1 : 0, 1);
+        P.eq("web.off_no_tools", toolsOf(at).size() == 17 && webTool(at, "web_search").isVoid() ? 1 : 0, 1);
         agent.setWeb(true);
         P.eq("web.on", agent.chatState().web ? 1 : 0, 1);
         const juce::var result = input({ { "type", "web_search_tool_result" },
@@ -1648,7 +1648,7 @@ PROBE(plugin, chat)
         agent.waitIdle();
         {
             const juce::var search = webTool(at, "web_search"), fetch = webTool(at, "web_fetch");
-            P.eq("web.tools", toolsOf(at).size() == 18 && str(search, "type") == "web_search_20260209"
+            P.eq("web.tools", toolsOf(at).size() == 19 && str(search, "type") == "web_search_20260209"
                                   && static_cast<int>(search.getProperty("max_uses", 0)) == 5
                                   && str(fetch, "type") == "web_fetch_20260209"
                                   && static_cast<int>(fetch.getProperty("max_content_tokens", 0)) > 0
