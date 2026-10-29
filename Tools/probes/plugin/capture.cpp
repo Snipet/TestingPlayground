@@ -810,17 +810,18 @@ PROBE(plugin, capture)
         p.prepareToPlay(kFs, kPrepared);
         p.recorder().act(cap::Action::arm, { cap::Mode::last, 1.0, false });
         std::atomic<bool> playing{ true };
-        int takes = 0, broken = 0;
+        std::atomic<int> takes{ 0 };
+        int broken = 0;
         std::thread reader([&] {
             while (playing.load())
                 if (const cap::Reply st = p.recorder().act(cap::Action::status, {}); st.take != nullptr && !st.take->blocks.empty())
                 {
-                    ++takes;
+                    takes.fetch_add(1);
                     broken += whole(*st.take) ? 0 : 1;
                 }
         });
         juce::AudioBuffer<float> b(2, 16);
-        for (uint64_t k = 0; k < 12000; ++k)
+        for (uint64_t k = 0; k < 12000 || (takes.load() < 40 && k < 240000); ++k)   // 40 copies at least, however loaded
         {
             juce::MidiBuffer midi;
             for (int c = 0; c < 2; ++c)
@@ -835,9 +836,9 @@ PROBE(plugin, capture)
         playing.store(false);
         reader.join();
         const cap::Reply s = p.recorder().act(cap::Action::stop, {});
-        std::printf("race: %d takes copied while it played, %d broken; the last %.3f s\n", takes, broken,
+        std::printf("race: %d takes copied while it played, %d broken; the last %.3f s\n", takes.load(), broken,
                     s.take != nullptr ? s.take->seconds() : 0.0);
-        P.ge("race.takes", static_cast<double>(takes), 20.0);
+        P.ge("race.takes", static_cast<double>(takes.load()), 20.0);
         P.eq("race.takes_whole", broken, 0);
         P.eq("race.stop_whole", s.take != nullptr && !s.take->blocks.empty() && whole(*s.take) ? 1 : 0, 1);
     }
