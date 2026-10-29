@@ -1,12 +1,14 @@
 // Source/dsp/Compare.h: two programs rendered alike and compared, sample by sample (JUCE-free): the chat's compare
 // (plugin/ChatCompare.cpp), an A/B and a null test. Each side is a program's files and the render it is played in (one
 // request, its dials the side's own), or a recording (what played, the capture lane's); both render at one rate, an
-// effect with one input (Request::signal, its own Request::input, else noise), each in a Session of its own.
+// effect with one input (Request::signal, its own Request::input, else noise), each in a Session of its own, and as
+// long as the recording when a side is one.
 //
-// What it finds, in a few lines: identical bits; or how far apart they are (the RMS of A - B against A's, in dB), the
-// peak difference and when, the first and the last sample that differ by more than -120 dBFS; the gain and the lag
-// that fit B to A best (b(t) ~ gain a(t - lag), from their cross-correlation through fft(), Measure.h, over the first
-// 2^17 samples, lags within 0.5 s) and what is left after them; B against A in ten octave bands (31.5 Hz to 16 kHz,
+// What it finds, in a few lines: identical bits (over the shorter side when their lengths differ); or how far apart
+// they are (the RMS of A - B against A's, in dB), the peak difference and when, the first and the last sample that
+// differ by more than -120 dBFS; the gain and the lag that fit B to A best (b(t) ~ gain a(t - lag), from their
+// cross-correlation through fft(), Measure.h, over the first 2^17 samples, lags within 0.5 s, each lag's normalised by
+// the energies that overlap there) and what is left after them; B against A in ten octave bands (31.5 Hz to 16 kHz,
 // Welch power spectra); and the metrics (Measure.h) that differ by more than their tolerance (MetricInfo), side by
 // side (the CPU's aside, which no two renders share). `detail` adds the difference's level in 32 parts of the render.
 //

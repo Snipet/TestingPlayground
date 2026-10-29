@@ -36,7 +36,9 @@
 // host's automation) and the transport once a block, each block in one Engine call or in the parts a RenderHooks asks
 // for, the events at their samples. A phrase and the wheels give the same bits at any block size (the voices run on
 // the absolute grid, Engine.h); a dial that moves does not, as in a DAW. The report's step line then names each of the
-// largest steps' nearest event ("0.41 at 0.300 s, 0.4 ms after note-on 52").
+// largest steps' nearest event ("0.41 at 0.300 s, 0.4 ms after note-on 52"). A render lasts until the scenario's last
+// move or edit and the tail after it; an effect's test signal that ends before it is followed by silence (the report
+// says so).
 #pragma once
 
 #include "dsp/Controls.h"

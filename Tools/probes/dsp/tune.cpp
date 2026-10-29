@@ -31,10 +31,12 @@
 //            scenarios apart; the click locator names the note-on that clicks (an instrument's voice that starts at
 //            full level) or the dial that steps at a block's start (an effect's mute), and the retrigger and the steal
 //            in its words; a RenderHooks that cuts every call to 16 samples sees every sample once, on its host
-//            blocks, and leaves the bits as they were
+//            blocks, and leaves the bits as they were; one that stops leaves the rest silent; a move after the held
+//            part is rendered (and an effect's report says it came after the test signals)
 //   COMPARE  compare (Compare.h): a program against itself gives identical bits, and a recording of it against it
 //            too; a gain dial shows as that gain (no delay, nothing left; every octave band and the level metric
-//            moved), a delay dial as that lag (the gain 1); the detail's 32 parts
+//            moved), a delay dial as that lag (the gain 1), also of a note still sounding past the correlation's 2^17
+//            samples; the detail's 32 parts; a recording shorter than the render identical (rendered as long)
 #include "Probe.h"
 
 #include "dsp/Compare.h"
@@ -254,6 +256,19 @@ namespace
             crossings += c.at + static_cast<std::size_t>(c.length) > c.hostBlock + static_cast<std::size_t>(c.timeline.block) ? 1 : 0;
             ++calls;
             return true;
+        }
+    };
+
+    // Hooks that stop the render at the call that reaches sample 1000.
+    struct StopEarly final : ms::RenderHooks
+    {
+        std::size_t stoppedAt = 0;
+        bool afterCall(const ms::CallInfo& c) override
+        {
+            if (c.at + static_cast<std::size_t>(c.length) < 1000)
+                return true;
+            stoppedAt = c.at + static_cast<std::size_t>(c.length);
+            return false;
         }
     };
 
@@ -738,6 +753,22 @@ PROBE(dsp, tune)
         P.eq("scenario.hooks_every_sample", hooks.inOrder && hooks.next == h.l.size() ? 1 : 0, 1);
         P.eq("scenario.hooks_sixteen", static_cast<int64_t>(hooks.longest), 16);
         P.eq("scenario.hooks_host_blocks", static_cast<int64_t>(hooks.crossings), 0);
+        StopEarly stop;
+        const ms::Session::Render stopped = render(sc, 256, &stop);
+        bool silent = stop.stoppedAt > 0 && stop.stoppedAt < stopped.l.size();
+        for (std::size_t i = stop.stoppedAt; i < stopped.l.size() && silent; ++i)
+            silent = stopped.l[i] == 0.0f && stopped.r[i] == 0.0f;
+        P.eq("scenario.hooks_stop_silent", silent ? 1 : 0, 1);
+        // A move after the held part: the render goes on until it and the tail (view_sound, compare), and an effect's
+        // report says it came after the test signals.
+        ms::ViewRequest late;
+        late.render.holdSeconds = 0.5f;
+        late.render.tailSeconds = 0.5f;
+        late.render.automate = { { kInstrument ? "cutoff" : "gain", 3.0, kInstrument ? 6000.0f : -12.0f, 0.0 } };
+        P.eq("scenario.late_move_rendered", static_cast<int64_t>(ms::renderSound(files(), late).l.size()), 168000);
+        if constexpr (!kInstrument)
+            P.eq("scenario.late_move_noted", played.measure(late.render).report.find("comes after the sine and the noise end")
+                                                     != std::string::npos ? 1 : 0, 1);
         if constexpr (kInstrument)
         {
             // The click locator: the voice that starts at its peak clicks at its note-on, again when the key comes back.
@@ -821,6 +852,23 @@ PROBE(dsp, tune)
         ms::CompareOptions detail;
         detail.detail = true;
         P.eq("compare.detail_parts", static_cast<int64_t>(ms::compare(a, quieter, detail).envelopeDb.size()), 32);
+        // A recording shorter than the render: the program renders as long, so the same bits are identical.
+        const std::vector<float> shortL(self.a.l.begin(), self.a.l.begin() + 30000), shortR(self.a.r.begin(), self.a.r.begin() + 30000);
+        const ms::CompareSide shortRecording{ {}, r, &shortL, &shortR };
+        P.eq("compare.recording_length", ms::compare(a, shortRecording).identical ? 1 : 0, 1);
+        // A delay of a note still sounding where the correlation's 2^17 samples end: its lag, not a period's alias.
+        ms::CompareSide held = a;
+        held.request.holdSeconds = 3.0f;
+        if constexpr (kInstrument)
+            held.request.notes = { 69 };
+        ms::CompareSide heldLater = held;
+        heldLater.request.dials = { { "delay", 100.0f } };
+        ms::CompareOptions quick;
+        quick.metrics = false;
+        const ms::Comparison longLag = ms::compare(held, heldLater, quick);
+        for (const std::string& line : longLag.lines)
+            std::printf("long delay: %s\n", line.c_str());
+        P.eq("compare.long_lag", static_cast<int64_t>(longLag.lag), 100);
     }
     return P.finish();
 }

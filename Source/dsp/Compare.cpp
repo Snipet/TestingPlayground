@@ -5,6 +5,7 @@
 #include <cmath>
 #include <complex>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <numbers>
 
@@ -46,7 +47,10 @@ namespace playground::measure
         }
 
         // The lag of B against A (b(t) ~ a(t - lag)) from the cross-correlation of their mono sums over the first 2^17
-        // samples, within half a second (or half what is compared); the largest |correlation|, the smaller lag on a tie.
+        // samples, within half a second (or half what is compared): at each lag normalised by the energies of the samples
+        // that overlap there (a pure delay scores 1 at its lag, a period's alias less, even where the cut falls while a
+        // note sounds); the highest |score|, the smaller lag on a tie. A lag whose overlap holds less than a millionth of
+        // either side's energy is passed over.
         int bestLag(const Sound& a, const Sound& b, std::size_t n, double rate)
         {
             const std::size_t seg = std::min<std::size_t>(n, std::size_t{ 1 } << 17);
@@ -56,25 +60,37 @@ namespace playground::measure
             while (size < 2 * seg)
                 size *= 2;
             std::vector<std::complex<double>> x(size), y(size);
+            std::vector<double> ex(seg + 1, 0.0), ey(seg + 1, 0.0);   // the energies before each sample
             for (std::size_t i = 0; i < seg; ++i)
             {
-                x[i] = { 0.5 * (static_cast<double>(a.l[i]) + a.r[i]), 0.0 };
-                y[i] = { 0.5 * (static_cast<double>(b.l[i]) + b.r[i]), 0.0 };
+                const double u = 0.5 * (static_cast<double>(a.l[i]) + a.r[i]), v = 0.5 * (static_cast<double>(b.l[i]) + b.r[i]);
+                x[i] = { u, 0.0 };
+                y[i] = { v, 0.0 };
+                ex[i + 1] = ex[i] + u * u;
+                ey[i + 1] = ey[i] + v * v;
             }
             fft(x);
             fft(y);
             for (std::size_t k = 0; k < size; ++k)               // the inverse of conj(X) Y, through the forward FFT
                 x[k] = std::conj(std::conj(x[k]) * y[k]);
             fft(x);
-            const auto at = [&](long k) { return x[static_cast<std::size_t>(k >= 0 ? k : static_cast<long>(size) + k)].real(); };
+            const double least = 1e-6;
+            const auto score = [&](long k) {
+                const auto m = static_cast<std::size_t>(std::labs(k));
+                // k >= 0: a[0, seg - k) against b[k, seg); k < 0: a[m, seg) against b[0, seg - m).
+                const double fx = k >= 0 ? ex[seg - m] : ex[seg] - ex[m], fy = k >= 0 ? ey[seg] - ey[m] : ey[seg - m];
+                if (!(fx > least * ex[seg] && fy > least * ey[seg] && fx * fy > 1e-60))
+                    return 0.0;
+                return std::fabs(x[static_cast<std::size_t>(k >= 0 ? k : static_cast<long>(size) + k)].real()) / std::sqrt(fx * fy);
+            };
             const long most = static_cast<long>(std::min<double>(static_cast<double>(seg / 2), 0.5 * rate));
             long best = 0;
-            double top = std::fabs(at(0));
+            double top = score(0);
             for (long k = 1; k <= most; ++k)
                 for (const long s : { k, -k })
-                    if (std::fabs(at(s)) > top * (1.0 + 1e-9))
+                    if (const double v = score(s); v > top * (1.0 + 1e-9))
                     {
-                        top = std::fabs(at(s));
+                        top = v;
                         best = s;
                     }
             return static_cast<int>(best);
@@ -121,7 +137,8 @@ namespace playground::measure
             std::string errors;
         };
 
-        Rendered renderSide(const CompareSide& side, double rate)
+        // `length` samples (0: as its request plays): a recording's, when the other side is one.
+        Rendered renderSide(const CompareSide& side, double rate, std::size_t length)
         {
             Rendered out;
             if (side.recordedL != nullptr)
@@ -144,6 +161,7 @@ namespace playground::measure
             vr.render = side.request;
             vr.render.rate = rate;
             vr.input = ViewInput::noise;                     // an effect's, unless the request names one
+            vr.length = length;
             out.sound = renderSound(*out.session, vr);
             return out;
         }
@@ -156,7 +174,8 @@ namespace playground::measure
         Comparison c;
         const double rate = sa.request.rate > 1000.0 ? sa.request.rate : 48000.0;
         c.rate = rate;
-        Rendered ra = renderSide(sa, rate), rb = renderSide(sb, rate);
+        const std::size_t recorded = sa.recordedL != nullptr ? sa.recordedL->size() : sb.recordedL != nullptr ? sb.recordedL->size() : 0;
+        Rendered ra = renderSide(sa, rate, recorded), rb = renderSide(sb, rate, recorded);
         if (!ra.errors.empty() || !rb.errors.empty())
         {
             c.error = (!ra.errors.empty() ? "A does not compile:\n" + ra.errors : std::string())
@@ -178,9 +197,13 @@ namespace playground::measure
         const double rmsA = rmsOf(a.l, a.r, n), rmsB = rmsOf(b.l, b.r, n);
         const std::string levels = "A peak " + dbfs(peakOf(a.l, a.r, n)) + ", RMS " + dbfs(rmsA) + "; B peak "
                                  + dbfs(peakOf(b.l, b.r, n)) + ", RMS " + dbfs(rmsB);
-        if (c.identical)
+        const bool overlap = c.identical || (std::equal(a.l.begin(), a.l.begin() + static_cast<std::ptrdiff_t>(n), b.l.begin())
+                                             && std::equal(a.r.begin(), a.r.begin() + static_cast<std::ptrdiff_t>(n), b.r.begin()));
+        if (overlap)
         {
-            c.lines.push_back("Identical bits: every sample of both channels is the same, over "
+            c.lines.push_back(std::string(c.identical ? "Identical bits: every sample of both channels is the same, over "
+                                                      : "Identical bits over the shorter one: every sample of both channels is "
+                                                        "the same, over the first ")
                               + seconds(static_cast<double>(n) / rate) + " (peak " + dbfs(peakOf(a.l, a.r, n)) + ", RMS "
                               + dbfs(rmsA) + ").");
             c.a = std::move(ra.sound);

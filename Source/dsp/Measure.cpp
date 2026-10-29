@@ -968,10 +968,10 @@ namespace playground::measure
             std::stable_sort(tl.marks.begin(), tl.marks.end(), [](const Mark& x, const Mark& y) { return x.at < y.at; });
         }
 
-        // Where the timeline's last event, move or edit is.
-        std::size_t lastMoment(const Timeline& tl)
+        // Where the timeline's last event, move or edit is (lastChange), or its held part's end if later (lastMoment).
+        std::size_t lastChange(const Timeline& tl)
         {
-            std::size_t end = tl.heldUntil;
+            std::size_t end = 0;
             for (const auto& e : tl.events)
                 end = std::max(end, e.first);
             for (const Timeline::Move& m : tl.moves)
@@ -980,6 +980,8 @@ namespace playground::measure
                 end = std::max(end, t.at);
             return end;
         }
+
+        std::size_t lastMoment(const Timeline& tl) { return std::max(tl.heldUntil, lastChange(tl)); }
     }
 
     struct Session::Impl
@@ -1114,6 +1116,9 @@ namespace playground::measure
                     if (!hooks->afterCall(call))
                     {
                         pos += n;
+                        const auto rest = static_cast<std::ptrdiff_t>(pos);   // silent (an effect's held its input)
+                        std::fill(r.out.l.begin() + rest, r.out.l.end(), 0.0f);
+                        std::fill(r.out.r.begin() + rest, r.out.r.end(), 0.0f);
                         break;
                     }
                 }
@@ -1530,7 +1535,17 @@ namespace playground::measure
                 std::string where, near;
             };
             std::vector<Found> found;
-            const auto through = [&](const Stereo& in, const char* name, std::size_t ends = 0, bool starts = false) {
+            // A move or an edit at or after a signal's end: the signal, then silence until it and the tail.
+            const std::size_t late = lastChange(plan);
+            const auto through = [&](const Stereo& signalIn, const char* name, std::size_t ends = 0, bool starts = false) {
+                Stereo padded;
+                if (late >= signalIn.size())
+                {
+                    padded = signalIn;
+                    padded.l.resize(late + tailN, 0.0f);
+                    padded.r.resize(late + tailN, 0.0f);
+                }
+                const Stereo& in = late >= signalIn.size() ? padded : signalIn;
                 Timeline tl = impl_->plan(dials, request, in.size());
                 if (ends > 0)
                     tl.marks.push_back({ ends, std::string(name) + "'s end", -1, false });
@@ -1615,7 +1630,8 @@ namespace playground::measure
                         at = i;
                     }
                 }
-                out += "An impulse (0.5), then " + seconds(tail) + " of silence: ";
+                out += "An impulse (0.5), then " + seconds(o.size() > impulseN ? static_cast<double>(o.size()) / rate - 0.01 : tail)
+                     + " of silence: ";
                 v["impulse_peak_db"] = toDb(pk);
                 if (pk < 1e-7)
                 {
@@ -1645,6 +1661,10 @@ namespace playground::measure
                 if (r > 1e-4)
                     warnings.push_back("It makes sound from silence (self-oscillation, DC or noise of its own).");
             }
+            if (late >= holdN && request.input == nullptr)
+                warnings.push_back("The scenario's last move or edit, at " + seconds(static_cast<double>(late) / rate)
+                                   + ", comes after the sine and the noise end (" + seconds(hold)
+                                   + ", hold_seconds): it plays over silence there. A longer hold_seconds plays it over them.");
             if (request.input != nullptr)                    // its own input (a recording's), as it is
             {
                 Stereo own;

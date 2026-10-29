@@ -16,7 +16,7 @@
 // view() is renderSound() then analyse(): a sound recorded instead of rendered (the capture lane's) is analysed and
 // drawn the same way. A request's scenario (Measure.h) plays as measure_output plays it: an instrument's phrase (the
 // held part its first note-on to its last note-off), an effect's input chosen by Request::signal or its own
-// (Request::input).
+// (Request::input). The render lasts until the scenario's last move or edit and the tail after it, if that is later.
 //
 // Off the audio thread only. Deterministic.
 #pragma once
@@ -42,6 +42,7 @@ namespace playground::measure
         int columns = 1000;                       // the waveform's and the spectrogram's
         int rows = 300;                           // the spectrogram's
         int spectrumColumns = 520;                // the average spectrum's
+        std::size_t length = 0;                   // samples rendered (0: as the request plays; compare: a recording's)
     };
 
     struct View

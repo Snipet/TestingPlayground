@@ -228,19 +228,21 @@ namespace playground::measure
                 std::string what;
                 for (const int n : notes)
                     what += (what.empty() ? "" : " ") + std::to_string(n) + " (" + noteName(n) + ")";
+                r.notes = notes;
+                total = request.length > 0 ? request.length : std::max(total, session.lengthOf(r));   // a late move too
                 out.title = (notes.size() == 1 ? "Note " : "Notes ") + what + " at velocity "
                           + fmt("%.2f", std::clamp(request.render.velocity, 0.0f, 1.0f)) + ", held " + fmt("%.2f s", hold)
-                          + ", then released for " + fmt("%.2f s", tail) + (scenario.empty() ? "" : "; " + scenario);
+                          + ", then released for " + fmt("%.2f s", static_cast<double>(total - std::min(total, holdN)) / rate)
+                          + (scenario.empty() ? "" : "; " + scenario);
                 out.heldUntil = hold;
                 out.cycleHz = noteHz(*std::min_element(notes.begin(), notes.end()));
                 out.harmonics = notes.size() == 1;
-                r.notes = notes;
                 played = session.render(r, nullptr, nullptr, total);
             }
             else
             {
                 // A phrase (or a recording): as long as it plays, and the tail; held until its last note-off.
-                const Timeline tl = session.timeline(r);
+                const Timeline tl = session.timeline(r, request.length);
                 total = tl.length;
                 int lowest = 127;
                 for (const auto& [at, e] : tl.events)
@@ -254,14 +256,18 @@ namespace playground::measure
         }
         else
         {
-            std::vector<float> in(total, 0.0f);
+            // As long as the input and the tail, or until the scenario's last move or edit and the tail (silence there).
+            total = request.length > 0                  ? request.length
+                  : request.render.input != nullptr     ? session.lengthOf(request.render)
+                                                        : std::max(total, session.lengthOf(request.render));
+            const double after = static_cast<double>(total - std::min(total, holdN)) / rate;   // the silence after it
+            std::vector<float> in(std::max(total, holdN), 0.0f);
             const double amp = std::pow(10.0, -12.0 / 20.0);
             const ViewInput input = request.render.signal >= 0 && request.render.signal <= static_cast<int>(ViewInput::silence)
                                         ? static_cast<ViewInput>(request.render.signal)
                                         : request.input;
             if (request.render.input != nullptr)
             {
-                total = session.lengthOf(request.render);
                 out.title = "Its own input, " + fmt("%.2f s", static_cast<double>(request.render.input->l.size()) / rate);
                 out.heldUntil = static_cast<double>(std::min(total, request.render.input->l.size())) / rate;
             }
@@ -278,7 +284,7 @@ namespace playground::measure
                             in[i] = static_cast<float>(amp * std::sin(2.0 * std::numbers::pi * f1 * T / k * (std::exp(t / T * k) - 1.0)));
                         }
                         out.title = "A sweep from 20 Hz to " + fmt("%.0f Hz", f2) + " at -12 dBFS for " + fmt("%.2f s", hold)
-                                  + ", then " + fmt("%.2f s", tail) + " of silence";
+                                  + ", then " + fmt("%.2f s", after) + " of silence";
                         out.heldUntil = hold;
                         break;
                     }
@@ -291,14 +297,14 @@ namespace playground::measure
                             seed = seed * 1664525u + 1013904223u;
                             in[i] = noiseAmp * (static_cast<float>(seed >> 8) / 8388608.0f - 1.0f);
                         }
-                        out.title = "Noise at -18 dBFS RMS for " + fmt("%.2f s", hold) + ", then " + fmt("%.2f s", tail) + " of silence";
+                        out.title = "Noise at -18 dBFS RMS for " + fmt("%.2f s", hold) + ", then " + fmt("%.2f s", after) + " of silence";
                         out.heldUntil = hold;
                         break;
                     }
                     case ViewInput::impulse:
                         if (total > 0)
                             in[0] = 0.5f;
-                        out.title = "An impulse (0.5), then " + fmt("%.2f s", hold + tail) + " of silence";
+                        out.title = "An impulse (0.5), then " + fmt("%.2f s", static_cast<double>(total) / rate) + " of silence";
                         out.fromStart = true;
                         break;
                     case ViewInput::sine:
@@ -307,14 +313,14 @@ namespace playground::measure
                         for (std::size_t i = 0; i < holdN; ++i)
                             in[i] = static_cast<float>(amp * std::sin(2.0 * std::numbers::pi * hz * static_cast<double>(i) / rate));
                         out.title = "A sine of " + fmt(hz >= 1000.0 ? "%.0f Hz" : "%.1f Hz", hz) + " at -12 dBFS for "
-                                  + fmt("%.2f s", hold) + ", then " + fmt("%.2f s", tail) + " of silence";
+                                  + fmt("%.2f s", hold) + ", then " + fmt("%.2f s", after) + " of silence";
                         out.heldUntil = hold;
                         out.cycleHz = hz;
                         out.harmonics = true;
                         break;
                     }
                     case ViewInput::silence:
-                        out.title = "Silence for " + fmt("%.2f s", hold + tail);
+                        out.title = "Silence for " + fmt("%.2f s", static_cast<double>(total) / rate);
                         break;
                 }
             if (!scenario.empty() && request.render.input == nullptr)
