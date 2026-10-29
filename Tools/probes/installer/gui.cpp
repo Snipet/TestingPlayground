@@ -10,18 +10,27 @@
 //   gui.installer.done[.paper].png         what went where, Open <app>, Add to Claude Desktop; .noclaude.png without it
 //   gui.installer.uninstall[.paper].png    every copy found, each a switch
 //   gui.installer.error[.paper].png        a run that failed (a folder made unwritable): the words, what changed
+//   gui.installer.choose.notes[.paper].png Logic Pro and a Standalone open, copies in the other scope: the notes on
+//                                          top, the rows closed up; .notes.allusers.png the same for all users;
+//   gui.installer.uninstall.notes.png      and the Uninstall page's
 // and checks, on every page in both themes:
 //   LAYOUT    every control inside the window, none overlapping another, every text inside the window and clear of
 //             the controls, every control and text with an accessibility title, every glyph in the font
 // and on the way:
 //   BUTTONS   the window's buttons are placed over the sidebar (20, 22), once
 //   CHOOSE    a part whose installed copy is newer starts off, the others on; a blocked part cannot be switched on
-//   KEYS      Return presses the default button (Continue, Install, Done), Escape goes back (Choose to Welcome,
-//             Uninstall to Choose), Tab moves the focus to the first control and Space toggles a focused switch
+//   KEYS      Return presses the default button (Continue, Install, Done), once: its repeat, a held Return and a
+//             Return as a page appears press nothing (nor does the second click of a double-click on Continue);
+//             Escape goes back (Choose to Welcome, Uninstall to Choose, Done to Choose), Tab moves the focus to the
+//             first control and Space toggles a focused switch
 //   RUN       Install runs on the Panel's thread: its progress shows while it copies, then the Done page with the report
 //   DONE      Open <app> opens the installed app, Add to Claude Desktop opens the installed extension with Claude Desktop
 //             (only while it is installed; without it, the button is off and a note says how), Done quits
 //   UNINSTALL every copy listed, Move to Trash moves them (to the root's Trash), the Done page says so
+//   ERROR     the Done page of a failed run says why, keeps the old copy, names the log and how to get Claude Desktop
+//             (its button is off), and Back returns to Choose to try again
+//   NOTES     a host and a Standalone open, and copies in the other scope, are named on Choose in both scopes (one line
+//             each, whole in its accessibility title) and on Uninstall
 #include "Probe.h"
 
 #include "Fixture.h"
@@ -54,6 +63,7 @@ namespace
         std::vector<fs::path> opened, added;
         fs::path claude;
         float placedX = -1.0f, placedMiddle = -1.0f;
+        bool held = false;                       // Return held down
 
         void quit() override { ++quits; }
         bool openApp(const fs::path& app) override
@@ -75,6 +85,7 @@ namespace
             placedMiddle = middle;
         }
         void dragWindow(int) override { ++drags; }
+        bool returnHeld() const override { return held; }
     };
 
     bool meet(const funkgui::Rect& a, const funkgui::Rect& b)
@@ -175,6 +186,23 @@ namespace
                 return true;
         return false;
     }
+
+    // A note (a warning line), by its whole text: what it says, or what its accessibility title says when it is cut.
+    bool anyNote(const pi::Panel& panel, const std::string& what)
+    {
+        for (const pi::Panel::Line& l : panel.lines())
+            if (l.kind == pi::Panel::Line::Kind::warn && (l.whole.empty() ? l.text : l.whole).find(what) != std::string::npos)
+                return true;
+        return false;
+    }
+
+    int notes(const pi::Panel& panel)
+    {
+        int n = 0;
+        for (const pi::Panel::Line& l : panel.lines())
+            n += l.kind == pi::Panel::Line::Kind::warn ? 1 : 0;
+        return n;
+    }
 }
 
 PROBE(installer, gui)
@@ -186,7 +214,8 @@ PROBE(installer, gui)
     const fs::path root = fixture::root("installer.gui");
     const fs::path payloadDir = root / "payload";
     fixture::writePayload(payloadDir);
-    const pi::Places places = pi::Places::under(root);
+    pi::Places places = pi::Places::under(root);
+    places.log = places.home / "Library/Logs/Tone Installer.log";   // where the app keeps it: the Done page names it
     std::error_code ec;
     fs::create_directories(places.root / "Applications", ec);
     fs::create_directories(places.home, ec);
@@ -221,9 +250,28 @@ PROBE(installer, gui)
     host.keys("return");
     host.settle();
     P.eq("keys.return_continues", panel.page() == Page::choose ? 1 : 0, 1);
+    host.keys("return");                                 // its repeat, at once: not Install
+    P.eq("keys.repeat_presses_nothing", panel.page() == Page::choose && !panel.busy() ? 1 : 0, 1);
+    port.held = true;                                    // held for a second, repeating
+    host.tick(60);
+    host.keys("return");
+    P.eq("keys.held_presses_nothing", panel.page() == Page::choose && !panel.busy() ? 1 : 0, 1);
+    port.held = false;
     host.keys("escape");
     host.settle();
     P.eq("keys.escape_goes_back", panel.page() == Page::welcome ? 1 : 0, 1);
+    host.tick(30);                                       // let go, and the page has been there a while
+    {
+        // A double-click on Continue: its second click lands where Install is, as Choose appears, and presses nothing.
+        const auto welcome = panel.controls();
+        const pi::Panel::Control* cont = findControl(welcome, Act::next, 0);
+        if (cont != nullptr)
+            host.doubleClick(cont->r.centreX(), cont->r.centreY());
+        P.eq("keys.double_click_continue_is_one", panel.page() == Page::choose && !panel.busy() ? 1 : 0, 1);
+        host.move(100.0f, 400.0f);                        // the pointer away, over the sidebar: no hover in the pictures
+        host.keys("escape");
+        host.tick(30);
+    }
     host.keys("return");
     host.settle();
     P.eq("choose.newer_starts_off", panel.chosen("effect", pi::Part::vst3) ? 1 : 0, 0);
@@ -265,6 +313,7 @@ PROBE(installer, gui)
     };
     const int copied = sys.copiesStarted.load();
     sys.holdFrom(copied + 3);
+    host.tick(30);
     host.keys("return");
     P.eq("run.started", panel.page() == Page::installing ? 1 : 0, 1);
     P.eq("run.third_copying", waitFor([&] { return sys.copiesStarted.load() - copied >= 3; }) ? 1 : 0, 1);
@@ -305,8 +354,12 @@ PROBE(installer, gui)
         panel.press(Act::addToClaude, 0);
         P.eq("done.no_claude_opens_nothing", static_cast<int64_t>(port.added.size()), static_cast<int64_t>(addedBefore));
         shoot(P, panel, host, "gui.installer.done.noclaude", false);
+        P.eq("done.back_shown", has(panel.controls(), Act::back) ? 1 : 0, 1);
+        host.tick(30);
         host.keys("return");
         P.eq("done.return_quits", port.quits, 1);
+        host.keys("escape");
+        P.eq("done.escape_back_to_choose", panel.page() == Page::choose ? 1 : 0, 1);
     }
 
     // ---- UNINSTALL ---------------------------------------------------------------------------------------------------
@@ -327,7 +380,8 @@ PROBE(installer, gui)
                 first = c.index;
         panel.press(Act::copy, first);
         host.tick(240);
-        const pi::Panel::Control* off = findControl(panel.controls(), Act::copy, first);
+        const auto after = panel.controls();
+        const pi::Panel::Control* off = findControl(after, Act::copy, first);
         P.eq("uninstall.switch_kept_across_a_refresh", off != nullptr && !off->on ? 1 : 0, 1);
         panel.press(Act::copy, first);
         host.keys("escape");
@@ -344,6 +398,7 @@ PROBE(installer, gui)
         host.settle();
         const int base = sys.copiesStarted.load();
         sys.holdFrom(base + 2);                          // the second copy, the extension's, waits
+        host.tick(30);
         host.keys("return");
         P.eq("error.started", panel.page() == Page::installing ? 1 : 0, 1);
         P.eq("error.extension_copying", waitFor([&] { return sys.copiesStarted.load() - base >= 2; }) ? 1 : 0, 1);
@@ -360,13 +415,48 @@ PROBE(installer, gui)
         P.eq("error.shown", anyLine(panel, "ToneSynth's Claude Desktop extension was not installed") ? 1 : 0, 1);
         P.eq("error.old_extension_kept", pi::Engine::extensionVersion(dir / "ToneSynth.mcpb") == "0.1.0" ? 1 : 0, 1);
         P.eq("error.a11y_says_error", panel.a11yDump().find("Error: ") != std::string::npos ? 1 : 0, 1);
+        P.eq("error.says_how_to_get_claude", anyLine(panel, "claude.ai/download") ? 1 : 0, 1);
+        P.eq("error.names_the_log", anyLine(panel, "The log of what went where") ? 1 : 0, 1);
         shoot(P, panel, host, "gui.installer.error");
+        host.tick(30);
+        panel.press(Act::back);
+        P.eq("error.back_to_choose", panel.page() == Page::choose ? 1 : 0, 1);
+    }
+
+    // ---- NOTES: a host and a Standalone open, copies in the other scope ----------------------------------------------
+    {
+        fixture::setVersion(places.root / "Applications/ToneSynth.app", "1.0.0");         // its app upgrades: open
+        fixture::writeBundle(places.root / "Library/Audio/Plug-Ins/Components/Tone.component", "1.2.0", "system", false);
+        fixture::writeBundle(places.root / "Library/Audio/Plug-Ins/VST3/Tone.vst3", "1.2.0", "system", false);
+        fixture::writeBundle(places.root / "Library/Audio/Plug-Ins/VST3/ToneSynth.vst3", "1.2.0", "system", false);
+        sys.apps = { "/Applications/Logic Pro.app", places.root / "Applications/ToneSynth.app" };
+        panel.show(Page::choose);
+        host.settle();
+        P.eq("notes.app_open", anyNote(panel, "ToneSynth is open") ? 1 : 0, 1);
+        P.eq("notes.host_open", anyNote(panel, "Logic Pro is open: restart your DAW") ? 1 : 0, 1);
+        P.eq("notes.other_scope", anyNote(panel, "Tone is also installed for all users (Audio Unit and VST3)")
+                                  && anyNote(panel, "ToneSynth is also installed for all users (VST3)") ? 1 : 0, 1);
+        P.eq("notes.each_shown", notes(panel), 4);
+        shoot(P, panel, host, "gui.installer.choose.notes");
+        panel.press(Act::scope, 1);
+        host.settle();
+        P.eq("notes.allusers_host_open", anyNote(panel, "Logic Pro is open") ? 1 : 0, 1);
+        P.eq("notes.allusers_other_scope", anyNote(panel, "Tone is also installed just for you") ? 1 : 0, 1);
+        P.eq("notes.allusers_each_shown", notes(panel), 4);
+        shoot(P, panel, host, "gui.installer.choose.notes.allusers", false);
+        panel.press(Act::scope, 0);
+        panel.press(Act::toUninstall);
+        host.settle();
+        P.eq("notes.uninstall", anyNote(panel, "ToneSynth is open") && anyNote(panel, "Logic Pro is open") ? 1 : 0, 1);
+        shoot(P, panel, host, "gui.installer.uninstall.notes", false);
+        sys.apps.clear();
     }
 
     // ---- UNINSTALL, run ----------------------------------------------------------------------------------------------
     {
         panel.show(Page::uninstall);
         host.settle();
+        host.tick(30);
         host.keys("return");
         panel.waitForRun();
         host.tick(2);

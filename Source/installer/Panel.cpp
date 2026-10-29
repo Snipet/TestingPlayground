@@ -167,6 +167,7 @@ namespace playground::installer
                 all.push_back({ pr.key, part });
         choices_ = engine_.plan(all, scope_);
         copies_ = engine_.installed();                   // each on, but links and those switched off (by path)
+        copyNotes_ = page_ == Page::uninstall ? engine_.uninstallNotes(copies_) : std::vector<std::string>{};
         copyOn_.assign(copies_.size(), true);
         for (std::size_t i = 0; i < copies_.size(); ++i)
             copyOn_[i] = !copies_[i].link && copyOff_.count(copies_[i].path.string()) == 0;
@@ -179,11 +180,17 @@ namespace playground::installer
         if (busy())
             return;
         page_ = page;
-        focus_ = {};
-        ring_ = false;
+        appeared();
         if (page == Page::choose || page == Page::uninstall || page == Page::welcome)
             refresh();
         changed();
+    }
+
+    void Panel::appeared()
+    {
+        focus_ = {};
+        ring_ = false;
+        shownAt_ = now_;
     }
 
     bool Panel::chosen(const std::string& key, Part part) const
@@ -219,6 +226,13 @@ namespace playground::installer
     {
         const std::lock_guard<std::mutex> lock(runMutex_);
         return running_;
+    }
+
+    bool Panel::working() const
+    {
+        // tick() takes a finished run's report, and a hidden window's host does not tick: a quit asks this instead.
+        const std::lock_guard<std::mutex> lock(runMutex_);
+        return running_ && !runFinished_;
     }
 
     void Panel::waitForRun()
@@ -262,6 +276,7 @@ namespace playground::installer
         if (plan.changing() == 0)
             return;
         runPlan_ = plan;
+        runNotes_ = plan.notes;
         uninstalling_ = false;
         {
             const std::lock_guard<std::mutex> lock(runMutex_);
@@ -273,8 +288,7 @@ namespace playground::installer
         }
         cancel_.store(false);
         page_ = Page::installing;
-        focus_ = {};
-        ring_ = false;
+        appeared();
         changed();
         if (worker_.joinable())
             worker_.join();
@@ -306,6 +320,7 @@ namespace playground::installer
         if (copies.empty())
             return;
         runCopies_ = copies;
+        runNotes_ = engine_.uninstallNotes(copies);
         uninstalling_ = true;
         {
             const std::lock_guard<std::mutex> lock(runMutex_);
@@ -317,8 +332,7 @@ namespace playground::installer
         }
         cancel_.store(false);
         page_ = Page::installing;
-        focus_ = {};
-        ring_ = false;
+        appeared();
         changed();
         if (worker_.joinable())
             worker_.join();
@@ -350,8 +364,7 @@ namespace playground::installer
             runFinished_ = false;
         }
         page_ = Page::done;
-        focus_ = {};
-        ring_ = false;
+        appeared();
         refresh();
         changed();
     }
@@ -377,6 +390,8 @@ namespace playground::installer
             finishRun();
         if (!running_ && (page_ == Page::choose || page_ == Page::uninstall) && now_ - refreshedAt_ > kRefreshSeconds)
             refresh();
+        if (returnLatched_ && !app_.returnHeld())
+            returnLatched_ = false;                      // let go: the next Return is a new press
         // The window's buttons sit over the sidebar, where its top keeps them room.
         if (!buttonsPlaced_ && app_.windowButtons().width > 0.0f)
         {
@@ -421,6 +436,34 @@ namespace playground::installer
         }
         for (Control& c : placed)
             L.controls.push_back(c);
+    }
+
+    int Panel::noteLines(Layout& L, const std::vector<std::string>& notes, float y, int room) const
+    {
+        const int n = static_cast<int>(notes.size());
+        if (room <= 0 || n == 0)
+            return 0;
+        const float w = kInnerW - 20.0f;
+        const auto place = [&](const std::string& text) {
+            Line l{ Line::Kind::warn, fit(text, chat::kSmall, w), { kX0 + 20.0f, y, w, 15.0f } };
+            if (l.text != text)
+                l.whole = text;
+            L.lines.push_back(std::move(l));
+            y += 15.0f;
+        };
+        // One line each; when there are more than fit, the last line holds the rest, as much as fits (all of it in its
+        // accessibility title), never a bare ellipsis.
+        const int whole = n <= room ? n : room - 1;
+        for (int i = 0; i < whole; ++i)
+            place(notes[static_cast<std::size_t>(i)]);
+        if (whole < n)
+        {
+            std::string rest;
+            for (int i = whole; i < n; ++i)
+                rest += (rest.empty() ? "" : " ") + notes[static_cast<std::size_t>(i)];
+            place(rest);
+        }
+        return whole < n ? room : n;
     }
 
     Panel::Layout Panel::layout() const
@@ -526,9 +569,28 @@ namespace playground::installer
         L.lines.push_back({ Line::Kind::title, "Choose what to install", { kX0, 34.0f, kInnerW, 22.0f } });
         L.lines.push_back({ Line::Kind::subtitle, "Each part has its switch; what is installed now is beside it.",
                             { kX0, 60.0f, kInnerW, 16.0f } });
-        constexpr float kRow = 24.0f, kHead = 30.0f;
-        constexpr float kStatusX = 220.0f;
-        float y = 92.0f;
+        constexpr float kHead = 30.0f, kStatusX = 220.0f, kNotesY = 84.0f;
+        const float products = static_cast<float>(pay.products.size());
+        const std::string where = scope_ == Scope::user
+                                      ? "Plugins in ~/Library/Audio/Plug-Ins, apps in "
+                                            + engine_.shown(engine_.folder(pay.products.empty() ? Product{} : pay.products.front(),
+                                                                           Part::app, Scope::user))
+                                            + ": no password."
+                                      : "Plugins in /Library/Audio/Plug-Ins, apps in /Applications: macOS asks for an "
+                                        "administrator's password.";
+        const std::vector<std::string> whereLines = wrapped(where, chat::kSmall, kInnerW);
+
+        // The notes first, under the subtitle: what is open that uses what changes, a product installed in the other
+        // scope too. The part rows close up (24 px down to 18) to make room for them: below the notes come the cards
+        // (each its head, four rows, its padding and a gap), the scope's row and its sentence.
+        const float bottom = kFooterY - 10.0f;
+        const float below = 2.0f + 38.0f + 15.0f * static_cast<float>(whereLines.size());
+        const auto cardsH = [&](float row) { return products * (kHead + 4.0f * row + 8.0f + 12.0f); };
+        const int room = static_cast<int>(std::floor((bottom - kNotesY - 14.0f - below - cardsH(18.0f)) / 15.0f));
+        const int placed = noteLines(L, choices_.notes, kNotesY, room);
+        float y = placed == 0 ? 92.0f : kNotesY + 15.0f * static_cast<float>(placed) + 14.0f;
+        const float kRow = std::clamp(std::floor((bottom - y - below - cardsH(0.0f)) / std::max(1.0f, 4.0f * products)),
+                                      18.0f, 24.0f);
         for (std::size_t p = 0; p < pay.products.size(); ++p)
         {
             const Product& pr = pay.products[p];
@@ -565,8 +627,11 @@ namespace playground::installer
                 const Line::Kind k = step->action == Action::blocked ? Line::Kind::error
                                    : step->action == Action::same     ? Line::Kind::faint
                                                                        : Line::Kind::note;
-                L.lines.push_back({ k, fit(statusOf(*step), chat::kSmall, kInnerW - kStatusX),
-                                    { kX0 + kStatusX, ry, kInnerW - kStatusX, kRow - 4.0f } });
+                Line status{ k, fit(statusOf(*step), chat::kSmall, kInnerW - kStatusX),
+                             { kX0 + kStatusX, ry, kInnerW - kStatusX, kRow - 4.0f } };
+                if (status.text != statusOf(*step))
+                    status.whole = statusOf(*step);
+                L.lines.push_back(std::move(status));
                 ry += kRow;
             }
             y += blockH + 12.0f;
@@ -585,31 +650,9 @@ namespace playground::installer
                                "Into the system's Library folders: macOS asks for an administrator's password",
                                scope_ == Scope::system, true, idOf(Act::scope, 1) });
         y += 38.0f;
-        const std::string where = scope_ == Scope::user
-                                      ? "The plugins go in ~/Library/Audio/Plug-Ins, and the apps in "
-                                            + engine_.shown(engine_.folder(pay.products.empty() ? Product{} : pay.products.front(),
-                                                                           Part::app, Scope::user))
-                                            + "."
-                                      : "The plugins go in /Library/Audio/Plug-Ins, and the apps in /Applications: macOS "
-                                        "asks for an administrator's password.";
-        for (const std::string& l : wrapped(where, chat::kSmall, kInnerW))
+        for (const std::string& l : whereLines)
         {
             L.lines.push_back({ Line::Kind::faint, l, { kX0, y, kInnerW, 15.0f } });
-            y += 15.0f;
-        }
-
-        // What is running that uses what changes; copies elsewhere. As many lines as there is room for.
-        y += 6.0f;
-        std::vector<std::string> notes;
-        for (const std::string& n : choices_.notes)
-            for (const std::string& l : wrapped(n, chat::kSmall, kInnerW - 20.0f))
-                notes.push_back(l);
-        const int room = static_cast<int>((kFooterY - 10.0f - y) / 15.0f);
-        for (int i = 0; i < static_cast<int>(notes.size()) && i < room; ++i)
-        {
-            const bool last = i + 1 == room && static_cast<int>(notes.size()) > room;
-            L.lines.push_back({ Line::Kind::warn, last ? "..." : notes[static_cast<std::size_t>(i)],
-                                { kX0 + 20.0f, y, kInnerW - 20.0f, 15.0f } });
             y += 15.0f;
         }
 
@@ -641,7 +684,7 @@ namespace playground::installer
             return l.find("administrator") != std::string::npos;
         });
         const std::string sub = waiting ? "macOS asks for an administrator's password: the installer never sees it."
-                              : uninstalling_ ? "Each copy goes to the Trash, where you can put it back."
+                              : uninstalling_ ? "Each copy goes to the Trash: nothing is deleted."
                                               : admin ? "Installing for all users, as an administrator."
                                                       : "Each part is copied beside its place, then put in place; old "
                                                         "copies go to the Trash.";
@@ -683,10 +726,16 @@ namespace playground::installer
                 said = engine_.shown(runPlan_.steps[i].folder);
             else if (states[i] == State::skipped && !uninstalling_ && i < runPlan_.steps.size() && said.rfind("already", 0) == 0)
                 said = engine_.shown(runPlan_.steps[i].folder) + " (already up to date)";
-            L.lines.push_back({ states[i] == State::failed ? Line::Kind::error : Line::Kind::faint,
-                                fit(said, chat::kSmall, kInnerW - 262.0f), { kX0 + 262.0f, y, kInnerW - 262.0f, row } });
+            Line l{ states[i] == State::failed ? Line::Kind::error : Line::Kind::faint,
+                    fit(said, chat::kSmall, kInnerW - 262.0f), { kX0 + 262.0f, y, kInnerW - 262.0f, row } };
+            if (l.text != said)
+                l.whole = said;
+            L.lines.push_back(std::move(l));
             y += row;
         }
+        // The notes the run started with (what is open), under the steps, as many as there is room for.
+        y += 10.0f;
+        noteLines(L, runNotes_, y, static_cast<int>(std::floor((kFooterY - 10.0f - y) / 15.0f)));
         const bool stopping = cancel_.load();
         footer(L, {}, { { Act::stop, 0, Control::Kind::secondary, {}, stopping ? "Stopping..." : "Stop",
                           "Stop after the step running", {}, false, !stopping && !admin, 0 } });
@@ -717,7 +766,7 @@ namespace playground::installer
             const bool left = std::any_of(r.lines.begin(), r.lines.end(), [](const std::string& l) {
                 return l.rfind("left as it was", 0) == 0;
             });
-            const std::string sub = uninstalling_ ? "Each copy is in the Trash: Put Back returns it."
+            const std::string sub = uninstalling_ ? "Each copy is in the Trash: to undo, drag it back to its folder (above)."
                                     : left        ? "Here is what went where; a part that could not go is left as it was."
                                                   : "Here is what went where.";
             L.lines.push_back({ Line::Kind::subtitle, fit(sub, chat::kSmall, kInnerW), { kX0, y, kInnerW, 16.0f } });
@@ -725,70 +774,120 @@ namespace playground::installer
         }
         y += 14.0f;
 
+        // Each product's rows (the steps, or the copies, that are its) and actions (the app opened, the extension added
+        // to Claude Desktop, in a row under its parts).
+        struct Row
+        {
+            Part part;
+            State state;
+            std::string line;
+            fs::path target;
+        };
+        struct Block
+        {
+            std::size_t product;
+            std::vector<Row> rows;
+            std::vector<Control> actions;
+        };
+        std::vector<Block> blocks;
         bool claudeNote = false, plugins = false;
-        std::vector<Control> actions;
         const fs::path claude = app_.claudeDesktop();
         for (std::size_t p = 0; p < pay.products.size(); ++p)
         {
             const Product& pr = pay.products[p];
-            // This product's rows: the steps (install) or the copies (uninstall) that are its.
-            struct Row
-            {
-                Part part;
-                State state;
-                std::string line;
-                fs::path target;
-            };
-            std::vector<Row> rows;
+            Block b{ p, {}, {} };
             if (uninstalling_)
             {
                 for (std::size_t i = 0; i < runCopies_.size() && i < r.states.size(); ++i)
                     if (runCopies_[i].key == pr.key)
-                        rows.push_back({ runCopies_[i].part, r.states[i], r.lines[i], runCopies_[i].path });
+                        b.rows.push_back({ runCopies_[i].part, r.states[i], r.lines[i], runCopies_[i].path });
             }
             else
             {
                 for (std::size_t i = 0; i < runPlan_.steps.size() && i < r.states.size(); ++i)
                     if (runPlan_.steps[i].key == pr.key)
-                        rows.push_back({ runPlan_.steps[i].part, r.states[i], r.lines[i], runPlan_.steps[i].target });
+                        b.rows.push_back({ runPlan_.steps[i].part, r.states[i], r.lines[i], runPlan_.steps[i].target });
             }
-            if (rows.empty())
+            if (b.rows.empty())
                 continue;
-            // Its actions, in a row under its parts: the app opened, the extension added to Claude Desktop.
-            std::vector<Control> mine;
-            if (!uninstalling_)
-                for (const Row& row : rows)
-                {
-                    const bool installed = row.state == State::done
-                                           || (row.state == State::skipped && row.line.rfind("already", 0) == 0);
-                    if (!installed)
-                        continue;
-                    if (row.part == Part::app)
-                        mine.push_back({ Act::openApp, static_cast<int>(p), Control::Kind::small, {}, "Open " + pr.name,
-                                         "Open " + pr.name, {}, false, true, idOf(Act::openApp, static_cast<int>(p)) });
-                    else if (row.part == Part::extension)
-                    {
-                        mine.push_back({ Act::addToClaude, static_cast<int>(p), Control::Kind::small, {},
-                                         "Add to Claude Desktop", "Add " + pr.name + "'s extension to Claude Desktop",
-                                         claude.empty() ? "Claude Desktop is not installed"
-                                                        : "Opens it with Claude Desktop, which asks to add it",
-                                         false, !claude.empty(), idOf(Act::addToClaude, static_cast<int>(p)) });
-                        claudeNote = claudeNote || claude.empty();
-                    }
-                }
-            const float rowH = 18.0f;
-            const float actionsH = mine.empty() ? 0.0f : 32.0f;
-            const float blockH = 30.0f + rowH * static_cast<float>(rows.size()) + actionsH + 12.0f;
-            L.cards.push_back({ kX0 - 14.0f, y - 6.0f, kInnerW + 28.0f, blockH });
-            L.marks.push_back({ { kX0, y, logo::kTile, logo::kTile }, pr.instrument(), 1.0f });
-            L.lines.push_back({ Line::Kind::strong, fit(pr.name, chat::kStrong, kInnerW - 36.0f),
-                                { kX0 + 36.0f, y + 4.0f, kInnerW - 36.0f, 18.0f } });
-            float ry = y + 30.0f;
-            for (const Row& row : rows)
+            for (const Row& row : b.rows)
             {
                 plugins = plugins || ((row.part == Part::au || row.part == Part::vst3) && row.state == State::done);
-                L.glyphs.push_back({ { kX0 + 8.0f, ry + 0.5f * rowH }, row.state });
-                L.lines.push_back({ Line::Kind::label, partName(row.part), { kX0 + 24.0f, ry, 150.0f, rowH } });
+                const bool installed = row.state == State::done
+                                       || (row.state == State::skipped && row.line.rfind("already", 0) == 0);
+                if (uninstalling_ || !installed)
+                    continue;
+                if (row.part == Part::app)
+                    b.actions.push_back({ Act::openApp, static_cast<int>(p), Control::Kind::small, {}, "Open " + pr.name,
+                                          "Open " + pr.name, {}, false, true, idOf(Act::openApp, static_cast<int>(p)) });
+                else if (row.part == Part::extension)
+                {
+                    b.actions.push_back({ Act::addToClaude, static_cast<int>(p), Control::Kind::small, {},
+                                          "Add to Claude Desktop", "Add " + pr.name + "'s extension to Claude Desktop",
+                                          claude.empty() ? "Claude Desktop is not installed"
+                                                         : "Opens it with Claude Desktop, which asks to add it",
+                                          false, !claude.empty(), idOf(Act::addToClaude, static_cast<int>(p)) });
+                    claudeNote = claudeNote || claude.empty();
+                }
+            }
+            blocks.push_back(std::move(b));
+        }
+        const bool adding = std::any_of(blocks.begin(), blocks.end(), [](const Block& b) {
+            return std::any_of(b.actions.begin(), b.actions.end(), [](const Control& c) { return c.act == Act::addToClaude; });
+        });
+
+        // The notes: the DAW's rescan, Claude Desktop, the log. After a failure, the reason a button is off and the log
+        // come first.
+        std::string rescan, claudeHow, log;
+        if (plugins)
+            rescan = std::string("Rescan plugins in your DAW, or restart it, ")
+                     + (uninstalling_ ? "so that it forgets them" : "to see them")
+                     + (r.registrarRestarted ? " (macOS's list of Audio Units is fresh already)." : ".");
+        if (claudeNote)
+            claudeHow = "Claude Desktop is not installed: get it at claude.ai/download, then double-click the .mcpb.";
+        else if (!uninstalling_ && !claude.empty() && adding)
+            claudeHow = "Add to Claude Desktop opens the extension with Claude Desktop, which asks before adding it.";
+        if (!engine_.places().log.empty())
+            log = "The log of what went where: " + engine_.shown(engine_.places().log);
+        std::vector<std::vector<std::string>> notes;
+        for (const std::string& n : r.ok() ? std::vector<std::string>{ rescan, claudeHow, log }
+                                           : std::vector<std::string>{ claudeHow, log, rescan })
+            if (!n.empty())
+                notes.push_back(wrapped(n, chat::kSmall, kInnerW));
+        float notesH = 0.0f;
+        for (const auto& n : notes)
+            notesH += 15.0f * static_cast<float>(n.size());
+
+        // The cards: roomy, or closed up when the notes would not all fit below them.
+        struct Metrics
+        {
+            float head, row, actions, pillY, gap;
+        };
+        constexpr Metrics kRoomy{ 30.0f, 18.0f, 32.0f, 6.0f, 12.0f }, kTight{ 26.0f, 16.0f, 30.0f, 4.0f, 10.0f };
+        const auto cardsH = [&](const Metrics& m) {
+            float h = 0.0f;
+            for (const Block& b : blocks)
+                h += m.head + m.row * static_cast<float>(b.rows.size()) + (b.actions.empty() ? 0.0f : m.actions) + 12.0f + m.gap;
+            return h;
+        };
+        const float notesTop = kFooterY - 8.0f - notesH - 2.0f;
+        const Metrics& m = y + cardsH(kRoomy) <= notesTop ? kRoomy : kTight;
+
+        std::vector<Control> actions;
+        for (Block& b : blocks)
+        {
+            const Product& pr = pay.products[b.product];
+            const float blockH = m.head + m.row * static_cast<float>(b.rows.size()) + (b.actions.empty() ? 0.0f : m.actions)
+                                 + 12.0f;
+            L.cards.push_back({ kX0 - 14.0f, y - 6.0f, kInnerW + 28.0f, blockH });
+            L.marks.push_back({ { kX0, y + 0.5f * (m.head - 30.0f), logo::kTile, logo::kTile }, pr.instrument(), 1.0f });
+            L.lines.push_back({ Line::Kind::strong, fit(pr.name, chat::kStrong, kInnerW - 36.0f),
+                                { kX0 + 36.0f, y + 4.0f + 0.5f * (m.head - 30.0f), kInnerW - 36.0f, 18.0f } });
+            float ry = y + m.head;
+            for (const Row& row : b.rows)
+            {
+                L.glyphs.push_back({ { kX0 + 8.0f, ry + 0.5f * m.row }, row.state });
+                L.lines.push_back({ Line::Kind::label, partName(row.part), { kX0 + 24.0f, ry, 150.0f, m.row } });
                 // Where it is, for a part installed or up to date; else what happened to it.
                 std::string said;
                 if (row.state == State::done)
@@ -797,51 +896,41 @@ namespace playground::installer
                     said = engine_.shown(row.target.parent_path()) + " (already up to date)";
                 else
                     said = row.line.empty() ? stateWords(row.state) : row.line;
-                L.lines.push_back({ row.state == State::failed ? Line::Kind::error : Line::Kind::faint,
-                                    fit(said, chat::kSmall, kInnerW - 180.0f), { kX0 + 180.0f, ry, kInnerW - 180.0f, rowH } });
-                ry += rowH;
+                Line l{ row.state == State::failed ? Line::Kind::error : Line::Kind::faint,
+                        fit(said, chat::kSmall, kInnerW - 180.0f), { kX0 + 180.0f, ry, kInnerW - 180.0f, m.row } };
+                if (l.text != said)
+                    l.whole = said;
+                L.lines.push_back(std::move(l));
+                ry += m.row;
             }
             float ax = kX0 + 24.0f;
-            for (Control& c : mine)
+            for (Control& c : b.actions)
             {
                 const float w = pillW(c.label, chat::kSmall);
-                c.r = { ax, ry + 6.0f, w, 24.0f };
+                c.r = { ax, ry + m.pillY, w, 24.0f };
                 ax += w + 8.0f;
                 actions.push_back(c);
             }
-            y += blockH + 12.0f;
+            y += blockH + m.gap;
         }
         for (Control& c : actions)
             L.controls.push_back(c);
 
-        // The notes: the DAW's rescan, Claude Desktop, the log.
-        std::vector<std::string> notes;
-        if (plugins)
-            notes.push_back(std::string("Rescan plugins in your DAW, or restart it, ")
-                            + (uninstalling_ ? "so that it forgets them" : "to see them")
-                            + (r.registrarRestarted ? " (macOS's list of Audio Units is fresh already)." : "."));
-        if (claudeNote)
-            notes.push_back("Claude Desktop is not installed: get it from claude.ai/download, then double-click the "
-                            "extension (.mcpb) in its folder to add it.");
-        else if (!uninstalling_ && !claude.empty() && std::any_of(actions.begin(), actions.end(), [](const Control& c) {
-                     return c.act == Act::addToClaude;
-                 }))
-            notes.push_back("Add to Claude Desktop opens the extension with Claude Desktop, which asks before adding it.");
-        if (!engine_.places().log.empty())
-            notes.push_back("The log of what went where: " + engine_.shown(engine_.places().log));
+        // The notes, each whole, those that fit (a long one left out lets a shorter one after it in).
         y += 2.0f;
-        for (const std::string& n : notes)                // each whole, while there is room for it
+        for (const auto& n : notes)
         {
-            const std::vector<std::string> ls = wrapped(n, chat::kSmall, kInnerW);
-            if (y + 15.0f * static_cast<float>(ls.size()) > kFooterY - 8.0f)
-                break;
-            for (const std::string& l : ls)
+            if (y + 15.0f * static_cast<float>(n.size()) > kFooterY - 8.0f)
+                continue;
+            for (const std::string& l : n)
             {
                 L.lines.push_back({ Line::Kind::note, l, { kX0, y, kInnerW, 15.0f } });
                 y += 15.0f;
             }
         }
-        footer(L, {}, { { Act::finish, 0, Control::Kind::primary, {}, "Done", "Done: quit the installer", {}, false, true, 0 } });
+        footer(L, { { Act::back, 0, Control::Kind::secondary, {}, "Back",
+                      uninstalling_ ? "Back to the copies installed" : "Back to the choice of parts", {}, false, true, 0 } },
+               { { Act::finish, 0, Control::Kind::primary, {}, "Done", "Done: quit the installer", {}, false, true, 0 } });
     }
 
     void Panel::layoutUninstall(Layout& L) const
@@ -857,7 +946,12 @@ namespace playground::installer
             n += static_cast<int>(k);
             heads += k > 0 ? 1 : 0;
         }
-        float y = 92.0f;
+        // The notes first: an app of theirs or a host that is open.
+        constexpr float kNotesY = 84.0f;
+        const int room = static_cast<int>(std::floor(
+            (kFooterY - 16.0f - kNotesY - 14.0f - static_cast<float>(heads) * 42.0f - 18.0f * static_cast<float>(n)) / 15.0f));
+        const int placed = noteLines(L, copyNotes_, kNotesY, room);
+        float y = placed == 0 ? 92.0f : kNotesY + 15.0f * static_cast<float>(placed) + 14.0f;
         if (n == 0)
         {
             std::vector<std::string> names;
@@ -938,7 +1032,12 @@ namespace playground::installer
         switch (c.act)
         {
             case Act::next:        show(Page::choose); break;
-            case Act::back:        show(page_ == Page::uninstall ? Page::choose : Page::welcome); break;
+            case Act::back:
+                show(page_ == Page::uninstall                  ? Page::choose
+                     : page_ == Page::done && uninstalling_    ? Page::uninstall
+                     : page_ == Page::done                     ? Page::choose
+                                                               : Page::welcome);
+                break;
             case Act::install:     startInstall(); break;
             case Act::toUninstall: show(Page::uninstall); break;
             case Act::part:
@@ -1053,7 +1152,8 @@ namespace playground::installer
         for (const Control& c : controls())
             if (c.r.contains(p))
             {
-                if (c.enabled)
+                // A click as a page appears is the last page's (a double-click on Continue is not Install's).
+                if (c.enabled && now_ - shownAt_ >= kHold)
                 {
                     focus_ = { c.act, c.index };
                     act(c);
@@ -1072,14 +1172,18 @@ namespace playground::installer
         switch (e.key)
         {
             case Key::enter:
+                // One press, one button: a held Return's repeats, and a Return as a page appears, press nothing.
+                if (returnLatched_ || now_ - shownAt_ < kHold)
+                    return true;
                 if (const Control* d = defaultButton(cs); d != nullptr && d->enabled)
                 {
                     const Control c = *d;
+                    returnLatched_ = true;
                     act(c);
                 }
                 return true;
             case Key::escape:
-                if (page_ == Page::choose || page_ == Page::uninstall)
+                if (page_ == Page::choose || page_ == Page::uninstall || page_ == Page::done)
                     press(Act::back);
                 else if (page_ == Page::installing)
                     press(Act::stop);
@@ -1175,7 +1279,8 @@ namespace playground::installer
             it.id = kLineIds + n++;
             it.role = funkgui::A11yRole::staticText;
             it.bounds = l.r;
-            it.title = l.kind == Line::Kind::error ? "Error: " + l.text : l.text;
+            const std::string& text = l.whole.empty() ? l.text : l.whole;
+            it.title = l.kind == Line::Kind::error ? "Error: " + text : text;
             it.readOnly = true;
             out.push_back(std::move(it));
         }
@@ -1275,7 +1380,15 @@ namespace playground::installer
                 c.rrect(tx + st.x0 * scale, ty + st.y0 * scale, (st.x1 - st.x0) * scale, (st.y1 - st.y0) * scale, 0.0f, accent);
         }
 
-        void drawGlyph(funkgui::Canvas& c, const chat::Palette& p, funkgui::Point at, State s, float spin)
+        // The errors' red: neither product's accent (the effect's orange, the instrument's blue; FunkGui's signal, which
+        // ChatStyle's `danger` is, is a blue of the instrument's family), as Theme.h asks of an error.
+        funkgui::Col errorInk(const funkgui::Theme& th)
+        {
+            const bool dark = th.ground.r < 128;
+            return dark ? funkgui::Col{ 0xFF, 0x5D, 0x6E } : funkgui::Col{ 0xC4, 0x2B, 0x3C };
+        }
+
+        void drawGlyph(funkgui::Canvas& c, const chat::Palette& p, funkgui::Col error, funkgui::Point at, State s, float spin)
         {
             constexpr float r = 7.0f;
             const funkgui::Col none = p.card.withAlpha(0.0f);
@@ -1301,7 +1414,7 @@ namespace playground::installer
                     c.segment(at.x - 3.0f, at.y, at.x + 3.0f, at.y, 1.4f, p.faint);
                     break;
                 case State::failed:
-                    c.disc(at.x, at.y, r, p.danger);
+                    c.disc(at.x, at.y, r, error);
                     chat::drawIcon(c, chat::Icon::cross, at.x, at.y, 8.0f, p.onAccent);
                     break;
             }
@@ -1370,7 +1483,7 @@ namespace playground::installer
                 case Line::Kind::value:
                 case Line::Kind::note:     ink = p.soft; break;
                 case Line::Kind::faint:    ink = p.dim; break;
-                case Line::Kind::error:    ink = p.danger; break;
+                case Line::Kind::error:    ink = errorInk(th); break;
                 case Line::Kind::warn:     ink = p.text; break;
             }
             const float top = c.capCentreTop(l.r.centreY(), st);
@@ -1392,7 +1505,7 @@ namespace playground::installer
                 c.rrect(r.x, r.y, w, r.h, 0.5f * r.h, p.accent);
         }
         for (const Layout::Glyph& g : L.glyphs)
-            drawGlyph(c, p, g.c, g.state, spin_);
+            drawGlyph(c, p, errorInk(th), g.c, g.state, spin_);
 
         // The controls.
         const int focus = ring_ ? focusIndex(L.controls) : -1;

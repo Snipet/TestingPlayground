@@ -5,20 +5,26 @@
 //   sidebar    the project's name, and the pages as steps: Welcome, Choose, Install (or Uninstall), Done
 //   Welcome    both products' marks (editor/LogoMark.h, each in its kind's accent), a line on what they are, each
 //              product with the version this installer holds; Continue
-//   Choose     each product's four parts as switches, what is installed now beside each (its version, and what
+//   Choose     the notes first (an app or a host that is open, a product installed in the other scope too: one line
+//              each, whole in its accessibility title; the part rows close up, 24 px down to 18, to make room), then
+//              each product's four parts as switches, what is installed now beside each (its version, and what
 //              installing does: install, upgrade, replace a newer one, already installed, or why it cannot), the scope
-//              ("Just for me", "All users": macOS asks for an administrator's password), notes on running apps and
-//              hosts; Uninstall..., Back, Install (the default)
-//   Installing each step with its state and a progress bar; Stop (after the step running)
+//              ("Just for me", "All users": macOS asks for an administrator's password); Uninstall..., Back, Install
+//              (the default)
+//   Installing each step with its state and a progress bar, the notes under them; Stop (after the step running)
 //   Done       what went where, per product: "Open <app>" for an app installed, "Add to Claude Desktop" for an extension
 //              (open -a Claude <file>, only when clicked, and only when Claude Desktop is installed; else how), a note to
-//              rescan plugins in the DAW; an error in plain words, with what was and was not changed; Done (quits)
-//   Uninstall  every copy found, each a switch (on), where it is and its version; Back, Move to Trash (the default)
+//              rescan plugins in the DAW; an error in plain words, with what was and was not changed; Back (to Choose,
+//              or to Uninstall after one: try again, or another scope), Done (quits)
+//   Uninstall  the notes (an app or a host that is open), every copy found, each a switch (on), where it is and its
+//              version; Back, Move to Trash (the default)
 //
-// Keys: Return presses the page's default button, Escape goes back (Choose, Uninstall) or stops (Installing), Tab and
-// Shift-Tab (or Down and Up) move the focus over the page's controls, Space presses the focused one, Left and Right
-// choose the scope while it has the focus. Every control has an accessibility title. Runs happen on a worker thread
-// of the Panel's; tick() takes their progress, and the Done page their report.
+// Keys: Return presses the page's default button, Escape goes back (Choose, Uninstall, Done) or stops (Installing), Tab
+// and Shift-Tab (or Down and Up) move the focus over the page's controls, Space presses the focused one, Left and Right
+// choose the scope while it has the focus. A held Return presses one button only: after it, Return does nothing until
+// it is let go (AppPort::returnHeld), nor for a moment after a page appears (a press or a click then is the last
+// page's, repeated). Every control has an accessibility title. Errors are drawn in a red that is neither product's
+// accent. Runs happen on a worker thread of the Panel's; tick() takes their progress, and the Done page their report.
 #pragma once
 
 #include "installer/Engine.h"
@@ -61,6 +67,9 @@ namespace playground::installer
         virtual Buttons windowButtons() const { return {}; }
         virtual void placeWindowButtons(float x, float middle) { (void) x; (void) middle; }
         virtual void dragWindow(int clicks) { (void) clicks; }
+
+        // Return is down now (juce::KeyPress::isKeyCurrentlyDown): its key repeats are not new presses.
+        virtual bool returnHeld() const { return false; }
     };
 
     class Panel final : public funkgui::Panel
@@ -100,7 +109,10 @@ namespace playground::installer
             std::string text;
             funkgui::Rect r;
             bool right = false;                  // right-aligned at r.right()
+            std::string whole = {};              // the whole text when `text` is cut to fit (its accessibility title)
         };
+
+        static constexpr double kHold = 0.35;    // seconds after a page appears in which a press is the last page's
 
         Panel(Engine& engine, AppPort& app, std::string installerName);
         ~Panel() override;
@@ -136,7 +148,8 @@ namespace playground::installer
         bool chosen(const std::string& key, Part part) const;
         void choose(const std::string& key, Part part, bool on);
         void setScope(Scope scope);
-        bool busy() const;                       // a run is going
+        bool busy() const;                       // a run is going (until tick() takes its report)
+        bool working() const;                    // the run's thread is still at work (a quit waits for this)
         void waitForRun();                       // blocks until the run's thread is over (the next tick takes it)
         const Report& report() const noexcept { return report_; }
         bool press(Act act, int index = 0);      // as a click on that control (false: none such, or disabled)
@@ -173,6 +186,10 @@ namespace playground::installer
         void layoutDone(Layout& L) const;
         void layoutUninstall(Layout& L) const;
         void footer(Layout& L, std::vector<Control> left, std::vector<Control> right) const;
+        // The notes, one line each from `y` (each whole in its accessibility title), at most `room` lines: when there
+        // are more, the last says how many more. Returns the lines placed.
+        int noteLines(Layout& L, const std::vector<std::string>& notes, float y, int room) const;
+        void appeared();                         // a page appeared: the focus cleared, Return held off for kHold
 
         void act(const Control& c);
         void refresh();                          // the plan of every part, and the copies found
@@ -195,6 +212,7 @@ namespace playground::installer
         Plan choices_;                           // every part offered, in this scope
         std::map<std::string, bool> on_;         // "<key>/<part>": the switch, once the user (or a default) set it
         std::vector<Copy> copies_;               // what is installed now (Uninstall)
+        std::vector<std::string> copyNotes_;     // what is open that uses them
         std::vector<bool> copyOn_;
         std::set<std::string> copyOff_;          // the copies switched off, by path (kept across a refresh)
         double refreshedAt_ = -1.0;
@@ -204,6 +222,7 @@ namespace playground::installer
         bool uninstalling_ = false;              // the last run's kind
         Plan runPlan_;                           // what Install ran
         std::vector<Copy> runCopies_;            // what Uninstall ran
+        std::vector<std::string> runNotes_;      // the notes the run started with
         std::thread worker_;
         mutable std::mutex runMutex_;
         std::vector<State> runStates_;
@@ -224,6 +243,8 @@ namespace playground::installer
             int index = -1;                      // -1: none
         } focus_;
         bool ring_ = false;                      // the focus shown (the keys moved it)
+        double shownAt_ = -1.0e9;                // when the page appeared (now_)
+        bool returnLatched_ = false;             // Return pressed a button and has not been let go since
         uint32_t revision_ = 1;
         bool buttonsPlaced_ = false;
     };

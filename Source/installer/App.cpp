@@ -122,6 +122,12 @@ namespace playground::installer
         Buttons windowButtons() const override;
         void placeWindowButtons(float x, float middle) override;
         void dragWindow(int clicks) override;
+        bool returnHeld() const override
+        {
+            // JUCE's window keeps the keys that are down (their key-down and key-up events, cleared when it loses the
+            // focus): a held Return's repeats come while it is down.
+            return juce::KeyPress::isKeyCurrentlyDown(juce::KeyPress::returnKey);
+        }
 
     private:
         Window* window_ = nullptr;
@@ -261,9 +267,11 @@ namespace playground::installer
         void systemRequestedQuit() override { requestQuit(); }
 
         // Quit, once no run is going: a run asked to stop first (between steps), the administrator's script let end.
+        // working(), not busy(): a minimised window's host does not tick the Panel, so a run that ended there is never
+        // taken; the worker's own state says it is over.
         void requestQuit()
         {
-            if (window_ != nullptr && window_->panel().busy())
+            if (window_ != nullptr && window_->panel().working())
             {
                 window_->panel().press(Panel::Act::stop);
                 startTimer(200);
@@ -275,7 +283,7 @@ namespace playground::installer
     private:
         void timerCallback() override
         {
-            if (window_ == nullptr || !window_->panel().busy())
+            if (window_ == nullptr || !window_->panel().working())
             {
                 stopTimer();
                 quit();
