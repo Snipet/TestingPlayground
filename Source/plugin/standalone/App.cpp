@@ -220,9 +220,13 @@ namespace playground::standalone
             holder_.startPlaying();
         }
 
-        // Settings... (Cmd-,): the editor opens its card over the devices (EditorPort::settingsAsked).
+        // Settings... (Cmd-,): the editor opens its card over the devices (EditorPort::settingsAsked), in a window
+        // brought forward first (from the Dock when minimised: the card is in it, where JUCE's dialog had its own).
         void showSettings()
         {
+            if (isMinimised())
+                setMinimised(false);
+            toFront(true);
             if (auto* processor = dynamic_cast<Processor*>(holder_.processor.get()))
                 processor->showSettings();
         }
