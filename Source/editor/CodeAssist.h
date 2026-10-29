@@ -21,6 +21,8 @@
 //                    Cmd-] and Cmd-[     the lines indented, outdented
 //                    Cmd-B, Cmd-click    go to the definition (another tab's too); F12 does not reach a plugin
 //                                        (FunkGui delivers no function keys)
+//                    Ctrl-G              go to a line (and a column: 12:5), in a bar where the find bar sits; a click
+//                                        on the status line's place opens it too
 //   pointer        the word under the pointer, still for half a second: a card of what it is (its declaration, its
 //                  documentation) and of the problems there
 //   problems       squiggles and marks from the compiler's messages: RUN's (the files it compiled, as long as a tab
@@ -33,6 +35,12 @@
 //
 // The completion list, the signature and the hover card are drawn over everything (drawOverlays, after the Panel's
 // items); the find bar and the status line with the editor. Message thread only.
+//
+// A view (the IR tab, IrView.h: the one past the files, Tabs::active() == Tabs::count()) is none of the program's files:
+// no language feature reaches it (completion, signature help, hover, occurrences, the problems, Format, go to the
+// definition) and it is read only (TextEditorOptions::readOnly): a key that would edit it (typing, Return, Backspace,
+// Delete, cut, paste, undo, the line commands) changes nothing, is taken (never the host's) and says so in the status;
+// it moves, selects, copies, finds (no replace) and goes to a line. Its status line says it is read only and LLVM IR.
 #pragma once
 
 #include "editor/Theme.h"
@@ -143,7 +151,7 @@ namespace playground::ui
         bool wheel(const funkgui::WheelEvent&);
         bool over(funkgui::Point) const;                 // over an overlay or the status line (not the text)
         std::optional<funkgui::Cursor> cursorAt(funkgui::Point) const;
-        bool takesKeys() const noexcept { return findFocus_; }   // the find bar has the keys
+        bool takesKeys() const noexcept { return findFocus_ || gotoOpen_; }   // the find or go-to bar has the keys
 
         void tick(float dt, funkgui::Point pointer, bool focused);
         bool settled() const;
@@ -198,6 +206,9 @@ namespace playground::ui
         bool deleteLines();
         bool goToDefinition();                           // the word at the caret
         bool goToDefinitionAt(funkgui::Point p);
+        void openGoTo();                                 // Ctrl-G: the go-to-line bar, its field empty
+        void closeGoTo();
+        bool goToLine(const std::string& typed);         // "12" or "12:5" (1-based): the caret there; false for none
 
         // ---- probes -----------------------------------------------------------------------------------------------
         bool completionOpen() const noexcept { return completion_.has_value(); }
@@ -208,6 +219,7 @@ namespace playground::ui
         bool hoverOpen() const noexcept { return hover_.has_value(); }
         std::string hoverText() const;                   // its code and documentation, and the problems there
         bool findOpen() const noexcept { return findOpen_; }
+        bool goToOpen() const noexcept { return gotoOpen_; }
         int findCount() const noexcept { return static_cast<int>(matches_.size()); }
         int findCurrent() const noexcept { return current_; }
         lang::Service& service();                        // the index, brought up to date
@@ -227,7 +239,9 @@ namespace playground::ui
 
         funkgui::TextEditor& ed() const;
         int activeTab() const;
-        bool fmFile(int tab) const;
+        bool fmFile(int tab) const;                      // one of the program's FMinus files (not a .gui, not a view)
+        bool viewShown() const;                          // the tab shown is a view (the IR): no file of the program
+        bool goToKey(const funkgui::KeyEvent& e);
         void sync();                                     // the service follows the tabs
         uint64_t filesRevision() const;
         lang::Pos pos(funkgui::TextPos p) const noexcept { return { p.line, p.col }; }
@@ -251,6 +265,7 @@ namespace playground::ui
         };
         Popup popupGeometry(float panelW, float panelH) const;
         funkgui::Rect findBarRect() const;
+        funkgui::Rect goToBarRect() const;
         struct FindParts
         {
             funkgui::Rect bar, toggle, field, caseBtn, wordBtn, count, prev, next, close, replaceField, replaceBtn, allBtn;
@@ -313,5 +328,10 @@ namespace playground::ui
         uint32_t matchesRev_ = 0;
         int matchesTab_ = -1;
         std::string matchesNeedle_;
+
+        // go to a line
+        bool gotoOpen_ = false;
+        funkgui::text::LineEdit gotoEdit_;
+        bool gotoBad_ = false;                           // the line typed is none of the text's
     };
 }

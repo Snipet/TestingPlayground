@@ -38,6 +38,8 @@ namespace playground::ui
         constexpr float kOccurrenceDelay = 0.25f;        // s the caret rests
         constexpr const char* kFormatOnRunKey = "codeFormatOnRun";
         constexpr int kMaxFind = 200;                    // characters in the find bar's fields
+        constexpr int kMaxGoTo = 16;                     // characters in the go-to-line field ("123456:789")
+        constexpr float kGoToW = 330.0f;
         constexpr int kMaxMatches = 10000;
         constexpr funkgui::TextStyle kCode = funkgui::editorFont(funkgui::EditorFont::code);
         constexpr funkgui::TextStyle kCardCode{ 11.5f, 0.0f, 0.0f, true };
@@ -151,6 +153,45 @@ namespace playground::ui
         }
 
         bool fmName(std::string_view name) { return !(name.size() > 4 && name.substr(name.size() - 4) == ".gui"); }
+
+        // A key that would change the text: typing (Alt's symbols, Shift-Alt-F's Format too), Return, Space, Backspace,
+        // Delete, cut, paste, undo and redo, and the line commands (Cmd-/, Cmd-] and Cmd-[, Shift-Cmd-K, Alt-Up and
+        // Alt-Down). Cmd-Return is RUN's, which the Panel takes first; Tab moves the focus on from a read-only text.
+        bool editKey(const funkgui::KeyEvent& e)
+        {
+            const bool cmd = e.mods.cmd;
+            switch (e.key)
+            {
+                case funkgui::Key::enter:
+                    return !cmd && !e.mods.ctrl;
+                case funkgui::Key::space:
+                    return !cmd && !e.mods.ctrl;
+                case funkgui::Key::backspace:
+                case funkgui::Key::del:
+                    return true;
+                case funkgui::Key::up:
+                case funkgui::Key::down:
+                    return e.mods.alt && !cmd;
+                case funkgui::Key::character:
+                {
+                    if (!cmd)
+                        return !e.mods.ctrl;
+                    const char32_t c = e.ch >= U'A' && e.ch <= U'Z' ? e.ch - U'A' + U'a' : e.ch;
+                    return c == U'v' || c == U'x' || c == U'z' || c == U'y' || c == U'/' || c == U']' || c == U'['
+                        || (c == U'k' && e.mods.shift);
+                }
+                case funkgui::Key::tab:
+                case funkgui::Key::escape:
+                case funkgui::Key::left:
+                case funkgui::Key::right:
+                case funkgui::Key::home:
+                case funkgui::Key::end:
+                case funkgui::Key::pageUp:
+                case funkgui::Key::pageDown:
+                    return false;
+            }
+            return false;
+        }
 
         bool identStart(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; }
 
@@ -349,7 +390,8 @@ namespace playground::ui
 
     funkgui::TextEditor& CodeAssist::ed() const { return tabs_.editor(tabs_.active()); }
     int CodeAssist::activeTab() const { return tabs_.active(); }
-    bool CodeAssist::fmFile(int tab) const { return fmName(tabs_.name(tab)); }
+    bool CodeAssist::fmFile(int tab) const { return tab >= 0 && tab < tabs_.count() && fmName(tabs_.name(tab)); }
+    bool CodeAssist::viewShown() const { return activeTab() >= tabs_.count(); }
 
     void CodeAssist::configure(funkgui::TextEditor& e, std::string_view fileName)
     {
@@ -458,6 +500,8 @@ namespace playground::ui
     // ---- keys -------------------------------------------------------------------------------------------------------
     bool CodeAssist::key(const funkgui::KeyEvent& e)
     {
+        if (gotoOpen_)
+            return goToKey(e);
         if (findFocus_)
             return findKey(e);
         funkgui::TextEditor& E = ed();
@@ -465,6 +509,18 @@ namespace playground::ui
             return E.key(e);
         const bool cmd = e.mods.cmd;
         hover_.reset();
+        // Ctrl-G: go to a line, in any tab.
+        if (e.key == funkgui::Key::character && e.mods.ctrl && !cmd && !e.mods.alt && (e.ch == U'g' || e.ch == U'G'))
+        {
+            openGoTo();
+            return true;
+        }
+        // A read-only text (the IR view) refuses every edit, and takes the key, which is never the host's.
+        if (E.options().readOnly && editKey(e))
+        {
+            tabs_.notice("READ ONLY: A VIEW OF THE COMPILED PROGRAM, NOT ONE OF ITS FILES");
+            return true;
+        }
         if (completion_)
         {
             const int n = static_cast<int>(completion_->items.size());
@@ -841,6 +897,7 @@ namespace playground::ui
     void CodeAssist::tabShown()
     {
         closeOverlays();
+        gotoOpen_ = false;
         if (findOpen_)
             updateMatches();
     }
@@ -853,6 +910,7 @@ namespace playground::ui
             completion_.reset();
             signature_.reset();
             findFocus_ = false;
+            gotoOpen_ = false;
         }
     }
 
@@ -862,6 +920,8 @@ namespace playground::ui
         if (statusRect().contains(p))
             return true;
         if (findOpen_ && findBarRect().contains(p))
+            return true;
+        if (gotoOpen_ && goToBarRect().contains(p))
             return true;
         if (completion_ && popupGeometry(panelW_, panelH_).box.contains(p))
             return true;
@@ -873,8 +933,12 @@ namespace playground::ui
         if (statusRect().contains(p))
         {
             const StatusParts s = statusParts();
-            return s.formatOnRun.contains(p) || s.problems.contains(p) ? funkgui::Cursor::pointingHand : funkgui::Cursor::normal;
+            return s.formatOnRun.contains(p) || s.position.contains(p) || (s.problems.contains(p) && !viewShown())
+                       ? funkgui::Cursor::pointingHand
+                       : funkgui::Cursor::normal;
         }
+        if (gotoOpen_ && goToBarRect().contains(p))
+            return funkgui::Cursor::normal;
         if (findOpen_ && findBarRect().contains(p))
             return funkgui::Cursor::pointingHand;
         if (completion_ && popupGeometry(panelW_, panelH_).box.contains(p))
@@ -904,12 +968,20 @@ namespace playground::ui
             completion_.reset();
         }
         signature_.reset();
+        if (gotoOpen_)
+        {
+            if (goToBarRect().contains(p))
+                return true;                             // the field keeps the keys
+            closeGoTo();
+        }
         if (statusRect().contains(p))
         {
             const StatusParts s = statusParts();
             if (s.formatOnRun.contains(p))
                 setFormatOnRun(!formatOnRun());
-            else if (s.problems.contains(p))
+            else if (s.position.contains(p))
+                openGoTo();
+            else if (s.problems.contains(p) && !viewShown())
             {
                 // The next problem after the caret, in the tab shown, else the first in another.
                 funkgui::TextEditor& E = ed();
@@ -951,7 +1023,7 @@ namespace playground::ui
             findFocus_ = true;
             ed().setFocused(false);
             if (f.toggle.contains(p))
-                replaceOpen_ = !replaceOpen_;
+                replaceOpen_ = !replaceOpen_ && !ed().options().readOnly;
             else if (f.caseBtn.contains(p))
             {
                 matchCase_ = !matchCase_;
@@ -1233,6 +1305,8 @@ namespace playground::ui
     std::vector<std::string> CodeAssist::diagnosticsAt(int tab, TextPos p) const
     {
         std::vector<std::string> out;
+        if (tab < 0 || tab >= tabs_.count())
+            return out;                                  // a view (the IR): none of the program's files
         const funkgui::TextEditor& E = tabs_.editor(tab);
         const auto it = diags_.find(tabs_.name(tab));
         if (it == diags_.end())
@@ -1280,7 +1354,7 @@ namespace playground::ui
         const int tab = activeTab();
         if (!fmFile(tab))
         {
-            tabs_.notice("FORMAT: FMINUS FILES ONLY");
+            tabs_.notice(viewShown() ? "READ ONLY: A VIEW OF THE COMPILED PROGRAM" : "FORMAT: FMINUS FILES ONLY");
             return false;
         }
         sync();
@@ -1474,8 +1548,9 @@ namespace playground::ui
     void CodeAssist::openFind(bool replace)
     {
         funkgui::TextEditor& E = ed();
+        gotoOpen_ = false;
         findOpen_ = true;
-        replaceOpen_ = replaceOpen_ || replace;
+        replaceOpen_ = !E.options().readOnly && (replaceOpen_ || replace);   // nothing to replace in a read-only text
         findFocus_ = true;
         findField_ = replace && !findEdit_.buffer.empty() && !E.hasSelection() ? 1 : 0;
         const std::string sel = E.selectedText();
@@ -1499,6 +1574,7 @@ namespace playground::ui
         // own set again by updateMatches).
         for (int i = 0; i < tabs_.count(); ++i)
             tabs_.editor(i).setDecorations({}, funkgui::kFindDecorations);
+        ed().setDecorations({}, funkgui::kFindDecorations);   // a view's (the IR's) too
         if (focused_)
             ed().setFocused(true);
     }
@@ -1673,7 +1749,7 @@ namespace playground::ui
                     }
                     else if (c == 'g' || c == 'G')
                         findNext(!e.mods.shift);
-                    else if ((c == 'f' || c == 'F' || c == U'ƒ') && e.mods.alt)
+                    else if ((c == 'f' || c == 'F' || c == U'ƒ') && e.mods.alt && !ed().options().readOnly)
                     {
                         replaceOpen_ = true;
                         findField_ = 1;
@@ -1715,6 +1791,120 @@ namespace playground::ui
                 showMatch(0);
         }
         return true;
+    }
+
+    // ---- go to a line -----------------------------------------------------------------------------------------------
+    void CodeAssist::openGoTo()
+    {
+        if (findOpen_)
+            closeFind();
+        completion_.reset();
+        signature_.reset();
+        hover_.reset();
+        gotoOpen_ = true;
+        gotoBad_ = false;
+        gotoEdit_.set("", kMaxGoTo);
+        ed().setFocused(false);                          // the field has the keys
+    }
+
+    void CodeAssist::closeGoTo()
+    {
+        if (!gotoOpen_)
+            return;
+        gotoOpen_ = false;
+        gotoBad_ = false;
+        if (focused_)
+            ed().setFocused(true);
+    }
+
+    bool CodeAssist::goToLine(const std::string& typed)
+    {
+        funkgui::TextEditor& E = ed();
+        long line = 0, col = 0;
+        std::size_t k = 0;
+        while (k < typed.size() && typed[k] == ' ')
+            ++k;
+        const std::size_t start = k;
+        while (k < typed.size() && std::isdigit(static_cast<unsigned char>(typed[k])) != 0 && line < 100000000)
+            line = line * 10 + (typed[k++] - '0');
+        if (k == start || line < 1 || line > E.lineCount())
+            return false;
+        if (k < typed.size() && typed[k] == ':')
+        {
+            ++k;
+            while (k < typed.size() && std::isdigit(static_cast<unsigned char>(typed[k])) != 0 && col < 100000000)
+                col = col * 10 + (typed[k++] - '0');
+        }
+        while (k < typed.size() && typed[k] == ' ')
+            ++k;
+        if (k != typed.size())
+            return false;
+        E.setCaret({ static_cast<int>(line - 1), col > 0 ? static_cast<int>(col - 1) : 0 });   // clamped to the line
+        // The line two fifths down the text, where the eye looks for it.
+        const float y = static_cast<float>(E.rowOf(E.caret())) * E.rowHeight() - 0.4f * E.textArea().h;
+        E.setScroll(E.scroll().x, std::max(0.0f, y));
+        E.scrollToCaret();
+        return true;
+    }
+
+    bool CodeAssist::goToKey(const funkgui::KeyEvent& e)
+    {
+        switch (e.key)
+        {
+            case funkgui::Key::escape:
+                closeGoTo();
+                return true;
+            case funkgui::Key::enter:
+                if (goToLine(gotoEdit_.buffer))
+                    closeGoTo();
+                else
+                    gotoBad_ = true;
+                return true;
+            case funkgui::Key::character:
+                if (e.mods.cmd)
+                {
+                    if ((e.ch == U'v' || e.ch == U'V') && host_ != nullptr)
+                        gotoEdit_.paste(host_->clipboardText(), kMaxGoTo);
+                    else if (e.ch == U'a' || e.ch == U'A')
+                        gotoEdit_.allSelected = !gotoEdit_.buffer.empty();
+                    gotoBad_ = false;
+                    return true;
+                }
+                if (e.mods.ctrl)
+                {
+                    if (e.ch == U'g' || e.ch == U'G')
+                        closeGoTo();                     // Ctrl-G again
+                    return true;
+                }
+                if (!(e.ch >= U'0' && e.ch <= U'9') && e.ch != U':')
+                    return true;                         // a line's number only
+                break;
+            case funkgui::Key::tab:
+            case funkgui::Key::up:
+            case funkgui::Key::down:
+            case funkgui::Key::pageUp:
+            case funkgui::Key::pageDown:
+            case funkgui::Key::space:
+                return true;
+            case funkgui::Key::left:
+            case funkgui::Key::right:
+            case funkgui::Key::home:
+            case funkgui::Key::end:
+            case funkgui::Key::backspace:
+            case funkgui::Key::del:
+                break;
+        }
+        gotoEdit_.key(e, kMaxGoTo);
+        gotoBad_ = false;
+        return true;
+    }
+
+    funkgui::Rect CodeAssist::goToBarRect() const
+    {
+        const Rect e = editorRect();
+        const float w = std::min(kGoToW, e.w - 100.0f);
+        const float minimap = 72.0f + 18.0f;
+        return { e.right() - w - minimap, e.y + 4.0f, w, kFindRowH + 4.0f };
     }
 
     // ---- geometry ---------------------------------------------------------------------------------------------------
@@ -1793,8 +1983,8 @@ namespace playground::ui
             return Rect{ x, r.y, w, r.h };
         };
         s.formatOnRun = take("Format on Run", 14.0f);
-        s.language = take(fmFile(activeTab()) ? "FMinus" : "GUI", 0.0f);
-        s.indent = take("Spaces: 4", 0.0f);
+        s.language = take(viewShown() ? "LLVM IR" : fmFile(activeTab()) ? "FMinus" : "GUI", 0.0f);
+        s.indent = take(viewShown() ? "Spaces: 2" : "Spaces: 4", 0.0f);
         const funkgui::TextEditor& E = ed();
         char buf[64];
         std::snprintf(buf, sizeof buf, "Ln %d, Col %d", E.caret().line + 1, E.caret().col + 1);
@@ -1825,11 +2015,19 @@ namespace playground::ui
             const StatusParts parts = statusParts();
             const float mid = r.centreY();
             const float top = c.capCentreTop(mid, st);
-            // The problems' count.
+            // The problems' count; a view's (the IR's) place says it is read only, and its size.
             const int errors = errorCount(), warnings = warningCount();
             float x = parts.problems.x + 6.0f;
             constexpr Col kRed{ 0xE5, 0x48, 0x4D, 0xFF }, kAmber{ 0xE2, 0xA3, 0x36, 0xFF };
-            if (errors == 0 && warnings == 0)
+            if (viewShown())
+            {
+                char lines[64];
+                std::snprintf(lines, sizeof lines, "Read only   %d lines", ed().lineCount());
+                chat::drawIcon(c, chat::Icon::chip, x + 5.0f, mid, 10.0f, p.faint);
+                c.text(lines, x + 16.0f, top, st, p.faint);
+                x += 16.0f + widthOf(lines, st) + 12.0f;
+            }
+            else if (errors == 0 && warnings == 0)
             {
                 chat::drawIcon(c, chat::Icon::check, x + 5.0f, mid, 10.0f, p.faint);
                 c.text("No problems", x + 14.0f, top, st, p.faint);
@@ -1859,8 +2057,9 @@ namespace playground::ui
             else
                 std::snprintf(buf, sizeof buf, "Ln %d, Col %d", E.caret().line + 1, E.caret().col + 1);
             c.text(buf, parts.position.right() - 8.0f, top, st, p.soft, funkgui::Align::right);
-            c.text("Spaces: 4", parts.indent.right() - 8.0f, top, st, p.faint, funkgui::Align::right);
-            c.text(fmFile(activeTab()) ? "FMinus" : "GUI", parts.language.right() - 8.0f, top, st, p.faint, funkgui::Align::right);
+            c.text(viewShown() ? "Spaces: 2" : "Spaces: 4", parts.indent.right() - 8.0f, top, st, p.faint, funkgui::Align::right);
+            c.text(viewShown() ? "LLVM IR" : fmFile(activeTab()) ? "FMinus" : "GUI", parts.language.right() - 8.0f, top, st, p.faint,
+                   funkgui::Align::right);
             const bool on = formatOnRun();
             const Rect box{ parts.formatOnRun.x + 6.0f, mid - 5.0f, 10.0f, 10.0f };
             c.rrect(box.x, box.y, box.w, box.h, 2.0f, on ? p.accent : p.card, 1.0f, on ? p.accent : p.dim);
@@ -1924,6 +2123,33 @@ namespace playground::ui
                 c.rrect(f.allBtn.x, f.allBtn.y, f.allBtn.w, f.allBtn.h, 4.0f, p.hover);
                 c.text("All", f.allBtn.centreX(), c.capCentreTop(f.allBtn.centreY(), st), st, p.text, funkgui::Align::centre);
             }
+        }
+        // The go-to-line bar: one field, where the find bar sits.
+        if (gotoOpen_)
+        {
+            const Rect b = goToBarRect();
+            c.rrect(b.x + 1.0f, b.y + 2.0f, b.w, b.h, 6.0f, Col{ 0, 0, 0, static_cast<uint8_t>(dark ? 90 : 30) });
+            c.rrect(b.x, b.y, b.w, b.h, 6.0f, p.raised, 1.0f, p.composerEdge);
+            const Rect r{ b.x + 4.0f, b.y + 3.0f, b.w - 8.0f, kFindRowH - 4.0f };
+            constexpr Col kRed{ 0xE5, 0x48, 0x4D, 0xFF };
+            c.rrect(r.x, r.y + 2.0f, r.w, r.h - 4.0f, 4.0f, p.composer, 1.0f, gotoBad_ ? kRed : p.accent);
+            const float t = c.capCentreTop(r.centreY(), kCode);
+            const funkgui::Canvas::ClipScope clip(c, { r.x + 2.0f, r.y, r.w - 4.0f, r.h });
+            const funkgui::text::LineEdit& edit = gotoEdit_;
+            if (edit.buffer.empty())
+            {
+                char hint[96];
+                std::snprintf(hint, sizeof hint, "Go to line 1 to %d (or line:column)", ed().lineCount());
+                c.text(hint, r.x + 6.0f, t, kCode, p.faint);
+            }
+            else
+            {
+                if (edit.allSelected)
+                    c.rrect(r.x + 5.0f, r.y + 5.0f, std::min(widthOf(edit.buffer, kCode), r.w - 10.0f) + 2.0f, r.h - 10.0f, 2.0f, th.accentDim);
+                c.text(edit.buffer.c_str(), r.x + 6.0f, t, kCode, gotoBad_ ? kRed : p.text);
+            }
+            const float cx = r.x + 6.0f + widthOf(std::string_view(edit.buffer).substr(0, static_cast<std::size_t>(std::clamp(edit.caret, 0, static_cast<int>(edit.buffer.size())))), kCode);
+            c.rrect(cx, r.y + 6.0f, 1.5f, r.h - 12.0f, 0.0f, p.accent);
         }
     }
 
@@ -2160,6 +2386,10 @@ namespace playground::ui
             if (s.formatOnRun.contains(pointer))
                 std::snprintf(out, n, "FORMAT ON RUN   %s   A CLICK TURNS IT %s   SHIFT-ALT-F FORMATS THE FILE NOW",
                               formatOnRun() ? "ON: RUN FORMATS EVERY FMINUS FILE FIRST" : "OFF", formatOnRun() ? "OFF" : "ON");
+            else if (s.position.contains(pointer))
+                std::snprintf(out, n, "LINE AND COLUMN   A CLICK (OR CTRL-G) GOES TO A LINE");
+            else if (viewShown())
+                std::snprintf(out, n, "LLVM IR   READ ONLY: WHAT FMINUS MADE OF THE PROGRAM   CMD-F FINDS   CTRL-G GOES TO A LINE");
             else if (s.problems.contains(pointer))
                 std::snprintf(out, n, "PROBLEMS   %d ERRORS   %d WARNINGS   A CLICK GOES TO THE NEXT   CHECKED AS YOU TYPE",
                               errorCount(), warningCount());
@@ -2170,6 +2400,11 @@ namespace playground::ui
         if (findOpen_ && findBarRect().contains(pointer))
         {
             std::snprintf(out, n, "FIND   RETURN THE NEXT   SHIFT-RETURN THE ONE BEFORE   TAB THE OTHER FIELD   ESCAPE CLOSES");
+            return true;
+        }
+        if (gotoOpen_ && goToBarRect().contains(pointer))
+        {
+            std::snprintf(out, n, "GO TO LINE   A LINE'S NUMBER, OR LINE:COLUMN   RETURN GOES THERE   ESCAPE CLOSES");
             return true;
         }
         return false;

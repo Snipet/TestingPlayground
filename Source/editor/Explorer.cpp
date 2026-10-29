@@ -387,7 +387,7 @@ namespace playground::ui
         list.role = funkgui::a11yrole::list;
         list.bounds = bounds_;
         list.title = "Explorer";
-        list.help = "The program's files and presets, the projects, the library and the examples";
+        list.help = "The program's files and its LLVM IR, the presets, the projects, the library and the examples";
         out.push_back(list);
         for (const Hit& h : hits_)
         {
@@ -424,6 +424,7 @@ namespace playground::ui
                     it.checkable = row.active || row.marked;
                     it.checked = row.active || row.marked;
                     it.help = g.section == Section::files      ? "Shows this file; a double click renames it"
+                            : g.section == Section::ir         ? "Shows the program's LLVM IR, as FMinus compiled it, in a read-only tab"
                             : g.section == Section::library    ? (row.marked ? "Shows this library file" : "Adds this library file to the program")
                             : g.section == Section::examples   ? "Puts this example in the program and runs it"
                             : g.section == Section::presets    ? "Applies this preset's dials"
@@ -472,10 +473,18 @@ namespace playground::ui
         const Hit* h = hitAt(pointer_);
         if (h == nullptr)
         {
-            std::snprintf(out, n, "%s", "EXPLORER   THE PROGRAM'S FILES AND PRESETS, THE PROJECTS, THE LIBRARY, THE EXAMPLES");
+            std::snprintf(out, n, "%s", "EXPLORER   THE PROGRAM'S FILES AND ITS IR, THE PRESETS, THE PROJECTS, THE LIBRARY, THE EXAMPLES");
             return;
         }
         const Section s = groups_[static_cast<std::size_t>(h->group)].section;
+        if (s == Section::ir && h->part == Part::row)
+        {
+            const int view = groups_[static_cast<std::size_t>(h->group)].rows[static_cast<std::size_t>(h->row)].index;
+            std::snprintf(out, n, "%s", view == 1 ? "LLVM IR, LOWERED   AS FMINUS'S CODE GENERATOR WROTE IT, BEFORE ANY PASS   A READ-ONLY TAB, NOT A FILE"
+                                      : view == 2 ? "LLVM IR, FROZEN   THE COPY WITH THE DIALS AS CONSTANTS, OPTIMISED   A READ-ONLY TAB, NOT A FILE"
+                                                  : "LLVM IR, OPTIMISED   WHAT THE PROGRAM'S MACHINE CODE CAME FROM   A READ-ONLY TAB, NOT A FILE");
+            return;
+        }
         const char* line = h->part == Part::header ? "SECTION   SHOW OR HIDE IT"
                          : h->part == Part::close  ? "CLOSE   THE FILE'S TAB GOES (IT ASKS FIRST WHEN THE FILE HAS TEXT)"
                          : h->part == Part::action ? (s == Section::files     ? "NEW FILE   A TAB OF ITS OWN, ITS NAME TO TYPE"

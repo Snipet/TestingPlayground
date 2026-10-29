@@ -73,7 +73,7 @@ namespace playground::ui::chat
     {
         none, plus, key, chevronDown, chevronRight, chevronUp, arrowUp, stop, copy, check, file, play, dial, wave, alert,
         pencil, bolt, chevronLeft, bubble, dice, blocks, list, sun, moon, code, book, question, globe, image, cross,
-        snowflake, gear
+        snowflake, gear, chip
     };
 
     inline void drawIcon(funkgui::Canvas& c, Icon icon, float cx, float cy, float size, funkgui::Col ink)
@@ -353,6 +353,19 @@ namespace playground::ui::chat
                     const float a = 0.3926991f + 0.7853982f * static_cast<float>(k);
                     const float ca = std::cos(a), sa = std::sin(a);
                     c.segment(cx + ca * s * 0.62f, cy + sa * s * 0.62f, cx + ca * s * 0.72f, cy + sa * s * 0.72f, s * 0.3f, ink);
+                }
+                break;
+            }
+            case Icon::chip:
+            {
+                // A chip: a square with three pins a side, what the compiler made of the code (the IR view).
+                const float h = s * 0.5f;
+                c.rrect(cx - h, cy - h, 2.0f * h, 2.0f * h, s * 0.14f, ink.withAlpha(0.0f), w, ink);
+                for (int k = -1; k <= 1; ++k)
+                {
+                    const float y = cy + static_cast<float>(k) * h * 0.58f;
+                    c.segment(cx - h - s * 0.32f, y, cx - h, y, w, ink);
+                    c.segment(cx + h, y, cx + h + s * 0.32f, y, w, ink);
                 }
                 break;
             }
