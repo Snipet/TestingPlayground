@@ -77,6 +77,8 @@ namespace playground::scenario
         measure::Request request;
         std::vector<float> l, r;
         std::string about;                        // a line: when, how long, the rate, what it holds
+        Sources files;                            // the program that played at its start (none: not known), which
+                                                  // replays it as it played (trace's source "capture")
     };
     // The last recording (its part from..to, in seconds; to < 0: to its end, on its host blocks); false with why
     // ("nothing recorded yet: ...") when there is none. The one function the sources "capture" (scenario's phrase and

@@ -673,7 +673,13 @@ namespace playground
     // A render's "host" (ChatScenario.h): the Engine's rate, and the host's block as it announced it (the largest it
     // may send; JUCE's own value, set before prepareToPlay).
     double Processor::chatHostRate() const { return static_cast<double>(engine_.rate()); }
-    int Processor::chatHostBlock() const { return getBlockSize(); }
+    int Processor::chatHostBlock() const
+    {
+        // The largest block the host has sent since it prepared the plugin (an atomic the audio thread keeps), else what
+        // it announced.
+        const int seen = largestHostBlock_.load(std::memory_order_relaxed);
+        return seen > 0 ? seen : getBlockSize();
+    }
 
     std::string Processor::chatProject() const
     {

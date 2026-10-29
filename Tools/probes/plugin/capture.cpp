@@ -41,6 +41,9 @@
 //             the null test says so; measure_output and compare replay it through scenario::captured ("capture"): the
 //             replay's line in their result, compare with what plays identical bits, a part (from, to) named so, and
 //             status then reports the replay's line; from and to without "capture" are refused
+//             trace's source "capture" replays it through the program that played it, a part of it too
+//   VOICES    an instrument's eighteen keys at once: the take's blocks hold the Engine's steals (Meters' counts), and
+//             stop's report says them
 //   NOTFRESH  LAST's take (it started mid-playing): the synth's replay differs, and the line says why; the effect's
 //             default program keeps no state, so its replay matches bit for bit all the same
 //   RESTART   mode next with restart after notes and the pedal (an effect: a sine): it waits for the program's fresh
@@ -906,6 +909,16 @@ PROBE(plugin, capture)
         const std::string ct = textOf(c);
         std::printf("replay, compare:\n%s", ct.c_str());
         P.eq("replay.compare_identical", !c.isError && has(ct, "Identical bits") ? 1 : 0, 1);
+        // trace's source "capture": the recording replayed through the program that played it (and a part of it).
+        const pg::ChatAgent::McpResult tr = r.rec.chatAgent().mcpCall("trace", object({ { "source", "capture" } }));
+        const std::string tt = textOf(tr);
+        std::printf("replay, trace:\n%s", tt.c_str());
+        P.eq("replay.trace", !tr.isError && has(tt, "Traced offline (nothing that plays changed): the user's recording, replayed "
+                                                    "through the program that played it (the user's recording, ")
+                                 && has(tt, "its replay matches what played bit for bit") ? 1 : 0, 1);
+        const pg::ChatAgent::McpResult tp = r.rec.chatAgent().mcpCall(
+            "trace", object({ { "source", "capture" }, { "scenario", object({ { "from", 0.5 }, { "to", 1.0 } }) } }));
+        P.eq("replay.trace_part", !tp.isError && has(textOf(tp), "this part starts mid-take") ? 1 : 0, 1);
         const juce::var part = object({ { kInstrument ? "phrase" : "input", "capture" }, { "from", 0.5 }, { "to", 1.0 } });
         const pg::ChatAgent::McpResult w = r.rec.chatAgent().mcpCall("measure_output", object({ { "scenario", part } }));
         const std::string wt = textOf(w);
@@ -920,6 +933,38 @@ PROBE(plugin, capture)
         P.eq("privacy.replay_pictures_not_kept", !cp.isError && hasImage(cp) && keptPictures(r.rec) == 0 ? 1 : 0, 1);
         const std::string after = textOf(tool(r.rec, object({ { "action", "status" } })));
         P.eq("replay.status_says", has(after, "Replay: matches what played bit for bit.") ? 1 : 0, 1);
+    }
+
+    // ---- VOICES: an instrument's steals in the take, from the Engine's own counts (Meters::steals) ---------------------
+    if constexpr (kInstrument)
+    {
+        Rig r;
+        std::vector<std::pair<int, juce::MidiMessage>> none;
+        for (std::size_t k = 0; k < 8; ++k)
+            r.block(256, silence, none);
+        P.eq("voices.armed", tool(r.rec, object({ { "action", "arm" }, { "seconds", 2 } })).isError ? 0 : 1, 1);
+        pg::Meters before{}, after{};
+        r.rec.engine().meters(before);
+        for (std::size_t k = 0; k < 40; ++k)
+        {
+            std::vector<std::pair<int, juce::MidiMessage>> midi;
+            if (k == 4)
+                for (int j = 0; j < 18; ++j)                 // eighteen keys at once: two more than the voices
+                    midi.push_back({ j, juce::MidiMessage::noteOn(1, 40 + j, static_cast<juce::uint8>(90)) });
+            r.block(256, silence, midi);
+        }
+        r.rec.engine().meters(after);
+        const std::string stopText = textOf(tool(r.rec, object({ { "action", "stop" } })));
+        const cap::Reply taken = r.rec.recorder().act(cap::Action::take, {});
+        int steals = 0;
+        if (taken.take != nullptr)
+            for (const cap::Block& b : taken.take->blocks)
+                steals += b.steals;
+        const int counted = static_cast<int>(after.steals - before.steals);
+        std::printf("voices: %d steals counted by the Engine, %d in the take\n", counted, steals);
+        P.ge("voices.engine_steals", static_cast<double>(counted), 2.0);
+        P.eq("voices.take_steals", steals, counted);
+        P.eq("voices.report", has(stopText, ("Voices: " + std::to_string(counted) + " stolen").c_str()) ? 1 : 0, 1);
     }
 
     // ---- RESTART ------------------------------------------------------------------------------------------------------

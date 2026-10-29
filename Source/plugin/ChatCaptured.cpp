@@ -96,6 +96,7 @@ namespace playground::scenario
 
         out.request = std::move(replay.request);
         out.request.recording = about;
+        out.files = replay.files != nullptr ? *replay.files : Sources{};
         out.l = std::move(replay.played[0]);
         out.r = std::move(replay.played[1]);
         out.about = about;

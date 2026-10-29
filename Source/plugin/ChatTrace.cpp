@@ -58,7 +58,8 @@ namespace playground
                 "paths or globs (filter.*; list: true names them): min, max, mean, first, last, the first non-finite moment, "
                 "the largest jump and a sparkline each; points (at most 64) adds raw values, a sample each around `around` "
                 "seconds when given. voice: newest, all or a note (find's default all, the fields' newest). source: editor "
-                "(the default), playing (its own code, not the frozen copy) or capture. It renders in calls of 16 samples, "
+                "(the default), playing (its own code, not the frozen copy) or capture (the user's recording, replayed "
+                "through the program that played it; scenario from and to: a part of it). It renders in calls of 16 samples, "
                 "then of 1 sample before each problem, and says when the output depends on how the calls are split. detail: "
                 "more of each. scenario and try_edits as measure_output's (an effect plays the scenario's input, else the "
                 "sweep)." },
@@ -144,24 +145,35 @@ namespace playground
             if (files.empty())
                 return done("Nothing plays yet (run_program plays the editor's files).", true);
         }
-        else if (source == "capture")
-        {
-            if (!scenario::captured(host_, recording, why))
-                return done("source is the recording, but " + why + ".", true);
-            files = host_.chatRunning();
-            words = "the user's recording, replayed through the program that plays (" + recording.about + ")";
-            if (files.empty())
-                return done("Nothing plays yet, so there is no program to replay the recording through.", true);
-        }
-        else
+        else if (source != "capture")
             return done("source is editor, playing or capture.", true);
 
-        if (!scenario::read(input, q.render, &why))
-            return done(why, true);
+        // The recording (source "capture"): the scenario is it (from, to: a part of it), replayed through the program that
+        // played it, as it played (ChatScenario.h); read once, here, for the files and the render alike.
         if (source == "capture")
             q.render.fromCapture = true;
+        if (!scenario::read(input, q.render, &why))
+            return done(why, true);
+        if (q.render.fromCapture)
+        {
+            if (!scenario::captured(host_, recording, why, q.render.captureFrom, q.render.captureTo))
+                return done((source == "capture" ? "source" : "the scenario") + std::string(" is the recording, but ") + why + ".", true);
+            if (source == "capture")
+            {
+                files = recording.files;
+                words = "the user's recording, replayed through the program that played it (" + recording.about + ")";
+                if (files.empty())
+                {
+                    files = host_.chatRunning();
+                    words = "the user's recording, replayed through the program that plays now (the one that played it is "
+                            "no longer known; " + recording.about + ")";
+                }
+                if (files.empty())
+                    return done("Nothing plays yet, so there is no program to replay the recording through.", true);
+            }
+        }
         q.render.current = currentDials();
-        if (!scenario::resolve(q.render, host_, why))
+        if (!scenario::resolve(q.render, host_, why, q.render.fromCapture ? &recording : nullptr))
             return done(why, true);
         int trials = 0;
         if (!scenario::tryEdits(input, files, trials, why))

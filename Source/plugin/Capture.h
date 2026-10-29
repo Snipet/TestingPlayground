@@ -138,8 +138,8 @@ namespace playground::capture
         uint32_t size = 0;          // samples
         uint32_t events = 0;
         uint16_t nonFinite = 0, clipped = 0;   // the output guard's calls that replaced a sample, that clipped one
-        uint16_t steals = 0, dropped = 0;      // the Engine's steals and dropped voices in it (Meters' counters, when
-                                               // the Engine has them: Recorder::end)
+        uint16_t steals = 0, dropped = 0;      // the Engine's steals and dropped voices in it (Meters::steals and
+                                               // ::dropped, read at the block's start and end: Recorder::end)
         uint8_t beatsPerBar = 4, beatUnit = 4;
         uint8_t flags = 0;          // kKnown, kPlaying, kBypassed, kFrozen
         uint8_t reserved = 0;
@@ -359,6 +359,7 @@ namespace playground::capture
         uint64_t inAt_ = 0, outAt_ = 0;              // this block's next sample, per stream
         uint32_t blockEvents_ = 0;
         uint64_t tally_ = 0;                         // Engine::alertTally at the block's start
+        uint32_t steals_ = 0, dropped_ = 0;          // Meters' steals and dropped voices at the block's start
         int voices_ = 0;                             // voices sounding at the block's start (next's start)
         float peak_ = 0.0f, lastPeak_ = 0.0f;        // the output's peak in this block, in the one before
         std::chrono::steady_clock::time_point t0_{};

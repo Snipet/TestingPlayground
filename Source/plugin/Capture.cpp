@@ -236,6 +236,14 @@ namespace playground::capture
         blockEvents_ = 0;
         peak_ = 0.0f;
         tally_ = engine.alertTally();
+        {
+            Meters m;                                        // the audio thread's own publish: never a torn read here
+            if (engine.meters(m))
+            {
+                steals_ = m.steals;
+                dropped_ = m.dropped;
+            }
+        }
         // Before it starts: the voices sounding (Engine::activeVoices reads the audio thread's own table: no race here).
         voices_ = r->started ? 0 : engine.activeVoices();
         t0_ = Clock::now();
@@ -345,8 +353,12 @@ namespace playground::capture
         const uint64_t len = pending_.size;
         Meters m;
         if (engine.meters(m))
+        {
             pending_.program = m.program;
-        // The Engine's steals and dropped voices go here once its Meters count them (pending_.steals, .dropped).
+            // The Engine's steals and dropped voices in this block: its counts run on, so the difference (wrapping).
+            pending_.steals = static_cast<uint16_t>(std::min<uint32_t>(m.steals - steals_, 0xffffu));
+            pending_.dropped = static_cast<uint16_t>(std::min<uint32_t>(m.dropped - dropped_, 0xffffu));
+        }
         pending_.events = blockEvents_;
         if (engine.frozen())
             pending_.flags = static_cast<uint8_t>(pending_.flags | Block::kFrozen);
