@@ -155,6 +155,15 @@ place (its `products/<key>.cmake`, and its names in the docs).
   waits for two blocks measured. `Meters::program` names the program the fields
   are of (`Patch::program`, the compile's request id): the panel shows them only on that program's displays, since
   the audio thread takes a new program at its next block. Nothing there allocates; `dsp.meters` checks the values.
+- **What a tool that listens reads** (the MCP's listen, `plugin/Live.cpp`): `Meters` also carries, every block and
+  whoever reads, the host block the programs read (the transport, an instrument's wheels and pedal), the samples
+  counted, an instrument's voices (sounding, released, held by the pedal, fading), the keys held, the player's
+  note-ons (`Engine::heard`, in the event loops only: the held keys a new program starts are none), the steals (set on
+  the steal paths in `noteOn`) and the last voice dropped for going non-finite (its key and sample); counts run on from
+  the Engine's making, so readers take differences. `Engine::blocks` is a ring of atomics of each block's cost and
+  context (`BlockStat`, written after the load measurement). The processor keeps the host's bypass, its largest block
+  and its block count in atomics (`hostBlock`). Scalar stores only: no lock, no allocation. Readers never call
+  `Engine::takeAlerts` (it clears the latch `poll` reads): they read the latched `chatAlerts`.
 - The output guard (Engine::guard) stays: whatever a program computes, what leaves the plugin is finite and within
   +-4. Hosts and speakers come first.
 - The processor copes with what a host may do: the bypass crossfades between the Engine's output and the input (the
@@ -310,6 +319,23 @@ place (its `products/<key>.cmake`, and its names in the docs).
   count: the draft under `programMutex_`, the Compiler's status, the dials under `dialMutex_`, as get_status reads
   them); it never touches the program (a Patch, a Session), the editor, the chat's history or `busy_`, never waits
   for the message thread or the worker, and returns in milliseconds. A tool that cannot keep that is not live.
+- **listen and get_status's `since`** (`plugin/Live.cpp`, live: their reads keep the contract above). listen is
+  the live line reserved above: a call that takes seconds (`ChatAgent::mcpLiveWaits`), so the link runs each on a
+  thread of its own (`McpLink::listen`, four at once at most; a cancel or the connection closing stops it, the link
+  going cancels and joins them), never on the poll thread; it raises the meters' reader count while it listens
+  (`ChatHost::chatListening`, lowered on every exit) and polls `ChatHost::chatLive` about 25 times a second. get_status
+  ends with a token of the processor's journal (`plugin/Journal.h`: about 256 changes, drags merged, under its own
+  mutex; what Claude Desktop does itself is not kept, `ChatAgent::mcpWorking`), and `since` lists what changed after
+  it, the files as diffs (`dsp/TextDiff.h`) against the texts Claude Desktop saw (`mcpSeen_`, under `liveMutex_`).
+  The two Claudes keep their own records of what they saw: an MCP call never marks the chat's `seen_` (`markSeen`
+  sends Claude Desktop's to `mcpSeen_`), so the plugin's chat is sent a file Claude Desktop wrote. Every other MCP
+  result starts with a line when something changed since the last (`ChatAgent::mcpHint`). The journal learns who: the
+  editor's ports are `GesturePort`s (a dial moved between polls with one of them is the user's, else the host's),
+  `setDraft` is the editor's and `chatSetDraft`, `chatRun`, `chatSetDial` the plugin chat's (or Claude Desktop's);
+  `poll()` compares the dials, the bypass and the transport once a poll and takes what it set itself as seen
+  (`syncDials`). The tools' dial lines say each value as the panel does (`dialText`, Controls.h: its unit, its option's
+  name, the number after a scaled one). `plugin.live` checks both tools, `dsp.meters` LISTEN the fields, `plugin.chat`
+  SEEN the two records.
 - **MCP results** stay small: a picture is at most `kMcpPictureBytes` (75,000 bytes, 100,000 base64 characters:
   the PNG when it fits, else scaled down, else a JPEG, `chatimages::fit`), the text after it saying what was sent;
   view_panel and view_sound take MCP's own `detail: "high"` for the whole picture. The plugin's own chat keeps its
