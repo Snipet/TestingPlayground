@@ -66,7 +66,7 @@ namespace playground
             return v[static_cast<std::size_t>(std::lround(q * static_cast<double>(v.size() - 1)))];
         }
 
-        std::string noteName(int n)
+        [[maybe_unused]] std::string noteName(int n)   // an instrument's
         {
             static constexpr const char* kNames[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
             return std::string(kNames[n % 12]) + std::to_string(n / 12 - 1);    // 60: C4, 48: C3 (the README's)
@@ -820,9 +820,9 @@ namespace playground
                 return l;
             };
             if (!kInstrument && inS.frames > 0 && !inSilent)
-                out += spectrumLine("Input:", inS, inB, inCentroid, inPeaks);
+                out += spectrumLine("Input spectrum:", inS, inB, inCentroid, inPeaks);
             if (outS.frames > 0 && !outSilent)
-                out += spectrumLine(kInstrument ? "Spectrum:" : "Output:", outS, outB, outCentroid, outPeaks);
+                out += spectrumLine(kInstrument ? "Spectrum:" : "Output spectrum:", outS, outB, outCentroid, outPeaks);
             else if (outS.frames > 0)
                 out += "Spectrum: the output is silent.\n";
         }
