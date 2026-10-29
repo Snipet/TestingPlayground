@@ -81,7 +81,7 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `-L <label>`, `-V` pass through to ctest). Run the probes through ctest only: outside CTest a probe's stores are the
   user's own folders. The editor rendered headless lands in `build-dev/probe-out/<key>/` (`gui.dump*.png`,
   `gui.code*.png`: the code editor's completion, signature, hover, problems, find bar and PAPER; `gui.ir*.png`: the IR
-  view's optimised, lowered (the find bar) and frozen views and PAPER;
+  view's optimised, lowered (the find bar) and frozen views, PAPER, and its tab beside twelve narrowed ones;
   `gui.chat*.png`: the empty chat, a conversation, the key dialog with a key pasted and with one stored, PAPER, the
   least size and a large one; `gui.settings*.png`: the Standalone's Settings card, PAPER, the least size, an error, the
   effect's muted notice): look at both products' PNGs after any editor change.
@@ -278,7 +278,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   someone looked keeps FMinus's own copy in its `fminus::Program` until it is replaced). A view's text is made again
   only when what it reads changes (`Panel::syncIr`: its comment lines, `irview::header`, and its `IrText`), not with
   each move of the IR's revision (the frozen copy's moves it too, which the program's views do not show), and its
-  selection and scroll follow LLVM's text. A new view is a row in the explorer's LLVM IR section, a `View`, its text in
+  selection and scroll follow LLVM's text. The IR tab takes no more of the bar than the files' tabs leave at their
+  narrowest, so none runs under it. A new view is a row in the explorer's LLVM IR section, a `View`, its text in
   `irview::header` and `irview::shown`, its texts in `IrStatus`, and `gui.ir` rows.
 
 ## The chat (Claude)

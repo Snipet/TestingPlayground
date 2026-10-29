@@ -219,6 +219,7 @@ namespace playground::ui
         bool hoverOpen() const noexcept { return hover_.has_value(); }
         std::string hoverText() const;                   // its code and documentation, and the problems there
         bool findOpen() const noexcept { return findOpen_; }
+        bool replaceOpen() const noexcept { return replaceOpen_; }   // the find bar's replace row
         bool goToOpen() const noexcept { return gotoOpen_; }
         int findCount() const noexcept { return static_cast<int>(matches_.size()); }
         int findCurrent() const noexcept { return current_; }

@@ -70,7 +70,8 @@ namespace playground::ui::irview
     void configure(funkgui::TextEditor& editor, const funkgui::Theme& theme);
 
     // LLVM IR, a line at a time (no state: nothing in it spans lines), in CodeAssist.h's styles: instructions as
-    // keywords, types, %locals as members, @globals and labels as functions, comments, numbers and constants, strings,
+    // keywords, types, %locals as members, @globals and labels as functions, comments, numbers and constants (a float
+    // LLVM cannot print exactly in decimal as its bits, f0x3D6C9820; +inf, -qnan, +nan(0x...)), strings,
     // the module's own words (define, declare, target, attributes, ...) as directives, and attributes, flags and
     // metadata (#0, !tbaa) faint.
     class IrHighlighter final : public funkgui::text::Highlighter

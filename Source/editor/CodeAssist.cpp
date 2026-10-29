@@ -34,6 +34,9 @@ namespace playground::ui
         constexpr float kFindRowH = 32.0f;
         constexpr float kCardMaxW = 540.0f;              // a hover card's or the signature's width, at most
         constexpr float kHoverDelay = 0.5f;              // s still over a word
+        // A key that would edit a read-only text (the IR view): short enough for the card's header at its least width,
+        // and no acronym (the header writes the status in sentence case).
+        constexpr const char* kReadOnlyNotice = "READ ONLY: A VIEW OF THE COMPILED PROGRAM";
         constexpr float kCheckDelay = 0.6f;              // s after the last edit
         constexpr float kOccurrenceDelay = 0.25f;        // s the caret rests
         constexpr const char* kFormatOnRunKey = "codeFormatOnRun";
@@ -518,7 +521,7 @@ namespace playground::ui
         // A read-only text (the IR view) refuses every edit, and takes the key, which is never the host's.
         if (E.options().readOnly && editKey(e))
         {
-            tabs_.notice("READ ONLY: A VIEW OF THE COMPILED PROGRAM, NOT ONE OF ITS FILES");
+            tabs_.notice(kReadOnlyNotice);
             return true;
         }
         if (completion_)
@@ -898,6 +901,11 @@ namespace playground::ui
     {
         closeOverlays();
         gotoOpen_ = false;
+        if (ed().options().readOnly)
+        {
+            replaceOpen_ = false;                        // nothing to replace in a read-only text (openFind's rule)
+            findField_ = 0;
+        }
         if (findOpen_)
             updateMatches();
     }
@@ -1354,7 +1362,7 @@ namespace playground::ui
         const int tab = activeTab();
         if (!fmFile(tab))
         {
-            tabs_.notice(viewShown() ? "READ ONLY: A VIEW OF THE COMPILED PROGRAM" : "FORMAT: FMINUS FILES ONLY");
+            tabs_.notice(viewShown() ? kReadOnlyNotice : "FORMAT: FMINUS FILES ONLY");
             return false;
         }
         sync();

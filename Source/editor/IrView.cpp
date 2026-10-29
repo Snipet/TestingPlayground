@@ -345,6 +345,25 @@ namespace playground::ui::irview
                 i = e;
                 continue;
             }
+            if ((c == '+' || c == '-') && i + 1 < n && alpha(l[static_cast<std::size_t>(i + 1)]))
+            {
+                // A special value as LLVM prints one: +inf, -inf, +qnan, -nan(0x...), +snan(0x...).
+                int e = i + 1;
+                while (e < n && alpha(l[static_cast<std::size_t>(e)]))
+                    ++e;
+                const std::string_view w = l.substr(static_cast<std::size_t>(i + 1), static_cast<std::size_t>(e - i - 1));
+                if (w == "inf" || w == "qnan" || ((w == "nan" || w == "snan") && e < n && l[static_cast<std::size_t>(e)] == '('))
+                {
+                    if (w == "nan" || w == "snan")
+                    {
+                        const std::size_t close = l.find(')', static_cast<std::size_t>(e));
+                        e = close == std::string_view::npos ? n : static_cast<int>(close) + 1;
+                    }
+                    span(i, e, csNumber);
+                    i = e;
+                    continue;
+                }
+            }
             const bool minus = c == '-' && i + 1 < n && digit(l[static_cast<std::size_t>(i + 1)]);
             if (digit(c) || minus)
             {
@@ -410,6 +429,9 @@ namespace playground::ui::irview
                 uint16_t st = csPlain;
                 if (w.size() >= 2 && w[0] == 'i' && std::all_of(w.begin() + 1, w.end(), digit))
                     st = csType;
+                else if (w.size() >= 4 && (w[0] == 'f' || w[0] == 'u' || w[0] == 's') && w[1] == '0' && w[2] == 'x'
+                         && std::all_of(w.begin() + 3, w.end(), hex))
+                    st = csNumber;                       // f0x3D6C9820: a float's bits (LLVM 23), u0x/s0x an integer's
                 else if (in(kInstructions, w))
                     st = csKeyword;
                 else if (in(kTypes, w))

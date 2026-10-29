@@ -672,7 +672,8 @@ namespace playground::ui
         constexpr float kTabCloseW = 14.0f;              // a closable tab's close box, after its name
         constexpr float kTabMinW = 64.0f;
         constexpr float kTabNarrowW = 36.0f;             // the least a tab narrows to when many do not fit (twelve fit
-                                                         // a program's card of kProgramMinW)
+                                                         // a program's card of kProgramMinW, the IR tab open too: it
+                                                         // takes no more than they leave)
         constexpr float kTabMaxW = 150.0f;
         constexpr float kTabGap = 4.0f;
         constexpr float kNewTabW = 24.0f;
@@ -1078,12 +1079,13 @@ namespace playground::ui
             const funkgui::Rect t = tabRect(i);
             return { t.right() - tabPad(i) - kTabCloseW + 4.0f, t.y + 4.0f, kTabCloseW, kTabH - 8.0f };
         }
-        // A tab narrowed to fit: less padding, and its close box only while it is shown or under the pointer.
+        // A tab narrowed to fit: less padding, and its close box only while it is shown (not under the IR tab) or under
+        // the pointer.
         bool narrow(int i) const { return tabWidth(i) < naturalWidth(i) - 0.5f; }
         float tabPad(int i) const { return narrow(i) ? 6.0f : kTabPad; }
         bool closeShown(int i) const
         {
-            return i > 0 && (!narrow(i) || i == active_ || tabRect(i).contains(pointer_));
+            return i > 0 && (!narrow(i) || (i == active_ && !irShown()) || tabRect(i).contains(pointer_));
         }
         funkgui::Rect newTabRect() const
         {
@@ -1091,13 +1093,20 @@ namespace playground::ui
             return { last.right() + kTabGap, bar_.y, kNewTabW, kTabH };
         }
         bool canAdd() const noexcept { return tabs_.size() < kMaxFiles; }
-        // The IR tab, apart from the files' at the bar's right end: its icon, its name, its close box.
+        // The IR tab, apart from the files' at the bar's right end: its icon, its name, its close box. As wide as its
+        // name (up to 40% of the bar), but never wider than the files' tabs leave at their narrowest (kTabNarrowW each,
+        // and the new-file box), so that they never run under it: its name is cut first.
         float irTabWidth() const
         {
             if (!ir_.open)
                 return 0.0f;
             const float w = funkgui::text::width(funkgui::FontService::get().atlas(), irName().c_str(), chat::kSmall);
-            return std::clamp(w + 2.0f * kTabPad + kIrIconW + kTabCloseW + 2.0f, kTabMinW, std::max(kTabMinW, bar_.w * 0.4f));
+            const float natural = std::clamp(w + 2.0f * kTabPad + kIrIconW + kTabCloseW + 2.0f, kTabMinW,
+                                             std::max(kTabMinW, bar_.w * 0.4f));
+            const int n = count();
+            const float files = kTabNarrowW * static_cast<float>(n) + kTabGap * static_cast<float>(n - 1)
+                              + (canAdd() ? kNewTabW + kTabGap : 0.0f) + 3.0f * kTabGap;
+            return std::max(kTabMinW, std::min(natural, bar_.w - files));
         }
         funkgui::Rect irTabRect() const
         {
@@ -1134,7 +1143,7 @@ namespace playground::ui
             for (int i = 0; i < count(); ++i)
             {
                 const funkgui::Rect r = tabRect(i);
-                const bool shown = i == active_;
+                const bool shown = i == active_ && !irShown();   // the IR tab's over it
                 const bool hover = r.contains(pointer_);
                 if (shown)
                     c.rrect(r.x, r.y, r.w, r.h, 8.0f, p.composer, 1.0f, p.composerEdge);
@@ -1322,7 +1331,7 @@ namespace playground::ui
                 tab.bounds = tabRect(i);
                 tab.title = name(i);
                 tab.checkable = true;
-                tab.checked = i == active_;
+                tab.checked = i == active_ && !irShown();
                 tab.help = i == 0 ? "the program" : "a file the program can include";
                 out.push_back(std::move(tab));
                 if (i > 0)
@@ -2992,6 +3001,8 @@ namespace playground::ui
         const funkgui::Rect r = files().irCloseRect();
         return { r.centreX(), r.centreY() };
     }
+    funkgui::Rect Panel::irTabRect() const { return files().irOpen() ? files().irTabRect() : funkgui::Rect{}; }
+    funkgui::Rect Panel::fileTabRect(int i) const { return files().tabRect(i); }
 
     void Panel::openIrView(int view)
     {
@@ -4242,6 +4253,18 @@ namespace playground::ui
         });
     }
 
+    float Panel::statusX() const
+    {
+        return programCard_.x + kInset + 14.0f + (explorerShown_ || panelView_ ? 0.0f : 30.0f);   // after the explorer's button
+    }
+
+    bool Panel::statusWhole() const
+    {
+        // As draw() fits it (the canvas measures a hair wider than the atlas at some sizes: 2 px of slack).
+        const float w = funkgui::text::width(funkgui::FontService::get().atlas(), statusShown().c_str(), chat::kSmall);
+        return w + 2.0f <= actionsX_ - 12.0f - statusX();
+    }
+
     // The status, "RUNNING   COMPILED IN 111 MS", as the card's header shows it: "Running · compiled in 111 ms".
     std::string Panel::statusShown() const
     {
@@ -4394,7 +4417,7 @@ namespace playground::ui
             const float mid = kActionsY + 0.5f * kActionH;
             const bool failed = !lastOk_ && !compiling_;
             const std::string shown = statusShown();
-            const float tx = r.x + kInset + 14.0f + (explorerShown_ || panelView_ ? 0.0f : 30.0f);   // after the explorer's button
+            const float tx = statusX();
             const std::string text = fitText(c, shown, chat::kSmall, std::max(0.0f, actionsX_ - 12.0f - tx));
             constexpr funkgui::Col kPlaying{ 0x46, 0xBE, 0x82, 255 };   // the program plays as written
             const funkgui::Col light = failed ? pal.danger : (compiling_ ? pal.soft : (edited_ ? pal.faint : kPlaying));

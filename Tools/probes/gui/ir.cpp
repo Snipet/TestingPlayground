@@ -6,21 +6,25 @@
 //   gui.ir.lowered.png  the lowered view, the find bar over it
 //   gui.ir.frozen.png   the frozen copy's, while it plays
 //   gui.ir.paper.png    PAPER: the optimised view
+//   gui.ir.tabs.png     the least window, twelve files and a long program name: the IR tab beside the narrowed tabs
 // and checks:
 //   NOBODY    with no IR tab open nothing is kept: a RUN keeps no text (the compiler wants none, holds none), and
 //             Patch::compile keeps none unless asked (asked, both texts, with the program's process function)
+//   HIGHLIGHT LLVM IR's numbers as numbers: decimal, a float's bits as LLVM 23 prints them (f0x3D6C9820), -inf,
+//             +qnan, +nan(0x...); a %name with f0x in it a name
 //   SAME      the IR alone (Patch::ir, Patch::frozenIr: what the compiler's thread makes for a program compiled
 //             without it) is the text the program's own compile kept, both texts, and the frozen copy's freeze kept
 //   OPEN      the explorer's LLVM IR section: its caption and a row a view (optimised, lowered; frozen only while a
 //             copy plays); a click on the optimised row opens the tab, shown, apart from the files' at the bar's right
-//             (none of the tabs, the draft's files the same), named <program>.ll; the processor now wants the IR and
+//             (none of the tabs, the draft's files the same; to a screen reader the tab selected, not the file under
+//             it), named <program>.ll; the processor now wants the IR and
 //             the compiler's thread makes it for the program that plays, with no RUN: the text holds the define of
 //             playground_process, the appended call Patch compiles
 //   RUN       a RUN of a changed program (a function of its own added) changes the text: the IR's revision moves, the
 //             new function's define in the lowered view, the caret's line kept
 //   READONLY  the view is read only: typed characters, Space, Return, Backspace, Delete, a paste, Cmd-Z, Cmd-/,
 //             Alt-Down, Shift-Cmd-K, Cmd-] and Shift-Alt-F change nothing (its text and revision stay) and are taken,
-//             never the host's; the status says READ ONLY; the files' texts are untouched
+//             never the host's; the status says READ ONLY, whole in the card's header; the files' texts are untouched
 //   LANGUAGE  no completion (a typed name, Ctrl-Space), no signature, no hover card, no squiggle; the status line says
 //             LLVM IR and read only
 //   FIND      Cmd-F and `define`: its matches counted and marked; Return goes on; Cmd-Alt-F opens no replace field;
@@ -32,13 +36,18 @@
 //             so at its top and its end; the editor takes the cut text on the message thread in well under a second
 //   NOTFILE   the IR is none of the program's files: not in the draft, the session's state, a project's saved files
 //             or its source export; an #include of its name finds no file
-//   SWITCH    a file's tab shows the file (the IR tab stays open); the IR tab's click shows it again, its caret kept
+//   SWITCH    a file's tab shows the file (the IR tab stays open; to a screen reader the file's tab selected); the IR
+//             tab's click shows it again, its caret kept; the find bar's replace row, open in the file's tab, closed in
+//             the IR's
 //   FROZEN    the lowered view shown with a selection, blocks played with the dials still: the frozen copy plays and
 //             its IR is kept, the lowered view's text, selection and scroll untouched (nothing of it changed); its row
 //             shows, its view holds the copy's IR (its define of playground_process) and says it plays; a dial moved:
 //             the view says the copy stopped, a comment line more, the selection on the same text of LLVM's
 //   CLOSE     the tab's close box: the file under it shown again, the processor wants nothing, the compiler holds
 //             nothing; a RUN then keeps nothing; a Panel that goes with its IR tab open leaves nothing wanted
+//   TABS      the least window, twelve files, a long program name, the lowered view: the files' tabs end before the IR
+//             tab, which keeps at least 64 px inside the card; a click on the last file's tab and on the IR tab each
+//             does its own; the read-only notice whole in the card's header
 #include "Probe.h"
 
 #include "dsp/Compiler.h"
@@ -145,6 +154,30 @@ namespace
     }
 
     bool kept(const pg::IrStatus& ir) { return ir.lowered || ir.optimised || ir.frozen; }
+
+    // The Files group's radio buttons checked, by title (a screen reader's "selected").
+    std::vector<std::string> checkedTabs(funkgui::HeadlessHost& host)
+    {
+        std::vector<std::string> out;
+        for (const funkgui::A11yItem& it : host.accessibility())
+            if (it.role == funkgui::A11yRole::radioButton && it.checkable && it.checked)
+                out.push_back(it.title);
+        return out;
+    }
+
+    // The style IrHighlighter gives `word` in `line` (one span from its start to its end), or -1.
+    int styleOf(const std::string& line, const std::string& word)
+    {
+        const std::size_t at = line.find(word);
+        if (at == std::string::npos)
+            return -1;
+        std::vector<funkgui::text::Span> spans;
+        pg::ui::irview::IrHighlighter().line(line, 0, spans);
+        for (const funkgui::text::Span& sp : spans)
+            if (sp.start == static_cast<int>(at) && sp.end == static_cast<int>(at + word.size()))
+                return sp.style;
+        return -1;
+    }
 
     // The program's text typed into its tab, as a user would: its tab shown, the text replaced, and the IR tab shown
     // again when it was.
@@ -317,6 +350,20 @@ PROBE(gui, ir)
             P.eq("same.freeze_without_ir", pg::Patch::freeze(recipe, values, why) != nullptr ? 1 : 0, 1);
         }
 
+        // ---- HIGHLIGHT -------------------------------------------------------------------------------------------------
+        {
+            P.eq("highlight.decimal", styleOf("  %0 = fadd float %note, -6.900000e+01", "-6.900000e+01"), pg::ui::csNumber);
+            P.eq("highlight.hex_float", styleOf("  %1 = fmul float %0, f0x3D6C9820", "f0x3D6C9820"), pg::ui::csNumber);
+            P.eq("highlight.hex_double", styleOf("  %2 = fadd double %1, f0x3FB999999999999A", "f0x3FB999999999999A"),
+                 pg::ui::csNumber);
+            P.eq("highlight.inf", styleOf("  %3 = fcmp oeq float %2, -inf", "-inf"), pg::ui::csNumber);
+            P.eq("highlight.qnan", styleOf("  %4 = select i1 %3, float +qnan, float %2", "+qnan"), pg::ui::csNumber);
+            P.eq("highlight.nan_payload", styleOf("  %5 = fadd float %4, +nan(0x200000)", "+nan(0x200000)"), pg::ui::csNumber);
+            P.eq("highlight.instruction", styleOf("  %1 = fmul float %0, f0x3D6C9820", "fmul"), pg::ui::csKeyword);
+            P.eq("highlight.local", styleOf("  %1 = fmul float %0, f0x3D6C9820", "%1"), pg::ui::csMember);
+            P.eq("highlight.word_not_hex", styleOf("  %fx = load float, ptr %f0xg", "%f0xg"), pg::ui::csMember);
+        }
+
         // ---- CUT -------------------------------------------------------------------------------------------------------
         std::string big;
         while (big.size() < 3 * pg::Compiler::kIrMaxBytes && !asked.ir.optimised.empty())
@@ -390,6 +437,9 @@ PROBE(gui, ir)
                                         && !ex.row(S::files, 0)->active ? 1 : 0, 1);
             const funkgui::Point tab = panel.centreOfIrTab();
             P.ge("open.tab_at_right", static_cast<double>(tab.x), static_cast<double>(panel.centreOfNewTab().x) + 40.0);
+            // To a screen reader the IR tab is the one selected among the tabs, not the file under it.
+            const std::vector<std::string> checked = checkedTabs(host);
+            P.eq("open.a11y_ir_selected", checked.size() == 1 && checked[0] == optimisedName ? 1 : 0, 1);
             P.eq("open.wanted", processor.compiler().ir().wanted ? 1 : 0, 1);
             const bool made = waitFor(host, [&] {
                 return defines(panel.editor().text(), "playground_process");
@@ -423,6 +473,7 @@ PROBE(gui, ir)
             P.eq("readonly.text_same", panel.editor().text() == text ? 1 : 0, 1);
             P.eq("readonly.revision_same", static_cast<int64_t>(panel.editor().revision()), static_cast<int64_t>(revision));
             P.eq("readonly.says_so", panel.statusText().find("READ ONLY") != std::string::npos ? 1 : 0, 1);
+            P.eq("readonly.said_whole", panel.statusWhole() ? 1 : 0, 1);
             P.eq("readonly.files_same", port.draft().files == d.files ? 1 : 0, 1);
             panel.editor().selectAll();
             P.eq("readonly.insert_refused", panel.editor().insert("x") ? 0 : 1, 1);
@@ -545,10 +596,18 @@ PROBE(gui, ir)
             P.eq("switch.goto_in_file", panel.editor().caret().line, 2);
             P.eq("switch.file_row_marked", ex.row(S::files, 0)->active && !ex.row(S::ir, rowOf(ex, S::ir, loweredName))->active
                                                ? 1 : 0, 1);
+            const std::vector<std::string> checked = checkedTabs(host);
+            P.eq("switch.a11y_file_selected", checked.size() == 1 && checked[0] == "program.fm" ? 1 : 0, 1);
+            // The find bar's replace row, open in the file's tab, is not in the IR's: nothing to replace there.
+            host.keys("cmd+alt+f");
+            P.eq("switch.replace_in_file", code.findOpen() && code.replaceOpen() ? 1 : 0, 1);
             const funkgui::Point irTab = panel.centreOfIrTab();
             host.click(irTab.x, irTab.y);
             host.settle();
             P.eq("switch.ir_again", panel.irShown() && panel.irView() == static_cast<int>(pg::ui::irview::View::lowered) ? 1 : 0, 1);
+            P.eq("switch.no_replace_in_ir", code.findOpen() && !code.replaceOpen() ? 1 : 0, 1);
+            host.keys("escape");
+            P.eq("switch.find_closed", code.findOpen() ? 0 : 1, 1);
             P.eq("switch.caret_kept", panel.editor().caret() == caret ? 1 : 0, 1);
         }
 
@@ -745,6 +804,59 @@ PROBE(gui, ir)
     }
     P.eq("close.panel_gone", processor.compiler().ir().wanted ? 0 : 1, 1);
     P.eq("close.panel_gone_nothing_held", kept(processor.compiler().ir()) ? 0 : 1, 1);
+
+    // ---- TABS --------------------------------------------------------------------------------------------------------
+    // The least window, twelve files and a long program name: the IR tab takes no more than the files' tabs leave at
+    // their narrowest, so none runs under it, and the read-only notice fits the card's header.
+    {
+        pg::Draft many;
+        many.files.push_back({ "a_long_named_program_file.fm", program() });
+        for (int k = 1; k < static_cast<int>(pg::kMaxFiles); ++k)
+            many.files.push_back({ "file" + std::to_string(k) + ".fm", "// file " + std::to_string(k) + "\n" });
+        port.setDraft(many);
+        pg::ui::Panel panel(processor.ports(), port);
+        funkgui::HeadlessHost host(panel, 0, 2.0f);
+        host.setZoom({ 100, 125, 150, 200 }, 100);
+        P.eq("tabs.least_size", host.resize(pg::ui::kMinWidth, pg::ui::kMinHeight) ? 1 : 0, 1);
+        host.settle();
+        P.eq("tabs.twelve", panel.fileCount(), static_cast<int64_t>(pg::kMaxFiles));
+        panel.openIrView(static_cast<int>(pg::ui::irview::View::lowered));
+        host.settle();
+        const funkgui::Rect irTab = panel.irTabRect();
+        float filesRight = 0.0f;
+        for (int i = 0; i < panel.fileCount(); ++i)
+            filesRight = std::max(filesRight, panel.fileTabRect(i).right());
+        std::printf("the least window: the files' tabs end at %.1f, the IR tab spans %.1f to %.1f\n", filesRight, irTab.x,
+                    irTab.right());
+        P.eq("tabs.ir_open", panel.irShown() && panel.irName() == "a_long_named_program_file.lowered.ll" ? 1 : 0, 1);
+        P.le("tabs.files_clear_of_ir", static_cast<double>(filesRight), static_cast<double>(irTab.x) - 4.0 + 0.01);
+        P.ge("tabs.ir_room", static_cast<double>(irTab.w), 64.0);
+        P.le("tabs.ir_inside", static_cast<double>(irTab.right()), static_cast<double>(panel.programCard().right()));
+        // A file's tab still takes its click (the one at the IR tab's left), and the IR tab its own.
+        const funkgui::Point last = panel.centreOfTab(panel.fileCount() - 1);
+        host.click(last.x, last.y);
+        host.settle();
+        P.eq("tabs.last_file_click", !panel.irShown() && panel.activeFile() == panel.fileCount() - 1 ? 1 : 0, 1);
+        const funkgui::Point ir = panel.centreOfIrTab();
+        host.click(ir.x, ir.y);
+        host.settle();
+        P.eq("tabs.ir_click", panel.irShown() ? 1 : 0, 1);
+        // An edit key in the view: the notice whole in the card's header.
+        focusEditor(panel, host);
+        funkgui::KeyEvent e;
+        e.key = funkgui::Key::character;
+        e.ch = U'x';
+        panel.key(e);
+        host.tick(1);
+        P.eq("tabs.notice", panel.statusText().find("READ ONLY") != std::string::npos ? 1 : 0, 1);
+        P.eq("tabs.notice_whole", panel.statusWhole() ? 1 : 0, 1);
+        waitFor(host, [&] { return defines(panel.editor().text(), "playground_process"); });
+        host.move(10.0f, 10.0f);
+        host.settle();
+        writePng(P, host, "gui.ir.tabs.png", "tabs");
+        port.setDraft(d);
+    }
+    P.eq("tabs.panel_gone", processor.compiler().ir().wanted ? 0 : 1, 1);
 
     pg::projectstore::setDirectoryForTests({});
     folder.deleteRecursively();

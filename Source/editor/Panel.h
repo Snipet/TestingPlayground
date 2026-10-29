@@ -278,6 +278,10 @@ namespace playground::ui
         void closeIrView();
         funkgui::Point centreOfIrTab() const;
         funkgui::Point centreOfIrClose() const;
+        funkgui::Rect irTabRect() const;                 // the IR tab (empty while it is closed)
+        funkgui::Rect fileTabRect(int i) const;          // file i's tab
+        // Whether the program's card's header shows the whole status at the panel's size (no ellipsis).
+        bool statusWhole() const;
         // The chat's column: open, or folded into a rail at the right (the editor and the panel take the room). The
         // header's chevron folds it, the rail's button opens it; the session keeps it (EditorPort::chatOpen).
         bool chatOpen() const noexcept { return chatOpen_; }
@@ -416,6 +420,7 @@ namespace playground::ui
         std::unique_ptr<funkgui::CellModel> zoomModel_;  // the zoom's steps (zoom_ points at it)
         void openZoom();                                 // the zoom's menu
         std::string statusShown() const;                 // the status as the card's header shows it (sentence case)
+        float statusX() const;                           // where it starts (it ends before the actions, actionsX_)
         int newChatItem_ = -1, keyItem_ = -1, chatViewItem_ = -1, inputItem_ = -1;
         int chatToggleItem_ = -1;                        // fold or open the chat
         bool chatOpen_ = true;
