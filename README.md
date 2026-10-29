@@ -495,10 +495,11 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   size with its milliseconds and the latency the device reports (the device type too, where there are several); **MIDI**
   (the synth's), each input with a switch. A choice the device refuses says why under its section, a device plugged in
   or out shows at once, Tab and Return reach every control, and the choices are kept as JUCE's dialog kept them, saved
-  as soon as they change. **File** loads a saved state, saves the state as a file, or resets to the default state;
-  **Edit** undoes, redoes, cuts, copies, pastes and selects all in the text field you are typing in (its shortcuts work
-  there as always, as do Cmd-Return and Cmd-S); **Window** minimises and zooms. The plugins in a host have the host's
-  window, as before, and no Settings card.
+  as soon as they change. While the effect's input is muted (JUCE's guard against a feedback loop through the speakers,
+  as it starts), the status bar says so at its right, beside a **Settings…** button that opens the card. **File** loads
+  a saved state, saves the state as a file, or resets to the default state; **Edit** undoes, redoes, cuts, copies,
+  pastes and selects all in the text field you are typing in (its shortcuts work there as always, as do Cmd-Return and
+  Cmd-S); **Window** minimises and zooms. The plugins in a host have the host's window, as before, and no Settings card.
 - The theme (the top bar's moon or sun: Graphite or Paper) and the zoom (the status bar's pill) are machine-wide
   preferences, each product's own.
 
