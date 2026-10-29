@@ -274,7 +274,10 @@ place (its `products/<key>.cmake`, and its names in the docs).
   again in 1-sample calls through a window of at most 4096 samples before each problem, and its output must equal
   pass 1's: when it does not, the program keeps state per call, and the result says so. The lines that write a field
   come from `fminus/Lang.h`'s resolution of each assignment (a heuristic). Deterministic but for its time limit (90 s)
-  and a cancel (`cancel_`); find's result at most twenty lines; `dsp.debug` checks it on planted bugs.
+  and a cancel (`cancel_`); find's result at most twenty lines; `dsp.debug` checks it on planted bugs. It never claims
+  what it did not check: a problem a stop kept from pass 2 is "not traced", "the same bits" needs compared samples, a
+  field bad before the first call is a note, not the problem, and with no field gone bad the verdict names the state
+  the map leaves out (`Patch::unmapped`) before it blames a local.
 - **set_checks** (`dsp/Goals.h`): checks are goals (a metric with min, max or a target and a tolerance) with a label
   and a render; `ChatAgent::evaluateChecks` measures them all (one compile, one render for checks that share one) on
   the editor's files and the plugin's dials after every run_program that compiles (the results end its result) and

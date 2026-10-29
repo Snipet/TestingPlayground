@@ -6,9 +6,11 @@
 //   Pass 1 plays it in calls of 16 samples (the Engine's grid), and after each call reads every field (Patch::fieldMap)
 //   of every instance that sounds, and of Shared: when one first goes non-finite, or past 1e6. With the output guard's
 //   alerts and the output itself, that finds each problem: nan (a field gone non-finite, or the guard's NaN alert),
-//   runaway (a field past 1e6, or the guard's clip), click (the click locator's steps that stand out from the steps
-//   around them), silence (the output stops at once while a key is held or the input plays, or never sounds) and dc (a
-//   mean offset held for 200 ms).
+//   runaway (a field past 1e6, or the guard's clip), click (a 10 ms window's step far above the second largest of the
+//   twenty windows around it: a step that comes back, as a low saw's wrap does, is the sound's own), silence (the
+//   output stops at once while a key is held or the input plays, or never sounds) and dc (a mean offset held for
+//   200 ms). A field already non-finite or past 1e6 before the first call (init's sentinel, say) is a note
+//   (TraceResult::fromStart), never the problem, and hides nothing after it.
 //   Pass 2 plays it again the same way up to a window of at most kTraceWindow samples before the problem, and in calls
 //   of one sample through it, keeping every field of the voices that sound there, sample by sample: the problem's exact
 //   sample, the events within 32 samples of it (the request's notes, moves and edits; a voice that starts, ends, is
@@ -16,8 +18,11 @@
 //   (runaway), or whose step there is at least ten times their usual step (click, silence, dc), each with its values
 //   over the 4 calls before and after it and the lines that write it (fminus/Lang.h resolves each assignment's name: a
 //   heuristic). Pass 2's output must equal pass 1's: when it does not, the program's output depends on how its calls
-//   are split (it keeps some state per call, not per sample), which the result says, as a finding of its own. A NaN
-//   that lives only in a local (computed and used within a call) leaves no field bad: the result says so.
+//   are split (it keeps some state per call, not per sample), which the result says, as a finding of its own; it says
+//   the bits are the same only where it compared some (not after a NaN, whose voice the Engine drops a call at a time).
+//   Culprits that go bad in one sample, or step alike, are named together; a step with a voice's note-on is the
+//   note-on's. A NaN that lives only in a local (computed and used within a call) leaves no field bad: the result says
+//   so, and names the state the map leaves out (a pointer's buffer, a large array: Patch::unmapped) when there is some.
 // watch (fields: paths or globs): each field over pass 1, as the voice chosen plays it (newest: the newest voice that
 //   sounds, as the panel's displays read; a note's newest voice; all: every voice pooled): min, max, mean, first, last,
 //   the first non-finite moment, the largest jump between two calls of one voice and a sparkline of 32 parts; `points`
@@ -27,7 +32,8 @@
 //
 // Offline only, off the audio thread: a Session's own Engine, never the one that plays. It reads the instances'
 // memory as FMinus lays it out and never follows a pointer. Deterministic: the same files and request give the same
-// result, but for the time limit (`seconds`) and a cancel, which stop it and say so.
+// result, but for the time limit (`seconds`) and a cancel, which stop it and say so: what pass 1 rendered is all it
+// looks at, and a problem the calls of one sample did not reach is listed as pass 1 places it, "not traced".
 #pragma once
 
 #include "dsp/Measure.h"
@@ -76,7 +82,6 @@ namespace playground::measure
         TraceFind kind = TraceFind::none;
         std::size_t at = 0;                       // its sample
         int note = -1;                            // its voice's key (-1: an effect's, or no voice known)
-        bool fromStart = false;                   // already so when the program started (init, or the defaults)
         std::vector<std::string> near;            // the events within 32 samples of it, in words
         std::vector<TraceCulprit> culprits;
         std::string verdict;
@@ -91,6 +96,7 @@ namespace playground::measure
         bool splitDiffers = false;                // pass 2's output differed from pass 1's
         std::size_t splitAt = 0;                  // where first
         bool stopped = false;                     // the time limit or a cancel cut it short
+        std::vector<std::string> fromStart;       // fields already non-finite or past 1e6 before the first call
     };
 
     TraceResult trace(const Sources& files, const TraceRequest& request);

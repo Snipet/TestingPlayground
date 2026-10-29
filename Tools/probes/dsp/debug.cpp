@@ -16,6 +16,15 @@
 //   LIST    the field map names the held module's fields; RAW: points around a moment give a sample each
 //   VOICE   the synth's NAN traced in the voice of note 48 alone finds nothing
 //   SAME    the same request twice gives the same lines
+//   SILENCE a voice that ends while its key is held (the synth), a gain stepped to 0 (the effect): found, and why
+//   DC      a constant added: found near the start
+//   FROMSTART a sentinel past 1e6 that init sets: a note, not a runaway, and the click after it is still found
+//   BUFFER  a delay line fed back at 1.1: the runaway's and the NaN's verdicts name the buffer trace does not read
+//   TIE     two fields bad in the same sample named together; ATTACK (the synth) a note-on's click is the note-on's
+//   LOWSAW  a saw at note 24, whose wrap comes every third window: no click
+//   SHARED  a module Shared's field listed, and watched as shared->gain
+//   STOP    a cancel in pass 1 (the NaN found so far listed, not traced), one in pass 2, the time limit: each says so
+//   NAN0    a NaN from the first sample: the self-check says it had nothing to compare
 #include "Probe.h"
 
 #include "Examples.h"
@@ -357,6 +366,498 @@ module Effect
 };
 )";
 
+    // A voice that ends (process returns false) at sample 9008, a call's end on the grid, while its key is held.
+    const char* const kSilenceVoice = R"(module Voice
+{
+    float rate;
+    float phase;
+    float step;
+    int count;
+    bool held;
+
+    void init(float r)
+    {
+        rate = r;
+    }
+
+    void start(float note, float vel)
+    {
+        step = 440 * expf(0.0577622650f * (note - 69)) / rate;
+        held = true;
+    }
+
+    void stop()
+    {
+        held = false;
+    }
+
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            count += 1;
+            const float y = 0.3f * sinf(6.28318531f * phase);
+            phase += step;
+            if (phase >= 1)
+                phase -= 1;
+            left[i] += y;
+            right[i] += y;
+        }
+        return held && count < 9008;
+    }
+};
+)";
+
+    const char* const kSilenceEffect = R"(module Effect
+{
+    float gain;
+    int count;
+
+    void init(float r)
+    {
+        gain = 1;
+    }
+
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            count += 1;
+            if (count == 9000)
+                gain = 0;
+            left[i] *= gain;
+            right[i] *= gain;
+        }
+    }
+};
+)";
+
+    const char* const kDcVoice = R"(module Voice
+{
+    float rate;
+    float phase;
+    float step;
+    bool held;
+
+    void init(float r)
+    {
+        rate = r;
+    }
+
+    void start(float note, float vel)
+    {
+        step = 440 * expf(0.0577622650f * (note - 69)) / rate;
+        held = true;
+    }
+
+    void stop()
+    {
+        held = false;
+    }
+
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            const float y = 0.2f * sinf(6.28318531f * phase) + 0.1f;
+            phase += step;
+            if (phase >= 1)
+                phase -= 1;
+            left[i] += y;
+            right[i] += y;
+        }
+        return held;
+    }
+};
+)";
+
+    const char* const kDcEffect = R"(module Effect
+{
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            left[i] = 0.5f * left[i] + 0.1f;
+            right[i] = 0.5f * right[i] + 0.1f;
+        }
+    }
+};
+)";
+
+    // A delay line of 10 samples fed back at 1.1: the state that grows is in the buffer, which trace does not read.
+    const char* const kLine = R"(module Line
+{
+    float* buffer;
+    int length;
+    int at;
+
+    void allocate(int n)
+    {
+        buffer = calloc(n, sizeof(float));
+        length = buffer ? n : 0;
+        at = 0;
+    }
+
+    void release()
+    {
+        if (length > 0)
+            free(buffer);
+        length = 0;
+    }
+
+    float read()
+    {
+        return length > 0 ? buffer[at] : 0;
+    }
+
+    void write(float x)
+    {
+        if (length == 0)
+            return;
+        buffer[at] = x;
+        at += 1;
+        if (at == length)
+            at = 0;
+    }
+};
+)";
+
+    const char* const kBufferVoice = R"(module Voice
+{
+    float rate;
+    float phase;
+    float step;
+    bool held;
+    Line line;
+
+    void init(float r)
+    {
+        rate = r;
+        line.allocate(10);
+    }
+
+    void end()
+    {
+        line.release();
+    }
+
+    void start(float note, float vel)
+    {
+        step = 440 * expf(0.0577622650f * (note - 69)) / rate;
+        held = true;
+    }
+
+    void stop()
+    {
+        held = false;
+    }
+
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            const float x = 0.1f * sinf(6.28318531f * phase);
+            phase += step;
+            if (phase >= 1)
+                phase -= 1;
+            const float y = line.read();
+            line.write(x + 1.1f * y);
+            left[i] += y;
+            right[i] += y;
+        }
+        return held;
+    }
+};
+)";
+
+    const char* const kBufferEffect = R"(module Effect
+{
+    Line line;
+
+    void init(float r)
+    {
+        line.allocate(10);
+    }
+
+    void end()
+    {
+        line.release();
+    }
+
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            const float y = line.read();
+            line.write(0.5f * left[i] + 1.1f * y);
+            left[i] = y;
+            right[i] = y;
+        }
+    }
+};
+)";
+
+    // Two fields that go bad in the same sample (b is computed from a).
+    const char* const kTieVoice = R"(module Voice
+{
+    float rate;
+    float phase;
+    float step;
+    int count;
+    float a;
+    float b;
+    bool held;
+
+    void init(float r)
+    {
+        rate = r;
+    }
+
+    void start(float note, float vel)
+    {
+        step = 440 * expf(0.0577622650f * (note - 69)) / rate;
+        held = true;
+    }
+
+    void stop()
+    {
+        held = false;
+    }
+
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            count += 1;
+            const float d = count < 9000 ? 1.0f : 0.0f;
+            a = (0.2f * sinf(6.28318531f * phase) + 0.01f) / d;
+            b = a * 0.5f;
+            phase += step;
+            if (phase >= 1)
+                phase -= 1;
+            left[i] += b;
+            right[i] += b;
+        }
+        return held;
+    }
+};
+)";
+
+    const char* const kTieEffect = R"(module Effect
+{
+    int count;
+    float a;
+    float b;
+
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            count += 1;
+            const float d = count < 9000 ? 1.0f : 0.0f;
+            a = (left[i] + 0.01f) / d;
+            b = a * 0.5f;
+            left[i] = b;
+            right[i] = b;
+        }
+    }
+};
+)";
+
+    // A voice that starts at once at its level (its phase where the sine is at its top): the second note's start
+    // clicks, and every field its start() sets jumps with it.
+    [[maybe_unused]] const char* const kAttackVoice = R"(module Voice
+{
+    float rate;
+    float phase;
+    float step;
+    float level;
+    bool held;
+
+    void init(float r)
+    {
+        rate = r;
+    }
+
+    void start(float note, float vel)
+    {
+        step = 440 * expf(0.0577622650f * (note - 69)) / rate;
+        level = 0.3f;
+        phase = 0.25f;
+        held = true;
+    }
+
+    void stop()
+    {
+        held = false;
+    }
+
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            if (!held)
+                level *= 0.999f;
+            const float y = level * sinf(6.28318531f * phase);
+            phase += step;
+            if (phase >= 1)
+                phase -= 1;
+            left[i] += y;
+            right[i] += y;
+        }
+        return held || level > 0.0001f;
+    }
+};
+)";
+
+    // A plain saw at note 24 (32.7 Hz): its wrap comes every 3 windows of the click finder's, and is no click.
+    const char* const kLowSawVoice = R"(module Voice
+{
+    float rate;
+    float phase;
+    float step;
+    float level;
+    bool held;
+
+    void init(float r)
+    {
+        rate = r;
+    }
+
+    void start(float note, float vel)
+    {
+        step = 440 * expf(0.0577622650f * (note - 69)) / rate;
+        level = 0.2f;
+        held = true;
+    }
+
+    void stop()
+    {
+        held = false;
+    }
+
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            if (!held)
+                level *= 0.999f;
+            const float y = level * (2 * phase - 1);
+            phase += step;
+            if (phase >= 1)
+                phase -= 1;
+            left[i] += y;
+            right[i] += y;
+        }
+        return held || level > 0.0001f;
+    }
+};
+)";
+
+    const char* const kLowSawEffect = R"(module Effect
+{
+    float rate;
+    float phase;
+
+    void init(float r)
+    {
+        rate = r;
+    }
+
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            const float y = 0.2f * (2 * phase - 1);
+            phase += 32.7031957f / rate;
+            if (phase >= 1)
+                phase -= 1;
+            left[i] = y;
+            right[i] = y;
+        }
+    }
+};
+)";
+
+    const char* const kSharedPart = R"(module Shared
+{
+    float gain;
+
+    void init(float r)
+    {
+        gain = 0.25f;
+    }
+};
+)";
+
+    const char* const kSharedVoice = R"(module Voice
+{
+    Shared* shared;
+    float rate;
+    float phase;
+    float step;
+    bool held;
+
+    void init(float r)
+    {
+        rate = r;
+    }
+
+    void start(float note, float vel)
+    {
+        step = 440 * expf(0.0577622650f * (note - 69)) / rate;
+        held = true;
+    }
+
+    void stop()
+    {
+        held = false;
+    }
+
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            const float y = shared->gain * sinf(6.28318531f * phase);
+            phase += step;
+            if (phase >= 1)
+                phase -= 1;
+            left[i] += y;
+            right[i] += y;
+        }
+        return held;
+    }
+};
+)";
+
+    const char* const kSharedEffect = R"(module Effect
+{
+    Shared* shared;
+
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            left[i] *= shared->gain;
+            right[i] *= shared->gain;
+        }
+    }
+};
+)";
+
+    // `program` with a field init sets to a sentinel past 1e6 (lastFc = 1e9), harmless: process never reads it.
+    std::string withSentinel(std::string program)
+    {
+        const auto put = [&](const std::string& after, const std::string& line) {
+            const std::size_t at = program.find(after);
+            if (at != std::string::npos)
+                program.insert(at + after.size(), line);
+        };
+        put("    float rate;\n", "    float lastFc;\n");
+        put("        rate = r;\n", "        lastFc = 1e9f;\n");
+        return program;
+    }
+
     // The 1-based line of the first line holding `text` ("program.fm:N"), "" when none does.
     std::string lineOf(const std::string& program, const std::string& text)
     {
@@ -455,7 +956,9 @@ PROBE(dsp, debug)
     std::printf("nan: the first culprit %s, expected written at %s\n", inFilter ? n0->culprits[0].path.c_str() : "-", written.c_str());
     P.eq("nan.culprit_written_at", inFilter && has(n0->culprits[0].writes, written) ? 1 : 0, 1);
     P.eq("nan.values_around", inFilter && n0->culprits[0].before.size() == 4 && n0->culprits[0].after.size() == 4 ? 1 : 0, 1);
-    P.eq("nan.verdict", n0 != nullptr && n0->verdict.find("first value to go bad") != std::string::npos ? 1 : 0, 1);
+    // The first to go bad, or those that go bad in its sample named together (the effect's filters: l.ic1, l.ic2, r.ic1).
+    P.eq("nan.verdict", n0 != nullptr && (n0->verdict.find("first value to go bad") != std::string::npos
+                                          || n0->verdict.find("go bad in the same sample") != std::string::npos) ? 1 : 0, 1);
     P.le("nan.lines", static_cast<double>(nan.lines.size()), 20.0);
     {
         ms::TraceRequest any = nanReq;
@@ -584,5 +1087,163 @@ PROBE(dsp, debug)
     }
     const ms::TraceResult again = ms::trace(pg::singleFile(clickProgram), clickReq);
     P.eq("same.lines", again.lines == click.lines ? 1 : 0, 1);
+
+    // The requests the rows below share: an instrument's note 60 held 0.5 s, an effect's sine as long.
+    const auto held = [&](ms::TraceFind find, double seconds = 0.5) {
+        ms::TraceRequest q;
+        q.find = find;
+        if constexpr (kInstrument)
+            q.render.phrase = { note(60, 0.0, seconds) };
+        else
+        {
+            q.render.holdSeconds = static_cast<float>(seconds);
+            q.render.signal = static_cast<int>(ms::ViewInput::sine);
+        }
+        q.render.tailSeconds = 0.2f;
+        return q;
+    };
+
+    // ---- SILENCE, DC ---------------------------------------------------------------------------------------------------
+    {
+        const ms::TraceResult r = ms::trace(pg::singleFile(kInstrument ? kSilenceVoice : kSilenceEffect), held(ms::TraceFind::silence));
+        print("SILENCE", r);
+        const ms::TraceProblem* s = firstOf(r, ms::TraceFind::silence);
+        P.eq("silence.found", s != nullptr ? 1 : 0, 1);
+        P.near("silence.at_sample", s != nullptr ? static_cast<double>(s->at) : -1.0, kInstrument ? 9008.0 : 8999.0, 1.0);
+        if constexpr (kInstrument)
+            P.eq("silence.voice_ends", s != nullptr && s->verdict.find("the voice ends while its key is held") != std::string::npos ? 1 : 0, 1);
+        else
+            P.eq("silence.culprit_gain", s != nullptr && !s->culprits.empty() && s->culprits[0].path == "gain" ? 1 : 0, 1);
+    }
+    {
+        const ms::TraceResult r = ms::trace(pg::singleFile(kInstrument ? kDcVoice : kDcEffect), held(ms::TraceFind::dc));
+        print("DC", r);
+        const ms::TraceProblem* d = firstOf(r, ms::TraceFind::dc);
+        P.eq("dc.found", d != nullptr ? 1 : 0, 1);
+        P.le("dc.near_the_start_s", d != nullptr ? static_cast<double>(d->at) / rate : 1.0, 0.06);
+        P.eq("dc.verdict", d != nullptr && d->verdict.find("a mean offset of") != std::string::npos ? 1 : 0, 1);
+    }
+
+    // ---- FROMSTART: a sentinel init sets past 1e6 hides nothing --------------------------------------------------------
+    {
+        ms::TraceRequest q = clickReq;
+        q.find = ms::TraceFind::any;
+        const ms::TraceResult r = ms::trace(pg::singleFile(withSentinel(clickProgram)), q);
+        print("FROMSTART", r);
+        // find any keeps the strongest click: one of the resets (samples 10006 and 20013), its culprit the phase.
+        const ms::TraceProblem* c = firstOf(r, ms::TraceFind::click);
+        P.eq("fromstart.click_still_found", c != nullptr && (c->at + 1) % 10007 == 0 && !c->culprits.empty()
+                                                && c->culprits[0].path == "phase" ? 1 : 0, 1);
+        P.eq("fromstart.no_runaway", firstOf(r, ms::TraceFind::runaway) == nullptr ? 1 : 0, 1);
+        P.eq("fromstart.noted", has(r.fromStart, "lastFc") && anyHas(r.lines, "lastFc 1e+09") ? 1 : 0, 1);
+    }
+
+    // ---- BUFFER: a feedback that grows in a buffer trace does not read -------------------------------------------------
+    {
+        const ms::TraceResult r = ms::trace(pg::singleFile(std::string(kLine) + (kInstrument ? kBufferVoice : kBufferEffect)), held(ms::TraceFind::any));
+        print("BUFFER", r);
+        const ms::TraceProblem* run = firstOf(r, ms::TraceFind::runaway);
+        P.eq("buffer.runaway_found", run != nullptr ? 1 : 0, 1);
+        P.eq("buffer.runaway_names_the_buffer", run != nullptr && run->verdict.find("line.buffer") != std::string::npos
+                                                    && run->verdict.find("rather than a state that grows") == std::string::npos ? 1 : 0, 1);
+        const ms::TraceProblem* bad = firstOf(r, ms::TraceFind::nan);
+        P.eq("buffer.nan_not_only_a_local", bad == nullptr || (bad->verdict.find("line.buffer") != std::string::npos
+                                                               && bad->verdict.find("lives in a local") == std::string::npos) ? 1 : 0, 1);
+    }
+
+    // ---- TIE: two fields bad in the same sample are named together; a note-on's step is the note-on's ------------------
+    {
+        const ms::TraceResult r = ms::trace(pg::singleFile(kInstrument ? kTieVoice : kTieEffect), held(ms::TraceFind::nan));
+        print("TIE", r);
+        const ms::TraceProblem* t = firstOf(r, ms::TraceFind::nan);
+        P.eq("tie.both_named", t != nullptr && t->culprits.size() >= 2 && t->culprits[0].at == t->culprits[1].at
+                                   && t->verdict.find("a and b go bad in the same sample") != std::string::npos
+                                   && t->verdict.find("first value") == std::string::npos ? 1 : 0, 1);
+    }
+    if constexpr (kInstrument)
+    {
+        ms::TraceRequest q;
+        q.find = ms::TraceFind::click;
+        q.render.phrase = { note(48, 0.0, 0.6), note(60, 0.3, 0.3) };
+        q.render.tailSeconds = 0.2f;
+        const ms::TraceResult r = ms::trace(pg::singleFile(kAttackVoice), q);
+        print("ATTACK", r);
+        const ms::TraceProblem* c = firstOf(r, ms::TraceFind::click);
+        P.near("attack.at_the_note_on", c != nullptr ? static_cast<double>(c->at) : -1.0, 14400.0, 1.0);
+        P.eq("attack.the_note_on_named", c != nullptr && c->verdict.find("comes with the note-on of note 60") != std::string::npos ? 1 : 0, 1);
+    }
+
+    // ---- LOWSAW: a low saw's wrap is no click --------------------------------------------------------------------------
+    {
+        ms::TraceRequest q;
+        q.find = ms::TraceFind::click;
+        if constexpr (kInstrument)
+            q.render.phrase = { note(24, 0.0, 1.0) };
+        else
+        {
+            q.render.holdSeconds = 1.0f;
+            q.render.signal = static_cast<int>(ms::ViewInput::silence);
+        }
+        q.render.tailSeconds = 0.2f;
+        const ms::TraceResult r = ms::trace(pg::singleFile(kInstrument ? kLowSawVoice : kLowSawEffect), q);
+        print("LOWSAW", r);
+        P.eq("lowsaw.no_click", r.problems.empty() && anyHas(r.lines, "Nothing found") ? 1 : 0, 1);
+    }
+
+    // ---- SHARED: a Shared field listed and watched as shared->gain -----------------------------------------------------
+    {
+        const pg::Sources files = pg::singleFile(std::string(kSharedPart) + (kInstrument ? kSharedVoice : kSharedEffect));
+        ms::TraceRequest q = held(ms::TraceFind::none, 0.2);
+        q.list = true;
+        const ms::TraceResult l = ms::trace(files, q);
+        print("SHARED list", l);
+        P.eq("shared.listed", anyHas(l.lines, "shared->gain float") ? 1 : 0, 1);
+        q.list = false;
+        q.fields = { "shared" };
+        const ms::TraceResult w = ms::trace(files, q);
+        print("SHARED watch", w);
+        P.eq("shared.watched", w.watched.size() == 1 && w.watched[0] == "shared->gain" && anyHas(w.lines, "shared->gain: min 0.25, max 0.25") ? 1 : 0, 1);
+    }
+
+    // ---- STOP: a cancel or the time limit says so, and claims nothing it did not check ---------------------------------
+    {
+        // Pass 1 renders the local program's 0.7 s in 2100 calls of 16 samples, and asks keepGoing every 64th: a cancel
+        // at the 10th ask stops it at sample 10,240, after the NaN at 8999 (which it lists, untraced); at the 34th, in
+        // the second pass, long before the NaN's window.
+        ms::TraceRequest q = localReq;
+        int asks = 0, stopAt = 10;
+        q.keepGoing = [&] { return ++asks < stopAt; };
+        const ms::TraceResult one = ms::trace(pg::singleFile(localProgram), q);
+        print("STOP in pass 1", one);
+        const ms::TraceProblem* a = firstOf(one, ms::TraceFind::nan);
+        P.eq("stop.pass1_stopped", one.stopped && anyHas(one.lines, "cancelled") ? 1 : 0, 1);
+        P.eq("stop.pass1_lists_the_nan", a != nullptr && a->at <= 8999 && a->at + 16 > 8999 && a->culprits.empty()
+                                             && !anyHas(one.lines, "Nothing found") && anyHas(one.lines, "not traced") ? 1 : 0, 1);
+        asks = 0;
+        stopAt = 34;
+        const ms::TraceResult two = ms::trace(pg::singleFile(localProgram), q);
+        print("STOP in pass 2", two);
+        const ms::TraceProblem* b = firstOf(two, ms::TraceFind::nan);
+        P.eq("stop.pass2_stopped", two.stopped && anyHas(two.lines, "cancelled") ? 1 : 0, 1);
+        P.eq("stop.pass2_claims_nothing", b != nullptr && b->culprits.empty() && b->verdict.find("lives in a local") == std::string::npos
+                                              && anyHas(two.lines, "not traced") && !anyHas(two.lines, "same bits") ? 1 : 0, 1);
+        ms::TraceRequest tiny = nanReq;
+        tiny.seconds = 1e-9;
+        const ms::TraceResult t = ms::trace(pg::singleFile(nanProgram), tiny);
+        print("STOP at the time limit", t);
+        P.eq("stop.time_limit", t.stopped && anyHas(t.lines, "the time limit") && anyHas(t.lines, "rendered before it stopped")
+                                    && !anyHas(t.lines, "same bits") ? 1 : 0, 1);
+    }
+
+    // ---- NAN0: a NaN from the first sample: the self-check has nothing to compare, and says so -------------------------
+    {
+        std::string program = kInstrument ? kLocalVoice : kLocalEffect;
+        const std::size_t at = program.find("count < 9000");
+        program.replace(at, 12, "count < 0");
+        const ms::TraceResult r = ms::trace(pg::singleFile(program), held(ms::TraceFind::nan));
+        print("NAN0", r);
+        P.eq("nan0.found_at_0", r.problems.size() == 1 && r.problems[0].at == 0 ? 1 : 0, 1);
+        P.eq("nan0.self_check_claims_nothing", !anyHas(r.lines, "same bits") && anyHas(r.lines, "nothing to compare") ? 1 : 0, 1);
+    }
     return P.finish();
 }
