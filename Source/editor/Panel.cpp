@@ -1499,6 +1499,74 @@ namespace playground::ui
             void setHidden(bool hidden) { hidden_ = hidden; }
             bool shown() const override { return !hidden_; }
         };
+
+        // ---- the top bar's load: the snowflake while the frozen copy plays ---------------------------------------------
+        // The load's text ends left of the theme's button; the snowflake sits just left of it while the dials are
+        // frozen into the code (EditorPort::frozen), and the alerts' words further left.
+        constexpr float kFrozenIcon = 11.0f;             // the snowflake's box
+        constexpr float kFrozenGap = 6.0f;               // between it and the load's text
+        constexpr float kAlertsGap = 9.0f;               // between it and the alerts' words
+
+        struct MeterPlaces
+        {
+            float loadRight = 0.0f;                      // the load's text ends here
+            float flakeX = 0.0f;                         // the snowflake's centre
+            float alertsRight = 0.0f;                    // the alerts' words end here
+        };
+
+        // `loadW` and `spaces` measured with Canvas::textWidth (text::width, which layout uses, is the same measure).
+        MeterPlaces meterPlaces(float themeX, float loadW, bool frozen, float spaces)
+        {
+            MeterPlaces m;
+            m.loadRight = themeX - 10.0f;
+            const float left = m.loadRight - loadW;
+            m.flakeX = left - kFrozenGap - 0.5f * kFrozenIcon;
+            m.alertsRight = frozen ? left - kFrozenGap - kFrozenIcon - kAlertsGap : left - spaces;
+            return m;
+        }
+
+        // The snowflake as a readout: drawn in the accent, its line in the status bar and its title for VoiceOver.
+        class FrozenItem final : public Item
+        {
+        public:
+            explicit FrozenItem(uint32_t id) : id_(id) {}
+
+            void place(float cx, float cy) { bounds_ = { cx - 9.0f, cy - 11.0f, 18.0f, 22.0f }; }
+            void setShown(bool shown) { shown_ = shown; }
+
+            void tick(float, bool, bool, funkgui::Point) override {}
+            void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool) const override
+            {
+                const funkgui::Canvas::Scope s(c, kFrozenTag, false);
+                chat::drawIcon(c, chat::Icon::snowflake, bounds_.centreX(), bounds_.centreY(), kFrozenIcon,
+                               chat::palette(th).accent);
+            }
+            bool contains(funkgui::Point p) const override { return bounds_.contains(p); }
+            void pointerDown(const funkgui::PointerEvent&, funkgui::GestureController&, funkgui::HostServices&) override {}
+            void accessibility(std::vector<funkgui::A11yItem>& out) const override
+            {
+                funkgui::A11yItem it;
+                it.id = id_;
+                it.role = funkgui::A11yRole::image;
+                it.bounds = bounds_;
+                it.title = "Frozen: the dials are compiled into the code while they hold still";
+                it.readOnly = true;
+                out.push_back(std::move(it));
+            }
+            bool a11yAction(uint32_t, funkgui::A11yAction, double, funkgui::GestureController&) override { return false; }
+            void specLine(char* out, std::size_t n) const override
+            {
+                std::snprintf(out, n, "FROZEN   THE DIALS ARE COMPILED INTO THE CODE WHILE THEY HOLD STILL");
+            }
+            funkgui::Point centre() const override { return { bounds_.centreX(), bounds_.centreY() }; }
+            bool shown() const override { return shown_; }
+            bool focusable() const override { return false; }
+
+        private:
+            uint32_t id_;
+            funkgui::Rect bounds_;
+            bool shown_ = false;
+        };
     }
 
     // ---- construction ---------------------------------------------------------------------------------------------------
@@ -1507,6 +1575,7 @@ namespace playground::ui
     Panel::Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& port) : port_(port)
     {
         port_.addMeterReader();                      // the displays read the meters and the scopes while it lives
+        seenSettingsAsk_ = port_.settingsAsked();        // the app's requests from now on open SETTINGS
         title_ = upper(product::kName);
         subtitle_ = std::string(product::kIsInstrument ? "Instrument" : "Effect") + "  v" + product::kVersion + "  FMinus";
         width_ = static_cast<float>(kDefaultWidth);
@@ -1750,6 +1819,7 @@ namespace playground::ui
             sp.spec = "THEME   GRAPHITE (DARK) OR PAPER (LIGHT), FOR EVERY PLAYGROUND EDITOR ON THIS MAC";
             themeItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
         }
+        frozenItem_ = add(std::make_unique<FrozenItem>(idFor()));   // left of the load, while the dials are frozen
 
         // The zoom (the status bar's right corner): a pill of the zoom in use, its menu the host's steps; shown when the
         // host offers zoom steps (the plugin's editor does).
@@ -1770,6 +1840,21 @@ namespace playground::ui
             sp.a11yTitle = "Zoom";
             sp.spec = "ZOOM   THE EDITOR'S SIZE ON SCREEN";
             zoomItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
+        }
+
+        // The Standalone's muted input (an effect's: JUCE's guard against a feedback loop): a notice in the status bar,
+        // left of the zoom, and this button, which opens SETTINGS.
+        {
+            TB::Spec sp;
+            sp.shape = TB::Shape::pill;
+            sp.icon = [] { return chat::Icon::gear; };
+            sp.label = [] { return std::string("Settings..."); };
+            sp.look = [] { return TB::Look::outlined; };
+            sp.shown = [this] { return mutedShown_; };
+            sp.act = [this] { openSettings(); };
+            sp.a11yTitle = "Settings: the audio input is muted, to avoid a feedback loop";
+            sp.spec = "INPUT MUTED   A LOOP THROUGH THE SPEAKERS WOULD FEED BACK: UNMUTE IT IN SETTINGS, WITH HEADPHONES ON";
+            mutedItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
         }
 
         layout();
@@ -1948,9 +2033,24 @@ namespace playground::ui
             const float w = z.preferredWidth();
             z.setBounds({ right - w, H - kFooterH + 4.0f, w, kFooterH - 8.0f });
         }
+        placeMutedNotice();
+        placeMeter();
         ++layoutRevision_;
         dirty_ = true;
     }
+
+    void Panel::placeMeter()
+    {
+        const funkgui::FontAtlasSdf& atlas = funkgui::FontService::get().atlas();
+        const funkgui::Rect theme = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(themeItem_)]).bounds();
+        const MeterPlaces m = meterPlaces(theme.x, funkgui::text::width(atlas, meterLoad_.c_str(), chat::kSmall), frozenShown_,
+                                          funkgui::text::width(atlas, "   ", chat::kSmall));
+        auto& flake = static_cast<FrozenItem&>(*items_[static_cast<std::size_t>(frozenItem_)]);
+        flake.place(m.flakeX, kTopBarY + 0.5f * kTopBarH);
+        flake.setShown(frozenShown_);
+    }
+
+    funkgui::Point Panel::centreOfFrozen() const { return centreOf(frozenItem_); }
 
     // The chat's card: the header, the conversation, the message box (as tall as its text), its bar's buttons (as wide
     // as their labels) and the usage line.
@@ -2803,23 +2903,29 @@ namespace playground::ui
         if (status_ != statusBefore)
             dirty_ = true;
 
-        // The meter, four times a second at most: a frame for it when it changed.
-        if (meterAt_ < 0.0 || nowSec - meterAt_ >= 0.25 || nowSec < meterAt_)
+        // The meter, four times a second at most: a frame for it when it changed. The snowflake (the dials compiled in,
+        // while they hold still) comes and goes with the frame after the change.
+        const bool frozen = port_.frozen();
+        if (meterAt_ < 0.0 || nowSec - meterAt_ >= 0.25 || nowSec < meterAt_ || frozen != frozenShown_)
         {
             meterAt_ = nowSec;
-            char meter[64];
             const uint32_t a = port_.alerts();
-            std::snprintf(meter, sizeof meter, "%s%s%sCPU %.1f%%",
-                          (a & Engine::nonFinite) != 0 ? "NAN REPLACED   " : "",
-                          (a & Engine::clipped) != 0 ? "CLIPPED   " : "",
-                          port_.frozen() ? "FROZEN   " : "",       // the dials compiled in, while they hold still
-                          static_cast<double>(port_.load()) * 100.0);
-            if (meter_ != meter)
+            std::string alerts = (a & Engine::nonFinite) != 0 ? "NAN REPLACED" : "";
+            if ((a & Engine::clipped) != 0)
+                alerts += (alerts.empty() ? "" : "   ") + std::string("CLIPPED");
+            char load[32];
+            std::snprintf(load, sizeof load, "CPU %.1f%%", static_cast<double>(port_.load()) * 100.0);
+            if (meterAlerts_ != alerts || meterLoad_ != load || frozen != frozenShown_)
             {
-                meter_ = meter;
+                meterAlerts_ = std::move(alerts);
+                meterLoad_ = load;
+                frozenShown_ = frozen;
+                meter_ = meterAlerts_.empty() ? meterLoad_ : meterAlerts_ + "   " + meterLoad_;
+                placeMeter();
                 dirty_ = true;
             }
         }
+        syncSettings();
         refreshChat(nowSec);
     }
 
@@ -3551,6 +3657,84 @@ namespace playground::ui
         dirty_ = true;
     }
 
+    // ---- SETTINGS: the Standalone's audio and MIDI devices (SettingsCard.h; EditorPort::devices) ------------------------
+    namespace
+    {
+        constexpr const char* kMutedText = "Input muted to avoid a feedback loop";
+    }
+
+    bool Panel::openSettings()
+    {
+        if (dialogOpen() || port_.devices() == nullptr)
+            return false;
+        files().endRename();
+        if (!settings_.open())
+            return false;
+        focusBeforeSettings_ = focus_;
+        setFocus(-1);
+        ring_ = false;
+        dirty_ = true;
+        return true;
+    }
+
+    void Panel::afterSettings(bool wasOpen)
+    {
+        if (wasOpen && !settings_.isOpen())
+        {
+            const int back = focusBeforeSettings_;
+            setFocus(back >= 0 && items_[static_cast<std::size_t>(back)]->shown() ? back : editorItem_);
+            focusBeforeSettings_ = -1;
+        }
+        dirty_ = true;
+    }
+
+    // Each refresh: the devices (read again when their serial moved), the app's Settings... (its count moved), and the
+    // muted notice with its button.
+    void Panel::syncSettings()
+    {
+        const bool wasOpen = settings_.isOpen();
+        settings_.sync();
+        if (wasOpen && !settings_.isOpen())
+            afterSettings(true);                         // the window let go of its devices
+        if (const uint64_t asked = port_.settingsAsked(); asked != seenSettingsAsk_)
+        {
+            seenSettingsAsk_ = asked;
+            openSettings();
+        }
+        if (settings_.revision() != seenSettingsRev_)
+        {
+            seenSettingsRev_ = settings_.revision();
+            dirty_ = true;
+        }
+        if (const bool muted = settings_.inputMuted(); muted != mutedShown_)
+        {
+            mutedShown_ = muted;
+            dirty_ = true;
+        }
+        placeMutedNotice();
+    }
+
+    // The notice's button, left of the zoom's pill in the status bar (the zoom shows once a host offers steps).
+    void Panel::placeMutedNotice()
+    {
+        auto& b = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(mutedItem_)]);
+        const auto& zoom = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(zoomItem_)]);
+        const float y = height_ - kFooterH + 4.0f, h = kFooterH - 8.0f;
+        const funkgui::Rect before = b.bounds();
+        b.setBounds({ 0.0f, y, 10.0f, h });
+        const float w = b.preferredWidth();
+        const float right = zoom.shown() ? zoom.bounds().x - 10.0f : width_ - kMargin;
+        b.setBounds({ right - w, y, w, h });
+        const funkgui::Rect now = b.bounds();
+        if (now.x != before.x || now.y != before.y || now.w != before.w || now.h != before.h)
+        {
+            ++layoutRevision_;                           // its accessibility item moved
+            dirty_ = true;
+        }
+    }
+
+    funkgui::Point Panel::centreOfMutedSettings() const { return centreOf(mutedItem_); }
+
     void Panel::chooseImport()
     {
         if (host_ == nullptr)
@@ -4093,10 +4277,16 @@ namespace playground::ui
             const funkgui::Rect panel = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(panelViewItem_)]).bounds();
             c.rrect(code.x - 3.0f, code.y - 3.0f, panel.right() - code.x + 6.0f, code.h + 6.0f, 0.5f * (code.h + 6.0f), pal.raised,
                     1.0f, pal.cardEdge);
+            // The load, the snowflake left of it while the dials are frozen (an item: FrozenItem), the alerts left of that.
             const funkgui::Rect theme = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(themeItem_)]).bounds();
             const bool alarm = port_.alerts() != 0;
-            c.text(meter_.c_str(), theme.x - 10.0f, c.capCentreTop(mid, chat::kSmall), chat::kSmall, alarm ? pal.danger : pal.faint,
-                   funkgui::Align::right);
+            const funkgui::Col ink = alarm ? pal.danger : pal.faint;
+            const MeterPlaces m = meterPlaces(theme.x, c.textWidth(meterLoad_.c_str(), chat::kSmall), frozenShown_,
+                                              c.textWidth("   ", chat::kSmall));
+            const float top = c.capCentreTop(mid, chat::kSmall);
+            c.text(meterLoad_.c_str(), m.loadRight, top, chat::kSmall, ink, funkgui::Align::right);
+            if (!meterAlerts_.empty())
+                c.text(meterAlerts_.c_str(), m.alertsRight, top, chat::kSmall, ink, funkgui::Align::right);
         }
 
         // The program's card: its header's status (a light, and what the last run did), left of its actions.
@@ -4239,7 +4429,9 @@ namespace playground::ui
         // Footer: the spec line of the control under the hand, else the focused one, else the last one touched; the
         // dialog's own while it is open.
         char line[256] = {};
-        if (keyOpen_)
+        if (settings_.isOpen())
+            std::snprintf(line, sizeof line, "SETTINGS   TAB THE NEXT CONTROL   RETURN OR SPACE CHOOSES   ESCAPE OR DONE CLOSES");
+        else if (keyOpen_)
             std::snprintf(line, sizeof line, "API KEY   CMD-V PASTES IT   RETURN SAVES IT   ESCAPE CANCELS");
         else if (export_.isOpen())
             std::snprintf(line, sizeof line, "EXPORT   TAB THE NEXT FIELD   A PILL TOGGLES   ESCAPE KEEPS THE INFO AND CLOSES");
@@ -4255,11 +4447,22 @@ namespace playground::ui
             if (src >= 0)
                 items_[static_cast<std::size_t>(src)]->specLine(line, sizeof line);
         }
+        // The muted input's notice at the status bar's right (an effect's, in the Standalone), before its button.
+        float noticeW = 0.0f;
+        if (mutedShown_)
+        {
+            const funkgui::Canvas::Scope s(c, kMutedTag, false);
+            const funkgui::Rect b = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(mutedItem_)]).bounds();
+            const float tx = b.x - 10.0f - c.textWidth(kMutedText, chat::kSmall);
+            chat::drawIcon(c, chat::Icon::alert, tx - 11.0f, b.centreY(), 12.0f, pal.accent);
+            c.text(kMutedText, tx, c.capCentreTop(b.centreY(), chat::kSmall), chat::kSmall, pal.soft);
+            noticeW = b.right() - (tx - 18.0f) + 12.0f;
+        }
         if (line[0] != '\0')
         {
             const ButtonItem& zoom = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(zoomItem_)]);
             const float zoomW = zoom.shown() ? zoom.bounds().w + 12.0f : 0.0f;
-            const std::string shown = fitFields(c, line, contentW - zoomW - 8.0f);
+            const std::string shown = fitFields(c, line, contentW - zoomW - noticeW - 8.0f);
             const funkgui::Canvas::Scope s(c, funkgui::tags::hint, false);
             c.text(shown.c_str(), kMargin + 8.0f, c.capCentreTop(height_ - 0.5f * kFooterH, funkgui::type::kMicro),
                    funkgui::type::kMicro, th.ink52);
@@ -4289,6 +4492,11 @@ namespace playground::ui
         {
             const funkgui::Canvas::Scope s(c, kExportTag, false);
             export_.draw(c, th, width_, height_, pointer_, hasPointer_);
+        }
+        if (settings_.isOpen())
+        {
+            const funkgui::Canvas::Scope s(c, kSettingsTag, false);
+            settings_.draw(c, th, width_, height_, pointer_, hasPointer_);
         }
     }
 
@@ -4336,24 +4544,35 @@ namespace playground::ui
         pointer_ = { e.x, e.y };
         hasPointer_ = true;
         windowPress_ = false;
-        if (keyOpen_)
+        // A press that closed a card (a click outside the Settings card, a card's Done or Cancel) ends there: the
+        // second press of its double-click finds the card gone and would act on what lies under it.
+        if (closingPress_ && e.clicks > 1)
         {
             pressed_ = -1;
-            keyDialogPointerDown(pointer_);
             return;
         }
-        if (export_.isOpen())
+        closingPress_ = false;
+        if (dialogOpen())
         {
             pressed_ = -1;
-            export_.pointerDown(pointer_, width_, height_);
-            afterExport(true);
-            return;
-        }
-        if (projects_.isOpen())
-        {
-            pressed_ = -1;
-            projects_.pointerDown(pointer_, width_, height_);
-            afterProjects(true);
+            if (settings_.isOpen())
+            {
+                settings_.pointerDown(pointer_, width_, height_, host_);
+                afterSettings(true);
+            }
+            else if (keyOpen_)
+                keyDialogPointerDown(pointer_);
+            else if (export_.isOpen())
+            {
+                export_.pointerDown(pointer_, width_, height_);
+                afterExport(true);
+            }
+            else
+            {
+                projects_.pointerDown(pointer_, width_, height_);
+                afterProjects(true);
+            }
+            closingPress_ = !dialogOpen();
             return;
         }
         pressed_ = itemAt(pointer_);
@@ -4412,9 +4631,9 @@ namespace playground::ui
     {
         // The double-click's second press went to the window (dragWindow), which may have zoomed or minimised since:
         // its release, and so this, comes where the pointer now is over the panel, and is no click of the panel's.
-        if (windowPress_)
+        if (windowPress_ || closingPress_)
             return;
-        if (keyOpen_)
+        if (keyOpen_ || settings_.isOpen())
             return;
         if (export_.isOpen())
             return;
@@ -4436,6 +4655,11 @@ namespace playground::ui
     bool Panel::wheel(const funkgui::WheelEvent& e)
     {
         dirty_ = true;
+        if (settings_.isOpen())
+        {
+            settings_.wheel(e, width_, height_);
+            return true;
+        }
         if (export_.isOpen())
             return true;
         if (projects_.isOpen())
@@ -4484,6 +4708,15 @@ namespace playground::ui
     bool Panel::key(const funkgui::KeyEvent& e)
     {
         dirty_ = true;
+        if (settings_.isOpen())
+        {
+            // The card takes no Cmd key: they go on to the app's menu (Cmd-Q, Cmd-H, Cmd-M), as with JUCE's dialog.
+            if (e.mods.cmd)
+                return false;
+            settings_.key(e, host_, width_, height_);
+            afterSettings(true);
+            return true;
+        }
         if (keyOpen_)
             return keyDialogKey(e);
         if (export_.isOpen())
@@ -4544,6 +4777,8 @@ namespace playground::ui
 
     funkgui::Cursor Panel::cursor() const
     {
+        if (settings_.isOpen())
+            return settings_.cursor(pointer_, width_, height_);
         if (keyOpen_)
         {
             const KeyDialog d = keyDialog();
@@ -4570,6 +4805,11 @@ namespace playground::ui
 
     void Panel::accessibility(std::vector<funkgui::A11yItem>& out) const
     {
+        if (settings_.isOpen())
+        {
+            settings_.accessibility(out, width_, height_);
+            return;
+        }
         if (keyOpen_)
         {
             // Never the key: its length only.
@@ -4634,6 +4874,7 @@ namespace playground::ui
         r |= (keyOpen_ ? 1u : 0u) << 17;
         r ^= (projects_.isOpen() ? 0x9E3779B1u : 0u) ^ (projects_.revision() * 0x165667B1u);
         r ^= (export_.isOpen() ? 0x85EBCA77u : 0u) ^ (export_.revision() * 0xC2B2AE3Du);
+        r ^= (settings_.isOpen() ? 0x27D4EB2Du : 0u) ^ (settings_.revision() * 0x9E3779B1u) ^ (mutedShown_ ? 0x165667B1u : 0u);
         r |= (chat_.ready() ? 1u : 0u) << 18;
         static_assert(kMaxDisplays <= 32, "the displays' mask");
         uint32_t displays = 0;                                // the displays shown, one bit each, mixed in
@@ -4648,13 +4889,20 @@ namespace playground::ui
         r ^= gui * 0x2C1B3C6Du;
         // The counters times odd constants: a change in any one of them changes the revision.
         return r ^ (files().layoutRevision() * 0x85EBCA77u) ^ (layoutRevision_ * 0xC2B2AE3Du) ^ (chatA11y_ * 2654435761u)
-             ^ (explorer().revision() * 0x27220A95u) ^ (explorerShown_ ? 0x1B873593u : 0u);
+             ^ (explorer().revision() * 0x27220A95u) ^ (explorerShown_ ? 0x1B873593u : 0u)
+             ^ (frozenShown_ ? 0x68E31DA4u ^ std::bit_cast<uint32_t>(centreOfFrozen().x) : 0u);   // it moves with the load's text
     }
 
     void Panel::a11yAction(uint32_t id, funkgui::A11yAction a, double value)
     {
         if (!gestures_)
             return;
+        if (settings_.isOpen())
+        {
+            settings_.a11yAction(id, a, width_, height_, host_);
+            afterSettings(true);
+            return;
+        }
         if (keyOpen_)
         {
             if (id == kKeySaveId)
