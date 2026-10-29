@@ -111,15 +111,15 @@ namespace probe
 
         playground::Engine& engine() noexcept { return engine_; }
         // The frozen copy of the program that plays (Patch::freeze), at the dials as the last block left them, offered
-        // to the Engine: false, with why, when it does not compile. `fastMath`: in FMinus's Math::Fast, not the
-        // program's Math::Vector as the plugin's copy is (dsp.freeze measures it).
-        bool freeze(std::string* why = nullptr, bool fastMath = false)
+        // to the Engine: false, with why, when it does not compile. `exactMath`: in the program's Math::Vector, as the
+        // plugin's copy is not (dsp.freeze measures it).
+        bool freeze(std::string* why = nullptr, bool exactMath = false)
         {
             playground::DialState d;
             if (!engine_.dials(d))
                 return false;
             std::string w;
-            std::unique_ptr<playground::Patch::Frozen> f = playground::Patch::freeze(recipe_, d.plain, w, fastMath);
+            std::unique_ptr<playground::Patch::Frozen> f = playground::Patch::freeze(recipe_, d.plain, w, exactMath);
             if (why != nullptr)
                 *why = w;
             if (!f)

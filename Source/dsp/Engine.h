@@ -151,8 +151,7 @@ namespace playground
         bool frozen() const noexcept { return frozenNow_.load(std::memory_order_relaxed); }   // the copy plays
         // While on (a recording armed, plugin/Capture.h), the program's own code plays: a frozen copy playing is
         // dropped at the next block, one offered goes back, and the Compiler's freezer waits; a replay of the
-        // recording then gives its bits by construction (the copy plays them too, Patch.h, but by a second compile's
-        // folding, which a recording need not lean on).
+        // recording then gives its bits (the copy's Math::Fast would not).
         void setOwnCode(bool on) noexcept { ownCode_.store(on, std::memory_order_relaxed); }
         bool ownCode() const noexcept { return ownCode_.load(std::memory_order_relaxed); }
         // The output guard's calls that raised an alert, counted and never cleared (the low 32 bits: a NaN or an
