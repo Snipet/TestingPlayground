@@ -17,8 +17,9 @@ By example:
   scripts/plugin.py codesign --identity "Developer ID Application: ..." [--product synth]
 
 A product is its products/<key>.cmake (the PRODUCT_* values), its examples in Source/fminus/examples/<key>/ and its
-extension's icon, Source/mcp/icon-<key>.png; everything else is shared, and nothing else names a product (the C++
-namespace is `playground` in all of them). CMakeLists.txt builds every products/<key>.cmake it finds.
+extension's icon, Source/mcp/icon-<key>.png (its kind's mark, which Tools/logo/logo.swift writes: never edited by
+hand); everything else is shared, and nothing else names a product (the C++ namespace is `playground` in all of them).
+CMakeLists.txt builds every products/<key>.cmake it finds.
 
 What a rename changes: products/<key>.cmake is rewritten with the new identity (name, codes, bundle id, FunkGui
 prefixes); the old name (as written, in upper case and in lower case), bundle id and environment prefix are replaced in
@@ -427,7 +428,8 @@ def cmd_add(args: argparse.Namespace) -> int:
         shutil.copy2(staged, product_file(root, key))
     print(f"Added products/{key}.cmake, {examples_dst.relative_to(root)}/ (from {src}'s) and "
           f"{icon_dst.relative_to(root)}.")
-    print("Next: describe it in README.md and CLAUDE.md, change its examples and icon, and run")
+    print("Next: describe it in README.md and CLAUDE.md, change its examples, and run")
+    print("  swift Tools/logo/logo.swift               # its icon is its kind's mark: the script writes it")
     print("  cmake --workflow --preset dev-verify      # configure, build every product, run every test")
     return 0
 
