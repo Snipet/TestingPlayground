@@ -148,9 +148,23 @@ namespace playground::measure
         std::vector<std::pair<std::size_t, Event>> events;
         std::vector<std::pair<std::size_t, Transport>> transport;
         std::vector<int> blocks;
+        // A recording's dials, clock and parts (the capture lane's), for a replay that gives what played bit for bit:
+        // `frames`, the 32 normalised values the processor sent with the host block at each sample (where they
+        // changed), of a program whose dials were `frameControls`: as they are for a program with the same dials, else
+        // by name through their plain values; they set every dial but those `dials` names (and `automate` moves).
+        // `clock`: the Engine's samples at the start (the phase of the voices' grid, Engine::kGrid). `part`: the
+        // largest Engine call, a host block played in parts of it as the processor plays one (0: in one call).
+        // `recording`: the recording in words, for the scenario's line.
+        std::vector<std::pair<std::size_t, std::array<float, kMaxControls>>> frames;
+        std::shared_ptr<const Controls> frameControls;
+        uint64_t clock = 0;
+        int part = 0;
+        std::string recording;
         // What the plugin fills in before it renders (plugin/ChatScenario.h): the host's rate and block ("host"), the
-        // user's last recording ("capture"). Measure renders what the fields above say and ignores these.
+        // user's last recording ("capture"; captureFrom and captureTo, in seconds of it, the part replayed, -1: to its
+        // end). Measure renders what the fields above say and ignores these.
         bool hostRate = false, hostBlock = false, fromCapture = false;
+        double captureFrom = 0.0, captureTo = -1.0;
 
         // The same render (the notes, the levels, the times, the dials asked for, the host and the scenario), `want`
         // aside.
@@ -197,7 +211,16 @@ namespace playground::measure
         int block = kDefaultBlock;
         std::vector<Mark> marks;                  // every event, move and edit, in words, by sample
         std::vector<std::string> unknown;         // dials moved by a name the program has not
+        // A recording's (Request::frames, clock, part): the normalised dials from each sample on, for this program's
+        // slots; the Engine's clock at the start; the largest call.
+        std::vector<std::pair<std::size_t, std::array<float, kMaxControls>>> frames;
+        uint64_t clock = 0;
+        int part = 0;
     };
+
+    // What `request` plays for a program with these dials, as Session::timeline gives it, without a compile (the
+    // capture's report names its steps' nearest events so).
+    Timeline timeline(const Request& request, const Controls& controls, double rate, std::size_t length = 0);
 
     // A render's calls into the Engine, for a tool that watches the program as it plays (the trace lane's). render()
     // asks callLength before each call and calls afterCall after it; without hooks a host block is one call. Offline

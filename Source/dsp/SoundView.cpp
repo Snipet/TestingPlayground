@@ -262,7 +262,9 @@ namespace playground::measure
             if (request.render.input != nullptr)
             {
                 total = session.lengthOf(request.render);
-                out.title = "Its own input, " + fmt("%.2f s", static_cast<double>(request.render.input->l.size()) / rate);
+                out.title = !request.render.recording.empty()
+                                ? "A scenario: " + scenario     // a recording's, in its words
+                                : "Its own input, " + fmt("%.2f s", static_cast<double>(request.render.input->l.size()) / rate);
                 out.heldUntil = static_cast<double>(std::min(total, request.render.input->l.size())) / rate;
             }
             else

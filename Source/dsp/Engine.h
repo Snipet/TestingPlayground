@@ -161,6 +161,9 @@ namespace playground
         bool playing() const noexcept { return current_ != nullptr || pending_.load() != nullptr; }
         bool swapping() const noexcept { return old_ != nullptr || pending_.load() != nullptr; }
         int activeVoices() const noexcept;
+        // Offline only, after restart() and before the first process(): the clock's start, so that the voices' grid
+        // (kGrid) has a recording's phase (a replay of the capture, Measure.h's Request::clock).
+        void setClock(uint64_t samples) noexcept { clock_ = samples; }
 
     private:
         // A value that moves to its target over a fixed time, linearly, landing on it exactly.
