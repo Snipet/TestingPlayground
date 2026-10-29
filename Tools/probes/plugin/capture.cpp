@@ -21,6 +21,8 @@
 //             block (flagged); the processing never waits, its output a processor's that never records, bit for bit
 //   FREEZE    a frozen copy playing (Compiler::freezeNow) stops the block after arm, one offered while armed is refused,
 //             and after forget one plays again
+//   SIZE      20 s at 48 kHz: what an armed recording holds (at most 25 MB), and the live status and stop each within
+//             a quarter of a second (they copy what was published), the take its 20 s
 //   FORGET    forget frees: a recording the audio thread never took at once, one it holds after its next block
 //   TOOL      arm's words say to tell the user and that it stays in memory; status and stop are live (mcpLive), at most
 //             25 lines, and say they are live; the tool is listed for MCP, read-only, titled in words; stop with nothing
@@ -37,6 +39,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -650,6 +653,42 @@ PROBE(plugin, capture)
         P.eq("freeze.refused_while_armed", armedAfterOffer ? 0 : 1, 1);
         P.eq("freeze.take_own_code", flags ? 1 : 0, 1);
         P.eq("freeze.plays_after_forget", again && after ? 1 : 0, 1);
+    }
+
+    // ---- SIZE: 20 s at 48 kHz in blocks of 512: what it holds, how long the live calls take ----------------------------
+    {
+        pg::Processor p;
+        p.compiler().setFreezing(false);
+        p.setRateAndBufferSizeDetails(kFs, 512);
+        p.prepareToPlay(kFs, 512);
+        const cap::Reply armed = p.recorder().act(cap::Action::arm, { cap::Mode::last, 20.0, false });
+        juce::AudioBuffer<float> b(2, 512);
+        juce::MidiBuffer midi;
+        for (uint64_t pos = 0; pos < static_cast<uint64_t>(21.0 * kFs); pos += 512)
+        {
+            for (int c = 0; c < 2; ++c)
+                for (int i = 0; i < 512; ++i)
+                    b.setSample(c, i, kInstrument ? 0.0f : sine(c, pos + static_cast<uint64_t>(i)));
+            midi.clear();
+            if (kInstrument && pos % 24576 == 0)
+                midi.addEvent(juce::MidiMessage::noteOn(1, 60 + static_cast<int>((pos / 24576) % 12), static_cast<juce::uint8>(100)), 0);
+            p.processBlock(b, midi);
+        }
+        const auto ms = [](auto t0) { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); };
+        auto t0 = std::chrono::steady_clock::now();
+        const std::string status = textOf(tool(p, object({ { "action", "status" } })));
+        const double statusMs = ms(t0);
+        t0 = std::chrono::steady_clock::now();
+        const cap::Reply stopped = p.recorder().act(cap::Action::stop, {});
+        const double stopMs = ms(t0);
+        const double heldMb = static_cast<double>(armed.bytes) / 1e6;
+        const double takeMb = stopped.take != nullptr ? static_cast<double>(stopped.take->bytes) / 1e6 : 0.0;
+        std::printf("size: armed for 20 s it holds %.1f MB; status (its report) took %.1f ms, stop %.1f ms; the take %.2f s, %.1f MB\n",
+                    heldMb, statusMs, stopMs, stopped.take != nullptr ? stopped.take->seconds() : 0.0, takeMb);
+        P.le("size.held_mb", heldMb, 25.0);
+        P.le("size.status_ms", statusMs, 250.0);
+        P.le("size.stop_ms", stopMs, 250.0);
+        P.ge("size.take_seconds", stopped.take != nullptr ? stopped.take->seconds() : 0.0, 20.0 - 512.0 / kFs);
     }
 
     // ---- FORGET: one the audio thread never took goes at once -----------------------------------------------------------
