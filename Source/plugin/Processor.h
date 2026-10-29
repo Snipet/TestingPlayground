@@ -43,8 +43,10 @@
 // and the probes call themselves; it also clears the alerts after two seconds.
 #pragma once
 
+#include "plugin/Capture.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
+#include "plugin/Journal.h"
 #include "plugin/McpLink.h"
 #include "plugin/ProjectStore.h"
 
@@ -125,6 +127,7 @@ namespace playground
         void setWindowHooks(WindowHooks hooks);
         Engine& engine() noexcept { return engine_; }
         Compiler& compiler() noexcept { return compiler_; }   // for the probes
+        capture::Recorder& recorder() noexcept { return capture_; }   // the capture tool's recorder (the probes)
         // The most samples one Engine::process call got since prepareToPlay (never more than it announced).
         int largestEngineCall() const noexcept { return largestCall_; }
         // The compiler's outcome to the message thread (the timer's call); settle() waits for a run first. It also makes
@@ -225,6 +228,16 @@ namespace playground
         float chatLoad() const override;
         uint32_t chatAlerts() const override;
         PanelPicture chatPicture(bool window, const std::string& page) override;
+        // For the live tools (ProcessorLive.cpp; any thread): what plays now, the meters measured while a tool listens,
+        // the journal of changes, the dials' options' names.
+        void chatLive(LiveRead& io) const override;
+        void chatListening(bool on) override;
+        Changes chatChanges(const std::string& since, bool issue) override;
+        std::array<std::vector<std::string>, kMaxControls> chatDialOptions() const override;
+        capture::Reply chatCapture(capture::Action action, const capture::Options& options) override;
+        double chatHostRate() const override;
+        int chatHostBlock() const override;
+        std::string chatProject() const override;
 
         // The program: what plays, the editor's draft, the dials. Message thread, and a host's state calls. Declared
         // before the parameters, whose names and texts read controls_ (control()).
@@ -255,11 +268,13 @@ namespace playground
         std::array<std::atomic<float>*, kMaxControls> raw_{};   // the normalised values the audio thread reads
         std::array<juce::RangedAudioParameter*, kMaxControls> params_{};
         // Declared after apvts_, so they are destroyed before the parameters they refer to.
-        std::vector<std::unique_ptr<funkgui::JuceParamPort>> portStore_;
+        std::vector<std::unique_ptr<GesturePort>> portStore_;   // JuceParamPorts that say when the editor moved them
         std::vector<funkgui::ParamPort*> ports_;
 
         Engine engine_;
         Compiler compiler_{ engine_ };                           // after engine_: stops before the Engine goes
+        // What the host plays, recorded for Claude (Capture.h; the audio thread writes it in hostBlock and play).
+        capture::Recorder capture_;
         // Dial values Claude set (slot, plain), applied by poll() on the message thread as host gestures.
         mutable std::mutex dialMutex_;
         // Claude's view_panel: a picture asked for (the agent's thread waits), made by poll() on the message thread.
@@ -300,6 +315,26 @@ namespace playground
         bool wetSet_ = false;
         std::vector<float> weight_;
         std::vector<float> dry_;                                 // an effect's input per channel (stride maxBlock_)
+
+        // What the live tools read (ProcessorLive.cpp): the host's bypass and blocks, set in hostBlock; and the journal
+        // of changes get_status `since` reads (Journal.h), fed by poll() (the dials, the bypass, the transport, the
+        // alerts, the editor's runs) and by the calls that change things (the draft, the projects, the chat's tools).
+        std::atomic<bool> bypassed_{ false };                    // the host's last block was bypassed
+        std::atomic<int> largestHostBlock_{ 0 };                 // since prepareToPlay
+        std::atomic<uint64_t> hostBlocks_{ 0 };                  // processBlock's calls
+        Journal journal_;
+        std::array<std::atomic<float>, kMaxControls> polled_{}; // the dials' normalised values as the journal last saw them
+        bool polledBypass_ = false, polledKnown_ = false, polledPlaying_ = false;   // poll()'s (message thread)
+        float polledBpm_ = 0.0f;
+        double preparedRate_ = 0.0;                              // prepareToPlay's last
+        std::atomic<uint64_t> userRun_{ 0 };                     // the request of the editor's last RUN
+        void journalPoll();                                      // poll(): the dials moved since, the bypass, the transport
+        void syncDials();                                        // the dials as they are now, seen (moves the plugin made)
+        std::atomic<uint32_t> ownDials_{ 0 };                    // the slots the plugin set since (bits; poll()'s writes)
+        void syncOwnDials();                                     // those as they are now, seen: any other move is journalled
+        void journalDraft(const Draft& before, const Draft& after, Journal::Who who);
+        void journalPrepare(double rate, int block);             // prepareToPlay's settings, when they change
+        std::string dialTextOf(int slot, float norm) const;      // slot's value as text, in its units
 
         // The chat with Claude. Declared after the members its turn calls (ChatHost), destroyed before them.
         ChatAgent chat_{ *this, claude::httpsTransport() };

@@ -609,6 +609,7 @@ module Host
                     break;
                 }
         }
+        patch->mapFields();
         patch->reset(sampleRate);
         r.compileMs = msSince(t0);
         r.patch = std::move(patch);
@@ -839,6 +840,185 @@ module Host
                 return *at != 0 ? 1.0f : 0.0f;
         }
         return 0.0f;
+    }
+
+    // ---- the fields (dsp/Debug.h) --------------------------------------------------------------------------------------
+    namespace
+    {
+        constexpr std::size_t kMaxMapped = 4096;       // fields in a map at most
+        constexpr std::size_t kMaxElements = 16;       // an array's elements expanded at most
+        constexpr const char* kLanes[4] = { "x", "y", "z", "w" };   // a float2's or float4's lanes
+
+        struct Mapper
+        {
+            const fminus::Program& program;
+            std::vector<Patch::Field>& out;
+            std::vector<std::string>& left;
+            bool full = false;
+
+            void leave(const std::string& line)
+            {
+                if (left.size() < 64)
+                    left.push_back(line);
+            }
+
+            void add(Patch::Field f)
+            {
+                if (out.size() >= kMaxMapped)
+                {
+                    if (!full)
+                        leave("the rest: the map keeps " + std::to_string(kMaxMapped) + " fields");
+                    full = true;
+                    return;
+                }
+                out.push_back(std::move(f));
+            }
+
+            // One element of type `type` (no array) at `offset`, of `size` bytes, as `path`.
+            void element(const std::string& type, const std::string& path, std::size_t offset, std::size_t size,
+                         const std::string& module, const std::string& name, Patch::Field::Home home, int depth)
+            {
+                Patch::Field f;
+                f.path = path;
+                f.module = module;
+                f.name = name;
+                f.offset = offset;
+                f.home = home;
+                if (type == "float" || type == "int" || type == "bool")
+                {
+                    f.type = type == "float" ? Patch::Field::Type::real
+                           : type == "int"   ? Patch::Field::Type::integer : Patch::Field::Type::boolean;
+                    add(std::move(f));
+                    return;
+                }
+                if (type == "float2" || type == "float4" || type == "float8" || type == "poly float")
+                {
+                    const std::size_t lanes = size / sizeof(float);
+                    for (std::size_t l = 0; l < lanes; ++l)
+                    {
+                        Patch::Field lane = f;
+                        lane.path = path + "." + (lanes <= 4 ? std::string(kLanes[l]) : "s" + std::to_string(l));
+                        lane.offset = offset + l * sizeof(float);
+                        lane.type = Patch::Field::Type::real;
+                        add(std::move(lane));
+                    }
+                    return;
+                }
+                if (const fminus::Program::Module* m = program.module(type); m != nullptr && depth < 16)
+                {
+                    fields(*m, path + ".", offset, home, depth + 1);
+                    return;
+                }
+                leave(path + ": " + type + ", not a number the trace reads");
+            }
+
+            // A module's fields from `base`, their paths after `prefix`.
+            void fields(const fminus::Program::Module& m, const std::string& prefix, std::size_t base, Patch::Field::Home home,
+                        int depth)
+            {
+                for (const fminus::Program::Module::Field& f : m.fields)
+                {
+                    const std::string path = prefix + f.name;
+                    if (f.type.rfind("param ", 0) == 0)
+                        continue;                      // a dial (or a held module's parameter at its default)
+                    if (f.type.find('*') != std::string::npos)
+                    {
+                        const std::string t = squeezed(f.type);
+                        if (!((t == "Shared*" || t == "Host*") && depth == 0))
+                            leave(path + ": " + f.type + ", a pointer, not followed");
+                        continue;                      // Shared* and Host*: mapFields maps what they point at
+                    }
+                    const std::size_t open = f.type.find('[');
+                    std::string type = f.type.substr(0, open);
+                    while (!type.empty() && type.back() == ' ')
+                        type.pop_back();
+                    std::size_t count = 1;
+                    for (std::size_t at = open; at != std::string::npos; at = f.type.find('[', at + 1))
+                        count *= static_cast<std::size_t>(std::max(1L, std::strtol(f.type.c_str() + at + 1, nullptr, 10)));
+                    if (open == std::string::npos)
+                    {
+                        element(type, path, base + f.offset, f.size, m.name, f.name, home, depth);
+                        continue;
+                    }
+                    if (count > kMaxElements)
+                    {
+                        leave(path + ": " + f.type + ", more than " + std::to_string(kMaxElements) + " elements");
+                        continue;
+                    }
+                    const std::size_t each = f.size / count;
+                    for (std::size_t k = 0; k < count; ++k)
+                        element(type, path + "[" + std::to_string(k) + "]", base + f.offset + k * each, each, m.name, f.name,
+                                home, depth);
+                }
+            }
+        };
+    }
+
+    void Patch::mapFields()
+    {
+        fields_.clear();
+        unmapped_.clear();
+        const fminus::Program& program = *s_->program;
+        Mapper map{ program, fields_, unmapped_, false };
+        const fminus::Program::Module* main = program.module(kModule);
+        if (main == nullptr)
+            return;
+        map.fields(*main, "", 0, Field::Home::instance, 0);
+        // What the main module's Shared* and Host* point at, through the first of each (and Host's through Shared's).
+        std::string viaShared, viaHost;
+        for (const fminus::Program::Module::Field& f : main->fields)
+        {
+            const std::string t = squeezed(f.type);
+            if (t == std::string(kSharedModule) + "*" && viaShared.empty())
+                viaShared = f.name;
+            if (t == std::string(kHostModule) + "*" && viaHost.empty())
+                viaHost = f.name;
+        }
+        const fminus::Program::Module* shared = program.module(kSharedModule);
+        if (shared != nullptr && shared_ != nullptr && !viaShared.empty())
+        {
+            map.fields(*shared, viaShared + "->", 0, Field::Home::shared, 0);
+            if (viaHost.empty())
+                for (const fminus::Program::Module::Field& f : shared->fields)
+                    if (squeezed(f.type) == std::string(kHostModule) + "*")
+                    {
+                        viaHost = viaShared + "->" + f.name;
+                        break;
+                    }
+        }
+        if (const fminus::Program::Module* host = program.module(kHostModule); host != nullptr && host_ != nullptr && !viaHost.empty())
+            map.fields(*host, viaHost + "->", 0, Field::Home::host, 0);
+    }
+
+    const void* Patch::instance(int i) const noexcept
+    {
+        return i >= 0 && i < static_cast<int>(instances_.size()) ? instances_[static_cast<std::size_t>(i)] : nullptr;
+    }
+
+    double Patch::read(const Field& f, int i) const noexcept
+    {
+        const void* home = f.home == Field::Home::shared ? shared_ : f.home == Field::Home::host ? host_ : instance(i);
+        if (home == nullptr)
+            return 0.0;
+        const char* at = static_cast<const char*>(home) + f.offset;
+        switch (f.type)
+        {
+            case Field::Type::real:
+            {
+                float v = 0.0f;
+                std::memcpy(&v, at, sizeof v);
+                return static_cast<double>(v);
+            }
+            case Field::Type::integer:
+            {
+                int32_t v = 0;
+                std::memcpy(&v, at, sizeof v);
+                return static_cast<double>(v);
+            }
+            case Field::Type::boolean:
+                return *at != 0 ? 1.0 : 0.0;
+        }
+        return 0.0;
     }
 
     // The front of compile()'s pass 1, kept in step with it: FMinus over the program as written (its messages), then the

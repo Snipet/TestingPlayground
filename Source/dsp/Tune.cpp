@@ -180,6 +180,8 @@ namespace playground::measure
             allMet = allMet || every;
             if (request.progress && !request.progress(out.renders, budget))
                 out.stopped = true;
+            if (request.seconds > 0.0 && std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() >= request.seconds)
+                out.stopped = out.timedOut = true;
             return Point{ x, score };
         };
         const auto goOn = [&] { return out.renders < budget && !out.stopped && !allMet; };
@@ -269,7 +271,7 @@ namespace playground::measure
         const int metBefore = static_cast<int>(std::count(out.startMet.begin(), out.startMet.end(), true));
         std::string t = "Tuned " + std::to_string(n) + " dial" + (n == 1 ? "" : "s") + " in " + std::to_string(out.renders)
                       + " render" + (out.renders == 1 ? "" : "s") + " (" + seconds2(out.seconds)
-                      + (out.stopped ? ", stopped by the user" : "") + "): " + std::to_string(metCount) + " of "
+                      + (out.timedOut ? ", stopped at the time limit: the best so far" : out.stopped ? ", stopped by the user" : "") + "): " + std::to_string(metCount) + " of "
                       + std::to_string(request.goals.size()) + " goals met (" + std::to_string(metBefore)
                       + " as the dials were).\n";
         if (metBefore == static_cast<int>(request.goals.size()) && out.renders == 1)

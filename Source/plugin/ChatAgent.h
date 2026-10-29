@@ -20,8 +20,8 @@
 // checks) while a check fails gets the results back as the user's line and the turn goes on, kMaxCheckNudges times a
 // turn at most (a turn that only talks is never sent on); clearChecks (the card's Clear) and an empty set_checks stop
 // it. The session keeps the checks. tune_dials (dsp/Tune.h) searches up to eight float dials for goals by rendering
-// offline (up to 400 renders, the activity counting them, the stop button ending the search with the best so far) and
-// sets the best values as set_dial does.
+// offline (up to 400 renders and `seconds`, 120 by default and 170 at most, the activity counting them, the stop button
+// or the time limit ending the search with the best so far) and sets the best values as set_dial does.
 //
 // A planner (setPlanner, chat.json "planner"): a second model plans each of the user's requests before the chosen one
 // builds it (Claude Fable 5.1 planning the DSP and the architecture, Claude Sonnet 5.5 writing, running and testing).
@@ -105,15 +105,18 @@
 // of their own, so the message thread never waits for them.
 #pragma once
 
+#include "plugin/Capture.h"
 #include "plugin/ChatPort.h"
 #include "plugin/ClaudeApi.h"
 #include "plugin/EditorPort.h"
+#include "plugin/Live.h"
 
 #include "dsp/Compiler.h"
 #include "dsp/Controls.h"
 #include "dsp/Goals.h"
 #include "dsp/Sources.h"
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -147,6 +150,22 @@ namespace playground
         virtual uint32_t chatAlerts() const = 0;
         // A picture of the panel (view_panel), made on the message thread; this thread waits for it (10 s at most).
         virtual PanelPicture chatPicture(bool window, const std::string& page) = 0;
+        // For the live tools (listen, get_status: any thread, beside a running call; Live.h): what plays now; a tool
+        // that listens (the meters and the scopes are measured only while one does, on: true while it listens); what
+        // changed since a token (Journal.h; `issue`: the token returned is handed out); the dials' options' names.
+        virtual void chatLive(LiveRead& io) const = 0;
+        virtual void chatListening(bool on) = 0;
+        virtual Changes chatChanges(const std::string& since, bool issue) = 0;
+        virtual std::array<std::vector<std::string>, kMaxControls> chatDialOptions() const = 0;
+        // The recorder (plugin/Capture.h; the capture tool): arm a recording (the program's own code plays while it is
+        // armed), stop it (its take kept), take (the take kept), status, forget (all of it freed, off the audio thread).
+        // stop and status are live (CLAUDE.md, "A live tool"): the recorder's own mutex and atomics only.
+        virtual capture::Reply chatCapture(capture::Action action, const capture::Options& options) = 0;
+        // For a render's "host" (ChatScenario.h): the host's sample rate and its largest block (0: not known); and the
+        // project open in the editor (compare's version:N and preset:Name; "" for none).
+        virtual double chatHostRate() const { return 0.0; }
+        virtual int chatHostBlock() const { return 0; }
+        virtual std::string chatProject() const { return {}; }
     };
 
     class ChatAgent final : public ChatPort
@@ -193,21 +212,46 @@ namespace playground
         // The program in several files the system prompt shows, for this plugin's kind (the program first).
         static Sources promptExample();
         static juce::var toolDefinitions();
+        static juce::var compareDefinition();                       // compare's (ChatCompare.cpp)
+        static juce::var traceDefinition();                         // trace's (ChatTrace.cpp)
 
         // MCP (plugin/McpLink.h): an assistant outside the plugin (Claude Desktop, through mcp/Main.cpp) working with the
-        // chat's own tools. mcpTools(): toolDefinitions() but ask_user and ask_planner, in MCP's form ({ name,
-        // description, inputSchema }); mcpGuide(): the system prompt after a word on working from outside. mcpCall() runs
-        // one tool as a turn's would, on the caller's thread: refused while a turn of the chat runs; while it runs the
-        // chat is busy (nothing can be sent; its stop button cancels a search), its activity says so, and what it did
-        // shows in the conversation. Its content is MCP's: text blocks and images ({ type, data, mimeType }).
+        // chat's own tools. mcpTools(): toolDefinitions() but ask_user and ask_planner, in MCP's form ({ name, title,
+        // description, inputSchema, annotations }), each description cut to its first paragraph (its first sentence when
+        // it has one: Claude Desktop puts the tools in every conversation), view_panel and view_sound with MCP's own
+        // `detail`. mcpGuide(): a word on working from outside, the system prompt, then what the descriptions lost (THE
+        // TOOLS: WHAT THEIR SHORT DESCRIPTIONS LEAVE OUT, each tool's in its guide part); mcpGuidePart(): a part of it
+        // (mcp/McpGuide.h; library:<file>:code from the library, adding nothing to the editor).
+        //
+        // mcpCall() runs one tool as a turn's would, on the caller's thread: refused while a turn of the chat runs; while
+        // it runs the chat is busy (nothing can be sent; its stop button cancels a search), its activity says so, and what
+        // it did shows in the conversation. `call` numbers it for mcpCancel (0: none), which stops it from any thread
+        // (as the stop button would, but a tune stopped so leaves the dials as they were); a cancel that comes before the
+        // call starts still counts. A live call (mcpLive: a read of what plays now) runs beside a running one, without
+        // the busy state, and is never refused. Its content is MCP's: text blocks and images ({ type, data, mimeType }),
+        // each picture at most kMcpPictureBytes (made smaller to fit, the text saying what was sent) unless its
+        // arguments ask for `detail` "high".
         struct McpResult
         {
             juce::var content;
             bool isError = false;
         };
+        static constexpr std::size_t kMcpPictureBytes = 75000;      // 100,000 characters in base64
         static juce::var mcpTools();
         static std::string mcpGuide();
-        McpResult mcpCall(const std::string& name, const juce::var& arguments);
+        static std::string mcpGuidePart(const std::string& part, bool& found);
+        // The calls that run on the MCP link's poll thread, beside a running call, without the busy state: get_status
+        // (ChatHost's locked getters and atomics, the journal), listen (the meters, the scopes, the blocks' ring), and
+        // capture's status and stop. One line a tool; such a tool keeps CLAUDE.md's live-tool contract.
+        static bool mcpLive(const std::string& name, const juce::var& arguments);
+        // Of the live calls, those that take seconds (listen): the link runs each on a thread of its own, so its poll
+        // thread stays free (McpLink.h). One line a tool.
+        static bool mcpLiveWaits(const std::string& name);
+        McpResult mcpCall(const std::string& name, const juce::var& arguments, uint64_t call = 0);
+        void mcpCancel(uint64_t call);
+        // A call of Claude Desktop's that is not live runs (any thread): what it changes is its own, which get_status
+        // `since` does not report back to it (the Processor's journal asks).
+        bool mcpWorking() const noexcept { return mcpWorking_.load(); }
 
     private:
         static claude::Headers headersFor(const std::string& key);  // the key and the API version
@@ -218,6 +262,9 @@ namespace playground
         juce::var buildRequest(std::string& beta) const;
         std::string contextBlock();                                 // the plugin's state, when it changed
         juce::var runTool(const juce::var& toolUse);               // a tool_result block
+        juce::var compareTool(const juce::var& toolUse);           // compare's (ChatCompare.cpp)
+        juce::var traceTool(const juce::var& toolUse);             // trace's (ChatTrace.cpp)
+        juce::var captureTool(const juce::var& toolUse);           // capture's (ChatCapture.cpp)
         std::string toolText(const std::string& name, const juce::var& input, bool& isError);
         // The checks measured on the editor's files and the plugin's dials: their entry brought up to date, and the
         // results in words for Claude ("" with no checks). The worker's.
@@ -250,7 +297,8 @@ namespace playground
         void dropThinking();                                        // the history without thinking (mutex held)
         int maxTokensFor(const std::string& id) const;              // a request's max_tokens (mutex held)
         static std::string promptPrint();                           // the system prompt's and tools' hash
-        void markSeen(const std::string& name, const std::string& text);   // Claude knows this text (mutex held)
+        void markSeen(const std::string& name, const std::string& text);   // the chat's Claude knows this text (mutex
+                                                                    // held; Claude Desktop's views mark nothing here)
         void addEntry(ChatEntry::Kind kind, std::string text);     // mutex held
         void appendToLast(ChatEntry::Kind kind, std::string_view text);   // mutex held
         void setActivity(std::string activity);
@@ -278,7 +326,8 @@ namespace playground
         std::string usage_;
         std::string key_;                                           // loaded on first use
         std::string keyProblem_;
-        std::map<std::string, uint64_t> seen_;                      // file name -> the text Claude saw (hashText)
+        std::map<std::string, uint64_t> seen_;                      // file name -> the text the chat's Claude saw
+                                                                    // (hashText; Claude Desktop's: mcpMarks_)
         uint64_t lastSignature_ = 0;                                // the plugin's state as Claude last got it
         bool resendState_ = false;                                  // a summary came: the state goes with what follows
         std::vector<std::string> requests_;                         // bodies sent (probes)
@@ -300,8 +349,41 @@ namespace playground
         int attaching_ = 0;                                         // files the job thread still reads
         uint64_t attachEpoch_ = 0;                                  // a new chat: files read for the old one go
 
+        // The live tools (Live.cpp). liveTool: listen and get_status, from a turn (`caller` none: the stop button stops
+        // listen) or from MCP (by its call's number: mcpCancel stops it); other live calls go to runTool. MCP's own view
+        // (never the chat's seen_: what one Claude saw the other did not): the files' texts at each token get_status
+        // gave it (a mark; `since` diffs against its token's, so each conversation of a server shared by several has
+        // its own), and the journal's token at its last result (the hint a result starts with when something changed
+        // since: one for the instance, whichever conversation called).
+        struct LiveCall
+        {
+            bool mcp = false;
+            uint64_t call = 0;
+        };
+        struct McpMark
+        {
+            std::string token;
+            std::shared_ptr<const std::vector<SourceFile>> files;   // shared while they stay the same
+        };
+        static constexpr std::size_t kMcpMarks = 16;                // the newest tokens' files kept
+        static constexpr std::size_t kMcpStopped = 64;              // cancels kept for calls not started (the newest)
+        static juce::var statusDefinition();                        // get_status's (toolDefinitions)
+        static juce::var listenDefinition();                        // listen's
+        juce::var liveTool(const juce::var& use, const LiveCall& caller);
+        std::string listenText(const juce::var& input, const std::function<bool()>& stopped, bool& isError);
+        std::string statusText(const juce::var& input, bool mcp, bool& isError);
+        std::string mcpHint();                                      // "" when nothing changed since MCP's last result
+        std::mutex liveMutex_;                                      // the members below (a leaf)
+        std::deque<McpMark> mcpMarks_;                              // the newest kMcpMarks tokens MCP was given
+        std::set<uint64_t> mcpStopped_;                             // MCP calls cancelled that are not the one running
+                                                                    // (a listen, one about to start): mcpCancel's
+        std::string mcpLook_;                                       // the journal's token at MCP's last result
+        std::atomic<bool> mcpWorking_{ false };                     // a call of Claude Desktop's, not live, runs
+
         std::atomic<bool> cancel_{ false };
         bool mcpNoted_ = false;                                      // the conversation says Claude Desktop is at work
+        uint64_t mcpRunning_ = 0;                                   // the MCP call running (its number; mutex held)
+        std::atomic<uint64_t> mcpCancelled_{ 0 };                   // the MCP call last cancelled
         std::thread worker_;
         // Pictures to read: jobs run in order on one thread, started on first use, so the message thread never waits
         // for them.

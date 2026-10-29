@@ -120,7 +120,9 @@ namespace playground
             const double after = freezeAfter_;
             lock.unlock();
             DialState d;
-            if (on && engine_.dials(d) && d.program != 0)
+            if (engine_.ownCode())
+                triedProgram_ = 0;                     // a recording plays the program's own code: after it, try again
+            else if (on && engine_.dials(d) && d.program != 0)
             {
                 if (d.stillSeconds < after)
                     triedProgram_ = 0;                 // a dial moved: any values may be tried again

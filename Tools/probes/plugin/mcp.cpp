@@ -3,33 +3,58 @@
 // plugin.mcp: Claude Desktop's way into the plugin (plugin/McpLink.h, mcp/Main.cpp), in a folder of the probe's own:
 //   LINK     a processor listens on a private socket in the folder (0600, the folder 0700) and leaves tools.json and
 //            guide.md there; info names its kind, plugin and files; tools are the chat's, but ask_user and
-//            ask_planner; the guide says it is driven from outside, then the system prompt
+//            ask_planner, each MCP description its first sentence or paragraph (tools.json's size printed, with the
+//            full descriptions for comparison, and compact), a setting's description given once (view_sound's render
+//            settings, set_checks' goals: not again in a check's or tune_dials'); the guide's start says it is driven
+//            from outside; a guide request naming no part (a 0.2.0 server's) gets the whole guide
+//   GUIDE    the guide in parts (mcp/McpGuide.h): start (working from outside, FMINUS, DSP PRACTICE, CHECKING, the
+//            notes of the tools it uses and the other parts named; its size printed, in bytes and about tokens),
+//            large-program (with THREADS), interface, library (a line a file), debugging (the notes of listen, capture,
+//            trace and compare, not in start), examples, projects, all (the system prompt whole);
+//            library:<file> its header, library:<file>:code its whole text with no tab added to the editor; an unknown
+//            part refused, naming the parts
 //   CALL     write_file through the socket writes the processor's draft (the chat's card notes Claude Desktop once);
 //            run_program compiles and plays it; a dial set reads back at once (before the message thread applies it);
 //            read_file gives it back; view_panel answers with a PNG; an unknown
 //            tool, and ask_user, are errors
+//   WAVE     on a second connection, with a slow program in the editor: get_status and info answered while a tune runs
+//            (each reply a whole line); the tune cancelled, its dial as it was; a call waiting behind it cancelled,
+//            answered at once; a tune with a time limit of a second stops there with the best so far; pictures fit
+//            (view_panel's window and view_sound at most 100,000 base64 characters, the text saying what was sent;
+//            detail "high" the picture whole)
+//   CROSSING a large request (half a megabyte) sent while the link answers the guide's start (more than the socket's
+//            buffers hold), without reading meanwhile: the link keeps reading, so the request goes through; then both
+//            replies come, whole lines
 //   NAMES    the first processor is "Synth 1" ("Effect 1"), its socket 1.sock; a second one "Synth 2"
 //   SERVER   the server program (<Name>MCP) over stdio, as Claude Desktop runs it: initialize (its protocol version,
-//            tools with listChanged, prompts, instructions that keep tools and ids from the user), tools/list
-//            (list_instances, playground_guide and the chat's tools, each with `instance` and a title in words, the
-//            ones that only look marked read-only), list_instances naming this processor by its name, get_status and
-//            write_file routed to it, playground_guide; the processor then knows Claude Desktop is connected, and
-//            its port says so with its name; the prompts (Make a sound, Improve the sound, Explain the sound), one
-//            filled in with the user's words
+//            2025-11-25 too, tools with listChanged, prompts, instructions that keep tools and ids from the user),
+//            tools/list (list_instances, playground_guide and the chat's tools, each with `instance` and a title in
+//            words, the ones that only look marked read-only), list_instances naming this processor by its name,
+//            get_status and write_file routed to it, playground_guide (its start, and a part); the processor then knows
+//            Claude Desktop is connected, and its port says so with its name; the prompts (Make a sound, Improve the
+//            sound, Explain the sound, Fix what I hear), one filled in with the user's words, fix_what_i_hear naming no
+//            tool and carrying the plugin's state
+//   DEADLINE a server whose calls may take 1.5 s: a tune past it is answered then ("still running"), once, while
+//            list_instances and get_status answer meanwhile; the plugin stops the tune (its dial as it was) and stays
+//            reachable
+//   STUCK    an instance that never reads (a socket nobody accepts on): a large call to it waits in the server's
+//            outbox, a ping is answered meanwhile, and the call is answered at its deadline
 //   MATCH    a second processor, on the track "Bass Line" with the project "Moog Bass": `instance` reaches it by its
 //            name, by "2", by its track's name in another case, by part of its project's; a word matching nothing
 //            describes both so that Claude asks; a fresh server, with both open and none named, asks which one
 //   GONE     a processor gone, its socket goes; the server, asked again, finds the one left; the server gone, the
-//            processor no longer counts as connected; with none open, a call says to open the plugin, and the tools
-//            still list (from tools.json)
+//            processor no longer counts as connected; with none open, a call says to open the plugin, the tools
+//            still list (from tools.json) and the guide's parts come from guide.md, as the plugin gave them
 #include "Probe.h"
 
+#include "mcp/McpGuide.h"
 #include "mcp/McpProtocol.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
 #include "plugin/McpLink.h"
 #include "plugin/Processor.h"
 
+#include "Library.h"
 #include "Product.h"
 
 #include <funkgui/panel/HeadlessGuiScope.h>
@@ -38,6 +63,10 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <csignal>
+#include <fcntl.h>
+#include <map>
+#include <poll.h>
 #include <spawn.h>
 #include <string>
 #include <sys/stat.h>
@@ -65,6 +94,25 @@ namespace
                            : "module Effect\n{\n    param float level [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
                              "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
                              "        for (int i = 0; i < n; ++i) { left[i] *= level[i]; right[i] *= level[i]; }\n    }\n};\n";
+    }
+
+    // The same, but slow (a few hundred operations a sample): a tune's renders take a while, so it can be cancelled.
+    std::string slowProgram()
+    {
+        return kInstrument ? "module Voice\n{\n    param float level [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
+                             "    bool held;\n    float phase;\n"
+                             "    void start(float n, float v) { held = true; }\n    void stop() { held = false; }\n"
+                             "    bool process(float* restrict left, float* restrict right, int n)\n    {\n"
+                             "        for (int i = 0; i < n; ++i) { phase += 0.01f; if (phase > 1.0f) phase -= 1.0f;\n"
+                             "            float x = phase - 0.5f;\n"
+                             "            for (int k = 0; k < 300; ++k) x = x * 0.9999f + 0.00001f;\n"
+                             "            left[i] += level[i] * x; right[i] += level[i] * x; }\n"
+                             "        return held;\n    }\n};\n"
+                           : "module Effect\n{\n    param float level [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
+                             "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                             "        for (int i = 0; i < n; ++i) { float x = left[i];\n"
+                             "            for (int k = 0; k < 300; ++k) x = x * 0.9999f + 0.00001f;\n"
+                             "            left[i] = x * level[i]; right[i] *= level[i]; }\n    }\n};\n";
     }
 
     juce::var object(std::initializer_list<std::pair<const char*, juce::var>> props)
@@ -106,6 +154,158 @@ namespace
         return {};
     }
 
+    bool has(const std::string& text, const std::string& part) { return text.find(part) != std::string::npos; }
+
+    // tune_dials on `level` toward a level it cannot reach, over long renders: it runs until stopped, or `seconds`.
+    juce::var tuneCall(double seconds)
+    {
+        juce::Array<juce::var> tune{ "level" }, goals;
+        goals.add(kInstrument ? object({ { "metric", "rms_db" }, { "target", 20.0 } }) : object({ { "metric", "sine_gain_db" }, { "target", 30.0 } }));
+        return object({ { "name", "tune_dials" },
+                        { "arguments", object({ { "tune", tune }, { "goals", goals }, { "budget", 400 }, { "hold_seconds", 10.0 },
+                                                { "tail_seconds", 0.2 }, { "seconds", seconds } }) } });
+    }
+
+    // Until the chat's activity starts with `what` (the message thread's work done meanwhile); false after `ms`.
+    bool waitActivity(pg::Processor& p, const char* what, int ms)
+    {
+        const auto t0 = std::chrono::steady_clock::now();
+        while (std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(ms))
+        {
+            if (p.chatAgent().chatState().activity.rfind(what, 0) == 0)
+                return true;
+            p.poll();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return false;
+    }
+
+    // Until the chat is no longer busy (an MCP call ended); false after `ms`.
+    bool waitIdle(pg::Processor& p, int ms)
+    {
+        const auto t0 = std::chrono::steady_clock::now();
+        while (std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(ms))
+        {
+            if (!p.chatAgent().chatState().busy)
+                return true;
+            p.poll();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return false;
+    }
+
+    // A dial's value as get_status says it ("now 0.25").
+    bool dialNow(pg::Processor& p, const std::string& value)
+    {
+        p.poll();
+        const pg::ChatAgent::McpResult status = p.chatAgent().mcpCall("get_status", juce::var(new juce::DynamicObject()));
+        std::string said;
+        if (const juce::Array<juce::var>* c = status.content.getArray())
+            said = (*c)[0]["text"].toString().toStdString();
+        return said.find("level: float [0, 1] default 0.50, now " + value + "\n") != std::string::npos;
+    }
+
+    // A link's socket as the server uses it: several requests in flight, their replies read as they come (each line
+    // counted, and those that are whole JSON objects), the processor's message-thread work done meanwhile.
+    struct Wire
+    {
+        pg::Processor& p;
+        int fd;
+        pg::mcp::LineReader r;
+        std::vector<juce::var> got;                      // the replies, in the order they came
+        int lines = 0, whole = 0;
+
+        Wire(pg::Processor& proc, int f) : p(proc), fd(f), r(f) {}
+
+        bool send(int id, const char* method, const juce::var& params)
+        {
+            return pg::mcp::writeLine(fd, line(object({ { "id", id }, { "method", method }, { "params", params } })));
+        }
+
+        int position(int id) const
+        {
+            for (std::size_t k = 0; k < got.size(); ++k)
+                if (static_cast<int>(got[k]["id"]) == id)
+                    return static_cast<int>(k);
+            return -1;
+        }
+
+        // The reply to `id` (void when none comes within `ms`).
+        juce::var wait(int id, int ms)
+        {
+            const auto t0 = std::chrono::steady_clock::now();
+            for (;;)
+            {
+                if (const int k = position(id); k >= 0)
+                    return got[static_cast<std::size_t>(k)];
+                if (std::chrono::steady_clock::now() - t0 > std::chrono::milliseconds(ms))
+                    return {};
+                std::string l;
+                const int n = r.next(l, 5);
+                if (n < 0)
+                    return {};
+                if (n == 1)
+                {
+                    ++lines;
+                    const juce::var v = juce::JSON::parse(juce::String::fromUTF8(l.c_str()));
+                    whole += v.isObject() ? 1 : 0;
+                    got.push_back(v);
+                }
+                p.poll();
+            }
+        }
+    };
+
+    // `text` written to `fd` without reading from it meanwhile: false when the other end stops taking it for `ms` (it
+    // waits for this end to read what it sent).
+    bool writeWithin(int fd, const std::string& text, int ms)
+    {
+        const int flags = fcntl(fd, F_GETFL, 0);
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        std::size_t sent = 0;
+        auto last = std::chrono::steady_clock::now();
+        while (sent < text.size() && std::chrono::steady_clock::now() - last < std::chrono::milliseconds(ms))
+        {
+            const ssize_t n = send(fd, text.data() + sent, text.size() - sent, 0);
+            if (n > 0)
+            {
+                sent += static_cast<std::size_t>(n);
+                last = std::chrono::steady_clock::now();
+                continue;
+            }
+            if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR && errno != ENOBUFS)
+                break;
+            pollfd p{ fd, POLLOUT, 0 };
+            poll(&p, 1, 20);
+        }
+        fcntl(fd, F_SETFL, flags);
+        return sent == text.size();
+    }
+
+    // A picture in a tool's result: its base64 characters, its type, and the text after it.
+    struct Picture
+    {
+        std::size_t chars = 0;
+        std::string type, text;
+    };
+
+    Picture pictureOf(const juce::var& result)
+    {
+        Picture out;
+        if (const juce::Array<juce::var>* c = result["content"].getArray())
+            for (const juce::var& b : *c)
+            {
+                if (b["type"].toString() == "image")
+                {
+                    out.chars = static_cast<std::size_t>(b["data"].toString().length());
+                    out.type = b["mimeType"].toString().toStdString();
+                }
+                else if (b["type"].toString() == "text")
+                    out.text += b["text"].toString().toStdString() + "\n";
+            }
+        return out;
+    }
+
     bool hasTool(const juce::var& tools, const char* name)
     {
         if (const juce::Array<juce::var>* a = tools.getArray())
@@ -145,26 +345,46 @@ namespace
             return rc == 0;
         }
 
-        // A request and its reply (a notification before it is skipped), the processors' work done meanwhile.
-        juce::var request(std::vector<pg::Processor*> ps, const char* method, const juce::var& params)
+        std::map<int, juce::var> early;                  // replies read while waiting for another's
+        std::vector<int> order;                          // the ids of the replies, in the order they came
+        int lines = 0, whole = 0;
+
+        // A request sent, its reply not waited for: its id.
+        int post(const char* method, const juce::var& params)
         {
             const int id = next++;
+            const std::string msg = line(object({ { "jsonrpc", "2.0" }, { "id", id }, { "method", method }, { "params", params } })) + "\n";
+            [[maybe_unused]] const ssize_t n = write(in, msg.data(), msg.size());
+            return id;
+        }
+
+        // The reply to `id` (a notification, or another's reply, kept aside), the processors' work done meanwhile.
+        juce::var wait(std::vector<pg::Processor*> ps, int id, int ms = 60000)
+        {
+            if (const auto it = early.find(id); it != early.end())
+                return it->second;
             std::atomic<bool> done{ false };
             juce::var reply;
             std::thread t([&] {
-                const std::string msg = line(object({ { "jsonrpc", "2.0" }, { "id", id }, { "method", method }, { "params", params } })) + "\n";
-                if (write(in, msg.data(), msg.size()) == static_cast<ssize_t>(msg.size()))
+                std::string got;
+                const auto t0 = std::chrono::steady_clock::now();
+                while (std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(ms) && reader->next(got, 100) >= 0)
                 {
-                    std::string got;
-                    while (reader->next(got, 60000) == 1)
+                    if (got.empty())
+                        continue;
+                    ++lines;
+                    const juce::var v = juce::JSON::parse(juce::String::fromUTF8(got.c_str()));
+                    got.clear();
+                    whole += v.isObject() ? 1 : 0;
+                    if (!v.hasProperty("id"))
+                        continue;
+                    order.push_back(static_cast<int>(v["id"]));
+                    if (static_cast<int>(v["id"]) == id)
                     {
-                        const juce::var v = juce::JSON::parse(juce::String::fromUTF8(got.c_str()));
-                        if (v.hasProperty("id") && static_cast<int>(v["id"]) == id)
-                        {
-                            reply = v;
-                            break;
-                        }
+                        reply = v;
+                        break;
                     }
+                    early[static_cast<int>(v["id"])] = v;
                 }
                 done.store(true);
             });
@@ -176,6 +396,27 @@ namespace
             }
             t.join();
             return reply;
+        }
+
+        // A request and its reply.
+        juce::var request(std::vector<pg::Processor*> ps, const char* method, const juce::var& params)
+        {
+            return wait(std::move(ps), post(method, params));
+        }
+
+        // The replies that come within `ms` (the processors' work done meanwhile), by id.
+        std::vector<int> drain(std::vector<pg::Processor*> ps, int ms)
+        {
+            const std::size_t from = order.size();
+            wait(std::move(ps), -1, ms);
+            return { order.begin() + static_cast<std::ptrdiff_t>(from), order.end() };
+        }
+
+        // Gone at once (a server stuck writing would never see its stdin close).
+        void kill()
+        {
+            if (pid > 0)
+                ::kill(pid, SIGKILL);
         }
 
         void stop()
@@ -225,8 +466,122 @@ PROBE(plugin, mcp)
     const juce::var tools = ask(*a, r, 2, "tools", {})["result"];
     P.eq("link.tools", hasTool(tools, "write_file") && hasTool(tools, "run_program") && hasTool(tools, "view_panel")
                            && !hasTool(tools, "ask_user") && !hasTool(tools, "ask_planner") ? 1 : 0, 1);
-    const std::string guide = ask(*a, r, 3, "guide", {})["result"].toString().toStdString();
-    P.eq("link.guide", guide.rfind("WORKING FROM OUTSIDE THE PLUGIN", 0) == 0 && guide.find(pg::ChatAgent::systemPrompt()) != std::string::npos ? 1 : 0, 1);
+    {
+        // Each MCP description is the chat's first sentence (or paragraph); tools.json's size, and with the full ones.
+        const juce::var full = pg::ChatAgent::toolDefinitions();
+        juce::var whole = juce::JSON::parse(juce::JSON::toString(tools));
+        bool leads = tools.size() > 0;
+        if (const juce::Array<juce::var>* t = whole.getArray())
+            for (const juce::var& tool : *t)
+                if (const juce::Array<juce::var>* f = full.getArray())
+                    for (const juce::var& d : *f)
+                        if (d["name"] == tool["name"])
+                        {
+                            const juce::String lead = tool["description"].toString();
+                            leads = leads && lead.isNotEmpty() && d["description"].toString().startsWith(lead)
+                                 && (lead == d["description"].toString() || lead.endsWithChar('.'));
+                            tool.getDynamicObject()->setProperty("description", d["description"]);
+                        }
+        const juce::int64 size = folder.getChildFile("tools.json").getSize();
+        std::printf("tools.json: %lld bytes (with the chat's full descriptions: %d bytes)\n", static_cast<long long>(size),
+                    juce::JSON::toString(whole, false).length());
+        std::string each;
+        if (const juce::Array<juce::var>* t = tools.getArray())
+            for (const juce::var& tool : *t)
+                each += " " + tool["name"].toString().toStdString() + " " + std::to_string(juce::JSON::toString(tool, false).length())
+                      + " (" + std::to_string(juce::JSON::toString(tool["inputSchema"], false).length()) + ")";
+        std::printf("tools.json by tool, bytes (its schema's):%s\n", each.c_str());
+        P.eq("link.tools_short", leads ? 1 : 0, 1);
+        // A setting described once: a goal's min keeps its words in set_checks and leaves them out in tune_dials; one
+        // with a number in its words (hold_seconds: a default and a cap) keeps them in every copy.
+        juce::var viewSound, setChecks, tuneDials;
+        if (const juce::Array<juce::var>* t = tools.getArray())
+            for (const juce::var& tool : *t)
+            {
+                const juce::String name = tool["name"].toString();
+                if (name == "view_sound")
+                    viewSound = tool;
+                else if (name == "set_checks")
+                    setChecks = tool;
+                else if (name == "tune_dials")
+                    tuneDials = tool;
+            }
+        P.eq("link.tools_described_once",
+             viewSound["inputSchema"]["properties"]["hold_seconds"].hasProperty("description")
+                     && tuneDials["inputSchema"]["properties"]["hold_seconds"].hasProperty("description")
+                     && setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["hold_seconds"].hasProperty("description")
+                     && !tuneDials["inputSchema"]["properties"]["goals"]["items"]["properties"]["min"].hasProperty("description")
+                     && setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["min"].hasProperty("description")
+                 ? 1 : 0, 1);
+        // The first MCP wave's budget (tools.json as the link writes it, pretty-printed; Desktop gets it compact).
+        std::printf("tools.json compact: %d bytes\n", juce::JSON::toString(tools, true).length());
+        P.le("link.tools_bytes", static_cast<double>(size), 25000.0);
+    }
+    const std::string guide = ask(*a, r, 3, "guide", object({ { "part", "start" } }))["result"].toString().toStdString();
+    P.eq("link.guide", guide.rfind("WORKING FROM OUTSIDE THE PLUGIN", 0) == 0 ? 1 : 0, 1);
+    // A 0.2.0 server asks for the guide with no part, and has no way to ask for the others: it gets all of it.
+    const std::string unnamed = ask(*a, r, 10, "guide", {})["result"].toString().toStdString();
+    P.eq("link.guide_unnamed_whole", unnamed == pg::ChatAgent::mcpGuide() && unnamed != guide ? 1 : 0, 1);
+
+    // ---- GUIDE -----------------------------------------------------------------------------------------------------------
+    std::string interfacePart;
+    {
+        int id = 100;
+        const auto part = [&](const std::string& name) { return ask(*a, r, id++, "guide", object({ { "part", juce::String(name) } })); };
+        const auto text = [&](const std::string& name) { return part(name)["result"].toString().toStdString(); };
+        const std::string all = text("all");
+        P.eq("guide.all", all.rfind("WORKING FROM OUTSIDE THE PLUGIN", 0) == 0 && has(all, pg::ChatAgent::systemPrompt()) ? 1 : 0, 1);
+        P.eq("guide.start", has(guide, "\nFMINUS, THE LANGUAGE\n") && has(guide, "\nDSP PRACTICE IN THIS PLUGIN\n")
+                                && has(guide, "\nCHECKING YOUR WORK\n") && has(guide, "\nTHE OTHER PARTS OF THIS GUIDE\n")
+                                && has(guide, "<tool name=\"write_file\" part=\"start\">") && has(guide, "\"library:<file>:code\"")
+                                && !has(guide, "\nTHE INTERFACE: panel.gui\n") && !has(guide, "<library_file")
+                                && !has(guide, "\nBUILDING A LARGE PROGRAM\n") && !has(guide, "\nTHREADS: parallel for")
+                                && !has(guide, "<tool name=\"trace\"") && has(guide, "- \"debugging\": ")
+                                && guide == text("start") ? 1 : 0, 1);
+        std::printf("guide: start %zu bytes (about %zu tokens); all %zu bytes (about %zu tokens)\n", guide.size(), guide.size() / 4,
+                    all.size(), all.size() / 4);
+        P.le("guide.start_tokens", static_cast<double>(guide.size() / 4), kInstrument ? 9100.0 : 8000.0);   // the first MCP wave's
+        const std::string large = text("large-program");
+        interfacePart = text("interface");
+        const std::string library = text("library"), examples = text("examples"), projects = text("projects");
+        const std::string debugging = text("debugging");
+        std::printf("guide parts: large-program %zu, interface %zu, library %zu, debugging %zu, examples %zu, projects %zu bytes\n",
+                    large.size(), interfacePart.size(), library.size(), debugging.size(), examples.size(), projects.size());
+        for (const auto& [name, body] : { std::pair<const char*, const std::string*>{ "start", &guide }, { "large-program", &large },
+                                          { "interface", &interfacePart }, { "library", &library }, { "debugging", &debugging },
+                                          { "examples", &examples }, { "projects", &projects } })
+            juce::File(juce::String(probe::outPath(std::string("plugin.mcp.guide.") + name + ".md"))).replaceWithText(juce::String::fromUTF8(body->c_str()));
+        juce::File(juce::String(probe::outPath("plugin.mcp.tools.json"))).replaceWithText(juce::JSON::toString(tools, false));
+        P.eq("guide.large_program", large.rfind("BUILDING A LARGE PROGRAM\n", 0) == 0 && has(large, "\nTHREADS: parallel for")
+                                        && has(large, "\nA PROGRAM BUILT FROM THE LIBRARY")
+                                        && has(large, "<example_program") && !has(large, "\nTHE INTERFACE: panel.gui\n") ? 1 : 0, 1);
+        P.eq("guide.interface", interfacePart.rfind("THE INTERFACE: panel.gui\n", 0) == 0 && has(interfacePart, "<tool name=\"view_panel\"")
+                                    && !has(interfacePart, "<library_file") ? 1 : 0, 1);
+        int listed = 0;
+        for (const pg::LibraryFile& f : pg::kLibrary)
+            listed += has(library, std::string("\n- ") + f.name + " (" + f.category + "): " + f.summary + "\n") ? 1 : 0;
+        P.eq("guide.library", library.rfind("THE LIBRARY\n", 0) == 0 && has(library, "<tool name=\"add_library_file\"")
+                                  && !has(library, "<library_file") && listed == static_cast<int>(std::size(pg::kLibrary)) ? 1 : 0, 1);
+        P.eq("guide.debugging", debugging.rfind(std::string(pg::mcp::guide::kDebugging) + "\n", 0) == 0
+                                    && has(debugging, "<tool name=\"listen\" part=\"debugging\">") && has(debugging, "<tool name=\"capture\"")
+                                    && has(debugging, "<tool name=\"trace\"") && has(debugging, "<tool name=\"compare\"")
+                                    && !has(debugging, "<tool name=\"get_status\"") && !has(debugging, "<library_file") ? 1 : 0, 1);
+        P.eq("guide.examples", examples.rfind("THIS PLUGIN'S EXAMPLES", 0) == 0 && has(examples, "<example title=") ? 1 : 0, 1);
+        P.eq("guide.projects", projects.rfind("RANDOM AND PROJECTS\n", 0) == 0 && !has(projects, "<tool name=") ? 1 : 0, 1);
+        const pg::LibraryFile& lib = pg::kLibrary[0];
+        const std::string header = text(std::string("library:") + lib.name);
+        const std::string firstLine = std::string(lib.source).substr(0, std::string(lib.source).find('\n'));
+        P.eq("guide.library_file", header.rfind(std::string("<library_file name=\"") + lib.name + "\"", 0) == 0 && has(header, firstLine)
+                                       && header.size() < std::string(lib.source).size() ? 1 : 0, 1);
+        const pg::Draft before = a->editorPort().draft();
+        const std::string code = text(std::string("library:") + lib.name + ":code");
+        a->poll();
+        const pg::Draft after = a->editorPort().draft();
+        P.eq("guide.library_code", has(code, lib.source) && before.files.size() == after.files.size() && before.files == after.files ? 1 : 0, 1);
+        const juce::var unknown = part("nonsense");
+        std::printf("unknown part: %s\n", unknown["error"].toString().toRawUTF8());
+        P.eq("guide.unknown", unknown.hasProperty("error") && unknown["error"].toString().contains("\"interface\"") ? 1 : 0, 1);
+    }
 
     // ---- CALL ------------------------------------------------------------------------------------------------------------
     const std::string text = program();
@@ -270,6 +625,91 @@ PROBE(plugin, mcp)
     P.eq("call.chat_only", static_cast<bool>(res["isError"]) ? 1 : 0, 1);
     close(fd);
 
+    // ---- WAVE: calls side by side, cancel, the time limit, pictures that fit ---------------------------------------------
+    {
+        Wire w(*a, link != nullptr ? pg::mcp::connectTo(link->socketPath()) : -1);
+        const auto call = [](const char* name, const juce::var& arguments) { return object({ { "name", name }, { "arguments", arguments } }); };
+        const juce::var none(new juce::DynamicObject());
+        w.send(200, "call", call("write_file", object({ { "name", "program.fm" }, { "content", juce::String(slowProgram()) } })));
+        w.wait(200, 20000);
+        P.eq("wave.level_before", dialNow(*a, "0.25") ? 1 : 0, 1);
+
+        // A tune running; get_status and info answered meanwhile; then the tune cancelled: its dial as it was.
+        w.send(201, "call", tuneCall(60.0));
+        const bool tuning = waitActivity(*a, "Tuning", 20000);
+        w.send(202, "call", call("get_status", none));
+        w.send(203, "info", none);
+        const juce::var status = w.wait(202, 10000), info2 = w.wait(203, 10000);
+        P.eq("live.beside_a_call", tuning && w.position(201) < 0 && !static_cast<bool>(status["result"]["isError"])
+                                       && has(firstText(status["result"]), "Dials:") && info2["result"]["name"].toString() == juce::String(first) ? 1 : 0, 1);
+        w.send(204, "cancel", object({ { "id", 201 } }));
+        const juce::var cancelled = w.wait(204, 5000), tuned = w.wait(201, 30000);
+        std::printf("cancelled tune: %s\n", firstText(tuned["result"]).c_str());
+        waitIdle(*a, 10000);
+        P.eq("cancel.answered", static_cast<bool>(cancelled["result"]["cancelled"]) ? 1 : 0, 1);
+        P.eq("cancel.dials_kept", has(firstText(tuned["result"]), "Claude Desktop stopped this call") && dialNow(*a, "0.25") ? 1 : 0, 1);
+
+        // A call waiting behind a running one, cancelled: answered at once, never run.
+        w.send(205, "call", tuneCall(60.0));
+        waitActivity(*a, "Tuning", 20000);
+        w.send(206, "call", call("set_dial", object({ { "name", "level" }, { "value", 0.9 } })));
+        w.send(207, "cancel", object({ { "id", 206 } }));
+        const juce::var dropped = w.wait(206, 5000);
+        P.eq("cancel.waiting", static_cast<bool>(dropped["result"]["isError"]) && has(firstText(dropped["result"]), "before it started")
+                                   && w.position(205) < 0 ? 1 : 0, 1);
+        w.send(208, "cancel", object({ { "id", 205 } }));
+        w.wait(205, 30000);
+        waitIdle(*a, 10000);
+        P.eq("cancel.never_ran", dialNow(*a, "0.25") ? 1 : 0, 1);
+        P.eq("live.whole_lines", w.lines > 0 && w.whole == w.lines ? 1 : 0, 1);
+
+        // A time limit of a second: the search stops there, with the best so far (applied: no cancel).
+        w.send(209, "call", tuneCall(1.0));
+        const juce::var limited = w.wait(209, 60000);
+        const std::string said = firstText(limited["result"]);
+        std::printf("tune with a limit: %s\n", said.c_str());
+        waitIdle(*a, 10000);
+        P.eq("tune.time_limit", has(said, "stopped at the time limit: the best so far")
+                                    && (has(said, "found before the time limit") ? !dialNow(*a, "0.25") : dialNow(*a, "0.25")) ? 1 : 0, 1);
+        a->chatAgent().mcpCall("set_dial", object({ { "name", "level" }, { "value", 0.25 } }));
+        a->poll();
+
+        // Pictures that fit a tool's result, the text saying what was sent; detail "high": whole.
+        w.send(210, "call", call("view_panel", object({ { "view", "window" } })));
+        const Picture window = pictureOf(w.wait(210, 30000)["result"]);
+        w.send(211, "call", call("view_panel", object({ { "view", "window" }, { "detail", "high" } })));
+        const Picture high = pictureOf(w.wait(211, 30000)["result"]);
+        w.send(212, "call", call("view_sound", none));
+        const Picture sound = pictureOf(w.wait(212, 60000)["result"]);
+        std::printf("pictures: the window %zu characters (%s; whole %zu, %s), the sound %zu (%s)\n", window.chars, window.type.c_str(),
+                    high.chars, high.type.c_str(), sound.chars, sound.type.c_str());
+        std::printf("the window's text: %s", window.text.c_str());
+        P.eq("picture.window_fits", window.chars > 0 && window.chars <= 100000
+                                        && (high.chars <= 100000 || has(window.text, "sent smaller")) ? 1 : 0, 1);
+        P.eq("picture.whole", high.type == "image/png" && high.chars >= window.chars && has(high.text, "sent whole") ? 1 : 0, 1);
+        P.eq("picture.sound_fits", sound.chars > 0 && sound.chars <= 100000 ? 1 : 0, 1);
+        w.send(213, "call", call("write_file", object({ { "name", "program.fm" }, { "content", juce::String(text) } })));
+        w.wait(213, 20000);
+        close(w.fd);
+    }
+
+    // ---- CROSSING: a large request while a large reply waits to be read -------------------------------------------------
+    {
+        Wire w(*a, link != nullptr ? pg::mcp::connectTo(link->socketPath()) : -1);
+        w.send(300, "guide", object({ { "part", "start" } }));
+        const std::string big = line(object({ { "id", 301 }, { "method", "call" },
+                                              { "params", object({ { "name", "no_such_tool" },
+                                                                   { "arguments", object({ { "padding", juce::String::repeatedString("x", 512 * 1024) } }) } }) } }))
+                              + "\n";
+        const bool through = writeWithin(w.fd, big, 5000);
+        const juce::var start = w.wait(300, 10000), refused = w.wait(301, 10000);
+        std::printf("crossing: the request %s, the guide's reply %zu bytes, the call's %s\n", through ? "went through" : "STUCK",
+                    start["result"].toString().toStdString().size(), firstText(refused["result"]).substr(0, 60).c_str());
+        P.eq("link.crossing", through && start["result"].toString().toStdString() == guide && static_cast<bool>(refused["result"]["isError"])
+                                  && w.lines == 2 && w.whole == 2 ? 1 : 0, 1);
+        close(w.fd);
+    }
+
     // ---- SERVER ----------------------------------------------------------------------------------------------------------
     P.eq("server.built", serverPath != nullptr && juce::File(serverPath).existsAsFile() ? 1 : 0, 1);
     Server s;
@@ -295,7 +735,7 @@ PROBE(plugin, mcp)
                     ++pluginTools;
                     instanceArg = instanceArg && tool["inputSchema"]["properties"].hasProperty("instance");
                 }
-        std::printf("tools/list: %d of the plugin's\n", pluginTools);
+        std::printf("tools/list: %d of the plugin's, %d bytes in all\n", pluginTools, juce::JSON::toString(list, false).length());
         P.eq("server.tools", hasTool(list, "list_instances") && hasTool(list, "playground_guide") && hasTool(list, "write_file")
                                  && !hasTool(list, "ask_user") && pluginTools == tools.size() && instanceArg ? 1 : 0, 1);
         {
@@ -321,11 +761,108 @@ PROBE(plugin, mcp)
         P.eq("server.routes", !static_cast<bool>(rep["result"]["isError"]) && !firstText(rep["result"]).empty() ? 1 : 0, 1);
         rep = s.request({ a.get() }, "tools/call", object({ { "name", "playground_guide" }, { "arguments", juce::var(new juce::DynamicObject()) } }));
         P.eq("server.guide", firstText(rep["result"]) == guide ? 1 : 0, 1);
+        rep = s.request({ a.get() }, "tools/call", object({ { "name", "playground_guide" }, { "arguments", object({ { "part", "interface" } }) } }));
+        P.eq("server.guide_part", firstText(rep["result"]) == interfacePart ? 1 : 0, 1);
         P.eq("server.connected", a->editorPort().desktopConnected() && a->editorPort().desktopName() == first ? 1 : 0, 1);
         rep = s.request({ a.get() }, "prompts/list", {});
-        P.eq("server.prompts", rep["result"]["prompts"].size() == 3 && rep["result"]["prompts"][0]["title"].toString().isNotEmpty() ? 1 : 0, 1);
+        bool fixListed = false;
+        if (const juce::Array<juce::var>* ps = rep["result"]["prompts"].getArray())
+            for (const juce::var& pr : *ps)
+                fixListed = fixListed || (pr["name"].toString() == "fix_what_i_hear" && pr["title"].toString() == "Fix what I hear");
+        P.eq("server.prompts", rep["result"]["prompts"].size() == 4 && rep["result"]["prompts"][0]["title"].toString().isNotEmpty() && fixListed ? 1 : 0, 1);
         rep = s.request({ a.get() }, "prompts/get", object({ { "name", "make_a_sound" }, { "arguments", object({ { "sound", "a warm pad" } }) } }));
         P.eq("server.prompt_filled", rep["result"]["messages"][0]["content"]["text"].toString().contains("a warm pad") ? 1 : 0, 1);
+        {
+            rep = s.request({ a.get() }, "prompts/get", object({ { "name", "fix_what_i_hear" },
+                                                               { "arguments", object({ { "what", "a click on fast notes" }, { "when", "in the chorus" } }) } }));
+            const std::string asked = rep["result"]["messages"][0]["content"]["text"].toString().toStdString();
+            const std::size_t mark = asked.find("(What the plugin reports now:)");
+            const std::string words = asked.substr(0, mark);
+            bool namesTool = false;
+            if (const juce::Array<juce::var>* t = tools.getArray())
+                for (const juce::var& tool : *t)
+                    namesTool = namesTool || has(words, tool["name"].toString().toStdString());
+            std::printf("fix_what_i_hear:\n%s\n", asked.substr(0, 1200).c_str());
+            P.eq("server.prompt_fix", has(words, "a click on fast notes") && has(words, "in the chorus") && !namesTool && !has(words, "_")
+                                          && mark != std::string::npos && has(asked.substr(mark), "Dials:") ? 1 : 0, 1);
+            rep = s.request({ a.get() }, "prompts/get", object({ { "name", "improve_the_sound" }, { "arguments", juce::var(new juce::DynamicObject()) } }));
+            P.eq("server.prompt_state", rep["result"]["messages"][0]["content"]["text"].toString().contains("in my song")
+                                            && rep["result"]["messages"][0]["content"]["text"].toString().contains("(What the plugin reports now:)") ? 1 : 0, 1);
+        }
+
+        // ---- DEADLINE: a server whose calls may take 1.5 s ------------------------------------------------------------
+        {
+            const std::string var2 = std::string(pg::product::kEnvPrefix) + "MCP_DEADLINE_MS";
+            setenv(var2.c_str(), "1500", 1);
+            Server d;
+            const bool dstarted = d.start(serverPath);
+            unsetenv(var2.c_str());
+            if (dstarted)
+            {
+                const std::vector<pg::Processor*> ps{ a.get() };
+                rep = d.request(ps, "initialize", object({ { "protocolVersion", "2025-11-25" }, { "capabilities", juce::var(new juce::DynamicObject()) },
+                                                          { "clientInfo", object({ { "name", "probe" }, { "version", "1" } }) } }));
+                P.eq("server.protocol_2025_11_25", rep["result"]["protocolVersion"].toString() == "2025-11-25" ? 1 : 0, 1);
+                d.request(ps, "tools/call", object({ { "name", "write_file" },
+                                                    { "arguments", object({ { "name", "program.fm" }, { "content", juce::String(slowProgram()) } }) } }));
+                const auto t0 = std::chrono::steady_clock::now();
+                const int tuneId = d.post("tools/call", tuneCall(60.0));
+                waitActivity(*a, "Tuning", 20000);
+                const juce::var listed = d.request(ps, "tools/call", object({ { "name", "list_instances" }, { "arguments", juce::var(new juce::DynamicObject()) } }));
+                const juce::var statusNow = d.request(ps, "tools/call", object({ { "name", "get_status" }, { "arguments", juce::var(new juce::DynamicObject()) } }));
+                const bool beside = d.early.count(tuneId) == 0 && has(firstText(listed["result"]), first) && has(firstText(statusNow["result"]), "Dials:");
+                const juce::var late = d.wait(ps, tuneId, 30000);
+                const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+                std::printf("past the deadline (%.1f s): %s\n", secs, firstText(late["result"]).c_str());
+                const std::vector<int> after = d.drain(ps, 1500);
+                waitIdle(*a, 10000);
+                P.eq("deadline.beside", beside ? 1 : 0, 1);
+                P.eq("deadline.answered", static_cast<bool>(late["result"]["isError"]) && has(firstText(late["result"]), "Still running")
+                                              && secs < 10.0 ? 1 : 0, 1);
+                P.eq("deadline.once", std::count(after.begin(), after.end(), tuneId) == 0 ? 1 : 0, 1);
+                P.eq("deadline.dials_kept", dialNow(*a, "0.25") ? 1 : 0, 1);
+                rep = d.request(ps, "tools/call", object({ { "name", "write_file" },
+                                                          { "arguments", object({ { "name", "program.fm" }, { "content", juce::String(text) } }) } }));
+                P.eq("deadline.still_reached", !static_cast<bool>(rep["result"]["isError"]) && a->editorPort().draft().files.front().text == text ? 1 : 0, 1);
+                P.eq("deadline.whole_lines", d.lines > 0 && d.whole == d.lines ? 1 : 0, 1);
+                d.stop();
+            }
+        }
+
+        // ---- STUCK: an instance that never reads ---------------------------------------------------------------------
+        {
+            // A folder of its own, with one "instance": a socket nobody accepts on (it takes 8 KB, then nothing).
+            const std::string stuckDir = dir + "-stuck";
+            mkdir(stuckDir.c_str(), 0700);
+            const int deaf = pg::mcp::listenAt(stuckDir + "/1.sock");
+            const std::string var2 = std::string(pg::product::kEnvPrefix) + "MCP_DEADLINE_MS";
+            setenv(var.c_str(), stuckDir.c_str(), 1);
+            setenv(var2.c_str(), "1500", 1);
+            Server k;
+            const bool kstarted = deaf >= 0 && k.start(serverPath);
+            setenv(var.c_str(), dir.c_str(), 1);
+            unsetenv(var2.c_str());
+            if (kstarted)
+            {
+                k.request({}, "initialize", object({ { "protocolVersion", "2025-11-25" } }));
+                const int callId = k.post("tools/call", object({ { "name", "write_file" },
+                                                                 { "arguments", object({ { "name", "big.fm" },
+                                                                                       { "content", juce::String::repeatedString("x", 256 * 1024) } }) } }));
+                const juce::var pong = k.wait({}, k.post("ping", juce::var(new juce::DynamicObject())), 5000);
+                const bool answered = pong.hasProperty("result");
+                const juce::var late = answered ? k.wait({}, callId, 10000) : juce::var();
+                std::printf("stuck instance: ping %s; the call: %s\n", answered ? "answered" : "NOT answered",
+                            firstText(late["result"]).substr(0, 80).c_str());
+                P.eq("stuck.ping_answered", answered ? 1 : 0, 1);
+                P.eq("stuck.call_deadline", static_cast<bool>(late["result"]["isError"]) && has(firstText(late["result"]), "Still running") ? 1 : 0, 1);
+                if (!answered)
+                    k.kill();
+                k.stop();
+            }
+            if (deaf >= 0)
+                close(deaf);
+            juce::File(juce::String::fromUTF8(stuckDir.c_str())).deleteRecursively();
+        }
 
         // ---- MATCH: a second instance, on a track, with a project ---------------------------------------------------
         auto b = std::make_unique<pg::Processor>();
@@ -344,21 +881,21 @@ PROBE(plugin, mcp)
                              object({ { "name", "write_file" },
                                       { "arguments", object({ { "name", file }, { "content", "// a file\n" }, { "instance", instance } }) } }))["result"];
         };
-        const auto has = [](pg::Processor& p, const char* file) {
+        const auto hasFile = [](pg::Processor& p, const char* file) {
             for (const pg::SourceFile& f : p.editorPort().draft().files)
                 if (f.name == file)
                     return true;
             return false;
         };
         juce::var res2 = writeTo(second.c_str(), "byname.fm");
-        P.eq("match.name", !static_cast<bool>(res2["isError"]) && has(*b, "byname.fm") && !has(*a, "byname.fm") ? 1 : 0, 1);
+        P.eq("match.name", !static_cast<bool>(res2["isError"]) && hasFile(*b, "byname.fm") && !hasFile(*a, "byname.fm") ? 1 : 0, 1);
         res2 = writeTo("2", "bynumber.fm");
-        P.eq("match.number", has(*b, "bynumber.fm") ? 1 : 0, 1);
+        P.eq("match.number", hasFile(*b, "bynumber.fm") ? 1 : 0, 1);
         res2 = writeTo("bass line", "bytrack.fm");
-        P.eq("match.track", has(*b, "bytrack.fm") ? 1 : 0, 1);
+        P.eq("match.track", hasFile(*b, "bytrack.fm") ? 1 : 0, 1);
         res2 = writeTo("the moog one", "byproject.fm");
         std::printf("by project: %s\n", firstText(res2).substr(0, 200).c_str());
-        P.eq("match.project_part", has(*b, "byproject.fm") || has(*b, "byproject.fm") ? 1 : 0, 1);
+        P.eq("match.project_part", hasFile(*b, "byproject.fm") || hasFile(*b, "byproject.fm") ? 1 : 0, 1);
         res2 = writeTo("the drums", "nowhere.fm");
         std::printf("no match: %s\n", firstText(res2).c_str());
         P.eq("match.none_asks", static_cast<bool>(res2["isError"]) && firstText(res2).find("Ask the user") != std::string::npos
@@ -392,6 +929,12 @@ PROBE(plugin, mcp)
         P.eq("gone.says_open_it", static_cast<bool>(rep["result"]["isError"]) && firstText(rep["result"]).find("open it") != std::string::npos ? 1 : 0, 1);
         rep = s.request({}, "tools/list", {});
         P.eq("gone.tools_cached", hasTool(rep["result"]["tools"], "write_file") ? 1 : 0, 1);
+        rep = s.request({}, "tools/call", object({ { "name", "playground_guide" }, { "arguments", juce::var(new juce::DynamicObject()) } }));
+        const juce::var cachedPart = s.request({}, "tools/call", object({ { "name", "playground_guide" }, { "arguments", object({ { "part", "interface" } }) } }));
+        const juce::var cachedCode = s.request({}, "tools/call", object({ { "name", "playground_guide" },
+                                                                          { "arguments", object({ { "part", juce::String("library:") + pg::kLibrary[0].name + ":code" } }) } }));
+        P.eq("gone.guide_cached", firstText(rep["result"]) == guide && firstText(cachedPart["result"]) == interfacePart
+                                      && has(firstText(cachedCode["result"]), pg::kLibrary[0].source) ? 1 : 0, 1);
         s.stop();
     }
     {

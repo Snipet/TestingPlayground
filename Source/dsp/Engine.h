@@ -35,7 +35,9 @@
 // came in (an effect's input) and what goes out, and keeps the last kScopeLength samples of each for the scopes; with
 // no reader the levels read 0 and the scopes stand still, which saves an effect about as much as a light program
 // costs. A reader that comes finds the levels from the next block on (its first block's own) and the scopes silent
-// before it.
+// before it. For a tool that listens (the MCP's listen) the meters also say, every block, what the host and the
+// player do (the transport, the note-ons, the keys held, the voices and their steals, a voice dropped for going
+// non-finite), and a ring of atomics keeps each block's cost and context (blocks()); a few scalar stores a block.
 //
 // Flush-to-zero. process() runs in it (fsdsp::ScopedFtz), the mode the programs are compiled for, whoever calls it:
 // the audio thread has it already; an offline render (Measure, the chat's tools) would otherwise make FMinus set and
@@ -82,6 +84,43 @@ namespace playground
         float taps[kMaxDisplays] = {};                // the fields the program's displays show (PanelDisplay::tap)
         uint64_t program = 0;                         // the program they are of (Patch::program), 0 while none plays
         float rate = 48000.0f;                        // the sample rate (a spectrum's frequencies)
+        // The player and the host, as of the last block, for a tool that listens (whoever reads; the counts run on
+        // from the Engine's making, so a reader takes differences):
+        uint64_t samples = 0;                         // processed so far
+        HostBlock host{};                             // the Host block: the tempo, the position at the block's first
+                                                      // sample, the signature, playing; an instrument's wheels and pedal
+        bool hostKnown = false;                       // the host says where it is (Transport::known), else our own clock
+        uint8_t voices = 0;                           // an instrument's voices sounding (fading ones aside), of them:
+        uint8_t released = 0, pedalHeld = 0;          // released, and let go while the pedal holds them
+        uint8_t fading = 0;                           // voices fading out (stolen, or of a program swapped out)
+        uint8_t held = 0;                             // keys down
+        int8_t lastNote = -1;                         // the last note-on's key (-1: none yet)
+        float lastVelocity = 0.0f;
+        uint32_t heldKeys[4] = {};                    // the keys down, a bit each (key k: word k / 32, bit k % 32)
+        uint32_t noteOns = 0;                         // the player's note-ons (not the held keys a new program starts)
+        uint32_t steals = 0;                          // voices stolen for a note (with every voice taken)
+        uint32_t dropped = 0;                         // voices dropped for going non-finite
+        int32_t droppedKey = -1;                      // the last one's key
+        uint64_t droppedAt = 0;                       // and its sample (as `samples` counts them)
+    };
+
+    // One block's cost and what went on in it (Engine::blocks): the share of its own length the audio thread took
+    // (1 = a whole core), its length, the voices sounding and its Flag bits.
+    struct BlockStat
+    {
+        enum Flag : uint8_t
+        {
+            swapping = 1u << 0,                       // a program swap's fade ran
+            moving = 1u << 1,                         // a dial moved (glided)
+            frozen = 1u << 2,                         // the frozen copy played
+            notes = 1u << 3,                          // a note-on came
+            alert = 1u << 4,                          // the output guard acted (or a voice was dropped)
+            metering = 1u << 5,                       // the levels and the scopes were measured (a reader)
+        };
+        float share = 0.0f;
+        uint16_t samples = 0;
+        uint8_t voices = 0;
+        uint8_t flags = 0;
     };
 
     // The dials as the freezer reads them (Engine::dials).
@@ -140,6 +179,14 @@ namespace playground
         // The dials as of the last block; false while the audio thread publishes (read again).
         bool dials(DialState& out) const noexcept { return dials_.read(out); }
         bool frozen() const noexcept { return frozenNow_.load(std::memory_order_relaxed); }   // the copy plays
+        // While on (a recording armed, plugin/Capture.h), the program's own code plays: a frozen copy playing is
+        // dropped at the next block, one offered goes back, and the Compiler's freezer waits; a replay of the
+        // recording then gives its bits (the copy's Math::Fast would not).
+        void setOwnCode(bool on) noexcept { ownCode_.store(on, std::memory_order_relaxed); }
+        bool ownCode() const noexcept { return ownCode_.load(std::memory_order_relaxed); }
+        // The output guard's calls that raised an alert, counted and never cleared (the low 32 bits: a NaN or an
+        // infinity replaced; the high: a sample clipped). Reading it clears nothing, unlike takeAlerts.
+        uint64_t alertTally() const noexcept { return alertTally_.load(std::memory_order_relaxed); }
         // The last block's meters; false while the audio thread publishes (keep the frame before).
         bool meters(Meters& out) const noexcept { return meters_.read(out); }
         // The last n samples (at most kScopeLength) of the input or the output, mono, oldest first.
@@ -148,11 +195,37 @@ namespace playground
         void addReader() noexcept { readers_.fetch_add(1, std::memory_order_relaxed); }
         void removeReader() noexcept { readers_.fetch_sub(1, std::memory_order_relaxed); }
         int readers() const noexcept { return readers_.load(std::memory_order_relaxed); }
+        // The blocks' costs (BlockStat), the last kBlockRing kept: those from block `from` on (blocks counted from the
+        // Engine's making), oldest first, at most `max` into `out`; how many, and in `next` where to read from next.
+        static constexpr int kBlockRing = 512;
+        int blocks(uint64_t from, BlockStat* out, int max, uint64_t& next) const noexcept;
 
         // For the probes, while the audio thread is stopped.
         bool playing() const noexcept { return current_ != nullptr || pending_.load() != nullptr; }
         bool swapping() const noexcept { return old_ != nullptr || pending_.load() != nullptr; }
         int activeVoices() const noexcept;
+        // Offline only, after restart() and before the first process(): the clock's start, so that the voices' grid
+        // (kGrid) has a recording's phase (a replay of the capture, Measure.h's Request::clock).
+        void setClock(uint64_t samples) noexcept { clock_ = samples; }
+        // The song's position at the next call's first sample (the audio thread's own: a recording keeps it where the
+        // host gives no transport and the Engine's own runs at 120 BPM), and, offline only, where it starts (after
+        // restart(), which sets it to 0: a replay of such a recording, Measure.h).
+        double beat() const noexcept { return beat_; }
+        void setBeat(double beat) noexcept { beat_ = beat; }
+
+        // Offline only (a Session's Engine, Measure.h; never the one that plays), between process calls: for a tool
+        // that watches the program as it plays (dsp/Debug.h). The program that plays, and the voices that sound (an
+        // instrument's): each one's instance, key, when it started (a count of note-ons), and whether it is released,
+        // fading (stolen) or ending (its process returned false: free at the next multiple of kGrid).
+        const Patch* playingPatch() const noexcept { return current_; }
+        struct VoiceInfo
+        {
+            int instance = 0;
+            int key = -1;
+            uint64_t age = 0;
+            bool released = false, fading = false, ending = false;
+        };
+        void voices(std::vector<VoiceInfo>& out) const;
 
     private:
         // A value that moves to its target over a fixed time, linearly, landing on it exactly.
@@ -205,12 +278,15 @@ namespace playground
         // the program's taps, published.
         void measureIn(float* const* channels, int numChannels, int n, bool fresh) noexcept;
         void publish(float* const* channels, int numChannels, int n, bool metering, bool fresh) noexcept;
+        void heard(const Event& e) noexcept;          // a note-on of the player's, counted (Meters::noteOns)
+        void blockDone(float share, int n) noexcept;  // the block's BlockStat, into the ring
 
         std::atomic<Patch::Frozen*> frozenPending_{ nullptr };
         std::array<std::atomic<Patch::Frozen*>, 4> frozenRetired_{};
         Patch::Frozen* frozen_ = nullptr;             // the copy of current_ that may play (the audio thread's)
         std::array<Patch::Frozen*, 4> frozenHold_{};  // copies done with, waiting for a retired slot
         std::atomic<bool> frozenNow_{ false };
+        std::atomic<bool> ownCode_{ false };          // setOwnCode
         bool moved_ = false;                          // a dial moved in this block (glideControls)
         uint64_t samples_ = 0;                        // processed since prepare()
         uint64_t lastMove_ = 0;                       // samples_ when a dial last moved or the program came
@@ -259,6 +335,7 @@ namespace playground
         std::vector<float> accL_, accR_, voiceL_, voiceR_, dryL_, dryR_, mono_;
         std::atomic<float> load_{ 0.0f };
         std::atomic<uint32_t> alerts_{ 0 };
+        std::atomic<uint64_t> alertTally_{ 0 };       // alertTally (the audio thread's, the only writer)
 
         fsdsp::Seqlock<Meters> meters_;
         Meters frame_{};                              // the audio thread's, built over a block
@@ -266,5 +343,10 @@ namespace playground
         std::atomic<uint32_t> scopeAt_{ 0 };          // samples written so far
         std::atomic<int> readers_{ 0 };               // who reads the meters and the scopes (addReader)
         bool metering_ = false;                       // the audio thread measured the last block
+        bool known_ = false;                          // the host's transport is known (setTransport)
+        uint8_t blockFlags_ = 0;                      // the block's BlockStat flags so far
+        // The blocks' costs, packed (the share's bits, the length, the voices, the flags), as the scopes' rings are.
+        std::array<std::atomic<uint64_t>, kBlockRing> blockRing_{};
+        std::atomic<uint64_t> blockAt_{ 0 };          // blocks written so far
     };
 }

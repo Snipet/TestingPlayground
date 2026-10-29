@@ -14,7 +14,7 @@
 //            thinking, each with its levels
 //   REQUEST  each request has the model, max_tokens (the model's own limit, from /v1/models), stream, adaptive
 //            thinking (summarized), the effort, the system prompt cached for an hour, the automatic cache breakpoint,
-//            the sixteen tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
+//            the seventeen tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
 //            and instructions) with their beta headers for a model that takes them, the API version and the key, and
 //            no temperature, top_p or top_k; it goes to api.anthropic.com with no other credential; the first message
 //            carries the plugin's state; the history is append-only
@@ -42,6 +42,11 @@
 //   FALLBACK a fallback block: a note; in the history the blocks before it keep only their text and it is dropped
 //   CONTEXT  the plugin's state names a file Claude has seen (as it wrote it) without its text; a file the user edited
 //            goes with its text; when nothing changed no state goes at all
+//   SEEN     the chat's Claude and Claude Desktop (MCP) keep their own records of the files they saw: a file Claude
+//            Desktop wrote, and one it read after the user edited it, go to the chat with their text (the chat's Claude
+//            never saw them); a file the chat's Claude wrote is new to Claude Desktop: get_status since shows the plugin's
+//            own chat editing it, and the lines it added since the token (what Claude Desktop read before it is no
+//            change); with the next token, nothing
 //   MEASURE  measure_output through the agent: its result is the render's report, with the dials asked for
 //   VIEW     view_panel through the agent: its result a PNG of the panel (and one of the whole editor) and a line of
 //            what it shows, drawn on the message thread; the user's view stays; the saved session keeps no picture
@@ -57,6 +62,15 @@
 //            and a turn after it goes on no more
 //   TUNE     tune_dials: a level for an RMS (an instrument) or a gain for a gain (an effect): the goal met, the dial
 //            set (measured afterwards, it gives the goal); an unknown dial an error result
+//   TRIAL    try_edits (ChatScenario.h): measure_output with a passage edited and a file added on a copy says so in
+//            its first line and renders it, the editor's files untouched; an edit whose text is not there is an error
+//            that names it; a scenario through the agent is in the report, and one that cannot be is refused naming
+//            its part; a check that would play the recording is refused
+//   COMPARE  compare through the agent: the editor against itself with a trial edit that halves the level shows a
+//            gain of 0.5; version:N with no project open says so; dials "current" keeps a {dials} side's own
+//   TRACE    trace through the agent (dsp/Debug.h): the program that sounds has nothing to find; a trial edit that makes
+//            its gain a NaN finds it at the first sample, in a local, the editor untouched; the recording, which there is
+//            none of yet, and a find it does not know are errors that say so
 //   PLANNER  a planning model (setPlanner): none at first, one the models do not list refused; chosen, a message's
 //            first request goes to it (its model, tool_choice none, the tools defined, no thinking block in its
 //            history, the brief after the user's words), its plan streams into a plan entry, and the builder's first
@@ -523,8 +537,8 @@ PROBE(plugin, chat)
         int eager = 0;
         for (const auto& t : tools)
             eager += static_cast<bool>(t.getProperty("eager_input_streaming", false)) ? 1 : 0;
-        P.eq("request.tools", tools.size(), 16);
-        P.eq("request.tools_eager", eager, 16);
+        P.eq("request.tools", tools.size(), 20);               // 16, and listen, compare, trace and capture
+        P.eq("request.tools_eager", eager, 20);
         bool libraryEnum = false;
         for (const auto& t : tools)
             if (str(t, "name") == "add_library_file")
@@ -879,6 +893,46 @@ PROBE(plugin, chat)
         agent.send("again?");
         agent.waitIdle();
         P.eq("context.nothing_changed_nothing_sent", lastState().empty() ? 1 : 0, 1);
+
+        // ---- SEEN ----------------------------------------------------------------------------------------------------
+        const auto firstText = [](const pg::ChatAgent::McpResult& r) {
+            const juce::Array<juce::var> c = arr(r.content);
+            std::string all;
+            for (const auto& b : c)
+                all += str(b, "text") + "\n";
+            return all;
+        };
+        const auto tokenOf = [](const std::string& status) {
+            const std::size_t at = status.rfind("Token: ");
+            return at == std::string::npos ? std::string() : status.substr(at + 7, status.find(' ', at + 7) - at - 7);
+        };
+        const std::string desktops = processor.editorPort().draft().files[0].text + "// Claude Desktop's\n";
+        const pg::ChatAgent::McpResult wrote = agent.mcpCall("write_file", input({ { "name", "program.fm" }, { "content", juce::String(desktops) } }));
+        script->add(fake::Response::ok(fake::Sse().start().text("Seen.").end()));
+        agent.send("what changed?");
+        agent.waitIdle();
+        P.eq("seen.desktop_write_goes_to_the_chat", !wrote.isError && has(lastState(), "// Claude Desktop's") ? 1 : 0, 1);
+        d = processor.editorPort().draft();
+        d.files[0].text += "// the user's second\n";
+        processor.editorPort().setDraft(d);
+        const pg::ChatAgent::McpResult read = agent.mcpCall("read_file", input({ { "name", "program.fm" } }));
+        script->add(fake::Response::ok(fake::Sse().start().text("Seen again.").end()));
+        agent.send("and this?");
+        agent.waitIdle();
+        P.eq("seen.desktop_read_goes_to_the_chat", has(firstText(read), "// the user's second") && has(lastState(), "// the user's second") ? 1 : 0, 1);
+        // Claude Desktop's own record: what it read is no change; the chat's write is.
+        const std::string token = tokenOf(firstText(agent.mcpCall("get_status", input({}))));
+        const std::string chats = d.files[0].text + "// the chat's own\n";
+        script->add(fake::Response::ok(fake::Sse().start().tool("toolu_seen", "write_file", input({ { "name", "program.fm" }, { "content", juce::String(chats) } })).end("tool_use")));
+        script->add(fake::Response::ok(fake::Sse().start().text("Added.").end()));
+        agent.send("add a line");
+        agent.waitIdle();
+        const std::string since = firstText(agent.mcpCall("get_status", input({ { "since", juce::String(token) } })));
+        std::printf("get_status since, after the chat's write:\n%s", since.c_str());
+        P.eq("seen.chat_write_new_to_desktop", !token.empty() && has(since, "the plugin's own chat edited program.fm")
+                                                   && has(since, "+// the chat's own") && !has(since, "+// the user's second") ? 1 : 0, 1);
+        const std::string after = firstText(agent.mcpCall("get_status", input({ { "since", juce::String(tokenOf(since)) } })));
+        P.eq("seen.then_as_desktop_saw_it", has(after, "Nothing changed since your last look") && has(after, "The files are as they were at that token") ? 1 : 0, 1);
     }
 
     // ---- MEASURE -------------------------------------------------------------------------------------------------------
@@ -1190,6 +1244,144 @@ PROBE(plugin, chat)
             ss->add(fake::Response::ok(fake::Sse().start().text("Hm.").end()));
             const int b2 = turn("tune nothing", 2);
             P.eq("tune.unknown_dial", has(resultText(b2 + 1), "no dial 'nothing'") ? 1 : 0, 1);
+        }
+
+        // ---- TRIAL ---------------------------------------------------------------------------------------------------------
+        const juce::var halve = input({ { "file", "program.fm" },
+                                        { "old_text", "const float g = expf(0.115129255f * " },
+                                        { "new_text", "const float g = 0.5f * expf(0.115129255f * " } });
+        {
+            const pg::Sources before = sp.editorPort().draft().files;
+            juce::Array<juce::var> good, bad;
+            good.add(halve);
+            good.add(input({ { "name", "extra.fm" }, { "content", "// a file of the trial's\n" } }));
+            bad.add(input({ { "file", "program.fm" }, { "old_text", "no such passage" }, { "new_text", "x" } }));
+            juce::Array<juce::var> phrase;
+            phrase.add(input({ { "note", 57 }, { "at", 0.1 }, { "len", 0.3 } }));
+            phrase.add(input({ { "note", 57 }, { "at", 0.3 }, { "len", 0.3 } }));
+            juce::Array<juce::var> moves;
+            moves.add(input({ { "dial", levelDial }, { "at", 0.2 }, { "to", -30.0 }, { "over", 0.2 } }));
+            const juce::var played = pg::product::kIsInstrument ? input({ { "phrase", phrase } }) : input({ { "automate", moves } });
+            const juce::var recorded = input({ { pg::product::kIsInstrument ? "phrase" : "input", "capture" } });
+            ss->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .tool("toolu_x1", "measure_output", input({ { "try_edits", good } }))
+                                           .tool("toolu_x2", "measure_output", input({ { "try_edits", bad } }))
+                                           .tool("toolu_x3", "measure_output", input({ { "scenario", played } }))
+                                           .tool("toolu_x4", "measure_output", input({ { "scenario", input({ { "rate", 5.0 } }) } }))
+                                           .tool("toolu_x5", "set_checks",
+                                                 input({ { "checks", juce::Array<juce::var>{ input({ { "label", "No alerts as played" },
+                                                                                                     { "metric", "alerts" },
+                                                                                                     { "max", 0.5 },
+                                                                                                     { "scenario", played } }) } } }))
+                                           .tool("toolu_x6", "set_checks",
+                                                 input({ { "checks", juce::Array<juce::var>{ input({ { "metric", "alerts" },
+                                                                                                     { "max", 0.5 },
+                                                                                                     { "scenario", recorded } }) } } }))
+                                           .end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("Tried.").end()));
+            const int at = turn("would halving the level help?", 2);
+            const std::string tried = resultText(at + 1, 0), refused = resultText(at + 1, 1), scenario = resultText(at + 1, 2),
+                              unfit = resultText(at + 1, 3);
+            std::printf("try_edits:\n%s\n%s\nscenario:\n%s\n%s\n", tried.c_str(), refused.c_str(), scenario.c_str(), unfit.c_str());
+            P.eq("trial.first_line", tried.rfind("With 2 trial edits; nothing in the plugin changed.\n", 0) == 0
+                                         && has(tried, "Rendered offline") ? 1 : 0, 1);
+            const juce::Array<juce::var> results = arr(lastUser(at + 1).getProperty("content", {}));
+            P.eq("trial.refused_names_it", results.size() == 6 && static_cast<bool>(results[1].getProperty("is_error", false))
+                                                && has(refused, "Trial edit 1 (program.fm): old_text does not occur") ? 1 : 0, 1);
+            P.eq("trial.editor_untouched", sp.editorPort().draft().files == before ? 1 : 0, 1);
+            P.eq("trial.turn_ended", ss->postCount() == at + 2 && !sa.chatState().busy ? 1 : 0, 1);
+            P.eq("scenario.through_agent", has(scenario, "Scenario: ") ? 1 : 0, 1);
+            P.eq("scenario.refused_names_it", results.size() == 6 && static_cast<bool>(results[3].getProperty("is_error", false))
+                                                  && has(unfit, "scenario.rate: rate is 8000 to 192000") ? 1 : 0, 1);
+            // A check cannot play the recording (gone after a reload, it would fail for ever); the checks stay as set.
+            P.eq("scenario.check_no_capture", static_cast<bool>(results[5].getProperty("is_error", false))
+                                                  && has(resultText(at + 1, 5), "a check cannot play the recording") ? 1 : 0, 1);
+            // A check keeps its scenario: measured in it, saved with it, loaded with it.
+            const std::string saved = sa.saveState();
+            P.eq("scenario.check_kept", has(resultText(at + 1, 4), "Checks: 1 of 1 pass") && has(saved, "\"scenario\"")
+                                            && has(saved, pg::product::kIsInstrument ? "\"phrase\"" : "\"automate\"") ? 1 : 0, 1);
+            sa.loadState(saved);
+            P.eq("scenario.check_loads", sa.saveState() == saved ? 1 : 0, 1);
+            sa.clearChecks();
+        }
+
+        // ---- COMPARE -------------------------------------------------------------------------------------------------------
+        {
+            juce::Array<juce::var> edits;
+            edits.add(halve);
+            ss->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .tool("toolu_y1", "compare", input({ { "a", "editor" }, { "b", "editor" }, { "try_edits", edits } }))
+                                           .tool("toolu_y2", "compare", input({ { "a", "version:1" }, { "b", "editor" } }))
+                                           .tool("toolu_y3", "compare",
+                                                 input({ { "a", "editor" },
+                                                         { "b", input({ { "dials", input({ { levelDial, pg::product::kIsInstrument ? -32.0 : -6.0 } }) } }) },
+                                                         { "picture", true } }))
+                                           .tool("toolu_y4", "compare",
+                                                 input({ { "a", "editor" },
+                                                         { "b", input({ { "dials", input({ { levelDial, pg::product::kIsInstrument ? -32.0 : -6.0 } }) } }) },
+                                                         { "dials", "current" } }))
+                                           .end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("Compared.").end()));
+            const int at = turn("what would halving change?", 2);
+            const std::string halved = resultText(at + 1, 0), noProject = resultText(at + 1, 1);
+            std::printf("compare:\n%s\n%s\n", halved.c_str(), noProject.c_str());
+            P.eq("compare.trial_gain", halved.rfind("With 1 trial edit; nothing in the plugin changed.\n", 0) == 0
+                                           && has(halved, "Best fit: B = 0.500 x A (-6.0 dB), no delay") ? 1 : 0, 1);
+            P.eq("compare.source_line", has(halved, "Source, B against A: program.fm +1 -1; the same dials") ? 1 : 0, 1);
+            P.eq("compare.no_project", has(noProject, "no project is open") ? 1 : 0, 1);
+            P.eq("compare.entry", has(lastText(sa.chatState(), pg::ChatEntry::Kind::tool), "compared two sounds") ? 1 : 0, 1);
+            // dials "current" keeps a {dials} side's own: B is still quieter.
+            const std::string current = resultText(at + 1, 3);
+            P.eq("compare.current_keeps_given", has(current, "Best fit: B = ") && !has(current, "Identical bits") ? 1 : 0, 1);
+            // The picture: both levels and spectra, a PNG of 1120 x 560 with the words after it.
+            std::string data, words;
+            const juce::Array<juce::var> results = arr(lastUser(at + 1).getProperty("content", {}));
+            for (const juce::var& b : arr(results.size() > 2 ? results[2].getProperty("content", {}) : juce::var()))
+            {
+                if (str(b, "type") == "image")
+                    data = str(b.getProperty("source", {}), "data");
+                if (str(b, "type") == "text")
+                    words = str(b, "text");
+            }
+            juce::MemoryOutputStream png;
+            juce::Base64::convertFromBase64(png, juce::String(data));
+            juce::File(juce::String(probe::outPath("plugin.chat.compare.png"))).replaceWithData(png.getData(), png.getDataSize());
+            const juce::Image img = juce::ImageFileFormat::loadFrom(png.getData(), png.getDataSize());
+            P.eq("compare.picture", img.getWidth() == 1120 && img.getHeight() == 560 && has(words, "Best fit") ? 1 : 0, 1);
+        }
+
+        // ---- TRACE ---------------------------------------------------------------------------------------------------------
+        {
+            const pg::Sources before = sp.editorPort().draft().files;
+            juce::Array<juce::var> nanEdit;
+            nanEdit.add(input({ { "file", "program.fm" },
+                                { "old_text", "const float g = expf(0.115129255f * " },
+                                { "new_text", "const float g = 0.0f / 0.0f + expf(0.115129255f * " } }));
+            ss->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .tool("toolu_t1", "trace", input({ { "find", "any" } }))
+                                           .tool("toolu_t2", "trace", input({ { "find", "nan" }, { "try_edits", nanEdit } }))
+                                           .tool("toolu_t3", "trace", input({ { "source", "capture" } }))
+                                           .tool("toolu_t4", "trace", input({ { "find", "boom" } }))
+                                           .end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("Traced.").end()));
+            const int at = turn("where does it go wrong?", 2);
+            const std::string clean = resultText(at + 1, 0), nan = resultText(at + 1, 1), capture = resultText(at + 1, 2),
+                              unknown = resultText(at + 1, 3);
+            std::printf("trace:\n%s\n%s\n%s\n%s\n", clean.c_str(), nan.c_str(), capture.c_str(), unknown.c_str());
+            P.eq("trace.clean", clean.rfind("Traced offline (nothing that plays changed): the editor's files.\n", 0) == 0
+                                    && has(clean, "Nothing found; checked: ") && has(clean, "gave the same bits") ? 1 : 0, 1);
+            P.eq("trace.trial_nan", nan.rfind("With 1 trial edit; nothing in the plugin changed.\n", 0) == 0
+                                        && has(nan, "Not a number at 0.000 s (sample 0)") && has(nan, "lives in a local") ? 1 : 0, 1);
+            P.eq("trace.editor_untouched", sp.editorPort().draft().files == before ? 1 : 0, 1);
+            const juce::Array<juce::var> results = arr(lastUser(at + 1).getProperty("content", {}));
+            P.eq("trace.capture_refused", results.size() == 4 && static_cast<bool>(results[2].getProperty("is_error", false))
+                                              && has(capture, "nothing recorded yet") ? 1 : 0, 1);
+            P.eq("trace.find_refused", results.size() == 4 && static_cast<bool>(results[3].getProperty("is_error", false))
+                                           && has(unknown, "find is one of") ? 1 : 0, 1);
+            P.eq("trace.entry", has(lastText(sa.chatState(), pg::ChatEntry::Kind::tool), "traced the sound") ? 1 : 0, 1);
         }
     }
 
@@ -1609,7 +1801,7 @@ PROBE(plugin, chat)
         int at = script->postCount();
         agent.send("hello");
         agent.waitIdle();
-        P.eq("web.off_no_tools", toolsOf(at).size() == 16 && webTool(at, "web_search").isVoid() ? 1 : 0, 1);
+        P.eq("web.off_no_tools", toolsOf(at).size() == 20 && webTool(at, "web_search").isVoid() ? 1 : 0, 1);
         agent.setWeb(true);
         P.eq("web.on", agent.chatState().web ? 1 : 0, 1);
         const juce::var result = input({ { "type", "web_search_tool_result" },
@@ -1648,7 +1840,7 @@ PROBE(plugin, chat)
         agent.waitIdle();
         {
             const juce::var search = webTool(at, "web_search"), fetch = webTool(at, "web_fetch");
-            P.eq("web.tools", toolsOf(at).size() == 18 && str(search, "type") == "web_search_20260209"
+            P.eq("web.tools", toolsOf(at).size() == 22 && str(search, "type") == "web_search_20260209"
                                   && static_cast<int>(search.getProperty("max_uses", 0)) == 5
                                   && str(fetch, "type") == "web_fetch_20260209"
                                   && static_cast<int>(fetch.getProperty("max_content_tokens", 0)) > 0

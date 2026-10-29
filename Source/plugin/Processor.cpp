@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <utility>
 
 namespace playground
 {
@@ -240,7 +241,7 @@ namespace playground
             raw_[i] = apvts_.getRawParameterValue(idOf(c));
             params_[i] = apvts_.getParameter(idOf(c));
             jassert(raw_[i] != nullptr && params_[i] != nullptr);
-            portStore_.push_back(std::make_unique<funkgui::JuceParamPort>(*params_[i]));
+            portStore_.push_back(std::make_unique<GesturePort>(*params_[i]));
             ports_.push_back(portStore_.back().get());
         }
 
@@ -248,15 +249,18 @@ namespace playground
         draft_.files = singleFile(kExamples[0].source);
         projectFiles_ = draft_.files;                            // nothing to lose yet: no project's open asks first
         compiler_.setShaderTools(shaderTools());
+        capture_.setOwnCode([this](bool on) { engine_.setOwnCode(on); });
         const CompileStatus s = compiler_.compileNow(draft_.files);
         jassert(s.ok);
         seen_ = s.revision;
         apply(s, true);
+        syncDials();                                             // the journal's dials start here
         startTimerHz(20);
         mcp_ = std::make_unique<McpLink>(McpLink::Hooks{ [this] { return mcpInfo(); },
-                                                         [this](const std::string& name, const juce::var& arguments) {
-                                                             return chat_.mcpCall(name, arguments);
-                                                         } });
+                                                         [this](const std::string& name, const juce::var& arguments, uint64_t call) {
+                                                             return chat_.mcpCall(name, arguments, call);
+                                                         },
+                                                         [this](uint64_t call) { chat_.mcpCancel(call); } });
     }
 
     void Processor::updateTrackProperties(const TrackProperties& properties)
@@ -318,9 +322,11 @@ namespace playground
 
     void Processor::prepareToPlay(double sampleRate, int maximumExpectedSamplesPerBlock)
     {
+        journalPrepare(sampleRate, std::max(1, maximumExpectedSamplesPerBlock));
         maxBlock_ = std::max(1, maximumExpectedSamplesPerBlock);
         largestCall_ = 0;
         engine_.prepare(sampleRate, maxBlock_);
+        capture_.prepare(engine_.rate(), maxBlock_);             // a recording under way ends here
         wet_.prepare(engine_.rate());                            // fsdsp::kFadeMs, 20 ms
         wetSet_ = false;
         weight_.assign(static_cast<std::size_t>(maxBlock_), 0.0f);
@@ -365,7 +371,9 @@ namespace playground
             if (!engineOnly)
                 keepDry(channels.data(), numCh, len);
             largestCall_ = std::max(largestCall_, len);
+            capture_.input(channels.data(), numCh, len);
             engine_.process(channels.data(), numCh, len, std::span<const Event>(events_.data(), numEvents));
+            capture_.output(channels.data(), numCh, len);
             if (!engineOnly)
                 bypassMix(channels.data(), numCh, len);
             numEvents = 0;
@@ -382,6 +390,7 @@ namespace playground
                 const Event e = uiNotes_[tail % kUiNotes];
                 if (bypassed && e.kind == EventKind::noteOn)
                     continue;
+                capture_.event(0, e);
                 events_[numEvents++] = e;
             }
             uiNoteTail_.store(tail, std::memory_order_release);
@@ -396,6 +405,7 @@ namespace playground
                 if (numEvents == events_.size())                // full: play up to this event, then carry on
                     playTo(at);
                 e.offset = static_cast<uint32_t>(at - done);
+                capture_.event(at, e);
                 events_[numEvents++] = e;
             }
         }
@@ -548,6 +558,10 @@ namespace playground
     void Processor::hostBlock(juce::AudioBuffer<float>& buffer, const juce::MidiBuffer& midi, bool bypassed) noexcept
     {
         const juce::ScopedNoDenormals noDenormals;              // the mode the programs are compiled for
+        bypassed_.store(bypassed, std::memory_order_relaxed);    // what listen reads (ProcessorLive.cpp)
+        hostBlocks_.store(hostBlocks_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+        if (buffer.getNumSamples() > largestHostBlock_.load(std::memory_order_relaxed))
+            largestHostBlock_.store(buffer.getNumSamples(), std::memory_order_relaxed);
         if (!prepared_)
         {
             runUnprepared(buffer);
@@ -578,7 +592,9 @@ namespace playground
                 t.playing = pos->getIsPlaying();
             }
         engine_.setTransport(t);
+        capture_.begin(buffer.getNumSamples(), bypassed, t, values_, engine_);
         play(buffer, midi, bypassed);
+        capture_.end(engine_);
     }
 
     void Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
@@ -628,6 +644,7 @@ namespace playground
     {
         if (!s.ok)
             return;                                              // the program that played plays on
+        capture_.noteProgram(s.request, s.sources, s.controls);  // a recording's replay compiles these files
         Controls before;
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
@@ -645,11 +662,29 @@ namespace playground
                 if (!now.used || (was.used && sameName(was, now)))
                     continue;                                    // the same parameter keeps its dial's value
                 juce::RangedAudioParameter& p = *params_[static_cast<std::size_t>(c)];
+                ownDials_.fetch_or(1u << c);                     // the run's: no move (syncOwnDials)
                 p.beginChangeGesture();
                 p.setValueNotifyingHost(normOf(now, now.def));
                 p.endChangeGesture();
             }
         updateHostDisplay(juce::AudioProcessor::ChangeDetails().withParameterInfoChanged(true));
+    }
+
+    // A render's "host" (ChatScenario.h): the Engine's rate, and the host's block as it announced it (the largest it
+    // may send; JUCE's own value, set before prepareToPlay).
+    double Processor::chatHostRate() const { return static_cast<double>(engine_.rate()); }
+    int Processor::chatHostBlock() const
+    {
+        // The largest block the host has sent since it prepared the plugin (an atomic the audio thread keeps), else what
+        // it announced.
+        const int seen = largestHostBlock_.load(std::memory_order_relaxed);
+        return seen > 0 ? seen : getBlockSize();
+    }
+
+    std::string Processor::chatProject() const
+    {
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        return projectName_;
     }
 
     PanelPicture Processor::chatPicture(bool window, const std::string& page)
@@ -687,12 +722,15 @@ namespace playground
                 pictureDone_.notify_all();
             }
         }
+        journalPoll();                                           // what moved since the last poll (ProcessorLive.cpp)
         if (compiler_.revision() != seen_)
         {
             const CompileStatus s = compiler_.status();
             seen_ = s.revision;
             const uint64_t run = editorRun_.load();
             apply(s, run != 0 && s.request == run);
+            if (s.request == userRun_.load())
+                journal_.note(Journal::Who::you, runWords(s));
             // A version's program (or a preset's): its dials, by name, once it compiled (an older request's result
             // waits for its own).
             if (dialsRequest_ != 0 && s.request >= dialsRequest_)
@@ -715,18 +753,22 @@ namespace playground
             if (!c.used)
                 continue;
             juce::RangedAudioParameter& p = *params_[static_cast<std::size_t>(slot)];
+            ownDials_.fetch_or(1u << slot);                      // journalled when Claude set it (chatSetDial)
             p.beginChangeGesture();
             p.setValueNotifyingHost(normOf(c, plain));
             p.endChangeGesture();
         }
+        capture_.housekeep();                                    // frees what the audio thread handed back
         const double now = juce::Time::getMillisecondCounterHiRes();
         if (const uint32_t a = engine_.takeAlerts(); a != 0)
         {
             alerts_.fetch_or(a);
             alertsAt_ = now;
+            journal_.alert(a);
         }
         else if (alerts_.load() != 0 && now - alertsAt_ > kAlertMs)
             alerts_.store(0);
+        syncOwnDials();                                          // what poll() itself set: a run's, a version's, Claude's
     }
 
     void Processor::setEditorSize(int w, int h) noexcept
@@ -870,6 +912,8 @@ namespace playground
         seen_ = s.revision;
         apply(s, false);
         apvts_.replaceState(state);
+        journal_.note(Journal::Who::host, "loaded a saved state (the program, its files and its dials)");
+        syncDials();
     }
 
     // ---- EditorPort ------------------------------------------------------------------------------------------------------
@@ -887,13 +931,19 @@ namespace playground
 
     void Processor::setDraft(const Draft& draft)
     {
-        const std::lock_guard<std::mutex> lock(programMutex_);
-        draft_ = draft;
+        Draft before;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            before = std::exchange(draft_, draft);
+        }
+        journalDraft(before, draft, Journal::Who::you);
     }
 
     void Processor::run(const Sources& files)
     {
-        editorRun_.store(compiler_.request(files));
+        const uint64_t id = compiler_.request(files);
+        editorRun_.store(id);
+        userRun_.store(id);
     }
 
     bool Processor::compiling() const { return compiler_.busy(); }
@@ -1047,6 +1097,7 @@ namespace playground
                 if (!k.used || d.name != k.name)
                     continue;
                 juce::RangedAudioParameter& p = *params_[static_cast<std::size_t>(c)];
+                ownDials_.fetch_or(1u << c);                     // a version's or a preset's: its line says so
                 p.beginChangeGesture();
                 p.setValueNotifyingHost(normOf(k, d.value));
                 p.endChangeGesture();
@@ -1093,7 +1144,10 @@ namespace playground
             why = "\"" + p->name + "\" keeps no version " + std::to_string(version);
             return false;
         }
-        return openVersion(*p, *v, why);
+        if (!openVersion(*p, *v, why))
+            return false;
+        journal_.note(Journal::Who::you, "opened project \"" + p->name + "\", version " + std::to_string(v->number));
+        return true;
     }
 
     bool Processor::saveVersion(const std::string& name, SavedVersion& saved, std::string& why)
@@ -1110,6 +1164,8 @@ namespace playground
         if (!r)
             return false;
         saved = { r->number, r->unchanged, r->created };
+        if (!r->unchanged)
+            journal_.note(Journal::Who::you, "saved version " + std::to_string(r->number) + " of \"" + projectstore::tidyName(name) + "\"");
         const std::lock_guard<std::mutex> lock(programMutex_);
         const std::string tidy = projectstore::tidyName(name);
         // The preset applied stays named while the dials are still its.
@@ -1175,6 +1231,7 @@ namespace playground
         const std::vector<projectstore::Dial> dials = dialsNow();
         if (!projectstore::savePreset(project, preset, dials, version, &why))
             return false;
+        journal_.note(Journal::Who::you, "saved preset \"" + projectstore::tidyName(preset) + "\"");
         const std::lock_guard<std::mutex> lock(programMutex_);
         projectPreset_ = projectstore::tidyName(preset);
         baseDials_ = dials;
@@ -1210,6 +1267,8 @@ namespace playground
             projectDials_ = overlay(projectDials_, pr->dials);   // a compile on its way: after it
         else
             setDialsByName(cs, pr->dials);
+        syncOwnDials();                                          // the preset's dials: its line says so
+        journal_.note(Journal::Who::you, "applied preset \"" + pr->name + "\" of \"" + p->name + "\"");
         const std::lock_guard<std::mutex> lock(programMutex_);
         projectPreset_ = pr->name;
         baseDials_ = open ? overlay(baseDials_, pr->dials) : overlay(p->latest().dials, pr->dials);
@@ -1292,9 +1351,14 @@ namespace playground
         if (d.files.empty())
             return;
         d.active = std::clamp(d.active, 0, static_cast<int>(d.files.size()) - 1);
-        const std::lock_guard<std::mutex> lock(programMutex_);
-        draft_ = std::move(d);
-        ++draftRevision_;                                        // the editor merges it into its tabs
+        Draft before;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            before = std::exchange(draft_, d);
+            ++draftRevision_;                                    // the editor merges it into its tabs
+        }
+        if (!chat_.mcpWorking())                                 // the plugin's own chat (Claude Desktop knows its own)
+            journalDraft(before, d, Journal::Who::chat);
     }
 
     CompileStatus Processor::chatRun(const Sources& files)
@@ -1303,6 +1367,8 @@ namespace playground
         editorRun_.store(id);
         compiler_.wait();
         const CompileStatus s = compiler_.status();
+        if (!chat_.mcpWorking() && s.request >= id)
+            journal_.note(Journal::Who::chat, runWords(s));
         return s.request >= id ? s : CompileStatus{};
     }
 
@@ -1347,8 +1413,34 @@ namespace playground
     {
         if (slot < 0 || slot >= kMaxControls)
             return;
+        if (const Control c = control(slot); c.used && !chat_.mcpWorking())
+            journal_.dial(Journal::Who::chat, slot, c.name, dialTextOf(slot, normOf(c, chatDialValue(slot))), dialTextOf(slot, normOf(c, plain)));
         const std::lock_guard<std::mutex> lock(dialMutex_);
         pendingDials_.emplace_back(slot, plain);
+    }
+
+    capture::Reply Processor::chatCapture(capture::Action action, const capture::Options& options)
+    {
+        // restart (next): the files that play compiled again first, so that the recording starts on the program's fresh
+        // state (Capture.h); the editor's draft and the dials stay as they are.
+        if (action == capture::Action::arm && options.restart && options.mode == capture::Mode::next
+            && capture_.audio())
+        {
+            // A run on its way (the editor's, a version's, a preset's) lands first and is what starts afresh: a request
+            // now would replace it, or follow it with the files before it (the agent's worker waits, as chatRun does).
+            compiler_.wait();
+            const Sources running = chatRunning();
+            if (running.empty())
+            {
+                capture::Reply r;
+                r.why = "nothing plays yet to start afresh (run_program plays the editor's files)";
+                return r;
+            }
+            capture::Options o = options;
+            o.freshFrom = compiler_.request(running);
+            return capture_.act(action, o);
+        }
+        return capture_.act(action, options);
     }
 
     float Processor::chatLoad() const { return engine_.load(); }

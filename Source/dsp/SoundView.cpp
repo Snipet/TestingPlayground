@@ -189,111 +189,187 @@ namespace playground::measure
         return v.loHz * std::exp(std::log(v.hiHz / v.loHz) * row / static_cast<double>(v.rows));
     }
 
-    View view(const Sources& files, const ViewRequest& request)
+    Sound renderSound(const Sources& files, const ViewRequest& request)
     {
-        View v;
         Session session(files, request.render.rate);
-        v.rate = session.rate();
+        return renderSound(session, request);
+    }
+
+    Sound renderSound(Session& session, const ViewRequest& request) { return renderSound(session, request, nullptr); }
+
+    Sound renderSound(Session& session, const ViewRequest& request, RenderHooks* hooks)
+    {
+        Sound out;
+        out.rate = session.rate();
         if (!session.compiled())
         {
-            v.errors = session.errors();
-            return v;
+            out.errors = session.errors();
+            return out;
         }
-        v.compiled = true;
-        const double rate = v.rate;
+        out.compiled = true;
+        const double rate = out.rate;
         const float hold = std::clamp(request.render.holdSeconds, 0.05f, 10.0f);
         const float tail = std::clamp(request.render.tailSeconds, 0.0f, 10.0f);
         const std::size_t holdN = static_cast<std::size_t>(hold * rate);
-        const std::size_t total = holdN + static_cast<std::size_t>(tail * rate);
-        v.length = total;
-        v.hiHz = std::min(20000.0, 0.5 * rate);
+        std::size_t total = holdN + static_cast<std::size_t>(tail * rate);
+        const double hiHz = std::min(20000.0, 0.5 * rate);
+        const std::string scenario = scenarioText(request.render);
 
-        double cycleHz = 0.0;                                 // what the close-up shows four cycles of
-        Session::Render out;
+        Session::Render played;
         if constexpr (kInstrument)
         {
-            std::vector<int> notes;
-            for (const int n : request.render.notes)
-                if (n >= 0 && n <= 127 && std::find(notes.begin(), notes.end(), n) == notes.end() && notes.size() < 16)
-                    notes.push_back(n);
-            if (notes.empty())
-                notes.push_back(48);
-            std::string what;
-            for (const int n : notes)
-                what += (what.empty() ? "" : " ") + std::to_string(n) + " (" + noteName(n) + ")";
-            v.title = (notes.size() == 1 ? "Note " : "Notes ") + what + " at velocity "
-                    + fmt("%.2f", std::clamp(request.render.velocity, 0.0f, 1.0f)) + ", held " + fmt("%.2f s", hold)
-                    + ", then released for " + fmt("%.2f s", tail);
-            v.heldUntil = hold;
-            cycleHz = noteHz(*std::min_element(notes.begin(), notes.end()));
-            if (notes.size() == 1)
-                for (int k = 1; k <= 40 && cycleHz * k < v.hiHz; ++k)
-                    v.harmonics.push_back(cycleHz * k);
             Request r = request.render;
-            r.notes = notes;
-            out = session.render(r, nullptr, nullptr, total);
+            if (r.phrase.empty() && r.events.empty())
+            {
+                std::vector<int> notes;
+                for (const int n : request.render.notes)
+                    if (n >= 0 && n <= 127 && std::find(notes.begin(), notes.end(), n) == notes.end() && notes.size() < 16)
+                        notes.push_back(n);
+                if (notes.empty())
+                    notes.push_back(48);
+                std::string what;
+                for (const int n : notes)
+                    what += (what.empty() ? "" : " ") + std::to_string(n) + " (" + noteName(n) + ")";
+                r.notes = notes;
+                total = request.length > 0 ? request.length : std::max(total, session.lengthOf(r));   // a late move too
+                out.title = (notes.size() == 1 ? "Note " : "Notes ") + what + " at velocity "
+                          + fmt("%.2f", std::clamp(request.render.velocity, 0.0f, 1.0f)) + ", held " + fmt("%.2f s", hold)
+                          + ", then released for " + fmt("%.2f s", static_cast<double>(total - std::min(total, holdN)) / rate)
+                          + (scenario.empty() ? "" : "; " + scenario);
+                out.heldUntil = hold;
+                out.cycleHz = noteHz(*std::min_element(notes.begin(), notes.end()));
+                out.harmonics = notes.size() == 1;
+                played = session.render(r, nullptr, nullptr, total, hooks);
+            }
+            else
+            {
+                // A phrase (or a recording): as long as it plays, and the tail; held until its last note-off.
+                const Timeline tl = session.timeline(r, request.length);
+                total = tl.length;
+                int lowest = 127;
+                for (const auto& [at, e] : tl.events)
+                    if (e.kind == EventKind::noteOn)
+                        lowest = std::min(lowest, static_cast<int>(e.note));
+                out.title = "A scenario: " + scenario + ", then " + fmt("%.2f s", tail);
+                out.cycleHz = lowest <= 127 && lowest >= 0 && !tl.events.empty() ? noteHz(lowest) : 0.0;
+                played = session.render(r, nullptr, nullptr, total, hooks);
+                out.heldUntil = static_cast<double>(played.heldUntil) / rate;
+            }
         }
         else
         {
-            std::vector<float> in(total, 0.0f);
+            // As long as the input and the tail, or until the scenario's last move or edit and the tail (silence there).
+            total = request.length > 0                  ? request.length
+                  : request.render.input != nullptr     ? session.lengthOf(request.render)
+                                                        : std::max(total, session.lengthOf(request.render));
+            const double after = static_cast<double>(total - std::min(total, holdN)) / rate;   // the silence after it
+            std::vector<float> in(std::max(total, holdN), 0.0f);
             const double amp = std::pow(10.0, -12.0 / 20.0);
-            switch (request.input)
+            const ViewInput input = request.render.signal >= 0 && request.render.signal <= static_cast<int>(ViewInput::silence)
+                                        ? static_cast<ViewInput>(request.render.signal)
+                                        : request.input;
+            if (request.render.input != nullptr)
             {
-                case ViewInput::sweep:
-                {
-                    // A log sweep: the phase of a frequency that rises from f1 to f2 over the held part.
-                    const double f1 = 20.0, f2 = v.hiHz, T = static_cast<double>(holdN) / rate, k = std::log(f2 / f1);
-                    for (std::size_t i = 0; i < holdN; ++i)
-                    {
-                        const double t = static_cast<double>(i) / rate;
-                        in[i] = static_cast<float>(amp * std::sin(2.0 * std::numbers::pi * f1 * T / k * (std::exp(t / T * k) - 1.0)));
-                    }
-                    v.title = "A sweep from 20 Hz to " + fmt("%.0f Hz", f2) + " at -12 dBFS for " + fmt("%.2f s", hold)
-                            + ", then " + fmt("%.2f s", tail) + " of silence";
-                    v.heldUntil = hold;
-                    break;
-                }
-                case ViewInput::noise:
-                {
-                    uint32_t seed = 22222;
-                    const float noiseAmp = static_cast<float>(std::pow(10.0, -18.0 / 20.0) * std::sqrt(3.0));
-                    for (std::size_t i = 0; i < holdN; ++i)
-                    {
-                        seed = seed * 1664525u + 1013904223u;
-                        in[i] = noiseAmp * (static_cast<float>(seed >> 8) / 8388608.0f - 1.0f);
-                    }
-                    v.title = "Noise at -18 dBFS RMS for " + fmt("%.2f s", hold) + ", then " + fmt("%.2f s", tail) + " of silence";
-                    v.heldUntil = hold;
-                    break;
-                }
-                case ViewInput::impulse:
-                    if (total > 0)
-                        in[0] = 0.5f;
-                    v.title = "An impulse (0.5), then " + fmt("%.2f s", hold + tail) + " of silence";
-                    break;
-                case ViewInput::sine:
-                {
-                    const double hz = std::clamp(static_cast<double>(request.frequency), 10.0, 0.45 * rate);
-                    for (std::size_t i = 0; i < holdN; ++i)
-                        in[i] = static_cast<float>(amp * std::sin(2.0 * std::numbers::pi * hz * static_cast<double>(i) / rate));
-                    v.title = "A sine of " + fmt(hz >= 1000.0 ? "%.0f Hz" : "%.1f Hz", hz) + " at -12 dBFS for "
-                            + fmt("%.2f s", hold) + ", then " + fmt("%.2f s", tail) + " of silence";
-                    v.heldUntil = hold;
-                    cycleHz = hz;
-                    for (int k = 1; k <= 40 && hz * k < v.hiHz; ++k)
-                        v.harmonics.push_back(hz * k);
-                    break;
-                }
-                case ViewInput::silence:
-                    v.title = "Silence for " + fmt("%.2f s", hold + tail);
-                    break;
+                out.title = !request.render.recording.empty()
+                                ? "A scenario: " + scenario     // a recording's, in its words
+                                : "Its own input, " + fmt("%.2f s", static_cast<double>(request.render.input->l.size()) / rate);
+                out.heldUntil = static_cast<double>(std::min(total, request.render.input->l.size())) / rate;
             }
-            out = session.render(request.render, &in, &in, total);
+            else
+                switch (input)
+                {
+                    case ViewInput::sweep:
+                    {
+                        // A log sweep: the phase of a frequency that rises from f1 to f2 over the held part.
+                        const double f1 = 20.0, f2 = hiHz, T = static_cast<double>(holdN) / rate, k = std::log(f2 / f1);
+                        for (std::size_t i = 0; i < holdN; ++i)
+                        {
+                            const double t = static_cast<double>(i) / rate;
+                            in[i] = static_cast<float>(amp * std::sin(2.0 * std::numbers::pi * f1 * T / k * (std::exp(t / T * k) - 1.0)));
+                        }
+                        out.title = "A sweep from 20 Hz to " + fmt("%.0f Hz", f2) + " at -12 dBFS for " + fmt("%.2f s", hold)
+                                  + ", then " + fmt("%.2f s", after) + " of silence";
+                        out.heldUntil = hold;
+                        break;
+                    }
+                    case ViewInput::noise:
+                    {
+                        uint32_t seed = 22222;
+                        const float noiseAmp = static_cast<float>(std::pow(10.0, -18.0 / 20.0) * std::sqrt(3.0));
+                        for (std::size_t i = 0; i < holdN; ++i)
+                        {
+                            seed = seed * 1664525u + 1013904223u;
+                            in[i] = noiseAmp * (static_cast<float>(seed >> 8) / 8388608.0f - 1.0f);
+                        }
+                        out.title = "Noise at -18 dBFS RMS for " + fmt("%.2f s", hold) + ", then " + fmt("%.2f s", after) + " of silence";
+                        out.heldUntil = hold;
+                        break;
+                    }
+                    case ViewInput::impulse:
+                        if (total > 0)
+                            in[0] = 0.5f;
+                        out.title = "An impulse (0.5), then " + fmt("%.2f s", static_cast<double>(total) / rate) + " of silence";
+                        out.fromStart = true;
+                        break;
+                    case ViewInput::sine:
+                    {
+                        const double hz = std::clamp(static_cast<double>(request.frequency), 10.0, 0.45 * rate);
+                        for (std::size_t i = 0; i < holdN; ++i)
+                            in[i] = static_cast<float>(amp * std::sin(2.0 * std::numbers::pi * hz * static_cast<double>(i) / rate));
+                        out.title = "A sine of " + fmt(hz >= 1000.0 ? "%.0f Hz" : "%.1f Hz", hz) + " at -12 dBFS for "
+                                  + fmt("%.2f s", hold) + ", then " + fmt("%.2f s", after) + " of silence";
+                        out.heldUntil = hold;
+                        out.cycleHz = hz;
+                        out.harmonics = true;
+                        break;
+                    }
+                    case ViewInput::silence:
+                        out.title = "Silence for " + fmt("%.2f s", static_cast<double>(total) / rate);
+                        break;
+                }
+            if (!scenario.empty() && request.render.input == nullptr)
+                out.title += "; " + scenario;
+            played = session.render(request.render, &in, &in, total, hooks);
         }
-        v.dials = out.dials;
-        v.alerts = out.alerts;
-        const std::vector<float>& L = out.l;
-        const std::vector<float>& R = out.r;
+        out.dials = played.dials;
+        out.values = played.values;
+        out.alerts = played.alerts;
+        out.l = std::move(played.l);
+        out.r = std::move(played.r);
+        return out;
+    }
+
+    View view(const Sources& files, const ViewRequest& request)
+    {
+        Sound s = renderSound(files, request);
+        if (!s.compiled)
+        {
+            View v;
+            v.rate = s.rate;
+            v.errors = s.errors;
+            return v;
+        }
+        View v = analyse(s.l, s.r, s.rate, s.heldUntil, request, s.cycleHz, s.harmonics, s.fromStart);
+        v.title = std::move(s.title);
+        v.dials = std::move(s.dials);
+        v.alerts = s.alerts;
+        return v;
+    }
+
+    View analyse(const std::vector<float>& L, const std::vector<float>& R, double rate, double heldUntil,
+                 const ViewRequest& request, double cycleHz, bool harmonics, bool fromStart)
+    {
+        View v;
+        v.compiled = true;
+        v.rate = rate;
+        const std::size_t total = std::min(L.size(), R.size());
+        v.length = total;
+        v.hiHz = std::min(20000.0, 0.5 * rate);
+        v.heldUntil = heldUntil;
+        const std::size_t holdN = heldUntil > 0.0 ? std::min(total, static_cast<std::size_t>(heldUntil * rate)) : total;
+        if (harmonics && cycleHz > 0.0)
+            for (int k = 1; k <= 40 && cycleHz * k < v.hiHz; ++k)
+                v.harmonics.push_back(cycleHz * k);
 
         // The waveform and the level, a column at a time.
         const int cols = std::max(16, request.columns);
@@ -386,6 +462,8 @@ namespace playground::measure
             const int columns = std::max(32, request.spectrumColumns);
             v.spectrum.assign(static_cast<std::size_t>(columns), 0.0f);
             Axis(rate, kWelch, v.loHz, v.hiHz, columns).place(sum, v.spectrum.data());
+            for (const float x : v.spectrum)
+                v.spectrumTop = std::max(v.spectrumTop, x - static_cast<float>(10.0 * std::log10(std::max(frames, 1))));
             normalise(v.spectrum);
         }
 
@@ -408,7 +486,7 @@ namespace playground::measure
                                                              : std::min(total, static_cast<std::size_t>(0.002 * rate) + span / 2);
                 a = middle > span / 2 ? middle - span / 2 : 0;
                 b = std::min(total, a + span);
-                if (!kInstrument && request.input == ViewInput::impulse)
+                if (fromStart)
                 {
                     a = 0;                                   // the response's start
                     b = std::min(total, static_cast<std::size_t>(0.02 * rate));
