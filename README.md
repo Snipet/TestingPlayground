@@ -742,8 +742,64 @@ In the effect's Standalone, **Settings…** (Cmd-, in the app menu) picks the au
 input muted (JUCE's guard against a feedback loop through the speakers, which the status bar says at its right, beside a
 **Settings…** button): unmute it there, with headphones on. In the synth's, it picks the audio output and the MIDI
 inputs. The settings, the plugin's state and the window's place are kept where JUCE's Standalone kept them
-(`~/Library/Application Support/<name>.settings`, its keys `audioSetup` and `shouldMuteInput` for the devices). For
-a host:
+(`~/Library/Application Support/<name>.settings`, its keys `audioSetup` and `shouldMuteInput` for the devices).
+
+### Install
+
+Three ways, for three cases: the installer app (another Mac, or yours, with a window), `scripts/install.sh` (your own
+build onto your own Mac, from the terminal) and the `.pkg` (every user of a Mac, through macOS's Installer). Keep one
+copy of each plugin: a host that finds two lists both.
+
+**The installer.** Every build also makes **TestingPlayground Installer.app** (`<build>/Installer_artefacts/<type>/`):
+one app for both products, with both products' Audio Unit, VST3, app and Claude Desktop extension inside it (its
+payload, `Contents/Resources/payload/`), in the editor's look (GRAPHITE or PAPER, as macOS's appearance is). For another
+Mac, put it on a disk image with a short Read Me:
+
+```sh
+cmake --workflow --preset release-build  # Release with LTO, both products and the installer (build-release/)
+scripts/package.sh --installer           # build-release/dist/TestingPlayground-Installer-<version>.dmg
+```
+
+Open it (from the disk image: it installs itself nowhere) and it goes through four pages. **Welcome** shows the two
+products and the versions it holds; **Choose** has each product's four parts as switches, with what is installed now
+beside each (its version, and what installing does: install, upgrade, keep a newer one unless you switch it on, already
+up to date, or why it cannot), and whom for:
+
+- **Just for me**: the plugins in `~/Library/Audio/Plug-Ins/Components` and `VST3`, the apps in `/Applications` (or
+  `~/Applications` when you may not write there, as `install.sh` does), the extensions in `~/Library/Application
+  Support/Funk/<name>/`. No password.
+- **All users**: `/Library/Audio/Plug-Ins`, `/Applications` and `/Library/Application Support/Funk/<name>/`, where the
+  `.pkg` puts them. macOS asks for an administrator's password in its own prompt; the installer never sees it.
+
+**Installing** shows each part's progress, and **Done** what went where, with **Open TestingPlayground** (or the synth) for each app it installed
+and **Add to Claude Desktop** for each extension (it opens the extension with Claude Desktop, which asks before adding
+it; only when you click it, and only when Claude Desktop is installed, else the page says how), and a reminder to rescan
+plugins in your DAW. **Uninstall...** (on Choose) lists every copy it finds, for you and for all users, and moves the
+ones you leave switched on to the Trash. Return presses the page's main button (once: holding it presses nothing more),
+Escape goes back (or stops an install between two parts), Tab moves the focus and Space flips a switch; every control
+has a name for VoiceOver.
+
+How it installs a part: a copy (`ditto`, which keeps the signature and the extended attributes; the quarantine flag is
+dropped, as a `.pkg`'s files have none) into a staging folder beside its place, then one rename into place, so that a
+failure at any point leaves the old copy whole where it was. The old copy goes to the Trash: the installer deletes
+nothing (an uninstall moves to the Trash too; drag a copy back to undo). A failure stops the run, and the Done page says
+in plain words what went wrong, what was installed before it and what was left as it was, with the log's place; Back
+returns to Choose to try again (or for all users). A staging copy a crash left behind goes to the Trash on the next
+install. For all users, the script macOS runs as root is handed to it as text, never a file, and writes only into
+folders it checked and pinned, so nothing you run can change what root does while the password prompt waits. After an Audio Unit
+changes, macOS's AU registrar is restarted so that hosts see it. It warns, at the top of Choose (and of Uninstall), when
+the app it replaces is open, or a DAW (restart it to load the new plugins), or a product is installed both for you and
+for all users (hosts list both). It writes only into the folders above, never through a link: a plugin folder that
+is a link (to another disk, say) is left alone, and said so. What it did is logged in
+`~/Library/Logs/TestingPlayground Installer.log`. Its name is the products' names' common start and " Installer"
+(`cmake/Installer.cmake`), so renaming the products renames it.
+
+Unsigned, macOS asks before the installer opens (Control-click it, **Open**). `scripts/package.sh --installer --sign
+"Developer ID Application: <you> (<team>)" --notarize <profile>` signs a copy of it under
+`build-release/dist/stage-installer/`, its payload inside out first (as the `.pkg`'s bundles, below), then the disk
+image, which it notarizes and staples.
+
+**From your own build.** `scripts/install.sh` copies your build into your own Library:
 
 ```sh
 cmake --workflow --preset release-build  # Release with LTO, both products (build-release/)
@@ -756,7 +812,8 @@ Builds never install anything by themselves; `scripts/install.sh build-dev` inst
 there (it says which). A bundle it may not replace (an app the `.pkg` installed is root's) stops it before it copies
 anything: remove that one first.
 
-For another Mac, `scripts/package.sh` (after the release build, or with `--build`) makes one installer of both products,
+**The .pkg.** For every user of another Mac through macOS's Installer, `scripts/package.sh` (after the release build,
+or with `--build`) makes one package of both products,
 `build-release/dist/TestingPlayground-<version>.pkg`, in which each product is a choice of its own (**Customize**) made
 of four: the Audio Unit (into `/Library/Audio/Plug-Ins/Components`), the VST3 (`/Library/Audio/Plug-Ins/VST3`), the
 app (`/Applications`) and the Claude Desktop extension (`/Library/Application Support/Funk/<name>/<name>.mcpb`; the
@@ -765,7 +822,7 @@ itself). It installs for every user, beside what `install.sh` put in your own `~
 `scripts/package.sh synth` packages one product. Look inside without installing: `pkgutil --payload-files <pkg>`,
 `pkgutil --expand <pkg> <folder>` (its `Distribution` is the choices).
 
-The installer is unsigned for now: the bundles keep the build's ad hoc signatures and the .pkg is not signed, so macOS
+The `.pkg` is unsigned for now: the bundles keep the build's ad hoc signatures and the package is not signed, so macOS
 asks before it opens (Control-click it, **Open**). Signing is ready and off unless asked for:
 
 ```sh
@@ -798,7 +855,9 @@ ctest --test-dir build-dev -L effect  # every probe of the effect (after a build
 ```
 
 Every probe runs for both products, as `effect:<probe>` and `synth:<probe>` (labelled `effect` and `synth`, and
-`probe` and the probe's layer), each against its own build of the plugin; the lints run once. Where the kinds
+`probe` and the probe's layer), each against its own build of the plugin; the lints run once, and so do the installer's
+probes (`installer.engine`, `installer.gui`, labelled `probe` and `installer`), which install into a folder of their own
+only. Where the kinds
 differ, a row says what each product's run checks. Run the probes through ctest (or `scripts/test.sh`): outside CTest
 a probe would find the user's own folders.
 
@@ -837,7 +896,9 @@ a probe would find the user's own folders.
 | `gui.styles` | what a `.gui` file can make an interface look like, in the PANEL view, to `gui.styles.png`, `.fx.png`, `.mixer.png` and `.narrow.png`: a defaults line and a class reaching their elements (an element's own property winning); the knobs' nine looks, a small knob's label under it and no value, a face in px; card, inset and plate sections side by side, a frame's own corners, fill and border; a bar of three pages (a click shows the third, the processor keeps its title, its state carries it to another processor whose panel opens on it, an edited interface keeps it), pills and a side list switching their pages; the synth's keyboard (a press plays its note at its pitch, a drag slides to the next key, letting go is silent) and its wheels (the pitch wheel up reaching the Host block and springing back when let go, the mod wheel staying where it is left); a knob's live= mark at its field's value; at the least size the knobs' row wrapping onto two lines |
 | `gui.settings` | the Standalone's Settings card (`editor/SettingsCard.h`) over a real processor whose window hooks hand it a made-up `DevicePort` (every call recorded), to `gui.settings.png`, `.paper.png`, `.small.png`, `.error.png` and `.muted.png`: in a host (no devices) no card and no notice, the app's request doing nothing; the effect's muted notice in the status bar, clear of the zoom, its button opening the card (the synth has none); the app's request opening it, modal; at the default size, the least and a large one every control inside the card and none over another or over a text, each with an accessibility title; the effect's Input section and no MIDI, the synth's MIDI and no Input; Tab over every control in order, Return on Test; a pair's switch, a MIDI input's, the mute's (the notice gone when unmuted) and Test calling the port; the output device, the rate and the buffer chosen through the host's menus (the current one ticked) calling it with those values and shown; a device plugged in while open listed; an error under its section, spoken, and JUCE's error with line breaks in lines of its own; a Cmd key given back to the app's menu; at the least size with more than it holds, the scroll (Done in the card, Tab scrolling to its control, the wheel); Done, Escape and a click outside closing it, the click reaching nothing under it (nor a double-click's second press: a dial keeps its value); a second editor in PAPER; the hooks let go: no card, no notice |
 | `gui.window` | the Standalone's own window, as far as it is checked without opening one, to `gui.window.png` and `.host.png`: its menu bar as data (the app menu with About, Settings… Cmd-, , Services, Hide, Hide Others, Show All and Quit; File's Load State…, Save State As… and Reset to Default State; Edit's Undo Cmd-Z, Redo Cmd-Shift-Z, Cut, Copy, Paste and Select All; Window's Minimize Cmd-M, Zoom and Bring All to Front; every shortcut its own, none the editor's: Cmd-Return, Cmd-S); in a host's window no room and no drag; with the window's buttons (60 x 14 points) the top bar keeps them room (the product's mark after them, the project's pill clear), says once where they go (its left inner edge, its middle), keeps them their size in points at 200 % and none in full screen; a press on the top bar where nothing is drags the window and a double-click's second press asks for its double-click action (whose release and double-click, wherever a zoom then puts them, leave the panel alone: a dial keeps its value), a press on a button, a right-click, one under the top bar or with PROJECTS open drags nothing; each Edit item's shortcut, sent to the focused component as the app sends it, does its work in the editor's text field (Select All, Copy, Cut, Paste, Undo, Redo) and nothing with no text field focused |
-| `lint.layers`, `lint.exports`, `lint.signature` | once, for both products: Source/dsp, Source/fsdsp and Source/fminus without JUCE or FunkGui, FMinus through its public header only; every product's bundles export their entry points and nothing else, and their signatures hold |
+| `installer.engine` | the installer's engine (`Source/installer/Engine.h`) against a root of its own (its name has spaces and both quotes) with a made-up payload of two products, nothing outside it written (ditto copies inside it, its Trash is a folder there, the AU registrar and the administrator prompt are stand-ins): the payload read (each part's version from its Info.plist or manifest; a missing payload an error in words); a clean install of every part "Just for me", each where it belongs and whole (its signature holding), no staging folder left, the registrar restarted once, the log written; the same again: every part "already installed", nothing copied; another build of the same version (the bundle's bytes; a re-signed bundle's CDHash) replaces only those, the old copies in the Trash; an older and a newer copy told apart; a folder made unwritable mid-plan: the parts before it installed, its part failed with words that say why, the old copy whole, the rest not run; a folder that is a link and a target that is a link refused, nothing written where they point; a staging folder an earlier run left goes to the Trash with the next install (another's is left); uninstall to the Trash; "All users": the script quotes every path it names, reaches the prompt as text, renames only with `mv -h`, and run (as the user, by the stand-in) installs every part, replacing an older copy, its status folder gone after; a cancelled prompt changes nothing; run directly, a planted status folder stops it before it changes anything, and the uninstall's script refuses a parent folder swapped for a link and a Trash that is a link; a running Standalone and a running host named in the notes, a product in both scopes one note, an uninstall's notes |
+| `installer.gui` | the installer's window (`Source/installer/Panel.h`) headless at its size over that engine, to `gui.installer.welcome.png`, `.choose.png`, `.choose.allusers.png`, `.installing.png` (a run half done), `.done.png`, `.done.noclaude.png`, `.uninstall.png`, `.error.png`, `.uninstalled.png`, `.choose.notes.png` (a DAW and a Standalone open, copies in the other scope), `.choose.notes.allusers.png` and `.uninstall.notes.png`, each in PAPER too (`.paper.png`): on every page every control inside the window and none over another, every text inside it and clear of the controls, everything with an accessibility title, every glyph in the font; the window's buttons placed over the sidebar; a newer installed part's switch off at first; Return (once: its repeat, a held Return and a double-click on Continue press nothing more), Escape, Tab and Space; Install's progress, then Done with the report; Open <name> and Add to Claude Desktop open the installed app and extension (and nothing without Claude Desktop, whose absence a note explains); Done quits, Back and Escape return to Choose; a failed run's page names the log and how to get Claude Desktop; the notes on Choose in both scopes and on Uninstall, whole; an uninstall's switch kept across the page's refresh, and Move to Trash |
+| `lint.layers`, `lint.exports`, `lint.signature` | once, for both products: Source/dsp, Source/fsdsp and Source/fminus without JUCE or FunkGui, FMinus through its public header only; every product's bundles export their entry points and nothing else, and their signatures hold (the installer app's too, over its payload) |
 
 A probe is one file in `Tools/probes/<layer>/` whose first line registers it (`// PROBE name=dsp.mytest timeout=60`)
 and whose body uses spec rows (`P.near`, `P.le`, `P.ge`, `P.in`, `P.eq`): each states what must hold, with its
@@ -943,6 +1004,12 @@ Source/editor/           the FunkGui panel (Panel.cpp: the top bar, the explorer
                          (the chat's rounded look, its palette from the theme), Items.h, Theme.h (each product's
                          accent), LogoMark.h (the top bar's mark, generated by Tools/logo/logo.swift);
                          gpu/ starts it in the plugin
+Source/installer/        the installer, one app for both products (cmake/Installer.cmake; its payload is their
+                         bundles and extensions): Engine (no GUI: the payload, what is installed where, the plan,
+                         installing and uninstalling, the script "All users" runs as root), System.cpp (the system's
+                         tools: ditto, pgrep, killall, the Trash, osascript's administrator prompt), Panel (its window,
+                         a FunkGui Panel in the editor's look: Welcome, Choose, Installing, Done, Uninstall) and
+                         App.cpp (the app: an EditorHost in the Standalone's native window)
 Tools/logo/              logo.swift, the mark's one source: its construction and every number, and the script that
                          writes every asset from them (`swift Tools/logo/logo.swift`, after a build: it takes
                          JetBrains Mono from FunkGui's checkout there, or --font <ttf>)
@@ -951,12 +1018,13 @@ Assets/logo/             what it writes: <kind>/ (effect, instrument) the app ic
                          mark's SVGs and lockups; readme-*.png (the header above: both marks), construction.png (the
                          geometry, measured), sheet.png (every size, both themes, the top bar in FunkGui's pixels)
 Tools/probes/            tests that measure, each run for both products: fminus/, dsp/, plugin/, gui/ (the panel,
-                         headless)
+                         headless); installer/, the installer's, run once
 scripts/                 plugin.py (the products' identities: info, add, rename, codesign, notarize), test.sh,
-                         sync-dsp-core.sh, install.sh, package.sh (the installer .pkg), entitlements/ (the
-                         Standalones' hardened runtime, by kind)
-cmake/                   Deps.cmake (the pins), Flags.cmake, Probes.cmake (the probes and lints), Product.h.in, the
-                         lints
+                         sync-dsp-core.sh, install.sh, package.sh (the installer .pkg; --installer: the installer
+                         app's disk image), entitlements/ (the Standalones' hardened runtime, by kind)
+cmake/                   Deps.cmake (the pins), Flags.cmake, Probes.cmake (the probes and lints), Product.h.in,
+                         Installer.cmake (the installer, its payload, its probes) and InstallerPayload.cmake (the
+                         payload put in the app), the lints
 ```
 
 ## A new plugin, or a new product

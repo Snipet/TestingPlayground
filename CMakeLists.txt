@@ -20,7 +20,10 @@
 #   Source/sandbox/              the GUI sandbox's helper, with the editor's .gui  -> <Name>GuiSandbox (in the .mcpb)
 #                                code and no plugin code (FP_SANDBOX_SHARED)
 #   Assets/logo/<kind>/          the app icon (Tools/logo/logo.swift writes it)   -> each bundle's Icon.icns
+#   Source/installer/            the installer, one for every product (its payload: their bundles and extensions)
+#                                                                                  -> "<Project> Installer.app"
 #   Tools/probes/**/*.cpp        probes on FunkGui's Harness, self-registered      -> <Name>_probes, tests <key>:<probe>
+#   Tools/probes/installer/      the installer's probes                            -> Installer_probes, tests installer.*
 # Every list is a CONFIGURE_DEPENDS glob: a new source file needs no CMake edit. Nothing outside products/ (and the
 # docs) names a product: the C++ namespace is `playground` in both, and every product-specific value comes from the
 # product's file, through Product.h or the variables below.
@@ -120,6 +123,7 @@ file(GLOB FP_FMINUS_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/fminus/*.cpp)
 file(GLOB FP_SANDBOX_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/sandbox/*.cpp)
 set(FP_SANDBOX_SHARED "")
 foreach(_f editor/GuiView editor/GuiItems editor/GuiLayout editor/Looks editor/DisplayItem editor/Items editor/PictureDraw
+           editor/Theme
            fminus/GuiSpec fminus/PanelSpec fminus/Lang fminus/HostFile fminus/Shaders)
   list(APPEND FP_SANDBOX_SHARED ${FP_SOURCE_ROOT}/${_f}.cpp)
 endforeach()
@@ -547,6 +551,10 @@ endfunction()
 foreach(_k IN LISTS _fp_products)
   fp_add_product(${_k})
 endforeach()
+
+# ---- the installer: one app for every product, the products inside it (cmake/Installer.cmake) ----------------------
+include(Installer)
+fp_add_installer()
 
 # ---- the lints, once for every product's bundles (cmake/Probes.cmake) -----------------------------------------------
 fp_add_lints()

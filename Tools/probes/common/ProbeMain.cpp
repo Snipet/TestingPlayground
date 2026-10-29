@@ -6,11 +6,12 @@
 // It finds the probe, fills in the harness flags a person running it by hand would rather not type (--golden-root: a
 // directory that need not exist, since the probes have no golden rows; --arch: this machine's), prepares the probe's
 // preferences sandbox (<ENV_PREFIX>PREFS_DIR, emptied when it lies below a `sandbox` directory: CTest's
-// <build>/sandbox/<test>), and runs the body under flush-to-zero. An exception escaping the body is a harness error
-// (exit 4). The exit code is always the harness's finish().
+// <build>/sandbox/<test>), and runs the body under flush-to-zero. The prefix is FunkGui's (funkgui_configure_product's
+// ENV_PREFIX: the product's, or the installer's), so one main serves every probe executable. An exception escaping the
+// body is a harness error (exit 4). The exit code is always the harness's finish().
 #include "Probe.h"
 
-#include "Product.h"
+#include <funkgui/core/Config.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -77,7 +78,7 @@ namespace
     std::string makeSandbox()
     {
         namespace fs = std::filesystem;
-        const std::string var = std::string(playground::product::kEnvPrefix) + "PREFS_DIR";
+        const std::string var = std::string(funkgui::config::kEnvPrefix) + "PREFS_DIR";
         const char* dir = std::getenv(var.c_str());
         if (dir == nullptr || *dir == '\0')
             return {};
