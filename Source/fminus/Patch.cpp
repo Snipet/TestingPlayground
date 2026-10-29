@@ -194,6 +194,49 @@ namespace playground
             c.def = plainOf(c, normOf(c, static_cast<float>(def)));
             return c;
         }
+
+        // The program's files to FMinus's #include, by name, and host.fm where the program has no file of that name
+        // (compile() keeps its own, which also notes the files it reads). It reads `files` while FMinus compiles.
+        fminus::Program::IncludeResolver includeOf(const Sources& files)
+        {
+            return [&files](std::string_view name, std::string_view) -> std::optional<fminus::Program::IncludedFile> {
+                if (const SourceFile* f = findFile(files, name))
+                    return fminus::Program::IncludedFile{ f->name, f->text };
+                if (name == kHostFileName)
+                    return fminus::Program::IncludedFile{ kHostFileName, std::string(Patch::hostSource()) };
+                return std::nullopt;
+            };
+        }
+
+        // compile()'s second pass's options but for the #include: the audio thread's denormal mode, and each dial a
+        // stream (a float) or a knob. ir() gives FMinus the same, so its text is the one the program's code came from.
+        fminus::Program::Options playOptions(const std::string& fileName, const std::array<std::string, kMaxControls>& names,
+                                             const std::array<bool, kMaxControls>& streams)
+        {
+            fminus::Program::Options o;
+            o.fileName = fileName;
+            o.denormals = fminus::Program::Denormals::Flush;     // the audio thread's mode (ScopedNoDenormals)
+            for (std::size_t k = 0; k < names.size(); ++k)
+                if (!names[k].empty() && streams[k])
+                    o.parameters[names[k]] = fminus::Program::Binding::stream();
+            return o;
+        }
+
+        // freeze()'s (and frozenIr()'s) options but for the #include: compile()'s mode, the copy's math, every dial the
+        // program has frozen at its plain value.
+        fminus::Program::Options frozenOptions(const Patch::Recipe& r, const std::array<float, kMaxControls>& plain,
+                                               bool exactMath)
+        {
+            fminus::Program::Options o;
+            o.fileName = r.files.front().name;
+            o.denormals = fminus::Program::Denormals::Flush;     // as compile()'s
+            o.math = exactMath ? fminus::Program::Math::Vector   // dsp.freeze's measure of exact math
+                               : fminus::Program::Math::Fast;    // the copy's math (Patch.h, "Frozen dials")
+            for (std::size_t k = 0; k < r.names.size(); ++k)
+                if (!r.names[k].empty() && r.controls[k].used)
+                    o.parameters[r.names[k]] = fminus::Program::Binding::frozen(static_cast<double>(plain[k]));
+            return o;
+        }
     }
 
     struct Patch::Compiled
@@ -258,7 +301,7 @@ namespace playground
         return compile(singleFile(std::string(source), std::string(fileName)), sampleRate);
     }
 
-    Patch::Result Patch::compile(const Sources& files, float sampleRate)
+    Patch::Result Patch::compile(const Sources& files, float sampleRate, bool keepIr)
     {
         const auto t0 = std::chrono::steady_clock::now();
         Result r;
@@ -342,11 +385,9 @@ namespace playground
 
         // The dials: the first kMaxControls parameters, a float a stream.
         auto patch = std::unique_ptr<Patch>(new Patch());
-        fminus::Program::Options build;
-        build.fileName = file;
-        build.include = include;
-        build.denormals = fminus::Program::Denormals::Flush;     // the audio thread's mode (ScopedNoDenormals)
-        std::vector<std::string> names;
+        std::array<std::string, kMaxControls> names{};
+        std::array<bool, kMaxControls> streams{};
+        std::size_t dials = 0;
         for (std::size_t k = 0; k < main->parameters.size(); ++k)
         {
             const fminus::Program::Parameter& p = main->parameters[k];
@@ -357,10 +398,13 @@ namespace playground
                 continue;
             }
             patch->controls_[k] = controlOf(p);
-            names.push_back(p.module + "::" + p.name);
-            if (p.type == "float")
-                build.parameters[names.back()] = fminus::Program::Binding::stream();
+            names[k] = p.module + "::" + p.name;
+            streams[k] = p.type == "float";
+            dials = k + 1;
         }
+        fminus::Program::Options build = playOptions(file, names, streams);
+        build.include = include;
+        build.keepIr = keepIr ? fminus::Program::KeepIr::Both : fminus::Program::KeepIr::None;
 
         // Pass 2: the program and the plugin's calls, one line each after its last.
         std::string full(source);
@@ -415,7 +459,7 @@ namespace playground
             return r;
         }
         patch->params_.assign(static_cast<std::size_t>(kMaxControls), nullptr);
-        for (std::size_t k = 0; k < names.size(); ++k)
+        for (std::size_t k = 0; k < dials; ++k)
         {
             const fminus::Program::Parameter* param = program.parameter(names[k]);
             patch->params_[k] = param;
@@ -431,8 +475,8 @@ namespace playground
             Recipe& rc = patch->recipe_;
             rc.files = files;
             rc.source = full;
-            for (std::size_t k = 0; k < names.size() && k < rc.names.size(); ++k)
-                rc.names[k] = names[k];
+            rc.names = names;
+            rc.streams = streams;
             rc.controls = patch->controls_;
             rc.size = s.module->size;
             rc.alignment = s.module->alignment;
@@ -575,6 +619,11 @@ namespace playground
         }
         patch->mapFields();
         patch->reset(sampleRate);
+        if (keepIr)
+        {
+            r.ir.lowered = program.loweredIr();
+            r.ir.optimised = program.optimisedIr();
+        }
         r.compileMs = msSince(t0);
         r.patch = std::move(patch);
         return r;
@@ -712,7 +761,7 @@ namespace playground
     }
 
     std::unique_ptr<Patch::Frozen> Patch::freeze(const Recipe& r, const std::array<float, kMaxControls>& plain,
-                                                 std::string& why, bool exactMath)
+                                                 std::string& why, bool exactMath, std::string* ir)
     {
         const auto t0 = std::chrono::steady_clock::now();
         if (r.files.empty() || r.source.empty())
@@ -720,22 +769,9 @@ namespace playground
             why = "no program";
             return nullptr;
         }
-        const Sources& files = r.files;
-        fminus::Program::Options build;
-        build.fileName = files.front().name;
-        build.include = [&files](std::string_view name, std::string_view) -> std::optional<fminus::Program::IncludedFile> {
-            if (const SourceFile* f = findFile(files, name))
-                return fminus::Program::IncludedFile{ f->name, f->text };
-            if (name == kHostFileName)
-                return fminus::Program::IncludedFile{ kHostFileName, std::string(Patch::hostSource()) };
-            return std::nullopt;
-        };
-        build.denormals = fminus::Program::Denormals::Flush;     // as compile()'s
-        build.math = exactMath ? fminus::Program::Math::Vector   // dsp.freeze's measure of exact math
-                               : fminus::Program::Math::Fast;    // the copy's math (Patch.h, "Frozen dials")
-        for (std::size_t k = 0; k < r.names.size(); ++k)
-            if (!r.names[k].empty() && r.controls[k].used)
-                build.parameters[r.names[k]] = fminus::Program::Binding::frozen(static_cast<double>(plain[k]));
+        fminus::Program::Options build = frozenOptions(r, plain, exactMath);
+        build.include = includeOf(r.files);
+        build.keepIr = ir != nullptr ? fminus::Program::KeepIr::Optimised : fminus::Program::KeepIr::None;
         auto f = std::unique_ptr<Frozen>(new Frozen());
         std::string errors;
         f->code_->program = fminus::Program::compile(r.source, errors, build);
@@ -775,8 +811,54 @@ namespace playground
         }
         f->program_ = r.program;
         f->values_ = plain;
+        if (ir != nullptr)
+            *ir = program.optimisedIr();
         f->ms_ = msSince(t0);
         return f;
+    }
+
+    // ---- the IR alone ---------------------------------------------------------------------------------------------------
+    bool Patch::ir(const Recipe& r, Ir& out, std::string& why)
+    {
+        if (r.files.empty() || r.source.empty())
+        {
+            why = "no program";
+            return false;
+        }
+        fminus::Program::Options o = playOptions(r.files.front().name, r.names, r.streams);
+        o.include = includeOf(r.files);
+        o.keepIr = fminus::Program::KeepIr::Both;
+        std::string errors;
+        const std::unique_ptr<fminus::Program> program = fminus::Program::compile(r.source, errors, o);
+        if (!program)
+        {
+            why = errors.empty() ? std::string("it did not compile") : errors;
+            return false;
+        }
+        out.lowered = program->loweredIr();
+        out.optimised = program->optimisedIr();
+        return true;
+    }
+
+    bool Patch::frozenIr(const Recipe& r, const std::array<float, kMaxControls>& plain, std::string& out, std::string& why)
+    {
+        if (r.files.empty() || r.source.empty())
+        {
+            why = "no program";
+            return false;
+        }
+        fminus::Program::Options o = frozenOptions(r, plain, false);
+        o.include = includeOf(r.files);
+        o.keepIr = fminus::Program::KeepIr::Optimised;
+        std::string errors;
+        const std::unique_ptr<fminus::Program> program = fminus::Program::compile(r.source, errors, o);
+        if (!program)
+        {
+            why = errors.empty() ? std::string("it did not compile") : errors;
+            return false;
+        }
+        out = program->optimisedIr();
+        return true;
     }
 
     float Patch::tap(int t, int i) const noexcept

@@ -9,6 +9,7 @@
 #include "editor/DisplayItem.h"
 #include "editor/GuiItems.h"
 #include "editor/GuiView.h"
+#include "editor/IrView.h"
 #include "editor/Looks.h"
 #include "editor/Items.h"
 #include "editor/LogoMark.h"
@@ -671,11 +672,13 @@ namespace playground::ui
         constexpr float kTabCloseW = 14.0f;              // a closable tab's close box, after its name
         constexpr float kTabMinW = 64.0f;
         constexpr float kTabNarrowW = 36.0f;             // the least a tab narrows to when many do not fit (twelve fit
-                                                         // a program's card of kProgramMinW)
+                                                         // a program's card of kProgramMinW, the IR tab open too: it
+                                                         // takes no more than they leave)
         constexpr float kTabMaxW = 150.0f;
         constexpr float kTabGap = 4.0f;
         constexpr float kNewTabW = 24.0f;
         constexpr uint64_t kStructureStep = uint64_t{ 1 } << 40;   // FilesItem::revision: a change of the tabs
+        constexpr float kIrIconW = 16.0f;                // the IR tab's icon, before its name
     }
 
     // Not in the unnamed namespace: Panel.h names it.
@@ -687,9 +690,11 @@ namespace playground::ui
         FilesItem(funkgui::Rect bar, funkgui::Rect editor, uint32_t id, const std::vector<Problem>& problems,
                   Close close)
             : bar_(bar), editorBounds_(editor), id_(id), problems_(problems), close_(std::move(close)),
+              // The IR tab (IrView.h) is the one past the files while it is shown: none of their rules reach it.
               assist_(CodeAssist::Tabs{
-                  [this] { return count(); }, [this] { return active(); },
-                  [this](int i) -> funkgui::TextEditor& { return editorOf(i); }, [this](int i) { return name(i); },
+                  [this] { return count(); }, [this] { return irShown() ? count() : active(); },
+                  [this](int i) -> funkgui::TextEditor& { return i >= count() && irShown() ? this->editor() : editorOf(i); },
+                  [this](int i) { return i >= count() ? irName() : name(i); },
                   [this](int i) { select(i); },
                   [this](const std::string& n, const std::string& text) { return addFileQuiet(n, text); },
                   [this](const std::string& text) {
@@ -711,10 +716,14 @@ namespace playground::ui
                 assist_.drawOverlays(c, th, w, h);
         }
 
-        funkgui::TextEditor& editor() noexcept { return *tabs_[static_cast<std::size_t>(active_)].editor; }
+        // The editor shown: the file's, or the IR view's while the IR tab is shown.
+        funkgui::TextEditor& editor() noexcept
+        {
+            return irShown() ? *ir_.editors[static_cast<std::size_t>(ir_.view)] : *tabs_[static_cast<std::size_t>(active_)].editor;
+        }
         const funkgui::TextEditor& editor() const noexcept
         {
-            return *tabs_[static_cast<std::size_t>(active_)].editor;
+            return irShown() ? *ir_.editors[static_cast<std::size_t>(ir_.view)] : *tabs_[static_cast<std::size_t>(active_)].editor;
         }
         int active() const noexcept { return active_; }
         int count() const noexcept { return static_cast<int>(tabs_.size()); }
@@ -824,6 +833,9 @@ namespace playground::ui
             assist_.setArea(editorBounds_);
             for (Tab& t : tabs_)
                 t.editor->setBounds(assist_.editorRect());
+            for (const std::unique_ptr<funkgui::TextEditor>& e : ir_.editors)
+                if (e)
+                    e->setBounds(assist_.editorRect());
         }
 
         void attach(funkgui::HostServices* host)
@@ -832,17 +844,118 @@ namespace playground::ui
             assist_.attach(host);
             for (Tab& t : tabs_)
                 t.editor->attach(host);
+            for (const std::unique_ptr<funkgui::TextEditor>& e : ir_.editors)
+                if (e)
+                    e->attach(host);
         }
 
+        // The code's colours follow the theme: the files' (CodeAssist::setTheme) and the IR views'.
+        void setTheme(const funkgui::Theme& th)
+        {
+            assist_.setTheme(th);
+            const bool dark = th.ground.r < 128;
+            if (irThemed_ && dark == irDark_)
+                return;
+            irThemed_ = true;
+            irDark_ = dark;
+            irTheme_ = th;
+            for (const std::unique_ptr<funkgui::TextEditor>& e : ir_.editors)
+                if (e)
+                    e->setPalette(codePalette(th));
+        }
+
+        // File i's tab shown (from the IR tab too).
         void select(int i)
         {
-            if (i < 0 || i >= count() || i == active_)
+            if (i < 0 || i >= count() || (i == active_ && !irShown()))
                 return;
             editor().setFocused(false);
+            ir_.shown = false;
             active_ = i;
             show();
             assist_.tabShown();
             structure_ += kStructureStep;
+        }
+
+        // ---- the IR tab (IrView.h): what FMinus made of the program, read only, never one of its files -----------
+        bool irOpen() const noexcept { return ir_.open; }
+        bool irShown() const noexcept { return ir_.open && ir_.shown; }
+        int irView() const noexcept { return ir_.view; }
+        std::string irName() const { return irview::name(static_cast<irview::View>(ir_.view), name(0)); }
+        // The IR tab at `view`, shown (opened when it was not); the view's editor is made the first time it shows.
+        void openIr(int view)
+        {
+            view = std::clamp(view, 0, irview::kViews - 1);
+            if (irShown() && ir_.view == view)
+                return;
+            endRename();
+            editor().setFocused(false);
+            ir_.open = true;
+            ir_.shown = true;
+            ir_.view = view;
+            std::unique_ptr<funkgui::TextEditor>& e = ir_.editors[static_cast<std::size_t>(view)];
+            if (!e)
+            {
+                e = std::make_unique<funkgui::TextEditor>(id_);
+                irview::configure(*e, irTheme_);
+                e->setBounds(assist_.editorRect());
+                e->attach(host_);
+            }
+            show();
+            assist_.tabShown();
+            structure_ += kStructureStep;
+        }
+        // The IR tab closed: its views and their texts go, and the file under it shows again.
+        void closeIr()
+        {
+            if (!ir_.open)
+                return;
+            editor().setFocused(false);
+            ir_ = IrTab{};
+            show();
+            assist_.tabShown();
+            structure_ += kStructureStep;
+        }
+        // What a view's text was made from ("" for nothing yet).
+        const std::string& irMade(int view) const
+        {
+            static const std::string none;
+            return view >= 0 && view < irview::kViews ? ir_.made[static_cast<std::size_t>(view)] : none;
+        }
+        // A view's editor, while the tab is open and the view has shown (else null).
+        funkgui::TextEditor* irEditor(int view)
+        {
+            return ir_.open && view >= 0 && view < irview::kViews ? ir_.editors[static_cast<std::size_t>(view)].get() : nullptr;
+        }
+        // A view's text, made from `key` (what it shows: the Panel's) with LLVM's text `from` starting on line `body`,
+        // unless it is already: the selection (the caret and its anchor) and the scroll stay where they were in LLVM's
+        // text, moved by as many lines as the comment lines above it grew or shrank. False when nothing changed.
+        bool setIrText(int view, const std::string& key, const std::string& text, std::shared_ptr<const IrText> from, int body)
+        {
+            funkgui::TextEditor* e = irEditor(view);
+            const std::size_t v = static_cast<std::size_t>(view);
+            if (e == nullptr || ir_.made[v] == key)
+                return false;
+            const bool had = !ir_.made[v].empty();
+            const int moved = body - ir_.body[v];
+            const auto follow = [&](funkgui::TextPos p) {
+                if (p.line >= ir_.body[v])
+                    p.line = std::max(0, p.line + moved);
+                return p;
+            };
+            const funkgui::TextPos caret = follow(e->caret()), anchor = follow(e->anchor());
+            const funkgui::Point scroll = e->scroll();
+            const int top = static_cast<int>(scroll.y / std::max(1.0f, e->rowHeight()));
+            e->setText(text);
+            if (had)
+            {
+                e->select(anchor, caret);
+                e->setScroll(scroll.x, top >= ir_.body[v] ? scroll.y + static_cast<float>(moved) * e->rowHeight() : scroll.y);
+            }
+            ir_.made[v] = key;
+            ir_.from[v] = std::move(from);
+            ir_.body[v] = body;
+            return true;
         }
 
         // A new file after the others, shown, its name being edited. False when there is no room for its tab.
@@ -966,12 +1079,13 @@ namespace playground::ui
             const funkgui::Rect t = tabRect(i);
             return { t.right() - tabPad(i) - kTabCloseW + 4.0f, t.y + 4.0f, kTabCloseW, kTabH - 8.0f };
         }
-        // A tab narrowed to fit: less padding, and its close box only while it is shown or under the pointer.
+        // A tab narrowed to fit: less padding, and its close box only while it is shown (not under the IR tab) or under
+        // the pointer.
         bool narrow(int i) const { return tabWidth(i) < naturalWidth(i) - 0.5f; }
         float tabPad(int i) const { return narrow(i) ? 6.0f : kTabPad; }
         bool closeShown(int i) const
         {
-            return i > 0 && (!narrow(i) || i == active_ || tabRect(i).contains(pointer_));
+            return i > 0 && (!narrow(i) || (i == active_ && !irShown()) || tabRect(i).contains(pointer_));
         }
         funkgui::Rect newTabRect() const
         {
@@ -979,6 +1093,31 @@ namespace playground::ui
             return { last.right() + kTabGap, bar_.y, kNewTabW, kTabH };
         }
         bool canAdd() const noexcept { return tabs_.size() < kMaxFiles; }
+        // The IR tab, apart from the files' at the bar's right end: its icon, its name, its close box. As wide as its
+        // name (up to 40% of the bar), but never wider than the files' tabs leave at their narrowest (kTabNarrowW each,
+        // and the new-file box), so that they never run under it: its name is cut first.
+        float irTabWidth() const
+        {
+            if (!ir_.open)
+                return 0.0f;
+            const float w = funkgui::text::width(funkgui::FontService::get().atlas(), irName().c_str(), chat::kSmall);
+            const float natural = std::clamp(w + 2.0f * kTabPad + kIrIconW + kTabCloseW + 2.0f, kTabMinW,
+                                             std::max(kTabMinW, bar_.w * 0.4f));
+            const int n = count();
+            const float files = kTabNarrowW * static_cast<float>(n) + kTabGap * static_cast<float>(n - 1)
+                              + (canAdd() ? kNewTabW + kTabGap : 0.0f) + 3.0f * kTabGap;
+            return std::max(kTabMinW, std::min(natural, bar_.w - files));
+        }
+        funkgui::Rect irTabRect() const
+        {
+            const float w = irTabWidth();
+            return { bar_.right() - w, bar_.y, w, kTabH };
+        }
+        funkgui::Rect irCloseRect() const
+        {
+            const funkgui::Rect t = irTabRect();
+            return { t.right() - kTabPad - kTabCloseW + 4.0f, t.y + 4.0f, kTabCloseW, kTabH - 8.0f };
+        }
 
         // ---- Item --------------------------------------------------------------------------------------------
         void tick(float dt, bool, bool, funkgui::Point pointer) override
@@ -1004,7 +1143,7 @@ namespace playground::ui
             for (int i = 0; i < count(); ++i)
             {
                 const funkgui::Rect r = tabRect(i);
-                const bool shown = i == active_;
+                const bool shown = i == active_ && !irShown();   // the IR tab's over it
                 const bool hover = r.contains(pointer_);
                 if (shown)
                     c.rrect(r.x, r.y, r.w, r.h, 8.0f, p.composer, 1.0f, p.composerEdge);
@@ -1051,6 +1190,23 @@ namespace playground::ui
                     c.rrect(n.x, n.y, n.w, n.h, 8.0f, p.hover);
                 chat::drawIcon(c, chat::Icon::plus, n.centreX(), n.centreY(), 10.0f, hot ? p.text : p.soft);
             }
+            // The IR tab: outlined (a view, not a file), the chip before its name, its close box always there.
+            if (ir_.open)
+            {
+                const funkgui::Rect r = irTabRect();
+                const bool shown = irShown();
+                const bool hover = r.contains(pointer_);
+                if (shown)
+                    c.rrect(r.x, r.y, r.w, r.h, 8.0f, p.composer, 1.0f, p.composerEdge);
+                else
+                    c.rrect(r.x, r.y, r.w, r.h, 8.0f, hover ? p.hover : p.composer.withAlpha(0.0f), 1.0f, p.cardEdge);
+                chat::drawIcon(c, chat::Icon::chip, r.x + kTabPad + 4.0f, r.centreY(), 11.0f, shown ? p.accent : p.dim);
+                const float nameX = r.x + kTabPad + kIrIconW;
+                const float nameW = irCloseRect().x - 4.0f - nameX;
+                c.text(fitText(c, irName(), st, nameW).c_str(), nameX, c.capCentreTop(r.centreY(), st), st,
+                       shown || hover ? p.text : p.soft);
+                drawCross(c, irCloseRect(), 3.0f, irCloseRect().contains(pointer_) ? p.text : p.faint);
+            }
         }
 
         bool contains(funkgui::Point p) const override
@@ -1062,8 +1218,9 @@ namespace playground::ui
             if (const std::optional<funkgui::Cursor> own = assist_.cursorAt(p))
                 return *own;
             if (bar_.contains(p))
-                return tabAt(p) >= 0 || (canAdd() && newTabRect().contains(p)) ? funkgui::Cursor::pointingHand
-                                                                                : funkgui::Cursor::normal;
+                return tabAt(p) >= 0 || (canAdd() && newTabRect().contains(p)) || (ir_.open && irTabRect().contains(p))
+                           ? funkgui::Cursor::pointingHand
+                           : funkgui::Cursor::normal;
             return editor().cursorAt(p);
         }
         void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController&, funkgui::HostServices&) override
@@ -1082,6 +1239,15 @@ namespace playground::ui
                 return;
             }
             pressedEditor_ = false;
+            if (ir_.open && irTabRect().contains(p))
+            {
+                endRename();
+                if (irCloseRect().contains(p))
+                    closeIr();
+                else
+                    openIr(ir_.view);
+                return;
+            }
             if (canAdd() && newTabRect().contains(p))
             {
                 add();
@@ -1165,7 +1331,7 @@ namespace playground::ui
                 tab.bounds = tabRect(i);
                 tab.title = name(i);
                 tab.checkable = true;
-                tab.checked = i == active_;
+                tab.checked = i == active_ && !irShown();
                 tab.help = i == 0 ? "the program" : "a file the program can include";
                 out.push_back(std::move(tab));
                 if (i > 0)
@@ -1186,6 +1352,26 @@ namespace playground::ui
                 add.bounds = newTabRect();
                 add.title = "New file";
                 out.push_back(std::move(add));
+            }
+            if (ir_.open)
+            {
+                funkgui::A11yItem tab;
+                tab.id = id_ + 3 + 2 * static_cast<uint32_t>(kMaxFiles);
+                tab.parent = group.id;
+                tab.role = funkgui::A11yRole::radioButton;
+                tab.bounds = irTabRect();
+                tab.title = irName();
+                tab.checkable = true;
+                tab.checked = irShown();
+                tab.help = std::string("the program's LLVM IR, ") + irview::word(static_cast<irview::View>(ir_.view))
+                         + ", read only: not one of its files";
+                out.push_back(std::move(tab));
+                funkgui::A11yItem close;
+                close.id = id_ + 4 + 2 * static_cast<uint32_t>(kMaxFiles);
+                close.role = funkgui::A11yRole::button;
+                close.bounds = irCloseRect();
+                close.title = "Close " + irName();
+                out.push_back(std::move(close));
             }
             funkgui::A11yItem text;
             editor().accessibility(text);
@@ -1212,6 +1398,16 @@ namespace playground::ui
                 add();
                 return true;
             }
+            if (id == id_ + 3 + 2 * files && ir_.open)
+            {
+                openIr(ir_.view);
+                return true;
+            }
+            if (id == id_ + 4 + 2 * files && ir_.open)
+            {
+                closeIr();
+                return true;
+            }
             return false;
         }
         void specLine(char* out, std::size_t n) const override
@@ -1224,7 +1420,10 @@ namespace playground::ui
             }
             if (bar_.contains(pointer_))
             {
-                if (canAdd() && newTabRect().contains(pointer_))
+                if (ir_.open && irTabRect().contains(pointer_))
+                    std::snprintf(out, n, "%s   THE PROGRAM'S LLVM IR, %s   READ ONLY: NOT ONE OF ITS FILES   X CLOSES IT",
+                                  upper(irName()).c_str(), upper(irview::word(static_cast<irview::View>(ir_.view))).c_str());
+                else if (canAdd() && newTabRect().contains(pointer_))
                     std::snprintf(out, n, "NEW FILE   ONE THE PROGRAM CAN #INCLUDE BY ITS NAME");
                 else if (const int i = tabAt(pointer_); i == 0)
                     std::snprintf(out, n, "%s   THE PROGRAM   DOUBLE-CLICK RENAMES IT", upper(name(0)).c_str());
@@ -1239,8 +1438,11 @@ namespace playground::ui
                 return;
             const funkgui::TextPos p = editor().caret();
             const std::string sel = editor().selectedText();
-            const std::string file = upper(name(active_));
-            if (sel.empty())
+            const std::string file = upper(irShown() ? irName() : name(active_));
+            if (irShown())
+                std::snprintf(out, n, "%s   LINE %d   COLUMN %d   READ ONLY   CMD-F FINDS   CTRL-G GOES TO A LINE", file.c_str(),
+                              p.line + 1, p.col + 1);
+            else if (sel.empty())
                 std::snprintf(out, n, "%s   LINE %d   COLUMN %d   CMD-RETURN RUNS THE PROGRAM", file.c_str(),
                               p.line + 1, p.col + 1);
             else
@@ -1315,7 +1517,8 @@ namespace playground::ui
         float widthCap() const
         {
             const int n = count();
-            const float room = bar_.w - (canAdd() ? kNewTabW + kTabGap : 0.0f) - kTabGap * static_cast<float>(n - 1);
+            const float room = bar_.w - (canAdd() ? kNewTabW + kTabGap : 0.0f) - kTabGap * static_cast<float>(n - 1)
+                             - (ir_.open ? irTabWidth() + 3.0f * kTabGap : 0.0f);
             std::vector<float> w;
             float sum = 0.0f;
             for (int k = 0; k < n; ++k)
@@ -1377,6 +1580,23 @@ namespace playground::ui
         std::string why_;                            // why the name typed cannot be the file's
         bool hidden_ = false;                        // the PANEL view
         std::function<void(const std::string&)> notice_;
+        // The IR tab (IrView.h): open, shown, its view; each view's editor, made when it first shows, and what its text
+        // was made from; the theme a new one takes.
+        struct IrTab
+        {
+            bool open = false;
+            bool shown = false;                      // the tab shown (else the file active_ is)
+            int view = 0;                            // an irview::View
+            std::array<std::unique_ptr<funkgui::TextEditor>, irview::kViews> editors;
+            std::array<std::string, irview::kViews> made;
+            // The IrText each view's text was made from: held, so that no other text takes its address while `made`
+            // names it; and the line LLVM's text starts on (after the comment lines and the blank line).
+            std::array<std::shared_ptr<const IrText>, irview::kViews> from;
+            std::array<int, irview::kViews> body{};
+        };
+        IrTab ir_;
+        funkgui::Theme irTheme_ = funkgui::Theme::graphite();
+        bool irThemed_ = false, irDark_ = true;
         // Last: its tabs' callbacks reach the members above.
         CodeAssist assist_;
 
@@ -2130,6 +2350,8 @@ namespace playground::ui
         guiView_->releaseKeys();                         // a note held as the editor closes is let go
         releasePictures();
         port_.removeMeterReader();
+        if (irViewing_)
+            port_.removeIrViewer();                      // its IR tab goes with it: nothing kept for it
     }
 
     // ---- pictures ------------------------------------------------------------------------------------------------------
@@ -2393,6 +2615,9 @@ namespace playground::ui
         for (int i = 0; i < files().count(); ++i)
             key += files().name(i) + (i == files().active() ? "*" : "") + (erred(files().name(i)) ? "!" : "") + '\x1f';
         key += files().count() < static_cast<int>(kMaxFiles) ? "+" : "-";
+        const bool frozenPlays = port_.frozen();
+        key += std::string(files().irOpen() ? "I" : "-") + (files().irShown() ? "S" : "-") + std::to_string(files().irView())
+             + (frozenPlays ? "F" : "-");
         key += '\x1c' + st.name + '\x1d' + st.preset;
         for (const ProjectEntry& e : projectList_)
             key += '\x1e' + e.name + '\x1d' + e.when + '\x1d' + std::to_string(e.latest);
@@ -2414,7 +2639,7 @@ namespace playground::ui
                 r.label = files().name(i);
                 const bool gui = r.label.size() > 4 && r.label.substr(r.label.size() - 4) == ".gui";
                 r.icon = i == 0 ? chat::Icon::code : gui ? chat::Icon::dial : chat::Icon::file;
-                r.active = i == files().active();
+                r.active = i == files().active() && !files().irShown();
                 r.error = erred(r.label);
                 r.closable = i > 0;
                 r.index = i;
@@ -2424,6 +2649,31 @@ namespace playground::ui
             {
                 g.action = chat::Icon::plus;
                 g.actionTitle = "New file";
+            }
+            groups.push_back(std::move(g));
+        }
+        {
+            // The IR (IrView.h): none of the program's files, which its caption says; a row a view, the frozen copy's
+            // while it plays (or while its view is shown).
+            ExplorerItem::Group g;
+            g.section = S::ir;
+            g.title = "LLVM IR";
+            ExplorerItem::Row caption;
+            caption.label = "COMPILED, READ ONLY";
+            caption.heading = true;
+            g.rows.push_back(std::move(caption));
+            for (int v = 0; v < irview::kViews; ++v)
+            {
+                const bool shown = files().irShown() && files().irView() == v;
+                if (static_cast<irview::View>(v) == irview::View::frozen && !frozenPlays && !shown)
+                    continue;
+                ExplorerItem::Row r;
+                r.label = irview::name(static_cast<irview::View>(v), files().name(0));
+                r.detail = irview::word(static_cast<irview::View>(v));
+                r.icon = chat::Icon::chip;
+                r.active = shown;
+                r.index = v;
+                g.rows.push_back(std::move(r));
             }
             groups.push_back(std::move(g));
         }
@@ -2537,6 +2787,10 @@ namespace playground::ui
                 break;
             case S::projects:
                 openProjectNamed(row.key);
+                break;
+            case S::ir:
+                if (row.index >= 0 && row.index < irview::kViews)
+                    openIrView(row.index);
                 break;
         }
         explorerKey_.clear();                            // what it shows may have changed (a tab, a tick)
@@ -2732,6 +2986,94 @@ namespace playground::ui
         return { r.centreX(), r.centreY() };
     }
 
+    // ---- the IR view (IrView.h) ----------------------------------------------------------------------------------------
+    bool Panel::irOpen() const { return files().irOpen(); }
+    bool Panel::irShown() const { return files().irShown(); }
+    int Panel::irView() const { return files().irView(); }
+    std::string Panel::irName() const { return files().irName(); }
+    funkgui::Point Panel::centreOfIrTab() const
+    {
+        const funkgui::Rect r = files().irTabRect();
+        return { r.x + kTabPad + kIrIconW + 6.0f, r.centreY() };
+    }
+    funkgui::Point Panel::centreOfIrClose() const
+    {
+        const funkgui::Rect r = files().irCloseRect();
+        return { r.centreX(), r.centreY() };
+    }
+    funkgui::Rect Panel::irTabRect() const { return files().irOpen() ? files().irTabRect() : funkgui::Rect{}; }
+    funkgui::Rect Panel::fileTabRect(int i) const { return files().tabRect(i); }
+
+    void Panel::openIrView(int view)
+    {
+        if (panelView_)
+            setPanelView(false);                         // the tabs are the CODE view's
+        files().openIr(view);
+        syncIr();
+        setFocus(editorItem_);
+        explorerKey_.clear();
+        dirty_ = true;
+    }
+
+    void Panel::closeIrView()
+    {
+        files().closeIr();
+        syncIr();
+        explorerKey_.clear();
+        dirty_ = true;
+    }
+
+    // Whether this Panel looks at the IR (its IR tab open: the processor keeps the IR only while someone does), and the
+    // shown view's text made from what there is, when that changed: the IR's revision, the last compile, the frozen
+    // copy playing, the files edited since, the program's file name.
+    void Panel::syncIr()
+    {
+        const bool open = files().irOpen();
+        if (open != irViewing_)
+        {
+            irViewing_ = open;
+            if (open)
+                port_.addIrViewer();
+            else
+                port_.removeIrViewer();
+            explorerKey_.clear();
+        }
+        if (!files().irShown())
+            return;
+        const int view = files().irView();
+        const irview::View v = static_cast<irview::View>(view);
+        const bool frozen = port_.frozen();
+        // What can change the view's text, read without a lock: the IR's revision, the last compile, the frozen copy
+        // playing (the frozen view's alone), the files edited since, the program's name. Unchanged, nothing to do.
+        const std::string seen = std::to_string(view) + '/' + std::to_string(port_.irRevision()) + '/'
+                               + std::to_string(seenStatus_) + '/' + (v == irview::View::frozen && frozen ? 'f' : '-')
+                               + (edited_ ? 'e' : '-') + '/' + files().name(0);
+        if (seen == irSeen_ && !files().irMade(view).empty())
+            return;
+        irSeen_ = seen;
+        // What the text reads: its comment lines and LLVM's text (by its address: setIrText holds it). The revision
+        // bumps for anything of the IR, the frozen copy's too, which the program's views do not show: they keep their
+        // text, its selection and its scroll.
+        const IrStatus ir = port_.ir();
+        const CompileStatus st = port_.status();
+        irview::Source from;
+        from.ir = &ir;
+        from.status = &st;
+        from.frozenPlays = frozen;
+        from.edited = edited_;
+        from.controls = &controls_;
+        const std::string head = irview::header(v, files().name(0), from);
+        const std::shared_ptr<const IrText>& shown = irview::shown(v, ir);
+        char id[32];
+        std::snprintf(id, sizeof id, "%p", static_cast<const void*>(shown.get()));
+        const std::string key = head + '\n' + id;
+        if (key == files().irMade(view))
+            return;
+        const int body = static_cast<int>(std::count(head.begin(), head.end(), '\n')) + 1;
+        files().setIrText(view, key, irview::text(head, shown.get()), shown, body);
+        dirty_ = true;
+    }
+
     void Panel::runNow()
     {
         files().endRename();
@@ -2834,6 +3176,7 @@ namespace playground::ui
         compiling_ = port_.compiling();
         if (textChanged || statusChanged)
             edited_ = files().draft().files != running_;
+        syncIr();
         const std::string statusBefore = status_;
 
         // The project open, in words.
@@ -3910,6 +4253,18 @@ namespace playground::ui
         });
     }
 
+    float Panel::statusX() const
+    {
+        return programCard_.x + kInset + 14.0f + (explorerShown_ || panelView_ ? 0.0f : 30.0f);   // after the explorer's button
+    }
+
+    bool Panel::statusWhole() const
+    {
+        // As draw() fits it (the canvas measures a hair wider than the atlas at some sizes: 2 px of slack).
+        const float w = funkgui::text::width(funkgui::FontService::get().atlas(), statusShown().c_str(), chat::kSmall);
+        return w + 2.0f <= actionsX_ - 12.0f - statusX();
+    }
+
     // The status, "RUNNING   COMPILED IN 111 MS", as the card's header shows it: "Running · compiled in 111 ms".
     std::string Panel::statusShown() const
     {
@@ -3997,7 +4352,7 @@ namespace playground::ui
     void Panel::draw(funkgui::Canvas& c, const funkgui::Theme& hostTheme)
     {
         const funkgui::Theme th = productTheme(hostTheme);
-        files().assist().setTheme(th);                   // the code's colours follow the theme
+        files().setTheme(th);                            // the code's colours follow the theme
         const float contentW = width_ - 2.0f * kMargin;
 
         const chat::Palette pal = chat::palette(th);
@@ -4062,7 +4417,7 @@ namespace playground::ui
             const float mid = kActionsY + 0.5f * kActionH;
             const bool failed = !lastOk_ && !compiling_;
             const std::string shown = statusShown();
-            const float tx = r.x + kInset + 14.0f + (explorerShown_ || panelView_ ? 0.0f : 30.0f);   // after the explorer's button
+            const float tx = statusX();
             const std::string text = fitText(c, shown, chat::kSmall, std::max(0.0f, actionsX_ - 12.0f - tx));
             constexpr funkgui::Col kPlaying{ 0x46, 0xBE, 0x82, 255 };   // the program plays as written
             const funkgui::Col light = failed ? pal.danger : (compiling_ ? pal.soft : (edited_ ? pal.faint : kPlaying));

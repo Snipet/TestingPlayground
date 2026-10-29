@@ -9,7 +9,8 @@
 // transcript take the height that is left.
 //
 //   explorer  at the left, a card like the chat's (Explorer.h): the program's files (a click shows one, a double click
-//             renames it, its cross closes it, the header's + makes one), the library (a click adds a file as a tab,
+//             renames it, its cross closes it, the header's + makes one), its LLVM IR (a click opens the IR tab on a
+//             view, IrView.h), the library (a click adds a file as a tab,
 //             #included, or shows it), the examples (a click loads one, undoably) and the presets on this Mac (a click
 //             loads one, asking first when the editor has changes no preset holds; the header's + opens PRESETS); its
 //             sections fold, and the whole card folds away (its chevron; the button at the left of the program's card's
@@ -23,7 +24,9 @@
 //   files     a tab for each of the program's files (Sources.h; at most kMaxFiles): the program's first, then the
 //             files it can #include by name. A click shows a file, a double-click edits its name in place (Return keeps
 //             it, Escape cancels), the + adds a file (its name being edited), a tab's x closes its file (asking first
-//             when it has text). A tab whose file the last run's errors name has a mark before its name
+//             when it has text). A tab whose file the last run's errors name has a mark before its name. At the bar's
+//             right end, apart, the IR tab while it is open (IrView.h: the program's LLVM IR, read only, none of its
+//             files), opened from the explorer's LLVM IR rows
 //   editor    a funkgui::TextEditor for each file, the shown file's drawn (the processor keeps the files and the tab:
 //             EditorPort::draft), made a code editor by CodeAssist.h: FMinus highlighted, the problems' squiggles and
 //             marks (RUN's, and a check while typing), completion, signature help, hover cards, Format Document, the
@@ -265,6 +268,20 @@ namespace playground::ui
         funkgui::Rect explorerCard() const noexcept { return explorerCard_; }
         // EXAMPLES' choice (Examples.h): its text in place of the program's (one edit Cmd-Z takes back), run.
         void loadExample(int i);
+        // The IR tab (IrView.h): open, shown, its view (an irview::View) and name; openIrView() as the explorer's LLVM IR
+        // row does (the tab opened on that view, shown, the editor focused), closeIrView() as its close box.
+        bool irOpen() const;
+        bool irShown() const;
+        int irView() const;
+        std::string irName() const;
+        void openIrView(int view);
+        void closeIrView();
+        funkgui::Point centreOfIrTab() const;
+        funkgui::Point centreOfIrClose() const;
+        funkgui::Rect irTabRect() const;                 // the IR tab (empty while it is closed)
+        funkgui::Rect fileTabRect(int i) const;          // file i's tab
+        // Whether the program's card's header shows the whole status at the panel's size (no ellipsis).
+        bool statusWhole() const;
         // The chat's column: open, or folded into a rail at the right (the editor and the panel take the room). The
         // header's chevron folds it, the rail's button opens it; the session keeps it (EditorPort::chatOpen).
         bool chatOpen() const noexcept { return chatOpen_; }
@@ -403,6 +420,7 @@ namespace playground::ui
         std::unique_ptr<funkgui::CellModel> zoomModel_;  // the zoom's steps (zoom_ points at it)
         void openZoom();                                 // the zoom's menu
         std::string statusShown() const;                 // the status as the card's header shows it (sentence case)
+        float statusX() const;                           // where it starts (it ends before the actions, actionsX_)
         int newChatItem_ = -1, keyItem_ = -1, chatViewItem_ = -1, inputItem_ = -1;
         int chatToggleItem_ = -1;                        // fold or open the chat
         bool chatOpen_ = true;
@@ -423,6 +441,11 @@ namespace playground::ui
         void syncExplorer();
         void layoutExplorer();
         void openFromExplorer(ExplorerItem::Section section, const ExplorerItem::Row& row);
+        // The IR view: this Panel is an IR viewer while its IR tab is open (EditorPort::addIrViewer), and the view shown
+        // has its text made from what there is (refresh(); a view shown again catches up then).
+        bool irViewing_ = false;
+        std::string irSeen_;                             // what syncIr last looked at
+        void syncIr();
         void openProjectNamed(const std::string& name);  // its newest version, asking first over unsaved edits
         void applyPresetNamed(const std::string& name);  // a preset of the project open
         void afterProjects(bool wasOpen);                // the card's notice to the status, the focus back

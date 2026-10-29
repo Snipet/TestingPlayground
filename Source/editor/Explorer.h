@@ -4,6 +4,9 @@
 //   FILES     the program's files, the editor's tabs (the one shown marked, one with errors a red dot): a click shows
 //             it, a double click renames it, the cross on a row closes it (not the program, the first); the header's
 //             + makes a new file
+//   LLVM IR   what FMinus made of the program (IrView.h), none of its files: a caption saying so, then a row a view
+//             (optimised, lowered, and the frozen copy's while it plays; the one shown marked): a click opens the
+//             read-only IR tab on it
 //   PRESETS   the presets of the project open (dial settings for its program; the one applied marked): a click applies
 //             one; the header's + saves the dials as a new one (PROJECTS, its field a preset's name)
 //   PROJECTS  the projects saved on this Mac, the newest first, each with its newest version (the one open marked): a
@@ -32,8 +35,8 @@ namespace playground::ui
     class ExplorerItem final : public Item
     {
     public:
-        enum class Section : uint8_t { files, presets, projects, library, examples };
-        static constexpr int kSections = 5;
+        enum class Section : uint8_t { files, presets, projects, library, examples, ir };
+        static constexpr int kSections = 6;
 
         struct Row
         {
@@ -45,7 +48,7 @@ namespace playground::ui
             bool marked = false;                      // a library file the program has: a tick
             bool error = false;                       // a file with errors: a red dot
             bool closable = false;                    // a cross under the pointer
-            int index = -1;                           // what the Panel acts on: a tab, a library file, an example
+            int index = -1;                           // what the Panel acts on: a tab, a library file, an example, an IR view
             std::string key;                          // a preset's or a project's name
         };
 
@@ -128,7 +131,7 @@ namespace playground::ui
         Hooks hooks_;
         funkgui::Rect bounds_;
         std::vector<Group> groups_;
-        std::array<bool, kSections> open_{ true, true, true, true, true };
+        std::array<bool, kSections> open_{ true, true, true, true, true, true };
         std::vector<Hit> hits_;                       // every header, header button, row and cross, in the content
         std::vector<float> rowY_;                     // per group: its header's y
         float contentH_ = 0.0f;
