@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <utility>
 
 namespace playground
 {
@@ -240,7 +241,7 @@ namespace playground
             raw_[i] = apvts_.getRawParameterValue(idOf(c));
             params_[i] = apvts_.getParameter(idOf(c));
             jassert(raw_[i] != nullptr && params_[i] != nullptr);
-            portStore_.push_back(std::make_unique<funkgui::JuceParamPort>(*params_[i]));
+            portStore_.push_back(std::make_unique<GesturePort>(*params_[i]));
             ports_.push_back(portStore_.back().get());
         }
 
@@ -252,6 +253,7 @@ namespace playground
         jassert(s.ok);
         seen_ = s.revision;
         apply(s, true);
+        syncDials();                                             // the journal's dials start here
         startTimerHz(20);
         mcp_ = std::make_unique<McpLink>(McpLink::Hooks{ [this] { return mcpInfo(); },
                                                          [this](const std::string& name, const juce::var& arguments, uint64_t call) {
@@ -319,6 +321,7 @@ namespace playground
 
     void Processor::prepareToPlay(double sampleRate, int maximumExpectedSamplesPerBlock)
     {
+        journalPrepare(sampleRate, std::max(1, maximumExpectedSamplesPerBlock));
         maxBlock_ = std::max(1, maximumExpectedSamplesPerBlock);
         largestCall_ = 0;
         engine_.prepare(sampleRate, maxBlock_);
@@ -549,6 +552,10 @@ namespace playground
     void Processor::hostBlock(juce::AudioBuffer<float>& buffer, const juce::MidiBuffer& midi, bool bypassed) noexcept
     {
         const juce::ScopedNoDenormals noDenormals;              // the mode the programs are compiled for
+        bypassed_.store(bypassed, std::memory_order_relaxed);    // what listen reads (ProcessorLive.cpp)
+        hostBlocks_.store(hostBlocks_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+        if (buffer.getNumSamples() > largestHostBlock_.load(std::memory_order_relaxed))
+            largestHostBlock_.store(buffer.getNumSamples(), std::memory_order_relaxed);
         if (!prepared_)
         {
             runUnprepared(buffer);
@@ -688,12 +695,15 @@ namespace playground
                 pictureDone_.notify_all();
             }
         }
+        journalPoll();                                           // what moved since the last poll (ProcessorLive.cpp)
         if (compiler_.revision() != seen_)
         {
             const CompileStatus s = compiler_.status();
             seen_ = s.revision;
             const uint64_t run = editorRun_.load();
             apply(s, run != 0 && s.request == run);
+            if (s.request == userRun_.load())
+                journal_.note(Journal::Who::you, runWords(s));
             // A version's program (or a preset's): its dials, by name, once it compiled (an older request's result
             // waits for its own).
             if (dialsRequest_ != 0 && s.request >= dialsRequest_)
@@ -725,9 +735,11 @@ namespace playground
         {
             alerts_.fetch_or(a);
             alertsAt_ = now;
+            journal_.alert(a);
         }
         else if (alerts_.load() != 0 && now - alertsAt_ > kAlertMs)
             alerts_.store(0);
+        syncDials();                                             // what poll() itself set: a run's, a version's, Claude's
     }
 
     void Processor::setEditorSize(int w, int h) noexcept
@@ -871,6 +883,8 @@ namespace playground
         seen_ = s.revision;
         apply(s, false);
         apvts_.replaceState(state);
+        journal_.note(Journal::Who::host, "loaded a saved state (the program, its files and its dials)");
+        syncDials();
     }
 
     // ---- EditorPort ------------------------------------------------------------------------------------------------------
@@ -888,13 +902,19 @@ namespace playground
 
     void Processor::setDraft(const Draft& draft)
     {
-        const std::lock_guard<std::mutex> lock(programMutex_);
-        draft_ = draft;
+        Draft before;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            before = std::exchange(draft_, draft);
+        }
+        journalDraft(before, draft, Journal::Who::you);
     }
 
     void Processor::run(const Sources& files)
     {
-        editorRun_.store(compiler_.request(files));
+        const uint64_t id = compiler_.request(files);
+        editorRun_.store(id);
+        userRun_.store(id);
     }
 
     bool Processor::compiling() const { return compiler_.busy(); }
@@ -1094,7 +1114,10 @@ namespace playground
             why = "\"" + p->name + "\" keeps no version " + std::to_string(version);
             return false;
         }
-        return openVersion(*p, *v, why);
+        if (!openVersion(*p, *v, why))
+            return false;
+        journal_.note(Journal::Who::you, "opened project \"" + p->name + "\", version " + std::to_string(v->number));
+        return true;
     }
 
     bool Processor::saveVersion(const std::string& name, SavedVersion& saved, std::string& why)
@@ -1111,6 +1134,8 @@ namespace playground
         if (!r)
             return false;
         saved = { r->number, r->unchanged, r->created };
+        if (!r->unchanged)
+            journal_.note(Journal::Who::you, "saved version " + std::to_string(r->number) + " of \"" + projectstore::tidyName(name) + "\"");
         const std::lock_guard<std::mutex> lock(programMutex_);
         const std::string tidy = projectstore::tidyName(name);
         // The preset applied stays named while the dials are still its.
@@ -1176,6 +1201,7 @@ namespace playground
         const std::vector<projectstore::Dial> dials = dialsNow();
         if (!projectstore::savePreset(project, preset, dials, version, &why))
             return false;
+        journal_.note(Journal::Who::you, "saved preset \"" + projectstore::tidyName(preset) + "\"");
         const std::lock_guard<std::mutex> lock(programMutex_);
         projectPreset_ = projectstore::tidyName(preset);
         baseDials_ = dials;
@@ -1211,6 +1237,8 @@ namespace playground
             projectDials_ = overlay(projectDials_, pr->dials);   // a compile on its way: after it
         else
             setDialsByName(cs, pr->dials);
+        syncDials();                                             // the preset's dials: its line says so
+        journal_.note(Journal::Who::you, "applied preset \"" + pr->name + "\" of \"" + p->name + "\"");
         const std::lock_guard<std::mutex> lock(programMutex_);
         projectPreset_ = pr->name;
         baseDials_ = open ? overlay(baseDials_, pr->dials) : overlay(p->latest().dials, pr->dials);
@@ -1293,9 +1321,14 @@ namespace playground
         if (d.files.empty())
             return;
         d.active = std::clamp(d.active, 0, static_cast<int>(d.files.size()) - 1);
-        const std::lock_guard<std::mutex> lock(programMutex_);
-        draft_ = std::move(d);
-        ++draftRevision_;                                        // the editor merges it into its tabs
+        Draft before;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            before = std::exchange(draft_, d);
+            ++draftRevision_;                                    // the editor merges it into its tabs
+        }
+        if (!chat_.mcpWorking())                                 // the plugin's own chat (Claude Desktop knows its own)
+            journalDraft(before, d, Journal::Who::chat);
     }
 
     CompileStatus Processor::chatRun(const Sources& files)
@@ -1304,6 +1337,8 @@ namespace playground
         editorRun_.store(id);
         compiler_.wait();
         const CompileStatus s = compiler_.status();
+        if (!chat_.mcpWorking() && s.request >= id)
+            journal_.note(Journal::Who::chat, runWords(s));
         return s.request >= id ? s : CompileStatus{};
     }
 
@@ -1348,6 +1383,8 @@ namespace playground
     {
         if (slot < 0 || slot >= kMaxControls)
             return;
+        if (const Control c = control(slot); c.used && !chat_.mcpWorking())
+            journal_.dial(Journal::Who::chat, slot, c.name, dialTextOf(slot, normOf(c, chatDialValue(slot))), dialTextOf(slot, normOf(c, plain)));
         const std::lock_guard<std::mutex> lock(dialMutex_);
         pendingDials_.emplace_back(slot, plain);
     }

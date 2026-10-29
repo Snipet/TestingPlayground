@@ -108,12 +108,14 @@
 #include "plugin/ChatPort.h"
 #include "plugin/ClaudeApi.h"
 #include "plugin/EditorPort.h"
+#include "plugin/Live.h"
 
 #include "dsp/Compiler.h"
 #include "dsp/Controls.h"
 #include "dsp/Goals.h"
 #include "dsp/Sources.h"
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -147,6 +149,13 @@ namespace playground
         virtual uint32_t chatAlerts() const = 0;
         // A picture of the panel (view_panel), made on the message thread; this thread waits for it (10 s at most).
         virtual PanelPicture chatPicture(bool window, const std::string& page) = 0;
+        // For the live tools (listen, get_status: any thread, beside a running call; Live.h): what plays now; a tool
+        // that listens (the meters and the scopes are measured only while one does, on: true while it listens); what
+        // changed since a token (Journal.h; `issue`: the token returned is handed out); the dials' options' names.
+        virtual void chatLive(LiveRead& io) const = 0;
+        virtual void chatListening(bool on) = 0;
+        virtual Changes chatChanges(const std::string& since, bool issue) = 0;
+        virtual std::array<std::vector<std::string>, kMaxControls> chatDialOptions() const = 0;
     };
 
     class ChatAgent final : public ChatPort
@@ -220,11 +229,17 @@ namespace playground
         static std::string mcpGuide();
         static std::string mcpGuidePart(const std::string& part, bool& found);
         // The calls that run on the MCP link's poll thread, beside a running call, without the busy state: get_status
-        // (ChatHost's locked getters and atomics), and the live tools to come (listen; capture's status and stop). One
-        // line a tool; such a tool keeps CLAUDE.md's live-tool contract.
+        // (ChatHost's locked getters and atomics, the journal), listen (the meters, the scopes, the blocks' ring), and
+        // capture's status and stop. One line a tool; such a tool keeps CLAUDE.md's live-tool contract.
         static bool mcpLive(const std::string& name, const juce::var& arguments);
+        // Of the live calls, those that take seconds (listen): the link runs each on a thread of its own, so its poll
+        // thread stays free (McpLink.h). One line a tool.
+        static bool mcpLiveWaits(const std::string& name);
         McpResult mcpCall(const std::string& name, const juce::var& arguments, uint64_t call = 0);
         void mcpCancel(uint64_t call);
+        // A call of Claude Desktop's that is not live runs (any thread): what it changes is its own, which get_status
+        // `since` does not report back to it (the Processor's journal asks).
+        bool mcpWorking() const noexcept { return mcpWorking_.load(); }
 
     private:
         static claude::Headers headersFor(const std::string& key);  // the key and the API version
@@ -267,7 +282,8 @@ namespace playground
         void dropThinking();                                        // the history without thinking (mutex held)
         int maxTokensFor(const std::string& id) const;              // a request's max_tokens (mutex held)
         static std::string promptPrint();                           // the system prompt's and tools' hash
-        void markSeen(const std::string& name, const std::string& text);   // Claude knows this text (mutex held)
+        void markSeen(const std::string& name, const std::string& text);   // Claude knows this text (mutex held): the
+                                                                    // chat's Claude, or Claude Desktop's (mcpSaw)
         void addEntry(ChatEntry::Kind kind, std::string text);     // mutex held
         void appendToLast(ChatEntry::Kind kind, std::string_view text);   // mutex held
         void setActivity(std::string activity);
@@ -295,7 +311,8 @@ namespace playground
         std::string usage_;
         std::string key_;                                           // loaded on first use
         std::string keyProblem_;
-        std::map<std::string, uint64_t> seen_;                      // file name -> the text Claude saw (hashText)
+        std::map<std::string, uint64_t> seen_;                      // file name -> the text the chat's Claude saw
+                                                                    // (hashText; Claude Desktop's: mcpSeen_)
         uint64_t lastSignature_ = 0;                                // the plugin's state as Claude last got it
         bool resendState_ = false;                                  // a summary came: the state goes with what follows
         std::vector<std::string> requests_;                         // bodies sent (probes)
@@ -316,6 +333,29 @@ namespace playground
         std::vector<Attached> attached_;                            // for the next message
         int attaching_ = 0;                                         // files the job thread still reads
         uint64_t attachEpoch_ = 0;                                  // a new chat: files read for the old one go
+
+        // The live tools (Live.cpp). liveTool: listen and get_status, from a turn (`caller` none: the stop button stops
+        // listen) or from MCP (by its call's number: mcpCancel stops it); other live calls go to runTool. MCP's own view:
+        // the texts Claude Desktop saw of each file (not the chat's seen_: what one saw the other did not), the
+        // journal's token at its last result (the hint a result starts with when something changed since).
+        struct LiveCall
+        {
+            bool mcp = false;
+            uint64_t call = 0;
+        };
+        static juce::var statusDefinition();                        // get_status's (toolDefinitions)
+        static juce::var listenDefinition();                        // listen's
+        juce::var liveTool(const juce::var& use, const LiveCall& caller);
+        std::string listenText(const juce::var& input, const std::function<bool()>& stopped, bool& isError);
+        std::string statusText(const juce::var& input, bool mcp, bool& isError);
+        std::string mcpHint();                                      // "" when nothing changed since MCP's last result
+        void mcpSaw(const std::string& name, const std::string& text);
+        void mcpForget(const std::string& name, const std::string& renamedTo = {});
+        std::mutex liveMutex_;                                      // the members below (a leaf)
+        std::map<std::string, std::string> mcpSeen_;               // file name -> the text Claude Desktop last saw
+        std::set<uint64_t> liveCalls_, liveStopped_;                // MCP's live calls running, and those cancelled
+        std::string mcpLook_;                                       // the journal's token at MCP's last result
+        std::atomic<bool> mcpWorking_{ false };                     // a call of Claude Desktop's, not live, runs
 
         std::atomic<bool> cancel_{ false };
         bool mcpNoted_ = false;                                      // the conversation says Claude Desktop is at work

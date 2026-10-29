@@ -89,6 +89,18 @@ namespace playground
         wake();
         if (thread_.joinable())
             thread_.join();
+        // The listens: cancelled (each stops within a read) and waited for.
+        std::list<Listening> listens;
+        {
+            const std::lock_guard<std::mutex> lock(jobMutex_);
+            listens.swap(listens_);
+        }
+        for (const Listening& l : listens)
+            if (hooks_.cancel)
+                hooks_.cancel(l.call);
+        for (Listening& l : listens)
+            if (l.thread.joinable())
+                l.thread.join();
         // The worker: what waits is dropped, what runs is cancelled (a tune stops within a render) and waited for.
         uint64_t running = 0;
         {
@@ -149,6 +161,10 @@ namespace playground
             }
             if (stop_.load())
                 break;
+            {
+                const std::lock_guard<std::mutex> lock(jobMutex_);
+                reap();
+            }
             const std::size_t polled = fds.size() - 2;   // the clients before this round's accept
             std::vector<bool> dead(clients.size(), false);
             for (std::size_t k = 0; k < polled; ++k)
@@ -256,7 +272,18 @@ namespace playground
                 jobCv_.notify_all();
                 return;                                  // the worker answers
             }
-            o.setProperty("result", resultOf(hooks_.call(name, arguments, 0)));
+            if (ChatAgent::mcpLiveWaits(name))
+            {
+                if (listen(client, id, name, arguments))
+                    return;                              // its thread answers
+                ChatAgent::McpResult r;
+                r.content = words("The plugin is listening " + std::to_string(kListens) + " times already: wait for one to end, "
+                                  "then call again.");
+                r.isError = true;
+                o.setProperty("result", resultOf(r));
+            }
+            else
+                o.setProperty("result", resultOf(hooks_.call(name, arguments, 0)));
         }
         else
             o.setProperty("error", "there is no method \"" + method + "\"");
@@ -270,9 +297,12 @@ namespace playground
         std::optional<Job> dropped;
         {
             const std::lock_guard<std::mutex> lock(jobMutex_);
-            if (running_ != 0 && runningClient_ == client && runningId_ == id)
+            for (const Listening& l : listens_)
+                if (l.client == client && l.id == id && !l.done->load())
+                    running = l.call;                    // a listen: it stops and replies with what it heard
+            if (running == 0 && running_ != 0 && runningClient_ == client && runningId_ == id)
                 running = running_;
-            else
+            else if (running == 0)
                 for (auto it = jobs_.begin(); it != jobs_.end(); ++it)
                     if (it->client == client && it->id == id)
                     {
@@ -299,14 +329,56 @@ namespace playground
     void McpLink::closed(const std::shared_ptr<Client>& client)
     {
         uint64_t running = 0;
+        std::vector<uint64_t> listening;
         {
             const std::lock_guard<std::mutex> lock(jobMutex_);
             jobs_.erase(std::remove_if(jobs_.begin(), jobs_.end(), [&](const Job& j) { return j.client == client; }), jobs_.end());
             if (running_ != 0 && runningClient_ == client)
                 running = running_;
+            for (const Listening& l : listens_)
+                if (l.client == client)
+                    listening.push_back(l.call);
         }
         if (running != 0 && hooks_.cancel)
             hooks_.cancel(running);
+        for (const uint64_t call : listening)
+            if (hooks_.cancel)
+                hooks_.cancel(call);
+    }
+
+    bool McpLink::listen(const std::shared_ptr<Client>& client, const juce::var& id, const std::string& name, const juce::var& arguments)
+    {
+        const std::lock_guard<std::mutex> lock(jobMutex_);
+        reap();
+        if (workerStop_ || stop_.load() || listens_.size() >= kListens)
+            return false;
+        Listening& l = listens_.emplace_back();
+        l.client = client;
+        l.id = id;
+        l.call = nextCall_++;
+        l.done = std::make_shared<std::atomic<bool>>(false);
+        l.thread = std::thread([this, client, id, name, arguments, call = l.call, done = l.done] {
+            const ChatAgent::McpResult r = hooks_.call(name, arguments, call);
+            juce::var reply = replyTo(id);
+            reply.getDynamicObject()->setProperty("result", resultOf(r));
+            answer(*client, reply);                      // to a connection gone: nothing is read, nothing breaks
+            done->store(true);
+            wake();                                      // the poll thread joins it
+        });
+        return true;
+    }
+
+    void McpLink::reap()
+    {
+        for (auto it = listens_.begin(); it != listens_.end();)
+            if (it->done->load())
+            {
+                if (it->thread.joinable())
+                    it->thread.join();
+                it = listens_.erase(it);
+            }
+            else
+                ++it;
     }
 
     void McpLink::work()
