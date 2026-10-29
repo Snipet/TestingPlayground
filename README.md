@@ -132,20 +132,21 @@ module Voice
 - **Frozen dials.** Once no dial has moved for 3 seconds, the plugin compiles the program again in the background with
   each dial's value as a constant (FMinus's frozen binding), and plays that copy on the same instance (the synth's on
   the same voices), at a block's start, until a dial moves (that block it plays its own code again; 3 s later it
-  freezes again); the top bar shows a snowflake beside the CPU load while the copy plays (under the pointer, the status bar says what it means). The copy is in the program's own
-  math (FMinus's Math::Vector, whose kernels give a float one result wherever it is computed, from a frozen dial or a
-  knob), so it plays the program's very bits, in any blocks, and the switch changes nothing but the cost (`dsp.freeze`
-  checks the examples and 64 of RANDOM's programs for ten seconds each, in irregular blocks). On those programs it
-  takes about 93% of the program's time (the geometric mean; single programs within about a quarter either way on a
-  quiet Mac, from under half to twice beside other builds): the gain is the dials' folding (FMinus also makes copies
-  of a method for a bool's or a small int's values and moves a still dial's arithmetic out of its loops). Until FMinus
-  c75caab the copy was in FMinus's fast math (LLVM's own sinf, cosf, tanf, expf, tanhf and logf), which then took
-  about three quarters of the program's time (exact math would have taken 91% and 94%). Since c75caab inlined FMinus's
-  own kernels, fast math saves only a few points more on average, is not the program's bits (and while it plays the
-  output may depend on where the host's blocks end), and makes a program that calls `tanhf` or `sinf` a sample at a
-  time in a loop with state slower than the program itself: the effect's Drive 124% to 168%, the synth's FM bell 105%
-  to 127%, where the plugin's copy takes about 80% and 95% on a quiet Mac (`dsp.freeze` times a fast copy beside the
-  plugin's and names the programs more than 5% slower with either).
+  freezes again); the top bar shows a snowflake beside the CPU load while the copy plays (under the pointer, the
+  status bar says what it means). The copy is in the program's own math (FMinus's Math::Vector, whose kernels give a
+  float one result wherever it is computed, from a frozen dial or a knob), so it plays the program's very bits, in any
+  blocks, and the switch changes nothing but the cost (`dsp.freeze` checks the examples and 64 of RANDOM's programs
+  for ten seconds each, in irregular blocks). On those programs it takes about 93% of the program's time (the
+  geometric mean; single programs within about a quarter either way on a quiet Mac, from under half to twice beside
+  other builds): the gain is the dials' folding (FMinus also makes copies of a method for a bool's or a small int's
+  values and moves a still dial's arithmetic out of its loops). Until FMinus c75caab the copy was in FMinus's fast
+  math (LLVM's own sinf, cosf, tanf, expf, tanhf and logf), which then took about three quarters of the program's time
+  (exact math would have taken 91% and 94%). Since c75caab inlined FMinus's own kernels, fast math saves only a few
+  points more on average, is not the program's bits (and while it plays the output may depend on where the host's
+  blocks end), and makes a program that calls `tanhf` or `sinf` a sample at a time in a loop with state slower than
+  the program itself: the effect's Drive 124% to 168%, the synth's FM bell 105% to 127%, where the plugin's copy takes
+  about 80% and 95% on a quiet Mac (`dsp.freeze` times a fast copy beside the plugin's and names the programs more
+  than 5% slower with either).
 - **The audio thread.** process (and the synth's start and stop) may not allocate: FMinus refuses a program whose
   methods could reach `calloc`, `malloc` or `free` from them, and names the line. Allocate in init (a delay line:
   `calloc`, zeroed; in the synth each voice's own, as the Pluck example's) and free in end, both off the audio thread;
