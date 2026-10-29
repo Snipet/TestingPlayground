@@ -2908,10 +2908,10 @@ namespace playground
             { "measure_output", "Measure the sound", true, false }, { "view_panel", "Look at the panel", true, false, "interface" },
             { "view_sound", "Look at the sound", true, false },   { "set_checks", "Set checks on the sound", false, false },
             { "tune_dials", "Tune the dials", false, false },     { "get_status", "Check the plugin", true, false },
-            { "listen", "Listen live", true, false },
-            { "compare", "Compare two sounds", true, false },
-            { "trace", "Trace a problem", true, false },
-            { "capture", "Record what you play", true, false },
+            { "listen", "Listen live", true, false, "debugging" },
+            { "compare", "Compare two sounds", true, false, "debugging" },
+            { "trace", "Trace a problem", true, false, "debugging" },
+            { "capture", "Record what you play", true, false, "debugging" },
         };
 
         const Face* faceOf(const juce::String& name)
@@ -2945,6 +2945,26 @@ namespace playground
             return { d.substr(0, cut), d.substr(next) };
         }
 
+        // MCP's copy of the schemas leaves out a property's description that an earlier property of the same name has
+        // word for word (tools.json sits in every Desktop conversation; the guide says so): the render settings
+        // view_sound describes, again in a check's and in tune_dials'; a goal's, set_checks', again in tune_dials'.
+        void dropRepeated(const juce::var& node, std::set<std::pair<juce::String, juce::String>>& seen)
+        {
+            if (juce::DynamicObject* o = node.getDynamicObject())
+            {
+                if (juce::DynamicObject* props = o->getProperty("properties").getDynamicObject())
+                    for (const auto& kv : props->getProperties())
+                        if (juce::DynamicObject* p = kv.value.getDynamicObject(); p != nullptr && p->hasProperty("description"))
+                            if (!seen.insert({ kv.name.toString(), p->getProperty("description").toString() }).second)
+                                p->removeProperty("description");
+                for (const auto& kv : o->getProperties())
+                    dropRepeated(kv.value, seen);
+            }
+            else if (const juce::Array<juce::var>* a = node.getArray())
+                for (const juce::var& v : *a)
+                    dropRepeated(v, seen);
+        }
+
         std::vector<uint8_t> fromBase64(const juce::String& b64)
         {
             juce::MemoryOutputStream out;
@@ -2958,6 +2978,7 @@ namespace playground
     juce::var ChatAgent::mcpTools()
     {
         juce::Array<juce::var> out;
+        std::set<std::pair<juce::String, juce::String>> described;   // properties described so far (dropRepeated)
         const juce::var all = toolDefinitions();         // held: getArray() points into it
         if (const juce::Array<juce::var>* tools = all.getArray())
             for (const juce::var& t : *tools)
@@ -2967,7 +2988,7 @@ namespace playground
                     continue;
                 const Face* f = faceOf(name);
                 const juce::String title = f != nullptr ? juce::String(f->title) : name;
-                const juce::var schema = t["input_schema"];
+                const juce::var schema = juce::JSON::parse(juce::JSON::toString(t["input_schema"]));   // a copy of its own
                 if (name == "view_panel" || name == "view_sound")
                     if (juce::DynamicObject* props = schema["properties"].getDynamicObject())
                         props->setProperty("detail", claude::object({ { "type", "string" },
@@ -2975,6 +2996,7 @@ namespace playground
                                                                       { "description", "high: the picture at its full size, "
                                                                                        "which may not fit (by default it is "
                                                                                        "made smaller to fit)" } }));
+                dropRepeated(schema, described);
                 out.add(claude::object({ { "name", name },
                                          { "title", title },
                                          { "description", juce::String::fromUTF8(leadOf(t["description"].toString().toStdString()).first.c_str()) },
@@ -3011,7 +3033,9 @@ namespace playground
                "This guide comes in parts (playground_guide's part): \"start\" is what every piece of work needs, and its end "
                "names the others and when to read them; a section it calls \"below\" that is not in the part you read is in "
                "another part. The tools' descriptions here are short: what they leave out is in " + mcp::guide::kNotes
-             + ", at the end of the part that needs it. What follows is the guide the plugin's chat works from.\n\n"
+             + ", at the end of the part that needs it; and a setting described in one tool's schema is not described again "
+               "in a later one's (a check's and tune_dials' render settings are as view_sound's, their goals as set_checks'). "
+               "What follows is the guide the plugin's chat works from.\n\n"
              + systemPrompt() + "\n" + mcp::guide::kNotes + "\n\n" + notes;
     }
 

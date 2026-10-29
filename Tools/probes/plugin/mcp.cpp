@@ -4,11 +4,13 @@
 //   LINK     a processor listens on a private socket in the folder (0600, the folder 0700) and leaves tools.json and
 //            guide.md there; info names its kind, plugin and files; tools are the chat's, but ask_user and
 //            ask_planner, each MCP description its first sentence or paragraph (tools.json's size printed, with the
-//            full descriptions for comparison); the guide's start says it is driven from outside; a guide request
-//            naming no part (a 0.2.0 server's) gets the whole guide
+//            full descriptions for comparison, and compact), a setting's description given once (view_sound's render
+//            settings, set_checks' goals: not again in a check's or tune_dials'); the guide's start says it is driven
+//            from outside; a guide request naming no part (a 0.2.0 server's) gets the whole guide
 //   GUIDE    the guide in parts (mcp/McpGuide.h): start (working from outside, FMINUS, DSP PRACTICE, CHECKING, the
 //            notes of the tools it uses and the other parts named; its size printed, in bytes and about tokens),
-//            large-program (with THREADS), interface, library (a line a file), examples, projects, all (the system prompt whole);
+//            large-program (with THREADS), interface, library (a line a file), debugging (the notes of listen, capture,
+//            trace and compare, not in start), examples, projects, all (the system prompt whole);
 //            library:<file> its header, library:<file>:code its whole text with no tab added to the editor; an unknown
 //            part refused, naming the parts
 //   CALL     write_file through the socket writes the processor's draft (the chat's card notes Claude Desktop once);
@@ -45,6 +47,7 @@
 //            still list (from tools.json) and the guide's parts come from guide.md, as the plugin gave them
 #include "Probe.h"
 
+#include "mcp/McpGuide.h"
 #include "mcp/McpProtocol.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
@@ -489,7 +492,29 @@ PROBE(plugin, mcp)
                       + " (" + std::to_string(juce::JSON::toString(tool["inputSchema"], false).length()) + ")";
         std::printf("tools.json by tool, bytes (its schema's):%s\n", each.c_str());
         P.eq("link.tools_short", leads ? 1 : 0, 1);
-        P.le("link.tools_bytes", static_cast<double>(size), kInstrument ? 24000.0 : 22500.0);   // the first MCP wave's budget
+        // A setting described once: view_sound's hold_seconds keeps its words, a check's and tune_dials' leave them out.
+        juce::var viewSound, setChecks, tuneDials;
+        if (const juce::Array<juce::var>* t = tools.getArray())
+            for (const juce::var& tool : *t)
+            {
+                const juce::String name = tool["name"].toString();
+                if (name == "view_sound")
+                    viewSound = tool;
+                else if (name == "set_checks")
+                    setChecks = tool;
+                else if (name == "tune_dials")
+                    tuneDials = tool;
+            }
+        P.eq("link.tools_described_once",
+             viewSound["inputSchema"]["properties"]["hold_seconds"].hasProperty("description")
+                     && !tuneDials["inputSchema"]["properties"]["hold_seconds"].hasProperty("description")
+                     && !setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["hold_seconds"].hasProperty("description")
+                     && !tuneDials["inputSchema"]["properties"]["goals"]["items"]["properties"]["min"].hasProperty("description")
+                     && setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["min"].hasProperty("description")
+                 ? 1 : 0, 1);
+        // The first MCP wave's budget (tools.json as the link writes it, pretty-printed; Desktop gets it compact).
+        std::printf("tools.json compact: %d bytes\n", juce::JSON::toString(tools, true).length());
+        P.le("link.tools_bytes", static_cast<double>(size), 24000.0);
     }
     const std::string guide = ask(*a, r, 3, "guide", object({ { "part", "start" } }))["result"].toString().toStdString();
     P.eq("link.guide", guide.rfind("WORKING FROM OUTSIDE THE PLUGIN", 0) == 0 ? 1 : 0, 1);
@@ -510,18 +535,20 @@ PROBE(plugin, mcp)
                                 && has(guide, "<tool name=\"write_file\" part=\"start\">") && has(guide, "\"library:<file>:code\"")
                                 && !has(guide, "\nTHE INTERFACE: panel.gui\n") && !has(guide, "<library_file")
                                 && !has(guide, "\nBUILDING A LARGE PROGRAM\n") && !has(guide, "\nTHREADS: parallel for")
+                                && !has(guide, "<tool name=\"trace\"") && has(guide, "- \"debugging\": ")
                                 && guide == text("start") ? 1 : 0, 1);
         std::printf("guide: start %zu bytes (about %zu tokens); all %zu bytes (about %zu tokens)\n", guide.size(), guide.size() / 4,
                     all.size(), all.size() / 4);
-        P.le("guide.start_tokens", static_cast<double>(guide.size() / 4), 9500.0);   // the first MCP wave's
+        P.le("guide.start_tokens", static_cast<double>(guide.size() / 4), kInstrument ? 9100.0 : 8000.0);   // the first MCP wave's
         const std::string large = text("large-program");
         interfacePart = text("interface");
         const std::string library = text("library"), examples = text("examples"), projects = text("projects");
-        std::printf("guide parts: large-program %zu, interface %zu, library %zu, examples %zu, projects %zu bytes\n", large.size(),
-                    interfacePart.size(), library.size(), examples.size(), projects.size());
+        const std::string debugging = text("debugging");
+        std::printf("guide parts: large-program %zu, interface %zu, library %zu, debugging %zu, examples %zu, projects %zu bytes\n",
+                    large.size(), interfacePart.size(), library.size(), debugging.size(), examples.size(), projects.size());
         for (const auto& [name, body] : { std::pair<const char*, const std::string*>{ "start", &guide }, { "large-program", &large },
-                                          { "interface", &interfacePart }, { "library", &library }, { "examples", &examples },
-                                          { "projects", &projects } })
+                                          { "interface", &interfacePart }, { "library", &library }, { "debugging", &debugging },
+                                          { "examples", &examples }, { "projects", &projects } })
             juce::File(juce::String(probe::outPath(std::string("plugin.mcp.guide.") + name + ".md"))).replaceWithText(juce::String::fromUTF8(body->c_str()));
         juce::File(juce::String(probe::outPath("plugin.mcp.tools.json"))).replaceWithText(juce::JSON::toString(tools, false));
         P.eq("guide.large_program", large.rfind("BUILDING A LARGE PROGRAM\n", 0) == 0 && has(large, "\nTHREADS: parallel for")
@@ -534,6 +561,10 @@ PROBE(plugin, mcp)
             listed += has(library, std::string("\n- ") + f.name + " (" + f.category + "): " + f.summary + "\n") ? 1 : 0;
         P.eq("guide.library", library.rfind("THE LIBRARY\n", 0) == 0 && has(library, "<tool name=\"add_library_file\"")
                                   && !has(library, "<library_file") && listed == static_cast<int>(std::size(pg::kLibrary)) ? 1 : 0, 1);
+        P.eq("guide.debugging", debugging.rfind(std::string(pg::mcp::guide::kDebugging) + "\n", 0) == 0
+                                    && has(debugging, "<tool name=\"listen\" part=\"debugging\">") && has(debugging, "<tool name=\"capture\"")
+                                    && has(debugging, "<tool name=\"trace\"") && has(debugging, "<tool name=\"compare\"")
+                                    && !has(debugging, "<tool name=\"get_status\"") && !has(debugging, "<library_file") ? 1 : 0, 1);
         P.eq("guide.examples", examples.rfind("THIS PLUGIN'S EXAMPLES", 0) == 0 && has(examples, "<example title=") ? 1 : 0, 1);
         P.eq("guide.projects", projects.rfind("RANDOM AND PROJECTS\n", 0) == 0 && !has(projects, "<tool name=") ? 1 : 0, 1);
         const pg::LibraryFile& lib = pg::kLibrary[0];

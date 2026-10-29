@@ -13,6 +13,9 @@
 //   library               THE LIBRARY's introduction and an index, one line a file, and the notes of the tools it uses
 //   library:<file>        that file's header (how to use it), as THE LIBRARY quotes it
 //   library:<file>:code   the whole file (the caller's library gives it): nothing is added to the user's editor
+//   debugging             the notes of the tools for a problem the user hears (listen, capture, trace, compare): no
+//                         heading of the prompt's, only a line of what they are for, since CHECKING YOUR WORK (in
+//                         start) says when to use each
 //   examples              THIS PLUGIN'S EXAMPLES
 //   projects              RANDOM AND PROJECTS
 //   all                   all of it
@@ -39,7 +42,8 @@ namespace playground::mcp::guide
     inline constexpr const char* kNotes = "THE TOOLS: WHAT THEIR SHORT DESCRIPTIONS LEAVE OUT";
 
     // The parts a caller may ask for (library:<file> and library:<file>:code aside).
-    inline constexpr const char* kParts[] = { "start", "large-program", "interface", "library", "examples", "projects", "all" };
+    inline constexpr const char* kParts[] = { "start", "large-program", "interface", "library", "debugging", "examples", "projects", "all" };
+    inline constexpr const char* kDebugging = "WHAT PLAYS NOW AND WHAT WENT WRONG";   // the debugging part's title
 
     namespace detail
     {
@@ -183,6 +187,9 @@ namespace playground::mcp::guide
                    "- \"library\": the ready-made building blocks (" + categories + "), a line each. Read it before you "
                    "build, and use them rather than writing your own; then \"library:<file>\" gives a block's usage (its "
                    "header), \"library:<file>:code\" its whole code without adding anything to the user's editor.\n"
+                   "- \"debugging\": listen, capture, trace and compare in full (what plays now in the user's song, "
+                   "recording what they play, where a problem starts, two versions against each other). Read it before you "
+                   "first use one of them: when the user says something sounds wrong, or a measurement shows a problem.\n"
                    "- \"examples\": this plugin's examples (its EXAMPLES menu), whole.\n"
                    "- \"projects\": RANDOM, and the user's projects and presets.\n"
                    "- \"all\": all of it at once (about " + std::to_string((g.size() / 4 + 500) / 1000) + "K tokens).\n";
@@ -203,6 +210,14 @@ namespace playground::mcp::guide
                 out += "- " + b.name + " (" + b.category + "): " + summary(b) + "\n";
             return out + notes(g, c.notes, "library");
         }
+        if (n == "debugging")
+            return std::string(kDebugging) + "\n\n"
+                   "The tools for a problem the user hears: listen (what plays now in their song, live), capture (a recording "
+                   "of what they play, kept in the plugin's memory, which then replays as a scenario), trace (where a problem "
+                   "starts in the program: the moment, the voice, the field and its lines) and compare (two versions rendered "
+                   "alike). CHECKING YOUR WORK, in \"start\", says what each is for; here is what their short descriptions "
+                   "leave out.\n"
+                 + notes(g, c.notes, "debugging");
         if (n == "examples")
             return g.substr(c.examples, c.projects - c.examples);
         if (n == "projects")

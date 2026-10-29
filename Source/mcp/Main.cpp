@@ -764,7 +764,8 @@ namespace
                             object({ { "part", object({ { "type", "string" },
                                                         { "description", "The part: start (the default), large-program, "
                                                                          "interface, library, library:<file>, "
-                                                                         "library:<file>:code, examples, projects or all" } }) } })));
+                                                                         "library:<file>:code, debugging, examples, "
+                                                                         "projects or all" } }) } })));
             listedPlain_ = tools.isVoid();
             if (const juce::Array<juce::var>* a = tools.getArray())
                 for (const juce::var& t : *a)
@@ -1009,13 +1010,15 @@ namespace
             else
                 text = "Something in the " + thing + " sounds wrong: " + arg("what") + (arg("when").empty() ? std::string() : ", " + arg("when"))
                      + ". Find out why and fix it:\n"
-                       "1. First look at what it plays now in my song, as it is, before you guess.\n"
-                       "2. If it happens only while I play, tell me what to play and ask me to play it (recording it, if you can); "
-                       "otherwise work from what I told you.\n"
-                       "3. Reproduce it away from my song, so you can study it without me.\n"
-                       "4. Find where it starts: the part of the program, and the moment it goes wrong.\n"
-                       "5. Try a fix without changing what I hear until you know it works; then put it in.\n"
-                       "6. Set a check so it stays fixed.\n"
+                       "1. First hear what it plays now in my song, as it is, before you guess.\n"
+                       "2. If it happens only while I play, tell me you will record me and what to play, record me playing it, "
+                       "and work from that recording; otherwise work from what I told you.\n"
+                       "3. Reproduce it away from my song (on my recording, or on notes and moves you write), so you can study "
+                       "it without me.\n"
+                       "4. Find where it starts: the moment, the note, and the part of the program that goes wrong first.\n"
+                       "5. Try a fix on a copy, without changing what I hear, and play it the same way against what plays now "
+                       "until you know it works; then put it in.\n"
+                       "6. Set a check, on a passage like mine, so it stays fixed.\n"
                        "7. Tell me in a few plain sentences what was wrong, what you changed, and what to play to hear that it is gone.";
             const auto finish = [this, id](const std::string& t) {
                 juce::Array<juce::var> messages;
