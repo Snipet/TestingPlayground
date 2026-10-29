@@ -8,7 +8,8 @@
 // for two seconds is one line ("14:02:31-33 you moved cutoff 1.20 kHz -> 3.40 kHz") and a reader never misses part of
 // one. A token is the journal's identity (made at random, so a token of another instance or of before a reload is
 // known as not this one's) and the number of the last change: tokens rather than a cursor here, since one server
-// process may serve several conversations, each with its own.
+// process may serve several conversations, each with its own. Each token handed out is a new one (a number of its own
+// when nothing changed since the last), so what Live.cpp keeps of the files at a token is that token's alone.
 //
 // Any thread, under the journal's own mutex (a leaf: nothing is called with it held). The Processor writes it from the
 // message thread (poll(), the editor's calls), the agent's and the link's threads (the chat's tools), and
@@ -52,7 +53,8 @@ namespace playground
         // Anything else, in words ("ran it: it compiled, 9 dials"). With a `key`, it goes into the last change of that
         // key when it may (above), its words replacing that one's.
         void note(Who who, const std::string& words, const std::string& key = {});
-        // The bypass's edges: "bypassed", then "bypassed (14:04:10-14:05:01)" once it ends.
+        // The bypass's edges: "bypassed", then "bypassed (14:04:10-14:05:01)" once it ends (and, when a token was
+        // handed out meanwhile, "un-bypassed" for that token's readers).
         void bypass(bool on);
         // The output guard's alerts (Engine::Alert bits), merged while they go on.
         void alert(uint32_t bits);
@@ -72,6 +74,7 @@ namespace playground
             std::string from, to;                     // a dial's values
             int64_t fromMs = 0, toMs = 0;             // when (the wall clock, ms)
             bool open = false;                        // the bypass still on
+            uint64_t ends = 0;                        // an un-bypass: the bypass it ends (a reader of both reads one)
         };
         static constexpr int64_t kMergeMs = 1500;     // a drag's pause at most
         static constexpr int64_t kTypingMs = 60000;   // typing's

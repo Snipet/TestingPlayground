@@ -322,6 +322,8 @@ namespace playground
         std::atomic<uint64_t> userRun_{ 0 };                     // the request of the editor's last RUN
         void journalPoll();                                      // poll(): the dials moved since, the bypass, the transport
         void syncDials();                                        // the dials as they are now, seen (moves the plugin made)
+        std::atomic<uint32_t> ownDials_{ 0 };                    // the slots the plugin set since (bits; poll()'s writes)
+        void syncOwnDials();                                     // those as they are now, seen: any other move is journalled
         void journalDraft(const Draft& before, const Draft& after, Journal::Who who);
         void journalPrepare(double rate, int block);             // prepareToPlay's settings, when they change
         std::string dialTextOf(int slot, float norm) const;      // slot's value as text, in its units

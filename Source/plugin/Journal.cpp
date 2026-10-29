@@ -161,15 +161,18 @@ namespace playground
     {
         const int64_t now = nowMs();
         const std::lock_guard<std::mutex> lock(mutex_);
+        uint64_t ends = 0;
         if (!on)
             for (auto it = changes_.rbegin(); it != changes_.rend(); ++it)
                 if (it->key == "bypass")
                 {
-                    if (it->open && it->seq > issued_)
+                    if (it->open)
                     {
-                        it->open = false;
+                        it->open = false;                 // whoever reads it reads until when
                         it->toMs = now;
-                        return;
+                        if (it->seq > issued_)
+                            return;                       // no token covers it yet: its one line says it all
+                        ends = it->seq;                   // a token's readers saw it begin: they read the end
                     }
                     break;
                 }
@@ -178,6 +181,7 @@ namespace playground
         c.key = "bypass";
         c.words = on ? "bypassed" : "un-bypassed";
         c.open = on;
+        c.ends = ends;
         c.fromMs = c.toMs = now;
         add(std::move(c));
     }
@@ -241,7 +245,7 @@ namespace playground
             out.complete = from >= dropped_;
             for (const Change& c : changes_)
             {
-                if (c.seq <= from)
+                if (c.seq <= from || c.ends > from)       // an un-bypass whose bypass is listed: that line says until
                     continue;
                 out.lines.push_back(line(c));
                 if (c.who == Who::plugin)
@@ -251,7 +255,11 @@ namespace playground
             }
         }
         if (issue)
+        {
+            if (issued_ == seq_)
+                ++seq_;                                   // a token of its own: its files are its own (Live.cpp)
             issued_ = seq_;
+        }
         char buf[48];
         std::snprintf(buf, sizeof buf, "%x-%llu", static_cast<unsigned>(epoch_), static_cast<unsigned long long>(seq_));
         out.token = buf;

@@ -93,6 +93,18 @@ namespace playground
         }
     }
 
+    // Only the slots the plugin set itself: a move by the host (its automation, on the audio thread) or by the user
+    // between the last journalPoll() and here is journalled at the next.
+    void Processor::syncOwnDials()
+    {
+        static_assert(kMaxControls <= 32, "ownDials_ holds a bit a slot");
+        const uint32_t own = ownDials_.exchange(0);
+        for (int c = 0; c < kMaxControls; ++c)
+            if ((own & (1u << c)) != 0)
+                if (const float v = raw_[static_cast<std::size_t>(c)]->load(); std::isfinite(v))
+                    polled_[static_cast<std::size_t>(c)].store(v);
+    }
+
     void Processor::journalPoll()
     {
         // The dials moved since the last poll: the editor's (its ports say so) or the host's.

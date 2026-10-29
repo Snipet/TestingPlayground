@@ -653,6 +653,7 @@ namespace playground
                 if (!now.used || (was.used && sameName(was, now)))
                     continue;                                    // the same parameter keeps its dial's value
                 juce::RangedAudioParameter& p = *params_[static_cast<std::size_t>(c)];
+                ownDials_.fetch_or(1u << c);                     // the run's: no move (syncOwnDials)
                 p.beginChangeGesture();
                 p.setValueNotifyingHost(normOf(now, now.def));
                 p.endChangeGesture();
@@ -726,6 +727,7 @@ namespace playground
             if (!c.used)
                 continue;
             juce::RangedAudioParameter& p = *params_[static_cast<std::size_t>(slot)];
+            ownDials_.fetch_or(1u << slot);                      // journalled when Claude set it (chatSetDial)
             p.beginChangeGesture();
             p.setValueNotifyingHost(normOf(c, plain));
             p.endChangeGesture();
@@ -739,7 +741,7 @@ namespace playground
         }
         else if (alerts_.load() != 0 && now - alertsAt_ > kAlertMs)
             alerts_.store(0);
-        syncDials();                                             // what poll() itself set: a run's, a version's, Claude's
+        syncOwnDials();                                          // what poll() itself set: a run's, a version's, Claude's
     }
 
     void Processor::setEditorSize(int w, int h) noexcept
@@ -1068,6 +1070,7 @@ namespace playground
                 if (!k.used || d.name != k.name)
                     continue;
                 juce::RangedAudioParameter& p = *params_[static_cast<std::size_t>(c)];
+                ownDials_.fetch_or(1u << c);                     // a version's or a preset's: its line says so
                 p.beginChangeGesture();
                 p.setValueNotifyingHost(normOf(k, d.value));
                 p.endChangeGesture();
@@ -1237,7 +1240,7 @@ namespace playground
             projectDials_ = overlay(projectDials_, pr->dials);   // a compile on its way: after it
         else
             setDialsByName(cs, pr->dials);
-        syncDials();                                             // the preset's dials: its line says so
+        syncOwnDials();                                          // the preset's dials: its line says so
         journal_.note(Journal::Who::you, "applied preset \"" + pr->name + "\" of \"" + p->name + "\"");
         const std::lock_guard<std::mutex> lock(programMutex_);
         projectPreset_ = pr->name;
