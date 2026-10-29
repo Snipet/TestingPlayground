@@ -498,10 +498,10 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   instead (above): knobs, sliders and the XY pad take a drag (Shift is finer), the wheel and the keys, and a
   double-click for the default; buttons, switches and menus a click; a tab shows its page; in the synth, a keyboard's
   key plays its note (louder lower on the key; a drag slides across the keys).
-- **The session** keeps the program that plays (all its files), the files as you left them (run or not), the tab
-  shown, the dials and the project open (its version, the preset applied). A session whose program no longer compiles
-  (an older FMinus, say) leaves the first example, Init, playing, its files in the editor. A session saved before files
-  loads as a program of one file.
+- **The session** keeps the program that plays (all its files), the files as you left them (run or not), the tab shown,
+  the dials and the project open (its version, the preset applied). A session whose program no longer compiles (an older
+  FMinus, say) leaves the program that played playing (in a new instance, the first example, Init), and the session's
+  files in the editor. A session saved before files loads as a program of one file.
 - **The window** resizes in both directions, from 1000 x 600 (logical px, before the zoom) up: the editor and the chat's
   conversation take the height, the chat about a third of the width. The session keeps the size.
 - **The Standalone** (each product's app) is a Mac window of its own kind: no title bar over the editor, its close,
