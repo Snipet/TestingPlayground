@@ -65,7 +65,7 @@ place (its `products/<key>.cmake`, and its names in the docs).
 ## Build and test
 
 - `cmake --workflow --preset dev-verify`: configure, build (both products' Standalone, AU, VST3, MCP server and
-  probes) and run every test in `build-dev`: each of the 29 probes once for each product (`effect:fminus.examples`,
+  probes) and run every test in `build-dev`: each of the 31 probes once for each product (`effect:fminus.examples`,
   `synth:fminus.examples`, ...), and the lints once. Done means it exits 0 with no warning from our sources (they build
   with `-Werror`). While working on one product, `cmake --workflow --preset effect-verify` (or `synth-verify`) builds
   and tests it alone (the build preset and target `<key>`, the test preset `dev-<key>`: label `<key>`); the gate is
@@ -279,15 +279,17 @@ place (its `products/<key>.cmake`, and its names in the docs).
   program's own code, never the frozen copy, and it says so.
 - **trace** (`dsp/Debug.h`, `plugin/ChatTrace.cpp`): offline only, in a Session's own Engine, never the one that plays
   (`Engine::playingPatch` and `voices` are offline accessors). Pass 1 renders in 16-sample calls and reads every field
-  of the voices that sound after each (`Patch::fieldMap`, `Patch::read`: inside the instances' memory as FMinus lays
-  it out, never through a pointer), the alerts a call from `CallInfo` (never `Engine::takeAlerts`); pass 2 renders
-  again in 1-sample calls through a window of at most 4096 samples before each problem, and its output must equal
-  pass 1's: when it does not, the program keeps state per call, and the result says so. The lines that write a field
-  come from `fminus/Lang.h`'s resolution of each assignment (a heuristic). Deterministic but for its time limit (90 s)
-  and a cancel (`cancel_`); find's result at most twenty lines; `dsp.debug` checks it on planted bugs. It never claims
-  what it did not check: a problem a stop kept from pass 2 is "not traced", "the same bits" needs compared samples, a
-  field bad before the first call is a note, not the problem, and with no field gone bad the verdict names the state
-  the map leaves out (`Patch::unmapped`) before it blames a local.
+  of the voices that sound after each (`Patch::fieldMap`, `Patch::read`: inside the instances' memory as FMinus lays it
+  out, never through a pointer), the alerts a call from `CallInfo` (never `Engine::takeAlerts`); pass 2 renders again in
+  1-sample calls through a window of at most 4096 samples before each problem, and its output must equal pass 1's: when
+  it does not, the program keeps state per call, and the result says so. The lines that write a field come from
+  `fminus/Lang.h`'s resolution of each assignment (a heuristic). Deterministic but for its time limit (90 s) and a
+  cancel (`cancel_`); find's result at most twenty lines; `dsp.debug` checks it on planted bugs. It never claims what it
+  did not check: a problem a stop kept from pass 2 is "not traced", "the same bits" needs compared samples, a field bad
+  before the first call is a note, not the problem, and with no field gone bad the verdict names the state the map
+  leaves out (`Patch::unmapped`) before it blames a local. Its source "capture" is the user's recording replayed through
+  the program that played it (`scenario::Captured::files`, the take's own; the one that plays now when the take no
+  longer knows it), read once for the files and the render (`scenario::resolve` with the recording).
 - **set_checks** (`dsp/Goals.h`): checks are goals (a metric with min, max or a target and a tolerance) with a label
   and a render; `ChatAgent::evaluateChecks` measures them all (one compile, one render for checks that share one) on
   the editor's files and the plugin's dials after every run_program that compiles (the results end its result) and
@@ -309,7 +311,10 @@ place (its `products/<key>.cmake`, and its names in the docs).
   (ChatAgent.cpp: its title in words, read-only, destructive, and the guide part its notes go in, "start" unless
   said), and its description's first sentence (or first paragraph, when it has several) must stand alone: that is
   all MCP's copy keeps (tools.json sits in every Desktop conversation), the rest goes in the guide's THE TOOLS: WHAT
-  THEIR SHORT DESCRIPTIONS LEAVE OUT, in that part. Each product has its own server, extension and socket folder.
+  THEIR SHORT DESCRIPTIONS LEAVE OUT, in that part. MCP's copy of the schemas also leaves out a property's description
+  an earlier property of the same name has word for word (`dropRepeated`: a check's and tune_dials' render settings
+  are view_sound's; the guide says so). tools.json stays at most 24,000 bytes as the link writes it (pretty-printed;
+  Desktop gets it compact): `plugin.mcp` checks. Each product has its own server, extension and socket folder.
   The server is juce_core only; it finds the instances by their sockets (`<n>.sock`, the lowest number free: the
   instance's name, "Effect 2" or "Synth 2", shown in the chat card while connected) and falls back on the tools.json
   and guide.md the newest left. It is for someone who never sees a tool: its instructions keep tools and ids from the
@@ -335,35 +340,35 @@ place (its `products/<key>.cmake`, and its names in the docs).
   A cancel stops the call running (`ChatAgent::mcpCancel`, by the call's number: it sets `cancel_`, which tune's
   progress reads, and a tune cancelled so applies nothing) or drops one waiting; a connection closing cancels its
   calls, and the link going (the plugin closing) cancels and waits for the one running.
-- **A live tool** (`ChatAgent::mcpLive`, one line a tool: get_status and capture's status and stop now; listen
-  reserved) runs on the link's poll thread while a call may be running on its worker, without `busy_`, never refused.
-  Such a tool's handler is called concurrently with a running call (a tune, a render, a compile) from another thread,
-  so it reads only atomics, seqlock copies (`Engine::Meters`) or data under its own mutex (ChatHost's locked getters
-  count: the draft under `programMutex_`, the Compiler's status, the dials under `dialMutex_`, as get_status reads
-  them); it never touches the program (a Patch, a Session), the editor, the chat's history or `busy_`, never waits
-  for the message thread or the worker, and returns in milliseconds. A tool that cannot keep that is not live.
-- **listen and get_status's `since`** (`plugin/Live.cpp`, live: their reads keep the contract above). listen is
-  the live line reserved above: a call that takes seconds (`ChatAgent::mcpLiveWaits`), so the link runs each on a
-  thread of its own (`McpLink::listen`, four at once at most; a cancel or the connection closing stops it, the link
-  going cancels and joins them), never on the poll thread; it raises the meters' reader count while it listens
-  (`ChatHost::chatListening`, lowered on every exit) and polls `ChatHost::chatLive` about 25 times a second; a cancel
-  that comes before it starts is kept (`mcpStopped_`, every one, not only the last). get_status ends with a token of the
-  processor's journal (`plugin/Journal.h`: about 256 changes, drags merged, under its own mutex; what Claude Desktop
-  does itself is not kept, `ChatAgent::mcpWorking`; each token handed out is a new one), and `since` lists what changed
-  after it, the files as diffs (`dsp/TextDiff.h`) against their texts at that token (`mcpMarks_`, the newest 16
-  tokens', under `liveMutex_`). One server may serve several conversations and its calls name none: what is kept
-  for Claude Desktop is kept by token, never as one record of what "it" saw, which one conversation's look would move
-  for all. The two Claudes keep their own records: an MCP call never marks the chat's `seen_` (`markSeen`), so the
-  plugin's chat is sent a file Claude Desktop wrote; a chat turn never runs beside a call of Claude Desktop's (New
-  chat and a session load keep `busy_` while one runs). Every other MCP result starts with a line when something
-  changed since the last MCP call (`ChatAgent::mcpHint`, one cursor for the instance). The journal learns who: the
-  editor's ports are `GesturePort`s (a dial moved between polls with one of them is the user's, else the host's),
-  `setDraft` is the editor's and `chatSetDraft`, `chatRun`, `chatSetDial` the plugin chat's (or Claude Desktop's);
-  `poll()` compares the dials, the bypass and the transport once a poll and takes as seen only the dials it set itself
-  (`ownDials_`, `syncOwnDials`: a run's, a version's or a preset's, Claude's), so a move made meanwhile is journalled.
-  The tools' dial lines say each value as the panel does (`dialText`, Controls.h: its unit, its option's name, the
-  number after a scaled one). `plugin.live` checks both tools, `dsp.meters` LISTEN the fields, `plugin.chat` SEEN the
-  two records.
+- **A live tool** (`ChatAgent::mcpLive`, one line a tool: get_status, listen, and capture's status and stop without a
+  picture) runs on the link's poll thread (listen on a thread of its own: `mcpLiveWaits`, below) while a call may be
+  running on its worker, without `busy_`, never refused. Such a tool's handler is called concurrently with a running
+  call (a tune, a render, a compile) from another thread, so it reads only atomics, seqlock copies (`Engine::Meters`) or
+  data under its own mutex (ChatHost's locked getters count: the draft under `programMutex_`, the Compiler's status, the
+  dials under `dialMutex_`, as get_status reads them); it never touches the program (a Patch, a Session), the editor,
+  the chat's history or `busy_`, never waits for the message thread or the worker, and returns in milliseconds. A tool
+  that cannot keep that is not live.
+- **listen and get_status's `since`** (`plugin/Live.cpp`, live: their reads keep the contract above). listen is a call
+  that takes seconds (`ChatAgent::mcpLiveWaits`), so the link runs each on a thread of its own (`McpLink::listen`, four
+  at once at most; a cancel or the connection closing stops it, the link going cancels and joins them), never on the
+  poll thread; it raises the meters' reader count while it listens (`ChatHost::chatListening`, lowered on every exit)
+  and polls `ChatHost::chatLive` about 25 times a second; a cancel that comes before it starts is kept (`mcpStopped_`,
+  every one, not only the last). get_status ends with a token of the processor's journal (`plugin/Journal.h`: about 256
+  changes, drags merged, under its own mutex; what Claude Desktop does itself is not kept, `ChatAgent::mcpWorking`; each
+  token handed out is a new one), and `since` lists what changed after it, the files as diffs (`dsp/TextDiff.h`) against
+  their texts at that token (`mcpMarks_`, the newest 16 tokens', under `liveMutex_`). One server may serve several
+  conversations and its calls name none: what is kept for Claude Desktop is kept by token, never as one record of what
+  "it" saw, which one conversation's look would move for all. The two Claudes keep their own records: an MCP call never
+  marks the chat's `seen_` (`markSeen`), so the plugin's chat is sent a file Claude Desktop wrote; a chat turn never
+  runs beside a call of Claude Desktop's (New chat and a session load keep `busy_` while one runs). Every other MCP
+  result starts with a line when something changed since the last MCP call (`ChatAgent::mcpHint`, one cursor for the
+  instance). The journal learns who: the editor's ports are `GesturePort`s (a dial moved between polls with one of them
+  is the user's, else the host's), `setDraft` is the editor's and `chatSetDraft`, `chatRun`, `chatSetDial` the plugin
+  chat's (or Claude Desktop's); `poll()` compares the dials, the bypass and the transport once a poll and takes as seen
+  only the dials it set itself (`ownDials_`, `syncOwnDials`: a run's, a version's or a preset's, Claude's), so a move
+  made meanwhile is journalled. The tools' dial lines say each value as the panel does (`dialText`, Controls.h: its
+  unit, its option's name, the number after a scaled one). `plugin.live` checks both tools, `dsp.meters` LISTEN the
+  fields, `plugin.chat` SEEN the two records.
 - **MCP results** stay small: a picture is at most `kMcpPictureBytes` (75,000 bytes, 100,000 base64 characters:
   the PNG when it fits, else scaled down, else a JPEG, `chatimages::fit`), the text after it saying what was sent;
   view_panel and view_sound take MCP's own `detail: "high"` for the whole picture. The plugin's own chat keeps its
@@ -371,26 +376,28 @@ place (its `products/<key>.cmake`, and its names in the docs).
   the plugin and from guide.md in the server): "start" (working from outside, the contract, FMINUS, DSP PRACTICE,
   CHECKING YOUR WORK, the tools' notes, the other parts named), large-program (with THREADS), interface, library (a
   line a file), library:<file> (its header), library:<file>:code (its whole text, adding nothing to the editor),
-  examples, projects, all. A heading renamed in ChatPrompt.cpp is a part lost: `plugin.mcp` GUIDE fails.
+  debugging (no heading of the prompt's: the notes of listen, capture, trace and compare, whose uses CHECKING YOUR
+  WORK names), examples, projects, all. A heading renamed in ChatPrompt.cpp is a part lost: `plugin.mcp` GUIDE fails.
 - **capture** (`plugin/Capture.h`, `plugin/ChatCapture.cpp`, `ChatHost::chatCapture`): the recorder of what the host
   plays. `Processor::hostBlock` and `play` call its audio side (begin, the input before each Engine call, the output
   after it, each event the Engine gets, end); a recording crosses by atomic pointers, armed announce-then-claim and
-  handed back for `Recorder::housekeep` (from `poll`) to free, as the Engine's programs do. The audio thread only
-  copies into rings the arming thread allocated and touched, and never frees or waits: a full ring wraps (last) or
-  ends the recording (next), with a flag. A reader copies what was published and leaves out what may have been
-  overwritten meanwhile, so stop and status (live) never wait for the audio thread. While a recording is armed the
-  program's own code plays (`Engine::setOwnCode`: the frozen copy is dropped, none is taken, the freezer waits), so
-  a replay of a take can match it bit for bit. The user's audio and MIDI stay in memory: never on disk, in the
-  session or a project, never returned as samples (the tool reports numbers), no picture of it among the chat's kept
-  thumbnails; freed on forget, the next arm, or ten minutes without a call. A take replays
-  (`plugin/CaptureReplay.h`, through `scenario::captured`): a `measure::Request` with its blocks (in the processor's
-  parts, `Request::part`), events, transport, its dials as the processor sent them (`Request::frames`, by name for
-  another program), the Engine's clock (`Request::clock`, `Engine::setClock`: the voices' grid phase) and the wheels
-  at its start (without the host's transport, the Engine's own song position: `Engine::setBeat`; a Session's
-  `Engine::restart` puts the wheels, the pedal and the position at rest); the first replay null-tests it once (a
-  compile and a render of the program that played, off the live calls) and the recorder keeps the line for stop and
-  status. restart (mode next) recompiles what plays first (after a run on its way) and waits for that program to
-  play alone. stop and status stay live but for `picture` (drawn on the worker). `plugin.capture` checks it.
+  handed back for `Recorder::housekeep` (from `poll`) to free, as the Engine's programs do. The audio thread only copies
+  into rings the arming thread allocated and touched, and never frees or waits: a full ring wraps (last) or ends the
+  recording (next), with a flag. A reader copies what was published and leaves out what may have been overwritten
+  meanwhile, so stop and status (live) never wait for the audio thread. While a recording is armed the program's own
+  code plays (`Engine::setOwnCode`: the frozen copy is dropped, none is taken, the freezer waits), so a replay of a take
+  can match it bit for bit. The user's audio and MIDI stay in memory: never on disk, in the session or a project, never
+  returned as samples (the tool reports numbers), no picture of it among the chat's kept thumbnails; freed on forget,
+  the next arm, or ten minutes without a call. A take replays (`plugin/CaptureReplay.h`, through `scenario::captured`):
+  a `measure::Request` with its blocks (in the processor's parts, `Request::part`), events, transport, its dials as the
+  processor sent them (`Request::frames`, by name for another program), the Engine's clock (`Request::clock`,
+  `Engine::setClock`: the voices' grid phase) and the wheels at its start (without the host's transport, the Engine's
+  own song position: `Engine::setBeat`; a Session's `Engine::restart` puts the wheels, the pedal and the position at
+  rest); the first replay null-tests it once (a compile and a render of the program that played, off the live calls) and
+  the recorder keeps the line for stop and status. restart (mode next) recompiles what plays first (after a run on its
+  way) and waits for that program to play alone. Each block keeps the Engine's steals and dropped voices in it
+  (`Meters::steals` and `::dropped`, the audio thread's own publish, read at the block's start and end). stop and status
+  stay live but for `picture` (drawn on the worker). `plugin.capture` checks it.
 - **tune_dials** (`dsp/Tune.h`): Nelder-Mead over the named float dials' normalised ranges, from the dials as they
   are and a Halton spread, restarted when it settles with a goal unmet, until every goal is met, the budget (150, at
   most 400 renders) is spent, its time limit passes (`seconds`: 120, at most 170, under the MCP server's deadline)
