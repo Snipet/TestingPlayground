@@ -7,7 +7,7 @@
 //   gui.installer.welcome[.paper].png      the marks, the products and their versions
 //   gui.installer.choose[.paper].png       the parts' switches and what is installed now; .allusers.png "All users"
 //   gui.installer.installing[.paper].png   a run half done: two parts in place, the third copying, the rest waiting
-//   gui.installer.done[.paper].png         what went where, Open app, Add to Claude Desktop; .noclaude.png without it
+//   gui.installer.done[.paper].png         what went where, Open <app>, Add to Claude Desktop; .noclaude.png without it
 //   gui.installer.uninstall[.paper].png    every copy found, each a switch
 //   gui.installer.error[.paper].png        a run that failed (a folder made unwritable): the words, what changed
 // and checks, on every page in both themes:
@@ -19,7 +19,7 @@
 //   KEYS      Return presses the default button (Continue, Install, Done), Escape goes back (Choose to Welcome,
 //             Uninstall to Choose), Tab moves the focus to the first control and Space toggles a focused switch
 //   RUN       Install runs on the Panel's thread: its progress shows while it copies, then the Done page with the report
-//   DONE      Open app opens the installed app, Add to Claude Desktop opens the installed extension with Claude Desktop
+//   DONE      Open <app> opens the installed app, Add to Claude Desktop opens the installed extension with Claude Desktop
 //             (only while it is installed; without it, the button is off and a note says how), Done quits
 //   UNINSTALL every copy listed, Move to Trash moves them (to the root's Trash), the Done page says so
 #include "Probe.h"
@@ -285,6 +285,8 @@ PROBE(installer, gui)
     {
         const auto cs = panel.controls();
         P.eq("done.open_app_each", has(cs, Act::openApp, 0) && has(cs, Act::openApp, 1) ? 1 : 0, 1);
+        const pi::Panel::Control* open = findControl(cs, Act::openApp, 1);
+        P.eq("done.open_names_the_app", open != nullptr && open->label == "Open ToneSynth" ? 1 : 0, 1);
         P.eq("done.add_to_claude_each", has(cs, Act::addToClaude, 0) && has(cs, Act::addToClaude, 1) ? 1 : 0, 1);
         shoot(P, panel, host, "gui.installer.done");
         panel.press(Act::addToClaude, 1);

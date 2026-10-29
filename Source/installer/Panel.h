@@ -10,7 +10,7 @@
 //              ("Just for me", "All users": macOS asks for an administrator's password), notes on running apps and
 //              hosts; Uninstall..., Back, Install (the default)
 //   Installing each step with its state and a progress bar; Stop (after the step running)
-//   Done       what went where, per product: "Open app" for an app installed, "Add to Claude Desktop" for an extension
+//   Done       what went where, per product: "Open <app>" for an app installed, "Add to Claude Desktop" for an extension
 //              (open -a Claude <file>, only when clicked, and only when Claude Desktop is installed; else how), a note to
 //              rescan plugins in the DAW; an error in plain words, with what was and was not changed; Done (quits)
 //   Uninstall  every copy found, each a switch (on), where it is and its version; Back, Move to Trash (the default)

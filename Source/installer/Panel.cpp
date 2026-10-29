@@ -754,42 +754,35 @@ namespace playground::installer
             }
             if (rows.empty())
                 continue;
-            const float rowH = 18.0f;
-            const float blockH = 30.0f + rowH * static_cast<float>(rows.size()) + 12.0f;
-            L.cards.push_back({ kX0 - 14.0f, y - 6.0f, kInnerW + 28.0f, blockH });
-            L.marks.push_back({ { kX0, y, logo::kTile, logo::kTile }, pr.instrument(), 1.0f });
-            L.lines.push_back({ Line::Kind::strong, fit(pr.name, chat::kStrong, 200.0f), { kX0 + 36.0f, y + 4.0f, 200.0f, 18.0f } });
-            // Its actions, at the right of its name: the app opened, the extension added to Claude Desktop.
-            float ax = kX0 + kInnerW;
+            // Its actions, in a row under its parts: the app opened, the extension added to Claude Desktop.
+            std::vector<Control> mine;
             if (!uninstalling_)
-                for (auto it = rows.rbegin(); it != rows.rend(); ++it)
+                for (const Row& row : rows)
                 {
-                    const bool there = it->state == State::done || (it->state == State::skipped && it->line.rfind("already", 0) == 0);
-                    if (!there)
+                    const bool installed = row.state == State::done
+                                           || (row.state == State::skipped && row.line.rfind("already", 0) == 0);
+                    if (!installed)
                         continue;
-                    if (it->part == Part::extension)
+                    if (row.part == Part::app)
+                        mine.push_back({ Act::openApp, static_cast<int>(p), Control::Kind::small, {}, "Open " + pr.name,
+                                         "Open " + pr.name, {}, false, true, idOf(Act::openApp, static_cast<int>(p)) });
+                    else if (row.part == Part::extension)
                     {
-                        const std::string label = "Add to Claude Desktop";
-                        const float w = pillW(label, chat::kSmall);
-                        ax -= w;
-                        actions.push_back({ Act::addToClaude, static_cast<int>(p), Control::Kind::small,
-                                            { ax, y + 1.0f, w, 24.0f }, label, "Add " + pr.name + "'s extension to Claude Desktop",
-                                            claude.empty() ? "Claude Desktop is not installed"
-                                                           : "Opens it with Claude Desktop, which asks to add it",
-                                            false, !claude.empty(), idOf(Act::addToClaude, static_cast<int>(p)) });
-                        ax -= 8.0f;
+                        mine.push_back({ Act::addToClaude, static_cast<int>(p), Control::Kind::small, {},
+                                         "Add to Claude Desktop", "Add " + pr.name + "'s extension to Claude Desktop",
+                                         claude.empty() ? "Claude Desktop is not installed"
+                                                        : "Opens it with Claude Desktop, which asks to add it",
+                                         false, !claude.empty(), idOf(Act::addToClaude, static_cast<int>(p)) });
                         claudeNote = claudeNote || claude.empty();
                     }
-                    else if (it->part == Part::app)
-                    {
-                        const std::string label = "Open app";
-                        const float w = pillW(label, chat::kSmall);
-                        ax -= w;
-                        actions.push_back({ Act::openApp, static_cast<int>(p), Control::Kind::small, { ax, y + 1.0f, w, 24.0f },
-                                            label, "Open " + pr.name, {}, false, true, idOf(Act::openApp, static_cast<int>(p)) });
-                        ax -= 8.0f;
-                    }
                 }
+            const float rowH = 18.0f;
+            const float actionsH = mine.empty() ? 0.0f : 32.0f;
+            const float blockH = 30.0f + rowH * static_cast<float>(rows.size()) + actionsH + 12.0f;
+            L.cards.push_back({ kX0 - 14.0f, y - 6.0f, kInnerW + 28.0f, blockH });
+            L.marks.push_back({ { kX0, y, logo::kTile, logo::kTile }, pr.instrument(), 1.0f });
+            L.lines.push_back({ Line::Kind::strong, fit(pr.name, chat::kStrong, kInnerW - 36.0f),
+                                { kX0 + 36.0f, y + 4.0f, kInnerW - 36.0f, 18.0f } });
             float ry = y + 30.0f;
             for (const Row& row : rows)
             {
@@ -807,6 +800,14 @@ namespace playground::installer
                 L.lines.push_back({ row.state == State::failed ? Line::Kind::error : Line::Kind::faint,
                                     fit(said, chat::kSmall, kInnerW - 180.0f), { kX0 + 180.0f, ry, kInnerW - 180.0f, rowH } });
                 ry += rowH;
+            }
+            float ax = kX0 + 24.0f;
+            for (Control& c : mine)
+            {
+                const float w = pillW(c.label, chat::kSmall);
+                c.r = { ax, ry + 6.0f, w, 24.0f };
+                ax += w + 8.0f;
+                actions.push_back(c);
             }
             y += blockH + 12.0f;
         }
@@ -829,14 +830,17 @@ namespace playground::installer
         if (!engine_.places().log.empty())
             notes.push_back("The log of what went where: " + engine_.shown(engine_.places().log));
         y += 2.0f;
-        for (const std::string& n : notes)
-            for (const std::string& l : wrapped(n, chat::kSmall, kInnerW))
+        for (const std::string& n : notes)                // each whole, while there is room for it
+        {
+            const std::vector<std::string> ls = wrapped(n, chat::kSmall, kInnerW);
+            if (y + 15.0f * static_cast<float>(ls.size()) > kFooterY - 8.0f)
+                break;
+            for (const std::string& l : ls)
             {
-                if (y + 15.0f > kFooterY - 8.0f)
-                    break;
                 L.lines.push_back({ Line::Kind::note, l, { kX0, y, kInnerW, 15.0f } });
                 y += 15.0f;
             }
+        }
         footer(L, {}, { { Act::finish, 0, Control::Kind::primary, {}, "Done", "Done: quit the installer", {}, false, true, 0 } });
     }
 
