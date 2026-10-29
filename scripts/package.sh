@@ -155,7 +155,7 @@ if [[ $INSTALLER -eq 1 ]]; then
   rm -rf "$STAGE"
   mkdir -p "$STAGE/image"
   APP="$STAGE/image/$APPNAME.app"
-  ditto "$SRC" "$APP"
+  ditto --clone "$SRC" "$APP"                    # a copy that costs nothing on APFS until it is signed
   if [[ -n "$APP_ID" ]]; then
     # The payload inside out (each product's bundles, its apps with their entitlements, its extension's server), then
     # the installer app alone: its seal covers the payload as resources, signed already.
@@ -187,7 +187,10 @@ if [[ $INSTALLER -eq 1 ]]; then
     echo "(Uninstall...). Nothing changes until you click Install."
     echo
     echo "The installer installs itself nowhere: eject this disk image when you are done."
-    [[ -z "$APP_ID" ]] && { echo; echo "This build is not signed by a developer: if macOS will not open the installer, Control-click it and choose Open."; }
+    if [[ -z "$APP_ID" ]]; then
+      echo
+      echo "This build is not signed by a developer: if macOS will not open the installer, Control-click it and choose Open."
+    fi
   } > "$STAGE/image/Read Me.txt"
   OUT="$DIST/${APPNAME// /-}-$IVERSION.dmg"
   rm -f "$OUT"
