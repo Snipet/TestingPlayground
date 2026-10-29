@@ -3,23 +3,35 @@
 // preference), and productTheme() may change its colours before anything is drawn.
 //
 // Every colour is a token (funkgui::Theme): ground, the ink ladder ink100 > ink70 > ink52 > ink32 > ink16, accent (the
-// control under the hand), accentDim (its hover fill) and signal (one job of your choosing, e.g. a meter). To give this
-// plugin its own accent, set it here for both themes (keep it readable on both grounds), for example:
+// control under the hand), accentDim (its hover fill) and signal (one job of the product's choosing: here, errors,
+// ChatStyle.h's `danger`). The accent is the product's own colour, and its mark's caret is drawn in it (the top bar's,
+// LogoMark.h; the app icon's, Tools/logo/logo.swift), so the mark, the editor's caret and RUN agree. The effect keeps
+// FunkGui's orange (#FF5A1F, PAPER #E8451A); the instrument is blue (keep an accent readable on both grounds), and its
+// errors take the orange, since FunkGui's signal (#7FD4E8) is a blue of the same family and an error must never read
+// as the accent.
 //
-//     const bool dark = host.ground.r < 128;
-//     t.accent    = dark ? funkgui::Col{ 0x4F, 0xC3, 0xF7 } : funkgui::Col{ 0x0B, 0x6E, 0x99 };
-//     t.accentDim = dark ? funkgui::Col{ 0x1D, 0x4E, 0x63 } : funkgui::Col{ 0xA9, 0xD3, 0xE6 };
+// Tools/logo/logo.swift reads the instrument's accent from the `t.accent = dark ? funkgui::Col{...} : ...` line below
+// (keep its shape): change it, run the script, and the icons follow.
 //
 // Leave textGamma alone: the host records the theme's text gamma into the frame before the Panel draws.
 #pragma once
 
 #include <funkgui/core/Theme.h>
 
+#include "Product.h"
+
 namespace playground::ui
 {
     inline funkgui::Theme productTheme(const funkgui::Theme& host)
     {
         funkgui::Theme t = host;
+        if constexpr (product::kIsInstrument)
+        {
+            const bool dark = host.ground.r < 128;
+            t.accent = dark ? funkgui::Col{ 0x4F, 0xC3, 0xF7 } : funkgui::Col{ 0x0B, 0x6E, 0x99 };
+            t.accentDim = dark ? funkgui::Col{ 0x1D, 0x4E, 0x63 } : funkgui::Col{ 0xA9, 0xD3, 0xE6 };
+            t.signal = dark ? funkgui::Col{ 0xFF, 0x5A, 0x1F } : funkgui::Col{ 0xE8, 0x45, 0x1A };
+        }
         return t;
     }
 }
