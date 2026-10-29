@@ -8,8 +8,9 @@
 //                 (unsigned: compared byte for byte) and a .mcpb (a zip with its manifest.json)
 //   FakeSystem    ditto is real (it copies inside the root only); the Trash is Places::trash (a folder of the root);
 //                 the AU registrar, the running apps and the administrator prompt are stand-ins: the prompt runs the
-//                 engine's script with /bin/sh as this user (inside the root, no administrator, no prompt), or
-//                 answers "cancelled". A gate holds copies from a given one on, for a picture of a run half done.
+//                 engine's script's text with /bin/sh -c as this user (as `do shell script` does, but inside the root,
+//                 no administrator, no prompt), or answers "cancelled". A gate holds copies from a given one on, for a
+//                 picture of a run half done.
 //
 // The probes use Places::under(root()) only: nothing reaches ~/Library, /Library or /Applications.
 #pragma once
@@ -188,15 +189,15 @@ namespace fixture
             error = "a probe never uses the user's Trash (" + path.string() + ")";
             return false;
         }
-        Admin runAsAdministrator(const fs::path& script, const std::string& prompt, std::string& error) override
+        Admin runAsAdministrator(const std::string& script, const std::string& prompt, std::string& error) override
         {
             ++adminRuns;
-            lastScript = readText(script);
+            lastScript = script;
             lastPrompt = prompt;
             if (cancelPrompt)
                 return Admin::cancelled;
             std::string err;
-            const int status = pi::runProgram({ "/bin/sh", script.string() }, nullptr, &err);
+            const int status = pi::runProgram({ "/bin/sh", "-c", script }, nullptr, &err);
             if (status == 0)
                 return Admin::ran;
             error = err;

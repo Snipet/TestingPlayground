@@ -1,7 +1,7 @@
 // Source/installer/System.cpp: the engine's system tools on this Mac (Engine.h's MacSystem): ditto, pgrep, killall,
 // NSFileManager's trash (through juce::File::moveToTrash) and the administrator prompt (osascript). Every program runs
 // without a shell, its arguments as they are; the one shell is the administrator's /bin/sh running the engine's script,
-// whose path osascript gets as an argument (never spliced into AppleScript's text).
+// whose text osascript gets as an argument (never spliced into AppleScript's text, never written to a file root runs).
 #include "installer/Engine.h"
 
 #include <juce_core/juce_core.h>
@@ -152,16 +152,18 @@ namespace playground::installer
         return false;
     }
 
-    System::Admin MacSystem::runAsAdministrator(const fs::path& script, const std::string& prompt, std::string& error)
+    System::Admin MacSystem::runAsAdministrator(const std::string& script, const std::string& prompt, std::string& error)
     {
-        // The script's path and the prompt reach AppleScript as arguments (argv), so nothing is quoted into its text.
+        // The script's text and the prompt reach AppleScript as arguments (argv), so nothing is quoted into its text,
+        // and `do shell script` hands the text to /bin/sh -c as root: no file holds it that this user could change
+        // while the prompt waits for the password.
         std::string out, err;
         const int status = runProgram({ "/usr/bin/osascript",
                                         "-e", "on run argv",
-                                        "-e", "do shell script \"/bin/sh \" & quoted form of (item 1 of argv) "
-                                              "with prompt (item 2 of argv) with administrator privileges",
+                                        "-e", "do shell script (item 1 of argv) with prompt (item 2 of argv) "
+                                              "with administrator privileges",
                                         "-e", "end run",
-                                        script.string(), prompt },
+                                        script, prompt },
                                       &out, &err);
         if (status == 0)
             return Admin::ran;

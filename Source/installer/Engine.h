@@ -32,20 +32,29 @@
 // rename into place (renamex_np's RENAME_SWAP over an old copy), so a failure at any point leaves the old copy whole
 // where it was. The old copy then goes to the Trash. Nothing is ever deleted: a replaced copy, an uninstalled one and
 // a half-made staging copy all go to the user's Trash (Places::trash in a probe), and only an empty staging folder is
-// removed (rmdir). After an Audio Unit changes, the AU registrar restarts (killall -9 AudioComponentRegistrar, as the
-// .pkg's postinstall restarts it) so hosts rescan. A failed step stops the run: the steps before it are done, the
-// ones after it not run, and the report says which.
+// removed (rmdir). A staging folder an earlier run left (a crash, a folder that turned unwritable) and that holds only
+// this part (or `old`) goes to the Trash before the part is installed again, so no host scans a second copy (JUCE's
+// VST3 scan looks into hidden folders). After an Audio Unit changes, the AU registrar restarts (killall -9
+// AudioComponentRegistrar, as the .pkg's postinstall restarts it) so hosts rescan. A failed step stops the run: the
+// steps before it are done, the ones after it not run, and the report says which.
 //
 // "All users" writes where only an administrator may: the engine writes the whole run as one shell script (every path
 // quoted, adminScript) and asks macOS to run it as root through its own administrator prompt (osascript's `do shell
-// script ... with administrator privileges`): the app never sees the password. The script reports each step to a
-// status file the engine reads as it runs. The AU registrar is restarted by the app afterwards, never by the script.
+// script ... with administrator privileges`): the app never sees the password. The script's text itself goes to
+// osascript as an argument, never as a file: nothing this user may write is run as root. The script reports each step
+// to a status file in a folder it makes itself, as root, in Places::scratch (/private/tmp: root's, sticky), so root
+// writes no path this user could have swapped for a link; it gives the folder back to the user as it ends, and the
+// engine reads it as the script runs and removes it after. Before it moves anything it checks, as root, every folder on
+// the way (a link refuses the step) and that the Trash is the user's real one (`cd -P`, then `pwd -P`), and it renames
+// with `mv -h` (a link planted where a copy goes is replaced, never followed). The AU registrar is restarted by the
+// app afterwards, never by the script.
 //
 // Safety: the engine writes only into the folders above. A path is followed only below Places::home and Places::root
 // (each resolved first: /var is /private/var), and every folder on the way to a target must be a real folder, not a
 // link: a target, or a folder above it, that is a symbolic link is refused, whatever it points at. A copy another user
 // owns is not replaced "Just for me" (the .pkg's are root's). Running apps are warned of: the Standalone that a part
-// replaces, and the hosts that load the plugins ("restart your DAW").
+// replaces or removes, and the hosts that load the plugins ("restart your DAW"); and a product installed in the other
+// scope too (hosts would list both), one note a product.
 //
 // Threads: an Engine is used by one thread at a time; install() and uninstall() call `progress` on their own thread
 // (the caller's, and for "All users" a poller of the status file too), never at once.
@@ -76,14 +85,17 @@ namespace playground::installer
     {
         fs::path home;                               // the user's home: ~/Library/..., ~/Applications
         fs::path root;                               // the system's root: /Library/..., /Applications
-        fs::path trash;                              // where old copies go; empty: the user's own Trash (Finder's
-                                                     // Put Back works), through System::moveToTrash
+        fs::path trash;                              // where old copies go; empty: the user's own Trash, through
+                                                     // System::moveToTrash (NSFileManager)
         fs::path log;                                // the log appended to (what went where); empty: none
+        fs::path scratch;                            // where "All users" makes its status folder, as root: a folder
+                                                     // only root may change (/private/tmp, root's and sticky)
 
         static Places thisMac();                     // $HOME (else the password database's), "/", the Trash,
-                                                     // ~/Library/Logs/<logName>.log
+                                                     // /private/tmp; and ~/Library/Logs/<logName>.log
         static Places thisMac(const std::string& logName);
-        static Places under(const fs::path& testRoot);   // <root>/home, <root>/system, <root>/Trash, <root>/install.log
+        static Places under(const fs::path& testRoot);   // <root>/home, <root>/system, <root>/Trash, <root>/install.log,
+                                                         // <root>/tmp
     };
 
     // A part the payload offers.
@@ -195,11 +207,12 @@ namespace playground::installer
         virtual std::vector<fs::path> runningApps() = 0;
         // killall -9 AudioComponentRegistrar: hosts see the Audio Units as they are now.
         virtual bool restartAuRegistrar() = 0;
-        // The user's Trash (Finder's Put Back works). False with the reason in `error`.
+        // The user's Trash. False with the reason in `error`.
         virtual bool moveToTrash(const fs::path& path, std::string& error) = 0;
-        // /bin/sh <script>, as root, through macOS's administrator prompt showing `prompt`; blocks until it is over.
+        // `/bin/sh -c <script>` (the script's text, never a file), as root, through macOS's administrator prompt showing
+        // `prompt`; blocks until it is over.
         enum class Admin : uint8_t { ran, failed, cancelled };
-        virtual Admin runAsAdministrator(const fs::path& script, const std::string& prompt, std::string& error) = 0;
+        virtual Admin runAsAdministrator(const std::string& script, const std::string& prompt, std::string& error) = 0;
     };
 
     // The tools of this Mac (System.cpp): ditto, pgrep, killall, NSFileManager's trash, osascript.
@@ -210,7 +223,7 @@ namespace playground::installer
         std::vector<fs::path> runningApps() override;
         bool restartAuRegistrar() override;
         bool moveToTrash(const fs::path& path, std::string& error) override;
-        Admin runAsAdministrator(const fs::path& script, const std::string& prompt, std::string& error) override;
+        Admin runAsAdministrator(const std::string& script, const std::string& prompt, std::string& error) override;
     };
 
     // ditto --noqtn <from> <to>, as MacSystem::copy runs it (a probe's System copies with it too).
@@ -242,6 +255,8 @@ namespace playground::installer
 
         // The plan for these parts in this scope (the selection's order is the payload's, whatever it is given in).
         Plan plan(const std::vector<Selection>& chosen, Scope scope) const;
+        // The notes for an uninstall of these copies: an app of theirs that is open, the hosts that are.
+        std::vector<std::string> uninstallNotes(const std::vector<Copy>& copies) const;
 
         // Runs the plan's steps that change something (the others are skipped at once). Stops at the first failure,
         // or before the next step once `cancel` is set. The AU registrar restarts when an Audio Unit changed.
@@ -252,12 +267,15 @@ namespace playground::installer
         Report uninstall(const std::vector<Copy>& copies, const ProgressFn& progress,
                          const std::atomic<bool>* cancel = nullptr);
 
-        // The scripts "All users" runs as root: every path quoted. Each step reports to `status` ("STEP <i> start",
-        // "STEP <i> done", "STEP <i> fail <why>"); the first failure ends the script.
+        // The scripts "All users" runs as root: every path quoted. The script makes `statusDir` (it must not be there:
+        // a folder, a file or a link there stops it before it does anything) and reports each step to its file
+        // `status` ("STEP <i> start", "STEP <i> done", "STEP <i> fail <why>"); the first failure ends the script, and
+        // as it ends, the folder is given to this user (who removes it).
         // The uninstall's script holds the copies `only` names (indices; empty: every copy that is not a link).
-        std::string adminScript(const Plan& plan, const fs::path& status) const;
-        std::string adminUninstallScript(const std::vector<Copy>& copies, const fs::path& status,
+        std::string adminScript(const Plan& plan, const fs::path& statusDir) const;
+        std::string adminUninstallScript(const std::vector<Copy>& copies, const fs::path& statusDir,
                                          const std::vector<int>& only = {}) const;
+        static constexpr const char* kStatusFile = "status";
 
         // A path as the user reads it: ~ for the home.
         std::string shown(const fs::path& p) const;
@@ -278,7 +296,14 @@ namespace playground::installer
         fs::path trashFolder() const;                                        // the script's: Places::trash, or ~/.Trash
         void log(Report& report, const std::string& line);
         bool installStep(const Step& step, std::string& line, std::string& error);
-        // Writes the script `makeScript` makes for its status file, runs it through the administrator prompt, and
+        // The staging folders an earlier run left in `folder` that hold only `name` (or `old`), owned by this user:
+        // their contents to the Trash, then the folders removed (rmdir). What went, in words; "" when nothing did.
+        std::string sweep(const fs::path& folder, const std::string& name);
+        // The script's checks that every folder from home or root down to `folder` is a real one ("fail <k> ..." when
+        // one is a link), and its line that pins `folder` (cd -P, then pwd -P against its real path).
+        std::string walkChecks(const fs::path& folder, const std::string& k) const;
+        std::string scriptHead(const std::string& what, const fs::path& statusDir) const;
+        // Writes the script `makeScript` makes for its status folder, runs it through the administrator prompt, and
         // reports its steps (`indices` of `steps`) as the status file tells them.
         Report runAdmin(const std::function<std::string(const fs::path&)>& makeScript, int steps,
                         const std::vector<int>& indices, const ProgressFn& progress, Report report, const std::string& what);
@@ -287,5 +312,8 @@ namespace playground::installer
         Places places_;
         System& system_;
         fs::path realHome_, realRoot_;               // home and root, resolved
+        // A path below home or root with the base resolved (realHome_, realRoot_): the folder as `pwd -P` says it.
+        fs::path realOf(const fs::path& p) const;
+        std::vector<std::string> runningNotes(const std::vector<std::string>& apps, bool plugins, bool removing) const;
     };
 }
