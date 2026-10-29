@@ -172,19 +172,21 @@ if [[ $INSTALLER -eq 1 ]]; then
     codesign --verify --strict --deep "$APP" || die "$APP: the signature does not verify"
   fi
   # The Read Me: what the installer does, in a few lines.
-  WHAT=""
+  ITEMS=()
   for k in "${KEYS[@]}"; do
     [[ "$BUILT" == *" $k "* ]] || continue
     [[ "$(value "$k" KIND)" == "instrument" ]] && kind="a synth" || kind="an effect"
-    WHAT+="${WHAT:+, }$(value "$k" NAME) ($kind)"
+    ITEMS+=("$(value "$k" NAME) ($kind)")
   done
-  {
+  WHAT="${ITEMS[0]}"
+  for ((i = 1; i < ${#ITEMS[@]}; ++i)); do
+    [[ $i -eq $((${#ITEMS[@]} - 1)) ]] && WHAT+=" and " || WHAT+=", "
+    WHAT+="${ITEMS[$i]}"
+  done
+  {                                              # a paragraph a line: TextEdit wraps them
     echo "$APPNAME $IVERSION"
     echo
-    echo "Open \"$APPNAME\" and follow it. It installs $WHAT: their Audio Unit and VST3 plugins, their apps"
-    echo "and their Claude Desktop extensions, the parts you choose, just for you (no password) or for every user of this Mac"
-    echo "(macOS asks for an administrator's password; the installer never sees it). It can also move them to the Trash"
-    echo "(Uninstall...). Nothing changes until you click Install."
+    echo "Open \"$APPNAME\" and follow it. It installs $WHAT: their Audio Unit and VST3 plugins, their apps and their Claude Desktop extensions, the parts you choose, just for you (no password) or for every user of this Mac (macOS asks for an administrator's password; the installer never sees it). It can also move them to the Trash (Uninstall...). Nothing changes until you click Install."
     echo
     echo "The installer installs itself nowhere: eject this disk image when you are done."
     if [[ -z "$APP_ID" ]]; then
