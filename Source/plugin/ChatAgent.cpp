@@ -1159,7 +1159,7 @@ namespace playground
         lastSignature_ = 0;                        // the next message sends the files again
         usage_.clear();
         activity_.clear();
-        busy_ = false;
+        busy_ = mcpWorking_.load();                // a call of Claude Desktop's keeps it busy until it ends (mcpCall)
         asking_.clear();
         attached_.clear();
         ++attachEpoch_;
@@ -1334,7 +1334,7 @@ namespace playground
         entries_.clear();
         seen_.clear();
         lastSignature_ = 0;                        // the next message sends the files again
-        busy_ = false;
+        busy_ = mcpWorking_.load();                // a call of Claude Desktop's keeps it busy until it ends (mcpCall)
         asking_.clear();
         activity_.clear();
         historyWeb_ = static_cast<bool>(v.getProperty("web", false));
@@ -1535,9 +1535,7 @@ namespace playground
 
     void ChatAgent::markSeen(const std::string& name, const std::string& text)
     {
-        if (mcpWorking_.load())                    // Claude Desktop saw it, not the chat's Claude (Live.cpp)
-            mcpSaw(name, text);
-        else
+        if (!mcpWorking_.load())                   // Claude Desktop's views are its own (Live.cpp's marks)
             seen_[name] = hashText(text);
     }
 
@@ -3025,17 +3023,21 @@ namespace playground
         if (call == 0)
             return;
         mcpCancelled_.store(call);
-        {
-            const std::lock_guard<std::mutex> live(liveMutex_);   // a live call that takes a while (listen)
-            if (liveCalls_.count(call) != 0)
-                liveStopped_.insert(call);
-        }
         const std::lock_guard<std::mutex> lock(mutex_);
         if (mcpRunning_ == call)
         {
             cancel_.store(true);
             activity_ = "Stopping";
             touch();
+        }
+        else
+        {
+            // A listen (running or not yet started), or a call about to start: each cancel is kept, however many come
+            // before it looks (mcpCall's start, Live.cpp's listen), the newest kMcpStopped.
+            const std::lock_guard<std::mutex> live(liveMutex_);
+            mcpStopped_.insert(call);
+            while (mcpStopped_.size() > kMcpStopped)
+                mcpStopped_.erase(mcpStopped_.begin());
         }
     }
 
@@ -3077,7 +3079,12 @@ namespace playground
             busy_ = true;
             mcpWorking_.store(true);
             mcpRunning_ = call;
-            cancel_.store(call != 0 && mcpCancelled_.load() == call);   // a cancel that came before it started
+            bool early = false;
+            {
+                const std::lock_guard<std::mutex> stopped(liveMutex_);
+                early = mcpStopped_.erase(call) != 0;
+            }
+            cancel_.store(call != 0 && (early || mcpCancelled_.load() == call));   // a cancel that came before it started
             if (!mcpNoted_)
             {
                 addEntry(ChatEntry::Kind::note, "Claude Desktop is working on the program through MCP: what it does shows here.");
@@ -3374,11 +3381,10 @@ namespace playground
             host_.chatSetDraft(d);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
-                if (mcpWorking_.load())
-                    mcpForget(file, to);
-                else if (const auto it = seen_.find(file); it != seen_.end())
+                if (const auto it = seen_.find(file); it != seen_.end())
                 {
-                    seen_[to] = it->second;
+                    if (!mcpWorking_.load())       // Claude Desktop's rename: the chat's Claude is sent the file anew
+                        seen_[to] = it->second;
                     seen_.erase(file);
                 }
             }
@@ -3401,10 +3407,7 @@ namespace playground
             host_.chatSetDraft(d);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
-                if (mcpWorking_.load())
-                    mcpForget(file);
-                else
-                    seen_.erase(file);
+                seen_.erase(file);
             }
             note("deleted " + file);
             return "Deleted " + file + ".";

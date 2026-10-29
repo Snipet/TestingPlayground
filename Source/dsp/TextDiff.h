@@ -1,7 +1,7 @@
 // Source/dsp/TextDiff.h: a line diff of two texts (JUCE-free): Myers's O(ND) shortest edit script, after the lines the
 // two share at their ends are set aside, so a small edit to a long file costs little. unified() writes it as `diff -u`
 // does, hunks with a few lines of context, cut at a number of lines. get_status's `since` shows the user's edits with
-// it (against the text Claude Desktop last saw); a comparison of two versions of a program can use it too.
+// it (against the files' text at a token); a comparison of two versions of a program can use it too.
 //
 // Lines are the text's parts between '\n's; a last line without one counts, an empty text has none. Two lines are the
 // same when their bytes are. Deterministic: the same texts give the same script.

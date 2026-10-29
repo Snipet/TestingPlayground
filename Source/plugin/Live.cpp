@@ -1,14 +1,16 @@
 // Source/plugin/Live.cpp: the live tools (ChatAgent.h's liveTool). listen: what plays now in the user's song, over a
 // few seconds (the meters, the scopes and the blocks' costs as the audio thread publishes them, Engine.h; the host's
 // bypass and blocks; Live.h's LiveRead). get_status: the state now, and with `since` only what changed after a token
-// (the Processor's journal, Journal.h; the files as diffs against the text Claude Desktop last saw). MCP's own record
-// of the files it saw (mcpSeen_), and the line its results start with when something changed since its last one.
+// (the Processor's journal, Journal.h; the files as diffs against their text at that token). MCP's own record of the
+// files, by token (mcpMarks_: one server may serve several conversations, each with its own tokens), and the line its
+// results start with when something changed since the last MCP call.
 //
 // Both are live from MCP (ChatAgent::mcpLive): they run beside a running call, on the link's threads, and keep
-// CLAUDE.md's contract: ChatHost's lock-free reads and locked getters, mcpSeen_ under liveMutex_, never the program,
+// CLAUDE.md's contract: ChatHost's lock-free reads and locked getters, mcpMarks_ under liveMutex_, never the program,
 // the editor, the chat's history or busy_. listen waits between its reads (about 25 a second) and stops when its call
-// is cancelled (mcpCancel; a turn's: the stop button); while it listens the audio thread measures the levels and the
-// scopes, as for an open editor (chatListening), until it returns, however it returns.
+// is cancelled (mcpCancel, which keeps a cancel that comes before it starts; a turn's: the stop button); while it
+// listens the audio thread measures the levels and the scopes, as for an open editor (chatListening), until it
+// returns, however it returns.
 #include "plugin/ChatAgent.h"
 
 #include "plugin/ClaudeApi.h"
@@ -284,8 +286,8 @@ namespace playground
             "Read the plugin's state now: the files, what plays, the last compile, the dials, the CPU load and the output "
             "guard's alerts. It ends with a token: with since set to it, only what changed after (dials, code as a diff, "
             "runs, presets, bypass, the host).\n\n"
-            "files: none (the default without since), changed (with since: each file as a diff against the text you "
-            "last read or wrote), all (each whole). A token of another instance, or of before a reload, gets the whole "
+            "files: none (the default without since), changed (with since: each file as a diff against its text at "
+            "that token), all (each whole). A token of another instance, or of before a reload, gets the whole "
             "state. Your other MCP results start with a line when something changed.",
             claude::object({ { "since", prop("string", "A token from an earlier call") },
                              { "files", claude::object({ { "type", "string" },
@@ -329,25 +331,18 @@ namespace playground
             result = statusText(input, caller.mcp, isError);
         else if (caller.mcp)
         {
+            // Its cancels (mcpCancel keeps each, even one that came before it started).
             const uint64_t call = caller.call;
-            if (call != 0)
-            {
-                const std::lock_guard<std::mutex> lock(liveMutex_);
-                liveCalls_.insert(call);
-                if (mcpCancelled_.load() == call)                // a cancel that came before it started
-                    liveStopped_.insert(call);
-            }
             result = listenText(input, [this, call] {
                 if (call == 0)
                     return false;
                 const std::lock_guard<std::mutex> lock(liveMutex_);
-                return liveStopped_.count(call) != 0;
+                return mcpStopped_.count(call) != 0;
             }, isError);
             if (call != 0)
             {
                 const std::lock_guard<std::mutex> lock(liveMutex_);
-                liveCalls_.erase(call);
-                liveStopped_.erase(call);
+                mcpStopped_.erase(call);
             }
         }
         else
@@ -365,24 +360,9 @@ namespace playground
         return block;
     }
 
-    // ---- MCP's own view of the files ---------------------------------------------------------------------------------
-    void ChatAgent::mcpSaw(const std::string& name, const std::string& text)
-    {
-        const std::lock_guard<std::mutex> lock(liveMutex_);
-        mcpSeen_[name] = text;
-    }
-
-    void ChatAgent::mcpForget(const std::string& name, const std::string& renamedTo)
-    {
-        const std::lock_guard<std::mutex> lock(liveMutex_);
-        const auto it = mcpSeen_.find(name);
-        if (it == mcpSeen_.end())
-            return;
-        if (!renamedTo.empty())
-            mcpSeen_[renamedTo] = it->second;
-        mcpSeen_.erase(name);
-    }
-
+    // ---- the hint -------------------------------------------------------------------------------------------------------
+    // One cursor for the instance: Claude Desktop's calls carry no conversation, so the line says "the last MCP call"
+    // (get_status's token is each conversation's own).
     std::string ChatAgent::mcpHint()
     {
         Changes ch;
@@ -398,7 +378,7 @@ namespace playground
             what = "The user changed " + std::to_string(ch.changes) + (ch.changes == 1 ? " thing" : " things");
         if (ch.alerts > 0)
             what += ch.changes > 0 ? " and the output guard acted" : "The output guard acted";
-        return "(" + what + " since your last look: get_status with since shows " + (ch.changes + ch.alerts == 1 ? "it" : "them")
+        return "(" + what + " since the last MCP call here: get_status with since shows " + (ch.changes + ch.alerts == 1 ? "it" : "them")
              + ".)";
     }
 
@@ -410,12 +390,25 @@ namespace playground
         std::string files = input.getProperty("files", "").toString().toStdString();
         if (files != "none" && files != "changed" && files != "all")
             files = since.empty() ? "none" : "changed";
+        // The files first, then the token: what a token keeps of them is never newer than it (an edit between the two
+        // is listed after the token, and shows in the next diff too).
+        const Draft d = host_.chatDraft();
         Changes ch;
+        std::shared_ptr<const std::vector<SourceFile>> then;     // the files at `since` (MCP's mark of it)
         if (mcp)
         {
             const std::lock_guard<std::mutex> lock(liveMutex_);
             ch = host_.chatChanges(since, true);
             mcpLook_ = ch.token;
+            for (const McpMark& m : mcpMarks_)
+                if (ch.known && m.token == since)
+                    then = m.files;
+            std::shared_ptr<const std::vector<SourceFile>> now = !mcpMarks_.empty() && *mcpMarks_.back().files == d.files
+                                                                     ? mcpMarks_.back().files
+                                                                     : std::make_shared<const std::vector<SourceFile>>(d.files);
+            mcpMarks_.push_back({ ch.token, std::move(now) });
+            while (mcpMarks_.size() > kMcpMarks)
+                mcpMarks_.pop_front();
         }
         else
             ch = host_.chatChanges(since, true);
@@ -444,16 +437,13 @@ namespace playground
         }
 
         // The files' text, as asked.
-        const Draft d = host_.chatDraft();
         if (files == "all")
         {
             out += "The files:\n";
             for (const SourceFile& f : d.files)
             {
                 out += "<file name=\"" + f.name + "\">\n" + f.text + (f.text.empty() || f.text.back() == '\n' ? "" : "\n") + "</file>\n";
-                if (mcp)
-                    mcpSaw(f.name, f.text);
-                else
+                if (!mcp)
                 {
                     const std::lock_guard<std::mutex> lock(mutex_);
                     markSeen(f.name, f.text);
@@ -462,46 +452,49 @@ namespace playground
         }
         else if (files == "changed" && mcp)
         {
-            std::map<std::string, std::string> seen;
+            // Each file against its text at the token `since` (that conversation's own: another one's looks move
+            // nothing), the edits made through MCP since among them (Claude Desktop's calls name no conversation).
+            if (since.empty())
+                out += "(files \"changed\" goes with since: read_file shows a file, files \"all\" all of them.)\n";
+            else if (ch.known && !then)
+                out += "(The files at that token are no longer kept, only the newest " + std::to_string(kMcpMarks)
+                     + " tokens' are: read_file shows a file, files \"all\" all of them.)\n";
+            else if (then)
             {
-                const std::lock_guard<std::mutex> lock(liveMutex_);
-                seen = mcpSeen_;
-            }
-            std::string part;
-            int budget = 60;
-            for (const SourceFile& f : d.files)
-            {
-                const auto it = seen.find(f.name);
-                const int lines = static_cast<int>(textdiff::lines(f.text).size());
-                if (it == seen.end())
+                std::map<std::string, const SourceFile*> was;
+                for (const SourceFile& f : *then)
+                    was[f.name] = &f;
+                std::string part;
+                int budget = 60;
+                for (const SourceFile& f : d.files)
                 {
-                    part += f.name + ": " + std::to_string(lines) + " lines you have not read (read_file shows it).\n";
-                    continue;
+                    const auto it = was.find(f.name);
+                    if (it == was.end())
+                    {
+                        part += f.name + ": new since then, " + std::to_string(textdiff::lines(f.text).size())
+                              + " lines (read_file shows it).\n";
+                        continue;
+                    }
+                    const std::string& before = it->second->text;
+                    was.erase(it);
+                    if (before == f.text)
+                        continue;
+                    if (budget <= 0)
+                    {
+                        part += f.name + " changed too: read_file shows it.\n";
+                        continue;
+                    }
+                    const textdiff::Unified u = textdiff::unified(before, f.text, 2, budget);
+                    part += f.name + " (+" + std::to_string(u.added) + " -" + std::to_string(u.removed) + "):\n" + u.text;
+                    budget -= u.lines;
+                    if (u.cut)
+                        part += "(cut here: read_file shows the whole file)\n";
                 }
-                const std::string was = it->second;
-                seen.erase(it);
-                if (was == f.text)
-                    continue;
-                if (budget <= 0)
-                {
-                    part += f.name + " changed too: read_file shows it.\n";
-                    continue;
-                }
-                const textdiff::Unified u = textdiff::unified(was, f.text, 2, budget);
-                part += f.name + " (+" + std::to_string(u.added) + " -" + std::to_string(u.removed)
-                      + "), against the text you last saw:\n" + u.text;
-                budget -= u.lines;
-                if (u.cut)
-                    part += "(cut here: read_file shows the whole file)\n";
-                else
-                    mcpSaw(f.name, f.text);                      // you have seen it now
+                for (const auto& [name, f] : was)
+                    part += name + " is gone (closed or renamed).\n";
+                out += part.empty() ? "The files are as they were at that token.\n"
+                                    : "The files against their text at that token (edits made through MCP since are in it too):\n" + part;
             }
-            for (const auto& [name, text] : seen)
-            {
-                part += name + " is gone (closed or renamed).\n";
-                mcpForget(name);
-            }
-            out += part.empty() ? "The files are as you last saw them.\n" : "The files:\n" + part;
         }
         out += "Token: " + ch.token + " (get_status with since \"" + ch.token + "\" shows only what changes after this).\n";
         return out;
