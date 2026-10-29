@@ -17,6 +17,7 @@
 //   Assets/logo/readme-graphite.png, readme-paper.png       the README's header (a <picture>)
 //   Assets/logo/construction.png                            the construction, drawn and measured
 //   Assets/logo/sheet.png                                   every size of both, on both themes, and the top bar
+//                                                           (in FunkGui's pixels: its rasteriser mirrored below)
 //   Source/editor/LogoMark.h                                the top bar's mark at 1x and 2x (generated: do not edit)
 //   Source/mcp/icon-<key>.png                               each product's extension icon
 // --font names JetBrains Mono (FunkGui's fonts/upstream/JetBrainsMono-Regular.ttf); without it the script takes the
@@ -53,14 +54,24 @@
 //              square ends; body 26 at 3.
 //   16 px      set pixel by pixel (pix16): 1 px lines, the crest on row 6, the trough on row 9, the caret column 12,
 //              rows 4-11; the effect's trough a box whose right flank climbs to row 7; body 14 at 1.
-//   Top bar    the editor's 26 px tile (radius 8, the accent at 16%), the mark in the accent alone as two polylines
-//              (FunkGui's capsules), one drawing a backing scale (LogoMark.h; Panel.cpp picks by Canvas::dpi()):
-//              2x: u 0.75, stroke 1.5 (3 device px), baseline 13: the crest's top 10.0, the trough's bottom 16.0
-//                  (device px 20 and 32); the caret at x 20.25, its stem device px 39-42.
-//              1x: the same grid at x 5 (crossings 5, 11, 17); the caret 2 px wide on columns 19-20, rows 8-17; the
-//                  crest's top row 10 and the trough's bottom row 15 whole; the effect's floor sharp-cornered, 4.7 px
-//                  long on row 15, and the instrument's trough one rounded row.
-//   Extension  512, the full square (corners 0.225 * 512), u 16. README: u 8 beside JetBrains Mono at 64 px.
+//   Top bar    the editor's 26 px tile (radius 8, the accent at 16%), the mark in the accent alone, one drawing a
+//              backing scale (LogoMark.h; Panel.cpp picks the 1x one at a Canvas::dpi() of exactly 1, the 2x one at any
+//              other): the wave an areaStrip (FunkGui's AREA columns, half a device px wide, between the stroke's top
+//              and bottom edges: one primitive over each sample, so no antialiased fringe is blended twice, as a
+//              polyline's capsules blend theirs where they overlap) and the caret one primitive. FunkGui antialiases
+//              every edge over one device px each side (a smoothstep): an edge on a whole device px renders as about
+//              16% outside and 84% inside it, the crispest it draws, which the hints below keep at a zoom of 100%
+//              and 200%.
+//              2x: u 0.75, stroke 1.5 (3 device px), baseline 13: the crest's top 10.0 and the trough's bottom 16.0
+//                  (device px 20 and 32); the caret a capsule at x 20.25, its stem device px 39-42.
+//              1x: one stroke for both, 2 px, so they weigh the same: x unit 0.75 (crossings 5, 11, 17) and y unit
+//                  2/3, so the crest's centreline is on 11 and the trough's on 15 (rows 10-11 and 14-15 whole); the
+//                  caret 2 px on columns 20-21, rows 8-17, square ends (as at 32 px), two columns clear of the wave;
+//                  the effect's floor sharp-cornered, 4.7 px long on rows 14-15, the instrument's trough round.
+//              At other scales (a zoom of 125% or 150%) the 2x drawing lands where it lands, antialiased. The sheet
+//              shows the tiles in FunkGui's own pixels (its rasteriser, mirrored here: gui.dump's PNGs, byte for byte).
+//   Extension  512, the full square (corners 0.225 * 512), u 16. README: both marks at u 8, 8u apart, beside
+//              JetBrains Mono at 64 px (a product's own lockup: its mark alone).
 //   Colours    the wave in ink (#ECEAE4 on the icon and GRAPHITE, #17181A on PAPER); the caret in the product's
 //              accent: the effect's #FF5A1F (PAPER #E8451A, FunkGui's own), the instrument's Theme.h's (#4FC3F7,
 //              PAPER #0B6E99). The top bar's mark is the theme's accent alone.
@@ -437,42 +448,80 @@ func fillPlace(cx: Double, cy: Double, u: Double) -> FillPlace {
     return FillPlace(ox: ox, oy: oy, u: u, caretW: caretW, floorEdge: edge, floorThick: thick)
 }
 
-// The mark as a stroked centreline on a hinted grid (32 px, the top bar): px = (ox + x * ux, oy + y * uy). Its
-// points are a FunkGui polyline's (the top bar's), for a canvas of `dpi` device px a px: the arcs in even steps whose
-// chords stray at most 0.1 device px from the circle (FunkGui's own rule for its arcs, geom::kArcDevicePx), the lines
-// and the caret in pieces as long as an arc's step. FunkGui draws a polyline as capsules whose antialiased ends
-// overlap at each point, which darkens the fringe there a little: even pieces keep the floor, the caret and the curves
-// one weight, and pieces no shorter than the tolerance needs keep that fringe light.
+// The mark as a stroked centreline on a hinted grid (32 px, the top bar): px = (ox + x * ux, oy + y * uy); the caret
+// a capsule from caretTop to caretBottom on its centreline (caretRound), or a rectangle whose edges they are.
 struct StrokePlace {
     var ox, oy, ux, uy, stroke: Double
     var floor, fillet, rise: Double          // units (the effect's floor's centreline)
     var caretX, caretTop, caretBottom, caretW: Double   // px
     var caretRound: Bool
-    var dpi = 2.0
-    var tolerance = 0.1                      // device px; CoreGraphics' own drawings (32 px) take 0.01
-    var step: Double { 2 * acos(1 - tolerance / (M.radius * ux * dpi)) }  // radians
+    var dpi = 1.0                            // device px a px: the top bar's columns are half of one
+    // CoreGraphics' polyline (32 px): arcs in even steps whose chords stray at most 0.01 device px, lines in pieces as
+    // long.
+    var step: Double { 2 * acos(1 - 0.01 / (M.radius * ux * dpi)) }       // radians
     var piece: Double { M.radius * step }                                  // units
-    func points(_ k: Kind) -> [P2] {
+    func points(_ k: Kind) -> [P2] { points(k, step: step, piece: piece) }
+    // The centreline in px, its arcs and lines in steps of at most `step` radians and `piece` units.
+    func points(_ k: Kind, step: Double, piece: Double) -> [P2] {
         centreline(k, D: floor, f: fillet, rise: rise).sampled(step: step, piece: piece)
             .map { P2(ox + $0.x * ux, oy + $0.y * uy) }
     }
-    var caretPoints: [P2] {
-        var p = Path2(P2(caretX, caretTop)); p.line(P2(caretX, caretBottom))
-        return p.sampled(step: step, piece: piece * ux)
+    // The caret's ink: x0, y0, x1, y1.
+    var caretBox: (Double, Double, Double, Double) {
+        let r = caretW / 2, e = caretRound ? r : 0
+        return (caretX - r, caretTop - e, caretX + r, caretBottom + e)
+    }
+    // The stroke's band as AREA columns: at xs, its top and bottom edges. The band is the centreline grown by half
+    // the stroke (round caps and joins), which every vertical cuts in one interval; its edges are found over the
+    // centreline at 0.005 px (an error below 1e-5 px), at the ends of the ink and every half device px between.
+    func strip(_ k: Kind) -> (xs: [Double], tops: [Double], bottoms: [Double]) {
+        let r = stroke / 2
+        let pts = points(k, step: 0.001, piece: 0.005)
+        let left = pts.map { $0.x }.min()! - r, right = pts.map { $0.x }.max()! + r
+        let col = 0.5 / dpi
+        var xs = [left]
+        var x = ((left / col).rounded(.down) + 1) * col
+        while x < right - 1e-9 { if x > left + 1e-9 { xs.append(x) }; x += col }
+        xs.append(right)
+        var tops: [Double] = [], bottoms: [Double] = []
+        for x in xs {
+            var t = Double.infinity, b = -Double.infinity
+            for p in pts where abs(x - p.x) <= r + 1e-9 {
+                let h = max(0, r * r - (x - p.x) * (x - p.x)).squareRoot()
+                t = min(t, p.y - h); b = max(b, p.y + h)
+            }
+            tops.append(t); bottoms.append(b)
+        }
+        return (xs, tops, bottoms)
+    }
+    // FunkGui's primitives for the mark at (x, y), as LogoMark.h's numbers make them in Panel.cpp.
+    func prims(_ k: Kind, _ c: C, x: Double, y: Double) -> [FGPrim] {
+        let s = strip(k)
+        var v: [FGPrim] = []
+        for i in 0..<(s.xs.count - 1) {
+            v.append(.area(x0: x + s.xs[i], x1: x + s.xs[i + 1], t0: y + s.tops[i], t1: y + s.tops[i + 1],
+                           b0: y + s.bottoms[i], b1: y + s.bottoms[i + 1], col: c))
+        }
+        let (x0, y0, x1, y1) = caretBox
+        if caretRound {
+            v.append(.segment(x0: x + caretX, y0: y + caretTop, x1: x + caretX, y1: y + caretBottom, w: caretW, col: c))
+        } else {
+            v.append(.rrect(x: x + x0, y: y + y0, w: x1 - x0, h: y1 - y0, r: 0, col: c))
+        }
+        return v
     }
 }
 
 let PLACE32 = StrokePlace(ox: 8, oy: 16, ux: 0.75, uy: 1, stroke: 2, floor: 3, fillet: 0, rise: M.rise,
-                          caretX: 24, caretTop: 9, caretBottom: 23, caretW: 2, caretRound: false, dpi: 1,
-                          tolerance: 0.01)
-// The top bar's tile (26 px): at 2x the grid whose stem covers device px 39-42, at 1x the same hinted to whole px.
+                          caretX: 24, caretTop: 9, caretBottom: 23, caretW: 2, caretRound: false)
+// The top bar's tile (26 px): at 2x the grid whose stem covers device px 39-42; at 1x one 2 px stroke, hinted.
 let TILE = 26.0, TILE_RADIUS = 8.0, TILE_ALPHA = 0.16
 let TOPBAR2X = StrokePlace(ox: 5.25, oy: 13, ux: 0.75, uy: 0.75, stroke: 1.5, floor: 3, fillet: M.fillet,
                            rise: M.rise, caretX: 20.25, caretTop: 8.5, caretBottom: 17.5, caretW: 1.5,
                            caretRound: true, dpi: 2)
-let TOPBAR1X = StrokePlace(ox: 5, oy: 13, ux: 0.75, uy: 0.75, stroke: 1.5, floor: 3, fillet: 0,
-                           rise: M.rise, caretX: 20, caretTop: 9, caretBottom: 17, caretW: 2,
-                           caretRound: true, dpi: 1)
+let TOPBAR1X = StrokePlace(ox: 5, oy: 13, ux: 0.75, uy: 2.0 / 3.0, stroke: 2, floor: 3, fillet: 0,
+                           rise: M.rise, caretX: 21, caretTop: 8, caretBottom: 18, caretW: 2,
+                           caretRound: false, dpi: 1)
 
 // The 16 px mark, set pixel by pixel: rows 4 to 11, '#' the wave, 'C' the caret. One cycle in columns 3-10 (the
 // crest on row 6, the trough on row 9), column 11 empty, the caret in column 12. The effect's trough is a box whose
@@ -549,7 +598,7 @@ func strokePoints(_ ctx: CGContext, _ pts: [P2], _ w: Double, _ c: C, cap: CGLin
 func drawStroked(_ ctx: CGContext, _ sp: StrokePlace, _ k: Kind, wave: C, caret: C) {
     strokePoints(ctx, sp.points(k), sp.stroke, wave)
     if sp.caretRound {
-        strokePoints(ctx, sp.caretPoints, sp.caretW, caret)
+        strokePoints(ctx, [P2(sp.caretX, sp.caretTop), P2(sp.caretX, sp.caretBottom)], sp.caretW, caret)
     } else {
         ctx.setFillColor(caret.cg)
         ctx.fill(CGRect(x: sp.caretX - sp.caretW / 2, y: sp.caretTop, width: sp.caretW,
@@ -653,18 +702,94 @@ func appIcon(_ k: Kind, size: Int, full: Bool = false) -> CGImage {
     return ctx.makeImage()!
 }
 
-// The top bar's tile as the editor draws it (CoreGraphics in place of FunkGui's SDF: close, not the same pixels), at
+// MARK: - FunkGui's rasteriser
+// canvas/SoftRaster.cpp's rrect, segment and area (fs_ui.sc's, which the GPU runs), mirrored: each primitive's
+// coverage (1 - smoothstep(-aa, aa, d), aa one device px), its quad (the AA apron, 1.5 px; an AREA's x range
+// half-open, by the sample's centre), source-over blending on gamma-encoded values, ss x ss samples a device px,
+// box-filtered and rounded once. For the top bar's tile it gives gui.dump's PNG pixels, byte for byte (ss 2).
+enum FGPrim {
+    case rrect(x: Double, y: Double, w: Double, h: Double, r: Double, col: C)
+    case segment(x0: Double, y0: Double, x1: Double, y1: Double, w: Double, col: C)
+    case area(x0: Double, x1: Double, t0: Double, t1: Double, b0: Double, b1: Double, col: C)
+}
+func fgSmooth(_ e0: Double, _ e1: Double, _ x: Double) -> Double {
+    let t = min(max((x - e0) / max(e1 - e0, 1e-9), 0), 1)
+    return t * t * (3 - 2 * t)
+}
+// Coverage of a primitive at the logical point (x, y), aa = one device px in logical px.
+func fgCoverage(_ p: FGPrim, _ x: Double, _ y: Double, _ aa: Double) -> Double {
+    switch p {
+    case .rrect(let rx, let ry, let w, let h, let r0, _):
+        let bx = w / 2, by = h / 2, lx = x - (rx + bx), ly = y - (ry + by)
+        let r = min(r0, min(bx, by))
+        let qx = abs(lx) - bx + r, qy = abs(ly) - by + r
+        let d = hypot(max(qx, 0), max(qy, 0)) + min(max(qx, qy), 0) - r
+        if abs(lx) > bx + 1.5 || abs(ly) > by + 1.5 { return 0 }
+        return 1 - fgSmooth(-aa, aa, d)
+    case .segment(let ax, let ay, let bx, let by, let w, _):
+        let r = w / 2
+        if x < min(ax, bx) - r - 1.5 || x >= max(ax, bx) + r + 1.5 || y < min(ay, by) - r - 1.5
+            || y >= max(ay, by) + r + 1.5 { return 0 }
+        let dx = bx - ax, dy = by - ay
+        let t = min(max(((x - ax) * dx + (y - ay) * dy) / max(dx * dx + dy * dy, 1e-6), 0), 1)
+        let d = hypot(x - ax - dx * t, y - ay - dy * t) - r
+        return 1 - fgSmooth(-aa, aa, d)
+    case .area(let x0, let x1, let t0, let t1, let b0, let b1, _):
+        if x < x0 || x >= x1 { return 0 }
+        let top = min(t0, t1, b0, b1) - 1.5, bot = max(t0, t1, b0, b1) + 1.5
+        if y < top || y >= bot { return 0 }
+        let t = (x - x0) / (x1 - x0)
+        let yT = t0 + (t1 - t0) * t, yB = b0 + (b1 - b0) * t
+        let sT = (t1 - t0) / (x1 - x0), sB = (b1 - b0) / (x1 - x0)
+        let dT = (yT - y) / (1 + sT * sT).squareRoot(), dB = (y - yB) / (1 + sB * sB).squareRoot()
+        return 1 - fgSmooth(-aa, aa, max(dT, dB))
+    }
+}
+func fgColour(_ p: FGPrim) -> C {
+    switch p {
+    case .rrect(_, _, _, _, _, let c), .segment(_, _, _, _, _, let c), .area(_, _, _, _, _, _, let c): return c
+    }
+}
+// w x h logical px at dpi, on `ground`, ss x ss samples a device px.
+func fgRender(_ prims: [FGPrim], w: Double, h: Double, dpi: Double, ground: C, ss: Int = 2) -> CGImage {
+    let W = Int((w * dpi).rounded()), H = Int((h * dpi).rounded())
+    var buf = [UInt8](repeating: 0, count: W * H * 4)
+    let aa = 1 / dpi
+    for j in 0..<H {
+        for i in 0..<W {
+            var acc = (0.0, 0.0, 0.0)
+            for sj in 0..<ss {
+                for si in 0..<ss {
+                    let x = (Double(i) + (Double(si) + 0.5) / Double(ss)) / dpi
+                    let y = (Double(j) + (Double(sj) + 0.5) / Double(ss)) / dpi
+                    var c = (ground.r, ground.g, ground.b)
+                    for p in prims {
+                        let col = fgColour(p)
+                        let a = fgCoverage(p, x, y, aa) * col.a
+                        if a <= 0 { continue }
+                        c = (col.r * a + c.0 * (1 - a), col.g * a + c.1 * (1 - a), col.b * a + c.2 * (1 - a))
+                    }
+                    acc = (acc.0 + c.0, acc.1 + c.1, acc.2 + c.2)
+                }
+            }
+            let n = Double(ss * ss), o = (j * W + i) * 4
+            buf[o] = UInt8((acc.0 / n * 255).rounded()); buf[o + 1] = UInt8((acc.1 / n * 255).rounded())
+            buf[o + 2] = UInt8((acc.2 / n * 255).rounded()); buf[o + 3] = 255
+        }
+    }
+    let ctx = CGContext(data: &buf, width: W, height: H, bitsPerComponent: 8, bytesPerRow: W * 4, space: sRGB,
+                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    return ctx.makeImage()!
+}
+
+// The top bar's tile as the editor draws it (the primitives Panel.cpp makes from LogoMark.h, in FunkGui's pixels), at
 // a scale (1 or 2), on the theme's card.
 func topBarTile(_ k: Kind, _ th: Theme, scale: Int) -> CGImage {
-    let n = Int(TILE) * scale, ctx = context(n, n)
-    ctx.scaleBy(x: CGFloat(scale), y: CGFloat(scale))
-    ctx.setFillColor(th.card.cg); ctx.fill(CGRect(x: 0, y: 0, width: TILE, height: TILE))
     let acc = th.accent(k)
-    let tile = CGPath(roundedRect: CGRect(x: 0, y: 0, width: TILE, height: TILE), cornerWidth: TILE_RADIUS,
-                      cornerHeight: TILE_RADIUS, transform: nil)
-    ctx.setFillColor(acc.alpha(Double(Int(TILE_ALPHA * 255)) / 255).cg); ctx.addPath(tile); ctx.fillPath()
-    drawStroked(ctx, scale >= 2 ? TOPBAR2X : TOPBAR1X, k, wave: acc, caret: acc)
-    return ctx.makeImage()!
+    var prims: [FGPrim] = [.rrect(x: 0, y: 0, w: TILE, h: TILE, r: TILE_RADIUS,
+                                  col: acc.alpha(Double(Int(TILE_ALPHA * 255)) / 255))]
+    prims += (scale >= 2 ? TOPBAR2X : TOPBAR1X).prims(k, acc, x: 0, y: 0)
+    return fgRender(prims, w: TILE, h: TILE, dpi: Double(scale), ground: th.card)
 }
 
 // MARK: - text
@@ -781,10 +906,33 @@ func lockup(_ k: Kind, _ th: Theme, name: String, line: String) -> CGImage {
     return ctx.makeImage()!
 }
 
+// The README's header: the same card with both marks, the effect's then the instrument's (one construction, the
+// trough and the caret's colour apart), 8u between the first's caret and the second's wave (four times the caret's
+// own gap, so they read as two), 6u before the text.
+func familyLockup(_ th: Theme, name: String, line: String) -> CGImage {
+    let W = 1360.0, H = 400.0, u = 8.0, gap = 8 * u, air = 6 * u, ink = (M.box.x1 - M.box.x0) * u
+    let ctx = context(Int(W), Int(H))
+    let card = CGPath(roundedRect: CGRect(x: 0, y: 0, width: W, height: H), cornerWidth: 24, cornerHeight: 24,
+                      transform: nil)
+    ctx.setFillColor(th.ground.cg); ctx.addPath(card); ctx.fillPath()
+    let textW = max(inkBounds(textLine(name, 64, th.ink)).width, inkBounds(textLine(line, 28, th.ink52)).width)
+    let left = ((W - 2 * ink - gap - air - textW) / 2).rounded()                 // the first ink box's left
+    var right = 0.0
+    for (i, k) in [Kind.effect, .instrument].enumerated() {
+        let fp = fillPlace(cx: left + Double(i) * (ink + gap) + (10 + 1 + M.optical) * u, cy: H / 2, u: u)
+        fill(ctx, fp.wave(k), th.ink)
+        fill(ctx, fp.caret, th.accent(k))
+        right = fp.ox + (M.caretX + 1) * u
+    }
+    text(ctx, name, right + air, 196, 64, th.ink, inkLeft: true)
+    text(ctx, line, right + air, 252, 28, th.ink52, inkLeft: true)
+    return ctx.makeImage()!
+}
+
 // MARK: - the construction sheet
 
 func constructionSheet() -> CGImage {
-    let W = 1600, H = 1320, g = 52.0
+    let W = 1600, H = 1480, g = 52.0
     let th = GRAPHITE
     let ctx = context(W, H)
     ctx.setFillColor(th.ground.cg); ctx.fill(CGRect(x: 0, y: 0, width: W, height: H))
@@ -915,6 +1063,14 @@ func constructionSheet() -> CGImage {
     text(ctx, cells[2] + "   " + cells[3], 160, y + 20, 14, note)
     text(ctx, cells[4] + "   (px: the crest's top, the trough's bottom, the floor's edge/thickness)", 160, y + 40, 14,
          note)
+    y += 80
+    text(ctx, "TOP BAR", 60, y, 15, note, tracking: 1)
+    text(ctx, "the 26 px tile, in the accent alone: the wave AREA columns, the caret one primitive (LogoMark.h):",
+         160, y, 16, th.ink)
+    text(ctx, "2x: u 0.75, stroke 1.5 (3 device px), the crest's top 10.0, the trough's bottom 16.0, the stem "
+         + "device px 39-42", 160, y + 24, 14, note)
+    text(ctx, "1x: one 2 px stroke (x unit 0.75, y unit 2/3): the crest rows 10-11, the trough rows 14-15, the "
+         + "caret columns 20-21, rows 8-17", 160, y + 44, 14, note)
     return ctx.makeImage()!
 }
 
@@ -927,6 +1083,8 @@ func reviewSheet(_ names: [Kind: String]) -> CGImage {
         let y0 = Double(i) * Double(H) / 2
         ctx.setFillColor(th.ground.cg); ctx.fill(CGRect(x: 0, y: y0, width: Double(W), height: Double(H) / 2))
         text(ctx, "CARET  ·  \(th.name.uppercased())", 40, y0 + 44, 15, th.ink52, tracking: 1.5)
+        text(ctx, "the top bar's tiles in FunkGui's own pixels (its rasteriser, mirrored: gui.dump's)", 830, y0 + 44,
+             14, th.ink52)
         for (j, k) in Kind.allCases.enumerated() {
             let x0 = 40.0 + Double(j) * 790
             text(ctx, names[k] ?? k.rawValue, x0, y0 + 84, 17, th.ink)
@@ -983,32 +1141,38 @@ func header() -> String {
     for (k, kName) in [(Kind.effect, "Effect"), (.instrument, "Instrument")] {
         for (sp, sName) in [(TOPBAR1X, "1x"), (TOPBAR2X, "2x")] {
             let id = "k\(kName)\(sName)"
-            var lines: [String] = []
-            for (part, pts, w) in [("Wave", sp.points(k), sp.stroke), ("Caret", sp.caretPoints, sp.caretW)] {
-                maxN = max(maxN, pts.count)
-                for (axis, v) in [("X", pts.map { $0.x }), ("Y", pts.map { $0.y })] {
-                    arrays += "        inline constexpr float \(id)\(part)\(axis)[] = {\n\(floats(v))\n        };\n"
-                }
-                lines.append("{ detail::\(id)\(part)X, detail::\(id)\(part)Y, \(pts.count), \(f(w)) }")
+            let st = sp.strip(k)
+            maxN = max(maxN, st.xs.count)
+            for (part, v) in [("Xs", st.xs), ("Tops", st.tops), ("Bottoms", st.bottoms)] {
+                arrays += "        inline constexpr float \(id)\(part)[] = {\n\(floats(v))\n        };\n"
             }
-            let lead = "    inline constexpr Mark \(id){ "
-            marks += lead + lines[0] + ",\n" + String(repeating: " ", count: lead.count) + lines[1] + " };\n"
+            let (x0, y0, x1, y1) = sp.caretBox
+            marks += "    inline constexpr Mark \(id){\n"
+                + "        { detail::\(id)Xs, detail::\(id)Tops, detail::\(id)Bottoms, \(st.xs.count) },\n"
+                + "        { \(f(x0)), \(f(y0)), \(f(x1)), \(f(y1)), \(sp.caretRound) } };\n"
         }
     }
+    let p1 = TOPBAR1X, p2 = TOPBAR2X
+    let c1 = p1.caretBox, c2 = p2.caretBox
+    let s2 = num(p2.stroke), w2 = num(p2.caretW), x2 = num(p2.caretX), d0 = num(c2.0 * 2), d1 = num(c2.2 * 2)
+    let s1 = num(p1.stroke), cA = num(c1.0), cB = num(c1.2 - 1), rA = num(c1.1), rB = num(c1.3 - 1)
     return """
     // Source/editor/LogoMark.h: GENERATED by Tools/logo/logo.swift (swift Tools/logo/logo.swift): do not edit;
     // change the script and run it again. The top bar's mark, "~|" (a wave written up to the editor's caret), in its
-    // 26 px tile, in the theme's accent alone: two polylines (FunkGui's capsules, round caps and joins), the wave's
-    // centreline and the caret's, px from the tile's top-left. The arcs are in even steps whose chords stray at most
-    // 0.1 device px, the lines and the caret in pieces as long: FunkGui's capsules overlap their antialiased ends at
-    // each point, so even pieces keep the floor, the caret and the curves one weight. One drawing a backing scale,
-    // hinted for it:
-    //   2x  u 0.75, stroke 1.5 (3 device px): the crest's top on 10.0 and the trough's bottom on 16.0 (device px 20
-    //       and 32), the caret's stem 1.5 wide at x 20.25 (device px 39-42)
-    //   1x  the same grid at x 5: the crest's top row 10 and the trough's bottom row 15 whole, the caret 2 px wide on
-    //       columns 19-20; the effect's floor sharp-cornered, 4.7 px long on row 15, the instrument's trough rounded
+    // 26 px tile, in the theme's accent alone, px from the tile's top-left. The wave is Canvas::areaStrip's columns
+    // (half a device px wide) between its stroke's top and bottom edges, one primitive over each sample, and the caret
+    // one primitive: a capsule (Canvas::segment) or a rectangle (Canvas::rrect). FunkGui antialiases each edge over a
+    // device px each side, so an edge on a whole device px shows about 16% outside it and 84% inside, its crispest.
+    // One drawing a backing scale, hinted for it; mark() picks by Canvas::dpi(), which is the backing scale times the
+    // editor's zoom, so the hints hold at a zoom of 100% and 200%; at 125% and 150% the 2x drawing is antialiased
+    // where it lands:
+    //   2x  u 0.75, stroke \(s2) (3 device px): the crest's top on 10.0 and the trough's bottom on 16.0 (device px 20
+    //       and 32); the caret a capsule \(w2) wide at x \(x2) (its stem device px \(d0)-\(d1))
+    //   1x  one stroke, \(s1) px, for the wave and the caret: the crest's centreline on 11 and the trough's on 15
+    //       (rows 10-11 and 14-15); the caret on columns \(cA)-\(cB), rows \(rA)-\(rB), square ends; the
+    //       effect's floor 4.7 px long, sharp-cornered, the instrument's trough round
     // The effect's trough is processed (flat-floored, its last flank on past the baseline), the instrument's the crest
-    // turned over (logo.swift has the construction).
+    // turned over (logo.swift has the construction). gui.dump's MARK checks the numbers and the pixels.
     #pragma once
 
     namespace playground::ui::logo
@@ -1016,31 +1180,40 @@ func header() -> String {
         // The tile under the mark: its side, its corner radius and the accent's alpha in it.
         inline constexpr float kTile = \(f(TILE)), kTileRadius = \(f(TILE_RADIUS)), kTileAlpha = \(f(TILE_ALPHA));
 
-        struct Line
+        // The wave: Canvas::areaStrip's points, its top and bottom edges at each x (n - 1 columns).
+        struct Strip
         {
             const float* xs;                     // px in the tile
-            const float* ys;
-            int n;                               // its points
-            float width;                         // its stroke
+            const float* tops;
+            const float* bottoms;
+            int n;
+        };
+
+        // The caret's ink, px in the tile: a capsule (round) or a rectangle.
+        struct Stem
+        {
+            float x0, y0, x1, y1;
+            bool round;
         };
 
         struct Mark
         {
-            Line wave, caret;
+            Strip wave;
+            Stem caret;
         };
 
-        inline constexpr int kMaxPoints = \(maxN);         // the most points a Line has
+        inline constexpr int kMaxPoints = \(maxN);         // the most points a Strip has
 
         namespace detail
         {
     \(arrays)    }
 
     \(marks)
-        // The mark for the product's kind at the canvas's scale (Canvas::dpi()): the 1x drawing below 1.5 device px a
-        // logical px, else the 2x one.
+        // The mark for the product's kind at the canvas's scale (Canvas::dpi()): the 1x drawing at exactly 1 device px
+        // a logical px, else the 2x one.
         constexpr const Mark& mark(bool instrument, float dpi)
         {
-            if (dpi < 1.5f)
+            if (dpi > 0.99f && dpi < 1.01f)
                 return instrument ? kInstrument1x : kEffect1x;
             return instrument ? kInstrument2x : kEffect2x;
         }
@@ -1088,11 +1261,11 @@ for k in Kind.allCases {
     }
 }
 for p in products { write(appIcon(p.kind, size: 512, full: true), "Source/mcp/icon-\(p.key).png") }
-// The README's header: the repository has the effect's name and holds both.
+// The README's header: the repository has the effect's name and holds both, so it shows both marks.
 if let name = names[.effect] {
     let line = "an effect and a synth you write while they play"
     for th in [GRAPHITE, PAPER] {
-        write(lockup(.effect, th, name: name, line: line), "Assets/logo/readme-\(th.name).png")
+        write(familyLockup(th, name: name, line: line), "Assets/logo/readme-\(th.name).png")
     }
 }
 write(constructionSheet(), "Assets/logo/construction.png")

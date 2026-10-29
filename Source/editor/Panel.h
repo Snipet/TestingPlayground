@@ -227,6 +227,8 @@ namespace playground::ui
         funkgui::Point centreOfProblem(int i) const;
         const std::vector<Problem>& problems() const noexcept { return problems_; }
         const std::string& statusText() const noexcept { return status_; }
+        // The top bar's mark: its tile's top-left as last drawn (LogoMark.h's px are from it).
+        funkgui::Point markTile() const noexcept { return markTile_; }
         // The top bar's load at its right: the alerts' words and the CPU's share ("CLIPPED   CPU 4.2%"), and the
         // snowflake left of the share while the frozen copy plays (EditorPort::frozen), its place.
         const std::string& meterText() const noexcept { return meter_; }
@@ -327,6 +329,7 @@ namespace playground::ui
         void syncWindowButtons();                        // each frame: a new room lays out again (layout() tells
                                                          // the port where they go)
         float buttonsRoom_ = 0.0f;
+        funkgui::Point markTile_{};                      // the mark's tile, as draw() last placed it
         bool buttonsPlaced_ = false;                     // the port was told where they go (while they are there)
         bool windowPress_ = false;                       // the last press went to the window (dragWindow): its
                                                          // double-click is none of the panel's
