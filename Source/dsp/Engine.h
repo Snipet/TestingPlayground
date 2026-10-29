@@ -164,6 +164,11 @@ namespace playground
         // Offline only, after restart() and before the first process(): the clock's start, so that the voices' grid
         // (kGrid) has a recording's phase (a replay of the capture, Measure.h's Request::clock).
         void setClock(uint64_t samples) noexcept { clock_ = samples; }
+        // The song's position at the next call's first sample (the audio thread's own: a recording keeps it where the
+        // host gives no transport and the Engine's own runs at 120 BPM), and, offline only, where it starts (after
+        // restart(), which sets it to 0: a replay of such a recording, Measure.h).
+        double beat() const noexcept { return beat_; }
+        void setBeat(double beat) noexcept { beat_ = beat; }
 
     private:
         // A value that moves to its target over a fixed time, linearly, landing on it exactly.

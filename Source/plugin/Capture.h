@@ -132,7 +132,8 @@ namespace playground::capture
         uint64_t sample = 0;        // its first sample, from the take's start
         uint64_t event = 0;         // its first event (Take::events' index)
         uint64_t program = 0;       // Meters::program after it (Patch::program: the compile's request)
-        double bpm = 120.0, beat = 0.0, barStart = 0.0;   // the host's transport at its first sample (Transport)
+        double bpm = 120.0, beat = 0.0, barStart = 0.0;   // the host's transport at its first sample (Transport;
+                                                          // without one, beat is the Engine's own: Engine::beat)
         float load = 0.0f;          // its processing time over its length (1 = a whole core; 0 for an empty block)
         uint32_t size = 0;          // samples
         uint32_t events = 0;

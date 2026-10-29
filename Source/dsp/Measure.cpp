@@ -1050,7 +1050,10 @@ namespace playground::measure
                         break;
                     case EventKind::controller:
                         if (e.note == 64)
-                            tl.marks.push_back({ at, e.velocity >= 0.5f ? "the pedal down" : "the pedal up", -1, false });
+                        {
+                            if (at > 0 || e.velocity >= 0.5f)        // (up at the start: at rest, no moment)
+                                tl.marks.push_back({ at, e.velocity >= 0.5f ? "the pedal down" : "the pedal up", -1, false });
+                        }
                         else if (at > 0 || e.velocity != 0.0f)
                             tl.marks.push_back({ at, (e.note == 1 ? std::string("the mod wheel") : "controller " + std::to_string(e.note))
                                                          + " to " + fmt("%.2f", static_cast<double>(e.velocity)),
@@ -1061,7 +1064,8 @@ namespace playground::measure
                             tl.marks.push_back({ at, "the pitch wheel to " + fmt("%.2f", static_cast<double>(e.velocity)), -1, false });
                         break;
                     case EventKind::pressure:
-                        tl.marks.push_back({ at, "pressure to " + fmt("%.2f", static_cast<double>(e.velocity)), -1, false });
+                        if (at > 0 || e.velocity != 0.0f)
+                            tl.marks.push_back({ at, "pressure to " + fmt("%.2f", static_cast<double>(e.velocity)), -1, false });
                         break;
                 }
             }
@@ -1136,6 +1140,8 @@ namespace playground::measure
             engine.restart();
             engine.takeAlerts();
             engine.setClock(tl.clock);                       // a recording's grid phase (0 otherwise)
+            if (!tl.transport.empty() && tl.transport.front().at == 0 && !tl.transport.front().transport.known)
+                engine.setBeat(tl.transport.front().transport.beat);   // a recording without the host's: the Engine's own
             const std::size_t total = tl.length;
             r.out.l.assign(total, 0.0f);
             r.out.r.assign(total, 0.0f);

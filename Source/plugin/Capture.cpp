@@ -239,7 +239,7 @@ namespace playground::capture
         pending_.event = r->e;
         pending_.size = static_cast<uint32_t>(len);
         pending_.bpm = t.bpm;
-        pending_.beat = t.beat;
+        pending_.beat = t.known ? t.beat : engine.beat();   // none: the Engine's own (a replay starts there)
         pending_.barStart = t.barStart;
         pending_.beatsPerBar = static_cast<uint8_t>(std::clamp(t.beatsPerBar, 0, 255));
         pending_.beatUnit = static_cast<uint8_t>(std::clamp(t.beatUnit, 0, 255));

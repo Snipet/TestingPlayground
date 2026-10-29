@@ -42,6 +42,10 @@
 //   RESTART   mode next with restart after notes and the pedal (an effect: a sine): it waits for the program's fresh
 //             compile and its swap, starts at the next note (sound), and replays bit for bit; restart with mode last is
 //             refused
+//   BEAT      no host transport, a program whose level follows the song's position, run in the editor just before an
+//             arm with restart: the restart plays that run's files; the take starts at the Engine's own position and
+//             replays bit for bit, twice in one Session (the second after the first ended with the pedal down); a take
+//             with no MIDI (a chord held from before) replays no notes of its own
 #include "Probe.h"
 
 #include "plugin/CaptureReplay.h"
@@ -252,7 +256,9 @@ namespace
             m.sizes = m.sizes && static_cast<int>(b.size) == r.sizes[j] && b.sample == r.starts[j] - base;
             m.dials = m.dials && std::memcmp(b.dials.data(), r.dials[j].data(), sizeof(float) * pg::kMaxControls) == 0;
             m.transport = m.transport && b.has(cap::Block::kKnown) == r.head.known && b.has(cap::Block::kPlaying) == r.playing[j]
-                       && b.beat == (r.head.known ? r.ppqs[j] : 0.0) && b.bpm == 120.0 && b.beatsPerBar == 4 && b.beatUnit == 4
+                       && (r.head.known ? b.beat == r.ppqs[j]   // no transport: the Engine's own, 120 BPM from its start
+                                        : std::fabs(b.beat - static_cast<double>(r.starts[j]) * 2.0 / kFs) < 1e-6)
+                       && b.bpm == 120.0 && b.beatsPerBar == 4 && b.beatUnit == 4
                        && !b.has(cap::Block::kBypassed) && !b.has(cap::Block::kFrozen);
             m.program = m.program && b.program != 0 && b.program == t.blocks.front().program;
         }
@@ -389,6 +395,28 @@ namespace
         const pg::measure::Session::Render out = s.render(rp.request, nullptr, nullptr, rp.length);
         return out.l.size() == rp.length && sameFloats(t.out[0], out.l.data(), out.l.size())
             && sameFloats(t.out[1], out.r.data(), out.r.size());
+    }
+
+    // A program whose level follows the song's position (host.fm's Host: host->beat, read at each call's start).
+    pg::Sources beatProgram()
+    {
+        if constexpr (kInstrument)
+            return pg::singleFile(
+                "#include \"host.fm\"\nmodule Voice\n{\n    Host* host;\n    float ph, step;\n    bool held;\n"
+                "    void start(float note, float velocity) { step = 440.0f * expf(0.0577622650f * (note - 69)) / 48000; held = true; }\n"
+                "    void stop() { held = false; }\n"
+                "    bool process(float* restrict left, float* restrict right, int n)\n    {\n"
+                "        const float g = 0.2f + 0.15f * sinf(6.28318531f * host->beat);\n"
+                "        for (int i = 0; i < n; ++i)\n        {\n            const float s = g * sinf(6.28318531f * ph);\n"
+                "            ph += step;\n            if (ph >= 1) ph -= 1;\n            left[i] += s;\n            right[i] += s;\n        }\n"
+                "        return held;\n    }\n};\n");
+        else
+            return pg::singleFile(
+                "#include \"host.fm\"\nmodule Effect\n{\n    Host* host;\n"
+                "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                "        const float g = 0.5f + 0.25f * sinf(6.28318531f * host->beat);\n"
+                "        for (int i = 0; i < n; ++i)\n        {\n            left[i] *= g;\n            right[i] *= g;\n        }\n"
+                "    }\n};\n");
     }
 
     bool hasImage(const pg::ChatAgent::McpResult& r)
@@ -825,6 +853,108 @@ PROBE(plugin, capture)
         P.eq("restart.took", ok && taken.take->restarted && taken.take->start == (kInstrument ? cap::Start::note : cap::Start::sound)
                                  && taken.take->clock == r.starts[from] ? 1 : 0, 1);
         P.eq("restart.bits", ok && replaysBitForBit(*taken.take) ? 1 : 0, 1);
+    }
+
+    // ---- BEAT: no host transport (the Standalone), a program whose level follows the song's position, run in the
+    // editor just before an arm with restart (its compile on its way) ---------------------------------------------------
+    {
+        Rig r;
+        r.head.known = false;
+        const pg::Sources beat = beatProgram();
+        r.ref.editorPort().run(beat);
+        r.ref.settle();
+        for (std::size_t k = 0; k < 9; ++k)
+            r.block(patternAt(k), silence, {});                  // the Engine's own position runs on
+        r.rec.editorPort().run(beat);                           // compiling when the arm comes: restart waits for it
+        const pg::ChatAgent::McpResult a =
+            tool(r.rec, object({ { "action", "arm" }, { "mode", "next" }, { "restart", true }, { "seconds", 1 } }));
+        r.rec.compiler().wait();
+        r.rec.poll();
+        P.eq("restart.after_a_run", !a.isError && r.rec.compiler().status().ok && r.rec.compiler().status().sources == beat ? 1 : 0, 1);
+        // Keys pressed and let go (no pedal), then the pedal down near the end (it stays down past the take's end).
+        const std::size_t from = r.sizes.size() + 12;
+        uint64_t sound = ~uint64_t{ 0 };
+        bool pedal = false;
+        for (std::size_t k = r.sizes.size(); r.pos < static_cast<uint64_t>(2.8 * kFs); ++k)
+        {
+            const int n = patternAt(k);
+            if (k == from)
+                sound = r.pos;
+            std::vector<std::pair<int, juce::MidiMessage>> midi;
+            if (kInstrument && k >= from && n > 0)
+            {
+                const std::size_t j = k - from;
+                const int key = 52 + static_cast<int>(j / 8 % 12);
+                if (j % 8 == 0)
+                    midi.push_back({ n / 4, juce::MidiMessage::noteOn(1, key, static_cast<juce::uint8>(100)) });
+                if (j % 8 == 5)
+                    midi.push_back({ n / 2, juce::MidiMessage::noteOff(1, key) });
+                if (j >= 120 && !pedal)
+                {
+                    midi.push_back({ 0, juce::MidiMessage::controllerEvent(1, 64, 127) });
+                    pedal = true;
+                }
+            }
+            r.block(n, [&](int ch, uint64_t i) { return !kInstrument && i >= sound ? sine(ch, i) : 0.0f; }, midi);
+        }
+        tool(r.rec, object({ { "action", "stop" } }));
+        const cap::Reply taken = r.rec.recorder().act(cap::Action::take, {});
+        const bool ok = taken.take != nullptr && !taken.take->blocks.empty();
+        bool twice = false, beatSet = false;
+        if (ok)
+        {
+            const cap::Take& t = *taken.take;
+            beatSet = !t.blocks.front().has(cap::Block::kKnown) && t.blocks.front().beat > 0.05;
+            cap::Replay rp;
+            std::string why;
+            if (cap::replayOf(t, 0.0, -1.0, rp, why) && rp.files != nullptr)
+            {
+                // One Session, twice (a render after one that ended with the pedal down, at another position).
+                pg::measure::Session s(*rp.files, t.rate);
+                const pg::measure::Session::Render one = s.render(rp.request, nullptr, nullptr, rp.length);
+                const pg::measure::Session::Render two = s.render(rp.request, nullptr, nullptr, rp.length);
+                twice = s.compiled() && sameFloats(t.out[0], one.l.data(), one.l.size()) && sameFloats(t.out[0], two.l.data(), two.l.size())
+                     && sameFloats(t.out[1], two.r.data(), two.r.size());
+            }
+            std::printf("beat: %.4f s from beat %.4f (the Engine's own), restarted %d, the pedal at its end %.0f\n", t.seconds(),
+                        t.blocks.front().beat, t.restarted ? 1 : 0, static_cast<double>(t.blocks.back().wheels[3]));
+        }
+        P.eq("beat.take", ok && taken.take->restarted && beatSet ? 1 : 0, 1);
+        P.eq("beat.bits", ok && replaysBitForBit(*taken.take) ? 1 : 0, 1);
+        P.eq("beat.one_session_twice", twice ? 1 : 0, 1);
+        if constexpr (kInstrument)
+            P.eq("beat.pedal_down_at_end", ok && taken.take->blocks.back().wheels[3] >= 0.5f ? 1 : 0, 1);
+
+        // A take with no MIDI in it (a chord held from before, mode last): its replay plays no notes of its own.
+        if constexpr (kInstrument)
+        {
+            std::vector<std::pair<int, juce::MidiMessage>> chord = { { 0, juce::MidiMessage::controllerEvent(1, 64, 0) },
+                                                                     { 0, juce::MidiMessage::noteOn(1, 57, static_cast<juce::uint8>(90)) },
+                                                                     { 0, juce::MidiMessage::noteOn(1, 64, static_cast<juce::uint8>(90)) } };
+            r.block(256, silence, chord);
+            tool(r.rec, object({ { "action", "arm" }, { "seconds", 1 } }));
+            for (std::size_t k = 0; k < 200; ++k)
+                r.block(256, silence, {});
+            tool(r.rec, object({ { "action", "stop" } }));
+            const cap::Reply held = r.rec.recorder().act(cap::Action::take, {});
+            int notes = -1;
+            bool events = false;
+            if (held.take != nullptr && held.take->events.empty())
+            {
+                cap::Replay rp;
+                std::string why;
+                if (cap::replayOf(*held.take, 0.0, -1.0, rp, why, false))
+                {
+                    events = !rp.request.events.empty();
+                    notes = 0;
+                    for (const auto& [at, e] : cap::timelineOf(*held.take, rp, pg::Controls{}).events)
+                        notes += e.kind == pg::EventKind::noteOn ? 1 : 0;
+                }
+            }
+            std::printf("held chord: the take's events %zu; its replay's note-ons %d\n",
+                        held.take != nullptr ? held.take->events.size() : 0, notes);
+            P.eq("replay.no_midi_no_notes", events && notes == 0 ? 1 : 0, 1);
+        }
     }
 
     // ---- FREEZE ---------------------------------------------------------------------------------------------------------

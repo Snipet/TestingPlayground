@@ -67,8 +67,8 @@ namespace playground::capture
             if (t.start == Start::arm && !t.restarted)
                 return "it started in the middle of the playing (mode last), on the program's state then, not a fresh one";
             if (t.restarted)
-                return "the program started afresh, yet its output differs: it reads something a recording does not hold (the "
-                       "wheels or the playhead before it, a clock of its own)";
+                return "the program started afresh, yet its output differs: it reads something a recording does not hold (a "
+                       "clock or a state of its own that a fresh compile does not reset)";
             return "the program's state at the start was not a fresh one (what played before left its mark)";
         }
 
@@ -177,14 +177,13 @@ namespace playground::capture
         }
         if constexpr (kInstrument)
         {
-            // The wheels and the pedal as they stood (a fresh Engine starts at rest), then what the Engine got.
+            // The wheels and the pedal as they stood, always (whatever a render before left; and so a take without MIDI
+            // is still a recording, not the default notes: Measure's noteParts), then what the Engine got.
             const std::array<float, 4>& w = t.blocks[first].wheels;
             q.modwheel = w[0];
             q.pitchbend = w[1];
-            if (w[2] != 0.0f)
-                q.events.push_back({ 0, Event{ 0, EventKind::pressure, 0, w[2] } });
-            if (w[3] >= 0.5f)
-                q.events.push_back({ 0, Event{ 0, EventKind::controller, 64, 1.0f } });
+            q.events.push_back({ 0, Event{ 0, EventKind::pressure, 0, w[2] } });
+            q.events.push_back({ 0, Event{ 0, EventKind::controller, 64, w[3] >= 0.5f ? 1.0f : 0.0f } });
             for (const Note& x : t.events)
                 if (x.sample >= s0 && x.sample < s1)
                     q.events.push_back({ static_cast<std::size_t>(x.sample - s0), x.event(0) });

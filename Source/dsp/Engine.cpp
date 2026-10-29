@@ -122,6 +122,10 @@ namespace playground
     void Engine::restart()
     {
         prepare(fs_, maxBlock_);
+        host_ = HostBlock{};                         // the wheels, the pedal and the song's position at rest, as new
+        beat_ = 0.0;
+        bpm_ = 120.0;
+        running_ = true;
         const std::lock_guard<std::mutex> lock(mutex_);
         if (current_ != nullptr)
             current_->reset(fs_);

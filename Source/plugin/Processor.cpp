@@ -1380,6 +1380,9 @@ namespace playground
         if (action == capture::Action::arm && options.restart && options.mode == capture::Mode::next
             && capture_.audio())
         {
+            // A run on its way (the editor's, a version's, a preset's) lands first and is what starts afresh: a request
+            // now would replace it, or follow it with the files before it (the agent's worker waits, as chatRun does).
+            compiler_.wait();
             const Sources running = chatRunning();
             if (running.empty())
             {
