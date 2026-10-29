@@ -192,7 +192,7 @@ namespace playground::scenario
         Reader in(why);
         measure::Request r = request;
         const bool ok = [&] {
-            if (!in.keys(sc, "", { "phrase", "automate", "wheels", "host", "rate", "block", "input" }))
+            if (!in.keys(sc, "", { "phrase", "automate", "wheels", "host", "rate", "block", "input", "from", "to" }))
                 return false;
             if (!kInstrument && (sc.hasProperty("phrase") || sc.hasProperty("wheels")))
                 return in.fail(sc.hasProperty("phrase") ? "phrase" : "wheels", "an effect plays no notes (an instrument's)");
@@ -238,6 +238,19 @@ namespace playground::scenario
                     if (r.signal < 0)
                         return in.fail("input", "sweep, noise, impulse, sine, silence or \"capture\"");
                 }
+            }
+            if (sc.hasProperty("from") || sc.hasProperty("to"))
+            {
+                double from = 0.0, to = -1.0;
+                if (!r.fromCapture)
+                    return in.fail(sc.hasProperty("from") ? "from" : "to", std::string("a part of the recording: with ")
+                                                                         + (kInstrument ? "phrase" : "input") + " \"capture\"");
+                if (!in.num(sc, "from", "from", 0.0, 3600.0, from) || !in.num(sc, "to", "to", 0.0, 3600.0, to))
+                    return false;
+                if (to >= 0.0 && to <= from)
+                    return in.fail("to", "after from");
+                r.captureFrom = from;
+                r.captureTo = to;
             }
             return true;
         }();
@@ -300,6 +313,10 @@ namespace playground::scenario
             o->setProperty("block", r.block);
         if (!kInstrument && r.fromCapture)
             o->setProperty("input", "capture");
+        if (r.fromCapture && r.captureFrom > 0.0)
+            o->setProperty("from", r.captureFrom);
+        if (r.fromCapture && r.captureTo >= 0.0)
+            o->setProperty("to", r.captureTo);
         else if (!kInstrument && r.signal >= 0 && r.signal < 5)
             o->setProperty("input", kInputs[r.signal]);
         return o->getProperties().isEmpty() ? juce::var() : out;
@@ -316,7 +333,7 @@ namespace playground::scenario
         if (r.fromCapture)
         {
             Captured c;
-            if (!captured(host, c, why))
+            if (!captured(host, c, why, r.captureFrom, r.captureTo))
                 return false;
             const measure::Request& k = c.request;
             r.rate = k.rate;
@@ -325,6 +342,15 @@ namespace playground::scenario
             r.events = k.events;
             r.transport = k.transport;
             r.input = k.input;
+            r.frames = k.frames;                             // its dials, clock and parts: a replay gives what played
+            r.frameControls = k.frameControls;
+            r.clock = k.clock;
+            r.part = k.part;
+            r.recording = k.recording;
+            r.modwheel = k.modwheel;
+            r.pitchbend = k.pitchbend;
+            for (const auto& [name, v] : k.current)          // its dials at its start, for the report's line
+                r.current[name] = v;
             r.phrase.clear();
             std::vector<measure::DialMove> moves = k.automate;   // the recording's, then the request's own
             moves.insert(moves.end(), r.automate.begin(), r.automate.end());

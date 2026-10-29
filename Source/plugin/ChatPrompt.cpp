@@ -224,6 +224,7 @@ You cannot hear the plugin, but these tools check what you build against what wa
 - scenario: how the user plays it, in measure_output, view_sound, a check (which keeps it), tune_dials and compare: {%SCENARIO% rate: Hz or "host", block: 1 to 8192 or "host"}; times up to 10 s, then the tail. A dial moves once a host block, as a host's automation does, so its sound depends on the block size.%SCENARIOUSE%
 - try_edits: [{file, old_text, new_text} or {name, content}] on a copy of the files, in measure_output, view_sound and compare (on b): nothing in the plugin changes. Edit for real once a trial works.
 - compare: two sources rendered alike: identical bits, or how and where they differ ({a: "version:3", b: "editor"}; a fix: both "editor", try_edits on b).
+- the user's recording (capture stop keeps it), as a scenario: %CAPTURE%, its dials, the host and its blocks as they played (from, to: a part of it, in seconds); compare {a: "capture", b: "editor"} holds what played against your code on it. Each says how closely a replay of the program that played matched what played: bit for bit, or from when, and why not.
 
 The metrics, the names checks and goals use (a value that never comes, as a release that does not end within the tail, is infinity, which only "at least" meets):
 %METRICS%A target's tolerance is the metric's own unless one is given (1 dB for levels, 5 % of a frequency, 10 % of a time).
@@ -692,6 +693,9 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
                                             "at a block's start a dial's step."
                                           : " Try automation, an int switched while the input plays, 96 kHz, a block of 32. The "
                                             "step line names each large step's nearest event: at a block's start a dial's step.");
+                c = replaceAll(c, "%CAPTURE%",
+                               instrument ? "{phrase: \"capture\"} replays its notes, pedal and wheels"
+                                          : "{input: \"capture\"} replays its input");
                 c = replaceAll(c, "%TUNING%",
                                instrument ? "\"the release at 1.2 s\", \"the level at -18 dBFS RMS\", \"the centroid at "
                                             "1500 Hz\""

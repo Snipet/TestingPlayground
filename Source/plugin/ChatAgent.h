@@ -247,6 +247,7 @@ namespace playground
         std::string contextBlock();                                 // the plugin's state, when it changed
         juce::var runTool(const juce::var& toolUse);               // a tool_result block
         juce::var compareTool(const juce::var& toolUse);           // compare's (ChatCompare.cpp)
+        juce::var captureTool(const juce::var& toolUse);           // capture's (ChatCapture.cpp)
         std::string toolText(const std::string& name, const juce::var& input, bool& isError);
         // The checks measured on the editor's files and the plugin's dials: their entry brought up to date, and the
         // results in words for Claude ("" with no checks). The worker's.

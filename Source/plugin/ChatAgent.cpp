@@ -3008,7 +3008,8 @@ namespace playground
         const juce::String action = arguments.getProperty("action", juce::var()).toString();
         return name == "get_status"                                              // ChatHost's locked getters, atomics
             || name == "listen"                                                  // the live state (wave 1, lane "live")
-            || (name == "capture" && (action == "status" || action == "stop"));  // the recorder (wave 1, lane "capture")
+            || (name == "capture" && (action == "status" || action == "stop")    // the recorder (wave 1, lane "capture"),
+                && !static_cast<bool>(arguments.getProperty("picture", false))); // but a picture, drawn on the worker
     }
 
     void ChatAgent::mcpCancel(uint64_t call)
@@ -3125,6 +3126,8 @@ namespace playground
         const juce::var input = use.getProperty("input", juce::var());
         if (name == "compare")
             return compareTool(use);
+        if (name == "capture")
+            return captureTool(use);                              // ChatCapture.cpp
         if (name == "view_panel")
         {
             // A picture of the panel: an image block and a line of what it shows (the tool_result's content).
@@ -3649,8 +3652,6 @@ namespace playground
                 return fail("The planner did not answer: " + why + ". Decide yourself.");
             return "The planner answers:\n" + answer;
         }
-        if (name == "capture")
-            return captureToolText(host_, input, isError, note);  // ChatCapture.cpp
         if (name == "get_status")
         {
             const Draft d = host_.chatDraft();

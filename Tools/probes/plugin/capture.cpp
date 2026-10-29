@@ -28,10 +28,27 @@
 //             25 lines, and say they are live; the tool is listed for MCP, read-only, titled in words; stop with nothing
 //             armed, and an unknown action, are errors
 //   PRIVACY   the processor's state holds nothing of a recording
+//   ANALYSIS  stop's report has the octave bands (in and out), the centroid, the correlation, the largest steps each
+//             named by its nearest recorded moment, and the replay's forecast; picture: true draws it, and is not live
+//   REPLAY    mode next from the default program's fresh state: a take that starts off the voices' 16-sample grid, on a
+//             block over the announced (played in parts), with blocks of 0 and 1 samples, a dial written by the host, an
+//             instrument's sustain-pedal phrase (keys let go while it is down, then the pedal up), an effect's own input;
+//             replayed offline (CaptureReplay.h, a Session of the take's own files) it gives what played bit for bit, and
+//             the null test says so; measure_output and compare replay it through scenario::captured ("capture"): the
+//             replay's line in their result, compare with what plays identical bits, a part (from, to) named so, and
+//             status then reports the replay's line; from and to without "capture" are refused
+//   NOTFRESH  LAST's take (it started mid-playing): the synth's replay differs, and the line says why; the effect's
+//             default program keeps no state, so its replay matches bit for bit all the same
+//   RESTART   mode next with restart after notes and the pedal (an effect: a sine): it waits for the program's fresh
+//             compile and its swap, starts at the next note (sound), and replays bit for bit; restart with mode last is
+//             refused
 #include "Probe.h"
 
+#include "plugin/CaptureReplay.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/Processor.h"
+
+#include "dsp/Measure.h"
 
 #include "Product.h"
 
@@ -336,6 +353,52 @@ namespace
     }
 
     int patternAt(std::size_t k) { return kPattern[k % std::size(kPattern)]; }
+
+    // An instrument's sustain-pedal phrase from block j on (its events in a block of n samples): a key, the pedal down,
+    // the key let go (it sounds on), another key pressed and let go, the pedal up (both stop), the pitch wheel.
+    std::vector<std::pair<int, juce::MidiMessage>> pedalPhrase(std::size_t j, int n)
+    {
+        std::vector<std::pair<int, juce::MidiMessage>> m;
+        if (!kInstrument || n == 0)
+            return m;
+        const int a = 48 + static_cast<int>(((j / 12) * 7) % 24);
+        switch (j % 12)
+        {
+            case 0: m.push_back({ n / 3, juce::MidiMessage::noteOn(1, a, static_cast<juce::uint8>(96)) }); break;
+            case 2: m.push_back({ 0, juce::MidiMessage::controllerEvent(1, 64, 127) }); break;
+            case 4: m.push_back({ n / 2, juce::MidiMessage::noteOff(1, a) }); break;
+            case 5: m.push_back({ n - 1, juce::MidiMessage::noteOn(1, a + 4, static_cast<juce::uint8>(70)) }); break;
+            case 7: m.push_back({ n / 3, juce::MidiMessage::noteOff(1, a + 4) }); break;
+            case 9: m.push_back({ n / 2, juce::MidiMessage::controllerEvent(1, 64, 0) }); break;
+            case 10: m.push_back({ n / 4, juce::MidiMessage::pitchWheel(1, static_cast<int>((j * 811) % 16384)) }); break;
+            default: break;
+        }
+        return m;
+    }
+
+    // A take replayed offline in a Session of its own files, against what played: bit for bit.
+    bool replaysBitForBit(const cap::Take& t)
+    {
+        cap::Replay rp;
+        std::string why;
+        if (!cap::replayOf(t, 0.0, -1.0, rp, why) || rp.files == nullptr)
+            return false;
+        pg::measure::Session s(*rp.files, t.rate);
+        if (!s.compiled())
+            return false;
+        const pg::measure::Session::Render out = s.render(rp.request, nullptr, nullptr, rp.length);
+        return out.l.size() == rp.length && sameFloats(t.out[0], out.l.data(), out.l.size())
+            && sameFloats(t.out[1], out.r.data(), out.r.size());
+    }
+
+    bool hasImage(const pg::ChatAgent::McpResult& r)
+    {
+        if (const juce::Array<juce::var>* c = r.content.getArray())
+            for (const juce::var& b : *c)
+                if (b["type"].toString() == "image")
+                    return true;
+        return false;
+    }
 }
 
 PROBE(plugin, capture)
@@ -422,6 +485,28 @@ PROBE(plugin, capture)
                                     && has(stopText, kInstrument ? "Notes: " : "In: ") && has(stopText, "Dials moved: ")
                                     && lines(stopText) <= 25 && !st.isError ? 1 : 0, 1);
         std::printf("stop: %d lines\n", lines(stopText));
+        P.eq("analysis.lines", has(stopText, "Out: octave bands (Hz: dBFS) 32: ") && has(stopText, "; centroid ")
+                                   && has(stopText, "left/right correlation") && has(stopText, "Largest step")
+                                   && (kInstrument || has(stopText, "In: octave bands")) && has(stopText, "Replay: ") ? 1 : 0, 1);
+        P.eq("analysis.forecast_mid_playing", has(stopText, "Replay: it started mid-playing (mode last)") ? 1 : 0, 1);
+
+        // NOTFRESH: replayed, LAST's take differs (it started mid-playing), and the line says why.
+        if (taken.take != nullptr)
+        {
+            cap::Replay rp;
+            std::string why;
+            const bool built = cap::replayOf(*taken.take, 0.0, -1.0, rp, why);
+            const cap::Fidelity f = built ? cap::nullTest(*taken.take, rp) : cap::Fidelity{};
+            std::printf("notfresh: %s\n", f.line.c_str());
+            // The synth's voices sounded on: it differs, and says why. The effect's default program (a gain and a pan) keeps
+            // no state, so even this take replays bit for bit: the line is measured, not assumed.
+            P.eq("notfresh.measured", f.rendered && (kInstrument ? !f.identical && has(f.line, "mode last") : f.identical) ? 1 : 0, 1);
+        }
+
+        // ANALYSIS: picture: true draws the take (status), and does not run live.
+        const pg::ChatAgent::McpResult pic = tool(r.rec, object({ { "action", "status" }, { "picture", true } }));
+        P.eq("analysis.picture", hasImage(pic) && !pic.isError && has(textOf(pic), "A picture of the recording (what played")
+                                     && !pg::ChatAgent::mcpLive("capture", object({ { "action", "stop" }, { "picture", true } })) ? 1 : 0, 1);
 
         // FORGET: the ring the audio thread held goes after its next block; the take stays until forget.
         juce::MidiBuffer midi;
@@ -616,6 +701,130 @@ PROBE(plugin, capture)
         P.eq("overflow.events_flagged", ok && (s.take->trimmed & cap::eventsLimit) != 0 && s.take->blocks.size() == 3 ? 1 : 0, 1);
         P.eq("overflow.events_bits", ok && matchTake(*s.take, r, 2).all() ? 1 : 0, 1);
         P.eq("overflow.events_changes_nothing", r.sameAsRef ? 1 : 0, 1);
+    }
+
+    // ---- REPLAY ---------------------------------------------------------------------------------------------------------
+    {
+        Rig r;
+        r.head.known = false;
+        const pg::ChatAgent::McpResult a = tool(r.rec, object({ { "action", "arm" }, { "mode", "next" }, { "seconds", 1.5 } }));
+        P.eq("replay.armed", a.isError ? 0 : 1, 1);
+        // Blocks 256, 64 and 333 of silence first: the take starts at sample 653, off the 16-sample grid, on a block of
+        // 1061 (four parts of 256 and one of 37).
+        constexpr std::size_t kFrom = 4;
+        uint64_t sound = ~uint64_t{ 0 };
+        for (std::size_t k = 0; r.pos < static_cast<uint64_t>(2.4 * kFs); ++k)
+        {
+            const int n = patternAt(k);
+            if (k == kFrom)
+                sound = r.pos + static_cast<uint64_t>(n / 3);
+            const auto midi = k >= kFrom ? pedalPhrase(k - kFrom, n) : std::vector<std::pair<int, juce::MidiMessage>>{};
+            r.block(n, [&](int c, uint64_t i) { return !kInstrument && i >= sound ? sine(c, i) : 0.0f; }, midi, -1,
+                    k >= kFrom && k % 10 == 7 ? static_cast<float>((k * 37) % 100) / 100.0f : -1.0f);
+        }
+        const std::string stopText = textOf(tool(r.rec, object({ { "action", "stop" } })));
+        std::printf("replay, stop:\n%s", stopText.c_str());
+        const cap::Reply taken = r.rec.recorder().act(cap::Action::take, {});
+        if (taken.take != nullptr)
+        {
+            const cap::Take& t = *taken.take;
+            bool over = false, empty = false, one = false;
+            for (const cap::Block& b : t.blocks)
+            {
+                over = over || static_cast<int>(b.size) > t.part;
+                empty = empty || b.size == 0;
+                one = one || b.size == 1;
+            }
+            int pedals = 0;
+            for (const cap::Note& x : t.events)
+                pedals += x.kind == pg::EventKind::controller && x.note == 64 ? 1 : 0;
+            std::printf("replay: %zu blocks (%.4f s), clock %llu (phase %llu), %zu events, %d of the pedal\n", t.blocks.size(),
+                        t.seconds(), static_cast<unsigned long long>(t.clock), static_cast<unsigned long long>(t.clock % 16),
+                        t.events.size(), pedals);
+            P.eq("replay.take_shape", t.clock == r.starts[kFrom] && t.clock % 16 != 0 && over && empty && one ? 1 : 0, 1);
+            if constexpr (kInstrument)
+                P.ge("replay.pedal_events", static_cast<double>(pedals), 4.0);
+            P.eq("replay.forecast_fresh", has(stopText, kInstrument ? "Replay: no voice sounded when it started"
+                                                                    : "Replay: no tail rang when it started") ? 1 : 0, 1);
+            P.eq("replay.bits", replaysBitForBit(t) ? 1 : 0, 1);
+            cap::Replay rp;
+            std::string why;
+            const cap::Fidelity f = cap::replayOf(t, 0.0, -1.0, rp, why) ? cap::nullTest(t, rp) : cap::Fidelity{};
+            std::printf("replay: %s\n", f.line.c_str());
+            P.eq("replay.null_test", f.identical && f.line == "Replay: matches what played bit for bit." ? 1 : 0, 1);
+        }
+        else
+            P.eq("replay.kept", 0, 1);
+
+        // Through the seam: measure_output and compare replay it ("capture"), and say how closely it matches.
+        const juce::var capture = object({ { kInstrument ? "phrase" : "input", "capture" } });
+        const pg::ChatAgent::McpResult m = r.rec.chatAgent().mcpCall("measure_output", object({ { "scenario", capture } }));
+        const std::string mt = textOf(m);
+        std::printf("replay, measure_output:\n%s", mt.c_str());
+        P.eq("replay.measure_output", !m.isError && has(mt, "the user's recording, ") && has(mt, "its replay matches what played bit for bit") ? 1 : 0, 1);
+        const pg::ChatAgent::McpResult c = r.rec.chatAgent().mcpCall("compare", object({ { "a", "capture" }, { "b", "playing" } }));
+        const std::string ct = textOf(c);
+        std::printf("replay, compare:\n%s", ct.c_str());
+        P.eq("replay.compare_identical", !c.isError && has(ct, "Identical bits") ? 1 : 0, 1);
+        const juce::var part = object({ { kInstrument ? "phrase" : "input", "capture" }, { "from", 0.5 }, { "to", 1.0 } });
+        const pg::ChatAgent::McpResult w = r.rec.chatAgent().mcpCall("measure_output", object({ { "scenario", part } }));
+        const std::string wt = textOf(w);
+        std::printf("replay, a part: %s\n", wt.substr(0, wt.find("Played:")).c_str());
+        P.eq("replay.part", !w.isError && has(wt, "this part starts mid-take") && has(wt, " of its 1.49 s (from 0.4") ? 1 : 0, 1);
+        const pg::ChatAgent::McpResult bad = r.rec.chatAgent().mcpCall("measure_output", object({ { "scenario", object({ { "from", 0.5 } }) } }));
+        P.eq("replay.from_needs_capture", bad.isError && has(textOf(bad), "scenario.from") ? 1 : 0, 1);
+        const pg::ChatAgent::McpResult v = r.rec.chatAgent().mcpCall("view_sound", object({ { "scenario", capture } }));
+        P.eq("replay.view_sound", !v.isError && hasImage(v) && has(textOf(v), "the user's recording, ") ? 1 : 0, 1);
+        const std::string after = textOf(tool(r.rec, object({ { "action", "status" } })));
+        P.eq("replay.status_says", has(after, "Replay: matches what played bit for bit.") ? 1 : 0, 1);
+    }
+
+    // ---- RESTART ------------------------------------------------------------------------------------------------------
+    {
+        Rig r;
+        r.head.known = false;
+        const pg::ChatAgent::McpResult last = tool(r.rec, object({ { "action", "arm" }, { "restart", true } }));
+        P.eq("restart.needs_next", last.isError ? 1 : 0, 1);
+        // What plays first leaves its state: notes and the pedal, the mod wheel up (an effect: a sine); then quiet.
+        for (std::size_t k = 0; k < 60; ++k)
+        {
+            const int n = patternAt(k);
+            auto midi = k < 30 ? pedalPhrase(k, n) : std::vector<std::pair<int, juce::MidiMessage>>{};
+            if (kInstrument && k == 31 && n > 0)
+            {
+                midi.push_back({ 0, juce::MidiMessage::controllerEvent(1, 64, 0) });
+                midi.push_back({ 0, juce::MidiMessage::allNotesOff(1) });
+                midi.push_back({ 0, juce::MidiMessage::controllerEvent(1, 1, 90) });
+            }
+            r.block(n, [&](int ch, uint64_t i) { return !kInstrument && k < 30 ? sine(ch, i) : 0.0f; }, midi);
+        }
+        const pg::ChatAgent::McpResult a = tool(r.rec, object({ { "action", "arm" }, { "mode", "next" }, { "restart", true }, { "seconds", 1 } }));
+        const std::string waiting = textOf(tool(r.rec, object({ { "action", "status" } })));
+        std::printf("restart, arm: %s\nrestart, waiting: %s", textOf(a).c_str(), waiting.c_str());
+        P.eq("restart.armed", !a.isError && has(textOf(a), "restarts now") ? 1 : 0, 1);
+        P.eq("restart.waiting", has(waiting, "waiting for the program to restart") ? 1 : 0, 1);
+        r.rec.compiler().wait();                                // the fresh compile, offered to the Engine
+        r.rec.poll();                                           // and noted (its files, for the replay)
+        const std::size_t from = r.sizes.size() + 12;          // the swap's 20 ms over by then
+        uint64_t sound = ~uint64_t{ 0 };
+        for (std::size_t k = r.sizes.size(); r.pos < static_cast<uint64_t>(3.2 * kFs); ++k)
+        {
+            const int n = patternAt(k);
+            if (k == from)
+                sound = r.pos;
+            const auto midi = k >= from ? pedalPhrase(k - from, n) : std::vector<std::pair<int, juce::MidiMessage>>{};
+            r.block(n, [&](int ch, uint64_t i) { return !kInstrument && i >= sound ? sine(ch, i) : 0.0f; }, midi);
+        }
+        tool(r.rec, object({ { "action", "stop" } }));
+        const cap::Reply taken = r.rec.recorder().act(cap::Action::take, {});
+        const bool ok = taken.take != nullptr && !taken.take->blocks.empty();
+        if (ok)
+            std::printf("restart: from block %zu (the probe's %zu), %.4f s, started by %d, wheels at its start %.3f\n",
+                        static_cast<std::size_t>(std::find(r.starts.begin(), r.starts.end(), taken.take->clock) - r.starts.begin()), from,
+                        taken.take->seconds(), static_cast<int>(taken.take->start), static_cast<double>(taken.take->blocks.front().wheels[0]));
+        P.eq("restart.took", ok && taken.take->restarted && taken.take->start == (kInstrument ? cap::Start::note : cap::Start::sound)
+                                 && taken.take->clock == r.starts[from] ? 1 : 0, 1);
+        P.eq("restart.bits", ok && replaysBitForBit(*taken.take) ? 1 : 0, 1);
     }
 
     // ---- FREEZE ---------------------------------------------------------------------------------------------------------

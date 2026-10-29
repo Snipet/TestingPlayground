@@ -261,12 +261,14 @@ namespace playground
         scenario::Captured recording;
         if (a.capture || b.capture)
         {
-            if (!scenario::captured(host_, recording, why))
+            if (!scenario::captured(host_, recording, why, req.captureFrom, req.captureTo))
                 return done((a.capture ? "a" : "b") + std::string(" is the recording, but ") + why + ".", true);
             req.fromCapture = true;
         }
         if (!scenario::resolve(req, host_, why))
             return done(why, true);
+        if (a.capture || b.capture)
+            req.tailSeconds = 0.0f;                          // as long as the recording, no more
         const bool current = input.getProperty("dials", juce::var()).toString() == "current";
         measure::CompareSide A, B;
         const std::map<std::string, float> now = currentDials();
@@ -302,7 +304,7 @@ namespace playground
         if (a.playing || b.playing)
             out += "(\"playing\" is the running program's own code; once its dials hold still the plugin plays a frozen copy "
                    "whose last bits differ, which this does not render.)\n";
-        if (a.capture || b.capture)
+        if ((a.capture || b.capture) && rendered.title.find(recording.about) == std::string::npos)
             out += "(The recording: " + recording.about + ")\n";
         for (const std::string& line : c.lines)
             out += line + "\n";

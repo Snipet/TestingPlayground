@@ -1,6 +1,12 @@
 // Source/plugin/ChatCapture.cpp: the capture tool: see ChatCapture.h, and Capture.h for the recorder.
 #include "plugin/ChatCapture.h"
 
+#include "plugin/CaptureReplay.h"
+#include "plugin/SoundPicture.h"
+
+#include "dsp/Compare.h"
+#include "dsp/SoundView.h"
+
 #include "Product.h"
 
 #include <algorithm>
@@ -14,6 +20,7 @@ namespace playground
     {
         constexpr bool kInstrument = product::kIsInstrument;
         constexpr std::size_t kDialsShown = 6;              // dials named in the report (then "and N more")
+        constexpr std::size_t kSteps = 5;                   // the largest steps the report names
 
         __attribute__((format(printf, 1, 2))) std::string fmt(const char* f, ...)
         {
@@ -85,6 +92,44 @@ namespace playground
                  + ".\n";
         }
 
+        // A sound's spectrum in a line: its octave bands (dBFS of each band's RMS), its centroid, its stereo correlation.
+        std::string spectrumLine(const char* what, const capture::Spectrum& s, double rate)
+        {
+            if (s.silent)
+                return {};
+            std::string bands;
+            for (std::size_t b = 0; b < s.bandsDb.size(); ++b)
+            {
+                const double c = measure::Comparison::kBands[b];
+                if (c / std::sqrt(2.0) >= 0.5 * rate)
+                    break;
+                const std::string hz = c >= 1000.0 ? fmt("%.0fk", c / 1000.0) : fmt("%.0f", c);
+                bands += (bands.empty() ? "" : ", ") + hz + (s.bandsDb[b] <= -120.0 ? std::string(": <-120") : fmt(": %.0f", s.bandsDb[b]));
+            }
+            return std::string(what) + ": octave bands (Hz: dBFS) " + bands + fmt("; centroid %.0f Hz", s.centroidHz)
+                 + fmt("; left/right correlation %.2f.\n", s.correlation);
+        }
+
+        // The largest steps between two samples of what played, each with its nearest recorded moment.
+        std::string stepsLine(const capture::Take& t, const Controls& controls)
+        {
+            const std::vector<measure::Step> steps = measure::largestSteps(t.out[0], t.out[1], kSteps, t.rate);
+            if (steps.empty())
+                return "Largest steps: none (silent).\n";
+            capture::Replay plan;
+            std::string why;
+            measure::Timeline tl;
+            if (capture::replayOf(t, 0.0, -1.0, plan, why, false))
+                tl = capture::timelineOf(t, plan, controls);
+            std::string out;
+            for (const measure::Step& st : steps)
+                out += (out.empty() ? "" : "; ") + fmt("%.3f at %.3f s, ", st.size, static_cast<double>(st.at) / t.rate)
+                     + measure::nearestMark(tl, st.at, t.rate);
+            return std::string(steps.size() > 1 ? "Largest steps between two samples (a click is one far above the rest): "
+                                                : "Largest step between two samples: ")
+                 + out + ".\n";
+        }
+
         const char* startWords(capture::Start s)
         {
             switch (s)
@@ -115,6 +160,9 @@ namespace playground
                         return "Armed (" + mode + fmt("), but no audio has reached the plugin in the %.0f s since: the host may not "
                                                       "be running it (a track not playing or not record-armed, the Standalone's "
                                                       "audio off).\n", t.armedAgo);
+                    if (t.restartPending)
+                        return "Armed (" + mode + ", from a fresh start): waiting for the program to restart (its compile, "
+                               "then its 20 ms swap), then for " + waitWords() + ": nothing recorded yet.\n";
                     if (t.options.mode == capture::Mode::next)
                         return "Armed (" + mode + "), waiting for " + waitWords() + ": nothing recorded yet.\n";
                     return "Armed (" + mode + "): it records from the plugin's next block of audio.\n";
@@ -151,19 +199,25 @@ namespace playground
         juce::var props = claude::object({ { "action", choice({ "arm", "stop", "status", "forget" }, nullptr) },
                                            { "mode", choice({ "last", "next" }, nullptr) },
                                            { "seconds", prop("number", "At most 20 (default 10)") },
-                                           { "stop_on_alert", claude::object({ { "type", "boolean" } }) } });
+                                           { "stop_on_alert", claude::object({ { "type", "boolean" } }) },
+                                           { "restart", prop("boolean", "With next: start afresh (ask first)") },
+                                           { "picture", claude::object({ { "type", "boolean" } }) } });
         juce::var schema = claude::object({ { "type", "object" },
                                             { "properties", props },
                                             { "required", juce::Array<juce::var>{ "action" } } });
         const char* description =
             "Record what the user plays live, in the plugin's memory, and report it in numbers. Tell the user before "
             "arming; arm returns at once, then they play and you call stop.\n\n"
-            "Only numbers come back; the audio and MIDI stay in the plugin's memory until forget, the next arm or ten "
-            "minutes without a call. mode last (the default) records continuously and stop keeps the last `seconds`; "
-            "next waits for the next note-on (an effect: its input's first sound) or for the host to start playing, then "
-            "fills `seconds` once. stop_on_alert ends it 0.5 s after a NaN or a clip. status and stop are live; status "
-            "after stop reads the take again. While armed the program's own code plays, not its frozen copy, so the take "
-            "replays exactly; the CPU may rise a little.";
+            "Only numbers come back (picture: true adds view_sound's picture); the audio and MIDI stay in the plugin's "
+            "memory until forget, the next arm or ten minutes without a call. mode last (the default) records "
+            "continuously and stop keeps the last `seconds`; next waits for the next note-on (an effect: its input's first "
+            "sound) or for the host to start playing, then fills `seconds` once. restart (with next) runs the program "
+            "afresh first, so the take starts from a fresh state and replays bit for bit; it cuts what still sounds, so ask "
+            "the user first. stop_on_alert ends it 0.5 s after a NaN or a clip. status and stop are live (not with a "
+            "picture); status after stop reads the take again. The report ends with the largest steps, each named by its "
+            "nearest recorded moment, and how closely a replay matches what played; the take replays as a render's "
+            "scenario (CHECKING YOUR WORK). While armed the program's own code plays, not its frozen copy: the CPU may "
+            "rise a little.";
         return claude::object({ { "name", "capture" },
                                 { "description", description },
                                 { "eager_input_streaming", true },
@@ -308,16 +362,23 @@ namespace playground
                    "loaded).\n",
                    static_cast<double>(s.worstLoad) * 100.0, s.worstAt, static_cast<double>(s.medianLoad) * 100.0);
 
-        // The levels.
+        // The levels and the spectra, the largest steps, the replay.
         if (t.input)
+        {
             out += levelsLine("In", s.in);
+            out += spectrumLine("In", capture::spectrumOf(t.in[0], t.in[1], t.rate), t.rate);
+        }
         out += levelsLine(t.input ? "Out (the program's, before the bypass)" : "Out", s.out);
+        out += spectrumLine("Out", capture::spectrumOf(t.out[0], t.out[1], t.rate), t.rate);
+        out += stepsLine(t, controls);
+        if (r.state == capture::State::kept || r.state == capture::State::ended)
+            out += (r.replay.empty() ? capture::forecast(t) : r.replay) + "\n";
         out += "It stays in the plugin's memory (" + megabytes(r.bytes) + "), never on disk or sent; capture forget frees it.\n";
         return out;
     }
 
     std::string captureToolText(ChatHost& host, const juce::var& input, bool& isError,
-                                const std::function<void(std::string)>& note)
+                                const std::function<void(std::string)>& note, std::shared_ptr<const capture::Take>* taken)
     {
         const std::string action = input.getProperty("action", juce::var()).toString().toStdString();
         capture::Options o;
@@ -332,6 +393,12 @@ namespace playground
         if (const juce::var v = input.getProperty("seconds", juce::var()); v.isDouble() || v.isInt() || v.isInt64())
             o.seconds = std::clamp(static_cast<double>(v), capture::kMinSeconds, capture::kMaxSeconds);
         o.stopOnAlert = static_cast<bool>(input.getProperty("stop_on_alert", false));
+        o.restart = static_cast<bool>(input.getProperty("restart", false));
+        if (o.restart && o.mode != capture::Mode::next)
+        {
+            isError = true;
+            return "restart goes with mode next (the take then starts on the program's fresh state).";
+        }
 
         if (action == "arm")
         {
@@ -344,13 +411,17 @@ namespace playground
             }
             const std::string what = o.mode == capture::Mode::last
                                        ? fmt("recording what plays from now on (mode last: stop keeps the last %.0f s)", o.seconds)
-                                       : fmt("the recording starts at %s and fills %.0f s once (mode next)", waitWords(), o.seconds);
+                                       : o.restart ? fmt("the program restarts now (what still sounds is cut), and the recording starts "
+                                                         "at %s after that and fills %.0f s once (mode next, from a fresh state)",
+                                                         waitWords(), o.seconds)
+                                                   : fmt("the recording starts at %s and fills %.0f s once (mode next)", waitWords(), o.seconds);
             note(fmt("started recording what plays (%.0f s; it stays in the plugin's memory)", o.seconds));
             return "Armed (live): " + what + (o.stopOnAlert ? ", ending half a second after the first alert" : "")
                  + ". Tell the user it is recording, ask them to play the passage, then call capture stop when they say it is "
                    "done (status shows how far it has got). The audio and MIDI stay in the plugin's memory (about "
                  + megabytes(r.bytes) + "), never on disk or sent; capture forget frees them. Until it stops the program's own "
-                   "code plays rather than its frozen copy, so the take replays exactly: the CPU load may rise a little.\n";
+                   "code plays rather than its frozen copy, so that a replay of the take can match it: the CPU load may rise "
+                   "a little.\n";
         }
         if (action == "forget")
         {
@@ -374,11 +445,84 @@ namespace playground
                                         : "no audio reached the plugin while it was armed")
                      + ", so nothing was recorded. Arm again when the user is ready.\n";
             }
+            if (taken != nullptr)
+                *taken = r.take;
             return captureReport(r, host.chatDials());
         }
         if (action == "status")
-            return captureReport(host.chatCapture(capture::Action::status, o), host.chatDials());
+        {
+            const capture::Reply r = host.chatCapture(capture::Action::status, o);
+            if (taken != nullptr)
+                *taken = r.take;
+            return captureReport(r, host.chatDials());
+        }
         isError = true;
         return "action is arm, stop, status or forget.";
+    }
+}
+
+namespace playground
+{
+    // The tool's run (runTool): its words (captureToolText), and for picture (stop or status, not live: mcpLive) the take
+    // drawn as view_sound draws a render (SoundPicture.h), its close-up at its largest step, with a thumbnail in the chat.
+    juce::var ChatAgent::captureTool(const juce::var& use)
+    {
+        const juce::var input = use.getProperty("input", juce::var());
+        const bool picture = static_cast<bool>(input.getProperty("picture", false));
+        const auto note = [this](std::string t) {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            addEntry(ChatEntry::Kind::tool, std::move(t));
+        };
+        bool isError = false;
+        std::shared_ptr<const capture::Take> take;
+        const std::string text = captureToolText(host_, input, isError, note, picture ? &take : nullptr);
+        juce::var block = claude::object({ { "type", "tool_result" }, { "tool_use_id", use.getProperty("id", "") } });
+        if (!picture || isError || take == nullptr || take->samples() == 0)
+        {
+            block.getDynamicObject()->setProperty("content", juce::String::fromUTF8(text.c_str()));
+            if (isError)
+                block.getDynamicObject()->setProperty("is_error", true);
+            return block;
+        }
+        setActivity("Drawing the recording");
+        const capture::Take& t = *take;
+        measure::ViewRequest shape = soundpicture::request();
+        if (const auto steps = measure::largestSteps(t.out[0], t.out[1], 1, t.rate); !steps.empty())
+        {
+            const double at = static_cast<double>(steps.front().at) / t.rate;
+            shape.from = static_cast<float>(std::max(0.0, at - 0.005));
+            shape.to = static_cast<float>(std::min(t.seconds(), at + 0.005));
+        }
+        measure::View v = measure::analyse(t.out[0], t.out[1], t.rate, -1.0, shape);
+        v.title = fmt("The recording: %.2f s at %.0f Hz, what played (live)", t.seconds(), t.rate)
+                + (t.input ? std::string(", its input as it came") : std::string()) + "; the close-up at its largest step";
+        const Controls controls = host_.chatDials();
+        for (int c = 0; c < kMaxControls; ++c)
+            if (const Control& k = controls[static_cast<std::size_t>(c)]; k.used)
+                v.dials += (v.dials.empty() ? "" : ", ") + std::string(k.name) + " "
+                         + dialValue(k, t.blocks.front().dials[static_cast<std::size_t>(c)]);
+        if (v.dials.empty())
+            v.dials = "none";
+        for (const capture::Block& b : t.blocks)
+            v.alerts |= (b.nonFinite > 0 ? Engine::nonFinite : 0u) | (b.clipped > 0 ? Engine::clipped : 0u);
+        const soundpicture::Drawn d = soundpicture::draw(v);
+        // Its words are a render's: this is what played.
+        std::string about = d.about;
+        const std::string rendered = "A picture of the program's sound, rendered offline from the editor's files (nothing that "
+                                     "plays changed): ";
+        if (about.rfind(rendered, 0) == 0)
+            about = "A picture of the recording (what played, live; nothing changed): " + about.substr(rendered.size());
+        juce::Array<juce::var> content;
+        content.add(claude::object({ { "type", "image" },
+                                     { "source", claude::object({ { "type", "base64" },
+                                                                  { "media_type", "image/png" },
+                                                                  { "data", juce::Base64::toBase64(d.png.data(), d.png.size()) } }) } }));
+        content.add(claude::object({ { "type", "text" }, { "text", juce::String::fromUTF8((text + about).c_str()) } }));
+        block.getDynamicObject()->setProperty("content", content);
+        const std::lock_guard<std::mutex> lock(mutex_);
+        addEntry(ChatEntry::Kind::tool, "looked at the recording");
+        entries_.back().pictures.push_back(d.thumb);
+        touch();
+        return block;
     }
 }

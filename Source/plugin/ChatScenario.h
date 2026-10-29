@@ -10,7 +10,8 @@
 //     wheels:   [{wheel: mod | bend | pressure | sustain, at, value}] (at most 64),
 //     host:     {bpm, stop_at, jump_to_beat, jump_at},
 //     rate:     a number (8000 to 192000) or "host",   block: 1 to 8192 or "host",
-//     input:    sweep | noise | impulse | sine | silence | "capture" (an effect's) }
+//     input:    sweep | noise | impulse | sine | silence | "capture" (an effect's),
+//     from, to: with "capture", the part of the recording replayed, in seconds of it }
 //
 // read() parses it into a measure::Request (Measure.h), "host" and "capture" as flags; resolve() fills those in from
 // the plugin just before a render (the host's rate and block from ChatHost; the user's last recording through
@@ -63,16 +64,17 @@ namespace playground::scenario
 
     // ---- the recording (the capture lane's seam) --------------------------------------------------------------------
     // What the user played, recorded in the processor per host block (the events, the dials' values, the transport,
-    // the input and the output), as a render: `request` replays it (its rate, its blocks, its MIDI by sample, its dials
-    // as DialMoves over 0 s at each block that changed them, its transport, an effect's input), `l` and `r` are what
-    // played. ChatCaptured.cpp: the capture lane fills it in.
+    // the input and the output), as a render: `request` replays it (its rate, its blocks and the processor's parts, its
+    // MIDI by sample, its dials as the processor sent them (Request::frames), its transport, the Engine's clock, an
+    // effect's input; plugin/CaptureReplay.h), `l` and `r` are what played. ChatCaptured.cpp.
     struct Captured
     {
         measure::Request request;
         std::vector<float> l, r;
         std::string about;                        // a line: when, how long, the rate, what it holds
     };
-    // The last recording; false with why ("nothing recorded yet: ...") when there is none. The one function the
-    // sources "capture" (scenario's phrase and input, compare's a and b, trace's source) go through.
-    bool captured(ChatHost& host, Captured& out, std::string& why);
+    // The last recording (its part from..to, in seconds; to < 0: to its end, on its host blocks); false with why
+    // ("nothing recorded yet: ...") when there is none. The one function the sources "capture" (scenario's phrase and
+    // input, compare's a and b, trace's source) go through. `about` says how closely a replay of it gives what played.
+    bool captured(ChatHost& host, Captured& out, std::string& why, double from = 0.0, double to = -1.0);
 }
