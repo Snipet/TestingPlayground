@@ -17,9 +17,15 @@
 //   gui.dump.projects.png PROJECTS: three projects, another than the open one chosen, its older version chosen
 //   gui.dump.export.png  EXPORT: a project's info typed and chosen
 //   gui.dump.frozen.png  the frozen copy playing: the snowflake left of the load in the top bar; .frozen.paper.png
+//   gui.dump.1x.png      the default program at 1x (a screen that is not Retina): the top bar's mark hinted for it
 // and checks:
 //   FRAME     the frame settles, every glyph is in the font, the editor shows the processor's draft (the first
 //             example), and the dials are the program's parameters: one for each, the rest not shown
+//   MARK      the top bar's mark (editor/LogoMark.h, the product's kind's) at 2x and at 1x: drawn under kLogoTag, a
+//             capsule for each piece of its two polylines, the wave and the caret; hinted for the scale: the caret's
+//             stem upright with its edges on whole device px, the crest's top and the trough's bottom on whole device
+//             px; the effect's floor at least 3 px long, flat (points along it at the trough's depth), the
+//             instrument's trough one point
 //   TYPE      typed keys go to the editor, which has the caret when the panel opens; the processor's draft follows
 //             the text; the status says the text is edited
 //   RUN       Cmd-Return runs the text: the processor plays it, the status says it runs
@@ -86,6 +92,7 @@
 #include "Probe.h"
 
 #include "editor/DisplayItem.h"
+#include "editor/LogoMark.h"
 #include "editor/Panel.h"
 #include "plugin/ProjectStore.h"
 #include "fminus/Random.h"
@@ -347,6 +354,47 @@ PROBE(gui, dump)
             dials += panel.centreOfDial(c).has_value() ? 1 : 0;
         P.eq(tag + ".dials_are_params", dials, params);
         writePng(P, host, theme == 0 ? "gui.dump.png" : "gui.dump.paper.png", tag);
+    }
+
+    // MARK, at 2x and at 1x.
+    for (const float dpi : { 2.0f, 1.0f })
+    {
+        const std::string tag = dpi > 1.5f ? "mark.2x" : "mark.1x";
+        funkgui::UiPreferences::get().setTheme(0);
+        pg::ui::Panel panel(processor.ports(), port);
+        funkgui::HeadlessHost host(panel, 0, dpi);
+        host.settle();
+        const funkgui::PrimList& frame = host.draw();
+        const pg::ui::logo::Mark& m = pg::ui::logo::mark(pg::product::kIsInstrument, dpi);
+        const pg::ui::logo::Line& wave = m.wave;
+        const pg::ui::logo::Line& caret = m.caret;
+        P.eq(tag + ".prims", countTag(frame, pg::ui::kLogoTag), wave.n - 1 + caret.n - 1);   // a capsule a piece
+        const auto whole = [dpi](float x) { return std::fabs(x * dpi - std::round(x * dpi)) < 1e-3f ? 1 : 0; };
+        P.eq(tag + ".stem_upright", caret.xs[0] == caret.xs[caret.n - 1] ? 1 : 0, 1);
+        P.eq(tag + ".stem_left_whole", whole(caret.xs[0] - 0.5f * caret.width), 1);
+        P.eq(tag + ".stem_right_whole", whole(caret.xs[0] + 0.5f * caret.width), 1);
+        const float top = *std::min_element(wave.ys, wave.ys + wave.n);
+        const float bottom = *std::max_element(wave.ys, wave.ys + wave.n);
+        P.eq(tag + ".crest_top_whole", whole(top - 0.5f * wave.width), 1);
+        P.eq(tag + ".trough_bottom_whole", whole(bottom + 0.5f * wave.width), 1);
+        float floorL = 1e9f, floorR = -1e9f;
+        int deepest = 0;
+        for (int k = 0; k < wave.n; ++k)
+            if (wave.ys[k] > bottom - 1e-4f)
+            {
+                floorL = std::min(floorL, wave.xs[k]);
+                floorR = std::max(floorR, wave.xs[k]);
+                ++deepest;
+            }
+        if constexpr (pg::product::kIsInstrument)
+            P.eq(tag + ".trough_points", deepest, 1);
+        else
+        {
+            P.ge(tag + ".floor_points", deepest, 2);
+            P.ge(tag + ".floor_px", (floorR - floorL) * dpi, 3.0);
+        }
+        if (dpi < 1.5f)
+            writePng(P, host, "gui.dump.1x.png", tag);
     }
 
     funkgui::UiPreferences::get().setTheme(0);

@@ -140,6 +140,7 @@ namespace playground::ui
     inline constexpr funkgui::Tag kFrozenTag = funkgui::tags::firstProduct + 11;      // the top bar's snowflake
     inline constexpr funkgui::Tag kSettingsTag = funkgui::tags::firstProduct + 12;    // SETTINGS' card
     inline constexpr funkgui::Tag kMutedTag = funkgui::tags::firstProduct + 13;       // the muted input's notice
+    inline constexpr funkgui::Tag kLogoTag = funkgui::tags::firstProduct + 14;        // the top bar's mark (LogoMark.h)
 
     // One message of the last run, as the problems list shows it.
     struct Problem
