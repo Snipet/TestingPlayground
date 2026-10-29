@@ -31,10 +31,11 @@
 // when it is full.
 //
 // The frozen copy (Engine.h): while a recording is armed the program's own code plays (Engine::setOwnCode, through the
-// hook the processor gives: the copy playing is dropped at the next block, none is taken, the freezer waits), since the
-// copy's Math::Fast is not the program's bits and a replay of it would not match. The cost: the plugin's CPU while armed
-// is the program's own, flat calls (what it costs while its dials move, less the glides), usually a little more than
-// the copy's; the freezer comes back when the recording ends (stop, forget, full, ten minutes without a call).
+// hook the processor gives: the copy playing is dropped at the next block, none is taken, the freezer waits), so that
+// a replay matches what played by construction: the copy plays the program's bits too (the program's own math, its
+// dials folded, Patch.h), but by a second compile, which a recording need not lean on. The cost: the plugin's CPU while
+// armed is the program's own, flat calls (what it costs while its dials move, less the glides), usually a little more
+// than the copy's; the freezer comes back when the recording ends (stop, forget, full, ten minutes without a call).
 //
 // Threads. act() and housekeep() and noteProgram(): any thread but the audio thread, under the recorder's mutex. The
 // audio thread: prepare (while it is stopped), begin, input, output, event, end; no allocation, lock or syscall,

@@ -16,6 +16,7 @@
 //   gui.dump.random.png  a program RANDOM made, running
 //   gui.dump.projects.png PROJECTS: three projects, another than the open one chosen, its older version chosen
 //   gui.dump.export.png  EXPORT: a project's info typed and chosen
+//   gui.dump.frozen.png  the frozen copy playing: the snowflake left of the load in the top bar; .frozen.paper.png
 // and checks:
 //   FRAME     the frame settles, every glyph is in the font, the editor shows the processor's draft (the first
 //             example), and the dials are the program's parameters: one for each, the rest not shown
@@ -79,6 +80,9 @@
 //             takes a description, an author, tags, a category and genres, asks where (a save chooser), writes the
 //             package and keeps the info; Import... (an open chooser) adds it as a project of its own, chosen
 //   KEYS      Escape leaves the editor, after which Tab moves the focus ring (and no key reaches the text)
+//   FROZEN    blocks played with no dial moving until the frozen copy plays (one wait; the freezer's delay a quarter
+//             second): the top bar shows the snowflake (drawn, left of the load, clear of the CODE / PANEL switch, its
+//             accessibility title saying what it means) and its load's text no longer says FROZEN
 #include "Probe.h"
 
 #include "editor/DisplayItem.h"
@@ -1309,6 +1313,67 @@ PROBE(gui, dump)
         const std::string text = editor.text();
         host.keys("tab,x");
         P.eq("keys.text_untouched", editor.text() == text ? 1 : 0, 1);
+        host.keys("escape");                                      // the focus ring off again
+    }
+
+    // FROZEN: blocks with no dial moving until the frozen copy plays (the freezer's delay a quarter second here, as
+    // plugin.process has it), then a frame: the snowflake left of the load, the word gone.
+    {
+        constexpr bool kInstrument = pg::product::kIsInstrument;
+        constexpr double kRate = 48000.0;
+        constexpr int kBlock = 256;
+        processor.compiler().setFreezing(true, 0.25);
+        processor.prepareToPlay(kRate, kBlock);
+        juce::AudioBuffer<float> buffer(2, kBlock);
+        double phase = 0.0;
+        for (int k = 0; k < 400 && !processor.engine().frozen(); ++k)
+        {
+            juce::MidiBuffer midi;
+            if (kInstrument && k == 0)
+                midi.addEvent(juce::MidiMessage::noteOn(1, 57, static_cast<juce::uint8>(100)), 0);
+            for (int i = 0; i < kBlock; ++i)
+            {
+                const float v = kInstrument ? 0.0f : static_cast<float>(0.25 * std::sin(phase));
+                phase += 2.0 * 3.14159265358979 * 440.0 / kRate;
+                buffer.setSample(0, i, v);
+                buffer.setSample(1, i, v);
+            }
+            processor.processBlock(buffer, midi);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        P.eq("frozen.plays", processor.engine().frozen() ? 1 : 0, 1);
+        host.tick(2);
+        host.settle();
+        std::printf("meter: %s\n", panel.meterText().c_str());
+        P.eq("frozen.snowflake_shown", panel.frozenShown() ? 1 : 0, 1);
+        P.eq("frozen.no_word", panel.meterText().find("FROZEN") == std::string::npos ? 1 : 0, 1);
+        P.eq("frozen.load_shown", panel.meterText().find("CPU ") != std::string::npos ? 1 : 0, 1);
+        const funkgui::PrimList& frame = host.draw();
+        P.ge("frozen.snowflake_drawn", countTag(frame, pg::ui::kFrozenTag), 9.0);   // three strokes and six Vs
+        P.eq("frozen.missing_glyphs", static_cast<int64_t>(frame.missingGlyphs), 0);
+        // Left of the load's text and clear of the CODE / PANEL switch (its track 3 px past the PANEL half); its title
+        // says what it means.
+        const funkgui::Point flake = panel.centreOfFrozen();
+        P.ge("frozen.clear_of_switch", static_cast<double>(flake.x) - 9.0, static_cast<double>(panel.centreOfView(true).x) + 42.0 + 3.0);
+        bool titled = false;
+        std::vector<funkgui::A11yItem> items;
+        panel.accessibility(items);
+        for (const funkgui::A11yItem& it : items)
+            titled = titled || (it.bounds.contains(flake) && it.title == "Frozen: the dials are compiled into the code while they hold still");
+        P.eq("frozen.a11y_title", titled ? 1 : 0, 1);
+        writePng(P, host, "gui.dump.frozen.png", "frozen");
+        {
+            // The same in PAPER: a Panel of its own on the copy that still plays.
+            funkgui::UiPreferences::get().setTheme(1);
+            pg::ui::Panel paper(processor.ports(), port);
+            funkgui::HeadlessHost paperHost(paper, 1, 2.0f);
+            paperHost.setZoom({ 100, 125, 150, 200 }, 100);
+            paperHost.settle();
+            P.eq("frozen.paper_shown", paper.frozenShown() ? 1 : 0, 1);
+            writePng(P, paperHost, "gui.dump.frozen.paper.png", "frozen.paper");
+            funkgui::UiPreferences::get().setTheme(0);
+        }
+        processor.compiler().setFreezing(true);                  // back to its own delay
     }
     return P.finish();
 }

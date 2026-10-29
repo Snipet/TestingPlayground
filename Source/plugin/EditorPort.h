@@ -53,12 +53,15 @@
 //                     not opened
 //   chat()            the chat with Claude (ChatPort.h)
 //   windowButtons()   the Standalone's own window: its buttons over the top bar, their place, its drag (below)
+//   devices()         the Standalone's audio and MIDI devices (DevicePort.h), for the settings card; null in a host
+//   settingsAsked()   bumps each time the Standalone asks for the settings card (its menu's Settings..., Cmd-,)
 #pragma once
 
 #include <cctype>
 #include <string_view>
 
 #include "plugin/ChatPort.h"
+#include "plugin/DevicePort.h"
 
 #include "dsp/Compiler.h"
 #include "dsp/Controls.h"
@@ -80,19 +83,29 @@ namespace playground
     class EditorPort;
 
     // A picture of the editor, for the chat's view_panel tool: a Panel of its own over the processor's ports and its
-    // EditorPort, laid out at the editor's size and drawn headless (FunkGui's SoftRaster: a shader as a placeholder),
-    // as PNG bytes. `window`: the whole editor as the user has it; else the program's panel in the PANEL view, cropped
-    // to it. `page`: a tabs element's page to show, by its title ("" for the user's). The view, the chat's fold and
-    // the pages the user has stay as they were. Message thread only. Defined in Source/editor/Picture.cpp.
+    // EditorPort, laid out at the editor's size and drawn headless on the GPU, shaders as the screen draws them
+    // (editor/Picture.h; where the GPU cannot, with SoftRaster, a shader as a striped placeholder, and `about` says so
+    // and why), as PNG bytes. `window`: the whole editor as the user has it; else the program's panel in the PANEL
+    // view, cropped to it. `page`: a tabs element's page to show, by its title ("" for the user's). The view, the chat's
+    // fold and the pages the user has stay as they were. Message thread only. Defined in Source/editor/Picture.cpp.
     struct PanelPicture
     {
         std::string png;                         // the PNG's bytes ("" when it could not be made: `why`)
         int width = 0, height = 0;               // its pixels
-        std::string about;                       // what it shows (the view, its size, the pages there are)
+        std::string about;                       // what it shows (the view, its size, the pages there are, the shaders)
         std::string why;
+        bool gpu = false;                        // drawn by the GPU; false: SoftRaster (`about` says why)
     };
     PanelPicture picturePanel(std::span<funkgui::ParamPort* const> ports, EditorPort& port, int width, int height,
                               bool window, const std::string& page);
+
+    // The pictures' GPU context. With no editor open in the process, a picture starts bgfx headless and FunkGui holds
+    // it for the next (funkgui/gpu/GpuPicture.h, "The context"). A plugin lives in its host's process, so the hold is
+    // let go once no picture has been drawn for `seconds` (kPictureHoldSeconds: a burst of pictures, as Claude Desktop
+    // takes a page after a page, starts bgfx once, and none is kept for longer). The processor's timer calls it
+    // (message thread only); nothing to do while nothing is held. Defined in Source/editor/Picture.cpp.
+    inline constexpr double kPictureHoldSeconds = 10.0;
+    void picturesIdle(double seconds = kPictureHoldSeconds);
     // The editor's files, a tab each (the first the program), and the tab it shows.
     struct Draft
     {
@@ -266,5 +279,16 @@ namespace playground
         virtual WindowButtons windowButtons() const { return {}; }
         virtual void placeWindowButtons(float x, float middle) { (void)x; (void)middle; }
         virtual void dragWindow(int clicks) { (void)clicks; }
+
+        // The Standalone's audio and MIDI settings, a card of the editor's own (editor/SettingsCard.h) in place of JUCE's
+        // dialog. In a host's window there are none: devices() is null (no card, no muted notice) and settingsAsked()
+        // never moves.
+        //   devices()        the devices, the choices and the actions (DevicePort.h); the window hands it over with its
+        //                    buttons (Processor::WindowHooks), so ask again rather than keep it
+        //   settingsAsked()  a count the app raises each time it asks for the card (Settings... in its menu, Cmd-,): the
+        //                    editor opens the card when the count moves (a Panel polls it, starting from the count it
+        //                    found when it was made)
+        virtual DevicePort* devices() { return nullptr; }
+        virtual uint64_t settingsAsked() const { return 0; }
     };
 }

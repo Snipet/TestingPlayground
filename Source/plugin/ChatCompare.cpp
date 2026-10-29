@@ -308,7 +308,7 @@ namespace playground
              + (req.blocks.empty() ? std::to_string(req.block) : std::string("the recording's sizes")) + ".\n";
         if (a.playing || b.playing)
             out += "(\"playing\" is the running program's own code; once its dials hold still the plugin plays a frozen copy "
-                   "whose last bits differ, which this does not render.)\n";
+                   "of the same bits, which this does not render.)\n";
         if ((a.capture || b.capture) && rendered.title.find(recording.about) == std::string::npos)
             out += "(The recording: " + recording.about + ")\n";
         for (const std::string& line : c.lines)
