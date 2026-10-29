@@ -14,7 +14,7 @@
 //            thinking, each with its levels
 //   REQUEST  each request has the model, max_tokens (the model's own limit, from /v1/models), stream, adaptive
 //            thinking (summarized), the effort, the system prompt cached for an hour, the automatic cache breakpoint,
-//            the sixteen tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
+//            the seventeen tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
 //            and instructions) with their beta headers for a model that takes them, the API version and the key, and
 //            no temperature, top_p or top_k; it goes to api.anthropic.com with no other credential; the first message
 //            carries the plugin's state; the history is append-only
@@ -42,6 +42,11 @@
 //   FALLBACK a fallback block: a note; in the history the blocks before it keep only their text and it is dropped
 //   CONTEXT  the plugin's state names a file Claude has seen (as it wrote it) without its text; a file the user edited
 //            goes with its text; when nothing changed no state goes at all
+//   SEEN     the chat's Claude and Claude Desktop (MCP) keep their own records of the files they saw: a file Claude
+//            Desktop wrote, and one it read after the user edited it, go to the chat with their text (the chat's Claude
+//            never saw them); a file the chat's Claude wrote is new to Claude Desktop: get_status since shows the plugin's
+//            own chat editing it, and the lines it added since the token (what Claude Desktop read before it is no
+//            change); with the next token, nothing
 //   MEASURE  measure_output through the agent: its result is the render's report, with the dials asked for
 //   VIEW     view_panel through the agent: its result a PNG of the panel (and one of the whole editor) and a line of
 //            what it shows, drawn on the message thread; the user's view stays; the saved session keeps no picture
@@ -523,8 +528,8 @@ PROBE(plugin, chat)
         int eager = 0;
         for (const auto& t : tools)
             eager += static_cast<bool>(t.getProperty("eager_input_streaming", false)) ? 1 : 0;
-        P.eq("request.tools", tools.size(), 16);
-        P.eq("request.tools_eager", eager, 16);
+        P.eq("request.tools", tools.size(), 17);
+        P.eq("request.tools_eager", eager, 17);
         bool libraryEnum = false;
         for (const auto& t : tools)
             if (str(t, "name") == "add_library_file")
@@ -879,6 +884,46 @@ PROBE(plugin, chat)
         agent.send("again?");
         agent.waitIdle();
         P.eq("context.nothing_changed_nothing_sent", lastState().empty() ? 1 : 0, 1);
+
+        // ---- SEEN ----------------------------------------------------------------------------------------------------
+        const auto firstText = [](const pg::ChatAgent::McpResult& r) {
+            const juce::Array<juce::var> c = arr(r.content);
+            std::string all;
+            for (const auto& b : c)
+                all += str(b, "text") + "\n";
+            return all;
+        };
+        const auto tokenOf = [](const std::string& status) {
+            const std::size_t at = status.rfind("Token: ");
+            return at == std::string::npos ? std::string() : status.substr(at + 7, status.find(' ', at + 7) - at - 7);
+        };
+        const std::string desktops = processor.editorPort().draft().files[0].text + "// Claude Desktop's\n";
+        const pg::ChatAgent::McpResult wrote = agent.mcpCall("write_file", input({ { "name", "program.fm" }, { "content", juce::String(desktops) } }));
+        script->add(fake::Response::ok(fake::Sse().start().text("Seen.").end()));
+        agent.send("what changed?");
+        agent.waitIdle();
+        P.eq("seen.desktop_write_goes_to_the_chat", !wrote.isError && has(lastState(), "// Claude Desktop's") ? 1 : 0, 1);
+        d = processor.editorPort().draft();
+        d.files[0].text += "// the user's second\n";
+        processor.editorPort().setDraft(d);
+        const pg::ChatAgent::McpResult read = agent.mcpCall("read_file", input({ { "name", "program.fm" } }));
+        script->add(fake::Response::ok(fake::Sse().start().text("Seen again.").end()));
+        agent.send("and this?");
+        agent.waitIdle();
+        P.eq("seen.desktop_read_goes_to_the_chat", has(firstText(read), "// the user's second") && has(lastState(), "// the user's second") ? 1 : 0, 1);
+        // Claude Desktop's own record: what it read is no change; the chat's write is.
+        const std::string token = tokenOf(firstText(agent.mcpCall("get_status", input({}))));
+        const std::string chats = d.files[0].text + "// the chat's own\n";
+        script->add(fake::Response::ok(fake::Sse().start().tool("toolu_seen", "write_file", input({ { "name", "program.fm" }, { "content", juce::String(chats) } })).end("tool_use")));
+        script->add(fake::Response::ok(fake::Sse().start().text("Added.").end()));
+        agent.send("add a line");
+        agent.waitIdle();
+        const std::string since = firstText(agent.mcpCall("get_status", input({ { "since", juce::String(token) } })));
+        std::printf("get_status since, after the chat's write:\n%s", since.c_str());
+        P.eq("seen.chat_write_new_to_desktop", !token.empty() && has(since, "the plugin's own chat edited program.fm")
+                                                   && has(since, "+// the chat's own") && !has(since, "+// the user's second") ? 1 : 0, 1);
+        const std::string after = firstText(agent.mcpCall("get_status", input({ { "since", juce::String(tokenOf(since)) } })));
+        P.eq("seen.then_as_desktop_saw_it", has(after, "Nothing changed since your last look") && has(after, "The files are as they were at that token") ? 1 : 0, 1);
     }
 
     // ---- MEASURE -------------------------------------------------------------------------------------------------------
@@ -1609,7 +1654,7 @@ PROBE(plugin, chat)
         int at = script->postCount();
         agent.send("hello");
         agent.waitIdle();
-        P.eq("web.off_no_tools", toolsOf(at).size() == 16 && webTool(at, "web_search").isVoid() ? 1 : 0, 1);
+        P.eq("web.off_no_tools", toolsOf(at).size() == 17 && webTool(at, "web_search").isVoid() ? 1 : 0, 1);
         agent.setWeb(true);
         P.eq("web.on", agent.chatState().web ? 1 : 0, 1);
         const juce::var result = input({ { "type", "web_search_tool_result" },
@@ -1648,7 +1693,7 @@ PROBE(plugin, chat)
         agent.waitIdle();
         {
             const juce::var search = webTool(at, "web_search"), fetch = webTool(at, "web_fetch");
-            P.eq("web.tools", toolsOf(at).size() == 18 && str(search, "type") == "web_search_20260209"
+            P.eq("web.tools", toolsOf(at).size() == 19 && str(search, "type") == "web_search_20260209"
                                   && static_cast<int>(search.getProperty("max_uses", 0)) == 5
                                   && str(fetch, "type") == "web_fetch_20260209"
                                   && static_cast<int>(fetch.getProperty("max_content_tokens", 0)) > 0

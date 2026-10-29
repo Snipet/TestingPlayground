@@ -18,6 +18,15 @@
 //           have a reader, as a panel is): with none the levels read 0 and the scope stands still while the fields
 //           and the frame go on; a reader back, the next block's levels are its own (its peak and RMS, not smoothed up
 //           from 0), and the scope holds that block, silence before it
+//   LISTEN  what a tool that listens reads besides (Meters' second part, Engine::blocks): the samples counted; the host's
+//           transport as the Engine follows it (known, 90 BPM, 3/4, playing, the position at the last block's first
+//           sample); a block a ring entry, oldest first, each with its length, a finite share above 0 and the metering
+//           flag, the next read starting where this one ended; a block whose dial glides flagged moving, a still one
+//           not; the output guard's block flagged. An instrument's: three note-ons counted (the last's key and
+//           velocity), the keys held as bits and a count, the voices sounding, one held by the pedal after its key
+//           went up, none released or fading; a new program starting the held keys again counts no note-on, and the
+//           old program's voices fade; a seventeenth note steals one (fading at the block's end); a voice gone
+//           non-finite dropped, counted, with its key and its sample, its block flagged. An effect's: no notes, no voices
 #include "Probe.h"
 
 #include "Rig.h"
@@ -239,6 +248,158 @@ PROBE(dsp, meters)
         for (std::size_t i = 0; i < static_cast<std::size_t>(kBlock); ++i)
             theBlock = theBlock && after[512 - static_cast<std::size_t>(kBlock) + i] == 0.5f * (block.l[i] + block.r[i]);
         P.eq("readers.back_scope_silence_then_the_block", silentBefore && theBlock ? 1 : 0, 1);
+    }
+
+    // LISTEN
+    {
+        pg::Transport t;
+        t.known = true;
+        t.bpm = 90.0;
+        t.beat = 4.0;
+        t.barStart = 3.0;
+        t.beatsPerBar = 3;
+        t.beatUnit = 4;
+        t.playing = true;
+        rig.engine().setTransport(t);
+        std::vector<pg::BlockStat> stats(static_cast<std::size_t>(pg::Engine::kBlockRing));
+        uint64_t from = 0;
+        rig.engine().blocks(0, stats.data(), pg::Engine::kBlockRing, from);   // where the ring is now
+        pg::Meters before;
+        rig.engine().meters(before);
+        const std::size_t len = static_cast<std::size_t>(kBlock) * 4;
+        std::vector<probe::Note> played;
+        if constexpr (kInstrument)
+            played = { { 0, pg::EventKind::allNotesOff, 0, 0.0f },
+                       { static_cast<std::size_t>(kBlock), pg::EventKind::noteOn, 60, 0.5f },
+                       { static_cast<std::size_t>(kBlock), pg::EventKind::noteOn, 64, 0.25f },
+                       { static_cast<std::size_t>(kBlock), pg::EventKind::controller, 64, 1.0f },   // the pedal down
+                       { static_cast<std::size_t>(kBlock), pg::EventKind::noteOn, 67, 0.75f },
+                       { static_cast<std::size_t>(kBlock) * 2, pg::EventKind::noteOff, 64, 0.0f } };
+        rig.run(probe::Stereo(len), kBlock, played);
+        rig.engine().meters(m);
+        P.eq("listen.samples", static_cast<int64_t>(m.samples - before.samples), static_cast<int64_t>(len));
+        P.eq("listen.host_known_playing", m.hostKnown && m.host.playing ? 1 : 0, 1);
+        P.near("listen.host_bpm", static_cast<double>(m.host.bpm), 90.0, 1e-6);
+        P.eq("listen.host_signature", m.host.beatsPerBar == 3 && m.host.beatUnit == 4 ? 1 : 0, 1);
+        P.near("listen.host_beat", static_cast<double>(m.host.beat), 4.0 + 3.0 * kBlock * 90.0 / (60.0 * kFs), 1e-4);
+        uint64_t next = 0;
+        const int got = rig.engine().blocks(from, stats.data(), pg::Engine::kBlockRing, next);
+        bool lengths = true, shares = true, metering = true;
+        for (int i = 0; i < got; ++i)
+        {
+            const pg::BlockStat& b = stats[static_cast<std::size_t>(i)];
+            lengths = lengths && b.samples == kBlock;
+            shares = shares && std::isfinite(b.share) && b.share > 0.0f;
+            metering = metering && (b.flags & pg::BlockStat::metering) != 0;
+        }
+        P.eq("listen.blocks_one_a_block", got, 4);
+        P.eq("listen.blocks_next", static_cast<int64_t>(next - from), 4);
+        P.eq("listen.blocks_lengths", lengths ? 1 : 0, 1);
+        P.eq("listen.blocks_shares", shares ? 1 : 0, 1);
+        P.eq("listen.blocks_metering", metering ? 1 : 0, 1);
+        uint64_t again = 0;
+        P.eq("listen.blocks_read_once", rig.engine().blocks(next, stats.data(), pg::Engine::kBlockRing, again), 0);
+        if constexpr (kInstrument)
+        {
+            P.eq("listen.note_ons", static_cast<int64_t>(m.noteOns - before.noteOns), 3);
+            P.eq("listen.last_note", static_cast<int64_t>(m.lastNote), 67);
+            P.near("listen.last_velocity", static_cast<double>(m.lastVelocity), 0.75, 1e-6);
+            P.eq("listen.held", static_cast<int64_t>(m.held), 2);
+            P.eq("listen.held_bits", m.heldKeys[1] == ((1u << (60 - 32)) | 0u) && m.heldKeys[2] == (1u << (67 - 64)) && m.heldKeys[0] == 0
+                                         && m.heldKeys[3] == 0 ? 1 : 0, 1);
+            P.eq("listen.voices", static_cast<int64_t>(m.voices), 3);
+            P.eq("listen.pedal_held", static_cast<int64_t>(m.pedalHeld), 1);
+            P.eq("listen.none_released_or_fading", m.released == 0 && m.fading == 0 ? 1 : 0, 1);
+            P.eq("listen.notes_flag", (stats[1].flags & pg::BlockStat::notes) != 0 && (stats[2].flags & pg::BlockStat::notes) == 0 ? 1 : 0, 1);
+            // A new program: the held keys start again on it (no note-on of the player's), the old one's voices fade.
+            pg::Patch::Result next2 = pg::Patch::compile(source, static_cast<float>(kFs));
+            if (next2.patch)
+            {
+                next2.patch->setProgram(rig.program() + 200);
+                rig.engine().offer(std::move(next2.patch));
+            }
+            pg::Meters was = m;
+            rig.run(probe::Stereo(static_cast<std::size_t>(kBlock)), kBlock);
+            rig.engine().meters(m);
+            P.eq("listen.restart_counts_no_note_on", static_cast<int64_t>(m.noteOns - was.noteOns), 0);
+            P.eq("listen.swap_fades", m.fading >= 2 && m.voices == 2 ? 1 : 0, 1);
+            // Sixteen notes, then a seventeenth at the block's end: it steals one, which is still fading at the end.
+            std::vector<probe::Note> many{ { 0, pg::EventKind::controller, 64, 0.0f }, { 0, pg::EventKind::allNotesOff, 0, 0.0f } };
+            rig.run(probe::Stereo(static_cast<std::size_t>(kBlock) * 8), kBlock, many);
+            many.clear();
+            for (int k = 0; k < 16; ++k)
+                many.push_back({ 0, pg::EventKind::noteOn, 30 + k, 0.5f });
+            many.push_back({ static_cast<std::size_t>(kBlock) - 8, pg::EventKind::noteOn, 50, 0.5f });
+            rig.engine().meters(was);
+            rig.run(probe::Stereo(static_cast<std::size_t>(kBlock)), kBlock, many);
+            rig.engine().meters(m);
+            P.eq("listen.steal_counted", static_cast<int64_t>(m.steals - was.steals), 1);
+            P.eq("listen.steal_fading", m.fading == 1 && m.voices == 16 ? 1 : 0, 1);
+        }
+        else
+            P.eq("listen.effect_no_notes", m.noteOns == 0 && m.voices == 0 && m.held == 0 && m.steals == 0 ? 1 : 0, 1);
+
+        // A program with a dial, and a sound that goes bad: an instrument's voice for a key from 100, an effect's
+        // output with the dial at its top.
+        const std::string bad =
+            kInstrument ? "module Voice\n{\n    param float level [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
+                          "    bool bad;\n    bool held;\n"
+                          "    void start(float note, float velocity) { bad = note >= 100; held = true; }\n"
+                          "    void stop() { held = false; }\n"
+                          "    bool process(float* restrict left, float* restrict right, int n)\n    {\n"
+                          "        for (int i = 0; i < n; ++i)\n        {\n"
+                          "            const float s = bad ? sqrtf(-1.0f - level[i]) : 0.1f * level[i];\n"
+                          "            left[i] += s;\n            right[i] += s;\n        }\n        return held;\n    }\n};\n"
+                        : "module Effect\n{\n    param float level [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
+                          "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                          "        for (int i = 0; i < n; ++i)\n        {\n"
+                          "            left[i] = level[i] > 0.9f ? sqrtf(-1.0f - level[i]) : left[i] * level[i];\n"
+                          "            right[i] = left[i];\n        }\n    }\n};\n";
+        std::string why;
+        const bool loaded = rig.load(bad, &why);
+        if (!why.empty())
+            std::printf("%s", why.c_str());
+        P.eq("listen.bad_program_compiles", loaded ? 1 : 0, 1);
+        if (loaded)
+        {
+            rig.run(probe::Stereo(static_cast<std::size_t>(kBlock)), kBlock);     // its first block snaps the dial
+            rig.engine().blocks(0, stats.data(), pg::Engine::kBlockRing, from);
+            rig.engine().blocks(from, stats.data(), pg::Engine::kBlockRing, from);   // to the ring's end
+            int moved = 0;
+            rig.run(probe::Stereo(static_cast<std::size_t>(kBlock) * 4), kBlock, {}, {},
+                    [&](std::size_t pos, std::array<float, pg::kMaxControls>& norm) {
+                        if (pos == static_cast<std::size_t>(kBlock))
+                        {
+                            norm[0] = 0.8f;                      // it glides over the next 20 ms (four blocks of 256)
+                            ++moved;
+                        }
+                    });
+            const int n = rig.engine().blocks(from, stats.data(), pg::Engine::kBlockRing, next);
+            P.eq("listen.moving_flag", n == 4 && moved == 1 && (stats[0].flags & pg::BlockStat::moving) == 0
+                                               && (stats[1].flags & pg::BlockStat::moving) != 0 ? 1 : 0, 1);
+            from = next;
+            pg::Meters was;
+            rig.engine().meters(was);
+            std::vector<probe::Note> high;
+            if constexpr (kInstrument)
+                high.push_back({ 40, pg::EventKind::noteOn, 100, 0.5f });
+            else
+                rig.norm()[0] = 1.0f;
+            rig.engine().takeAlerts();
+            rig.run(probe::Stereo(static_cast<std::size_t>(kBlock) * 8), kBlock, high);
+            rig.engine().meters(m);
+            const int k = rig.engine().blocks(from, stats.data(), pg::Engine::kBlockRing, next);
+            bool flagged = false;
+            for (int i = 0; i < k; ++i)
+                flagged = flagged || (stats[static_cast<std::size_t>(i)].flags & pg::BlockStat::alert) != 0;
+            P.eq("listen.alert_flag", flagged && rig.engine().takeAlerts() != 0 ? 1 : 0, 1);
+            if constexpr (kInstrument)
+            {
+                P.eq("listen.dropped", static_cast<int64_t>(m.dropped - was.dropped), 1);
+                P.eq("listen.dropped_key", static_cast<int64_t>(m.droppedKey), 100);
+                P.eq("listen.dropped_at", static_cast<int64_t>(m.droppedAt), static_cast<int64_t>(was.samples + 40));
+            }
+        }
     }
     return P.finish();
 }

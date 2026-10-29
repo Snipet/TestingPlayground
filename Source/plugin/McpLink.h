@@ -15,6 +15,12 @@
 // reply says so), the one running is cancelled through the hook (a tune then leaves the dials as they were). A
 // connection that closes takes its calls with it: those waiting are dropped, the running one is cancelled.
 //
+// A live call that takes seconds (ChatAgent::mcpLiveWaits: listen) runs on a thread of its own, numbered for cancel
+// as the worker's calls are, and replies when it is done, so the poll thread goes on answering meanwhile (cancel, the
+// quick reads, another listen): kListens at once at most (one more is refused at once, in its reply). A cancel or its
+// connection closing stops it through the hook; the poll thread joins it once it is done, and the link going cancels
+// and waits for every one.
+//
 // Made by the Processor after its chat; gone first: its poll thread stopped, the call running cancelled and waited for,
 // its socket removed. Nothing it does touches the audio thread.
 #pragma once
@@ -28,6 +34,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -72,6 +79,9 @@ namespace playground
 
         void run();                                      // the poll thread
         void work();                                     // the worker
+        // A listen (mcpLiveWaits) on a thread of its own; false when kListens run already (jobMutex_ not held).
+        bool listen(const std::shared_ptr<Client>& client, const juce::var& id, const std::string& name, const juce::var& arguments);
+        void reap();                                     // the listens done, joined (jobMutex_ held)
         void request(const std::shared_ptr<Client>& client, const std::string& line);
         void cancel(const std::shared_ptr<Client>& client, const juce::var& id, bool& found);
         void closed(const std::shared_ptr<Client>& client);   // its calls dropped or cancelled
@@ -95,6 +105,16 @@ namespace playground
         uint64_t running_ = 0;
         uint64_t nextCall_ = 1;
         bool workerStop_ = false;
+        struct Listening                                 // a listen's thread (jobMutex_)
+        {
+            std::shared_ptr<Client> client;
+            juce::var id;
+            uint64_t call = 0;
+            std::shared_ptr<std::atomic<bool>> done;
+            std::thread thread;
+        };
+        static constexpr std::size_t kListens = 4;
+        std::list<Listening> listens_;
         std::thread thread_, worker_;
     };
 }

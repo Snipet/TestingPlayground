@@ -21,6 +21,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <vector>
 
 namespace playground
 {
@@ -108,6 +110,26 @@ namespace playground
         if (c.scale != 0.0f)
             v /= static_cast<double>(c.scale);
         return static_cast<float>(v);
+    }
+
+    // A dial's plain value as a person reads it: a real one as formatValue writes it; an int or a bool by the name its
+    // options give that value (the panel's options, from the range's low end), else as a number, or off and on.
+    inline std::string dialText(const Control& c, float plain, const std::vector<std::string>& options = {})
+    {
+        if (!std::isfinite(plain))
+            return "-";
+        if (c.type != ControlType::real)
+        {
+            const long k = std::lround(plain) - std::lround(c.min);
+            if (k >= 0 && static_cast<std::size_t>(k) < options.size() && !options[static_cast<std::size_t>(k)].empty())
+                return options[static_cast<std::size_t>(k)];
+            if (c.type == ControlType::toggle)
+                return plain >= 0.5f ? "on" : "off";
+            return std::to_string(std::lround(plain));
+        }
+        char buf[48];
+        formatValue(c, plain, buf, sizeof buf);
+        return buf;
     }
 
     inline bool sameName(const Control& a, const Control& b) noexcept

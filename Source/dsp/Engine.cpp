@@ -391,6 +391,7 @@ namespace playground
             if constexpr (kInstrument)
                 for (const Event& e : events)        // a block of 0 samples still plays its events
                 {
+                    heard(e);
                     if (e.kind == EventKind::noteOn)
                         noteOn(e.note, e.velocity);
                     else if (e.kind == EventKind::noteOff)
@@ -403,6 +404,7 @@ namespace playground
             return;
         }
         const auto t0 = std::chrono::steady_clock::now();
+        blockFlags_ = 0;
         takePending();
         glideControls(n);
         updateFrozen();
@@ -434,6 +436,57 @@ namespace playground
         const float share = static_cast<float>(took * static_cast<double>(fs_) / static_cast<double>(n));
         const float decayed = load_.load(std::memory_order_relaxed) * std::pow(0.5f, static_cast<float>(n) / (0.3f * fs_));
         load_.store(std::max(share, decayed), std::memory_order_relaxed);
+        blockDone(share, n);
+    }
+
+    void Engine::heard(const Event& e) noexcept
+    {
+        if (e.kind != EventKind::noteOn || e.note > 127)
+            return;
+        ++frame_.noteOns;
+        frame_.lastNote = static_cast<int8_t>(e.note);
+        frame_.lastVelocity = std::clamp(e.velocity, 0.0f, 1.0f);
+        blockFlags_ |= BlockStat::notes;
+    }
+
+    void Engine::blockDone(float share, int n) noexcept
+    {
+        uint8_t flags = blockFlags_;
+        if (old_ != nullptr || xfading_)
+            flags |= BlockStat::swapping;
+        if (moved_ || streamingNow_)
+            flags |= BlockStat::moving;
+        if (frozenNow_.load(std::memory_order_relaxed))
+            flags |= BlockStat::frozen;
+        if (metering_)
+            flags |= BlockStat::metering;
+        uint32_t bits = 0;
+        const float s = std::isfinite(share) ? std::max(0.0f, share) : 0.0f;
+        std::memcpy(&bits, &s, sizeof bits);
+        const uint64_t packed = static_cast<uint64_t>(bits) | (static_cast<uint64_t>(std::min(n, 65535)) << 32)
+                              | (static_cast<uint64_t>(frame_.voices) << 48) | (static_cast<uint64_t>(flags) << 56);
+        const uint64_t at = blockAt_.load(std::memory_order_relaxed);
+        blockRing_[static_cast<std::size_t>(at % kBlockRing)].store(packed, std::memory_order_relaxed);
+        blockAt_.store(at + 1, std::memory_order_release);
+    }
+
+    int Engine::blocks(uint64_t from, BlockStat* out, int max, uint64_t& next) const noexcept
+    {
+        const uint64_t end = blockAt_.load(std::memory_order_acquire);
+        uint64_t at = std::max(from, end > static_cast<uint64_t>(kBlockRing) ? end - kBlockRing : 0);
+        int count = 0;
+        for (; at < end && count < max; ++at, ++count)
+        {
+            const uint64_t packed = blockRing_[static_cast<std::size_t>(at % kBlockRing)].load(std::memory_order_relaxed);
+            const auto bits = static_cast<uint32_t>(packed & 0xffffffffu);
+            BlockStat& b = out[count];
+            std::memcpy(&b.share, &bits, sizeof bits);
+            b.samples = static_cast<uint16_t>((packed >> 32) & 0xffffu);
+            b.voices = static_cast<uint8_t>((packed >> 48) & 0xffu);
+            b.flags = static_cast<uint8_t>(packed >> 56);
+        }
+        next = at;
+        return count;
     }
 
     namespace
@@ -525,6 +578,42 @@ namespace playground
                 for (int t = 0; t < std::min(current_->taps(), kMaxDisplays); ++t)
                     frame_.taps[t] = current_->tap(t, instance);
         }
+        // The player and the host (Meters' second part): the transport, the keys held, the voices.
+        frame_.samples += static_cast<uint64_t>(n);
+        frame_.host = host_;
+        frame_.host.bpm = static_cast<float>(bpm_);
+        frame_.host.beat = static_cast<float>(beat_);
+        frame_.hostKnown = known_;
+        if constexpr (kInstrument)
+        {
+            uint8_t voices = 0, released = 0, pedal = 0, fading = 0, held = 0;
+            for (const Voice& v : voices_)
+            {
+                if (v.patch == nullptr)
+                    continue;
+                if (v.fading)
+                    ++fading;
+                else if (!v.ending)
+                {
+                    ++voices;
+                    released += v.released ? 1 : 0;
+                    pedal += v.pedal && !v.released ? 1 : 0;
+                }
+            }
+            for (uint32_t& w : frame_.heldKeys)
+                w = 0;
+            for (std::size_t k = 0; k < held_.size(); ++k)
+                if (held_[k])
+                {
+                    frame_.heldKeys[k / 32] |= 1u << (k % 32);
+                    ++held;
+                }
+            frame_.voices = voices;
+            frame_.released = released;
+            frame_.pedalHeld = pedal;
+            frame_.fading = fading;
+            frame_.held = held;
+        }
         ++frame_.frame;
         meters_.publish(frame_);
     }
@@ -607,6 +696,7 @@ namespace playground
                 done = at;
             }
             syncHost(at);                            // start and stop read the Host block at the event's sample
+            heard(e);
             if (e.kind == EventKind::noteOn)
                 noteOn(e.note, e.velocity);
             else if (e.kind == EventKind::noteOff)
@@ -697,6 +787,7 @@ namespace playground
             {
                 victim->fading = true;
                 victim->fall = victim->gain / static_cast<float>(stealFade_);
+                ++frame_.steals;
             }
         int instance = freeInstance(*current_);
         if (instance < 0)                            // every instance still fading: take the quietest of them now
@@ -709,6 +800,7 @@ namespace playground
                 return;
             instance = quietest->instance;
             *quietest = Voice{};
+            ++frame_.steals;
         }
         for (Voice& v : voices_)
             if (v.patch == nullptr)
@@ -779,6 +871,7 @@ namespace playground
 
     void Engine::setTransport(const Transport& t) noexcept
     {
+        known_ = t.known;
         if (!t.known)
         {
             running_ = true;                         // no host clock: our own, at 120 BPM, never playing
@@ -845,6 +938,10 @@ namespace playground
             if (!finite)                             // a voice gone bad is dropped: its program starts it afresh
             {
                 alerts_.fetch_or(nonFinite, std::memory_order_relaxed);
+                ++frame_.dropped;
+                frame_.droppedKey = v.key;
+                frame_.droppedAt = frame_.samples + static_cast<uint64_t>(from);
+                blockFlags_ |= BlockStat::alert;
                 v = Voice{};
                 continue;
             }
@@ -891,6 +988,9 @@ namespace playground
             }
         }
         if (raised != 0)
+        {
             alerts_.fetch_or(raised, std::memory_order_relaxed);
+            blockFlags_ |= BlockStat::alert;
+        }
     }
 }

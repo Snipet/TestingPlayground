@@ -249,17 +249,35 @@ namespace playground
             return "float";
         }
 
-        // The dials of `controls` with their values, one a line.
+        // The dials of `controls` with their values, one a line: the range in the parameter's own numbers (set_dial's),
+        // the default and the value now as the panel says them (their units, their options' names; the number after
+        // one the panel scales, as 35 % (0.35)).
         std::string dialLines(const Controls& controls, const ChatHost& host)
         {
             std::string out;
+            const std::array<std::vector<std::string>, kMaxControls> options = host.chatDialOptions();
             for (int c = 0; c < kMaxControls; ++c)
             {
                 const Control& k = controls[static_cast<std::size_t>(c)];
                 if (!k.used)
                     continue;
-                out += std::to_string(c + 1) + " " + k.name + ": " + controlType(k) + " [" + number(k.min) + ", "
-                     + number(k.max) + "] default " + number(k.def) + ", now " + number(host.chatDialValue(c)) + "\n";
+                const std::vector<std::string>& names = options[static_cast<std::size_t>(c)];
+                const auto said = [&](float v) {
+                    const std::string t = dialText(k, v, names);
+                    return k.type == ControlType::real && k.scale != 1.0f ? t + " (" + number(v) + ")" : t;
+                };
+                std::string range = k.type == ControlType::toggle ? std::string() : " [" + number(k.min) + ", " + number(k.max) + "]";
+                if (k.type == ControlType::real && k.unit[0] != '\0' && k.scale == 1.0f)
+                    range += std::string(" ") + k.unit;
+                if (!names.empty())
+                {
+                    range += " (";
+                    for (std::size_t i = 0; i < names.size(); ++i)
+                        range += (i == 0 ? "" : " ") + names[i];
+                    range += ")";
+                }
+                out += std::to_string(c + 1) + " " + k.name + ": " + controlType(k) + range + " default " + said(k.def)
+                     + ", now " + said(host.chatDialValue(c)) + "\n";
             }
             return out.empty() ? "none\n" : out;
         }
@@ -1141,7 +1159,7 @@ namespace playground
         lastSignature_ = 0;                        // the next message sends the files again
         usage_.clear();
         activity_.clear();
-        busy_ = false;
+        busy_ = mcpWorking_.load();                // a call of Claude Desktop's keeps it busy until it ends (mcpCall)
         asking_.clear();
         attached_.clear();
         ++attachEpoch_;
@@ -1316,7 +1334,7 @@ namespace playground
         entries_.clear();
         seen_.clear();
         lastSignature_ = 0;                        // the next message sends the files again
-        busy_ = false;
+        busy_ = mcpWorking_.load();                // a call of Claude Desktop's keeps it busy until it ends (mcpCall)
         asking_.clear();
         activity_.clear();
         historyWeb_ = static_cast<bool>(v.getProperty("web", false));
@@ -1515,7 +1533,11 @@ namespace playground
         return std::min(kMaxTokensCap, model != models_.end() ? model->maxTokens : kDefaultMaxTokens);
     }
 
-    void ChatAgent::markSeen(const std::string& name, const std::string& text) { seen_[name] = hashText(text); }
+    void ChatAgent::markSeen(const std::string& name, const std::string& text)
+    {
+        if (!mcpWorking_.load())                   // Claude Desktop's views are its own (Live.cpp's marks)
+            seen_[name] = hashText(text);
+    }
 
     void ChatAgent::addEntry(ChatEntry::Kind kind, std::string t)
     {
@@ -1920,11 +1942,8 @@ namespace playground
                                         { "context", prop("string", "What you found or tried that bears on it "
                                                                     "(measurements, errors, what you changed)") } }),
                        { "question" }));
-        tools.add(tool("get_status",
-                       "Read the plugin's state now: the files, whether the program that plays matches them, the last "
-                       "compile, the dials and their values, the CPU load and the output guard's alerts (NaN or inf "
-                       "replaced, samples clipped). Use it when debugging what the user hears.",
-                       claude::object({}), {}));
+        tools.add(statusDefinition());               // get_status (Live.cpp)
+        tools.add(listenDefinition());               // listen (Live.cpp)
         return juce::var(tools);
     }
 
@@ -2877,6 +2896,7 @@ namespace playground
             { "measure_output", "Measure the sound", true, false }, { "view_panel", "Look at the panel", true, false, "interface" },
             { "view_sound", "Look at the sound", true, false },   { "set_checks", "Set checks on the sound", false, false },
             { "tune_dials", "Tune the dials", false, false },     { "get_status", "Check the plugin", true, false },
+            { "listen", "Listen live", true, false },
         };
 
         const Face* faceOf(const juce::String& name)
@@ -3010,6 +3030,15 @@ namespace playground
             activity_ = "Stopping";
             touch();
         }
+        else
+        {
+            // A listen (running or not yet started), or a call about to start: each cancel is kept, however many come
+            // before it looks (mcpCall's start, Live.cpp's listen), the newest kMcpStopped.
+            const std::lock_guard<std::mutex> live(liveMutex_);
+            mcpStopped_.insert(call);
+            while (mcpStopped_.size() > kMcpStopped)
+                mcpStopped_.erase(mcpStopped_.begin());
+        }
     }
 
     ChatAgent::McpResult ChatAgent::mcpCall(const std::string& name, const juce::var& arguments, uint64_t call)
@@ -3048,8 +3077,14 @@ namespace playground
                 return r;
             }
             busy_ = true;
+            mcpWorking_.store(true);
             mcpRunning_ = call;
-            cancel_.store(call != 0 && mcpCancelled_.load() == call);   // a cancel that came before it started
+            bool early = false;
+            {
+                const std::lock_guard<std::mutex> stopped(liveMutex_);
+                early = mcpStopped_.erase(call) != 0;
+            }
+            cancel_.store(call != 0 && (early || mcpCancelled_.load() == call));   // a cancel that came before it started
             if (!mcpNoted_)
             {
                 addEntry(ChatEntry::Kind::note, "Claude Desktop is working on the program through MCP: what it does shows here.");
@@ -3058,11 +3093,13 @@ namespace playground
             activity_ = "Claude Desktop is at work";
             touch();
         }
-        const juce::var block = runTool(claude::object({ { "type", "tool_use" }, { "id", "mcp" }, { "name", juce::String(name) }, { "input", input } }));
+        const juce::var use = claude::object({ { "type", "tool_use" }, { "id", "mcp" }, { "name", juce::String(name) }, { "input", input } });
+        const juce::var block = live ? liveTool(use, { true, call }) : runTool(use);
         if (!live)
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             busy_ = false;
+            mcpWorking_.store(false);
             mcpRunning_ = 0;
             activity_.clear();
             touch();
@@ -3100,6 +3137,9 @@ namespace playground
             }
         if (out.isEmpty())
             out.add(claude::object({ { "type", "text" }, { "text", "(no result)" } }));
+        if (name != "get_status")                        // what the user changed since MCP's last result (Live.cpp)
+            if (const std::string hint = mcpHint(); !hint.empty())
+                out.insert(0, text(hint));
         r.content = out;
         r.isError = static_cast<bool>(block.getProperty("is_error", false));
         return r;
@@ -3110,6 +3150,8 @@ namespace playground
     {
         const std::string name = str(use, "name");
         const juce::var input = use.getProperty("input", juce::var());
+        if (name == "listen" || name == "get_status")   // a turn's (Live.cpp); MCP's come through mcpCall
+            return liveTool(use, {});
         if (name == "view_panel")
         {
             // A picture of the panel: an image block and a line of what it shows (the tool_result's content).
@@ -3341,7 +3383,8 @@ namespace playground
                 const std::lock_guard<std::mutex> lock(mutex_);
                 if (const auto it = seen_.find(file); it != seen_.end())
                 {
-                    seen_[to] = it->second;
+                    if (!mcpWorking_.load())       // Claude Desktop's rename: the chat's Claude is sent the file anew
+                        seen_[to] = it->second;
                     seen_.erase(file);
                 }
             }
@@ -3451,9 +3494,10 @@ namespace playground
                 if (k.type != ControlType::real)
                     v = std::round(v);
                 host_.chatSetDial(c, v);
-                note("set " + std::string(k.name) + " to " + number(v));
-                return std::string(k.name) + " is set to " + number(v) + " (its range " + number(k.min) + " to "
-                     + number(k.max) + ").";
+                const std::string said = dialText(k, v, host_.chatDialOptions()[static_cast<std::size_t>(c)]);
+                note("set " + std::string(k.name) + " to " + said);
+                return std::string(k.name) + " is set to " + said + (said == number(v) ? "" : " (" + number(v) + ")")
+                     + " (its range " + number(k.min) + " to " + number(k.max) + ").";
             }
             std::string have;
             for (const Control& k : controls)

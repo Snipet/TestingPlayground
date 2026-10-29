@@ -199,7 +199,7 @@ namespace
         std::string said;
         if (const juce::Array<juce::var>* c = status.content.getArray())
             said = (*c)[0]["text"].toString().toStdString();
-        return said.find("level: float [0, 1] default 0.5, now " + value + "\n") != std::string::npos;
+        return said.find("level: float [0, 1] default 0.50, now " + value + "\n") != std::string::npos;
     }
 
     // A link's socket as the server uses it: several requests in flight, their replies read as they come (each line
@@ -489,7 +489,7 @@ PROBE(plugin, mcp)
                       + " (" + std::to_string(juce::JSON::toString(tool["inputSchema"], false).length()) + ")";
         std::printf("tools.json by tool, bytes (its schema's):%s\n", each.c_str());
         P.eq("link.tools_short", leads ? 1 : 0, 1);
-        P.le("link.tools_bytes", static_cast<double>(size), kInstrument ? 21000.0 : 19500.0);
+        P.le("link.tools_bytes", static_cast<double>(size), kInstrument ? 22000.0 : 20500.0);
     }
     const std::string guide = ask(*a, r, 3, "guide", object({ { "part", "start" } }))["result"].toString().toStdString();
     P.eq("link.guide", guide.rfind("WORKING FROM OUTSIDE THE PLUGIN", 0) == 0 ? 1 : 0, 1);
