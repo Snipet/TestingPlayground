@@ -119,6 +119,7 @@ namespace playground::ui
     class CodeAssist;                                    // the editor's language features (CodeAssist.h)
     class DisplayItem;                                   // a program's display (DisplayItem.h)
     class GuiControlItem;                                // a .gui file's control (GuiItems.h)
+    class GuiView;                                       // a .gui file's interface: its items (GuiView.h)
 
     // The size (logical px): the default, the least.
     inline constexpr int kDefaultWidth = 1360, kDefaultHeight = 760;
@@ -188,7 +189,7 @@ namespace playground::ui
         bool hasGui() const noexcept { return !panelSpec_.gui.empty(); }
         bool panelView() const noexcept { return panelView_; }
         void setPanelView(bool on);
-        const GuiLayout& guiLayout() const noexcept { return gui_; }
+        const GuiLayout& guiLayout() const noexcept;
         const funkgui::Rect& programCard() const noexcept { return programCard_; }   // the program's card
         const PanelSpec& panelSpec() const noexcept { return panelSpec_; }      // the program's that the panel shows
         const GuiControlItem& guiControl(int slot) const;
@@ -468,24 +469,11 @@ namespace playground::ui
         PanelSpec panelSpec_;                            // its #pragma panel lines
         uint64_t panelProgram_ = 0;                      // the compile they came from (EditorPort::program)
         DialsLayout dials_;                              // their places
-        // A .gui file's interface (when panelSpec_.gui is not empty): its places, its tabs' pages, its scroll, and the
-        // items it is made of (a control a slot, pools of pads, envelopes and tabs).
-        GuiLayout gui_;
-        std::vector<int> guiPages_;                      // by node
-        float guiScrollX_ = 0.0f, guiScrollY_ = 0.0f;
+        // A .gui file's interface (when panelSpec_.gui is not empty): its items (a control a slot, pools of tabs, pads,
+        // envelopes, keyboards and shaders, in items_), its places, its tabs' pages and its scroll (GuiView.h).
+        std::unique_ptr<GuiView> guiView_;
         bool panelView_ = false;
         int viewItem_ = -1;                              // the Code / Panel switch's Code half
-        std::vector<int> itemOfGuiSlot_;                 // slot -> its GuiControlItem
-        std::vector<int> guiPads_, guiEnvelopes_, guiTabs_, guiKeyboards_, guiShaders_;
-        std::vector<int> shaderNode_;                    // by guiShaders_: the node it shows (-1: none)
-        // The shaders' programs, by PanelSpec::shaders: the id registered with FunkGui (0: none), why not, and whether
-        // its code reads the time (it then moves every frame).
-        std::vector<uint32_t> shaderIds_;
-        std::vector<std::string> shaderWhy_;
-        std::vector<bool> shaderMoves_;
-        void registerShaders(const std::string& notes);   // after panelSpec_ changed (the compile's notes say why not)
-        std::vector<bool> guiItem_;                      // by item: drawn in the interface's area, with its theme
-        void layoutGuiItems();                           // after layout() found gui_
         float chatX_ = 0.0f, chatW_ = 0.0f;
         funkgui::Rect card_;                             // the chat's card
         float headerY_ = 0.0f;                           // its header row

@@ -1,7 +1,6 @@
 // Source/editor/DisplayItem.cpp: a display's motion and its drawing (DisplayItem.h).
 #include "editor/DisplayItem.h"
 
-#include "editor/ChatItems.h"
 #include "editor/GuiItems.h"
 #include "editor/Looks.h"
 

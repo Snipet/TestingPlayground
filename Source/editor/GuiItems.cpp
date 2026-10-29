@@ -1,7 +1,6 @@
 // Source/editor/GuiItems.cpp: a .gui file's controls, pads, envelopes, tabs and decorations (GuiItems.h).
 #include "editor/GuiItems.h"
 
-#include "editor/ChatItems.h"
 #include "editor/Looks.h"
 #include "fminus/GuiSpec.h"
 
