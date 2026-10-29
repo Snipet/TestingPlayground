@@ -140,8 +140,8 @@ namespace playground
         else if (source == "playing")
         {
             files = host_.chatRunning();
-            words = "the program that plays (its own code; once its dials hold still the plugin plays a frozen copy whose "
-                    "last bits differ, which this does not render)";
+            words = "the program that plays (its own code; once its dials hold still the plugin plays a frozen copy of the "
+                    "same bits, which this does not render)";
             if (files.empty())
                 return done("Nothing plays yet (run_program plays the editor's files).", true);
         }

@@ -52,10 +52,12 @@
 // coefficients, a level's expf, a branch on a switch, which an instrument's voices otherwise compute in every call.
 // FMinus gives a parameter the same slot in an instance whatever its binding, so the frozen copy runs this Patch's own
 // instances: the Engine switches between the two at a block's start (useFrozen) without a seam. The copy compiles in
-// FMinus's Math::Fast (LLVM's own sinf, cosf, tanf, expf, tanhf and logf, vectorised where its loops vectorise, a
-// constant's folded with this machine's functions): faster than the program's Math::Vector, and the same sound, though
-// not the same bits; a result may move in its last bits (a few ulp), and while the copy plays it may depend on where
-// the host's blocks end. No fast-math flags: no reassociation, NaN and infinity kept as IEEE has them.
+// the program's own math, FMinus's Math::Vector, whose kernels give a float one result wherever it is computed, from a
+// frozen parameter or a knob: so the copy plays the program's very bits, in any blocks (dsp.freeze checks), and all it
+// changes is the cost. It was in Math::Fast (LLVM's intrinsics, libm a sample at a time where a loop does not
+// vectorise) until FMinus c75caab inlined its own kernels: since then fast math saves only a few percent on average
+// and makes a loop with state that calls tanhf or sinf slower than the program itself (README "Frozen dials").
+// No fast-math flags: no reassociation, NaN and infinity kept as IEEE has them.
 //
 // Threads: compile(), freeze() and reset() run off the audio thread (or while it is stopped), the calls marked
 // noexcept on it. init and end run in flush-to-zero (fsdsp::ScopedFtz), the mode the program is compiled for, on
@@ -151,10 +153,10 @@ namespace playground
         Recipe recipe() const;
         // The frozen copy of the recipe's program at the dials' plain values (each used control's, Controls.h): off
         // the audio thread. Null, with why, when it does not compile or its main module's layout is not the program's.
-        // `exactMath`: in the program's own Math::Vector rather than the copy's Math::Fast, for dsp.freeze, which
-        // measures what exact math would cost (the plugin never asks for it).
+        // `fastMath`: in FMinus's Math::Fast rather than the program's Math::Vector, for dsp.freeze, which measures
+        // what fast math would gain (the plugin never asks for it).
         static std::unique_ptr<Frozen> freeze(const Recipe& recipe, const std::array<float, kMaxControls>& plain,
-                                              std::string& why, bool exactMath = false);
+                                              std::string& why, bool fastMath = false);
 
         // ---- the audio thread ------------------------------------------------------------------------------------
         // The frozen copy's code for the calls that follow (null: the program's own). It must be of this program

@@ -750,7 +750,7 @@ module Host
     }
 
     std::unique_ptr<Patch::Frozen> Patch::freeze(const Recipe& r, const std::array<float, kMaxControls>& plain,
-                                                 std::string& why, bool exactMath)
+                                                 std::string& why, bool fastMath)
     {
         const auto t0 = std::chrono::steady_clock::now();
         if (r.files.empty() || r.source.empty())
@@ -769,8 +769,8 @@ module Host
             return std::nullopt;
         };
         build.denormals = fminus::Program::Denormals::Flush;     // as compile()'s
-        build.math = exactMath ? fminus::Program::Math::Vector   // dsp.freeze's measure of exact math
-                               : fminus::Program::Math::Fast;    // the copy's math (Patch.h, "Frozen dials")
+        build.math = fastMath ? fminus::Program::Math::Fast      // dsp.freeze's measure of fast math
+                              : fminus::Program::Math::Vector;   // the copy's math, the program's (Patch.h, "Frozen dials")
         for (std::size_t k = 0; k < r.names.size(); ++k)
             if (!r.names[k].empty() && r.controls[k].used)
                 build.parameters[r.names[k]] = fminus::Program::Binding::frozen(static_cast<double>(plain[k]));
