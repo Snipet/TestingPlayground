@@ -13,6 +13,7 @@
 
 #include <funkgui/gpu/ShaderLibrary.h>
 #include <funkgui/panel/HeadlessHost.h>
+#include <funkgui/prefs/UiPreferences.h>
 #include <funkgui/text/FontService.h>
 #include <funkgui/text/TextFit.h>
 
@@ -248,18 +249,44 @@ namespace playground::sandbox
     juce::var Sandbox::handle(const juce::var& r)
     {
         const std::string op = text(r["op"]);
+        // `load` first: the sandbox as the server kept it (a helper started again, or another design asked for by its
+        // number), made here before the request itself; the reply then says what is open (its state), whatever came of
+        // the request, so that the server's copy stays what this helper holds.
+        bool loaded = false;
+        if (r["load"].isObject())
+        {
+            juce::var l = juce::JSON::parse(juce::JSON::toString(r["load"]));
+            if (juce::DynamicObject* o = l.getDynamicObject())
+            {
+                o->setProperty("op", "open");
+                o->setProperty("from", "files");
+                o->setProperty("restore", true);
+            }
+            const juce::var made = open(l);
+            if (!static_cast<bool>(made["ok"]))
+                return fail("The sandbox could not be made again: " + text(made["text"]));
+            loaded = true;
+        }
+        juce::var out;
         if (op == "open")
-            return open(r);
-        if (op == "state")
-            return open_ ? state() : fail("Nothing is open in the sandbox.");
-        if (!open_)
-            return fail("Nothing is open in the sandbox: open it first (a blank panel, the open plugin's, a file, or a .gui "
-                        "as text).");
-        if (op == "edit")
-            return edit(r);
-        if (op == "render")
-            return render(r);
-        return fail("The sandbox has no request '" + op + "'.");
+            out = open(r);
+        else if (op == "state")
+            out = open_ ? state() : fail("Nothing is open in the sandbox.");
+        else if (!open_)
+            out = fail("Nothing is open in the sandbox: open it first (a blank panel, the open plugin's, a file, or a .gui "
+                       "as text).");
+        else if (r.hasProperty("expect") && static_cast<int>(r["expect"]) != number_)
+            out = fail("Sandbox #" + std::to_string(static_cast<int>(r["expect"])) + " is not the one open here: nothing was done.");
+        else if (op == "edit")
+            out = edit(r);
+        else if (op == "render")
+            out = render(r);
+        else
+            out = fail("The sandbox has no request '" + op + "'.");
+        if (loaded && open_)
+            if (juce::DynamicObject* o = out.getDynamicObject(); o != nullptr && !o->hasProperty("state"))
+                o->setProperty("state", state());
+        return out;
     }
 
     bool Sandbox::readPath(const std::string& given, Sources& out, std::string& why) const
@@ -409,7 +436,10 @@ namespace playground::sandbox
         }
         open_ = true;
         number_ = r.hasProperty("number") ? static_cast<int>(r["number"]) : number_ + 1;
-        if (r.hasProperty("area"))
+        // A sandbox made again keeps its area (its last render's); a new one starts at the PANEL view's.
+        areaW_ = kDefaultWidth;
+        areaH_ = kDefaultHeight;
+        if (r["area"].isArray() && r["area"].size() == 2)
         {
             areaW_ = std::clamp(static_cast<int>(r["area"][0]), kMinSide, kMaxSide);
             areaH_ = std::clamp(static_cast<int>(r["area"][1]), kMinSide, kMaxSide);
@@ -527,13 +557,13 @@ namespace playground::sandbox
         }
         if (!declared_.module.empty())
         {
-            if (!declared_.fields.empty())
-            {
-                std::string f;
-                for (const PanelField& x : declared_.fields)
+            // Those GuiSpec takes (a float, int or bool field: fieldOk), not a module's instance, a pointer or an array.
+            std::string f;
+            for (const PanelField& x : declared_.fields)
+                if (x.type == "float" || x.type == "int" || x.type == "bool")
                     f += (f.empty() ? "" : ", ") + x.name + " (" + x.type + ")";
+            if (!f.empty())
                 out += "Fields a display may show: " + f + ".\n";
-            }
         }
         else if (!mockedFields_.empty())
         {
@@ -826,10 +856,18 @@ namespace playground::sandbox
         const int w = side("width", areaW_), h = side("height", areaH_);
         areaW_ = w;
         areaH_ = h;
+        // The theme asked for, else the user's in the plugin (its preferences, read again: the plugin may have changed
+        // them since), as view_panel draws it.
         const std::string theme = text(r["theme"]);
-        const int themeIndex = theme == "paper" ? 1 : 0;
-        if (!theme.empty() && theme != "paper" && theme != "graphite")
-            said += "theme is graphite or paper: graphite. ";
+        int themeIndex = theme == "paper" ? 1 : 0;
+        const bool users = theme != "paper" && theme != "graphite";
+        if (users)
+        {
+            funkgui::UiPreferences::get().reload();
+            themeIndex = funkgui::UiPreferences::get().theme() == 1 ? 1 : 0;
+            if (!theme.empty())
+                said += "theme is graphite or paper: the user's. ";
+        }
         // The dials at their defaults, but those `values` names.
         std::array<float, kMaxControls> values{};
         for (int c = 0; c < kMaxControls; ++c)
@@ -894,7 +932,8 @@ namespace playground::sandbox
                 smaller = true;
             }
         }
-        std::string line = said + std::to_string(w) + " x " + std::to_string(h) + " px, " + (themeIndex == 1 ? "paper" : "graphite") + " (the picture "
+        std::string line = said + std::to_string(w) + " x " + std::to_string(h) + " px, " + (themeIndex == 1 ? "paper" : "graphite")
+                         + (users ? " (the user's theme in the plugin)" : "") + " (the picture "
                          + std::to_string(pw) + " x " + std::to_string(ph) + " pixels"
                          + (smaller ? ", made smaller to fit, from " + std::to_string(area.w) + " x " + std::to_string(area.h)
                                           + "; detail \"high\" sends it whole"
@@ -904,14 +943,26 @@ namespace playground::sandbox
             line += (view.shownPage().empty() ? (page.empty() ? std::string("; the first pages shown") : "; there is no page " + page + ": the first pages shown")
                                               : "; page " + view.shownPage() + " shown")
                   + " (its pages: " + view.allPages() + ")";
-        line += drawn.gpu ? std::string("; drawn by the GPU as the plugin draws it, shaders included")
-                          : "; drawn without the GPU (" + drawn.why + "): each shader is a striped placeholder here, though the plugin draws it";
+        int unbuilt = 0;
+        for (const PanelShader& sh : spec_.shaders)
+            unbuilt += sh.id == 0 ? 1 : 0;
+        if (!drawn.gpu)
+            line += "; drawn without the GPU (" + drawn.why + ")"
+                  + (spec_.shaders.empty() ? std::string() : ": each shader is a striped placeholder here, though the plugin draws it");
+        else if (unbuilt > 0)
+            line += "; drawn by the GPU as the plugin draws it, but " + std::to_string(unbuilt) + " of its "
+                  + std::to_string(spec_.shaders.size()) + (spec_.shaders.size() == 1 ? " shader" : " shaders")
+                  + " not built here, shown as placeholders (the notes say why)";
+        else
+            line += std::string("; drawn by the GPU as the plugin draws it") + (spec_.shaders.empty() ? "" : ", shaders included");
         line += "; the displays show demo values. Sandbox #" + std::to_string(number_) + ".";
+        // The area goes back with it: the server keeps it, so a helper started again lays the panel out as it was.
         return object({ { "ok", true },
                         { "text", str(line) },
                         { "png", juce::Base64::toBase64(png.data(), png.size()) },
                         { "width", pw },
                         { "height", ph },
+                        { "area", juce::Array<juce::var>{ areaW_, areaH_ } },
                         { "gpu", drawn.gpu } });
     }
 

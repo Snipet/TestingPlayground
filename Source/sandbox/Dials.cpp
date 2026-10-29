@@ -279,7 +279,8 @@ namespace playground::sandbox
             const Dial& d = dials[k];
             Control& c = out[k];
             std::snprintf(c.name, sizeof c.name, "%s", d.name.c_str());
-            std::snprintf(c.unit, sizeof c.unit, "%s", d.unit.c_str());
+            // No unit: in the plugin a dial's unit comes from the .gui's unit= alone (GuiSpec), never from its
+            // declaration (Patch's controlOf), so a dial's `unit` is only what a blank panel writes as unit=.
             c.used = true;
             c.type = d.type;
             c.min = d.type == ControlType::toggle ? 0.0f : d.min;

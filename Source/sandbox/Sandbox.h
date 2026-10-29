@@ -3,10 +3,11 @@
 // the shaders they hold, never compiled), the dials (sandbox/Dials.h) and what the plugin would make of them: GuiSpec's
 // tree and notes (fminus/GuiSpec.h), its shaders built with shaderc (fminus/Shaders.h), its layout (editor/GuiLayout.h)
 // and its picture (sandbox/View.h). Each request of SandboxProtocol.h is a method; each returns its reply (ok, text and
-// what the op adds). One document at a time: open replaces it.
+// what the op adds). One document at a time: open replaces it (the server keeps the others, and sends one back with a
+// request for it: `load`).
 //
-// The layout report (open's and edit's): the natural size against the area (the last render's, else the PANEL view's
-// at the default size); one line an element on the pages shown (its line, kind and name, its place in the area);
+// The layout report (open's and edit's): the natural size against the area (the last render's; after open the PANEL
+// view's at the default size); one line an element on the pages shown (its line, kind and name, its place in the area);
 // overlaps; what sticks out of its container, what is cut, what scrolls; controls that name no dial (GuiSpec's notes);
 // dials no control names (the plugin puts them last, in a section without a title). About 40 lines; `detail` all.
 #pragma once
@@ -62,6 +63,6 @@ namespace playground::sandbox
         std::string notes_;                      // readGuiSpec's, and the shaders' builds
         ShaderTools tools_;
         ShaderCache shaders_;
-        int areaW_, areaH_;                      // the area the report lays it out in (the last render's)
+        int areaW_, areaH_;                      // the area the report lays it out in (the last render's; open's default)
     };
 }

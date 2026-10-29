@@ -10,7 +10,8 @@
 // renderGpuPicture needs: called on it, it draws at once. The protocol is SandboxProtocol.h: a JSON request a line on
 // stdin, its reply a line on stdout, one at a time. stdout carries the replies alone: anything else that would print
 // there (a library's log) goes to stderr, where the server's own goes (Claude Desktop's MCP log). It ends when its stdin
-// closes (the server gone) and after kIdleSeconds with no request; the server starts it again on the next call.
+// closes (the server gone, or done with it after kIdleSeconds with no request), and by itself after kHelperIdleSeconds;
+// the server starts it again on the next call.
 #include "sandbox/Sandbox.h"
 #include "sandbox/SandboxProtocol.h"
 
@@ -74,9 +75,9 @@ int main()
     for (;;)
     {
         std::string line;
-        const int got = in.next(line, pg::sandbox::kIdleSeconds * 1000);
+        const int got = in.next(line, pg::sandbox::kHelperIdleSeconds * 1000);
         if (got <= 0)
-            break;                                // stdin closed (the server gone), or idle for kIdleSeconds
+            break;                                // stdin closed (the server gone or done with it), or idle long past it
         if (!line.empty() && line.back() == '\r')
             line.pop_back();
         if (line.empty())

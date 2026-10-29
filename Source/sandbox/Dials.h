@@ -20,7 +20,8 @@ namespace playground::sandbox
         std::string name;
         ControlType type = ControlType::real;
         float min = 0.0f, max = 1.0f, def = 0.0f;
-        std::string unit;                         // after a float's value ("Hz"), 7 characters at most
+        std::string unit;                         // a blank panel's unit= for a float knob or slider ("Hz"), 7 characters
+                                                  // at most: the plugin shows a unit only from the .gui's unit=
         std::vector<std::string> options;         // an int's or a bool's values' names, from its low end
         std::string style;                        // the control a blank .gui gives it: knob, slider, switch, buttons, menu
         bool given = false;                       // Claude's (else the program's declaration)
@@ -47,7 +48,7 @@ namespace playground::sandbox
     std::vector<Dial> merge(std::vector<Dial> base, const std::vector<Dial>& given);
 
     // The dials as the plugin's slots hold them (Patch's controlOf: a bool 0..1, an int 0..10 and a float 0..1 without a
-    // range, the default inside it), the first kMaxControls.
+    // range, the default inside it, no unit), the first kMaxControls.
     Controls controlsOf(const std::vector<Dial>& dials);
 
     // A small .gui that holds `dials` (each in its style, else a knob; a bool a switch; an int with names buttons) and
