@@ -273,11 +273,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
   FunkGui's `renderGpuPicture` (v0.23.0, `funkgui/gpu/GpuPicture.h`) where the build has bgfx (`FUNKGUI_HAS_BGFX`) and
   the platform GPU pictures, shaders drawn as on screen; on any other status SoftRaster (each shader FunkGui's striped
   placeholder), and the picture's text says so and why (`toString(status)`). With no editor open, the first picture
-  starts bgfx headless and FunkGui holds it; `picturesIdle` (the processor's timer) lets it go `kPictureHoldSeconds`
-  (10 s) after the last picture: a burst of pictures (Claude Desktop looking at one page after another) starts bgfx
-  once (here the first 190 ms, the next 26), and a host keeps no GPU context for a plugin nobody looks at. Never draw
-  one off the message thread. `gui.shaders` PICTURE (against SoftRaster's image of the same frame) and `plugin.chat`
-  VIEW check both paths (the fallback through `picture::forceSoftRasterForTests`).
+  starts bgfx headless and FunkGui holds it; `picturesIdle` (the processor's timer) lets it go ten seconds
+  (`kPictureHoldSeconds`) after the last picture: a burst of pictures (Claude Desktop looking at one page after another)
+  starts bgfx once (here the first 40 to 190 ms, by the load, the next about 25), and a host keeps no GPU context for a
+  plugin nobody looks at. Never draw one off the message thread. `gui.shaders` PICTURE (against SoftRaster's image of
+  the same frame) and `plugin.chat` VIEW check both paths (the fallback through `picture::forceSoftRasterForTests`).
 - **A scenario and trial edits** (`plugin/ChatScenario.h`; `measure::Request`'s scenario, `Timeline`, `RenderHooks`):
   measure_output, view_sound, each check (it keeps its scenario), tune_dials and compare take one `scenario` property
   (its schema one line, its details in the prompt's CHECKING YOUR WORK): a phrase, dial moves, wheels, host edits, the
