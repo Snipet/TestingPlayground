@@ -52,6 +52,8 @@ namespace playground::capture
             const double block = !r.request.blocks.empty() ? static_cast<double>(r.request.blocks.back()) / t.rate : 0.0;
             if (r.swappedAt >= 0.0 && firstDiffers >= r.swappedAt - block)
                 return fmt("another program came in at %.2f s (a run), and a replay plays the one at its start throughout", r.swappedAt);
+            if (r.frozenFrom >= 0.0 && firstDiffers >= r.frozenFrom - block)
+                return fmt("the frozen copy played from %.2f s (Math::Fast: its last bits are not the program's own)", r.frozenFrom);
             if (!r.fromStart)
                 return "this part starts in the middle of the take, on the state the program had there, which a replay starts "
                        "without";
@@ -73,7 +75,8 @@ namespace playground::capture
         bool stateCause(const Take& t, const Replay& r, double firstDiffers)
         {
             const double block = !r.request.blocks.empty() ? static_cast<double>(r.request.blocks.back()) / t.rate : 0.0;
-            return !(r.swappedAt >= 0.0 && firstDiffers >= r.swappedAt - block) && !t.restarted && r.fromStart;
+            return !(r.swappedAt >= 0.0 && firstDiffers >= r.swappedAt - block)
+                && !(r.frozenFrom >= 0.0 && firstDiffers >= r.frozenFrom - block) && !t.restarted && r.fromStart;
         }
 
         const char* const kExact = " For an exact take: capture arm with mode next and restart (ask the user first: it cuts "
@@ -150,6 +153,8 @@ namespace playground::capture
             }
             if (out.swappedAt < 0.0 && x.program != out.program)
                 out.swappedAt = static_cast<double>(at) / rate;
+            if (out.frozenFrom < 0.0 && x.has(Block::kFrozen))
+                out.frozenFrom = static_cast<double>(at) / rate;
         }
         q.block = std::clamp(lastSize, 1, measure::kMaxBlock);
         {
@@ -282,6 +287,9 @@ namespace playground::capture
             return "Replay: nothing to replay (" + why + ").";
         if (r.files == nullptr)
             return "Replay: cannot be made: the files of the program that played are not known.";
+        if (r.frozenFrom >= 0.0)
+            return fmt("Replay: it will differ from %.2f s, where the frozen copy played (not the program's own code); a "
+                       "render of \"capture\" null-tests it.", r.frozenFrom);
         if (r.swappedAt >= 0.0)
             return fmt("Replay: plays the program at its start throughout, so from %.2f s (another program came in) it "
                        "differs; a render of \"capture\" null-tests it.", r.swappedAt);
@@ -290,7 +298,7 @@ namespace playground::capture
             return std::string("Replay: ")
                  + (t.restarted ? "it started on the program's fresh state" : kInstrument ? "no voice sounded when it started"
                                                                                            : "no tail rang when it started")
-                 + ", so a replay should match it bit for bit"
+                 + " and the program's own code played, so a replay should match it bit for bit"
                  + (t.restarted ? "" : " (unless the program keeps a state from before, as an LFO's phase)")
                  + "; the first render of \"capture\" null-tests it.";
         const std::string why2 = t.start == Start::arm && t.fromSeconds > 0.0 ? std::string("it started mid-playing (mode last)")

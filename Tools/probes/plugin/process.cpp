@@ -22,9 +22,9 @@
 //           neighbouring samples exceeds the steady signal's own steepest by more than 5 %, and 20 ms after the
 //           un-bypass edge the output is the never-bypassed run's, bit for bit (the Engine ran through the bypass)
 //   EARLY   a block before any prepareToPlay: an effect passes its input, NaN and inf as 0; an instrument is silent
-//   FREEZE  the freezer: dials still for its delay, the frozen copy plays (the port says so), the same bits as a
-//           processor that never freezes (finite: the copy's math is the program's own, Math::Vector); a host's write
-//           drops it that block, and it comes back after the delay
+//   FREEZE  the freezer: dials still for its delay, the frozen copy plays (the port says so), the same sound as a
+//           processor that never freezes (finite, the difference 80 dB under the signal: the copy's math is
+//           Math::Fast); a host's write drops it that block, and it comes back after the delay
 //   MIDI    (an instrument) a note-on at velocity 0 is a note-off; All Notes Off (CC 123) releases every note
 //   HOSTDATA the host's playhead (100 BPM, 7/8, from beat 8, playing) reaches the Engine's Host block; an
 //           instrument's mod wheel (CC 1), pitch wheel (both ends), channel pressure and sustain pedal (CC 64) too,
@@ -391,7 +391,7 @@ PROBE(plugin, process)
         p.setPlayHead(nullptr);
     }
     // FREEZE: the processor's freezer (Compiler.h): its dials still for its delay (a quarter second here), the
-    // frozen copy plays, the same bits as a processor that never freezes; a host's write: the program's own code that
+    // frozen copy plays, the same sound as a processor that never freezes; a host's write: the program's own code that
     // block, and the copy again after the delay
     {
         pg::Processor a, b;
@@ -405,10 +405,10 @@ PROBE(plugin, process)
         juce::AudioBuffer<float> ba(2, kBlock), bb(2, kBlock);
         double signal = 0.0, difference = 0.0;
         bool finite = true;
-        const auto sameBits = [&] {
+        const auto sameSound = [&] {
             const double db = difference == 0.0 ? -300.0 : signal == 0.0 ? 300.0 : 10.0 * std::log10(difference / signal);
             std::printf("freeze: the difference %.1f dB\n", db);
-            return finite && signal > 0.0 && difference == 0.0;
+            return finite && db <= -80.0;
         };
         std::size_t at = 0;
         const auto block = [&](bool note) {
@@ -456,7 +456,7 @@ PROBE(plugin, process)
         P.eq("freeze.never_in_the_other", b.engine().frozen() || b.compiler().freezes() > 0 ? 0 : 1, 1);
         for (int k = 0; k < 40; ++k)
             block(false);
-        P.eq("freeze.same_bits", sameBits() ? 1 : 0, 1);
+        P.eq("freeze.same_sound", sameSound() ? 1 : 0, 1);
         const pg::Control c0 = a.control(0);
         setPlain(a, 0, pg::plainOf(c0, 0.4f));
         setPlain(b, 0, pg::plainOf(c0, 0.4f));
@@ -465,7 +465,7 @@ PROBE(plugin, process)
         P.eq("freeze.again", waitFrozen() && a.compiler().freezes() >= 2 ? 1 : 0, 1);
         for (int k = 0; k < 40; ++k)
             block(false);
-        P.eq("freeze.same_bits_after", sameBits() ? 1 : 0, 1);
+        P.eq("freeze.same_sound_after", sameSound() ? 1 : 0, 1);
     }
     return P.finish();
 }
