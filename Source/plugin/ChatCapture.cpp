@@ -314,8 +314,8 @@ namespace playground
             out += fmt(" (%zu programs played; a swap fades over 20 ms).\n", s.programs.size());
         }
         if (s.frozenSeconds > 0.0)
-            out += fmt("Frozen copy: played from %.2f to %.2f s (the program's own math with its dials as constants: the "
-                       "same bits, so a replay can still match it bit for bit).\n", s.frozenFrom, s.frozenTo);
+            out += fmt("Frozen copy: played from %.2f to %.2f s (Math::Fast: a replay there matches to about -80 dB, not bit for "
+                       "bit).\n", s.frozenFrom, s.frozenTo);
         else
             out += "Frozen copy: off; the program's own code played (so a replay can match it bit for bit).\n";
 

@@ -148,17 +148,17 @@ place (its `products/<key>.cmake`, and its names in the docs).
   its dials as FMinus frozen constants once `Engine::dials` says they have held still for 3 s (from the recipe the
   compile kept, `Patch::Recipe`), and offers it (`Engine::offerFrozen`); the audio thread plays it only if it is of
   the program that plays at exactly the dials' values, through the same instances (`Patch::useFrozen`), and drops it
-  the block a dial moves; copies go back through four retired slots for `collect`. The copy compiles in the program's
-  own Math::Vector, so it plays the program's very bits in any blocks and changes nothing but the cost. It was in
-  Math::Fast (the user's choice of 2026-10-27, when it took 78% and 75% of the program's time to exact math's 91% and
-  94%) until FMinus c75caab inlined its own kernels: since then fast math saves only a few points on average and makes
-  a loop with state that calls tanhf or sinf a sample at a time slower than the program itself (README "Frozen
-  dials"). While a recording is armed none plays (`Engine::setOwnCode`), so a replay matches by construction. Never
-  add fast-math flags or anything else that changes a result's bits. `dsp.freeze` (its own program, the examples, and
-  in LONG 64 RANDOM programs for ten seconds in irregular blocks: the program's bits) and plugin.process FREEZE (the
-  same bits as a processor that never freezes) check it; `dsp.freeze` also times a copy in fast math
-  (`Patch::freeze`'s `fastMath`, measured only); a probe that compares two processors' bits must not run long enough
-  to freeze (3 s of still dials), or turns the freezer off (`Compiler::setFreezing`).
+  the block a dial moves; copies go back through four retired slots for `collect`. The copy compiles in FMinus's
+  Math::Fast (the user's choice, 2026-10-27: faster, the same sound), so it is not the same bits as the program's
+  Math::Vector: its last bits move, and while it plays the output may depend on where the host's blocks end (while a
+  recording is armed none plays: `Engine::setOwnCode`). Never
+  add fast-math flags or anything else that changes more than a math function's last bits. `dsp.freeze` (its own
+  program: the same samples, finite and the difference 80 dB under the signal; the examples, and in LONG 64 RANDOM
+  programs for ten seconds: the same spectrum, every octave band, level and peak within 0.1 dB, since an FM voice's
+  phase drifts an ulp at a time) and plugin.process FREEZE check it; `dsp.freeze` also times a copy in exact math
+  (`Patch::freeze`'s `exactMath`, measured only: since FMinus c75caab it plays the program's bits, at about the fast
+  copy's cost, README "Frozen dials"); a probe that compares two processors' bits must
+  not run long enough to freeze (3 s of still dials), or turns the freezer off (`Compiler::setFreezing`).
 - The displays read what the audio thread publishes, without a lock: after each block the Engine measures the
   input (the effect's) and the output and reads the displays' fields (`Patch::tap`, a field of the effect's instance,
   or of the synth's newest sounding voice) into `Engine::Meters`, through an `fsdsp::Seqlock`, and writes the scope's
