@@ -105,6 +105,7 @@
 // of their own, so the message thread never waits for them.
 #pragma once
 
+#include "plugin/Capture.h"
 #include "plugin/ChatPort.h"
 #include "plugin/ClaudeApi.h"
 #include "plugin/EditorPort.h"
@@ -156,6 +157,10 @@ namespace playground
         virtual void chatListening(bool on) = 0;
         virtual Changes chatChanges(const std::string& since, bool issue) = 0;
         virtual std::array<std::vector<std::string>, kMaxControls> chatDialOptions() const = 0;
+        // The recorder (plugin/Capture.h; the capture tool): arm a recording (the program's own code plays while it is
+        // armed), stop it (its take kept), take (the take kept), status, forget (all of it freed, off the audio thread).
+        // stop and status are live (CLAUDE.md, "A live tool"): the recorder's own mutex and atomics only.
+        virtual capture::Reply chatCapture(capture::Action action, const capture::Options& options) = 0;
         // For a render's "host" (ChatScenario.h): the host's sample rate and its largest block (0: not known); and the
         // project open in the editor (compare's version:N and preset:Name; "" for none).
         virtual double chatHostRate() const { return 0.0; }
@@ -259,6 +264,7 @@ namespace playground
         juce::var runTool(const juce::var& toolUse);               // a tool_result block
         juce::var compareTool(const juce::var& toolUse);           // compare's (ChatCompare.cpp)
         juce::var traceTool(const juce::var& toolUse);             // trace's (ChatTrace.cpp)
+        juce::var captureTool(const juce::var& toolUse);           // capture's (ChatCapture.cpp)
         std::string toolText(const std::string& name, const juce::var& input, bool& isError);
         // The checks measured on the editor's files and the plugin's dials: their entry brought up to date, and the
         // results in words for Claude ("" with no checks). The worker's.

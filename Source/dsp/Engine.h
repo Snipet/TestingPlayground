@@ -179,6 +179,14 @@ namespace playground
         // The dials as of the last block; false while the audio thread publishes (read again).
         bool dials(DialState& out) const noexcept { return dials_.read(out); }
         bool frozen() const noexcept { return frozenNow_.load(std::memory_order_relaxed); }   // the copy plays
+        // While on (a recording armed, plugin/Capture.h), the program's own code plays: a frozen copy playing is
+        // dropped at the next block, one offered goes back, and the Compiler's freezer waits; a replay of the
+        // recording then gives its bits (the copy's Math::Fast would not).
+        void setOwnCode(bool on) noexcept { ownCode_.store(on, std::memory_order_relaxed); }
+        bool ownCode() const noexcept { return ownCode_.load(std::memory_order_relaxed); }
+        // The output guard's calls that raised an alert, counted and never cleared (the low 32 bits: a NaN or an
+        // infinity replaced; the high: a sample clipped). Reading it clears nothing, unlike takeAlerts.
+        uint64_t alertTally() const noexcept { return alertTally_.load(std::memory_order_relaxed); }
         // The last block's meters; false while the audio thread publishes (keep the frame before).
         bool meters(Meters& out) const noexcept { return meters_.read(out); }
         // The last n samples (at most kScopeLength) of the input or the output, mono, oldest first.
@@ -196,6 +204,14 @@ namespace playground
         bool playing() const noexcept { return current_ != nullptr || pending_.load() != nullptr; }
         bool swapping() const noexcept { return old_ != nullptr || pending_.load() != nullptr; }
         int activeVoices() const noexcept;
+        // Offline only, after restart() and before the first process(): the clock's start, so that the voices' grid
+        // (kGrid) has a recording's phase (a replay of the capture, Measure.h's Request::clock).
+        void setClock(uint64_t samples) noexcept { clock_ = samples; }
+        // The song's position at the next call's first sample (the audio thread's own: a recording keeps it where the
+        // host gives no transport and the Engine's own runs at 120 BPM), and, offline only, where it starts (after
+        // restart(), which sets it to 0: a replay of such a recording, Measure.h).
+        double beat() const noexcept { return beat_; }
+        void setBeat(double beat) noexcept { beat_ = beat; }
 
         // Offline only (a Session's Engine, Measure.h; never the one that plays), between process calls: for a tool
         // that watches the program as it plays (dsp/Debug.h). The program that plays, and the voices that sound (an
@@ -270,6 +286,7 @@ namespace playground
         Patch::Frozen* frozen_ = nullptr;             // the copy of current_ that may play (the audio thread's)
         std::array<Patch::Frozen*, 4> frozenHold_{};  // copies done with, waiting for a retired slot
         std::atomic<bool> frozenNow_{ false };
+        std::atomic<bool> ownCode_{ false };          // setOwnCode
         bool moved_ = false;                          // a dial moved in this block (glideControls)
         uint64_t samples_ = 0;                        // processed since prepare()
         uint64_t lastMove_ = 0;                       // samples_ when a dial last moved or the program came
@@ -318,6 +335,7 @@ namespace playground
         std::vector<float> accL_, accR_, voiceL_, voiceR_, dryL_, dryR_, mono_;
         std::atomic<float> load_{ 0.0f };
         std::atomic<uint32_t> alerts_{ 0 };
+        std::atomic<uint64_t> alertTally_{ 0 };       // alertTally (the audio thread's, the only writer)
 
         fsdsp::Seqlock<Meters> meters_;
         Meters frame_{};                              // the audio thread's, built over a block

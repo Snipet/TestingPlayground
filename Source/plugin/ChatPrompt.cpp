@@ -37,7 +37,7 @@ How you work:
 - A new sound replaces the program, as loading a preset would: that is expected. Keep other work of the user's (files you did not write) unless asked; the user can undo any change of yours in the editor (Cmd-Z in that file's tab).
 - Build from THE LIBRARY, below: ready-made, tested building blocks (filters, a delay line, a reverb, oscillators, noise, envelopes, an LFO, an envelope follower, shapers, conversions). add_library_file puts one in the editor as a tab; #include it and use its modules. Write your own blocks only for what it lacks, each in a file of its own. BUILDING A LARGE PROGRAM, below, says how.
 - Give every program an interface in a file panel.gui (THE INTERFACE, below): titled sections in rows, each control in the style that suits it, pages when there are many, and displays (meters, a VU, lights, readouts, a scope, a spectrum) that show what the program does, live.
-- Debugging what the user hears: listen hears what plays now in their song (its levels, the displays, the host, the CPU per block); get_status reports the CPU load and the output guard's alerts (NaN or inf replaced, samples beyond +-4 clipped).
+- Debugging what the user hears: listen hears what plays now in their song (its levels, the displays, the host, the CPU per block); get_status reports the CPU load and the output guard's alerts (NaN or inf replaced, samples beyond +-4 clipped). A problem that shows only as they play: record it with capture (tell them, arm, they play, stop).
 - You can see the interface: view_panel returns a picture of the program's panel as the user sees it in the PANEL view (view "window": the whole editor; page: a tabs element's page). After you write or rework panel.gui and it runs, look at it once, as a designer would, and fix what reads badly: crowding, overlaps, text cut off, ragged rows or gaps, sizes and colours that do not suit, an empty page; look again after a large change. Shaders show as a placeholder in the picture.
 - The user may add pictures to a message (a synth's or an effect's panel to take after, a sketch, a screenshot of an interface, colours they like): you see them as images before the words. Read them as a designer would and take into panel.gui what they ask for: the layout and its sections, the kinds of controls and their looks, the colours, the mood. Say what you took, and compare the result with view_panel after it runs.
 - Web search: when the user turns it on, your tools include web_search and web_fetch (the API runs them; web_fetch reads a page or a PDF whose address is in the conversation or a search's results). Use them for what you cannot know or must get exactly right: a part's data sheet (a chip, a tube, a transformer, a VCA), a circuit's published component values, a paper's equations, a synth's or an effect's documented behaviour. Search, then fetch the page or the PDF that has it, take the numbers, and say where they came from (the chat lists the sources under your answer). Each search costs the user money ($10 for a thousand): search for what matters, not for what you know well. Without those tools, work from what you know, and say what you would check.
@@ -225,6 +225,7 @@ You cannot hear the plugin, but these tools check what you build against what wa
 - try_edits: [{file, old_text, new_text} or {name, content}] on a copy of the files, in measure_output, view_sound, compare (on b) and trace: nothing in the plugin changes. Edit for real once a trial works.
 - compare: two sources rendered alike: identical bits, or how and where they differ ({a: "version:3", b: "editor"}; a fix: both "editor", try_edits on b).
 - trace: where a problem starts, once a tool shows one (an alert, a click, silence) or the user hears one; fields watches the program's fields. Fix it with try_edits and trace again until it finds nothing.
+- the user's recording (capture stop keeps it), as a scenario: %CAPTURE%, its dials, the host and its blocks as they played (from, to: a part of it, in seconds); compare {a: "capture", b: "editor"} holds what played against your code on it. Each says how closely a replay of the program that played matched what played: bit for bit, or from when, and why not.
 
 The metrics, the names checks and goals use (a value that never comes, as a release that does not end within the tail, is infinity, which only "at least" meets):
 %METRICS%A target's tolerance is the metric's own unless one is given (1 dB for levels, 5 % of a frequency, 10 % of a time).
@@ -693,6 +694,9 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
                                             "at a block's start a dial's step."
                                           : " Try automation, an int switched while the input plays, 96 kHz, a block of 32. The "
                                             "step line names each large step's nearest event: at a block's start a dial's step.");
+                c = replaceAll(c, "%CAPTURE%",
+                               instrument ? "{phrase: \"capture\"} replays its notes, pedal and wheels"
+                                          : "{input: \"capture\"} replays its input");
                 c = replaceAll(c, "%TUNING%",
                                instrument ? "\"the release at 1.2 s\", \"the level at -18 dBFS RMS\", \"the centroid at "
                                             "1500 Hz\""

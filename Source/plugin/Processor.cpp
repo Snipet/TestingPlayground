@@ -249,6 +249,7 @@ namespace playground
         draft_.files = singleFile(kExamples[0].source);
         projectFiles_ = draft_.files;                            // nothing to lose yet: no project's open asks first
         compiler_.setShaderTools(shaderTools());
+        capture_.setOwnCode([this](bool on) { engine_.setOwnCode(on); });
         const CompileStatus s = compiler_.compileNow(draft_.files);
         jassert(s.ok);
         seen_ = s.revision;
@@ -325,6 +326,7 @@ namespace playground
         maxBlock_ = std::max(1, maximumExpectedSamplesPerBlock);
         largestCall_ = 0;
         engine_.prepare(sampleRate, maxBlock_);
+        capture_.prepare(engine_.rate(), maxBlock_);             // a recording under way ends here
         wet_.prepare(engine_.rate());                            // fsdsp::kFadeMs, 20 ms
         wetSet_ = false;
         weight_.assign(static_cast<std::size_t>(maxBlock_), 0.0f);
@@ -369,7 +371,9 @@ namespace playground
             if (!engineOnly)
                 keepDry(channels.data(), numCh, len);
             largestCall_ = std::max(largestCall_, len);
+            capture_.input(channels.data(), numCh, len);
             engine_.process(channels.data(), numCh, len, std::span<const Event>(events_.data(), numEvents));
+            capture_.output(channels.data(), numCh, len);
             if (!engineOnly)
                 bypassMix(channels.data(), numCh, len);
             numEvents = 0;
@@ -386,6 +390,7 @@ namespace playground
                 const Event e = uiNotes_[tail % kUiNotes];
                 if (bypassed && e.kind == EventKind::noteOn)
                     continue;
+                capture_.event(0, e);
                 events_[numEvents++] = e;
             }
             uiNoteTail_.store(tail, std::memory_order_release);
@@ -400,6 +405,7 @@ namespace playground
                 if (numEvents == events_.size())                // full: play up to this event, then carry on
                     playTo(at);
                 e.offset = static_cast<uint32_t>(at - done);
+                capture_.event(at, e);
                 events_[numEvents++] = e;
             }
         }
@@ -586,7 +592,9 @@ namespace playground
                 t.playing = pos->getIsPlaying();
             }
         engine_.setTransport(t);
+        capture_.begin(buffer.getNumSamples(), bypassed, t, values_, engine_);
         play(buffer, midi, bypassed);
+        capture_.end(engine_);
     }
 
     void Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
@@ -636,6 +644,7 @@ namespace playground
     {
         if (!s.ok)
             return;                                              // the program that played plays on
+        capture_.noteProgram(s.request, s.sources, s.controls);  // a recording's replay compiles these files
         Controls before;
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
@@ -743,6 +752,7 @@ namespace playground
             p.setValueNotifyingHost(normOf(c, plain));
             p.endChangeGesture();
         }
+        capture_.housekeep();                                    // frees what the audio thread handed back
         const double now = juce::Time::getMillisecondCounterHiRes();
         if (const uint32_t a = engine_.takeAlerts(); a != 0)
         {
@@ -1401,6 +1411,30 @@ namespace playground
             journal_.dial(Journal::Who::chat, slot, c.name, dialTextOf(slot, normOf(c, chatDialValue(slot))), dialTextOf(slot, normOf(c, plain)));
         const std::lock_guard<std::mutex> lock(dialMutex_);
         pendingDials_.emplace_back(slot, plain);
+    }
+
+    capture::Reply Processor::chatCapture(capture::Action action, const capture::Options& options)
+    {
+        // restart (next): the files that play compiled again first, so that the recording starts on the program's fresh
+        // state (Capture.h); the editor's draft and the dials stay as they are.
+        if (action == capture::Action::arm && options.restart && options.mode == capture::Mode::next
+            && capture_.audio())
+        {
+            // A run on its way (the editor's, a version's, a preset's) lands first and is what starts afresh: a request
+            // now would replace it, or follow it with the files before it (the agent's worker waits, as chatRun does).
+            compiler_.wait();
+            const Sources running = chatRunning();
+            if (running.empty())
+            {
+                capture::Reply r;
+                r.why = "nothing plays yet to start afresh (run_program plays the editor's files)";
+                return r;
+            }
+            capture::Options o = options;
+            o.freshFrom = compiler_.request(running);
+            return capture_.act(action, o);
+        }
+        return capture_.act(action, options);
     }
 
     float Processor::chatLoad() const { return engine_.load(); }

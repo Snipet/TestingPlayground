@@ -122,6 +122,10 @@ namespace playground
     void Engine::restart()
     {
         prepare(fs_, maxBlock_);
+        host_ = HostBlock{};                         // the wheels, the pedal and the song's position at rest, as new
+        beat_ = 0.0;
+        bpm_ = 120.0;
+        running_ = true;
         const std::lock_guard<std::mutex> lock(mutex_);
         if (current_ != nullptr)
             current_->reset(fs_);
@@ -267,7 +271,8 @@ namespace playground
             lastMove_ = samples_;
         // The copy stops playing the block a dial moves, another program comes or a swap runs, and goes back once a
         // slot is free (until then it is kept, unused).
-        if (frozen_ != nullptr && (moved_ || current_ == nullptr || frozen_->program() != current_->program()
+        const bool own = ownCode_.load(std::memory_order_relaxed);   // setOwnCode: no copy plays
+        if (frozen_ != nullptr && (moved_ || own || current_ == nullptr || frozen_->program() != current_->program()
                                    || old_ != nullptr || xfading_ || !current_->frozen()))
         {
             if (current_ != nullptr)
@@ -282,7 +287,7 @@ namespace playground
             && std::find(frozenHold_.begin(), frozenHold_.end(), nullptr) != frozenHold_.end())
             if (Patch::Frozen* f = frozenPending_.exchange(nullptr, std::memory_order_acq_rel); f != nullptr)
             {
-                if (fits(*f))
+                if (!own && fits(*f))
                 {
                     if (frozen_ != nullptr && !holdFrozen(frozen_))
                         holdFrozen(f);               // no room to let the old one go: this one waits to go instead
@@ -999,6 +1004,9 @@ namespace playground
         {
             alerts_.fetch_or(raised, std::memory_order_relaxed);
             blockFlags_ |= BlockStat::alert;
+            alertTally_.store(alertTally_.load(std::memory_order_relaxed) + ((raised & nonFinite) != 0 ? 1u : 0u)
+                                  + ((raised & clipped) != 0 ? uint64_t{ 1 } << 32 : 0u),
+                              std::memory_order_relaxed);
         }
     }
 }

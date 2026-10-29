@@ -482,13 +482,14 @@ namespace playground::measure
             && hostEdits.jumpToBeat == o.hostEdits.jumpToBeat
             && std::equal(events.begin(), events.end(), o.events.begin(), o.events.end(), sameEvent)
             && std::equal(transport.begin(), transport.end(), o.transport.begin(), o.transport.end(), sameTransport)
-            && blocks == o.blocks;
+            && blocks == o.blocks && frames == o.frames && frameControls == o.frameControls && clock == o.clock
+            && part == o.part;
     }
 
     bool Request::scenario() const
     {
         return !phrase.empty() || !automate.empty() || !wheels.empty() || hostEdits.stopAt >= 0.0 || hostEdits.jumpAt >= 0.0
-            || !events.empty() || !transport.empty() || !blocks.empty() || input != nullptr;
+            || !events.empty() || !transport.empty() || !blocks.empty() || input != nullptr || !frames.empty();
     }
 
     std::string scenarioText(const Request& r)
@@ -535,9 +536,11 @@ namespace playground::measure
                                                             + " at " + seconds(r.hostEdits.jumpAt));
         if (r.hostEdits.stopAt >= 0.0)
             parts.push_back("the host stops at " + seconds(r.hostEdits.stopAt));
-        if (!r.events.empty() || !r.transport.empty() || !r.blocks.empty())
+        if (!r.recording.empty())
+            parts.push_back(r.recording);
+        else if (!r.events.empty() || !r.transport.empty() || !r.blocks.empty())
             parts.push_back("a recording's " + std::to_string(r.events.size()) + " events");
-        if (r.input != nullptr)
+        if (r.input != nullptr && r.recording.empty())
             parts.push_back("its own input (" + seconds(static_cast<double>(r.input->l.size()) / std::max(r.rate, 1.0)) + ")");
         std::string out;
         for (const std::string& p : parts)
@@ -753,6 +756,106 @@ namespace playground::measure
             }
         }
 
+        // A recording's parts (Request::frames, clock, part, transport): its dials for this program's slots (the same dial
+        // as it is, another by name through its plain value, one `dials` names as asked); a mark where a dial moves
+        // (changes 50 ms or more apart are two moves) and where the host starts, stops or jumps.
+        void recordingParts(Timeline& tl, const Request& req, const Controls& controls, const std::array<float, kMaxControls>& base,
+                            double rate)
+        {
+            tl.clock = req.clock;
+            tl.part = std::max(0, req.part);
+            for (std::size_t i = 1; i < req.transport.size(); ++i)
+            {
+                const auto& [at0, a] = req.transport[i - 1];
+                const auto& [at, b] = req.transport[i];
+                if (!a.known || !b.known)
+                    continue;
+                if (a.playing != b.playing)
+                    tl.marks.push_back({ at, b.playing ? "the host starts playing" : "the host stops", -1, false });
+                else if (b.playing && std::fabs(b.beat - (a.beat + static_cast<double>(at - at0) * a.bpm / (60.0 * rate))) > 0.01)
+                    tl.marks.push_back({ at, "the playhead jumps to beat " + fmt("%.2f", b.beat), -1, false });
+            }
+            if (req.frames.empty())
+                return;
+            std::array<int, kMaxControls> from;
+            std::array<bool, kMaxControls> same{};
+            from.fill(-1);
+            for (int c = 0; c < kMaxControls; ++c)
+            {
+                const Control& k = controls[static_cast<std::size_t>(c)];
+                if (!k.used || req.dials.count(k.name) != 0)
+                    continue;
+                if (req.frameControls == nullptr)
+                {
+                    from[static_cast<std::size_t>(c)] = c;
+                    same[static_cast<std::size_t>(c)] = true;
+                    continue;
+                }
+                for (int o = 0; o < kMaxControls && from[static_cast<std::size_t>(c)] < 0; ++o)
+                {
+                    const Control& r = (*req.frameControls)[static_cast<std::size_t>(o)];
+                    if (r.used && sameName(r, k))
+                    {
+                        from[static_cast<std::size_t>(c)] = o;
+                        same[static_cast<std::size_t>(c)] = r.type == k.type && r.min == k.min && r.max == k.max && r.taper == k.taper;
+                    }
+                }
+            }
+            for (const auto& [at, f] : req.frames)
+            {
+                std::array<float, kMaxControls> norm = base;
+                for (std::size_t c = 0; c < norm.size(); ++c)
+                {
+                    const int o = from[c];
+                    if (o < 0)
+                        continue;
+                    const float v = f[static_cast<std::size_t>(o)];
+                    norm[c] = same[c] ? v : normOf(controls[c], plainOf((*req.frameControls)[static_cast<std::size_t>(o)], v));
+                }
+                tl.frames.push_back({ at, norm });
+            }
+            const auto gap = static_cast<std::size_t>(0.05 * rate);
+            for (std::size_t c = 0; c < controls.size(); ++c)
+            {
+                if (from[c] < 0)
+                    continue;
+                const Control& k = controls[c];
+                std::size_t start = 0, last = 0;
+                float before = 0.0f, after = 0.0f;
+                bool open = false;
+                const auto close = [&] {
+                    tl.marks.push_back({ start,
+                                         std::string(k.name) + (last == start ? (k.type == ControlType::real ? " set to " : " steps to ")
+                                                                                    + plainText(after)
+                                                                              : " moves from " + plainText(before) + " to " + plainText(after)
+                                                                                    + " over " + seconds(static_cast<double>(last - start) / rate)),
+                                         -1, false });
+                };
+                for (std::size_t i = 1; i < tl.frames.size(); ++i)
+                {
+                    const float a = tl.frames[i - 1].second[c], b = tl.frames[i].second[c];
+                    if (a == b)
+                        continue;
+                    const std::size_t at = tl.frames[i].first;
+                    if (open && at - last >= gap)
+                    {
+                        close();
+                        open = false;
+                    }
+                    if (!open)
+                    {
+                        open = true;
+                        start = at;
+                        before = plainOf(k, a);
+                    }
+                    last = at;
+                    after = plainOf(k, b);
+                }
+                if (open)
+                    close();
+            }
+        }
+
         // The parts of a timeline every render of a request shares: the host's blocks, its transport (the song's start
         // at the request's tempo, the edits, or a recording's), the dials' moves; with their marks.
         void hostParts(Timeline& tl, const Request& req, const Controls& controls, const std::array<float, kMaxControls>& base,
@@ -843,6 +946,7 @@ namespace playground::measure
                                                                         + plainText(mv.to)),
                                      -1, false });
             }
+            recordingParts(tl, req, controls, base, rate);
         }
 
         // An instrument's MIDI: `keys` held from the start until offAt (the wheels where the request puts them, at the
@@ -946,7 +1050,10 @@ namespace playground::measure
                         break;
                     case EventKind::controller:
                         if (e.note == 64)
-                            tl.marks.push_back({ at, e.velocity >= 0.5f ? "the pedal down" : "the pedal up", -1, false });
+                        {
+                            if (at > 0 || e.velocity >= 0.5f)        // (up at the start: at rest, no moment)
+                                tl.marks.push_back({ at, e.velocity >= 0.5f ? "the pedal down" : "the pedal up", -1, false });
+                        }
                         else if (at > 0 || e.velocity != 0.0f)
                             tl.marks.push_back({ at, (e.note == 1 ? std::string("the mod wheel") : "controller " + std::to_string(e.note))
                                                          + " to " + fmt("%.2f", static_cast<double>(e.velocity)),
@@ -957,7 +1064,8 @@ namespace playground::measure
                             tl.marks.push_back({ at, "the pitch wheel to " + fmt("%.2f", static_cast<double>(e.velocity)), -1, false });
                         break;
                     case EventKind::pressure:
-                        tl.marks.push_back({ at, "pressure to " + fmt("%.2f", static_cast<double>(e.velocity)), -1, false });
+                        if (at > 0 || e.velocity != 0.0f)
+                            tl.marks.push_back({ at, "pressure to " + fmt("%.2f", static_cast<double>(e.velocity)), -1, false });
                         break;
                 }
             }
@@ -1033,6 +1141,9 @@ namespace playground::measure
             }
             engine.restart();
             engine.takeAlerts();
+            engine.setClock(tl.clock);                       // a recording's grid phase (0 otherwise)
+            if (!tl.transport.empty() && tl.transport.front().at == 0 && !tl.transport.front().transport.known)
+                engine.setBeat(tl.transport.front().transport.beat);   // a recording without the host's: the Engine's own
             const std::size_t total = tl.length;
             r.out.l.assign(total, 0.0f);
             r.out.r.assign(total, 0.0f);
@@ -1044,6 +1155,8 @@ namespace playground::measure
             r.voicesAt.assign(tl.events.size(), -1);
             std::vector<Event> block;
             std::array<float, kMaxControls> norm = dials.norm;
+            std::array<float, kMaxControls> base = dials.norm;   // a recording's dials where its frames say (else these)
+            std::size_t nextFrame = 0;
             std::size_t next = 0, nextSend = 0, hostAt = 0, hostEnd = 0, blockIndex = 0;
             double segBeat = 0.0, segBpm = 120.0;                // the transport last sent, for a stop where it is
             std::size_t segAt = 0;
@@ -1071,8 +1184,12 @@ namespace playground::measure
                         segPlaying = t.playing;
                         ++nextSend;
                     }
+                    while (nextFrame < tl.frames.size() && tl.frames[nextFrame].first <= pos)
+                        base = tl.frames[nextFrame++].second;
                     if (!tl.moves.empty())
-                        movedNorm(norm, dials.norm, controls, tl, pos);
+                        movedNorm(norm, base, controls, tl, pos);
+                    else if (!tl.frames.empty())
+                        norm = base;
                     engine.setControls(norm);
                 }
                 if (!timing && r.cpuSamples == 0 && pos >= timeFrom && pos < timeUntil)
@@ -1088,6 +1205,8 @@ namespace playground::measure
                     r.cpuSamples = pos - timedFrom;
                 }
                 std::size_t n = hostEnd - pos;
+                if (tl.part > 0)                                 // the processor's parts (a recording's)
+                    n = std::min(n, static_cast<std::size_t>(tl.part));
                 if (hooks != nullptr)
                     if (const int want = hooks->callLength(pos); want > 0)
                         n = std::min(n, static_cast<std::size_t>(want));
@@ -1222,6 +1341,28 @@ namespace playground::measure
 
     std::size_t Session::lengthOf(const Request& request) const { return timeline(request).length; }
 
+    Timeline timeline(const Request& req, const Controls& controls, double rate, std::size_t length)
+    {
+        // Session::Impl::plan's, for these dials and this rate.
+        Timeline tl;
+        const Dials dials = dialsFor(controls, req);
+        hostParts(tl, req, controls, dials.norm, rate);
+        const auto tailN = static_cast<std::size_t>(std::clamp(req.tailSeconds, 0.0f, 10.0f) * rate);
+        const auto holdN = static_cast<std::size_t>(std::clamp(req.holdSeconds, 0.05f, 10.0f) * rate);
+        if constexpr (kInstrument)
+        {
+            noteParts(tl, req, nullptr, holdN, rate);
+            tl.length = length > 0 ? length : lastMoment(tl) + tailN;
+        }
+        else
+        {
+            tl.heldUntil = req.input != nullptr ? std::min(req.input->l.size(), sampleOf(2.0 * kMaxPlaySeconds, rate)) : holdN;
+            tl.length = length > 0 ? length : std::max(tl.heldUntil, lastMoment(tl)) + tailN;
+        }
+        sortMarks(tl);
+        return tl;
+    }
+
     Result Session::measure(const Request& request)
     {
         Result res;
@@ -1253,7 +1394,9 @@ namespace playground::measure
         std::string out = "Rendered offline at " + fmt("%.0f", rate) + " Hz, in blocks of "
                         + (block > 0 ? std::to_string(block) : std::string("the recording's sizes"))
                         + (request.hostBlock && block > 0 ? " (the host's)" : "") + ". Dials: " + dials.text + ".\n";
-        if (impl_->host)
+        if (impl_->host && !request.transport.empty())
+            out += "Host: the recording's, as the host sent it a block at a time.\n";
+        else if (impl_->host)
             out += "Host: playing from the song's start at " + fmt("%.0f", std::clamp(request.bpm, 20.0f, 400.0f)) + " BPM"
                  + (kInstrument ? ", mod wheel " + fmt("%.2f", std::clamp(request.modwheel, 0.0f, 1.0f))
                                   + ", pitch bend " + fmt("%.2f", std::clamp(request.pitchbend, -1.0f, 1.0f))

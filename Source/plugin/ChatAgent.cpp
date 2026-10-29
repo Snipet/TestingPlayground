@@ -1,6 +1,7 @@
 // Source/plugin/ChatAgent.cpp: see ChatAgent.h.
 #include "plugin/ChatAgent.h"
 
+#include "plugin/ChatCapture.h"
 #include "plugin/ChatImages.h"
 #include "plugin/ChatScenario.h"
 
@@ -1954,6 +1955,7 @@ namespace playground
                        { "question" }));
         tools.add(statusDefinition());               // get_status (Live.cpp)
         tools.add(listenDefinition());               // listen (Live.cpp)
+        tools.add(captureToolDefinition());          // capture (ChatCapture.cpp)
         return juce::var(tools);
     }
 
@@ -2909,6 +2911,7 @@ namespace playground
             { "listen", "Listen live", true, false },
             { "compare", "Compare two sounds", true, false },
             { "trace", "Trace a problem", true, false },
+            { "capture", "Record what you play", true, false },
         };
 
         const Face* faceOf(const juce::String& name)
@@ -3027,7 +3030,8 @@ namespace playground
         const juce::String action = arguments.getProperty("action", juce::var()).toString();
         return name == "get_status"                                              // ChatHost's locked getters, atomics
             || name == "listen"                                                  // the live state (wave 1, lane "live")
-            || (name == "capture" && (action == "status" || action == "stop"));  // the recorder (wave 1, lane "capture")
+            || (name == "capture" && (action == "status" || action == "stop")    // the recorder (wave 1, lane "capture"),
+                && !static_cast<bool>(arguments.getProperty("picture", false))); // but a picture, drawn on the worker
     }
 
     void ChatAgent::mcpCancel(uint64_t call)
@@ -3168,6 +3172,8 @@ namespace playground
             return compareTool(use);
         if (name == "trace")
             return traceTool(use);
+        if (name == "capture")
+            return captureTool(use);                              // ChatCapture.cpp
         if (name == "view_panel")
         {
             // A picture of the panel: an image block and a line of what it shows (the tool_result's content).
@@ -3254,7 +3260,8 @@ namespace playground
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
                 addEntry(ChatEntry::Kind::tool, "looked at the sound");
-                entries_.back().pictures.push_back(d.thumb);
+                if (!vr.render.fromCapture)                     // the user's recording: no thumbnail kept in the session
+                    entries_.back().pictures.push_back(d.thumb);
                 touch();
             }
             return block;
