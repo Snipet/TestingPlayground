@@ -8,6 +8,7 @@
 #include "editor/DialLayout.h"
 #include "editor/DisplayItem.h"
 #include "editor/GuiItems.h"
+#include "editor/GuiView.h"
 #include "editor/Looks.h"
 #include "editor/Items.h"
 #include "editor/LogoMark.h"
@@ -187,7 +188,6 @@ namespace playground::ui
         constexpr float kBottomGap = 10.0f;              // over the status bar
         // The chat's column, at the right.
         constexpr float kChatShare = 0.32f;              // of the width
-        constexpr float kGuiScrollGutter = 8.0f;         // a .gui interface's scroll bar, at its area's right
         constexpr float kChatMinW = 330.0f;
         constexpr float kChatMaxW = 560.0f;
         constexpr float kChatGap = 12.0f;                // between the two cards
@@ -1653,28 +1653,18 @@ namespace playground::ui
         itemOfDisplay_.assign(static_cast<std::size_t>(kMaxDisplays), -1);
         for (int d = 0; d < kMaxDisplays; ++d)
             itemOfDisplay_[static_cast<std::size_t>(d)] = add(std::make_unique<DisplayItem>(idFor()));
-        // A .gui file's interface (GuiItems.h): its tabs first (their frames under the rest), a control a slot, and
-        // pools of pads and envelopes.
-        constexpr int kGuiPool = 8;
-        for (int k = 0; k < kGuiPool; ++k)
-            guiTabs_.push_back(add(std::make_unique<GuiTabsItem>(idFor(), [this](int node, int page) { chooseGuiPage(node, page); })));
-        itemOfGuiSlot_.assign(static_cast<std::size_t>(kMaxControls), -1);
-        for (int c = 0; c < kMaxControls && c < static_cast<int>(ports.size()); ++c)
-            itemOfGuiSlot_[static_cast<std::size_t>(c)] = add(std::make_unique<GuiControlItem>(
-                *ports[static_cast<std::size_t>(c)], idFor(), [this] {
-                    return productTheme(host_ != nullptr ? funkgui::Theme::byIndex(host_->themeIndex()) : funkgui::Theme::graphite());
-                }));
-        for (int k = 0; k < kGuiPool; ++k)
-            guiPads_.push_back(add(std::make_unique<GuiXyItem>(idFor())));
-        for (int k = 0; k < kGuiPool; ++k)
-            guiEnvelopes_.push_back(add(std::make_unique<GuiEnvelopeItem>(idFor())));
-        for (int k = 0; k < 2; ++k)
-            guiKeyboards_.push_back(add(std::make_unique<GuiKeyboardItem>(
-                idFor(), [this](int note, float velocity) { port_.playNote(note, velocity); },
-                [this](bool pitch, float value) { port_.playWheel(pitch, value); })));
-        for (int k = 0; k < 4; ++k)
-            guiShaders_.push_back(add(std::make_unique<GuiShaderItem>(idFor())));
-        shaderNode_.assign(guiShaders_.size(), -1);
+        // A .gui file's interface (GuiView.h): its tabs first (their frames under the rest), a control a slot, and
+        // pools of pads, envelopes, keyboards and shaders; the displays above are its too while it shows them.
+        {
+            GuiView::Hooks hooks;
+            hooks.menuTheme = [this] {
+                return productTheme(host_ != nullptr ? funkgui::Theme::byIndex(host_->themeIndex()) : funkgui::Theme::graphite());
+            };
+            hooks.choosePage = [this](int node, int page) { chooseGuiPage(node, page); };
+            hooks.playNote = [this](int note, float velocity) { port_.playNote(note, velocity); };
+            hooks.playWheel = [this](bool pitch, float value) { port_.playWheel(pitch, value); };
+            guiView_ = std::make_unique<GuiView>(items_, ports, itemOfDisplay_, idFor, std::move(hooks));
+        }
 
         // The chat: the header's buttons (a new chat, the API key), the conversation, the message box and the buttons in
         // its bar (the model, the thinking level, fast mode on a model that takes it, send or stop).
@@ -1967,25 +1957,16 @@ namespace playground::ui
             // Under the editor it takes half the column at most (the editor keeps the rest), and scrolls past that.
             const GuiExtent natural = naturalGuiSize(panelSpec_, controls_, gm, inW);   // a row that wraps: as wide
             const float h = std::max(40.0f, std::min({ natural.h, roomForDials, 0.5f * (inBottom - kEditorY) }));
-            funkgui::Rect area = panelView_ ? funkgui::Rect{ inX, kTabsY, inW, inBottom - kTabsY }
-                                            : funkgui::Rect{ inX, inBottom - h, inW, h };
-            guiPages_.resize(panelSpec_.gui.nodes.size(), 0);
-            gui_ = layoutGui(panelSpec_, controls_, gm, guiPages_, area, guiScrollX_, guiScrollY_);
-            if (gui_.maxScrollY > 0.0f)                  // a gutter for the scroll bar
-            {
-                area.w -= kGuiScrollGutter;
-                gui_ = layoutGui(panelSpec_, controls_, gm, guiPages_, area, guiScrollX_, guiScrollY_);
-            }
-            guiPages_ = gui_.pages;
-            guiScrollX_ = std::clamp(guiScrollX_, 0.0f, gui_.maxScrollX);
-            guiScrollY_ = std::clamp(guiScrollY_, 0.0f, gui_.maxScrollY);
+            const funkgui::Rect area = panelView_ ? funkgui::Rect{ inX, kTabsY, inW, inBottom - kTabsY }
+                                                  : funkgui::Rect{ inX, inBottom - h, inW, h };
+            guiView_->layout(panelSpec_, controls_, area);   // the items placed too
             dials_ = DialsLayout{};
             dials_.top = area.y;
             panelTop = area.y;
         }
         else
         {
-            gui_ = GuiLayout{};
+            guiView_->clear(panelSpec_);
             if (panelView_)
             {
                 // The PANEL view: the dials from the column's top, as tall as they would be with all its room.
@@ -2019,7 +2000,6 @@ namespace playground::ui
                              dials_.dials[static_cast<std::size_t>(c)]);
                 dial.setHidden(gui);
             }
-        layoutGuiItems();
 
         // The chat's card.
         card_ = { chatX_, kMainY, chatW_, bottom - kMainY };
@@ -2147,8 +2127,7 @@ namespace playground::ui
     // The host closes the open gestures before it lets go of the Panel; no HostServices call from here.
     Panel::~Panel()
     {
-        for (const int i : guiKeyboards_)                // a note held as the editor closes is let go
-            static_cast<GuiKeyboardItem&>(*items_[static_cast<std::size_t>(i)]).release();
+        guiView_->releaseKeys();                         // a note held as the editor closes is let go
         releasePictures();
         port_.removeMeterReader();
     }
@@ -2822,12 +2801,7 @@ namespace playground::ui
                         .model()
                         .setControl(cs[static_cast<std::size_t>(c)], spec.labels[static_cast<std::size_t>(c)],
                                     spec.options[static_cast<std::size_t>(c)], controlsRevision_);
-            for (int c = 0; c < kMaxControls; ++c)
-                if (const int i = itemOfGuiSlot_[static_cast<std::size_t>(c)]; i >= 0)
-                    static_cast<GuiControlItem&>(*items_[static_cast<std::size_t>(i)])
-                        .value()
-                        .set(cs[static_cast<std::size_t>(c)], spec.labels[static_cast<std::size_t>(c)],
-                             spec.options[static_cast<std::size_t>(c)]);
+            guiView_->setControls(cs, spec);
             // Other dials or another panel: their places again (a second row takes height from the editor).
             bool sameDials = spec == panelSpec_;
             for (int c = 0; c < kMaxControls && sameDials; ++c)
@@ -2841,16 +2815,16 @@ namespace playground::ui
             // Another interface from its top, unless it is this one edited (as many elements); an edited one the
             // same pages, by their titles (as the session keeps them).
             if (otherGui && spec.gui.nodes.size() != panelSpec_.gui.nodes.size())
-                guiScrollX_ = guiScrollY_ = 0.0f;
+                guiView_->resetScroll();
             const bool otherShaders = !(spec.shaders == panelSpec_.shaders);
             panelSpec_ = spec;
             if (otherGui)
-                guiPages_ = guiPagesOf(panelSpec_.gui, port_.guiPages());
+                guiView_->setPages(guiPagesOf(panelSpec_.gui, port_.guiPages()));
             if (otherShaders || otherGui)
             {
-                registerShaders(s.notes);
+                guiView_->registerShaders(panelSpec_, running_, s.notes);
                 if (sameDials)
-                    layoutGuiItems();
+                    guiView_->place(panelSpec_);
             }
             panelProgram_ = s.ok ? s.request : port_.program();
             if (!sameDials)
@@ -3861,168 +3835,7 @@ namespace playground::ui
     }
 
     // ---- a .gui file's interface ----------------------------------------------------------------------------------------
-    void Panel::layoutGuiItems()
-    {
-        guiItem_.assign(items_.size(), false);
-        const bool gui = !panelSpec_.gui.empty();
-        const std::vector<GuiNode>& nodes = panelSpec_.gui.nodes;
-        const funkgui::Rect area = gui_.area;
-        const GuiMeasure gm = [](const std::string& text, const funkgui::TextStyle& st) {
-            return funkgui::text::width(funkgui::FontService::get().atlas(), text.c_str(), st);
-        };
-        // A node on the pages shown and, at least in part, in the area.
-        const auto seen = [&](std::size_t i) {
-            if (!gui || i >= gui_.rects.size() || !gui_.visible[i])
-                return false;
-            const funkgui::Rect& r = gui_.rects[i];
-            return r.right() > area.x && r.x < area.right() && r.bottom() > area.y && r.y < area.bottom();
-        };
-        const auto control = [this](int slot) -> GuiControlItem& {
-            return static_cast<GuiControlItem&>(*items_[static_cast<std::size_t>(itemOfGuiSlot_[static_cast<std::size_t>(slot)])]);
-        };
-        std::vector<int> nodeOfSlot(static_cast<std::size_t>(kMaxControls), -1), nodeOfDisplay(static_cast<std::size_t>(kMaxDisplays), -1);
-        for (std::size_t i = 0; i < nodes.size(); ++i)
-        {
-            const GuiNode& n = nodes[i];
-            const bool isControl = n.kind == GuiKind::knob || n.kind == GuiKind::slider || n.kind == GuiKind::toggle
-                                || n.kind == GuiKind::buttons || n.kind == GuiKind::menu;
-            if (isControl && n.slot >= 0 && n.slot < kMaxControls)
-                nodeOfSlot[static_cast<std::size_t>(n.slot)] = static_cast<int>(i);
-            if (n.kind == GuiKind::display && n.display >= 0 && n.display < kMaxDisplays)
-                nodeOfDisplay[static_cast<std::size_t>(n.display)] = static_cast<int>(i);
-        }
-        for (int c = 0; c < kMaxControls; ++c)
-        {
-            if (itemOfGuiSlot_[static_cast<std::size_t>(c)] < 0)
-                continue;
-            const int i = nodeOfSlot[static_cast<std::size_t>(c)];
-            if (i >= 0)
-                control(c).place(nodes[static_cast<std::size_t>(i)], gui_.rects[static_cast<std::size_t>(i)], area,
-                                 seen(static_cast<std::size_t>(i)), nodes[static_cast<std::size_t>(i)].color);
-            else
-                control(c).place(GuiNode{}, {}, area, false, "");
-            guiItem_[static_cast<std::size_t>(itemOfGuiSlot_[static_cast<std::size_t>(c)])] = true;
-        }
-        std::size_t pad = 0, env = 0, tab = 0, keys = 0, shade = 0;
-        for (std::size_t i = 0; i < nodes.size() && gui; ++i)
-        {
-            const GuiNode& n = nodes[i];
-            if (n.kind == GuiKind::shader && shade < guiShaders_.size())
-            {
-                const std::size_t k = n.shader >= 0 ? static_cast<std::size_t>(n.shader) : panelSpec_.shaders.size();
-                const bool known = k < panelSpec_.shaders.size() && k < shaderIds_.size();
-                shaderNode_[shade] = static_cast<int>(i);
-                static_cast<GuiShaderItem&>(*items_[static_cast<std::size_t>(guiShaders_[shade++])])
-                    .place(n, gui_.rects[i], area, seen(i), known ? shaderIds_[k] : 0u, n.file,
-                           known ? shaderWhy_[k] : std::string("not built"), known && shaderMoves_[k]);
-            }
-            else if (n.kind == GuiKind::keyboard && keys < guiKeyboards_.size())
-                static_cast<GuiKeyboardItem&>(*items_[static_cast<std::size_t>(guiKeyboards_[keys++])])
-                    .place(n, gui_.rects[i], area, seen(i), n.color);
-            else if (n.kind == GuiKind::xy && pad < guiPads_.size() && n.slot >= 0 && n.slot2 >= 0)
-            {
-                auto& item = static_cast<GuiXyItem&>(*items_[static_cast<std::size_t>(guiPads_[pad++])]);
-                item.bind(&control(n.slot).value(), &control(n.slot2).value());
-                item.place(n, gui_.rects[i], area, seen(i), n.color);
-            }
-            else if (n.kind == GuiKind::envelope && env < guiEnvelopes_.size())
-            {
-                auto& item = static_cast<GuiEnvelopeItem&>(*items_[static_cast<std::size_t>(guiEnvelopes_[env++])]);
-                std::array<GuiValue*, 4> adsr{};
-                for (std::size_t k = 0; k < 4; ++k)
-                    adsr[k] = n.env[k] >= 0 ? &control(n.env[k]).value() : nullptr;
-                item.bind(adsr);
-                item.place(n, gui_.rects[i], area, seen(i), n.color);
-            }
-            else if (n.kind == GuiKind::tabs && tab < guiTabs_.size())
-            {
-                auto& item = static_cast<GuiTabsItem&>(*items_[static_cast<std::size_t>(guiTabs_[tab++])]);
-                std::vector<std::string> titles;
-                for (const int child : n.children)
-                    titles.push_back(nodes[static_cast<std::size_t>(child)].text);
-                item.place(static_cast<int>(i), gui_.rects[i], guiTabRects(panelSpec_, static_cast<int>(i), gui_.rects[i], gm),
-                           std::move(titles), gui_.pages[i], area, seen(i), n.color, n.style);
-            }
-        }
-        for (; pad < guiPads_.size(); ++pad)
-            static_cast<GuiXyItem&>(*items_[static_cast<std::size_t>(guiPads_[pad])]).place(GuiNode{}, {}, area, false, "");
-        for (; env < guiEnvelopes_.size(); ++env)
-            static_cast<GuiEnvelopeItem&>(*items_[static_cast<std::size_t>(guiEnvelopes_[env])]).place(GuiNode{}, {}, area, false, "");
-        for (; tab < guiTabs_.size(); ++tab)
-            static_cast<GuiTabsItem&>(*items_[static_cast<std::size_t>(guiTabs_[tab])]).place(-1, {}, {}, {}, 0, area, false, "", {});
-        for (; keys < guiKeyboards_.size(); ++keys)
-            static_cast<GuiKeyboardItem&>(*items_[static_cast<std::size_t>(guiKeyboards_[keys])]).place(GuiNode{}, {}, area, false, "");
-        for (const int i : guiKeyboards_)
-            guiItem_[static_cast<std::size_t>(i)] = true;
-        for (; shade < guiShaders_.size(); ++shade)
-        {
-            shaderNode_[shade] = -1;
-            static_cast<GuiShaderItem&>(*items_[static_cast<std::size_t>(guiShaders_[shade])])
-                .place(GuiNode{}, {}, area, false, 0u, "", "", false);
-        }
-        for (const int i : guiShaders_)
-            guiItem_[static_cast<std::size_t>(i)] = true;
-        for (const int i : guiPads_)
-            guiItem_[static_cast<std::size_t>(i)] = true;
-        for (const int i : guiEnvelopes_)
-            guiItem_[static_cast<std::size_t>(i)] = true;
-        for (const int i : guiTabs_)
-            guiItem_[static_cast<std::size_t>(i)] = true;
-        if (!gui)
-            return;
-        // The displays: where the interface puts them, while it shows them.
-        for (int d = 0; d < kMaxDisplays; ++d)
-        {
-            const int idx = itemOfDisplay_[static_cast<std::size_t>(d)];
-            auto& item = static_cast<DisplayItem&>(*items_[static_cast<std::size_t>(idx)]);
-            const int i = nodeOfDisplay[static_cast<std::size_t>(d)];
-            const bool has = d < static_cast<int>(panelSpec_.displays.size()) && i >= 0;
-            item.setDisplay(has && seen(static_cast<std::size_t>(i)) ? &panelSpec_.displays[static_cast<std::size_t>(d)] : nullptr);
-            item.setRect(has ? gui_.rects[static_cast<std::size_t>(i)] : funkgui::Rect{});
-            item.setArea(area);
-            guiItem_[static_cast<std::size_t>(idx)] = true;
-        }
-    }
-
-    // A shader's program goes to FunkGui's registry (process-wide, keyed by its bytes' hash: the same shader in two
-    // instances is one program) the first time a panel shows it; a program is never removed, since another instance
-    // may draw it too. One that was not built says why from the compile's notes; one FunkGui refuses (Metal's own
-    // compiler, say), from FunkGui.
-    void Panel::registerShaders(const std::string& notes)
-    {
-        const std::size_t n = panelSpec_.shaders.size();
-        shaderIds_.assign(n, 0u);
-        shaderWhy_.assign(n, std::string());
-        shaderMoves_.assign(n, false);
-        for (std::size_t k = 0; k < n; ++k)
-        {
-            const PanelShader& sh = panelSpec_.shaders[k];
-            const auto f = std::find_if(running_.begin(), running_.end(), [&](const SourceFile& x) { return x.name == sh.file; });
-            if (f != running_.end())
-                shaderMoves_[k] = f->text.find("u_time") != std::string::npos || f->text.find("u_viewSize") != std::string::npos;
-            if (sh.binary.empty() || sh.id == 0)
-            {
-                std::string why = f == running_.end() ? "there is no file " + sh.file + " among the program's" : std::string("not built");
-                std::istringstream in(notes);
-                std::string line;
-                while (std::getline(in, line))
-                    if (line.rfind(sh.file + ":", 0) == 0)
-                        if (const std::size_t at = line.find("note: "); at != std::string::npos)
-                        {
-                            why = line.substr(at + 6);
-                            break;
-                        }
-                shaderWhy_[k] = why;
-                continue;
-            }
-            std::string why;
-            if (funkgui::shaders::has(sh.id)
-                || funkgui::shaders::set(sh.id, sh.binary.data(), static_cast<uint32_t>(sh.binary.size()), why))
-                shaderIds_[k] = sh.id;
-            else
-                shaderWhy_[k] = why.empty() ? std::string("the GPU refused it") : why;
-        }
-    }
+    const GuiLayout& Panel::guiLayout() const noexcept { return guiView_->places(); }
 
     void Panel::setPanelView(bool on)
     {
@@ -4030,7 +3843,7 @@ namespace playground::ui
             return;
         panelView_ = on;
         port_.setPanelView(on);
-        guiScrollX_ = guiScrollY_ = 0.0f;
+        guiView_->resetScroll();
         if (on && (focus_ == editorItem_ || focus_ == problemsItem_))
             setFocus(-1);
         layout();
@@ -4038,40 +3851,31 @@ namespace playground::ui
 
     const GuiControlItem& Panel::guiControl(int slot) const
     {
-        return static_cast<const GuiControlItem&>(
-            *items_[static_cast<std::size_t>(itemOfGuiSlot_[static_cast<std::size_t>(std::clamp(slot, 0, kMaxControls - 1))])]);
+        return static_cast<const GuiControlItem&>(*items_[static_cast<std::size_t>(guiView_->controlItem(std::clamp(slot, 0, kMaxControls - 1)))]);
     }
 
     const Item& Panel::guiItem(int kind, int k) const
     {
-        const std::vector<int>& pool = kind == 0   ? guiPads_
-                                     : kind == 1 ? guiEnvelopes_
-                                     : kind == 2 ? guiTabs_
-                                     : kind == 3 ? guiKeyboards_
-                                                 : guiShaders_;
+        const std::vector<int>& pool = kind == 0   ? guiView_->pads()
+                                     : kind == 1 ? guiView_->envelopes()
+                                     : kind == 2 ? guiView_->tabs()
+                                     : kind == 3 ? guiView_->keyboards()
+                                                 : guiView_->shaders();
         return *items_[static_cast<std::size_t>(pool[static_cast<std::size_t>(std::clamp(k, 0, static_cast<int>(pool.size()) - 1))])];
     }
 
     void Panel::chooseGuiPage(int node, int page)
     {
-        if (node < 0 || static_cast<std::size_t>(node) >= panelSpec_.gui.nodes.size())
+        if (!guiView_->choosePage(panelSpec_, node, page))
             return;
-        guiPages_.resize(panelSpec_.gui.nodes.size(), 0);
-        if (guiPages_[static_cast<std::size_t>(node)] == page)
-            return;
-        guiPages_[static_cast<std::size_t>(node)] = page;
-        port_.setGuiPages(guiPageTitles(panelSpec_.gui, guiPages_));
+        port_.setGuiPages(guiPageTitles(panelSpec_.gui, guiView_->pages()));
         layout();
     }
 
     void Panel::scrollGui(float dx, float dy)
     {
-        const float x = std::clamp(guiScrollX_ + dx, 0.0f, gui_.maxScrollX), y = std::clamp(guiScrollY_ + dy, 0.0f, gui_.maxScrollY);
-        if (x == guiScrollX_ && y == guiScrollY_)
-            return;
-        guiScrollX_ = x;
-        guiScrollY_ = y;
-        layout();
+        if (guiView_->scrollBy(dx, dy))
+            layout();
     }
 
     funkgui::Point Panel::centreOfView(bool panel) const { return centreOf(panel ? panelViewItem_ : viewItem_); }
@@ -4161,74 +3965,10 @@ namespace playground::ui
             Meters shown = meters_;
             if (shown.program != panelProgram_)
                 std::fill(std::begin(shown.taps), std::end(shown.taps), 0.0f);
-            bool readIn = false, readOut = false;
-            for (const int i : itemOfDisplay_)
-            {
-                bool input = false;
-                if (static_cast<const DisplayItem&>(*items_[static_cast<std::size_t>(i)]).wantsScope(input))
-                    (input ? readIn : readOut) = true;
-            }
-            if (readIn || readOut)
-                scopeIn_.resize(DisplayItem::kScopeSamples), scopeOut_.resize(DisplayItem::kScopeSamples);
-            if (readIn)
-                port_.scope(true, scopeIn_.data(), DisplayItem::kScopeSamples);
-            if (readOut)
-                port_.scope(false, scopeOut_.data(), DisplayItem::kScopeSamples);
-            for (const int i : itemOfDisplay_)
-            {
-                auto& item = static_cast<DisplayItem&>(*items_[static_cast<std::size_t>(i)]);
-                bool input = false;
-                const bool scope = item.wantsScope(input);
-                item.update(shown, scope ? (input ? scopeIn_.data() : scopeOut_.data()) : nullptr, dt);
-            }
-            // The controls' live= fields: where the program has each parameter now (none until it plays this program).
-            for (const int i : itemOfGuiSlot_)
-            {
-                if (i < 0)
-                    continue;
-                auto& item = static_cast<GuiControlItem&>(*items_[static_cast<std::size_t>(i)]);
-                const int d = item.liveDisplay();
-                if (d < 0 || d >= static_cast<int>(panelSpec_.displays.size()))
-                    continue;
-                const int t = panelSpec_.displays[static_cast<std::size_t>(d)].tap;
-                const bool now = meters_.program == panelProgram_ && t >= 0 && t < kMaxDisplays;
-                item.setLive(now ? meters_.taps[t] : std::numeric_limits<float>::quiet_NaN());
-            }
-            // The shaders' inputs: a parameter's 0..1, a field's value, the audio's level.
-            for (std::size_t k = 0; k < guiShaders_.size(); ++k)
-            {
-                auto& item = static_cast<GuiShaderItem&>(*items_[static_cast<std::size_t>(guiShaders_[k])]);
-                const int node = shaderNode_[k];
-                if (!item.shown() || node < 0 || static_cast<std::size_t>(node) >= panelSpec_.gui.nodes.size())
-                    continue;
-                const GuiNode& n = panelSpec_.gui.nodes[static_cast<std::size_t>(node)];
-                std::array<float, 8> v{};
-                for (std::size_t j = 0; j < v.size(); ++j)
-                {
-                    const std::string& in = n.inputs[j];
-                    if (in == "in")
-                        v[j] = std::max(shown.inPeak[0], shown.inPeak[1]);
-                    else if (in == "out")
-                        v[j] = std::max(shown.outPeak[0], shown.outPeak[1]);
-                    else if (in.rfind("param:", 0) == 0)
-                    {
-                        const int slot = std::atoi(in.c_str() + 6);
-                        if (slot >= 0 && slot < kMaxControls && itemOfGuiSlot_[static_cast<std::size_t>(slot)] >= 0)
-                            v[j] = static_cast<GuiControlItem&>(*items_[static_cast<std::size_t>(itemOfGuiSlot_[static_cast<std::size_t>(slot)])])
-                                       .value()
-                                       .value01();
-                    }
-                    else if (in.rfind("field:", 0) == 0)
-                    {
-                        const int d = std::atoi(in.c_str() + 6);
-                        const int t = d >= 0 && d < static_cast<int>(panelSpec_.displays.size())
-                                        ? panelSpec_.displays[static_cast<std::size_t>(d)].tap
-                                        : -1;
-                        v[j] = t >= 0 && t < kMaxDisplays ? shown.taps[t] : 0.0f;
-                    }
-                }
-                item.setInputs(v);
-            }
+            updateDisplays(items_, itemOfDisplay_, shown,
+                           [this](bool input, float* out, int n) { port_.scope(input, out, n); }, scopeIn_, scopeOut_, dt);
+            // The controls' live= marks (none until the audio thread plays this program) and the shaders' inputs.
+            guiView_->tick(panelSpec_, shown, meters_.program == panelProgram_);
         }
         const int hovered = hasPointer_ && pressed_ < 0 ? itemAt(pointer_) : pressed_;
         const funkgui::Point far{ -1.0e4f, -1.0e4f };
@@ -4414,42 +4154,24 @@ namespace playground::ui
         // A .gui file's interface: its ground, frames, labels and dividers, then its items, all in its area, in its
         // theme (GuiItems.h), and a bar at its edge where it scrolls.
         const bool gui = !panelSpec_.gui.empty();
-        const funkgui::Theme gth = gui ? guiTheme(th, panelSpec_.gui) : th;
-        if (gui)
-        {
-            const funkgui::Canvas::Scope s(c, kSectionTag, false);
-            const funkgui::Canvas::ClipScope clip(c, gui_.area);
-            drawGuiPanel(c, gth, panelSpec_, gui_);
-        }
+        const funkgui::Theme gth = guiView_->theme(th, panelSpec_);
+        guiView_->drawGround(c, gth, panelSpec_, kSectionTag);
+        const funkgui::Rect& area = guiView_->places().area;
         for (std::size_t i = 0; i < items_.size(); ++i)
         {
             if (!items_[i]->shown())
                 continue;
-            if (gui && i < guiItem_.size() && guiItem_[i])
+            if (gui && guiView_->owns(i))
             {
-                const funkgui::Canvas::ClipScope clip(c, gui_.area);
+                const funkgui::Canvas::ClipScope clip(c, area);
                 items_[i]->draw(c, gth, ring_ && focus_ == static_cast<int>(i));
             }
             else
                 items_[i]->draw(c, th, ring_ && focus_ == static_cast<int>(i));
         }
         files().drawOverlays(c, th, width_, height_);    // the completion list, the signature, the hover card
-        if (gui && (gui_.maxScrollY > 0.0f || gui_.maxScrollX > 0.0f))
-        {
-            const funkgui::Rect& a = gui_.area;
-            if (gui_.maxScrollY > 0.0f)
-            {
-                const float h = std::max(24.0f, a.h * a.h / (a.h + gui_.maxScrollY));
-                const float y = a.y + (a.h - h) * guiScrollY_ / gui_.maxScrollY;
-                c.rrect(a.right() + kGuiScrollGutter - 4.0f, y, 3.0f, h, 1.5f, th.ink32);
-            }
-            if (gui_.maxScrollX > 0.0f)
-            {
-                const float w = std::max(24.0f, a.w * a.w / (a.w + gui_.maxScrollX));
-                const float x = a.x + (a.w - w) * guiScrollX_ / gui_.maxScrollX;
-                c.rrect(x, a.bottom() - 4.0f, w, 3.0f, 1.5f, th.ink32);
-            }
-        }
+        if (gui)
+            guiView_->drawScrollBars(c, th);
 
         // Footer: the spec line of the control under the hand, else the focused one, else the last one touched; the
         // dialog's own while it is open.
@@ -4695,8 +4417,9 @@ namespace playground::ui
         const int i = itemAt({ e.x, e.y });
         // A .gui interface taller or wider than its area scrolls, but for a control under the pointer (it takes the
         // wheel itself).
-        if (!panelSpec_.gui.empty() && gui_.area.contains({ e.x, e.y }) && (gui_.maxScrollX > 0.0f || gui_.maxScrollY > 0.0f)
-            && (i < 0 || std::find(itemOfGuiSlot_.begin(), itemOfGuiSlot_.end(), i) == itemOfGuiSlot_.end()))
+        const GuiLayout& gl = guiView_->places();
+        if (!panelSpec_.gui.empty() && gl.area.contains({ e.x, e.y }) && (gl.maxScrollX > 0.0f || gl.maxScrollY > 0.0f)
+            && !guiView_->isControl(i))
         {
             const float k = e.smooth ? 512.0f : 292.0f;     // px a unit of the wheel (the chat's)
             const float dy = e.reversed ? -e.dy : e.dy, dx = e.reversed ? -e.dx : e.dx;
@@ -4909,7 +4632,7 @@ namespace playground::ui
         r ^= displays * 0x9E3779B9u;
         uint32_t gui = 0;                                     // a .gui interface's controls shown
         for (int c = 0; c < kMaxControls; ++c)
-            if (const int i = itemOfGuiSlot_[static_cast<std::size_t>(c)]; i >= 0 && items_[static_cast<std::size_t>(i)]->shown())
+            if (const int i = guiView_->controlItem(c); i >= 0 && items_[static_cast<std::size_t>(i)]->shown())
                 gui |= 1u << c;
         r ^= gui * 0x2C1B3C6Du;
         // The counters times odd constants: a change in any one of them changes the revision.
@@ -4963,7 +4686,6 @@ namespace playground::ui
     {
         if (gestures_)
             gestures_->closeAll();
-        for (const int i : guiKeyboards_)
-            static_cast<GuiKeyboardItem&>(*items_[static_cast<std::size_t>(i)]).release();
+        guiView_->releaseKeys();
     }
 }

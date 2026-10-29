@@ -1,5 +1,5 @@
 // Source/editor/DisplayItem.h: one of a program's displays on the panel (fminus/PanelSpec.h: meter, vu, led, number,
-// scope), drawn by Looks.h from what the Engine published (Engine::Meters, Engine::scope), which the Panel hands it
+// scope), drawn by Looks.h from what the Engine published (Meters.h, Engine::scope), which the Panel hands it
 // each frame. It moves as hardware does:
 //   meter   the audio's peaks in dBFS, -48 to +6 (the Engine's peaks fall 20 dB a second), or a field's value across
 //           its range; the highest of the last second held, then falling
@@ -17,7 +17,7 @@
 #include "editor/DialLayout.h"
 #include "editor/Items.h"
 
-#include "dsp/Engine.h"
+#include "dsp/Meters.h"
 #include "fminus/PanelSpec.h"
 
 #include <array>
