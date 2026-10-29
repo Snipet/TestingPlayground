@@ -637,7 +637,7 @@ namespace playground
     {
         if (!s.ok)
             return;                                              // the program that played plays on
-        capture_.noteProgram(s.request, s.sources);              // a recording's replay compiles these files
+        capture_.noteProgram(s.request, s.sources, s.controls);  // a recording's replay compiles these files
         Controls before;
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
@@ -1375,6 +1375,22 @@ namespace playground
 
     capture::Reply Processor::chatCapture(capture::Action action, const capture::Options& options)
     {
+        // restart (next): the files that play compiled again first, so that the recording starts on the program's fresh
+        // state (Capture.h); the editor's draft and the dials stay as they are.
+        if (action == capture::Action::arm && options.restart && options.mode == capture::Mode::next
+            && capture_.audio())
+        {
+            const Sources running = chatRunning();
+            if (running.empty())
+            {
+                capture::Reply r;
+                r.why = "nothing plays yet to start afresh (run_program plays the editor's files)";
+                return r;
+            }
+            capture::Options o = options;
+            o.freshFrom = compiler_.request(running);
+            return capture_.act(action, o);
+        }
         return capture_.act(action, options);
     }
 

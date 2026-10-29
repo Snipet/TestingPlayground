@@ -87,6 +87,7 @@ namespace playground::capture
         Clock::time_point armedAt{};
         bool input = false;                                  // an effect's: the input's two streams
         uint64_t frames = 0, blockCap = 0, eventCap = 0;
+        uint64_t freshFrom = 0;                              // restart: the program it waits for (0: none)
         std::array<std::unique_ptr<std::atomic<float>[]>, 4> audio;   // in L, in R, out L, out R
         std::unique_ptr<std::atomic<uint64_t>[]> blocks, events;
         std::size_t bytes = 0;
@@ -109,6 +110,7 @@ namespace playground::capture
         std::atomic<uint8_t> trimmed{ 0 };                   // Trim flags (next's)
         std::atomic<bool> claimed{ false };                  // the audio thread took it
         std::atomic<bool> stopAsked{ false };                // the reader is done with it: hand it back
+        std::atomic<bool> fresh{ false };                    // restart: the fresh program plays alone
 
         void finish(End why) noexcept
         {
@@ -207,7 +209,18 @@ namespace playground::capture
         writing_ = true;
         startNow_ = r->started || r->options.mode == Mode::last;
         startWhy_ = Start::arm;
-        if (!startNow_ && playStarts)
+        // restart: nothing starts it until the fresh program plays alone (Engine::swapping reads the audio thread's own
+        // state and an atomic; the meters, its own last publish).
+        hold_ = false;
+        if (!r->started && r->freshFrom != 0 && !r->fresh.load(std::memory_order_relaxed))
+        {
+            Meters m;
+            if (engine.meters(m) && m.program >= r->freshFrom && !engine.swapping())
+                r->fresh.store(true, std::memory_order_relaxed);
+            else
+                hold_ = true;
+        }
+        if (!startNow_ && playStarts && !hold_)
         {
             startNow_ = true;
             startWhy_ = Start::transport;
@@ -233,6 +246,8 @@ namespace playground::capture
         pending_.flags = static_cast<uint8_t>((t.known ? Block::kKnown : 0) | (playing ? Block::kPlaying : 0)
                                               | (bypassed ? Block::kBypassed : 0));
         pending_.dials = dials;
+        const HostBlock& h = engine.host();                  // the audio thread's own: the wheels and the pedal now
+        pending_.wheels = { h.modwheel, h.pitchbend, h.aftertouch, h.sustain ? 1.0f : 0.0f };
         // The samples this block writes: announced before they are (Capture.h).
         maxStore(r->samplesAnnounced, r->s + len);
         std::atomic_thread_fence(std::memory_order_release);
@@ -245,7 +260,7 @@ namespace playground::capture
         Ring& r = *live_;
         for (int c = 0; c < 2; ++c)
             putSamples(r.audio[static_cast<std::size_t>(c)].get(), r.frames, inAt_, channels[std::min(c, numChannels - 1)], n);
-        if (!startNow_)                                      // next: the input's first sound starts it
+        if (!startNow_ && !hold_)                            // next: the input's first sound starts it
             for (int c = 0; c < std::min(numChannels, 2) && !startNow_; ++c)
                 for (int i = 0; i < n; ++i)
                     if (std::fabs(channels[c][i]) >= kSoundThreshold)
@@ -280,7 +295,7 @@ namespace playground::capture
         if (!writing_ || live_->eventCap == 0)
             return;
         Ring& r = *live_;
-        if (!startNow_ && e.kind == EventKind::noteOn)
+        if (!startNow_ && !hold_ && e.kind == EventKind::noteOn)
         {
             startNow_ = true;
             startWhy_ = Start::note;
@@ -371,7 +386,14 @@ namespace playground::capture
             case Action::take:   out = status(true); break;
             case Action::status: out = status(false); break;
             case Action::forget: out = forget(); break;
+            case Action::replayed:
+                if (options.take != nullptr && options.take == take_)
+                    replay_ = options.replay;
+                out.state = current_ != nullptr ? stateOf(*current_) : (take_ != nullptr ? State::kept : State::off);
+                break;
         }
+        if (out.take != nullptr && out.take == take_)
+            out.replay = replay_;
         out.audio = rate_.load(std::memory_order_relaxed) > 0.0f;
         out.bytes = heldBytes();
         if (action == Action::forget)
@@ -392,14 +414,20 @@ namespace playground::capture
             forget();
     }
 
-    void Recorder::noteProgram(uint64_t program, const Sources& files)
+    void Recorder::noteProgram(uint64_t program, const Sources& files, const Controls& controls)
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         programs_.erase(std::remove_if(programs_.begin(), programs_.end(), [&](const auto& p) { return p.first == program; }),
                         programs_.end());
+        programDials_.erase(std::remove_if(programDials_.begin(), programDials_.end(), [&](const auto& p) { return p.first == program; }),
+                            programDials_.end());
         programs_.emplace_back(program, files);
+        programDials_.emplace_back(program, controls);
         if (programs_.size() > kPrograms)
+        {
             programs_.erase(programs_.begin());
+            programDials_.erase(programDials_.begin());
+        }
     }
 
     std::size_t Recorder::bytes() const
@@ -478,6 +506,7 @@ namespace playground::capture
             current_ = nullptr;
         }
         take_.reset();
+        replay_.clear();
 
         auto r = std::make_unique<Ring>();
         r->options = o;
@@ -487,6 +516,7 @@ namespace playground::capture
         r->epoch = epoch_.load(std::memory_order_acquire);
         r->armedAt = Clock::now();
         r->input = !product::kIsInstrument;
+        r->freshFrom = o.mode == Mode::next && o.restart ? o.freshFrom : 0;
         const auto asked = static_cast<uint64_t>(std::ceil(r->options.seconds * static_cast<double>(rate)));
         r->frames = asked + (o.mode == Mode::last ? kLastSlack : 0);
         r->blockCap = r->frames / kAverageBlock + 64;
@@ -535,6 +565,7 @@ namespace playground::capture
             return out;
         }
         take_ = t;
+        replay_.clear();
         out.state = State::kept;
         out.take = take_;
         return out;
@@ -566,6 +597,7 @@ namespace playground::capture
             release(current_);
         current_ = nullptr;
         take_.reset();
+        replay_.clear();
         setOwn(false);
         collect();
         Reply out;
@@ -586,6 +618,8 @@ namespace playground::capture
         t->end = static_cast<End>(r.end.load(std::memory_order_acquire));
         const uint64_t done = r.blocksDone.load(std::memory_order_acquire);
         t->trimmed = r.trimmed.load(std::memory_order_relaxed);
+        t->restarted = r.freshFrom != 0;
+        t->restartPending = t->restarted && !r.fresh.load(std::memory_order_relaxed);
         if (done == 0)
             return t;
         // The header: written before the first block was published.
@@ -666,9 +700,12 @@ namespace playground::capture
                  + (t->out[0].size() + t->out[1].size() + t->in[0].size() + t->in[1].size()) * sizeof(float);
         for (const Block& b : t->blocks)
             if (std::none_of(t->programs.begin(), t->programs.end(), [&](const auto& p) { return p.first == b.program; }))
-                for (const auto& p : programs_)
-                    if (p.first == b.program)
-                        t->programs.push_back(p);
+                for (std::size_t k = 0; k < programs_.size(); ++k)
+                    if (programs_[k].first == b.program)
+                    {
+                        t->programs.push_back(programs_[k]);
+                        t->programDials.push_back(programDials_[k]);
+                    }
         return t;
     }
 

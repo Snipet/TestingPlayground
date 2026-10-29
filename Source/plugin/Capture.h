@@ -6,6 +6,8 @@
 //   - the events the Engine got (an instrument's MIDI after toEvent, and the panel keyboard's, at their samples; a
 //     note-on dropped while bypassed is not among them, since the Engine never got it);
 //   - the dials' 32 normalised values as the Engine got them (setControls, once a block);
+//   - the Engine's mod wheel, pitch wheel, pressure and pedal at its start (its Host block: a replay from there starts
+//     on them);
 //   - the host's transport as the Engine got it (setTransport), and the bypass;
 //   - the program that played (Meters::program after the block) and whether its frozen copy did;
 //   - the output guard's alerts raised in it (Engine::alertTally) and its processing time over its length;
@@ -21,6 +23,9 @@
 //   last  (the default) records from the first block after arm, round and round; stop keeps the last `seconds`
 //   next  waits for the first note-on the Engine gets, the host's transport starting to play, or (an effect) the
 //         input's first sound above -60 dBFS; records from the start of that block, fills `seconds` once and ends
+// restart (next only): the processor runs the files that play again first (a fresh compile: Processor::chatCapture)
+// and the recording waits until that program plays alone (its swap's 20 ms fade over), so that it starts from the
+// program's fresh state, as a replay does: what still sounds then is cut, so Claude asks the user first.
 // stopOnAlert: the recording ends half a second after the output guard's first alert. It also ends when the host
 // prepares the plugin again once it has started (or before, at another rate or block size: prepare()), and, in next,
 // when it is full.
@@ -74,13 +79,21 @@ namespace playground::capture
     inline constexpr int kAverageBlock = 32;                // the host blocks a ring is sized for, on average
 
     enum class Mode : uint8_t { last, next };
-    enum class Action : uint8_t { arm, stop, take, status, forget };
+    enum class Action : uint8_t { arm, stop, take, status, forget, replayed };
+
+    struct Take;
 
     struct Options
     {
         Mode mode = Mode::last;
         double seconds = kDefaultSeconds;                   // kMinSeconds to kMaxSeconds
         bool stopOnAlert = false;
+        bool restart = false;                               // next: from the program's fresh state (above)
+        uint64_t freshFrom = 0;                             // restart: the compile request it waits for (the processor's)
+        // replayed: what a replay of `take` found (ChatCaptured.cpp: its null test against what played, in a line),
+        // kept with it while it is the take kept, for stop and status (Reply::replay).
+        std::shared_ptr<const Take> take{};
+        std::string replay{};
     };
 
     // What the recorder is doing (Reply::state).
@@ -130,6 +143,8 @@ namespace playground::capture
         uint8_t flags = 0;          // kKnown, kPlaying, kBypassed, kFrozen
         uint8_t reserved = 0;
         std::array<float, kMaxControls> dials{};   // normalised, as the Engine got them (Controls.h)
+        std::array<float, 4> wheels{};             // the Engine's at its start (its Host block): the mod wheel, the pitch
+                                                   // wheel, pressure, the pedal (1 down): what a replay from here starts on
 
         static constexpr uint8_t kKnown = 1u << 0;     // the host gave a transport (Transport::known)
         static constexpr uint8_t kPlaying = 1u << 1;
@@ -171,6 +186,8 @@ namespace playground::capture
         uint8_t trimmed = 0;        // Trim flags
         int voicesAtStart = 0;      // an instrument's voices sounding when it started
         float peakBefore = 0.0f;    // the output's peak in the block before it started (next: a tail still ringing)
+        bool restarted = false;     // restart: it waited for the program's fresh compile
+        bool restartPending = false;   // and that program does not play alone yet (nothing recorded)
         uint64_t clock = 0;         // the Engine's samples since prepare at the take's first sample
         double fromSeconds = 0.0;   // where the take starts in the recording (last: what it dropped before)
         double recordedSeconds = 0.0;   // how long it recorded in all
@@ -182,6 +199,7 @@ namespace playground::capture
         std::vector<Note> events;
         std::array<std::vector<float>, 2> in, out;   // left, right
         std::vector<std::pair<uint64_t, Sources>> programs;   // the files of each program that played, for a replay
+        std::vector<std::pair<uint64_t, Controls>> programDials;   // and its dials (what its blocks' values are of)
         std::size_t bytes = 0;      // what it holds
 
         uint64_t samples() const noexcept { return out[0].size(); }
@@ -244,6 +262,7 @@ namespace playground::capture
     {
         State state = State::off;
         std::shared_ptr<const Take> take;   // stop, status, take: the take kept, or a snapshot of one recording
+        std::string replay;                 // what a replay of the take kept found ("" until one is made: replayed)
         bool armedNow = false;              // arm: armed (false, with why, when it could not be)
         bool audio = false;                 // the plugin has been prepared (the host runs it)
         std::size_t bytes = 0;              // what the recorder holds now
@@ -271,8 +290,9 @@ namespace playground::capture
         // recording that ended by itself (the program's own code then need not play), and after kIdleSeconds without
         // a call forgets everything. Skips a round while a call holds the mutex.
         void housekeep();
-        // A program that plays now (a compile that landed: Processor::apply): its files, for a replay.
-        void noteProgram(uint64_t program, const Sources& files);
+        // A program that plays now (a compile that landed: Processor::apply): its files and its dials, for a replay.
+        void noteProgram(uint64_t program, const Sources& files, const Controls& controls = {});
+        bool audio() const noexcept { return rate_.load(std::memory_order_relaxed) > 0.0f; }   // prepared (the host runs it)
         std::size_t bytes() const;           // what it holds (probes: forget frees)
         int rings() const;                   // recordings allocated and not freed yet (probes)
 
@@ -311,7 +331,9 @@ namespace playground::capture
         std::vector<std::unique_ptr<Ring>> owned_;   // every ring not yet freed
         Ring* current_ = nullptr;                    // the one armed last, until stopped or forgotten
         std::shared_ptr<const Take> take_;           // the one stopped last
+        std::string replay_;                         // what a replay of it found (replayed)
         std::vector<std::pair<uint64_t, Sources>> programs_;   // the last few programs' files (noteProgram)
+        std::vector<std::pair<uint64_t, Controls>> programDials_;   // and their dials
         std::chrono::steady_clock::time_point lastUse_{};
         bool own_ = false;                           // what the hook was told last
         std::function<void(bool)> ownHook_;
@@ -329,6 +351,7 @@ namespace playground::capture
         bool aborted_ = false;                       // this block did not fit (next: the recording ends before it)
         bool lastPlaying_ = false;                   // the host played in the block before
         bool startNow_ = false;                      // next: this block starts it
+        bool hold_ = false;                          // restart: the fresh program does not play alone yet
         Start startWhy_ = Start::arm;
         uint32_t seenEpoch_ = 0;
         uint64_t clock_ = 0;                         // samples since prepare (the Engine's clock)
