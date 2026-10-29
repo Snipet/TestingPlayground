@@ -7,15 +7,19 @@
 // keeps the plugin's state and the devices' settings in JUCE's own file (~/Library/Application Support/<Name>.settings,
 // so what a user had carries over); the window's place is kept there too (windowX, windowY, as JUCE kept it); its size
 // is the editor's, which the session keeps; the editor stays resizable within its limits; and an effect starts with its
-// input muted (JUCE's guard against a feedback loop), a bar under the editor saying so.
+// input muted (JUCE's guard against a feedback loop).
 //
 // What is new: the window is macOS's own (NativeWindow.mm) without a title bar of its own: its buttons sit over the
 // editor's top bar, which keeps them room (EditorPort::windowButtons, through Processor::setWindowHooks), and the top
 // bar's empty parts drag it. JUCE's Options moved to the menu bar (StandaloneMenu.h): Settings... (Cmd-,) in the app
 // menu, Load State..., Save State As... and Reset to Default State in File; an Edit menu reaches the focused text field
-// (an item sends its shortcut to the focused component, as typing it would); Window minimises and zooms.
+// (an item sends its shortcut to the focused component, as typing it would); Window minimises and zooms. Settings is the
+// editor's own card (editor/SettingsCard.h) over the devices (Devices.h, handed over with the window's hooks), and the
+// editor says the input is muted in its own look: nothing in the window is drawn by JUCE but the window itself, the
+// native file choosers and the menus.
 #include "plugin/Processor.h"
 #include "plugin/StandaloneMenu.h"
+#include "plugin/standalone/Devices.h"
 #include "plugin/standalone/NativeWindow.h"
 
 #include "Product.h"
@@ -66,67 +70,17 @@ namespace playground::standalone
         }
     }
 
-    // Under the editor while an effect's input is muted (StandalonePluginHolder::shouldMuteInput: JUCE's guard against
-    // a feedback loop, until the user unmutes it in Settings).
-    class MutedBar final : public juce::Component
+    // The window's content: the editor, its size the window's (the editor says when the input is muted, and its card
+    // holds the settings).
+    class Content final : public juce::Component, private juce::ComponentListener
     {
     public:
-        static constexpr int kHeight = 30;
-
-        explicit MutedBar(std::function<void()> settings) : settings_(std::move(settings))
-        {
-            setOpaque(true);
-            text_.setText("Audio input is muted to avoid a feedback loop: unmute it in Settings, with headphones on.",
-                          juce::dontSendNotification);
-            text_.setColour(juce::Label::textColourId, juce::Colours::black);
-            button_.onClick = [this] {
-                if (settings_)
-                    settings_();
-            };
-            addAndMakeVisible(text_);
-            addAndMakeVisible(button_);
-        }
-
-        void paint(juce::Graphics& g) override
-        {
-            auto r = getLocalBounds();
-            g.setColour(juce::Colours::darkgoldenrod);
-            g.fillRect(r.removeFromTop(1));
-            g.setColour(juce::Colours::lightgoldenrodyellow);
-            g.fillRect(r);
-        }
-
-        void resized() override
-        {
-            auto r = getLocalBounds().reduced(5);
-            button_.setBounds(r.removeFromRight(90));
-            text_.setBounds(r);
-        }
-
-    private:
-        std::function<void()> settings_;
-        juce::Label text_;
-        juce::TextButton button_{ juce::String::fromUTF8("Settings\xe2\x80\xa6") };
-    };
-
-    // The window's content: the editor at the top (its size the window's), and the muted bar under it.
-    class Content final : public juce::Component, private juce::Value::Listener, private juce::ComponentListener
-    {
-    public:
-        Content(juce::StandalonePluginHolder& holder, std::function<void()> settings, std::function<void()> editorMoved)
-            : holder_(holder), bar_(std::move(settings)), editorMoved_(std::move(editorMoved))
+        Content(juce::StandalonePluginHolder& holder, std::function<void()> editorMoved)
+            : holder_(holder), editorMoved_(std::move(editorMoved))
         {
             juce::AudioProcessor& processor = *holder_.processor;
             editor_.reset(processor.hasEditor() ? processor.createEditorIfNeeded()
                                                 : new juce::GenericAudioProcessorEditor(processor));
-            addChildComponent(bar_);
-            if (holder_.getProcessorHasPotentialFeedbackLoop())
-            {
-                muted_.referTo(holder_.getMuteInputValue());
-                muted_.addListener(this);
-                showBar_ = static_cast<bool>(muted_.getValue());
-            }
-            bar_.setVisible(showBar_);
             if (editor_ != nullptr)
             {
                 editor_->addComponentListener(this);
@@ -146,7 +100,6 @@ namespace playground::standalone
         }
 
         juce::AudioProcessorEditor* editor() const noexcept { return editor_.get(); }
-        int barHeight() const noexcept { return showBar_ ? MutedBar::kHeight : 0; }
         juce::ComponentBoundsConstrainer* editorConstrainer() const
         {
             return editor_ != nullptr ? editor_->getConstrainer() : nullptr;
@@ -154,23 +107,20 @@ namespace playground::standalone
 
         void resized() override
         {
-            auto r = getLocalBounds();
-            if (showBar_)
-                bar_.setBounds(r.removeFromBottom(MutedBar::kHeight));
             if (editor_ == nullptr)
                 return;
             if (fitting_)
                 editor_->setTopLeftPosition(0, 0);
             else
-                editor_->setBoundsConstrained(r);
+                editor_->setBoundsConstrained(getLocalBounds());
         }
 
     private:
-        // The content follows the editor: its size plus the bar (the window follows the content).
+        // The content follows the editor: its size (the window follows the content).
         void fitEditor()
         {
             const juce::ScopedValueSetter<bool> scope(fitting_, true);
-            setSize(editor_->getWidth(), editor_->getHeight() + barHeight());
+            setSize(editor_->getWidth(), editor_->getHeight());
         }
 
         void componentMovedOrResized(juce::Component&, bool, bool) override
@@ -180,26 +130,14 @@ namespace playground::standalone
                 editorMoved_();                          // its zoom may have changed: the buttons follow
         }
 
-        void valueChanged(juce::Value& value) override
-        {
-            showBar_ = static_cast<bool>(value.getValue());
-            bar_.setVisible(showBar_);
-            if (editor_ != nullptr)
-                fitEditor();
-        }
-
         juce::StandalonePluginHolder& holder_;
-        MutedBar bar_;
         std::function<void()> editorMoved_;
         std::unique_ptr<juce::AudioProcessorEditor> editor_;
-        juce::Value muted_;
-        bool showBar_ = false;
         bool fitting_ = false;
     };
 
-    // The window's limits are the editor's (its own constrainer, the Panel's least size at its zoom) with the bar and
-    // any native frame around them, so a drag never sets a size the editor would then refuse (JUCE's standalone does
-    // the same).
+    // The window's limits are the editor's (its own constrainer, the Panel's least size at its zoom) with any native
+    // frame around it, so a drag never sets a size the editor would then refuse (JUCE's standalone does the same).
     class Constrainer final : public juce::BorderedComponentBoundsConstrainer
     {
     public:
@@ -221,7 +159,7 @@ namespace playground::standalone
                         b = *frame;
                 b = b.addedTo(window_->getContentComponentBorder());
             }
-            return b.addedTo(juce::BorderSize<int>{ 0, 0, content_ != nullptr ? content_->barHeight() : 0, 0 });
+            return b;
         }
 
     private:
@@ -232,12 +170,12 @@ namespace playground::standalone
     class Window final : public juce::DocumentWindow
     {
     public:
-        explicit Window(juce::StandalonePluginHolder& holder)
+        Window(juce::StandalonePluginHolder& holder, Devices& devices)
             : juce::DocumentWindow(juce::String::fromUTF8(product::kName),
                                    juce::LookAndFeel::getDefaultLookAndFeel().findColour(
                                        juce::ResizableWindow::backgroundColourId),
                                    juce::DocumentWindow::allButtons),
-              holder_(holder)
+              holder_(holder), devices_(devices)
         {
             constrainer_.setWindow(this);
             setUsingNativeTitleBar(true);                // macOS's window (styled in parentHierarchyChanged)
@@ -282,6 +220,13 @@ namespace playground::standalone
             holder_.startPlaying();
         }
 
+        // Settings... (Cmd-,): the editor opens its card over the devices (EditorPort::settingsAsked).
+        void showSettings()
+        {
+            if (auto* processor = dynamic_cast<Processor*>(holder_.processor.get()))
+                processor->showSettings();
+        }
+
         // A new peer (JUCE makes one when the title bar or the resizing changes): macOS's window gets its look.
         void parentHierarchyChanged() override
         {
@@ -303,7 +248,7 @@ namespace playground::standalone
 
         void updateContent()
         {
-            auto* c = new Content(holder_, [this] { holder_.showAudioSettingsDialog(); }, [this] { placeButtons(); });
+            auto* c = new Content(holder_, [this] { placeButtons(); });
             constrainer_.setContent(c);
             setContentOwned(c, true);
             hook();
@@ -311,7 +256,8 @@ namespace playground::standalone
         }
 
         // The processor's editor reaches this window through these (EditorPort::windowButtons, placeWindowButtons,
-        // dragWindow). In full screen the system shows the title bar itself: no room is kept.
+        // dragWindow), and the app's devices (EditorPort::devices). In full screen the system shows the title bar
+        // itself: no room is kept.
         void hook()
         {
             auto* processor = dynamic_cast<Processor*>(holder_.processor.get());
@@ -329,6 +275,7 @@ namespace playground::standalone
                 if (auto* peer = getPeer())
                     native::dragWindow(peer->getNativeHandle(), clicks);
             };
+            h.devices = &devices_;
             processor->setWindowHooks(std::move(h));
         }
 
@@ -382,6 +329,7 @@ namespace playground::standalone
         }
 
         juce::StandalonePluginHolder& holder_;
+        Devices& devices_;
         Constrainer constrainer_;
         native::ButtonsSize buttons_;
         juce::Point<float> place_;
@@ -406,6 +354,7 @@ namespace playground::standalone
             using Holder = juce::StandalonePluginHolder;
             holder_ = std::make_unique<Holder>(properties_.getUserSettings(), false, juce::String{}, nullptr,
                                                juce::Array<Holder::PluginInOuts>{}, false);
+            devices_ = std::make_unique<Devices>(*holder_);
             // JUCE's own menu bar first, then ours over it. Once this returns, JUCEApplication::initialiseApp sets up
             // JUCE's (initialiseMacMainMenu), and making it is what puts it in NSApp.mainMenu: made then, it would
             // replace ours with an app menu alone. Made now, it stays out of sight, and so does the Edit menu a native
@@ -414,13 +363,14 @@ namespace playground::standalone
             native::installMenuBar(menuBar(product::kName), [this](Command c) { return run(c); });
             if (juce::Desktop::getInstance().getDisplays().displays.isEmpty())
                 return;                                  // no display: it plays without a window, as JUCE's did
-            window_ = std::make_unique<Window>(*holder_);
+            window_ = std::make_unique<Window>(*holder_, *devices_);
             window_->setVisible(true);
         }
 
         void shutdown() override
         {
-            window_ = nullptr;
+            window_ = nullptr;                           // it lets go of the devices (the editor's hooks) first
+            devices_ = nullptr;
             holder_ = nullptr;
             properties_.saveIfNeeded();
         }
@@ -469,7 +419,10 @@ namespace playground::standalone
                 return true;                             // a dialog or a chooser is open: it goes first
             switch (c)
             {
-                case Command::settings:   holder_->showAudioSettingsDialog(); break;
+                case Command::settings:                  // the editor's card; with no window (no display), nothing
+                    if (window_ != nullptr)
+                        window_->showSettings();
+                    break;
                 case Command::loadState:  holder_->askUserToLoadState(); break;
                 case Command::saveState:  holder_->askUserToSaveState(); break;
                 case Command::resetState:
@@ -499,6 +452,7 @@ namespace playground::standalone
 
         juce::ApplicationProperties properties_;
         std::unique_ptr<juce::StandalonePluginHolder> holder_;
+        std::unique_ptr<Devices> devices_;               // the window goes first, then these, then the holder
         std::unique_ptr<Window> window_;
     };
 }
