@@ -10,7 +10,11 @@
 //   EXAMPLE  that program (ChatAgent::promptExample, this plugin's kind) compiles with no message (its panel.gui
 //            too); its dials are named, with ranges and defaults inside them, every one a control of its interface in
 //            a titled section, with two displays at least; it plays two seconds finite and audible with no alert (an effect over noise, an instrument a
-//            chord released at 1 s); blocks of 64 and 333 give the same bits; an instrument's voices end
+//            chord released at 1 s); blocks of 64 and 333 give the same bits; an instrument's voices end; in a
+//            scenario (measure::Request: an instrument's phrase with a retrigger, fast notes, a 17th note that steals,
+//            legato, the wheels and the pedal; an effect's host stopped and moved), the same bits in blocks of 64 and 333
+//            and again, finite, its report saying so; with its first float dial moving, the same bits again at each
+//            block size
 //   MEASURE  measure::run on programs whose answer is known: an instrument's sine voice at 0.25 (peak -12.0 dBFS,
 //            its partial at the note's frequency, the voice ending, a chord's level reported) or an effect's gain of
 //            0.5 (-6.0 dB on the sine and on the noise, an impulse's response at once); the spectrum's peak of a
@@ -385,6 +389,49 @@ PROBE(plugin, chatexample)
         std::printf("the example, measured:\n%s", report.c_str());
         P.eq("example.report_no_alerts", has(report, "Alerts: none.") ? 1 : 0, 1);
         P.eq("example.report_no_notes", has(report, "Note: ") ? 0 : 1, 1);
+
+        // A scenario: as the user plays it, at blocks of 64 and 333.
+        pg::measure::Request sc;
+        sc.tailSeconds = 1.0f;
+        if constexpr (kInstrument)
+        {
+            sc.phrase = { { 48, 0.0, 0.5, 0.8f }, { 48, 0.25, 0.4, 0.6f }, { 60, 0.5, 0.06, 0.9f }, { 62, 0.57, 0.06, 0.9f },
+                          { 64, 0.64, 0.06, 0.9f }, { 67, 0.7, 0.3, 0.8f }, { 69, 0.95, 0.3, 0.8f } };
+            for (int k = 0; k < 17; ++k)
+                sc.phrase.push_back({ 40 + 2 * k, 1.2, 0.4, 0.5f });
+            sc.wheels = { { pg::measure::Wheel::mod, 0.2, 0.7f }, { pg::measure::Wheel::bend, 0.4, 0.5f },
+                          { pg::measure::Wheel::pressure, 0.5, 0.4f }, { pg::measure::Wheel::sustain, 0.6, 1.0f },
+                          { pg::measure::Wheel::sustain, 1.0, 0.0f } };
+            sc.hostEdits.stopAt = 1.4;
+        }
+        else
+        {
+            sc.hostEdits.stopAt = 0.5;
+            sc.hostEdits.jumpAt = 0.7;
+            sc.hostEdits.jumpToBeat = 16.0;
+        }
+        pg::measure::Session session(example);
+        const std::vector<float> noiseIn = probe::noise(static_cast<std::size_t>(4.0 * kFs), 0.25).l;
+        const auto played = [&](pg::measure::Request r, int block) {
+            r.block = block;
+            return session.render(r, &noiseIn, &noiseIn, session.lengthOf(r));
+        };
+        const auto same = [](const pg::measure::Session::Render& a, const pg::measure::Session::Render& b) {
+            return probe::sameBits(a.l, b.l) && probe::sameBits(a.r, b.r);
+        };
+        const pg::measure::Session::Render s64 = played(sc, 64), s333 = played(sc, 333);
+        P.eq("scenario.example_blocks_64_333_same_bits", same(s64, s333) ? 1 : 0, 1);
+        P.eq("scenario.example_again", same(s64, played(sc, 64)) ? 1 : 0, 1);
+        P.eq("scenario.example_finite", probe::allFinite(s64.l) && probe::allFinite(s64.r) && s64.alerts == 0 ? 1 : 0, 1);
+        pg::measure::Request moving = sc;
+        for (int c = 0; c < pg::kMaxControls && moving.automate.empty(); ++c)
+            if (const pg::Control& k = session.controls()[static_cast<std::size_t>(c)]; k.used && k.type == pg::ControlType::real)
+                moving.automate.push_back({ k.name, 0.3, k.min + 0.8f * (k.max - k.min), 0.4 });
+        P.eq("scenario.example_moving_again_64", same(played(moving, 64), played(moving, 64)) ? 1 : 0, 1);
+        P.eq("scenario.example_moving_again_333", same(played(moving, 333), played(moving, 333)) ? 1 : 0, 1);
+        const std::string scReport = session.measure(sc).report;
+        std::printf("the example in a scenario:\n%s", scReport.c_str());
+        P.eq("scenario.example_report", has(scReport, "Scenario: ") && has(scReport, "Largest step") ? 1 : 0, 1);
     }
 
     // ---- MEASURE -----------------------------------------------------------------------------------------------------
