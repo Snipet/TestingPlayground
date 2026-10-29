@@ -49,7 +49,9 @@
 //            change); with the next token, nothing
 //   MEASURE  measure_output through the agent: its result is the render's report, with the dials asked for
 //   VIEW     view_panel through the agent: its result a PNG of the panel (and one of the whole editor) and a line of
-//            what it shows, drawn on the message thread; the user's view stays; the saved session keeps no picture
+//            what it shows, drawn on the message thread by the GPU on this Mac (the text says so); the user's view
+//            stays; with the GPU forced off (editor/Picture.h's test hook), a picture still, the text saying each
+//            shader shows as a striped placeholder and why; the saved session keeps no picture
 //   SOUND    view_sound through the agent (a program that sounds): its result a PNG of 1120 x 800 and what it shows,
 //            the tool's entry with the picture's thumbnail (480 px), the session without the PNG but with the thumbnail;
 //            a program that does not compile draws nothing and says why
@@ -127,6 +129,7 @@
 
 #include "FakeClaude.h"
 
+#include "editor/Picture.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/ChatImages.h"
 #include "plugin/ChatStore.h"
@@ -1002,6 +1005,28 @@ PROBE(plugin, chat)
         P.eq("view.answer", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "It looks tidy." ? 1 : 0, 1);
         P.eq("view.entry", lastText(agent.chatState(), pg::ChatEntry::Kind::tool) == "Looked at the editor" ? 1 : 0, 1);
         P.eq("view.user_view_kept", processor.editorPort().panelView() == viewBefore ? 1 : 0, 1);
+        P.eq("view.gpu", has(panelAbout, "Drawn by the GPU as the user's screen draws it, shaders included")
+                             && has(windowAbout, "Drawn by the GPU") ? 1 : 0, 1);
+
+        // The fallback (SoftRaster), forced: a picture still, and the note.
+        script->add(fake::Response::ok(fake::Sse().start().tool("toolu_v3", "view_panel", input({})).end("tool_use")));
+        script->add(fake::Response::ok(fake::Sse().start().text("Placeholders, then.").end()));
+        const int fallbackFrom = script->postCount();
+        pg::picture::forceSoftRasterForTests(true);
+        agent.send("and in software?");
+        for (int k = 0; k < 4000 && (agent.chatState().busy || script->postCount() < fallbackFrom + 2); ++k)
+        {
+            processor.poll();
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        agent.waitIdle();
+        pg::picture::forceSoftRasterForTests(false);
+        std::string softData, softAbout;
+        pictureOf(fallbackFrom + 1, softData, softAbout);
+        std::printf("view_panel without the GPU: %s\n", softAbout.c_str());
+        P.eq("view.fallback_png", softData.rfind("iVBORw0KGgo", 0) == 0 && softData.size() > 2000 ? 1 : 0, 1);
+        P.eq("view.fallback_note", has(softAbout, "Drawn without the GPU (forced by a test): each shader shows as a striped "
+                                                  "placeholder here, though the user's screen draws it") ? 1 : 0, 1);
         // The session keeps no picture: a line in its place, and the mark that drops the thinking on load.
         const std::string saved = agent.saveState();
         P.eq("view.session_no_picture", has(saved, "iVBORw0KGgo") ? 0 : 1, 1);

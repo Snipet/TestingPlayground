@@ -722,6 +722,7 @@ namespace playground
                 pictureDone_.notify_all();
             }
         }
+        picturesIdle();                                          // the pictures' GPU context, let go when idle
         journalPoll();                                           // what moved since the last poll (ProcessorLive.cpp)
         if (compiler_.revision() != seen_)
         {
