@@ -354,7 +354,8 @@ namespace playground
         block.getDynamicObject()->setProperty("content", content);
         const std::lock_guard<std::mutex> lock(mutex_);
         addEntry(ChatEntry::Kind::tool, "compared two sounds");
-        entries_.back().pictures.push_back(d.thumb);
+        if (!a.capture && !b.capture)                        // the user's recording: no thumbnail kept in the session
+            entries_.back().pictures.push_back(d.thumb);
         touch();
         return block;
     }

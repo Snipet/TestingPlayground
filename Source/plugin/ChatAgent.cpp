@@ -3214,7 +3214,8 @@ namespace playground
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
                 addEntry(ChatEntry::Kind::tool, "looked at the sound");
-                entries_.back().pictures.push_back(d.thumb);
+                if (!vr.render.fromCapture)                     // the user's recording: no thumbnail kept in the session
+                    entries_.back().pictures.push_back(d.thumb);
                 touch();
             }
             return block;

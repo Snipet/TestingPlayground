@@ -464,7 +464,7 @@ namespace playground
 namespace playground
 {
     // The tool's run (runTool): its words (captureToolText), and for picture (stop or status, not live: mcpLive) the take
-    // drawn as view_sound draws a render (SoundPicture.h), its close-up at its largest step, with a thumbnail in the chat.
+    // drawn as view_sound draws a render (SoundPicture.h), its close-up at its largest step (no thumbnail in the chat: below).
     juce::var ChatAgent::captureTool(const juce::var& use)
     {
         const juce::var input = use.getProperty("input", juce::var());
@@ -519,9 +519,10 @@ namespace playground
                                                                   { "data", juce::Base64::toBase64(d.png.data(), d.png.size()) } }) } }));
         content.add(claude::object({ { "type", "text" }, { "text", juce::String::fromUTF8((text + about).c_str()) } }));
         block.getDynamicObject()->setProperty("content", content);
+        // The chat's row has no thumbnail: the session keeps its entries' pictures, and nothing of the recording may land
+        // in it (or in the host's project).
         const std::lock_guard<std::mutex> lock(mutex_);
         addEntry(ChatEntry::Kind::tool, "looked at the recording");
-        entries_.back().pictures.push_back(d.thumb);
         touch();
         return block;
     }

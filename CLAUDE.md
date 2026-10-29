@@ -337,16 +337,18 @@ place (its `products/<key>.cmake`, and its names in the docs).
   copies into rings the arming thread allocated and touched, and never frees or waits: a full ring wraps (last) or
   ends the recording (next), with a flag. A reader copies what was published and leaves out what may have been
   overwritten meanwhile, so stop and status (live) never wait for the audio thread. While a recording is armed the
-  program's own code plays (`Engine::setOwnCode`: the frozen copy is dropped, none is taken, the freezer waits), so a
-  replay of a take can match it bit for bit. The user's audio and MIDI stay in memory: never on disk, in the session or a project,
-  never returned as samples (the tool reports numbers); freed on forget, the next arm, or ten minutes without a call.
-  A take replays (`plugin/CaptureReplay.h`, through `scenario::captured`): a `measure::Request` with its blocks (in the
-  processor's parts, `Request::part`), events, transport, its dials as the processor sent them (`Request::frames`,
-  by name for another program), the Engine's clock (`Request::clock`, `Engine::setClock`: the voices' grid phase) and
-  the wheels at its start; the first replay null-tests it once (a compile and a render of the program that played,
-  off the live calls) and the recorder keeps the line for stop and status. restart (mode next) recompiles what plays
-  first and waits for that program to play alone. stop and status stay live but for `picture` (drawn on the worker).
-  `plugin.capture` checks it.
+  program's own code plays (`Engine::setOwnCode`: the frozen copy is dropped, none is taken, the freezer waits), so
+  a replay of a take can match it bit for bit. The user's audio and MIDI stay in memory: never on disk, in the
+  session or a project, never returned as samples (the tool reports numbers), no picture of it among the chat's kept
+  thumbnails; freed on forget, the next arm, or ten minutes without a call. A take replays
+  (`plugin/CaptureReplay.h`, through `scenario::captured`): a `measure::Request` with its blocks (in the processor's
+  parts, `Request::part`), events, transport, its dials as the processor sent them (`Request::frames`, by name for
+  another program), the Engine's clock (`Request::clock`, `Engine::setClock`: the voices' grid phase) and the wheels
+  at its start (without the host's transport, the Engine's own song position: `Engine::setBeat`; a Session's
+  `Engine::restart` puts the wheels, the pedal and the position at rest); the first replay null-tests it once (a
+  compile and a render of the program that played, off the live calls) and the recorder keeps the line for stop and
+  status. restart (mode next) recompiles what plays first (after a run on its way) and waits for that program to
+  play alone. stop and status stay live but for `picture` (drawn on the worker). `plugin.capture` checks it.
 - **tune_dials** (`dsp/Tune.h`): Nelder-Mead over the named float dials' normalised ranges, from the dials as they
   are and a Halton spread, restarted when it settles with a goal unmet, until every goal is met, the budget (150, at
   most 400 renders) is spent, its time limit passes (`seconds`: 120, at most 170, under the MCP server's deadline)

@@ -30,7 +30,8 @@
 //   TOOL      arm's words say to tell the user and that it stays in memory; status and stop are live (mcpLive), at most
 //             25 lines, and say they are live; the tool is listed for MCP, read-only, titled in words; stop with nothing
 //             armed, and an unknown action, are errors
-//   PRIVACY   the processor's state holds nothing of a recording
+//   PRIVACY   the processor's state holds nothing of a recording, nor the chat's session a picture of it (capture's,
+//             view_sound's or compare's of "capture")
 //   ANALYSIS  stop's report has the octave bands (in and out), the centroid, the correlation, the largest steps each
 //             named by its nearest recorded moment, and the replay's forecast; picture: true draws it, and is not live
 //   REPLAY    mode next from the default program's fresh state: a take that starts off the voices' 16-sample grid, on a
@@ -424,6 +425,18 @@ namespace
                 "    }\n};\n");
     }
 
+    // The pictures the chat's session keeps (its saved entries' thumbnails).
+    int keptPictures(pg::Processor& p)
+    {
+        int n = 0;
+        const juce::var state = juce::JSON::parse(juce::String::fromUTF8(p.chatAgent().saveState().c_str()));
+        if (const juce::Array<juce::var>* entries = state["entries"].getArray())
+            for (const juce::var& e : *entries)
+                if (const juce::Array<juce::var>* pics = e["p"].getArray())
+                    n += pics->size();
+        return n;
+    }
+
     // A take that holds together: its blocks back to back from 0, its samples and events theirs, each event in its block.
     bool whole(const cap::Take& t)
     {
@@ -579,6 +592,7 @@ PROBE(plugin, capture)
         juce::MemoryBlock state;
         r.rec.getStateInformation(state);
         P.le("privacy.state_bytes", static_cast<double>(state.getSize()), 100000.0);
+        P.eq("privacy.no_picture_kept", keptPictures(r.rec), 0);   // the picture of it (ANALYSIS): not in the session
     }
 
     // ---- NEXT -----------------------------------------------------------------------------------------------------------
@@ -900,6 +914,9 @@ PROBE(plugin, capture)
         P.eq("replay.from_needs_capture", bad.isError && has(textOf(bad), "scenario.from") ? 1 : 0, 1);
         const pg::ChatAgent::McpResult v = r.rec.chatAgent().mcpCall("view_sound", object({ { "scenario", capture } }));
         P.eq("replay.view_sound", !v.isError && hasImage(v) && has(textOf(v), "the user's recording, ") ? 1 : 0, 1);
+        const pg::ChatAgent::McpResult cp =
+            r.rec.chatAgent().mcpCall("compare", object({ { "a", "capture" }, { "b", "playing" }, { "picture", true } }));
+        P.eq("privacy.replay_pictures_not_kept", !cp.isError && hasImage(cp) && keptPictures(r.rec) == 0 ? 1 : 0, 1);
         const std::string after = textOf(tool(r.rec, object({ { "action", "status" } })));
         P.eq("replay.status_says", has(after, "Replay: matches what played bit for bit.") ? 1 : 0, 1);
     }
