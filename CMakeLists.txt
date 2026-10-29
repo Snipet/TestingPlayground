@@ -18,7 +18,10 @@
 #   Source/editor/gpu/*.cpp      the EditorHost factory (GPU)                      -> the plugin only
 #   Source/mcp/                  the MCP server; icon-<key>.png its extension's    -> <Name>MCP and <Name>.mcpb
 #   Assets/logo/<kind>/          the app icon (Tools/logo/logo.swift writes it)   -> each bundle's Icon.icns
+#   Source/installer/            the installer, one for every product (its payload: their bundles and extensions)
+#                                                                                  -> "<Project> Installer.app"
 #   Tools/probes/**/*.cpp        probes on FunkGui's Harness, self-registered      -> <Name>_probes, tests <key>:<probe>
+#   Tools/probes/installer/      the installer's probes                            -> Installer_probes, tests installer.*
 # Every list is a CONFIGURE_DEPENDS glob: a new source file needs no CMake edit. Nothing outside products/ (and the
 # docs) names a product: the C++ namespace is `playground` in both, and every product-specific value comes from the
 # product's file, through Product.h or the variables below.
@@ -499,6 +502,10 @@ endfunction()
 foreach(_k IN LISTS _fp_products)
   fp_add_product(${_k})
 endforeach()
+
+# ---- the installer: one app for every product, the products inside it (cmake/Installer.cmake) ----------------------
+include(Installer)
+fp_add_installer()
 
 # ---- the lints, once for every product's bundles (cmake/Probes.cmake) -----------------------------------------------
 fp_add_lints()
