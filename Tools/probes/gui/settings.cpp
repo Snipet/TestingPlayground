@@ -18,15 +18,18 @@
 //            and none over another or over a text; each with an accessibility title
 //   SECTIONS the effect's Input (its device, its pairs, Mute input) and no MIDI; the synth's MIDI (an input a switch)
 //            and no Input
-//   KEYS     Tab reaches every control once, in order, the focus ring on it; Return on Test plays the tone
+//   KEYS     Tab reaches every control once, in order, the focus ring on it; Return on Test plays the tone; a Cmd
+//            key is given back (to the app's menu: Cmd-Q)
 //   ACTIONS  a channel pair's switch, a MIDI input's switch, the mute's switch (the notice gone once unmuted) and Test
 //            call the port; the output device, the sample rate and the buffer size chosen through their menus (the
 //            host's, the current one ticked) call it with those values, and the card shows them
 //   SERIAL   a device plugged in while the card is open: the output's menu lists it
-//   ERROR    the port's error shown under its section (Audio), in words to a screen reader too
+//   ERROR    the port's error shown under its section (Audio), in words to a screen reader too; JUCE's error with
+//            line breaks in lines of its own, no break drawn
 //   SCROLL   at the least size, more than the card holds: it scrolls, Done stays in the card, Tab scrolls the focused
 //            control into view, the wheel back
-//   CLOSE    Done, Escape and a click outside the card close it (the click reaching nothing under it: RUN unpressed)
+//   CLOSE    Done, Escape and a click outside the card close it (the click reaching nothing under it: RUN unpressed);
+//            a double-click outside it over a dial closes it and leaves the dial's value (the next one resets it)
 //   GONE     the hooks let go of the devices (the window closing): the card and the notice go
 #include "Probe.h"
 
@@ -434,6 +437,12 @@ PROBE(gui, settings)
         }
         P.eq("keys.every_control", static_cast<int64_t>(seen.size()), static_cast<int64_t>(n));
         P.eq("keys.in_order", ordered ? 1 : 0, 1);
+        // A Cmd key is none of the card's: the editor gives it back (JUCE then offers it to the app's menu: Cmd-Q).
+        funkgui::KeyEvent quit;
+        quit.ch = U'q';
+        quit.mods.cmd = true;
+        P.eq("keys.cmd_to_the_menu", panel.key(quit) ? 0 : 1, 1);
+        P.eq("keys.cmd_card_stays", card.isOpen() ? 1 : 0, 1);
         // On to Test, then Return.
         for (std::size_t k = 0; k < n + 1; ++k)
         {
@@ -545,6 +554,24 @@ PROBE(gui, settings)
         checkPlaces(P, "error", panel, card);
     }
     writePng(P, host, "gui.settings.error.png");
+    // JUCE's own error when a device will not open has line breaks: each starts a line, none is drawn as nothing.
+    fake.fail("Can't open the audio device!\n\nThis may be because another application is currently using the same device - "
+              "if so, you should close any other applications and try again!",
+              pg::DeviceSection::output);
+    settle();
+    {
+        std::vector<std::string> lines;
+        for (const pg::ui::SettingsCard::Line& l : card.places(W(), H()).lines)
+            if (l.kind == pg::ui::SettingsCard::Line::Kind::error)
+                lines.push_back(l.text);
+        bool plain = true;
+        for (const std::string& l : lines)
+            plain = plain && !l.empty() && l.find_first_of("\t\r\n") == std::string::npos && l.find("  ") == std::string::npos;
+        P.eq("error.breaks_a_line", !lines.empty() && lines.front() == "Can't open the audio device!" ? 1 : 0, 1);
+        P.ge("error.breaks_lines", static_cast<double>(lines.size()), 2.0);
+        P.eq("error.breaks_plain", plain ? 1 : 0, 1);
+        P.eq("error.breaks_missing_glyphs", static_cast<int64_t>(host.draw().missingGlyphs), 0);
+    }
     fake.fail("", pg::DeviceSection::output);
     settle();
 
@@ -604,6 +631,37 @@ PROBE(gui, settings)
         settle();
         P.eq("close.click_outside", card.isOpen() ? 0 : 1, 1);
         P.eq("close.nothing_under_it", port.statusRevision() == runs && !port.compiling() ? 1 : 0, 1);
+    }
+    {
+        // A double-click outside the card closes it, and its second press and doubleClick reach nothing either: the
+        // dial under it keeps its value (a double-click there would set it back to its default). The next one does.
+        processor.showSettings();
+        settle();
+        const funkgui::Rect box = card.places(W(), H()).box;
+        int slot = -1;
+        funkgui::Point dial{};
+        for (int c = 0; c < pg::kMaxControls && slot < 0; ++c)
+            if (const auto at = panel.centreOfDial(c); at && !box.contains(*at))
+            {
+                slot = c;
+                dial = *at;
+            }
+        P.eq("close.dial_outside_card", slot >= 0 ? 1 : 0, 1);
+        if (slot >= 0)
+        {
+            juce::AudioProcessorParameter& param = *processor.getParameters()[slot];
+            const float start = param.getValue();          // the program's default: nothing turned it yet
+            const float off = start > 0.5f ? 0.1f : 0.9f;
+            param.setValueNotifyingHost(off);
+            settle();
+            host.doubleClick(dial.x, dial.y);
+            settle();
+            P.eq("close.double_click_outside", card.isOpen() ? 0 : 1, 1);
+            P.near("close.double_click_nothing_under_it", static_cast<double>(param.getValue()), static_cast<double>(off), 1.0e-4);
+            host.doubleClick(dial.x, dial.y);
+            settle();
+            P.near("close.next_double_click_works", static_cast<double>(param.getValue()), static_cast<double>(start), 1.0e-4);
+        }
     }
 
     // ---- GONE: the window lets go of the devices -------------------------------------------------------------------------

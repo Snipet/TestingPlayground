@@ -40,7 +40,9 @@ namespace playground::ui
             return funkgui::text::width(funkgui::FontService::get().atlas(), s.c_str(), st);
         }
 
-        // `s` in lines of at most `maxW` px of `st`, words kept whole while they fit.
+        // `s` in lines of at most `maxW` px of `st`, words kept whole while they fit. A run of spaces, tabs or CRs
+        // is one space, and a line break (JUCE's "Can't open the audio device!\n\nThis may be...") starts a new
+        // line, never an empty one: the font has no glyph for either.
         std::vector<std::string> wrapped(const std::string& s, const funkgui::TextStyle& st, float maxW)
         {
             std::vector<std::string> out;
@@ -48,18 +50,26 @@ namespace playground::ui
             std::size_t at = 0;
             while (at < s.size())
             {
-                std::size_t end = s.find(' ', at);
+                std::size_t end = s.find_first_of(" \t\r\n", at);
                 if (end == std::string::npos)
                     end = s.size();
                 const std::string word = s.substr(at, end - at);
-                const std::string longer = line.empty() ? word : line + " " + word;
-                if (!line.empty() && textW(longer, st) > maxW)
+                if (!word.empty())
+                {
+                    const std::string longer = line.empty() ? word : line + " " + word;
+                    if (!line.empty() && textW(longer, st) > maxW)
+                    {
+                        out.push_back(line);
+                        line = word;
+                    }
+                    else
+                        line = longer;
+                }
+                if (end < s.size() && s[end] == '\n' && !line.empty())
                 {
                     out.push_back(line);
-                    line = word;
+                    line.clear();
                 }
-                else
-                    line = longer;
                 at = end + 1;
             }
             if (!line.empty())

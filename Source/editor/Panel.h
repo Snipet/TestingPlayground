@@ -329,6 +329,9 @@ namespace playground::ui
         bool buttonsPlaced_ = false;                     // the port was told where they go (while they are there)
         bool windowPress_ = false;                       // the last press went to the window (dragWindow): its
                                                          // double-click is none of the panel's
+        bool closingPress_ = false;                      // the last press closed a card (outside it, or its Done):
+                                                         // the rest of its click (a double-click's second press,
+                                                         // its doubleClick) reaches nothing under it
 
         int  itemAt(funkgui::Point) const;               // the item under p, -1 for none
         bool moveFocus(int dir);

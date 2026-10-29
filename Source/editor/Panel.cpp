@@ -4544,31 +4544,35 @@ namespace playground::ui
         pointer_ = { e.x, e.y };
         hasPointer_ = true;
         windowPress_ = false;
-        if (settings_.isOpen())
+        // A press that closed a card (a click outside the Settings card, a card's Done or Cancel) ends there: the
+        // second press of its double-click finds the card gone and would act on what lies under it.
+        if (closingPress_ && e.clicks > 1)
         {
             pressed_ = -1;
-            settings_.pointerDown(pointer_, width_, height_, host_);
-            afterSettings(true);
             return;
         }
-        if (keyOpen_)
+        closingPress_ = false;
+        if (dialogOpen())
         {
             pressed_ = -1;
-            keyDialogPointerDown(pointer_);
-            return;
-        }
-        if (export_.isOpen())
-        {
-            pressed_ = -1;
-            export_.pointerDown(pointer_, width_, height_);
-            afterExport(true);
-            return;
-        }
-        if (projects_.isOpen())
-        {
-            pressed_ = -1;
-            projects_.pointerDown(pointer_, width_, height_);
-            afterProjects(true);
+            if (settings_.isOpen())
+            {
+                settings_.pointerDown(pointer_, width_, height_, host_);
+                afterSettings(true);
+            }
+            else if (keyOpen_)
+                keyDialogPointerDown(pointer_);
+            else if (export_.isOpen())
+            {
+                export_.pointerDown(pointer_, width_, height_);
+                afterExport(true);
+            }
+            else
+            {
+                projects_.pointerDown(pointer_, width_, height_);
+                afterProjects(true);
+            }
+            closingPress_ = !dialogOpen();
             return;
         }
         pressed_ = itemAt(pointer_);
@@ -4627,7 +4631,7 @@ namespace playground::ui
     {
         // The double-click's second press went to the window (dragWindow), which may have zoomed or minimised since:
         // its release, and so this, comes where the pointer now is over the panel, and is no click of the panel's.
-        if (windowPress_)
+        if (windowPress_ || closingPress_)
             return;
         if (keyOpen_ || settings_.isOpen())
             return;
@@ -4706,6 +4710,9 @@ namespace playground::ui
         dirty_ = true;
         if (settings_.isOpen())
         {
+            // The card takes no Cmd key: they go on to the app's menu (Cmd-Q, Cmd-H, Cmd-M), as with JUCE's dialog.
+            if (e.mods.cmd)
+                return false;
             settings_.key(e, host_, width_, height_);
             afterSettings(true);
             return true;
