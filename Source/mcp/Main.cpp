@@ -51,6 +51,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <random>
 #include <set>
 #include <string>
 #include <vector>
@@ -162,6 +163,16 @@ namespace
         if (const char* v = std::getenv(var.c_str()); v != nullptr && std::atoi(v) > 0)
             return std::atoi(v);
         return pg::sandbox::kDeadlineMs;
+    }
+
+    // How long the sandbox's helper may sit idle before the server closes it, in ms: sandbox::kIdleSeconds, or
+    // <ENV_PREFIX>SANDBOX_IDLE_MS (the probes').
+    int sandboxIdleMs()
+    {
+        const std::string var = std::string(pg::product::kEnvPrefix) + "SANDBOX_IDLE_MS";
+        if (const char* v = std::getenv(var.c_str()); v != nullptr && std::atoi(v) > 0)
+            return std::atoi(v);
+        return pg::sandbox::kIdleSeconds * 1000;
     }
 
     // What of `pending` the non-blocking pipe `fd` takes now, written and removed from it (the rest waits for POLLOUT);
@@ -386,7 +397,10 @@ namespace
                     stop(a.instance, a.number);
             for (auto& entry : instances_)
                 close(entry.second.fd);
-            // The sandbox's helper reads the end of its stdin and quits by itself.
+            // The sandbox's helper reads the end of its stdin and quits by itself, unless it is busy (a request hung, or
+            // still at work): that one would outlive us, holding its GPU context, so it is stopped.
+            if (sbPid_ > 0 && sbBusy_)
+                ::kill(sbPid_, SIGKILL);
             if (sbIn_ >= 0)
                 close(sbIn_);
             if (sbOut_ >= 0)
@@ -686,14 +700,26 @@ namespace
             }
         }
 
+        // The poll's timeout: the next deadline (an ask's, the sandbox's request's, its helper's idle end), soon while a
+        // helper ended waits to be reaped; -1 for none.
         int msToNextDeadline() const
         {
-            if (asks_.empty() && !sbBusy_)
-                return -1;
-            Clock::time_point first = sbBusy_ ? sbDeadline_ : asks_.front().deadline;
+            std::optional<Clock::time_point> first;
+            const auto consider = [&first](Clock::time_point t) {
+                if (!first || t < *first)
+                    first = t;
+            };
             for (const Ask& a : asks_)
-                first = std::min(first, a.deadline);
-            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(first - Clock::now()).count();
+                consider(a.deadline);
+            if (sbBusy_)
+                consider(sbDeadline_);
+            else if (sbPid_ > 0 && sbQueue_.empty())
+                consider(sbUsed_ + std::chrono::milliseconds(sbIdleMs_));
+            if (!sbReap_.empty())
+                consider(Clock::now() + std::chrono::milliseconds(250));
+            if (!first)
+                return -1;
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(*first - Clock::now()).count();
             return static_cast<int>(std::clamp<long long>(ms + 1, 0, 60000));
         }
 
@@ -724,6 +750,11 @@ namespace
                 std::cerr << "deadline: the sandbox's helper did not answer in " << sbMs_ << " ms: stopped" << std::endl;
                 helperGone("did not answer in " + std::to_string((sbMs_ + 500) / 1000) + " s, so it was stopped", true);
             }
+            // The helper idle for sbIdleMs_: the server ends it (closing its stdin), so that no request ever crosses its
+            // quitting; the next call starts it again, with the panel as it was.
+            if (!sbBusy_ && sbQueue_.empty() && sbPid_ > 0 && sbUsed_ + std::chrono::milliseconds(sbIdleMs_) <= now)
+                retireHelper("idle for " + std::to_string(sbIdleMs_) + " ms");
+            reapHelpers();
         }
 
         // The first instance whose reply to `method` passes `accept` (in id order), to `done`; Got::closed when none
@@ -955,6 +986,7 @@ namespace
                 { "values", object({ { "type", "object" }, { "description", "render: dials at these values, by name" } }) },
                 { "detail", choice({ "high" }, "render: the picture whole; open, edit: the whole report") },
                 { "instance", prop("string", "open from instance, apply: which plugin, when several are open") },
+                { "sandbox", prop("integer", "edit, render, apply (needed), close: the number your open gave (Sandbox #n)") },
             });
             const std::string title = "Design a panel";
             return object({ { "name", "gui_sandbox" },
@@ -1123,20 +1155,65 @@ namespace
         }
 
         // ---- the GUI sandbox (sandbox/SandboxProtocol.h) ----------------------------------------------------------------
-        // One sandbox for the server, in a helper process started on the first call: Claude Desktop runs one server for
-        // the extension, so its conversations share it (each answer names it, "Sandbox #3"; an open replaces it). Its
-        // requests go one at a time, queued, each with a deadline (sbMs_): past it the helper is killed and the call says
-        // so. The server keeps what the helper last said the sandbox is (sbState_), so a helper that died, or quit after
-        // its idle minutes, is started again with the panel as it was. Never a blocking write: what the helper has not
-        // taken waits in sbOutbox_ (POLLOUT), as an instance's does.
+        // Sandboxes by number, in a helper process started on the first call. Claude Desktop runs one server for the
+        // extension, so its conversations share it: each open makes a sandbox with a number of its own (each answer names
+        // it, "Sandbox #3"), and a call naming one (`sandbox`) acts on that one, whichever another conversation opened
+        // since. The helper holds one at a time; the server keeps the newest kSandboxesKept as the helper last said they
+        // are (their `state`: sbKept_, the one in the helper sbState_), and puts the one asked for in the helper first
+        // (`load`), as it does in a helper started again (one that died, was killed at its deadline, or was ended after
+        // sbIdleMs_ idle). apply needs the number. Requests go one at a time, queued, each with a deadline (sbMs_): past
+        // it the helper is killed and the call says so. Never a blocking write: what the helper has not taken waits in
+        // sbOutbox_ (POLLOUT), as an instance's does; never a blocking wait for its end either (sbReap_).
         using SandboxDone = std::function<void(bool ok, const juce::var& reply, const std::string& why)>;
+
+        static constexpr std::size_t kSandboxesKept = 8;
 
         struct SandboxJob
         {
-            juce::var msg;                               // the request (its id set when sent)
+            juce::var msg;                               // the request (its id set when sent; `expect`: the sandbox it is for)
             std::string client;                          // the client's request it serves (key(id)); "" for the server's own
             SandboxDone done;
         };
+
+        static int numberOf(const juce::var& state) { return state.isObject() ? static_cast<int>(state["number"]) : 0; }
+
+        // The number before this server's first sandbox: drawn at random (10000 to 89999), so that a number given before
+        // Claude Desktop started the extension again (in yesterday's conversation) names none of this server's.
+        static int firstSandboxNumber()
+        {
+            std::random_device random;
+            return 10000 + static_cast<int>(random() % 80000u);
+        }
+
+        // A sandbox kept (its state as the helper last said it), by its number; nullptr when none is.
+        const juce::var* keptSandbox(int number) const
+        {
+            for (const juce::var& k : sbKept_)
+                if (numberOf(k) == number)
+                    return &k;
+            return nullptr;
+        }
+
+        void keepSandbox(const juce::var& state)
+        {
+            const int n = numberOf(state);
+            sbKept_.erase(std::remove_if(sbKept_.begin(), sbKept_.end(), [n](const juce::var& k) { return numberOf(k) == n; }), sbKept_.end());
+            sbKept_.push_front(state);
+            while (sbKept_.size() > kSandboxesKept)
+                sbKept_.pop_back();
+        }
+
+        void forgetSandbox(int number)
+        {
+            sbKept_.erase(std::remove_if(sbKept_.begin(), sbKept_.end(), [number](const juce::var& k) { return numberOf(k) == number; }),
+                          sbKept_.end());
+        }
+
+        static std::string noSandbox(int number)
+        {
+            return "There is no sandbox #" + std::to_string(number) + " now (it was closed, more than " + std::to_string(kSandboxesKept)
+                 + " were opened since, or Claude Desktop started the extension again)";
+        }
 
         std::string helperPath() const
         {
@@ -1205,9 +1282,46 @@ namespace
             sbOut_ = fromChild[0];
             sbReader_ = std::make_unique<pg::mcp::LineReader>(sbOut_);
             sbOutbox_.clear();
+            sbUsed_ = Clock::now();
             ++sbSerial_;
             std::cerr << "sandbox: started its helper, pid " << pid << std::endl;
             return true;
+        }
+
+        // The helper's pipes closed and the helper forgotten (its process reaped later: sbReap_).
+        void dropHelper()
+        {
+            if (sbIn_ >= 0)
+                close(sbIn_);
+            if (sbOut_ >= 0)
+                close(sbOut_);
+            if (sbPid_ > 0)
+                sbReap_.push_back(sbPid_);
+            sbPid_ = -1;
+            sbIn_ = sbOut_ = -1;
+            sbReader_.reset();
+            sbOutbox_.clear();
+            ++sbSerial_;
+        }
+
+        // The helper ended on purpose (idle, or closed; nothing waits for it): it reads the end of its stdin and quits.
+        void retireHelper(const std::string& why)
+        {
+            if (sbPid_ > 0)
+                std::cerr << "sandbox: its helper ended (" << why << ")" << std::endl;
+            dropHelper();
+        }
+
+        // The helpers ended, reaped as they go (never a waitpid that blocks: one stuck in the kernel takes its time).
+        void reapHelpers()
+        {
+            sbReap_.erase(std::remove_if(sbReap_.begin(), sbReap_.end(),
+                                         [](pid_t p) {
+                                             int status = 0;
+                                             const pid_t r = waitpid(p, &status, WNOHANG);
+                                             return r == p || (r < 0 && errno == ECHILD);
+                                         }),
+                          sbReap_.end());
         }
 
         // The helper is gone (it closed its end, stopped reading, or is killed here: `kill`); the request it had fails
@@ -1217,26 +1331,17 @@ namespace
             if (sbPid_ > 0)
             {
                 int status = 0;
-                pid_t r = kill ? 0 : waitpid(sbPid_, &status, WNOHANG);
+                const pid_t r = kill ? 0 : waitpid(sbPid_, &status, WNOHANG);
                 if (r == 0)
-                {
-                    ::kill(sbPid_, SIGKILL);     // hung, or closed its end and lingers: of no use either way
-                    r = waitpid(sbPid_, &status, 0);
-                }
+                    ::kill(sbPid_, SIGKILL);     // hung, or closed its end and lingers: of no use either way (reaped later)
                 const bool quit = r == sbPid_ && WIFEXITED(status) && WEXITSTATUS(status) == 0;
                 std::cerr << "sandbox: its helper ended (" << why << (quit ? ", exit 0" : "") << ")" << std::endl;
+                if (r == sbPid_)
+                    sbPid_ = -1;                 // reaped already
                 if (!quit && !sbState_.isVoid())
                     sbNote_ = "(The sandbox's helper had stopped; it started again, with the panel as it was.)";
             }
-            if (sbIn_ >= 0)
-                close(sbIn_);
-            if (sbOut_ >= 0)
-                close(sbOut_);
-            sbPid_ = -1;
-            sbIn_ = sbOut_ = -1;
-            sbReader_.reset();
-            sbOutbox_.clear();
-            ++sbSerial_;
+            dropHelper();
             if (sbBusy_)
             {
                 SandboxJob job = std::move(*sbBusy_);
@@ -1247,7 +1352,8 @@ namespace
             pumpSandbox();
         }
 
-        // Its replies: the one it owes, then the next request.
+        // Its replies: the one it owes, then the next request. A reply's `state` is the sandbox in the helper now (kept);
+        // render's `area` goes into it.
         void onHelper()
         {
             if (!sbReader_ || !sbReader_->readSome())
@@ -1261,10 +1367,17 @@ namespace
                 const juce::var r = juce::JSON::parse(str(line));
                 if (!sbBusy_ || static_cast<int>(r["id"]) != sbBusyId_)
                     continue;                            // a reply nobody waits for
+                sbUsed_ = Clock::now();
                 SandboxJob job = std::move(*sbBusy_);
                 sbBusy_.reset();
-                if (r.hasProperty("state"))
+                if (r["state"].isObject())
+                {
                     sbState_ = r["state"];
+                    keepSandbox(sbState_);
+                }
+                if (r["area"].isArray())
+                    if (juce::DynamicObject* o = sbState_.getDynamicObject())
+                        o->setProperty("area", r["area"]);   // the kept copy too: it is the same object
                 job.done(static_cast<bool>(r["ok"]), r, {});
                 pumpSandbox();
                 return;
@@ -1288,7 +1401,22 @@ namespace
                     sbQueue_.pop_front();                // cancelled meanwhile
                     continue;
                 }
-                const bool opening = sbQueue_.front().msg["op"].toString() == "open";
+                // The sandbox the request is for (`expect`), put in the helper first when it holds another.
+                juce::var load;
+                if (const juce::var want = sbQueue_.front().msg["expect"]; !want.isVoid())
+                {
+                    const int n = static_cast<int>(want);
+                    const juce::var* kept = keptSandbox(n);
+                    if (kept == nullptr)
+                    {
+                        SandboxJob job = std::move(sbQueue_.front());
+                        sbQueue_.pop_front();
+                        job.done(false, juce::var(), noSandbox(n) + ": open it again (text: its .gui) to go on");
+                        continue;
+                    }
+                    if (sbPid_ < 0 || numberOf(sbState_) != n)
+                        load = *kept;
+                }
                 if (sbPid_ < 0)
                 {
                     std::string why;
@@ -1300,32 +1428,23 @@ namespace
                             j.done(false, juce::var(), why);
                         return;
                     }
-                    // The sandbox as it was, in the new helper, before what is asked of it now.
-                    if (!sbState_.isVoid() && !opening)
-                    {
-                        juce::var restore = juce::JSON::parse(juce::JSON::toString(sbState_));
-                        if (juce::DynamicObject* o = restore.getDynamicObject())
-                        {
-                            o->setProperty("op", "open");
-                            o->setProperty("from", "files");
-                            o->setProperty("restore", true);
-                        }
-                        sbQueue_.push_front({ restore, {}, [this](bool made, const juce::var&, const std::string& whyNot) {
-                                                 if (!made)
-                                                 {
-                                                     std::cerr << "sandbox: could not make it again: " << whyNot << std::endl;
-                                                     sbState_ = juce::var();
-                                                 }
-                                             } });
-                    }
+                    // A helper started again holds the sandbox as it was before what is asked of it now (so that an open
+                    // that fails leaves it so, as it would have in the helper that ended).
+                    if (load.isVoid() && !sbState_.isVoid())
+                        load = sbState_;
                 }
                 SandboxJob job = std::move(sbQueue_.front());
                 sbQueue_.pop_front();
                 sbBusyId_ = sbNext_++;
                 if (juce::DynamicObject* o = job.msg.getDynamicObject())
+                {
                     o->setProperty("id", sbBusyId_);
+                    if (!load.isVoid())
+                        o->setProperty("load", load);
+                }
                 sbOutbox_ += juce::JSON::toString(job.msg, true).toStdString() + "\n";
                 sbDeadline_ = Clock::now() + std::chrono::milliseconds(sbMs_);
+                sbUsed_ = Clock::now();
                 sbBusy_ = std::move(job);
                 if (!flushPipe(sbIn_, sbOutbox_))
                 {
@@ -1335,13 +1454,14 @@ namespace
             }
         }
 
-        // The files of instance `instance`'s program, read through its get_status (files "all": read only, live), to
-        // `then` (false, and why, when it could not).
+        // The files of instance `instance`'s program, read through its get_status (files "all", peek: read only, live,
+        // and unseen by the plugin's record of what MCP was last told, so that the user's changes still reach Claude's
+        // next result), to `then` (false, and why, when it could not).
         void instanceFiles(const std::string& instance, const std::string& client,
                            std::function<void(bool, std::vector<std::pair<std::string, std::string>>, const std::string&)> then)
         {
-            ask(instance, "call", object({ { "name", "get_status" }, { "arguments", object({ { "files", "all" } }) } }), 20000, false, client,
-                [then](Got g, const juce::var& r, const std::string& why) {
+            ask(instance, "call", object({ { "name", "get_status" }, { "arguments", object({ { "files", "all" }, { "peek", true } }) } }), 20000,
+                false, client, [then](Got g, const juce::var& r, const std::string& why) {
                     if (g != Got::result || static_cast<bool>(r["isError"]))
                     {
                         then(false, {}, g == Got::result ? firstText(r) : why);
@@ -1375,11 +1495,27 @@ namespace
 
         std::string instanceName(const std::string& instance) const { return std::string(kInstrument ? "Synth " : "Effect ") + instance; }
 
+        // A sandbox's .gui (its name and text), as kept.
+        static std::pair<std::string, std::string> guiOf(const juce::var& state)
+        {
+            const std::string name = state["gui"].toString().toStdString();
+            if (const juce::Array<juce::var>* f = state["files"].getArray())
+                for (const juce::var& x : *f)
+                    if (x["name"].toString().toStdString() == name)
+                        return { name, x["text"].toString().toStdString() };
+            return { name, {} };
+        }
+
         void sandboxTool(const juce::var& id, const juce::var& args)
         {
             const std::string action = args["action"].toString().toStdString();
             const std::string wanted = args["instance"].toString().trim().toStdString();
             const juce::var detail = args["detail"];
+            // The sandbox the call names (`sandbox`, its number), 0 when it names none.
+            const juce::var named = args["sandbox"];
+            const int number = named.isInt() || named.isInt64() || named.isDouble() ? static_cast<int>(named)
+                             : named.isString() ? named.toString().retainCharacters("0123456789").getIntValue()
+                                                : 0;
             const auto answer = [this, id](bool ok, const juce::var& r, const std::string& why) { reply(id, sandboxResult(ok, r, why)); };
             const auto copy = [&](juce::DynamicObject& o, std::initializer_list<const char*> keys) {
                 for (const char* k : keys)
@@ -1436,7 +1572,9 @@ namespace
                     copy(o, { "width", "height", "theme", "page", "values" });
                     o.setProperty("cap", detail.toString() == "high" ? 0 : static_cast<int>(kPictureBytes));
                 }
-                if (sbState_.isVoid() && sbPid_ < 0)
+                if (number > 0)
+                    o.setProperty("expect", number);    // that sandbox, put in the helper first if another is there
+                else if (sbState_.isVoid())
                 {
                     reply(id, textContent("Nothing is open in the sandbox: open it first (a blank panel, the open plugin's, a file "
                                           "the user named, or a .gui as text).", true));
@@ -1447,72 +1585,89 @@ namespace
             }
             if (action == "apply")
             {
-                if (sbState_.isVoid())
+                // By number only: another conversation may have opened a sandbox since this one's.
+                if (number <= 0)
                 {
-                    reply(id, textContent("Nothing is open in the sandbox: there is nothing to apply.", true));
+                    reply(id, textContent("Nothing was applied: apply needs sandbox, the number of the sandbox to apply (its answers "
+                                          "name it, Sandbox #n: the one you designed).", true));
                     return;
                 }
+                const juce::var* kept = keptSandbox(number);
+                if (kept == nullptr)
+                {
+                    reply(id, textContent(noSandbox(number) + ", so nothing was applied: open it again (text: its .gui) and apply that.", true));
+                    return;
+                }
+                const juce::var st = *kept;
                 if (instances_.empty())
                 {
                     discover();
                     if (instances_.empty())
                     {
-                        const juce::var st = sbState_;
-                        const std::string guiName = st["gui"].toString().toStdString();
-                        std::string text;
-                        if (const juce::Array<juce::var>* f = st["files"].getArray())
-                            for (const juce::var& x : *f)
-                                if (x["name"].toString().toStdString() == guiName)
-                                    text = x["text"].toString().toStdString();
+                        const auto [guiName, text] = guiOf(st);
                         reply(id, textContent("No " + std::string(kThing) + " is open (" + pg::product::kName + "), so nothing was applied. "
-                                              "The sandbox's " + guiName + " (sandbox #" + std::to_string(static_cast<int>(st["number"]))
-                                              + ") is below. Tell the user how to use it: open " + pg::product::kName
-                                              + " and ask you again to apply it, or paste it into a new tab named " + guiName
-                                              + " beside the program in the plugin's editor and press RUN.\n\n" + text, false));
+                                              "Sandbox #" + std::to_string(number) + "'s " + guiName + " is below. Tell the user how to "
+                                              "use it: open " + pg::product::kName + " and ask you again to apply it, or paste it in "
+                                              "place of the program's .gui file in the plugin's editor (into a new tab named panel.gui "
+                                              "when it has none) and press RUN.\n\n" + text, false));
                         return;
                     }
                 }
-                withInstance(id, wanted, [this, id](const std::string& instance) { applyTo(id, instance); });
+                withInstance(id, wanted, [this, id, st](const std::string& instance) { applyTo(id, instance, st); });
                 return;
             }
             if (action == "close")
             {
-                sbState_ = juce::var();
-                sbNote_.clear();
-                if (sbPid_ < 0)
+                const int n = number > 0 ? number : numberOf(sbState_);
+                const bool here = n > 0 && numberOf(sbState_) == n;
+                const bool kept = n > 0 && keptSandbox(n) != nullptr;
+                forgetSandbox(n);
+                if (!here)
                 {
-                    reply(id, textContent("The sandbox is closed."));
+                    reply(id, textContent(n <= 0 ? std::string("The sandbox is closed.")
+                                          : kept ? "Sandbox #" + std::to_string(n) + " is closed."
+                                                 : "There was no sandbox #" + std::to_string(n) + " open: nothing to close."));
                     return;
                 }
-                sandboxAsk(object({ { "op", "quit" } }), key(id), [this, id](bool, const juce::var&, const std::string&) {
-                    reply(id, textContent("The sandbox is closed (its helper ended)."));
-                    helperGone("was closed");
-                });
+                // The one in the helper: the helper ends too, unless another conversation's request is at work or waits
+                // (it ends when idle then).
+                sbState_ = juce::var();
+                sbNote_.clear();
+                const bool ends = sbPid_ > 0 && !sbBusy_ && sbQueue_.empty();
+                if (ends)
+                    retireHelper("closed");              // it reads the end of its stdin and quits; reaped later
+                reply(id, textContent("Sandbox #" + std::to_string(n) + " is closed" + (ends ? " (its helper ended)." : ".")));
                 return;
             }
             reply(id, textContent("action is open, edit, render, apply or close.", true));
         }
 
-        // apply: the sandbox's .gui written into instance `instance`'s program (into its own .gui file when it has one,
-        // else as the sandbox names it), and run there, so that it shows; what changed said.
-        void applyTo(const juce::var& id, const std::string& instance)
+        // A tool result's line of what the user changed since the last MCP call (ChatAgent::mcpHint, its first text
+        // block), "" when it has none.
+        static std::string hintOf(const juce::var& result)
         {
-            const juce::var st = sbState_;
-            const std::string guiName = st["gui"].toString().toStdString();
-            std::string text;
-            if (const juce::Array<juce::var>* f = st["files"].getArray())
-                for (const juce::var& x : *f)
-                    if (x["name"].toString().toStdString() == guiName)
-                        text = x["text"].toString().toStdString();
-            const int number = static_cast<int>(st["number"]);
-            instanceFiles(instance, key(id), [this, id, instance, guiName, text, number](bool ok, std::vector<std::pair<std::string, std::string>> files,
-                                                                                         const std::string& why) {
+            const juce::Array<juce::var>* c = result["content"].getArray();
+            if (c == nullptr || c->size() < 2 || (*c)[0]["type"].toString() != "text")
+                return {};
+            const std::string t = (*c)[0]["text"].toString().toStdString();
+            return t.find("since the last MCP call here") != std::string::npos ? t : std::string();
+        }
+
+        // apply: sandbox `st`'s .gui written into instance `instance`'s program (into its own .gui file when it has one,
+        // else as panel.gui), and run there, so that it shows; what changed said, and what the user changed since the
+        // last MCP call (write_file's hint), as any other result says it.
+        void applyTo(const juce::var& id, const std::string& instance, const juce::var& st)
+        {
+            const std::string text = guiOf(st).second;
+            const int number = numberOf(st);
+            instanceFiles(instance, key(id), [this, id, instance, text, number](bool ok, std::vector<std::pair<std::string, std::string>> files,
+                                                                               const std::string& why) {
                 if (!ok)
                 {
                     reply(id, textContent("Could not read the " + std::string(kThing) + "'s program, so nothing was applied: " + why, true));
                     return;
                 }
-                std::string target = guiName, before;
+                std::string target = "panel.gui", before;
                 bool had = false;
                 for (const auto& [name, t] : files)
                     if (name.size() > 4 && name.compare(name.size() - 4, 4, ".gui") == 0)
@@ -1532,12 +1687,14 @@ namespace
                                                   + (g == Got::result ? firstText(w) : why2), true));
                             return;
                         }
+                        const std::string hint = hintOf(w);
                         ask(instance, "call", object({ { "name", "run_program" }, { "arguments", juce::var(new juce::DynamicObject()) } }), callMs_, true,
-                            key(id), [this, id, instance, target, text, before, had, number, thing](Got g3, const juce::var& run, const std::string& why3) {
+                            key(id), [this, id, instance, target, text, before, had, number, thing, hint](Got g3, const juce::var& run, const std::string& why3) {
                                 chosen_ = instance;
                                 const auto [added, removed] = lineChanges(before, text);
-                                std::string said = "Applied sandbox #" + std::to_string(number) + " to " + instanceName(instance) + ": wrote "
-                                                 + target + " into its program (" + std::to_string(lineCount(text)) + " lines; "
+                                std::string said = (hint.empty() ? std::string() : hint + "\n") + "Applied sandbox #" + std::to_string(number)
+                                                 + " to " + instanceName(instance) + ": wrote " + target + " into its program ("
+                                                 + std::to_string(lineCount(text)) + " lines; "
                                                  + (!had ? std::string("it had no .gui file")
                                                          : before == text ? std::string("the same as it was")
                                                                           : "it had " + std::to_string(lineCount(before)) + ": +" + std::to_string(added)
@@ -1689,7 +1846,8 @@ namespace
         bool listedPlain_ = false;                       // the last tools/list had none of the plugin's tools
         const int callMs_ = callDeadlineMs();
         // The GUI sandbox's helper (above): its process and pipes (non-blocking), its connection's number (a helper
-        // started again is another), the requests waiting and the one it works on, and the sandbox as it last said it is.
+        // started again is another), the requests waiting and the one it works on, the sandbox in it as it last said it
+        // is and the newest kept, when it was last used, and the helpers ended but not yet reaped.
         pid_t sbPid_ = -1;
         int sbIn_ = -1, sbOut_ = -1;
         uint64_t sbSerial_ = 0;
@@ -1698,11 +1856,15 @@ namespace
         std::deque<SandboxJob> sbQueue_;
         std::optional<SandboxJob> sbBusy_;
         int sbBusyId_ = 0, sbNext_ = 1;
-        int sbOpens_ = 0;                                // the sandbox's number: opens so far
+        int sbOpens_ = firstSandboxNumber();             // the last sandbox's number (each open the next)
         Clock::time_point sbDeadline_;
         juce::var sbState_;
+        std::deque<juce::var> sbKept_;                   // newest first, sbState_ among them (the same object)
+        Clock::time_point sbUsed_;
+        std::vector<pid_t> sbReap_;
         std::string sbNote_;                             // said first in the next answer: the helper was started again
         const int sbMs_ = sandboxDeadlineMs();
+        const int sbIdleMs_ = sandboxIdleMs();
     };
 }
 

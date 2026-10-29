@@ -12,19 +12,30 @@
 //   RENDER   a PNG of the size asked (1.5 pixels a px) in both themes, which differ (gui.sandbox.png, .paper.png); a
 //            dial's value moves its knob: the pictures differ inside its cell and nowhere else (gui.sandbox.knob.png);
 //            a large render without detail made smaller to fit the MCP cap (100,000 base64 characters), and saying so
-//   SHADER   a program's folder opened from disk (the .fm, the .gui, the .sc; its dials declared): the shader drawn by
-//            the GPU in its colour, not FunkGui's striped placeholder (gui.sandbox.shader.png)
+//   TWO      a second sandbox opened (another conversation's, say): laid out at the PANEL view's size, not the last
+//            render's; a dial's unit shown only from the .gui's unit=, as in the plugin; an edit naming the first by
+//            its number acts on the first (put back in the helper), a render naming the second shows the second as it
+//            was; a number no sandbox has refused; apply without a number refused
+//   SHADER   a program's folder opened from disk (the .fm, the .gui, the .sc; its dials declared; its fields listed
+//            for the displays but those no display can show): the shader drawn by the GPU in its colour, not
+//            FunkGui's striped placeholder (gui.sandbox.shader.png)
 //   RESTART  the helper killed between calls: the next call starts it again, says so, with the panel as it was (the
-//            same picture)
-//   NONE     apply with no instance open gives the .gui's text back, saying how the user can use it; close
+//            same picture, at the last render's size)
+//   NONE     apply with no instance open gives the .gui's text back, saying how the user can use it, by number (the
+//            first sandbox's while another is open); close ends the helper; a sandbox kept comes back after it
 //   MATCH    the prompt's example (ChatAgent::promptExample: its program, panel.gui and library files) playing in a
 //            processor: the sandbox opened from that instance (its files read through the link, its dials parsed)
-//            renders what view_panel's picture of it shows, pixel for pixel but the displays and the live= marks (the
-//            sandbox's demo values against the processor's silence), within a small bound (gui.sandbox.example.png,
-//            .example.view.png)
-//   APPLY    an edit applied: panel.gui written into the processor's draft, run, its interface the sandbox's
+//            renders, in the user's theme, what view_panel's picture of it shows, pixel for pixel but the displays and
+//            the live= marks (the sandbox's demo values against the processor's silence), within a small bound
+//            (gui.sandbox.example.png, .example.view.png); reading the instance leaves the plugin's record of what
+//            MCP was told alone (the user's change still starts the next result)
+//   APPLY    an edit applied: panel.gui written into the processor's draft, run, its interface the sandbox's; the
+//            user's change since the last MCP call said first
+//   MCPB     the extension (<Name>.mcpb) carries the server, the helper and the licences of what the helper holds
 //   HANG     a helper that never answers a render (<ENV_PREFIX>SANDBOX_TEST_HANG): the call answered at the deadline
 //            (<ENV_PREFIX>SANDBOX_DEADLINE_MS), saying so, the helper gone, and the next call working
+//   IDLE     the helper idle past <ENV_PREFIX>SANDBOX_IDLE_MS ended by the server, and back on the next call, quietly
+//   EXIT     the server gone while its helper hangs: the helper stopped too
 #include "Probe.h"
 
 #include "mcp/McpProtocol.h"
@@ -52,6 +63,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <memory>
 #include <string>
 #include <thread>
@@ -59,6 +71,7 @@
 
 #include <libproc.h>
 #include <spawn.h>
+#include <sys/proc.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -121,11 +134,18 @@ namespace
             return rc == 0;
         }
 
-        juce::var request(const char* method, const juce::var& params, pg::Processor* p = nullptr, int ms = 90000)
+        // A request written, its answer not waited for: its id.
+        int post(const char* method, const juce::var& params)
         {
             const int id = next++;
             const std::string msg = line(object({ { "jsonrpc", "2.0" }, { "id", id }, { "method", method }, { "params", params } })) + "\n";
             [[maybe_unused]] const ssize_t n = write(in, msg.data(), msg.size());
+            return id;
+        }
+
+        juce::var request(const char* method, const juce::var& params, pg::Processor* p = nullptr, int ms = 90000)
+        {
+            const int id = post(method, params);
             const auto t0 = std::chrono::steady_clock::now();
             while (std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(ms))
             {
@@ -166,16 +186,35 @@ namespace
             return got;
         }
 
-        // The helper processes it started (its children).
+        // The helper processes it started that still run (its children, but those that ended and wait to be reaped).
         std::vector<pid_t> children() const
         {
             pid_t kids[16] = {};
             const int n = proc_listchildpids(pid, kids, sizeof kids);
             std::vector<pid_t> found;
             for (int k = 0; k < n && k < 16; ++k)
-                if (kids[k] > 0)
+                if (kids[k] > 0 && running(kids[k]))
                     found.push_back(kids[k]);
             return found;
+        }
+
+        // Whether it has no helper running, within `ms` (a helper ended takes a moment to go).
+        bool childless(int ms) const
+        {
+            const auto t0 = std::chrono::steady_clock::now();
+            while (!children().empty())
+            {
+                if (std::chrono::steady_clock::now() - t0 > std::chrono::milliseconds(ms))
+                    return false;
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            return true;
+        }
+
+        static bool running(pid_t p)
+        {
+            proc_bsdinfo info{};
+            return proc_pidinfo(p, PROC_PIDTBSDINFO, 0, &info, sizeof info) == static_cast<int>(sizeof info) && info.pbi_status != SZOMB;
         }
 
         void stop()
@@ -273,16 +312,26 @@ namespace
         return list;
     }
 
-    // A program of the product's kind with two dials, for the folder SHADER opens.
+    // A program of the product's kind with two dials and two fields (a float a display can show, an array it cannot),
+    // for the folder SHADER opens.
     std::string program()
     {
         return kInstrument ? "module Voice\n{\n    param float glow [[fminus::range(0, 1)]] [[fminus::default(0.7)]];\n"
                              "    param float level [[fminus::range(-36, 0)]] [[fminus::default(-12)]];\n    bool held;\n"
+                             "    float shine;\n    float ring[4];\n"
                              "    void start(float n, float v) { held = true; }\n    void stop() { held = false; }\n"
                              "    bool process(float* restrict left, float* restrict right, int n) { return held; }\n};\n"
                            : "module Effect\n{\n    param float glow [[fminus::range(0, 1)]] [[fminus::default(0.7)]];\n"
                              "    param float level [[fminus::range(-36, 0)]] [[fminus::default(-12)]];\n"
+                             "    float shine;\n    float ring[4];\n"
                              "    void process(float* restrict left, float* restrict right, int n) { }\n};\n";
+    }
+
+    // The sandbox's number an answer names ("Sandbox #3"), 0 for none.
+    int numberIn(const std::string& text)
+    {
+        const std::size_t at = text.find("Sandbox #");
+        return at == std::string::npos ? 0 : std::atoi(text.c_str() + at + 9);
     }
 }
 
@@ -324,8 +373,11 @@ PROBE(plugin, sandbox)
     // ---- BLANK -----------------------------------------------------------------------------------------------------------
     Result opened = s.sandbox(object({ { "action", "open" }, { "from", "blank" }, { "dials", dials() } }));
     std::printf("open:\n%s", opened.text.c_str());
-    P.eq("blank.opens", !opened.error && has(opened.text, "Sandbox #1, from a blank panel") && has(opened.text, "yours: drive, tone, wave, spare")
-                            && has(opened.text, "No notes") && has(opened.text, "knob drive") ? 1 : 0, 1);
+    const int blank = numberIn(opened.text);
+    std::printf("the first sandbox's number: %d\n", blank);
+    P.eq("blank.opens", !opened.error && has(opened.text, "Sandbox #" + std::to_string(blank) + ", from a blank panel")
+                            && has(opened.text, "yours: drive, tone, wave, spare") && has(opened.text, "No notes") && has(opened.text, "knob drive") ? 1 : 0, 1);
+    P.in("blank.number_drawn", blank, 10001, 90000);   // at random: a number from before a restart names none of these
 
     // ---- EDIT ------------------------------------------------------------------------------------------------------------
     {
@@ -350,7 +402,7 @@ PROBE(plugin, sandbox)
         P.eq("edit.scrolls", has(r.text, "taller than the area by") && has(r.text, "so it scrolls") ? 1 : 0, 1);
         // Back to the blank panel's (drive large, wave, tone; spare left over), for the pictures.
         r = s.sandbox(object({ { "action", "open" }, { "from", "blank" }, { "dials", dials() } }));
-        P.eq("edit.reopened", !r.error && has(r.text, "Sandbox #2") ? 1 : 0, 1);
+        P.eq("edit.reopened", !r.error && numberIn(r.text) == blank + 1 ? 1 : 0, 1);
         opened = r;
     }
 
@@ -358,7 +410,7 @@ PROBE(plugin, sandbox)
     const auto pictureOf = [&](const juce::var& args) { return s.sandbox(args); };
     juce::Image graphite, paper;
     {
-        const Result g = pictureOf(object({ { "action", "render" }, { "width", 520 }, { "height", 260 }, { "detail", "high" } }));
+        const Result g = pictureOf(object({ { "action", "render" }, { "width", 520 }, { "height", 260 }, { "theme", "graphite" }, { "detail", "high" } }));
         const Result p = pictureOf(object({ { "action", "render" }, { "width", 520 }, { "height", 260 }, { "theme", "paper" }, { "detail", "high" } }));
         std::printf("render: %s", g.text.c_str());
         graphite = decode(g.png);
@@ -374,7 +426,7 @@ PROBE(plugin, sandbox)
         // A dial's value: only its knob's cell changes.
         float x = 0, y = 0, w = 0, h = 0;
         P.eq("render.knob_found", rectOf(opened.text, "knob tone", x, y, w, h) ? 1 : 0, 1);
-        const Result moved = pictureOf(object({ { "action", "render" }, { "width", 520 }, { "height", 260 }, { "detail", "high" },
+        const Result moved = pictureOf(object({ { "action", "render" }, { "width", 520 }, { "height", 260 }, { "theme", "graphite" }, { "detail", "high" },
                                                 { "values", object({ { "tone", 7000.0 }, { "wave", "TRI" } }) } }));
         writeBytes(probe::outPath("gui.sandbox.knob.png"), moved.png);
         float bx = 0, by = 0, bw = 0, bh = 0;
@@ -386,7 +438,52 @@ PROBE(plugin, sandbox)
         P.eq("render.value_alone", knob.outside, 0);
     }
 
+    // ---- TWO: a second sandbox beside the first, by number ----------------------------------------------------------------
+    const int first = numberIn(opened.text);
+    {
+        // A second sandbox: laid out at the PANEL view's size (not the first's last render's, 520 x 260); its dial's
+        // unit shown only as the .gui's unit= says (the plugin takes none from a declaration).
+        juce::Array<juce::var> dB;
+        dB.add(object({ { "name", "drive" }, { "range", juce::Array<juce::var>{ 0.0, 24.0 } }, { "default", 6.0 }, { "unit", "dB" } }));
+        juce::Array<juce::var> plain;
+        plain.add(object({ { "name", "drive" }, { "range", juce::Array<juce::var>{ 0.0, 24.0 } }, { "default", 6.0 } }));
+        Result r = s.sandbox(object({ { "action", "open" }, { "text", "knob drive\n" }, { "dials", dB } }));
+        const int second = numberIn(r.text);
+        std::printf("second:\n%s", r.text.c_str());
+        P.eq("two.numbered", first > 0 && second == first + 1 ? 1 : 0, 1);
+        P.eq("two.area_default", has(r.text, "Layout in the area " + std::to_string(pg::sandbox::kDefaultWidth) + " x "
+                                                 + std::to_string(pg::sandbox::kDefaultHeight) + " (the PANEL view") ? 1 : 0, 1);
+        const auto picture = [&](int n) {
+            return decode(s.sandbox(object({ { "action", "render" }, { "sandbox", n }, { "width", 320 }, { "height", 160 }, { "theme", "graphite" },
+                                             { "detail", "high" } })).png);
+        };
+        const juce::Image withUnit = picture(second);
+        s.sandbox(object({ { "action", "edit" }, { "sandbox", second }, { "dials", plain } }));
+        const juce::Image without = picture(second);
+        s.sandbox(object({ { "action", "edit" }, { "sandbox", second }, { "text", "knob drive unit=\"dB\"\n" } }));
+        const juce::Image fromGui = picture(second);
+        const Diff given = compare(withUnit, without, {}, 2), written = compare(without, fromGui, {}, 2);
+        std::printf("a dial's unit: %d pixels differ given in its list, %d written as unit=\n", given.outside, written.outside);
+        P.eq("two.unit_not_from_list", given.sameSize && given.outside == 0 ? 1 : 0, 1);
+        P.ge("two.unit_from_gui", written.outside, 20);
+
+        // The first again, by its number: the edit is the first's (its knob tone; the second has none), and the second
+        // comes back as it was.
+        r = s.sandbox(object({ { "action", "edit" }, { "sandbox", first }, { "edits", juce::Array<juce::var>{ object({ { "old_text", "knob tone" }, { "new_text", "knob tone size=small" } }) } } }));
+        std::printf("the first again: %s", r.text.substr(0, r.text.find('\n') + 1).c_str());
+        P.eq("two.first_by_number", !r.error && r.text.rfind("Sandbox #" + std::to_string(first) + ": panel.gui now", 0) == 0 ? 1 : 0, 1);
+        const Result back = s.sandbox(object({ { "action", "render" }, { "sandbox", second }, { "width", 320 }, { "height", 160 }, { "theme", "graphite" },
+                                               { "detail", "high" } }));
+        const Diff same = compare(fromGui, decode(back.png), {}, 0);
+        P.eq("two.second_as_it_was", has(back.text, "Sandbox #" + std::to_string(second) + ".") && same.sameSize && same.outside == 0 ? 1 : 0, 1);
+        r = s.sandbox(object({ { "action", "render" }, { "sandbox", 9 } }));
+        P.eq("two.unknown_number", r.error && has(r.text, "There is no sandbox #9 now") ? 1 : 0, 1);
+        r = s.sandbox(object({ { "action", "apply" } }));
+        P.eq("two.apply_needs_number", r.error && has(r.text, "apply needs sandbox") ? 1 : 0, 1);
+    }
+
     // ---- SHADER ----------------------------------------------------------------------------------------------------------
+    int shaderNumber = 0;
     {
         const std::filesystem::path folder = std::filesystem::path(dir) / "program";
         std::filesystem::create_directories(folder);
@@ -395,7 +492,9 @@ PROBE(plugin, sandbox)
         std::ofstream(folder / "glow.sc") << "void main()\n{\n    gl_FragColor = vec4(0.9, 0.1, 0.6, 1.0);\n}\n";
         const Result r = s.sandbox(object({ { "action", "open" }, { "from", "file" }, { "path", juce::String(folder.string()) } }));
         std::printf("folder:\n%s", r.text.c_str());
+        shaderNumber = numberIn(r.text);
         P.eq("shader.declared", !r.error && has(r.text, "2 from the program's declarations") && has(r.text, "Shaders: 1 of 1 built") ? 1 : 0, 1);
+        P.eq("shader.fields", has(r.text, "Fields a display may show: ") && has(r.text, "shine (float)") && !has(r.text, "ring") ? 1 : 0, 1);
         const Result pic = s.sandbox(object({ { "action", "render" }, { "width", 480 }, { "height", 200 }, { "detail", "high" } }));
         writeBytes(probe::outPath("gui.sandbox.shader.png"), pic.png);
         float x = 0, y = 0, w = 0, h = 0;
@@ -424,7 +523,7 @@ PROBE(plugin, sandbox)
         for (const pid_t k : kids)
             kill(k, SIGKILL);
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        const Result after = s.sandbox(object({ { "action", "render" }, { "width", 480 }, { "height", 200 }, { "detail", "high" } }));
+        const Result after = s.sandbox(object({ { "action", "render" }, { "detail", "high" } }));   // the last render's size
         const Diff same = compare(decode(before.png), decode(after.png), {}, 2);
         std::printf("restart: %zu helper(s) killed, then: %s", kids.size(), after.text.c_str());
         P.eq("restart.killed", kids.size() == 1 ? 1 : 0, 1);
@@ -434,13 +533,17 @@ PROBE(plugin, sandbox)
 
     // ---- NONE: apply with no instance; close -----------------------------------------------------------------------------
     {
-        const Result r = s.sandbox(object({ { "action", "apply" } }));
+        const Result r = s.sandbox(object({ { "action", "apply" }, { "sandbox", shaderNumber } }));
         P.eq("none.apply_text", !r.error && has(r.text, "nothing was applied") && has(r.text, "shader \"glow.sc\"") && has(r.text, "paste it") ? 1 : 0, 1);
-        const Result c = s.sandbox(object({ { "action", "close" } }));
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        P.eq("none.closed", !c.error && s.children().empty() ? 1 : 0, 1);
+        const Result older = s.sandbox(object({ { "action", "apply" }, { "sandbox", first } }));
+        P.eq("none.apply_by_number", !older.error && has(older.text, "Sandbox #" + std::to_string(first) + "'s panel.gui")
+                                         && has(older.text, "knob tone size=small") && !has(older.text, "glow.sc") ? 1 : 0, 1);
+        const Result c = s.sandbox(object({ { "action", "close" }, { "sandbox", shaderNumber } }));
+        P.eq("none.closed", !c.error && has(c.text, "its helper ended") && s.childless(3000) ? 1 : 0, 1);
         const Result after = s.sandbox(object({ { "action", "edit" }, { "text", "label \"X\"" } }));
         P.eq("none.closed_empty", after.error && has(after.text, "open it first") ? 1 : 0, 1);
+        const Result kept = s.sandbox(object({ { "action", "render" }, { "sandbox", first }, { "width", 320 }, { "height", 160 } }));
+        P.eq("none.kept_after_close", !kept.error && !kept.png.empty() && has(kept.text, "Sandbox #" + std::to_string(first) + ".") ? 1 : 0, 1);
     }
 
     // ---- MATCH and APPLY: a processor playing the prompt's example -------------------------------------------------------
@@ -476,11 +579,28 @@ PROBE(plugin, sandbox)
             port.setPanelView(false);
         }
         P.eq("match.area", areaW == pg::sandbox::kDefaultWidth && areaH == pg::sandbox::kDefaultHeight ? 1 : 0, 1);
+        // MCP's look at the plugin (the plugin's record of what it was told), then the host moving a dial: the sandbox's
+        // read of the instance leaves that record alone, so the change still starts the next result.
+        pg::ChatAgent& agent = processor.chatAgent();
+        agent.mcpCall("get_status", juce::var(new juce::DynamicObject()));
+        processor.getParameters()[0]->setValueNotifyingHost(0.25f);
+        processor.poll();
         const Result opened2 = s.sandbox(object({ { "action", "open" }, { "from", "instance" } }), &processor);
         std::printf("from the instance:\n%s", opened2.text.c_str());
         P.eq("match.opened", !opened2.error && has(opened2.text, "from the program of") && has(opened2.text, "from the program's declarations") ? 1 : 0, 1);
+        {
+            std::string hinted;
+            const pg::ChatAgent::McpResult read = agent.mcpCall("read_file", object({ { "name", "panel.gui" } }));
+            if (const juce::Array<juce::var>* blocks = read.content.getArray())
+                for (const juce::var& b : *blocks)
+                    hinted += b["text"].toString().toStdString();
+            std::printf("the next MCP result after the sandbox's read: %s\n", hinted.substr(0, hinted.find('\n')).c_str());
+            P.eq("peek.cursor_kept", hinted.rfind("(The user changed 1 thing since the last MCP call here", 0) == 0 ? 1 : 0, 1);
+        }
+        const int exampleNumber = numberIn(opened2.text);
         const std::string theme = funkgui::UiPreferences::get().theme() == 1 ? "paper" : "graphite";
-        const Result mine = s.sandbox(object({ { "action", "render" }, { "detail", "high" }, { "theme", juce::String(theme) } }), &processor);
+        const Result mine = s.sandbox(object({ { "action", "render" }, { "sandbox", exampleNumber }, { "detail", "high" } }), &processor);   // the user's theme
+        P.eq("match.users_theme", has(mine.text, theme + " (the user's theme in the plugin)") ? 1 : 0, 1);
         writeBytes(probe::outPath("gui.sandbox.example.png"), mine.png);
         writeBytes(probe::outPath("gui.sandbox.example.view.png"), view.png);
         const Diff d = compare(decode(view.png), decode(mine.png), masks, 4);
@@ -524,10 +644,14 @@ PROBE(plugin, sandbox)
         }
 
         // APPLY: a change in the sandbox, written into the processor's program and run.
-        const Result e = s.sandbox(object({ { "action", "edit" }, { "edits", juce::Array<juce::var>{ object({ { "old_text", "panel " }, { "new_text", "label \"APPLIED HERE\"\npanel " } }) } } }),
+        const Result e = s.sandbox(object({ { "action", "edit" }, { "sandbox", exampleNumber },
+                                            { "edits", juce::Array<juce::var>{ object({ { "old_text", "panel " }, { "new_text", "label \"APPLIED HERE\"\npanel " } }) } } }),
                                    &processor);
         P.eq("apply.edited", !e.error ? 1 : 0, 1);
-        const Result a = s.sandbox(object({ { "action", "apply" } }), &processor);
+        processor.getParameters()[1]->setValueNotifyingHost(0.75f);   // the host again, another dial (a move of the same
+                                                                        // one so soon would join the first, already told)
+        processor.poll();
+        const Result a = s.sandbox(object({ { "action", "apply" }, { "sandbox", exampleNumber } }), &processor);
         std::printf("apply: %s", a.text.substr(0, 400).c_str());
         processor.settle();
         std::string written;
@@ -539,32 +663,71 @@ PROBE(plugin, sandbox)
             labelled = labelled || (n.kind == pg::GuiKind::label && n.text == "APPLIED HERE");
         P.eq("apply.written", !a.error && has(a.text, "wrote panel.gui into its program") && has(written, "label \"APPLIED HERE\"") ? 1 : 0, 1);
         P.eq("apply.runs", port.status().ok && labelled ? 1 : 0, 1);
-        s.sandbox(object({ { "action", "close" } }), &processor);
+        P.eq("apply.hint", a.text.rfind("(The user changed 1 thing since the last MCP call here", 0) == 0 ? 1 : 0, 1);
+        s.sandbox(object({ { "action", "close" }, { "sandbox", exampleNumber } }), &processor);
     }
     s.stop();
 
+    // ---- MCPB: the extension's contents ----------------------------------------------------------------------------------
+    {
+        const juce::File mcpb = juce::File(serverPath).getSiblingFile(juce::String(pg::product::kName) + ".mcpb");
+        juce::ZipFile zip(mcpb);
+        std::set<std::string> entries;
+        for (int k = 0; k < zip.getNumEntries(); ++k)
+            entries.insert(zip.getEntry(k)->filename.toStdString());
+        std::string listed;
+        for (const std::string& e : entries)
+            listed += " " + e;
+        std::printf("%s:%s\n", mcpb.getFileName().toRawUTF8(), listed.c_str());
+        const std::string server = "server/" + std::string(pg::product::kName) + "MCP", helper = "server/" + pg::sandbox::helperName();
+        P.eq("mcpb.programs", static_cast<int>(entries.count(server) + entries.count(helper)), 2);
+        int licences = 0;
+        for (const char* l : { "JetBrainsMono-LICENSE.txt", "bgfx-LICENSE.txt", "bx-LICENSE.txt", "bimg-LICENSE.txt", "bgfx.cmake-LICENSE.txt" })
+            licences += static_cast<int>(entries.count(std::string("licences/") + l));
+        P.eq("mcpb.licences", licences, 5);
+    }
+
     // ---- HANG: a helper that never answers a render ----------------------------------------------------------------------
     {
-        const std::string hang = std::string(pg::product::kEnvPrefix) + "SANDBOX_TEST_HANG", deadline = std::string(pg::product::kEnvPrefix) + "SANDBOX_DEADLINE_MS";
+        const std::string hang = std::string(pg::product::kEnvPrefix) + "SANDBOX_TEST_HANG", deadline = std::string(pg::product::kEnvPrefix) + "SANDBOX_DEADLINE_MS",
+                          idle = std::string(pg::product::kEnvPrefix) + "SANDBOX_IDLE_MS";
         setenv(hang.c_str(), "render", 1);
         setenv(deadline.c_str(), "3000", 1);
+        setenv(idle.c_str(), "1500", 1);
         Server h;
         const bool started = h.start(serverPath);
         unsetenv(hang.c_str());
         unsetenv(deadline.c_str());
+        unsetenv(idle.c_str());
         P.eq("hang.starts", started ? 1 : 0, 1);
         h.request("initialize", object({ { "protocolVersion", "2025-11-25" }, { "capabilities", juce::var(new juce::DynamicObject()) } }));
         const Result o = h.sandbox(object({ { "action", "open" }, { "from", "blank" }, { "dials", dials() } }));
+        const int hung = numberIn(o.text);
         const auto t0 = std::chrono::steady_clock::now();
         const Result r = h.sandbox(object({ { "action", "render" } }), nullptr, 20000);
         const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         std::printf("hung: answered after %.1f s: %s", seconds, r.text.c_str());
         P.eq("hang.answered", !o.error && r.answered && r.error && has(r.text, "did not answer in 3 s") ? 1 : 0, 1);
         P.in("hang.at_deadline", seconds, 2.5, 8.0);
-        P.eq("hang.helper_gone", h.children().empty() ? 1 : 0, 1);
+        P.eq("hang.helper_gone", h.childless(2000) ? 1 : 0, 1);
         const Result next = h.sandbox(object({ { "action", "edit" }, { "edits", juce::Array<juce::var>{ object({ { "old_text", "knob tone" }, { "new_text", "knob tone size=small" } }) } } }));
-        P.eq("hang.next_works", !next.error && has(next.text, "Sandbox #1") ? 1 : 0, 1);
+        P.eq("hang.next_works", !next.error && hung > 0 && has(next.text, "Sandbox #" + std::to_string(hung)) ? 1 : 0, 1);
+
+        // IDLE: past 1.5 s with no request the server ends its helper; the next call brings it back, saying nothing of it.
+        P.eq("idle.running", h.children().size() == 1 ? 1 : 0, 1);
+        P.eq("idle.ended", h.childless(6000) ? 1 : 0, 1);
+        const Result quiet = h.sandbox(object({ { "action", "edit" }, { "sandbox", hung }, { "edits", juce::Array<juce::var>{ object({ { "old_text", "size=small" }, { "new_text", "size=large" } }) } } }));
+        P.eq("idle.back_quietly", !quiet.error && quiet.text.rfind("Sandbox #" + std::to_string(hung) + ": panel.gui now", 0) == 0 && h.children().size() == 1 ? 1 : 0, 1);
+
+        // EXIT: a render that hangs, and the server gone meanwhile: the helper does not outlive it.
+        const std::vector<pid_t> before = h.children();
+        h.post("tools/call", object({ { "name", "gui_sandbox" }, { "arguments", object({ { "action", "render" } }) } }));
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
         h.stop();
+        bool stopped = before.size() == 1;
+        for (int k = 0; k < 100 && stopped && Server::running(before.front()); ++k)
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        P.eq("exit.helper_stopped", stopped && !Server::running(before.front()) ? 1 : 0, 1);
     }
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);

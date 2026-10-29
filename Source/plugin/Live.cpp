@@ -385,6 +385,16 @@ namespace playground
     // ---- get_status ----------------------------------------------------------------------------------------------------
     std::string ChatAgent::statusText(const juce::var& input, bool mcp, bool& isError)
     {
+        // peek, the MCP server's own read (the GUI sandbox's, mcp/Main.cpp's instanceFiles; no schema names it): the
+        // files alone, and nothing kept of the look: no token, no mark, mcpHint's cursor where it was, so that what the
+        // user changed still starts Claude's next result.
+        if (mcp && static_cast<bool>(input.getProperty("peek", false)))
+        {
+            std::string out = "The files:\n";
+            for (const SourceFile& f : host_.chatDraft().files)
+                out += "<file name=\"" + f.name + "\">\n" + f.text + (f.text.empty() || f.text.back() == '\n' ? "" : "\n") + "</file>\n";
+            return out;
+        }
         const juce::var sinceVar = input.getProperty("since", juce::var());
         const std::string since = sinceVar.isString() ? sinceVar.toString().trim().toStdString() : std::string();
         std::string files = input.getProperty("files", "").toString().toStdString();
