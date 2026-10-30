@@ -664,10 +664,10 @@ namespace playground
                 files = running_;
                 controls = controls_;
             }
-            capture_.noteProgram(s.program, files, controls);
+            capture_.noteProgram(s.program, files, controls, s.circuits);
             return;
         }
-        capture_.noteProgram(s.program, s.sources, s.controls);  // a recording's replay compiles these files
+        capture_.noteProgram(s.program, s.sources, s.controls, s.circuits);   // a recording's replay compiles these
         Controls before;
         {
             const std::lock_guard<std::mutex> lock(programMutex_);

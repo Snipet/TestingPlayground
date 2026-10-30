@@ -326,7 +326,7 @@ namespace playground
         return compile(singleFile(std::string(source), std::string(fileName)), sampleRate);
     }
 
-    Patch::Result Patch::compile(const Sources& files, float sampleRate, bool keepIr)
+    Patch::Result Patch::compile(const Sources& files, float sampleRate, bool keepIr, const CircuitPins* pins)
     {
         const auto t0 = std::chrono::steady_clock::now();
         Result r;
@@ -347,7 +347,7 @@ namespace playground
         // included again reads nothing, as FMinus reads each file once. The files read, in the order first read: the
         // panel's lines come from them.
         std::vector<const SourceFile*> compiled{ &files.front() };
-        circuits::Generator circuits(files);
+        circuits::Generator circuits(files, pins);
         const fminus::Program::IncludeResolver include = includeOf(files, circuits, &compiled);
 
         // Pass 1: the program as written.
@@ -507,6 +507,7 @@ namespace playground
             Recipe& rc = patch->recipe_;
             rc.files = files;
             rc.circuits = circuits.generated();
+            rc.pins = circuits.pins();
             rc.source = full;
             rc.names = names;
             rc.streams = streams;

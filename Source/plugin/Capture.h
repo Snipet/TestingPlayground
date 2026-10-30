@@ -201,6 +201,7 @@ namespace playground::capture
         std::array<std::vector<float>, 2> in, out;   // left, right
         std::vector<std::pair<uint64_t, Sources>> programs;   // the files of each program that played, for a replay
         std::vector<std::pair<uint64_t, Controls>> programDials;   // and its dials (what its blocks' values are of)
+        std::vector<std::pair<uint64_t, CircuitPins>> programPins;   // and its netlists' configurations (the replay's)
         std::size_t bytes = 0;      // what it holds
 
         uint64_t samples() const noexcept { return out[0].size(); }
@@ -291,8 +292,9 @@ namespace playground::capture
         // recording that ended by itself (the program's own code then need not play), and after kIdleSeconds without
         // a call forgets everything. Skips a round while a call holds the mutex.
         void housekeep();
-        // A program that plays now (a compile that landed: Processor::apply): its files and its dials, for a replay.
-        void noteProgram(uint64_t program, const Sources& files, const Controls& controls = {});
+        // A program that plays now (a compile that landed: Processor::apply): its files, its dials and the configuration
+        // each of its netlists was generated with (CompileStatus::circuits), for a replay.
+        void noteProgram(uint64_t program, const Sources& files, const Controls& controls = {}, const CircuitPins& pins = {});
         bool audio() const noexcept { return rate_.load(std::memory_order_relaxed) > 0.0f; }   // prepared (the host runs it)
         std::size_t bytes() const;           // what it holds (probes: forget frees)
         int rings() const;                   // recordings allocated and not freed yet (probes)
@@ -335,6 +337,7 @@ namespace playground::capture
         std::string replay_;                         // what a replay of it found (replayed)
         std::vector<std::pair<uint64_t, Sources>> programs_;   // the last few programs' files (noteProgram)
         std::vector<std::pair<uint64_t, Controls>> programDials_;   // and their dials
+        std::vector<std::pair<uint64_t, CircuitPins>> programPins_;   // and their netlists' configurations
         std::chrono::steady_clock::time_point lastUse_{};
         bool own_ = false;                           // what the hook was told last
         std::function<void(bool)> ownHook_;

@@ -49,7 +49,9 @@
 // that plays to its SelfTester, and compiles the program again once an answer lands: Compiler.h, "The self-test"),
 // Result::circuitKeys the keys of every netlist generated with a configuration to choose; the recipe keeps the
 // generated texts (Recipe::circuits), so freeze(), ir() and frozenIr() read the modules the program was compiled with
-// and never generate again: a frozen copy keeps its program's layout whatever the store holds by then.
+// and never generate again: a frozen copy keeps its program's layout whatever the store holds by then. It keeps the
+// configuration each was generated with too (Recipe::pins, Sources.h's CircuitPins), which compile() takes back: a
+// recording's replay compiles the program that played with its pins, so it plays what played, not the store's answer.
 //
 // The methods the audio thread calls (process, start, stop) must not allocate: FMinus refuses a program whose methods
 // could reach calloc, malloc or free from them (init and end may: a delay line's memory). They need no
@@ -140,8 +142,9 @@ namespace playground
 
         // Compiles `files` (the first the program, each named in the messages as it is called) for this plugin's
         // kind and creates its instances at `sampleRate`: zeroed, their parameters at their defaults, init run.
-        // `keepIr`: the program's IR in Result::ir too, both texts (above, "The IR").
-        static Result compile(const Sources& files, float sampleRate, bool keepIr = false);
+        // `keepIr`: the program's IR in Result::ir too, both texts (above, "The IR"). `pins`: its netlists generated with
+        // these configurations where they name the netlist's key (above, "Circuits"), not with the store's answers.
+        static Result compile(const Sources& files, float sampleRate, bool keepIr = false, const CircuitPins* pins = nullptr);
         // A program of one file.
         static Result compile(std::string_view source, float sampleRate, std::string_view fileName = kProgramName);
         // The editor's check while typing (Compiler::check): what compile() would say of `files`, but faster and
@@ -180,6 +183,8 @@ namespace playground
             Sources circuits;                          // the modules generated from its netlists (the netlist's
                                                        // name, the FMinus text): what its #includes read, never
                                                        // generated again
+            CircuitPins pins;                          // the configuration each was generated with, when it chose
+                                                       // one (above, "Circuits")
             std::string source;                        // the program with the plugin's calls appended
             std::array<std::string, kMaxControls> names{};   // each control's parameter, qualified ("" for none)
             std::array<bool, kMaxControls> streams{};        // bound as a stream (a float), else a knob

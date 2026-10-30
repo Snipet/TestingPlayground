@@ -184,7 +184,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `circuits::chosenNote`. One compile offers at a time: `compileNow` waits while the compiler's thread compiles, and the
   thread starts no RUN while `compileNow` (or `selfTestNow`'s refine) does. The answers are kept with the session
   (`<PROGRAM><CIRCUITS><ANSWER key text/>`) and with each project version (its `circuits`), and stored again
-  (`circuits::restore`) before that program compiles. A probe that wants no test in the background turns them off
+  (`circuits::restore`) before that program compiles. A recording never reads the store: each program the capture
+  notes keeps the configuration each of its netlists was generated with (`CompileStatus::circuits`, Sources.h's
+  `CircuitPins`, from `Patch::Recipe::pins`), and its replay and trace's "capture" compile with them
+  (`Patch::compile`'s and `measure::Session`'s `pins`), so a provisional take replays provisional after the answer
+  lands. A probe that wants no test in the background turns them off
   (`Compiler::setSelfTesting(false)`) and runs them with `selfTestNow` (the jobs waiting, then the refine); a probe's
   netlists whose configuration is open are `Tools/probes/common/AutoClipper.h`'s.
 - The displays read what the audio thread publishes, without a lock: after each block the Engine measures the
@@ -409,8 +413,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   did not check: a problem a stop kept from pass 2 is "not traced", "the same bits" needs compared samples, a field bad
   before the first call is a note, not the problem, and with no field gone bad the verdict names the state the map
   leaves out (`Patch::unmapped`) before it blames a local. Its source "capture" is the user's recording replayed through
-  the program that played it (`scenario::Captured::files`, the take's own; the one that plays now when the take no
-  longer knows it), read once for the files and the render (`scenario::resolve` with the recording).
+  the program that played it (`scenario::Captured::files`, the take's own, with its netlists' `pins`; the one that
+  plays now when the take no longer knows it), read once for the files and the render (`scenario::resolve` with the recording).
 - **set_checks** (`dsp/Goals.h`): checks are goals (a metric with min, max or a target and a tolerance) with a label
   and a render; `ChatAgent::evaluateChecks` measures them all (one compile, one render for checks that share one) on
   the editor's files and the plugin's dials after every run_program that compiles (the results end its result) and

@@ -1273,10 +1273,10 @@ namespace playground::measure
         }
     }
 
-    Session::Session(const Sources& files, double rate)
+    Session::Session(const Sources& files, double rate, const CircuitPins* pins)
         : impl_(std::make_unique<Impl>()), rate_(rate > 1000.0 ? rate : 48000.0)
     {
-        Patch::Result r = Patch::compile(files, static_cast<float>(rate_));
+        Patch::Result r = Patch::compile(files, static_cast<float>(rate_), false, pins);
         if (!r.patch)
         {
             errors_ = r.errors + r.notes;

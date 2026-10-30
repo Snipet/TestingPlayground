@@ -66,6 +66,7 @@ namespace playground::measure
         bool detail = false;                      // more of each: culprits, values, lines
         double seconds = kTraceSeconds;           // the time limit
         std::function<bool()> keepGoing;          // false stops it (a cancel)
+        CircuitPins pins;                         // the netlists' configurations (a recording's: Session's `pins`)
     };
 
     struct TraceCulprit

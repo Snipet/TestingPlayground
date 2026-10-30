@@ -42,6 +42,10 @@
 //             replay's line in their result, compare with what plays identical bits, a part (from, to) named so, and
 //             status then reports the replay's line; from and to without "capture" are refused
 //             trace's source "capture" replays it through the program that played it, a part of it too
+//   CIRCUITS  a program playing a netlist's provisional configuration (AutoClipper.h's clipper, the self-test off),
+//             recorded (mode next); the self-test's answer stored after it: the take keeps the configuration its
+//             netlist played with (CompileStatus::circuits), and its replay (and trace's "capture") plays it bit for bit,
+//             where a compile of its files now would generate the answer's module and differ
 //   VOICES    an instrument's eighteen keys at once: the take's blocks hold the Engine's steals (Meters' counts), and
 //             stop's report says them
 //   NOTFRESH  LAST's take (it started mid-playing): the synth's replay differs, and the line says why; the effect's
@@ -55,13 +59,18 @@
 //             with no MIDI (a chord held from before) replays no notes of its own
 #include "Probe.h"
 
+#include "AutoClipper.h"
+
 #include "plugin/CaptureReplay.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/Processor.h"
 
 #include "dsp/Measure.h"
+#include "fminus/Circuits.h"
 
 #include "Product.h"
+
+#include "fminus/Circuit.h"
 
 #include <funkgui/panel/HeadlessGuiScope.h>
 
@@ -398,7 +407,7 @@ namespace
         std::string why;
         if (!cap::replayOf(t, 0.0, -1.0, rp, why) || rp.files == nullptr)
             return false;
-        pg::measure::Session s(*rp.files, t.rate);
+        pg::measure::Session s(*rp.files, t.rate, rp.pins);
         if (!s.compiled())
             return false;
         const pg::measure::Session::Render out = s.render(rp.request, nullptr, nullptr, rp.length);
@@ -934,6 +943,70 @@ PROBE(plugin, capture)
         P.eq("privacy.replay_pictures_not_kept", !cp.isError && hasImage(cp) && keptPictures(r.rec) == 0 ? 1 : 0, 1);
         const std::string after = textOf(tool(r.rec, object({ { "action", "status" } })));
         P.eq("replay.status_says", has(after, "Replay: matches what played bit for bit.") ? 1 : 0, 1);
+    }
+
+    // ---- CIRCUITS: a take of a netlist's provisional configuration, replayed once the self-test's answer is stored ------
+    {
+        pg::circuits::answers().clearForTests();
+        Rig r;
+        r.head.known = false;
+        r.rec.compiler().setSelfTesting(false);                 // the answer is the probe's: no test, no refine
+        const pg::Sources files = { { pg::kProgramName, probe::clipperProgram("clipper.cir", "Clipper", false) },
+                                    { "clipper.cir", probe::kAutoClipper } };
+        r.rec.editorPort().run(files);
+        r.rec.settle();
+        const pg::CompileStatus s = r.rec.compiler().status();
+        const std::string key = fminus::circuit::selfTestKey(probe::kAutoClipper, "clipper.cir", {});
+        P.eq("circuits.provisional_pinned", s.ok && has(s.notes, "provisional: ") && s.circuits.size() == 1 && s.circuits[0].key == key
+                                                && s.circuits[0].answer.empty() ? 1 : 0, 1);
+        const pg::ChatAgent::McpResult a = tool(r.rec, object({ { "action", "arm" }, { "mode", "next" }, { "seconds", 1 } }));
+        uint64_t sound = ~uint64_t{ 0 };
+        for (std::size_t k = 0; r.pos < static_cast<uint64_t>(1.6 * kFs); ++k)
+        {
+            const int n = patternAt(k);
+            if (k == 4)
+                sound = r.pos + static_cast<uint64_t>(n / 3);
+            std::vector<std::pair<int, juce::MidiMessage>> midi;
+            if (kInstrument && k == 4)
+                midi.push_back({ n / 3, juce::MidiMessage::noteOn(1, 45, static_cast<juce::uint8>(100)) });
+            if (kInstrument && k == 60 && n > 0)
+                midi.push_back({ 0, juce::MidiMessage::noteOff(1, 45) });
+            r.block(n, [&](int c, uint64_t i) { return !kInstrument && i >= sound ? sine(c, i) : 0.0f; }, midi);
+        }
+        r.rec.poll();
+        tool(r.rec, object({ { "action", "stop" } }));
+        const cap::Reply taken = r.rec.recorder().act(cap::Action::take, {});
+        P.eq("circuits.taken", !a.isError && taken.take != nullptr ? 1 : 0, 1);
+        if (taken.take != nullptr)
+        {
+            const cap::Take& t = *taken.take;
+            // The answer lands (another instance's, say): a compile of these files now generates another module.
+            fminus::circuit::Choice c;
+            c.key = key;
+            c.oversample = 4;
+            c.adaa = true;
+            c.solver.steps = 1;
+            pg::circuits::answers().store(key, c.text());
+            cap::Replay rp;
+            std::string why;
+            const bool built = cap::replayOf(t, 0.0, -1.0, rp, why);
+            const cap::Fidelity f = built ? cap::nullTest(t, rp) : cap::Fidelity{};
+            std::printf("circuits: the take's replay with the answer stored: %s\n", f.line.c_str());
+            P.eq("circuits.take_keeps_pins", built && rp.pins != nullptr && *rp.pins == s.circuits ? 1 : 0, 1);
+            P.eq("circuits.replay_bits", f.identical && replaysBitForBit(t) ? 1 : 0, 1);
+            bool storeDiffers = false;
+            if (built && rp.files != nullptr)
+            {
+                pg::measure::Session now(*rp.files, t.rate);         // no pins: the store's answer
+                const pg::measure::Session::Render out = now.compiled() ? now.render(rp.request, nullptr, nullptr, rp.length)
+                                                                        : pg::measure::Session::Render{};
+                storeDiffers = now.compiled() && !(out.l.size() == rp.length && sameFloats(t.out[0], out.l.data(), out.l.size()));
+            }
+            P.eq("circuits.store_would_differ", storeDiffers ? 1 : 0, 1);
+            const pg::ChatAgent::McpResult tr = r.rec.chatAgent().mcpCall("trace", object({ { "source", "capture" } }));
+            P.eq("circuits.trace_replays", !tr.isError && has(textOf(tr), "its replay matches what played bit for bit") ? 1 : 0, 1);
+        }
+        pg::circuits::answers().clearForTests();
     }
 
     // ---- VOICES: an instrument's steals in the take, from the Engine's own counts (Meters::steals) ---------------------

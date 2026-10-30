@@ -79,6 +79,7 @@ namespace playground
             r.patch->setProgram(id);
             s.program = id;
             b->recipe = r.patch->recipe();
+            s.circuits = b->recipe.pins;
             b->patch = std::move(r.patch);
         }
         return b;
@@ -353,7 +354,10 @@ namespace playground
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         if (!s.ok)
+        {
             s.program = recipe_.program;           // the program that played plays on
+            s.circuits = recipe_.pins;
+        }
         s.revision = status_.revision + 1;
         status_ = std::move(s);
         revision_.store(status_.revision, std::memory_order_release);
@@ -614,6 +618,7 @@ namespace playground
         {
             out = status_;                         // a failed compile's outcome stays: its errors, its files
             out.program = s.program;
+            out.circuits = std::move(s.circuits);
         }
         out.notes += chosen;
         out.refined = true;

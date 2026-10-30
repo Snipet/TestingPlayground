@@ -103,6 +103,8 @@ namespace playground
                                                // or the refine's (above, "The self-test")
         bool        refined = false;           // a refine brought it up to date (above): `program` is the refine's, and
                                                // when `ok`, all but `request`; else the failed compile's outcome stays
+        CircuitPins circuits;                  // the configuration each netlist of `program` was generated with
+                                               // (Patch::Recipe::pins): what a recording's replay compiles it with
     };
 
     // The last check's outcome (Compiler::check).

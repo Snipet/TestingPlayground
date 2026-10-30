@@ -54,6 +54,20 @@ namespace playground
         return ext[0] == '.' && lower(ext[1]) == 'c' && lower(ext[2]) == 'i' && lower(ext[3]) == 'r';
     }
 
+    // The configuration a netlist was generated with in a compile, when the netlist leaves it to the self-test
+    // (fminus/Circuits.h): its self-test key, and the answer it read (fminus::circuit::Choice::text()), or "" for the
+    // provisional configuration. A compile given a program's pins generates its netlists so again, whatever the
+    // self-test's store holds by then: a recording's replay (plugin/CaptureReplay.h) plays what played.
+    struct CircuitPin
+    {
+        std::string key;
+        std::string answer;
+
+        friend bool operator==(const CircuitPin&, const CircuitPin&) = default;
+    };
+
+    using CircuitPins = std::vector<CircuitPin>;
+
     // The file named `name`, or nullptr.
     inline const SourceFile* findFile(const Sources& files, std::string_view name)
     {

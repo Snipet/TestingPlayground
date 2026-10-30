@@ -17,7 +17,9 @@
 //               generated module ("pedal.cir.fm:120:5: error: ...") at the netlist's line the generated line comes
 //               from: "pedal.cir:9:1: error: ... (in the module generated from pedal.cir, line 120)". A Generator made
 //               from texts generated already (a recipe's: Patch::Recipe::circuits) serves them and never generates:
-//               a frozen copy keeps the program's layout whatever the store holds by then.
+//               a frozen copy keeps the program's layout whatever the store holds by then. One given pins (Sources.h's
+//               CircuitPins: a compile's, Patch::Recipe::pins) generates each netlist whose key they name with the
+//               configuration they say (the answer, or the provisional one), never the store's: a recording's replay.
 //   Answers     the self-test's answers (fminus::circuit::Choice::text(), by the netlist's key), process-wide: every
 //               instance and every compile reads one store. The newest 64 are kept. The self-test that fills it runs
 //               off the compiler's thread (dsp/SelfTester.h, one a Compiler); the in-flight set keeps two instances
@@ -104,8 +106,9 @@ namespace playground::circuits
     class Generator
     {
     public:
-        // One compile's: generates the netlists of `files` as #includes reach them, with the store's answers.
-        explicit Generator(const Sources& files);
+        // One compile's: generates the netlists of `files` as #includes reach them, with the store's answers (or, for a
+        // key `pins` names, with the pin's: its answer, or none).
+        explicit Generator(const Sources& files, const CircuitPins* pins = nullptr);
         // Serves `generated` (name and FMinus text, a recipe's) for the netlists of `files`, and generates nothing.
         Generator(const Sources& files, const Sources& generated);
 
@@ -126,6 +129,9 @@ namespace playground::circuits
         // (answered or provisional), in the order generated.
         const std::vector<Job>& jobs() const noexcept { return jobs_; }
         const std::vector<std::string>& keys() const noexcept { return keys_; }
+        // The configuration each of those was generated with (its key, the answer or ""), in the order generated: what
+        // a compile given them generates again (the recipe's, Patch::Recipe::pins).
+        const CircuitPins& pins() const noexcept { return used_; }
         // What was generated (each netlist's name and its module's text), in the order generated: the recipe's.
         Sources generated() const;
 
@@ -144,11 +150,13 @@ namespace playground::circuits
         Module& generate(const SourceFile& netlist, bool job);
 
         const Sources& files_;
+        const CircuitPins* pins_ = nullptr;      // the configurations to generate with, by key (null: the store's)
         bool replay_ = false;                    // serving a recipe's texts: nothing is generated
         std::vector<std::unique_ptr<Module>> modules_;   // stable: module() hands out their texts
         std::string errors_, warnings_, notes_;
         std::vector<Job> jobs_;
         std::vector<std::string> keys_;
+        CircuitPins used_;
     };
 
     // How many netlists every Generator has generated so far (fminus::circuit::generate calls): a probe's counting

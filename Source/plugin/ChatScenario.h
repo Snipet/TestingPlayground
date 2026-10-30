@@ -79,6 +79,7 @@ namespace playground::scenario
         std::string about;                        // a line: when, how long, the rate, what it holds
         Sources files;                            // the program that played at its start (none: not known), which
                                                   // replays it as it played (trace's source "capture")
+        CircuitPins pins;                         // and its netlists' configurations (Sources.h), which it plays with
     };
     // The last recording (its part from..to, in seconds; to < 0: to its end, on its host blocks); false with why
     // ("nothing recorded yet: ...") when there is none. The one function the sources "capture" (scenario's phrase and

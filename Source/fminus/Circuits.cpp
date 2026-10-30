@@ -163,7 +163,7 @@ namespace playground::circuits
     uint64_t generations() noexcept { return gGenerations.load(std::memory_order_relaxed); }
 
     // ---- one compile's generator --------------------------------------------------------------------------------------
-    Generator::Generator(const Sources& files) : files_(files) {}
+    Generator::Generator(const Sources& files, const CircuitPins* pins) : files_(files), pins_(pins) {}
 
     Generator::Generator(const Sources& files, const Sources& generated) : files_(files), replay_(true)
     {
@@ -182,12 +182,25 @@ namespace playground::circuits
     Generator::Module& Generator::generate(const SourceFile& netlist, bool job)
     {
         fminus::circuit::Options options;
-        // The store's answer, when it holds one for this netlist (its key, from a parse and a plan: cheap); one that
-        // does not read back is left out, and the provisional configuration plays.
+        // The store's answer, when it holds one for this netlist (its key, from a parse and a plan: cheap), or the pin's
+        // when the pins name its key (an empty one: none); one that does not read back is left out, and the
+        // provisional configuration plays.
         const std::string key = fminus::circuit::selfTestKey(netlist.text, netlist.name, options);
+        std::optional<std::string> answer;
         if (!key.empty())
-            if (const std::optional<std::string> stored = answers().find(key))
-                options.chosen = fminus::circuit::Choice::parse(*stored);
+        {
+            const auto pin = pins_ == nullptr ? CircuitPins::const_iterator{}
+                                              : std::find_if(pins_->begin(), pins_->end(), [&](const CircuitPin& p) { return p.key == key; });
+            if (pins_ != nullptr && pin != pins_->end())
+            {
+                if (!pin->answer.empty())
+                    answer = pin->answer;
+            }
+            else
+                answer = answers().find(key);
+        }
+        if (answer)
+            options.chosen = fminus::circuit::Choice::parse(*answer);
         const fminus::circuit::Result r = fminus::circuit::generate(netlist.text, netlist.name, options);
         gGenerations.fetch_add(1, std::memory_order_relaxed);
         errors_ += r.errors;
@@ -201,7 +214,10 @@ namespace playground::circuits
                     jobs_.push_back({ r.selfTestKey, netlist.name, netlist.text });
             }
             if (!r.selfTestKey.empty() && std::find(keys_.begin(), keys_.end(), r.selfTestKey) == keys_.end())
+            {
                 keys_.push_back(r.selfTestKey);
+                used_.push_back({ r.selfTestKey, options.chosen ? *answer : std::string() });
+            }
         }
         modules_.push_back(std::make_unique<Module>(Module{ netlist.name, r.source, r.lines }));
         return *modules_.back();
