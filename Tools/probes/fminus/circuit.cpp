@@ -30,15 +30,31 @@
 //                compile wants no job and says nothing, the module generated is generate()'s with that answer, and
 //                its key is the program's; the frozen copy of the provisional program keeps its own layout; the
 //                store's find, of, claim and release, and its 64 entries
+// and the plugin's self-test (dsp/SelfTester.h, Compiler.h's "The self-test"), a Compiler offering to an Engine played
+// in blocks of 256, on AutoClipper.h's netlists (no assertion is on time; every wait has a deadline):
+//   SELFTEST     with the tests off (setSelfTesting(false)) a RUN plays the provisional configuration and no test runs;
+//                selfTestNow() runs the test and the refine: the status's revision and request move on, it compiled,
+//                the Engine's Meters::program names the refined program, and its note names the self-test's choice
+//                (circuits::chosenNote); the same files compiled again read the store: no job, no note
+//   REFRESH      after a RUN that does not compile, the refine compiles the files that play; while a recording is armed
+//                (Engine::ownCode) the refine waits, and comes when it ends; a RUN queued before the refine wins (it
+//                reads the store: no note, no job) and the refine is dropped; an instrument's refine waits while a key
+//                is held (no new program id), and lands after the release, once the voice has ended; with the tests on,
+//                a RUN whose files drop the netlist cancels its test, which stores nothing, and a RUN made while the
+//                test runs has its status before landed() moves (by order), the refine after it
+//   DEDUP        two Compilers wanting one key run one test (the in-flight set), and both refine
 #include "Probe.h"
 
 #include "Audio.h"
+#include "AutoClipper.h"
 #include "Rig.h"
 
 #include "Library.h"
 #include "Product.h"
 
+#include "dsp/Compiler.h"
 #include "dsp/Debug.h"
+#include "dsp/Engine.h"
 #include "dsp/Sources.h"
 #include "fminus/Circuits.h"
 #include "fminus/Lang.h"
@@ -50,8 +66,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <memory>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -67,17 +86,7 @@ namespace
 
     // Yeh's RC diode clipper (FMinus's examples/circuits/clipper.cir): no configuration directives, so the self-test
     // chooses its configuration and the provisional one plays meanwhile.
-    constexpr const char* kClipper = "* clipper.cir: Yeh's RC diode clipper, its configuration left to the self-test\n"
-                                     ".title Clipper\n"
-                                     ".input  u    in   scale=1\n"
-                                     ".output vout a\n"
-                                     ".target solver=-60dB alias=-60dB level=4.5V freq=3k\n"
-                                     "R1     in a  2.2k\n"
-                                     "C1     a  0  10n\n"
-                                     "D1     a  0  1N914\n"
-                                     "D2     0  a  1N914\n"
-                                     ".model 1N914 D(IS=2.52n N=1.752)\n"
-                                     ".end\n";
+    constexpr const char* kClipper = probe::kAutoClipper;
 
     std::string libraryText(std::string_view name)
     {
@@ -239,6 +248,77 @@ namespace
         return out;
     }
 
+    // An Engine as the processor runs it (prepared for blocks of 256) and a Compiler offering to it, its freezer off and
+    // its self-test on or off.
+    struct Live
+    {
+        pg::Engine engine;
+        std::unique_ptr<pg::Compiler> compiler;
+
+        explicit Live(bool testing)
+        {
+            engine.prepare(kFs, 256);
+            compiler = std::make_unique<pg::Compiler>(engine);
+            compiler->setFreezing(false);
+            compiler->setSelfTesting(testing);
+        }
+        ~Live() { compiler.reset(); }                    // before the Engine it offers to
+        Live(const Live&) = delete;
+        Live& operator=(const Live&) = delete;
+
+        // `blocks` blocks of 256 (an effect's input noise; an instrument's silence, `events` in the first), as the audio
+        // thread plays them: the meters after the last.
+        pg::Meters play(int blocks, const std::vector<pg::Event>& events = {})
+        {
+            std::vector<float> l(256), r(256);
+            for (int b = 0; b < blocks; ++b)
+            {
+                for (int i = 0; i < 256; ++i)
+                {
+                    seed_ = seed_ * 1664525u + 1013904223u;
+                    l[static_cast<std::size_t>(i)] = kInstrument ? 0.0f : 0.25f * (static_cast<float>(seed_ >> 8) / 8388608.0f - 1.0f);
+                    r[static_cast<std::size_t>(i)] = l[static_cast<std::size_t>(i)];
+                }
+                float* channels[2] = { l.data(), r.data() };
+                engine.process(channels, 2, 256, b == 0 ? std::span<const pg::Event>(events) : std::span<const pg::Event>());
+            }
+            pg::Meters m;
+            for (int k = 0; k < 1000 && !engine.meters(m); ++k)
+                std::this_thread::yield();
+            return m;
+        }
+
+    private:
+        uint32_t seed_ = 12345;
+    };
+
+    // Waits until `done` holds or `seconds` pass (a deadline, never a measurement): whether it held.
+    template <typename Done>
+    bool until(Done&& done, double seconds)
+    {
+        const auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
+        while (!done())
+        {
+            if (std::chrono::steady_clock::now() > end)
+                return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        return true;
+    }
+
+    // A status of a refined compile: its note of what the self-test chose.
+    bool chose(const pg::CompileStatus& s)
+    {
+        return s.notes.find(": note: the self-test chose this circuit's configuration: ") != std::string::npos;
+    }
+
+    // A program of this kind playing AutoClipper.h's clipper (or its pot clipper), and its netlist.
+    pg::Sources clipperFiles(bool pot = false, const std::string& edit = {})
+    {
+        return { { pg::kProgramName, probe::clipperProgram(pot ? "potclip.cir" : "clipper.cir", pot ? "PotClip" : "Clipper", pot) + edit },
+                 { pot ? "potclip.cir" : "clipper.cir", pot ? probe::kPotClipper : probe::kAutoClipper } };
+    }
+
     // SelfTestOptions::parallel on a few threads of the probe's own.
     void parallel(int count, const std::function<void(int)>& job)
     {
@@ -253,6 +333,192 @@ namespace
         work();
         for (std::thread& t : pool)
             t.join();
+    }
+
+    // SELFTEST, REFRESH and DEDUP (above): the plugin's self-test, a Compiler's.
+    void selfTester(funkgui::test::Probe& P)
+    {
+        pg::circuits::Answers& store = pg::circuits::answers();
+        const pg::Sources files = clipperFiles();
+        const std::string key = fminus::circuit::selfTestKey(probe::kAutoClipper, "clipper.cir", {});
+        std::string answer;                              // the clipper's, from SELFTEST
+
+        // ---- SELFTEST -------------------------------------------------------------------------------------------------
+        {
+            store.clearForTests();
+            Live live(false);
+            live.compiler->request(files);
+            live.compiler->wait();
+            const pg::CompileStatus a = live.compiler->status();
+            live.play(8);
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));   // time a test would start in, were they on
+            std::printf("selftest: the provisional RUN: %s%s", a.errors.c_str(), a.notes.c_str());
+            P.eq("selftest.off_plays_provisional", a.ok && has(a.notes, "clipper.cir: note: the self-test chooses this circuit's configuration; provisional: ") ? 1 : 0, 1);
+            P.eq("selftest.off_no_test", live.compiler->selfTests() == 0 && !store.inFlight(key) && !store.find(key)
+                                             && live.compiler->selfTesting() ? 1 : 0, 1);
+            const uint64_t landed = store.landed();
+            const bool refined = live.compiler->selfTestNow();
+            const pg::CompileStatus b = live.compiler->status();
+            const pg::Meters m = live.play(8);
+            answer = store.find(key).value_or("");
+            std::printf("selftest: refined %d, the answer %s\n  its status: %s%s", refined ? 1 : 0, answer.c_str(), b.errors.c_str(), b.notes.c_str());
+            P.eq("selftest.now_tests_and_refines", refined && live.compiler->selfTests() == 1 && store.landed() == landed + 1 ? 1 : 0, 1);
+            P.eq("selftest.revision_request_advance", b.revision == a.revision + 1 && b.request > a.request ? 1 : 0, 1);
+            P.eq("selftest.ok", b.ok && b.sources == files ? 1 : 0, 1);
+            P.eq("selftest.meters_program", m.program == b.request ? 1 : 0, 1);
+            const std::string note = pg::circuits::chosenNote("clipper.cir", answer);
+            P.eq("selftest.note_names_choice", !note.empty() && has(b.notes, note) && !has(b.notes, "provisional") ? 1 : 0, 1);
+            const pg::CompileStatus c = live.compiler->compileNow(files);
+            P.eq("selftest.again_reads_store", c.ok && c.notes.empty() && !live.compiler->selfTesting() && live.compiler->selfTests() == 1
+                                                   ? 1 : 0, 1);
+        }
+        if (answer.empty())
+            return;
+
+        // ---- REFRESH ----------------------------------------------------------------------------------------------------
+        // After a RUN that does not compile, the refine compiles the files that play.
+        {
+            store.clearForTests();
+            Live live(false);
+            const pg::CompileStatus a = live.compiler->compileNow(files);
+            pg::Sources broken = files;
+            broken[0].text += "module {\n";
+            live.compiler->request(broken);
+            live.compiler->wait();
+            const pg::CompileStatus bad = live.compiler->status();
+            const bool refined = live.compiler->selfTestNow();
+            const pg::CompileStatus s = live.compiler->status();
+            std::printf("refresh: after a broken RUN: refined %d, %s%s", refined ? 1 : 0, s.errors.c_str(), s.notes.c_str());
+            P.eq("refresh.failed_run_refines_what_plays", a.ok && !bad.ok && refined && s.ok && s.sources == files && chose(s) ? 1 : 0, 1);
+        }
+        // While a recording is armed the refine waits; it comes when the recording ends.
+        {
+            store.clearForTests();
+            Live live(false);
+            const pg::CompileStatus a = live.compiler->compileNow(files);
+            live.engine.setOwnCode(true);
+            const bool during = live.compiler->selfTestNow();
+            const pg::Meters m = live.play(8);
+            P.eq("refresh.waits_while_recording", a.ok && !during && store.find(key) && live.compiler->revision() == a.revision
+                                                      && m.program == a.request && live.compiler->selfTesting() ? 1 : 0, 1);
+            live.engine.setOwnCode(false);
+            const bool after = live.compiler->selfTestNow();
+            const pg::CompileStatus s = live.compiler->status();
+            P.eq("refresh.after_recording", after && s.ok && s.revision == a.revision + 1 && chose(s) && live.play(8).program == s.request
+                                                ? 1 : 0, 1);
+        }
+        // A RUN queued before the refine wins: it reads the store itself, and the refine is dropped.
+        {
+            store.clearForTests();
+            Live live(false);
+            const pg::CompileStatus a = live.compiler->compileNow(files);
+            store.store(key, answer);                    // another instance's answer lands: a refine is due
+            const bool due = live.compiler->selfTesting();
+            const uint64_t run = live.compiler->request(files);
+            live.compiler->setSelfTesting(true);         // refines may run from here on
+            live.compiler->wait();
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));   // time a refine would come in, were it due
+            const pg::CompileStatus s = live.compiler->status();
+            const bool again = live.compiler->selfTestNow();
+            std::printf("refresh: a RUN before the refine: %s\n", (s.errors + s.notes).empty() ? "no messages" : (s.errors + s.notes).c_str());
+            P.eq("refresh.run_wins", a.ok && due && s.request == run && s.revision == a.revision + 1 && s.ok && s.notes.empty()
+                                         && !again && live.compiler->revision() == s.revision && !live.compiler->selfTesting()
+                                         && live.compiler->selfTests() == 0 ? 1 : 0, 1);
+        }
+        // An instrument refines only in silence: no voice sounding, fading or held.
+        if constexpr (kInstrument)
+        {
+            store.clearForTests();
+            Live live(false);
+            const pg::CompileStatus a = live.compiler->compileNow(files);
+            const pg::Meters held = live.play(8, { pg::Event{ 0, pg::EventKind::noteOn, 60, 0.8f } });
+            const bool whileHeld = live.compiler->selfTestNow();
+            const pg::Meters still = live.play(16);
+            P.eq("refresh.synth_waits_while_held", a.ok && held.voices == 1 && held.held == 1 && !whileHeld && store.find(key)
+                                                       && still.program == a.request && live.compiler->revision() == a.revision
+                                                       ? 1 : 0, 1);
+            pg::Meters m = live.play(1, { pg::Event{ 0, pg::EventKind::noteOff, 60, 0.0f } });
+            const bool releasing = m.voices == 1 && m.held == 0;
+            const bool sounding = live.compiler->selfTestNow();
+            for (int k = 0; k < 400 && (m.voices != 0 || m.fading != 0 || m.held != 0); ++k)
+                m = live.play(1);
+            const bool silent = m.voices == 0 && m.fading == 0 && m.held == 0;
+            const bool after = live.compiler->selfTestNow();
+            const pg::CompileStatus s = live.compiler->status();
+            const pg::Meters now = live.play(8);
+            P.eq("refresh.synth_after_release", releasing && !sounding && silent && after && s.ok && chose(s) && now.program == s.request
+                                                    ? 1 : 0, 1);
+        }
+        // With the tests on: a RUN whose files drop the netlist cancels its test, which stores nothing.
+        const pg::Sources potFiles = clipperFiles(true);
+        const std::string potKey = fminus::circuit::selfTestKey(probe::kPotClipper, "potclip.cir", {});
+        {
+            store.clearForTests();
+            Live live(true);
+            const uint64_t landed = store.landed();
+            live.compiler->request(potFiles);
+            live.compiler->wait();
+            const bool started = until([&] { return store.inFlight(potKey) || store.find(potKey); }, 30.0);
+            const bool running = store.inFlight(potKey);
+            live.compiler->request(pg::singleFile(silentMain()));
+            live.compiler->wait();
+            const bool ended = until([&] { return !store.inFlight(potKey); }, 60.0);
+            std::printf("refresh: dropped while testing: started %d, running %d, ended %d, %d test(s), stored %d\n", started ? 1 : 0,
+                        running ? 1 : 0, ended ? 1 : 0, live.compiler->selfTests(), store.find(potKey) ? 1 : 0);
+            P.eq("refresh.drop_cancels", started && running && ended && live.compiler->selfTests() == 1 && !live.compiler->selfTesting()
+                                             && live.compiler->status().ok ? 1 : 0, 1);
+            P.eq("refresh.drop_stores_nothing", !store.find(potKey) && store.landed() == landed ? 1 : 0, 1);
+        }
+        // With the tests on: a RUN made while the test runs has its status before the answer lands, and the refine
+        // follows it.
+        {
+            store.clearForTests();
+            Live live(true);
+            live.compiler->request(potFiles);
+            live.compiler->wait();
+            const pg::CompileStatus a = live.compiler->status();
+            const bool started = until([&] { return store.inFlight(potKey) || store.find(potKey); }, 30.0);
+            const uint64_t landed = store.landed();
+            const bool running = store.inFlight(potKey);
+            const pg::Sources edited = clipperFiles(true, "// edited while the self-test runs\n");
+            const uint64_t run = live.compiler->request(edited);
+            uint64_t landedAtRun = 0;
+            const bool answered = until([&] {
+                if (live.compiler->status().request < run)
+                    return false;
+                landedAtRun = store.landed();
+                return true;
+            }, 60.0);
+            const pg::CompileStatus b = live.compiler->status();
+            const bool refined = until([&] {
+                const pg::CompileStatus s = live.compiler->status();
+                return s.request > run && chose(s);
+            }, 60.0);
+            const pg::CompileStatus s = live.compiler->status();
+            std::printf("refresh: a RUN while the test runs: answered first %d (landed %llu then %llu); refined %d: %s", answered ? 1 : 0,
+                        static_cast<unsigned long long>(landedAtRun - landed), static_cast<unsigned long long>(store.landed() - landed),
+                        refined ? 1 : 0, s.notes.c_str());
+            P.eq("refresh.async_provisional", a.ok && has(a.notes, "provisional: ") ? 1 : 0, 1);
+            P.eq("refresh.async_run_before_landed", started && running && answered && b.request == run && b.ok && landedAtRun == landed
+                                                        ? 1 : 0, 1);
+            P.eq("refresh.async_refines_after", refined && s.ok && s.sources == edited && store.landed() == landed + 1 ? 1 : 0, 1);
+        }
+
+        // ---- DEDUP ------------------------------------------------------------------------------------------------------
+        {
+            store.clearForTests();
+            Live x(false), y(false);
+            const pg::CompileStatus a = x.compiler->compileNow(files);
+            const pg::CompileStatus b = y.compiler->compileNow(files);
+            x.compiler->setSelfTesting(true);
+            y.compiler->setSelfTesting(true);
+            const bool both = until([&] { return chose(x.compiler->status()) && chose(y.compiler->status()); }, 60.0);
+            std::printf("dedup: tests %d and %d; both refined %d\n", x.compiler->selfTests(), y.compiler->selfTests(), both ? 1 : 0);
+            P.eq("dedup.both_wanted", a.ok && b.ok && has(a.notes, "provisional: ") && has(b.notes, "provisional: ") ? 1 : 0, 1);
+            P.eq("dedup.one_test", x.compiler->selfTests() + y.compiler->selfTests(), 1);
+            P.eq("dedup.both_refine", both ? 1 : 0, 1);
+        }
+        store.clearForTests();
     }
 }
 
@@ -466,6 +732,9 @@ PROBE(fminus, circuit)
             P.eq("recipe.generates_nothing", static_cast<int64_t>(pg::circuits::generations() - before), 0);
         }
     }
+
+    // ---- SELFTEST, REFRESH, DEDUP ---------------------------------------------------------------------------------------
+    selfTester(P);
 
     // ---- PROVISIONAL and STORE ----------------------------------------------------------------------------------------
     {

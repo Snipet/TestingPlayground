@@ -121,6 +121,45 @@ namespace playground::circuits
         flight_.clear();
     }
 
+    bool restore(const std::string& key, const std::string& text)
+    {
+        if (key.size() != 16 || text.size() > 2000)
+            return false;
+        const std::optional<fminus::circuit::Choice> c = fminus::circuit::Choice::parse(text);
+        if (!c || c->key != key)
+            return false;
+        answers().store(key, text);
+        return true;
+    }
+
+    std::vector<std::string> keysOf(const Sources& files)
+    {
+        std::vector<std::string> out;
+        for (const SourceFile& f : files)
+            if (isCircuitFile(f.name))
+            {
+                std::string key = fminus::circuit::selfTestKey(f.text, f.name, {});
+                if (!key.empty() && std::find(out.begin(), out.end(), key) == out.end())
+                    out.push_back(std::move(key));
+            }
+        return out;
+    }
+
+    std::string chosenNote(std::string_view file, std::string_view text)
+    {
+        const std::optional<fminus::circuit::Choice> c = fminus::circuit::Choice::parse(text);
+        if (!c)
+            return {};
+        std::string words = std::to_string(c->oversample) + "x";
+        if (c->adaa)
+            words += ", ADAA";
+        words += c->solver.guess == fminus::circuit::Solver::Guess::Omega ? ", omega(" : ", newton(";
+        words += std::to_string(c->solver.steps) + ")";
+        if (c->method == fminus::circuit::Method::Bdf2)
+            words += ", BDF2";
+        return std::string(file) + ": note: the self-test chose this circuit's configuration: " + words + "\n";
+    }
+
     uint64_t generations() noexcept { return gGenerations.load(std::memory_order_relaxed); }
 
     // ---- one compile's generator --------------------------------------------------------------------------------------

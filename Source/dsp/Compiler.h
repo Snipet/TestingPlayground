@@ -35,10 +35,25 @@
 // printed and the texts held here are let go (a program compiled while someone looked keeps FMinus's own copy in its
 // fminus::Program until it is replaced: FMinus holds what it printed). Never on the audio thread, never on the message
 // thread.
+//
+// The self-test (fminus/Circuits.h; SelfTester.h). A netlist that leaves its configuration to FMinus's circuit
+// self-test plays a provisional one, and its compile wants the test (Patch::Result::circuitJobs): the jobs of a compile
+// that plays (RUN's, compileNow's, a refine's; never a check's, a failed compile's or Measure's) go to this compiler's
+// SelfTester, which runs them on threads of its own and stores each answer in circuits::answers() (process-wide), and
+// cancels a test the newest program no longer wants. RUN never waits for a test, and a check never asks for one. When
+// an answer lands for a netlist the program that plays used provisionally, this thread refines: it compiles the files
+// of the program that plays (the recipe's, never the draft and never a failed RUN's) again under a new request id,
+// now with the answer, and offers it as any program (the effect crossfades; the synth's old voices would fade), its
+// status ending with a note of what the self-test chose ("pedal.cir: note: the self-test chose this circuit's
+// configuration: 4x, ADAA, omega(1)"). It waits while a RUN is queued (which reads the store itself: the refine is then
+// dropped), while a recording is armed (Engine::ownCode) and, for an instrument, until no voice sounds, fades or is
+// held (Meters), so no held note starts again. setSelfTesting(false) stops both the tests and the refines (the
+// probes'); selfTestNow() runs the jobs waiting and then the refine on the calling thread, as freezeNow does.
 #pragma once
 
 #include "dsp/Controls.h"
 #include "dsp/Engine.h"
+#include "dsp/SelfTester.h"
 #include "dsp/Sources.h"
 #include "fminus/Patch.h"
 #include "fminus/PanelSpec.h"
@@ -140,6 +155,15 @@ namespace playground
         int freezes() const noexcept { return freezes_.load(std::memory_order_relaxed); }
         static constexpr double kFreezeAfterSeconds = 3.0;
 
+        // The self-test (above): the tests and the refines on or off (on by default); selfTestNow() runs the jobs
+        // waiting, then the refine when one is due and may run (no RUN queued, no recording armed, an instrument
+        // silent), on the calling thread: true when it refined; selfTesting() says whether a test waits or runs, or an
+        // answer waits to be compiled in; selfTests() counts the tests this compiler's tester started.
+        void setSelfTesting(bool on);
+        bool selfTestNow();
+        bool selfTesting() const;
+        int selfTests() const noexcept { return tester_.tests(); }
+
         // The IR (above): whether someone looks (the processor counts the editor's IR views), and what there is.
         // Any thread.
         void setIrWanted(bool on);
@@ -161,6 +185,14 @@ namespace playground
         void frozenIr(const DialState& d);     // the freezer's: the frozen copy that plays, when its text is not held
         void setFrozenIr(const DialState& d, const std::string& text);
         void bumpIr();                         // under mutex_
+        // The self-test's (under mutex_): refineDue_ from the answers landed since the program that plays was compiled;
+        // whether a refine may run now; the refine itself (mutex_ held on entry and on return, let go while it
+        // compiles).
+        void checkLanded();
+        bool mayRefine() const;
+        void refine(std::unique_lock<std::mutex>& lock);
+        // A compile that plays: its recipe, the self-tests it wants and the landed() count read before it began.
+        void played(Patch::Recipe recipe, std::vector<circuits::Job> jobs, uint64_t landed);
 
         Engine& engine_;
         mutable std::mutex mutex_;
@@ -193,6 +225,13 @@ namespace playground
         std::atomic<uint64_t> irRevision_{ 0 };
         uint64_t irFrozenTried_ = 0;
         std::array<float, kMaxControls> irFrozenValues_{};
+        // The self-test's (mutex_): the jobs of the compile that plays (its netlists' provisional configurations), the
+        // landed() count last looked at, an answer for one of them landed, the tests and refines on.
+        std::vector<circuits::Job> playing_;
+        uint64_t landedSeen_ = 0;
+        bool refineDue_ = false;
+        bool selfTesting_ = true;
+        SelfTester tester_;                    // its own threads; before thread_, so it outlives the loop
         std::mutex freezeMutex_;               // one freeze at a time (the freezer's, freezeNow's)
         std::condition_variable freezerWake_;
         std::thread thread_;                   // last: started once everything above is

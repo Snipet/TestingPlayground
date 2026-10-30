@@ -20,8 +20,11 @@
 //               a frozen copy keeps the program's layout whatever the store holds by then.
 //   Answers     the self-test's answers (fminus::circuit::Choice::text(), by the netlist's key), process-wide: every
 //               instance and every compile reads one store. The newest 64 are kept. The self-test that fills it runs
-//               off the compiler's thread (the self-tester); the in-flight set keeps two instances from testing one
-//               key at once; landed() counts the answers stored, so a compiler sees one land.
+//               off the compiler's thread (dsp/SelfTester.h, one a Compiler); the in-flight set keeps two instances
+//               from testing one key at once; landed() counts the answers stored, so a compiler sees one land and
+//               compiles the program that plays again with it. A saved session and a project's version keep the
+//               answers for their netlists (keysOf, restore), so a program loaded plays its refined configuration
+//               from its first block.
 //
 // Thread-safe: answers() under its own mutex; a Generator is one compile's, on the thread that compiles (never the
 // audio thread: generating allocates).
@@ -85,6 +88,18 @@ namespace playground::circuits
     };
 
     Answers& answers();
+
+    // An answer kept with a saved session or a project (key and Choice::text()), stored in answers() when it reads back
+    // as this FMinus's (Choice::parse: its version) and as the answer for that key; false, nothing stored, when not.
+    bool restore(const std::string& key, const std::string& text);
+
+    // The self-test's keys of the netlists among `files` (each .cir file's selfTestKey, as a Generator looks its answer
+    // up; one that does not parse has none), in their order: the answers a session or a project keeps with them.
+    std::vector<std::string> keysOf(const Sources& files);
+
+    // The note a refined compile ends with (Compiler.h): "pedal.cir: note: the self-test chose this circuit's
+    // configuration: 4x, ADAA, omega(1)", from the answer `text` (Choice::text()); "" when it does not read back.
+    std::string chosenNote(std::string_view file, std::string_view text);
 
     class Generator
     {
