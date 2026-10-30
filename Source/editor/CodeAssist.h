@@ -188,9 +188,10 @@ namespace playground::ui
         // too, while its netlist is the one that check saw.
         void setRunDiagnostics(const std::vector<Diagnostic>& messages, const Sources& compiled);
         void setCheckDiagnostics(const std::vector<Diagnostic>& messages, const Sources& compiled);
-        // A check is due: the files changed and have rested (true once for each such rest), and they are not the
-        // program the last check asked for or RUN compiled (cir::sameProgram: a change to a netlist's *@ lines alone,
-        // its drawing, asks for none).
+        // A check is due: the files changed and have rested (true once for each such rest), unless they differ from
+        // those the last check asked for or RUN compiled only in a netlist's *@ lines (cir::sameProgram: a change to
+        // its drawing alone asks for none). The same bytes again ask for one, so that a squiggle lost to an edit and
+        // its undo comes back; so do any files once messages could not land on a tab (its text had moved on).
         bool takeCheckRequest();
         void cancelCheck();                              // RUN: the files as they are need no check
         // A check sent; `revisionBefore` is the check status's revision as it was before (CheckStatus::revision):
@@ -328,7 +329,8 @@ namespace playground::ui
         Sources runSources_;
         std::vector<Diagnostic> checkMessages_;          // the last check's, and the files it checked
         Sources checkSources_;
-        Sources asked_;                                  // the files the last check asked for, or RUN compiled
+        Sources asked_;                                  // the files the last check asked for, RUN compiled, or a
+                                                         // drawing-only change left (empty: messages missed a tab)
         bool checking_ = false;
         uint64_t checkSeen_ = 0;
         uint64_t editedRevision_ = 0;                    // the files' revision at the last edit seen

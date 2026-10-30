@@ -44,7 +44,8 @@
 //             out, RUN compiles and plays, and the tab keeps the check's squiggle after RUN (RUN generates only the
 //             netlists an #include reaches)
 //   CIRLAYOUT the schematic's *@ lines are invisible to the program: a *@ part line typed into the netlist's tab and
-//             edited leaves the status RUNNING, asks for no check, and the check's squiggle stays; a RUN in flight
+//             edited leaves the status RUNNING, asks for no check, and the check's squiggle stays; the squiggled Q1
+//             deleted and undone (the same bytes again) asks for a check, which puts its squiggle back; a RUN in flight
 //             (the netlist included again, Q1 an error) lands its messages on the moved lines after a write gathers
 //             *@ lines from mid-file before .end (cir::lineMap)
 #include "Probe.h"
@@ -749,6 +750,31 @@ PROBE(gui, code)
         P.eq("cirlayout.status_running", panel.statusText().rfind("RUNNING", 0) == 0 ? 1 : 0, 1);
         P.eq("cirlayout.no_check", port.checkStatus().revision == checks && !code.checking() ? 1 : 0, 1);
         P.eq("cirlayout.squiggle_stays", squiggled() && code.errorCount() > 0 ? 1 : 0, 1);
+
+        // The same bytes again ask for a check: the squiggled Q1 selected and deleted, then undone within the check's
+        // rest (TextEditor drops a decoration whose text goes; its undo does not bring it back). The files are the ones
+        // the drawing-only edits above left, so the check is asked, and its squiggle comes back.
+        {
+            const std::string kept = net.text();
+            const uint64_t asked = port.checkStatus().revision;
+            net.setCaret({ line.line, 0 });
+            host.keys("shift+right,shift+right,backspace");
+            const bool gone = !squiggled();
+            for (int k = 0; k < 3 && net.text() != kept; ++k)
+                host.keys("cmd+z");
+            const bool back = net.text() == kept;
+            for (int k = 0; k < 6; ++k)
+            {
+                host.tick(20);
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            settleChecks(panel, host);
+            std::printf("cirlayout: Q1 deleted and undone: its squiggle %s at once, the text %s, %d check(s) asked\n",
+                        gone ? "went" : "stayed", back ? "the same bytes" : "not the same",
+                        static_cast<int>(port.checkStatus().revision - asked));
+            P.eq("cirlayout.undo_checked", back && port.checkStatus().revision > asked ? 1 : 0, 1);
+            P.eq("cirlayout.undo_squiggle_back", squiggled() && code.errorCount() > 0 ? 1 : 0, 1);
+        }
 
         // A RUN in flight lands its messages on the lines they moved to: *@ lines written mid-file, the netlist
         // included again (its Q1 an error RUN gives), RUN, and at once a write that gathers the *@ lines before .end

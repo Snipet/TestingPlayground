@@ -49,7 +49,7 @@
 //            change); with the next token, nothing
 //   LAYOUT   a netlist's drawing (its *@ lines) is invisible to the chat: a .cir goes without them, with a line saying
 //            how many it left out; a change to them alone sends no state; with a dial moved too, the state says these
-//            files play and sends no file again; get_status says these files
+//            files play and sends no file again; get_status says these files; compare's source line says the same program
 //   MEASURE  measure_output through the agent: its result is the render's report, with the dials asked for
 //   VIEW     view_panel through the agent: its result a PNG of the panel (and one of the whole editor) and a line of
 //            what it shows, drawn on the message thread by the GPU on this Mac (the text says so); the user's view
@@ -990,6 +990,10 @@ PROBE(plugin, chat)
             P.eq("layout.state_these_files", has(second, "What plays: these files") && has(second, "<file name=\"pedal.cir\" lines=")
                                                  && has(second, "unchanged=\"true\"") && !has(second, "R1     in a  2.2k") ? 1 : 0, 1);
             P.eq("layout.get_status_these_files", has(firstText(agent.mcpCall("get_status", input({}))), "What plays: these files") ? 1 : 0, 1);
+            // compare: what plays and the editor's files are the same program (cir::sameProgram)
+            const std::string compared = firstText(agent.mcpCall("compare", input({ { "a", "playing" }, { "b", "editor" } })));
+            std::printf("compare after a redraw:\n%s\n", compared.c_str());
+            P.eq("layout.compare_same_program", has(compared, "Source, B against A: the same program (only a netlist's drawing") ? 1 : 0, 1);
         }
     }
 

@@ -12,6 +12,7 @@
 
 #include "dsp/Compare.h"
 #include "dsp/SoundView.h"
+#include "fminus/CirDoc.h"
 
 #include "Product.h"
 
@@ -327,8 +328,11 @@ namespace playground
             }
             if (moved > 6)
                 dials += ", and " + std::to_string(moved - 6) + " more";
+            // a netlist's *@ lines (its drawing) are no change to the program (cir::sameProgram)
             std::string files = "the same files";
-            if (!(A.files == B.files))
+            if (!(A.files == B.files) && cir::sameProgram(A.files, B.files))
+                files = "the same program (only a netlist's drawing, its *@ lines, differs)";
+            else if (!(A.files == B.files))
             {
                 projectstore::Version before;
                 before.files = A.files;

@@ -1281,12 +1281,13 @@ namespace playground::ui
         if (!checkDue_ || sinceEdit_ < kCheckDelay)
             return false;
         checkDue_ = false;
-        // A change to a netlist's *@ lines alone (its drawing) is no change to the program: nothing to check.
+        // A change to a netlist's *@ lines alone (its drawing) is no change to the program: nothing to check (and these
+        // bytes are the ones to compare with from now on). The same bytes again are checked, as before: a squiggle an
+        // edit took and its undo did not bring back (TextEditor drops a decoration whose text goes) comes back.
         Sources now = filesOf(tabs_);
-        if (cir::sameProgram(now, asked_))
-            return false;
+        const bool drawingOnly = !(now == asked_) && cir::sameProgram(now, asked_);
         asked_ = std::move(now);
-        return true;
+        return !drawingOnly;
     }
 
     void CodeAssist::cancelCheck()
@@ -1345,7 +1346,8 @@ namespace playground::ui
             if (f == nullptr)
                 continue;
             // The text compiled, or (a netlist) the same netlist with its drawing's *@ lines elsewhere: each message
-            // on the line it was on (cir::lineMap; the columns are the line's). Else the next check's.
+            // on the line it was on (cir::lineMap; the columns are the line's). Else the next check's, which then
+            // asks whatever the files are (even the ones asked for last, should the text come back to them).
             const std::string was = funkgui::TextEditor::sanitise(f->text);
             const std::string now = E.text();
             std::vector<int> moved;
@@ -1354,7 +1356,10 @@ namespace playground::ui
                 if (fileKindOf(name) == FileKind::Circuit)
                     moved = cir::lineMap(was, now);
                 if (moved.empty())
+                {
+                    asked_.clear();
                     continue;
+                }
             }
             DiagSet set;
             set.revision = E.revision();

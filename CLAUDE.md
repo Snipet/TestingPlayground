@@ -293,8 +293,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - **A netlist's `*@` lines are its schematic's drawing, invisible to the program** (`fminus/CirDoc.h`): FMinus, its
   self-test's key, ngspice and LTspice read them as comments, and every comparison of the draft with what plays goes
   through `cir::sameProgram` (a `.cir` compared without its `*@` lines): the edited light (and the IR view's), CodeAssist's
-  RUN-kept messages and its check request (a change to `*@` lines alone asks for none), plugin_state's "What plays" and
-  get_status, listen's; messages land on a netlist's tab through `cir::lineMap` when only its `*@` lines moved;
+  RUN-kept messages and its check request (a change to `*@` lines alone asks for none; the same bytes again ask for
+  one, so that a squiggle an edit and its undo lost comes back), plugin_state's "What plays" and get_status, listen's,
+  compare's source line; messages land on a netlist's tab through `cir::lineMap` when only its `*@` lines moved;
   plugin_state sends a `.cir` without them (a line says how many) and hashes it so, a change to them alone sends nothing;
   the journal says "redrew". A new site that compares the draft with what plays uses `sameProgram`. The project's unsaved
   mark still counts them (they are part of the file), and the header readers (Lang's module doc, ChatPrompt's `headerOf`)
