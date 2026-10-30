@@ -157,6 +157,28 @@ namespace playground::ui
 
         bool fmName(std::string_view name) { return fileKindOf(name) == FileKind::FMinus; }
 
+        // RUN's messages (on `ran`), and the check's (on `checked`) on each netlist RUN says nothing of whose text the
+        // check saw as RUN compiled it: RUN generates only the netlists an #include reaches, and the check every netlist
+        // tab (a netlist's messages are its own text's), so a broken one no #include reaches keeps its squiggles (and
+        // its error mark) after RUN.
+        std::vector<Diagnostic> withNetlists(std::vector<Diagnostic> run, const Sources& ran,
+                                             const std::vector<Diagnostic>& check, const Sources& checked)
+        {
+            const std::size_t said = run.size();
+            for (const Diagnostic& d : check)
+            {
+                if (fileKindOf(d.file) != FileKind::Circuit
+                    || std::any_of(run.begin(), run.begin() + static_cast<std::ptrdiff_t>(said),
+                                   [&](const Diagnostic& r) { return r.file == d.file; }))
+                    continue;
+                const SourceFile* now = findFile(ran, d.file);
+                const SourceFile* then = findFile(checked, d.file);
+                if (now != nullptr && then != nullptr && now->text == then->text)
+                    run.push_back(d);
+            }
+            return run;
+        }
+
         // A key that would change the text: typing (Alt's symbols, Shift-Alt-F's Format too), Return, Space, Backspace,
         // Delete, cut, paste, undo and redo, and the line commands (Cmd-/, Cmd-] and Cmd-[, Shift-Cmd-K, Alt-Up and
         // Alt-Down). Cmd-Return is RUN's, which the Panel takes first; Tab moves the focus on from a read-only text.
@@ -1264,15 +1286,19 @@ namespace playground::ui
     {
         runMessages_ = messages;
         runSources_ = compiled;
-        setDiagnostics(messages, compiled);
+        // The last check's messages on the netlists RUN did not generate, their texts as RUN compiled them, stay.
+        setDiagnostics(withNetlists(messages, compiled, checkMessages_, checkSources_), compiled);
     }
 
     void CodeAssist::setCheckDiagnostics(const std::vector<Diagnostic>& messages, const Sources& compiled)
     {
+        checkMessages_ = messages;
+        checkSources_ = compiled;
         // The files RUN compiled (the editor opened on them, an edit undone, a check that waited behind RUN): RUN's
-        // messages, which hold the check's and what only RUN finds (its second pass, the notes).
+        // messages, which hold the check's and what only RUN finds (its second pass, the notes), but for a netlist no
+        // #include reaches, which RUN does not generate: the check's on it.
         if (compiled == runSources_)
-            setDiagnostics(runMessages_, compiled);
+            setDiagnostics(withNetlists(runMessages_, runSources_, messages, compiled), compiled);
         else
             setDiagnostics(messages, compiled);
     }

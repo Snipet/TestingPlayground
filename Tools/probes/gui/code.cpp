@@ -40,7 +40,9 @@
 //   CIRCUIT   a netlist's tab (the library's screamer.cir, added by LIBRARY with its #include): its own highlighter
 //             (lang::lexCirLine) in the code's palette, SPICE in the status line, no completion (Ctrl-Space) and no
 //             Format (Shift-Alt-F changes nothing); a broken line typed into it (a transistor, Phase 2's): the check
-//             generates the netlist and squiggles that line, the program that plays playing on
+//             generates the netlist and squiggles that line, the program that plays playing on; its #include taken
+//             out, RUN compiles and plays, and the tab keeps the check's squiggle after RUN (RUN generates only the
+//             netlists an #include reaches)
 #include "Probe.h"
 
 #include "editor/CodeAssist.h"
@@ -689,6 +691,32 @@ PROBE(gui, code)
         P.eq("cir.hover_says", code.hoverText().find("transistor Q1") != std::string::npos ? 1 : 0, 1);
         writePng(P, host, "gui.code.cir.png", "cir");
         host.move(10.0f, 10.0f);
+        // Its #include taken out: RUN does not generate it (the program compiles and plays), and its tab keeps the
+        // check's squiggle after RUN, and after the check of the files RUN compiled.
+        const funkgui::Point tab0 = panel.centreOfTab(0);
+        host.click(tab0.x, tab0.y);
+        host.settle();
+        funkgui::TextEditor& prog = panel.editor();
+        std::string text = prog.text();
+        const std::string include = "#include \"screamer.cir\"\n";
+        const std::size_t cut = text.find(include);
+        if (cut != std::string::npos)
+            text.erase(cut, include.size());
+        prog.selectAll();
+        prog.insert(text);
+        host.keys("cmd+return");
+        settleRun(processor, host);
+        settleChecks(panel, host);
+        host.click(at.x, at.y);
+        host.settle();
+        const auto squiggled = [&] {
+            bool on = false;
+            for (const funkgui::Decoration& d : panel.editor().decorations())
+                on = on || (d.kind == funkgui::DecorationKind::error && d.from.line == line.line);
+            return on;
+        };
+        P.eq("cir.uninclude_runs", cut != std::string::npos && port.status().ok && panel.activeFile() == tab ? 1 : 0, 1);
+        P.eq("cir.uninclude_keeps_squiggle", squiggled() && code.errorCount() > 0 ? 1 : 0, 1);
     }
     funkgui::UiPreferences::get().setTheme(0);
     return P.finish();

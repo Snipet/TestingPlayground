@@ -182,7 +182,8 @@ namespace playground::ui
         // ---- problems ---------------------------------------------------------------------------------------------
         // Messages for `compiled`: squiggles and marks in each tab whose text was compiled. RUN's are kept: a check of
         // the same files shows them again instead of its own, which are fewer (no notes, nothing only RUN's second
-        // pass finds).
+        // pass finds), but for a netlist RUN said nothing of (one no #include reaches, which RUN does not generate):
+        // the last check's on it stay, after RUN too, while its text is the one that check saw.
         void setRunDiagnostics(const std::vector<Diagnostic>& messages, const Sources& compiled);
         void setCheckDiagnostics(const std::vector<Diagnostic>& messages, const Sources& compiled);
         // A check is due: the files changed and have rested (true once for each such rest).
@@ -321,6 +322,8 @@ namespace playground::ui
         std::map<std::string, DiagSet> diags_;
         std::vector<Diagnostic> runMessages_;            // the last RUN's, and the files it compiled
         Sources runSources_;
+        std::vector<Diagnostic> checkMessages_;          // the last check's, and the files it checked
+        Sources checkSources_;
         bool checking_ = false;
         uint64_t checkSeen_ = 0;
         uint64_t editedRevision_ = 0;                    // the files' revision at the last edit seen
