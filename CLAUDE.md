@@ -131,7 +131,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `lint.layers` checks; the DSP library has no JUCE include path). `Source/plugin/EditorPort.h` stays JUCE-free too: the
   editor includes it. FMinus comes in through its public headers only, `fminus/FMinus.h` and its circuit compiler's
   `fminus/Circuit.h` (in `Source/fminus/Circuits.cpp` and `Source/dsp/SelfTester.cpp` alone): its internals (`circuit/...` among them) and LLVM's
-  headers appear nowhere in `Source/`.
+  headers appear nowhere in `Source/`. The schematic's model (`fminus/CirDoc`, `CirLayout`) includes none of them, nor
+  anything that reaches them: only `fminus/CirDoc.h`, `CirLayout.h`, `Lang.h`, `dsp/Sources.h` and the standard library
+  (`lint.layers`), so that every layer may use it.
 - Each AU and VST3 exports JUCE's entry points and nothing else (CMakeLists.txt's exported-symbols lists, one pair a
   product; the test `lint.exports` checks every product's built bundles). LLVM's weak symbols, exported, would be
   merged with every other plugin's that exports them, and the plugins would share LLVM's state; the two products,
