@@ -1,0 +1,98 @@
+// OTA filter: an oscillator through an analog two-pole low-pass. The library's otalp.cir is two buffered OTA one-poles
+// as a netlist, which the plugin turns into a module, OtaLp (FMinus's circuit compiler). Its cutoff is the OTAs' bias
+// current, Iabc, a law input the voice computes every sample as a synth's expo converter does: 10 uA times 2 to the
+// octaves of CUTOFF, the envelope's AMOUNT and the keyboard's TRACKING, through one expf. The oscillator and the
+// envelope, which shapes the level and the cutoff, are the library's osc.fm and adsr.fm. DRIVE is how many volts reach
+// the circuit: more makes its OTAs saturate, and the level stays. The pitch wheel bends 2 semitones; the mod wheel
+// opens the filter up to an octave more.
+#include "osc.fm"
+#include "adsr.fm"
+#include "otalp.cir"
+#include "host.fm"
+#pragma panel section "OSC" shape drive
+#pragma panel section "FILTER" cutoff amount tracking
+#pragma panel section "ENVELOPE" attack decay sustain release
+#pragma panel section "OUTPUT" volume out
+#pragma panel label amount "ENV AMOUNT"
+#pragma panel style attack decay sustain release fader
+#pragma panel meter out "OUT"
+#pragma panel color "FILTER" orange
+module Voice
+{
+    param float shape [[fminus::range(0, 1)]] [[fminus::default(0)]];           // 0 saw, 0.5 square, 1 triangle
+    param float drive [[fminus::range(-12, 24)]] [[fminus::default(6)]];        // dB: 0 is 1 V into the circuit
+    param float cutoff [[fminus::range(0, 7.6)]] [[fminus::default(2)]];        // octaves of Iabc over 10 uA
+    param float amount [[fminus::range(0, 7.6)]] [[fminus::default(4)]];        // octaves the envelope adds
+    param float tracking [[fminus::range(0, 1)]] [[fminus::default(0.5)]];      // octaves an octave of the keys
+    param float attack [[fminus::range(1, 2000)]] [[fminus::default(4)]];       // ms
+    param float decay [[fminus::range(10, 4000)]] [[fminus::default(500)]];     // ms
+    param float sustain [[fminus::range(0, 1)]] [[fminus::default(0.4)]];
+    param float release [[fminus::range(10, 4000)]] [[fminus::default(300)]];   // ms
+    param float volume [[fminus::range(-48, 0)]] [[fminus::default(-12)]];      // dB
+    Host* host;                                                                 // the plugin's: the wheels
+    Osc osc;
+    Adsr amp;
+    OtaLp filter;                                                               // otalp.cir's module
+    float rate;
+    float step;                                                                 // the note, cycles a sample
+    float key;                                                                  // its octaves from middle C
+    float velocity;
+
+    void init(float sampleRate)
+    {
+        rate = sampleRate;
+        filter.init(sampleRate);
+    }
+
+    void start(float note, float vel)
+    {
+        step = 440 * expf(0.0577622650f * (note - 69)) / rate;
+        key = (note - 60) / 12;
+        velocity = vel;
+        osc.reset(0);
+        filter.clear();    // a note starts on a voice at rest: one a stolen note left still holds that note's state
+        amp.level = 0;
+        amp.gate(true);
+    }
+
+    void stop()
+    {
+        amp.gate(false);
+    }
+
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        amp.set(attack[0], decay[0], sustain[0], release[0], rate);
+        const float f = step * expf(0.0577622650f * 2 * host->pitchbend);   // the pitch wheel: 2 semitones
+        const float volts = expf(0.115129255f * drive[0]);                  // into the circuit
+        const float gain = velocity * expf(0.115129255f * volume[0]) / volts;
+        const float wheel = host->modwheel;                                 // octaves more the mod wheel opens
+        // A part's samples, from one loop to the next.
+        float x[16];       // the oscillator, in volts
+        float e[16];       // the envelope
+        float iabc[16];    // the OTAs' bias current, in amps
+        for (int at = 0; at < n; at += 16)
+        {
+            const int m = n - at < 16 ? n - at : 16;
+            for (int i = 0; i < m; ++i)
+            {
+                x[i] = volts * osc.morph(f, shape[at + i]);
+                e[i] = amp.tick();
+            }
+            // The expo converter: no state here, so FMinus computes four samples a math call.
+            for (int i = 0; i < m; ++i)
+            {
+                const int j = at + i;
+                iabc[i] = 1e-5f * expf(0.693147181f * (cutoff[j] + amount[j] * e[i] + tracking[j] * key + wheel));
+            }
+            // The circuit, a sample at a time: tick clamps Iabc to its range, 10 uA to 2 mA.
+            for (int i = 0; i < m; ++i)
+            {
+                const float out = gain * e[i] * filter.tick(x[i], iabc[i]);
+                left[at + i] += out;
+                right[at + i] += out;
+            }
+        }
+        return amp.active();
+    }
+};

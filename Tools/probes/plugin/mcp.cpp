@@ -10,7 +10,9 @@
 //   GUIDE    the guide in parts (mcp/McpGuide.h): start (working from outside, FMINUS, DSP PRACTICE, CHECKING, the
 //            notes of the tools it uses and the other parts named; its size printed, in bytes and about tokens),
 //            large-program (with THREADS), interface, library (a line a file), debugging (the notes of listen, capture,
-//            trace and compare, not in start), examples, projects, all (the system prompt whole);
+//            trace and compare, not in start), examples, projects, circuits (CIRCUITS: .cir NETLISTS, which ends
+//            projects; start names it), all (the system prompt whole); a guide from before the circuits (an older
+//            plugin's guide.md) still cuts, its projects as they were, and has no circuits part;
 //            library:<file> its header, library:<file>:code its whole text with no tab added to the editor; an unknown
 //            part refused, naming the parts
 //   CALL     write_file through the socket writes the processor's draft (the chat's card notes Claude Desktop once);
@@ -540,16 +542,18 @@ PROBE(plugin, mcp)
                                 && guide == text("start") ? 1 : 0, 1);
         std::printf("guide: start %zu bytes (about %zu tokens); all %zu bytes (about %zu tokens)\n", guide.size(), guide.size() / 4,
                     all.size(), all.size() / 4);
-        P.le("guide.start_tokens", static_cast<double>(guide.size() / 4), kInstrument ? 9100.0 : 8000.0);   // the first MCP wave's
+        // The first MCP wave's budget, and the circuits part's line in the list of parts.
+        P.le("guide.start_tokens", static_cast<double>(guide.size() / 4), kInstrument ? 9200.0 : 8100.0);
         const std::string large = text("large-program");
         interfacePart = text("interface");
         const std::string library = text("library"), examples = text("examples"), projects = text("projects");
-        const std::string debugging = text("debugging");
-        std::printf("guide parts: large-program %zu, interface %zu, library %zu, debugging %zu, examples %zu, projects %zu bytes\n",
-                    large.size(), interfacePart.size(), library.size(), debugging.size(), examples.size(), projects.size());
+        const std::string debugging = text("debugging"), circuits = text("circuits");
+        std::printf("guide parts: large-program %zu, interface %zu, library %zu, debugging %zu, examples %zu, projects %zu, "
+                    "circuits %zu bytes\n", large.size(), interfacePart.size(), library.size(), debugging.size(), examples.size(),
+                    projects.size(), circuits.size());
         for (const auto& [name, body] : { std::pair<const char*, const std::string*>{ "start", &guide }, { "large-program", &large },
                                           { "interface", &interfacePart }, { "library", &library }, { "debugging", &debugging },
-                                          { "examples", &examples }, { "projects", &projects } })
+                                          { "examples", &examples }, { "projects", &projects }, { "circuits", &circuits } })
             juce::File(juce::String(probe::outPath(std::string("plugin.mcp.guide.") + name + ".md"))).replaceWithText(juce::String::fromUTF8(body->c_str()));
         juce::File(juce::String(probe::outPath("plugin.mcp.tools.json"))).replaceWithText(juce::JSON::toString(tools, false));
         P.eq("guide.large_program", large.rfind("BUILDING A LARGE PROGRAM\n", 0) == 0 && has(large, "\nTHREADS: parallel for")
@@ -567,7 +571,27 @@ PROBE(plugin, mcp)
                                     && has(debugging, "<tool name=\"trace\"") && has(debugging, "<tool name=\"compare\"")
                                     && !has(debugging, "<tool name=\"get_status\"") && !has(debugging, "<library_file") ? 1 : 0, 1);
         P.eq("guide.examples", examples.rfind("THIS PLUGIN'S EXAMPLES", 0) == 0 && has(examples, "<example title=") ? 1 : 0, 1);
-        P.eq("guide.projects", projects.rfind("RANDOM AND PROJECTS\n", 0) == 0 && !has(projects, "<tool name=") ? 1 : 0, 1);
+        P.eq("guide.projects", projects.rfind("RANDOM AND PROJECTS\n", 0) == 0 && !has(projects, "<tool name=")
+                                   && !has(projects, pg::mcp::guide::kCircuits) ? 1 : 0, 1);
+        P.eq("guide.circuits", circuits.rfind(std::string(pg::mcp::guide::kCircuits) + "\n", 0) == 0 && has(circuits, "pedal.tick(x)")
+                                   && has(circuits, "screamer.cir") && !has(circuits, "<tool name=") && !has(circuits, "<library_file")
+                                   ? 1 : 0, 1);
+        P.eq("guide.start_names_circuits", has(guide, "- \"circuits\": ") && !has(guide, pg::mcp::guide::kCircuits) ? 1 : 0, 1);
+        {
+            // An older plugin's guide.md, from before the circuits: it cuts as it did, and has no circuits part.
+            const std::string whole = pg::ChatAgent::mcpGuide();
+            const std::size_t from = whole.find(std::string("\n") + pg::mcp::guide::kCircuits + "\n");
+            const std::size_t to = whole.find(std::string("\n") + pg::mcp::guide::kNotes, from == std::string::npos ? 0 : from);
+            std::string older = whole;
+            if (from != std::string::npos && to != std::string::npos)
+                older.erase(from, to - from);
+            bool foundProjects = false, foundLibrary = false, foundCircuits = true;
+            const std::string olderProjects = pg::mcp::guide::part(older, "projects", {}, foundProjects);
+            const std::string olderLibrary = pg::mcp::guide::part(older, "library", {}, foundLibrary);
+            pg::mcp::guide::part(older, "circuits", {}, foundCircuits);
+            P.eq("guide.older_cuts", from != std::string::npos && to != std::string::npos && foundProjects && foundLibrary
+                                         && olderProjects == projects && olderLibrary == library && !foundCircuits ? 1 : 0, 1);
+        }
         const pg::LibraryFile& lib = pg::kLibrary[0];
         const std::string header = text(std::string("library:") + lib.name);
         const std::string firstLine = std::string(lib.source).substr(0, std::string(lib.source).find('\n'));

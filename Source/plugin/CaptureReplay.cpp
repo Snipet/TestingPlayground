@@ -126,6 +126,9 @@ namespace playground::capture
         for (std::size_t k = 0; k < t.programDials.size(); ++k)
             if (t.programDials[k].first == out.program)
                 out.controls = &t.programDials[k].second;
+        for (std::size_t k = 0; k < t.programPins.size(); ++k)
+            if (t.programPins[k].first == out.program)
+                out.pins = &t.programPins[k].second;
 
         measure::Request& q = out.request;
         q.rate = rate;
@@ -209,7 +212,7 @@ namespace playground::capture
                      "recorder knew it).";
             return f;
         }
-        measure::Session session(*r.files, t.rate);
+        measure::Session session(*r.files, t.rate, r.pins);
         if (!session.compiled())
         {
             const std::string e = session.errors();

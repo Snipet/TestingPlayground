@@ -1,7 +1,9 @@
 // PROBE name=fminus.examples timeout=300
 //
 // fminus.examples: every program of the editor's EXAMPLES (Source/fminus/examples/<product>/*.fm, the first the
-// default) as the plugin compiles and plays it (Patch::compile, the Engine), at 48 kHz:
+// default) as the plugin compiles and plays it (Patch::compile, the Engine), at 48 kHz, with the library files it
+// #includes beside it as EXAMPLES adds them (fminus/LibraryIncludes.h: the circuit examples' netlists, screamer.cir
+// and otalp.cir, generated as they are #included):
 //   COMPILE  it compiles for this plugin's kind, with no message; its dials are its first parameters, at most 32,
 //            each with a name, a range (min < max) and a default inside it
 //   PLAY     two seconds at the defaults: an effect over stereo noise at -12 dBFS, an instrument playing a chord
@@ -21,6 +23,8 @@
 
 #include "Examples.h"
 #include "Product.h"
+
+#include "fminus/LibraryIncludes.h"
 
 #include <algorithm>
 #include <cmath>
@@ -50,11 +54,14 @@ PROBE(fminus, examples)
     {
         const std::string key = "example" + std::to_string(++index);
         std::printf("%s: %s\n", key.c_str(), example.title);
+        const pg::Sources files = pg::withLibraryIncludes(pg::singleFile(example.source));
+        for (std::size_t k = 1; k < files.size(); ++k)
+            std::printf("  with the library's %s\n", files[k].name.c_str());
 
         // COMPILE
         probe::Rig rig(kFs, 512);
         std::string messages;
-        const bool ok = rig.load(example.source, &messages);
+        const bool ok = rig.load(files, &messages);
         if (!messages.empty())
             std::printf("%s", messages.c_str());
         P.eq(key + ".compiles", ok ? 1 : 0, 1);
@@ -86,8 +93,8 @@ PROBE(fminus, examples)
 
         // BLOCKS
         probe::Rig a(kFs, 512), b(kFs, 512);
-        a.load(example.source);
-        b.load(example.source);
+        a.load(files);
+        b.load(files);
         const probe::Stereo in64 = a.run(input, 64, chord);
         const probe::Stereo in333 = b.run(input, 333, chord);
         P.eq(key + ".blocks_64_333_same_bits", probe::sameBits(in64.l, in333.l) && probe::sameBits(in64.r, in333.r) ? 1 : 0,
@@ -115,8 +122,8 @@ PROBE(fminus, examples)
                                  k == kKeys - 1 ? 1.0f : 0.0f });
             const std::vector<probe::Note> one { { 0, pg::EventKind::noteOn, 48 + kKeys - 1, 1.0f } };
             probe::Rig s(kFs, 512), f(kFs, 512);
-            s.load(example.source);
-            f.load(example.source);
+            s.load(files);
+            f.load(files);
             const probe::Stereo stolen = s.run(probe::Stereo(at + gap), 256, keys);
             const probe::Stereo fresh = f.run(probe::Stereo(gap), 256, one);
             const auto peak = [](const std::vector<float>& v, std::size_t from, std::size_t count) {

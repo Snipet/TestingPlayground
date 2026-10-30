@@ -284,11 +284,12 @@ namespace playground::measure
         std::vector<std::string> unknown;         // dials asked for by a name the program has not
     };
 
-    // One compile, measured as often as asked.
+    // One compile, measured as often as asked. `pins`: its netlists generated with these configurations (Sources.h's
+    // CircuitPins, a recording's: what played), not the self-test's store.
     class Session
     {
     public:
-        explicit Session(const Sources& files, double rate = 48000.0);
+        explicit Session(const Sources& files, double rate = 48000.0, const CircuitPins* pins = nullptr);
         ~Session();
         Session(const Session&) = delete;
         Session& operator=(const Session&) = delete;

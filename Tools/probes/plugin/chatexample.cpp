@@ -4,7 +4,9 @@
 // 48 kHz:
 //   PROMPT   the system prompt has the large-program section, the tools' workflow (measure_output, add_library_file),
 //            what the editor's RANDOM button makes and what PROJECTS keeps (versions, presets),
-//            THE INTERFACE with the .gui file's language, THE LIBRARY with every library file's header word for word, and
+//            THE INTERFACE with the .gui file's language, THE LIBRARY with every library file's header word for word (a
+//            netlist's * lines too), CIRCUITS (the .cir netlists, last) and the circuit example naming the library files
+//            it comes with, and
 //            the program built from the library and its panel.gui, word for word; the program's other files are the
 //            library's, as it has them
 //   EXAMPLE  that program (ChatAgent::promptExample, this plugin's kind) compiles with no message (its panel.gui
@@ -58,11 +60,13 @@ namespace
     bool has(const std::string& s, const std::string& part) { return s.find(part) != std::string::npos; }
 
     // A file's header: the comment lines it starts with.
+    // A library file's header: the comment lines it starts with (a netlist's are SPICE's, * lines).
     std::string header(const std::string& text)
     {
         std::string out;
+        const std::string comment = text.rfind('*', 0) == 0 ? "*" : "//";
         std::size_t at = 0;
-        while (at < text.size() && text.compare(at, 2, "//") == 0)
+        while (at < text.size() && text.compare(at, comment.size(), comment) == 0)
         {
             const std::size_t end = text.find('\n', at);
             out += text.substr(at, end == std::string::npos ? std::string::npos : end + 1 - at);
@@ -307,6 +311,14 @@ PROBE(plugin, chatexample)
         headers += has(prompt, std::string("<library_file name=\"") + f.name + "\" category=\"" + f.category + "\">\n"
                                    + header(f.source) + "</library_file>") ? 1 : 0;
     P.eq("prompt.library_headers", headers, static_cast<int64_t>(std::size(pg::kLibrary)));
+    // CIRCUITS, last before the tools' notes, and the circuit example naming the library files it comes with.
+    P.eq("prompt.circuits", has(prompt, "\nCIRCUITS: .cir NETLISTS\n") && has(prompt, "#include \"pedal.cir\"")
+                                && has(prompt, "pedal.set(drive, tone);") && has(prompt, "write 1meg for a megohm")
+                                && has(prompt, "--self-test") && has(prompt, "provisional")
+                                && prompt.rfind("\nCIRCUITS: .cir NETLISTS\n") > prompt.rfind("\nRANDOM AND PROJECTS\n") ? 1 : 0, 1);
+    P.eq("prompt.example_uses", has(prompt, pg::product::kIsInstrument ? "<example title=\"OTA filter\" uses=\"osc.fm adsr.fm otalp.cir\">"
+                                                                       : "<example title=\"Tube screamer\" uses=\"screamer.cir\">")
+                                    ? 1 : 0, 1);
     P.ge("prompt.example_files", static_cast<double>(example.size()), 3.0);
     P.eq("prompt.example_word_for_word",
          !example.empty() && has(prompt, "\">\n" + example[0].text + "</example_program>") ? 1 : 0, 1);

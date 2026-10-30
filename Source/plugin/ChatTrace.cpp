@@ -161,6 +161,7 @@ namespace playground
             if (source == "capture")
             {
                 files = recording.files;
+                q.pins = recording.pins;               // its netlists as they played (an edited one: the store's)
                 words = "the user's recording, replayed through the program that played it (" + recording.about + ")";
                 if (files.empty())
                 {

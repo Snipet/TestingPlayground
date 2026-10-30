@@ -21,6 +21,7 @@
 #include "dsp/Compiler.h"
 #include "dsp/Controls.h"
 #include "dsp/Engine.h"
+#include "fminus/LibraryIncludes.h"
 #include "fminus/Random.h"
 
 #include "Examples.h"
@@ -812,7 +813,7 @@ namespace playground::ui
                     continue;
                 }
                 Tab t = std::move(old[static_cast<std::size_t>(match[i])]);
-                if (rulesFor(t.name).types != rulesFor(f.name).types)   // renamed to or from a .gui file
+                if (fileKindOf(t.name) != fileKindOf(f.name))   // renamed to another kind (a .gui file, a netlist)
                     assist_.configure(*t.editor, f.name);
                 t.name = f.name;
                 replaceText(*t.editor, f.text);
@@ -1046,7 +1047,7 @@ namespace playground::ui
                     return false;
                 }
                 Tab& tab = tabs_[static_cast<std::size_t>(renaming_)];
-                if (rulesFor(tab.name).types != rulesFor(typed).types)
+                if (fileKindOf(tab.name) != fileKindOf(typed))
                     assist_.configure(*tab.editor, typed);
                 tab.name = typed;
                 structure_ += kStructureStep;
@@ -1475,9 +1476,11 @@ namespace playground::ui
             o.softTabs = true;
             o.tabWidth = 4;
             o.a11yTitle = "File";
-            o.placeholder = tabs_.empty()                          ? "An FMinus program: EXAMPLES has some to start from"
-                          : n.size() > 4 && n.substr(n.size() - 4) == ".gui" ? "The program's interface: rows, sections, knobs, displays"
-                                                                             : "A file the program can #include by its name";
+            const FileKind kind = fileKindOf(n);
+            o.placeholder = tabs_.empty()                ? "An FMinus program: EXAMPLES has some to start from"
+                          : kind == FileKind::Gui     ? "The program's interface: rows, sections, knobs, displays"
+                          : kind == FileKind::Circuit ? "A circuit netlist (SPICE): the program #includes it as a module"
+                                                      : "A file the program can #include by its name";
             t.editor->setOptions(o);
             t.editor->setBounds(assist_.editorRect());
             assist_.configure(*t.editor, n);
@@ -2637,8 +2640,11 @@ namespace playground::ui
             {
                 ExplorerItem::Row r;
                 r.label = files().name(i);
-                const bool gui = r.label.size() > 4 && r.label.substr(r.label.size() - 4) == ".gui";
-                r.icon = i == 0 ? chat::Icon::code : gui ? chat::Icon::dial : chat::Icon::file;
+                const FileKind kind = fileKindOf(r.label);
+                r.icon = i == 0                     ? chat::Icon::code
+                       : kind == FileKind::Gui     ? chat::Icon::dial
+                       : kind == FileKind::Circuit ? chat::Icon::chip
+                                                   : chat::Icon::file;
                 r.active = i == files().active() && !files().irShown();
                 r.error = erred(r.label);
                 r.closable = i > 0;
@@ -2736,7 +2742,7 @@ namespace playground::ui
                 }
                 ExplorerItem::Row r;
                 r.label = f.name;
-                r.icon = chat::Icon::blocks;
+                r.icon = isCircuitFile(f.name) ? chat::Icon::chip : chat::Icon::blocks;   // a netlist: a circuit's
                 r.marked = files().find(f.name) >= 0;
                 r.index = static_cast<int>(i);
                 g.rows.push_back(std::move(r));
@@ -3110,8 +3116,9 @@ namespace playground::ui
         // The editor's check while typing (CodeAssist.h): the files once they have rested, its messages when it is done.
         if (files().assist().takeCheckRequest())
         {
+            const uint64_t before = port_.checkStatus().revision;   // read first: the check may finish at once
             port_.check(files().draft().files);
-            files().assist().checkSent();
+            files().assist().checkSent(before);
         }
         if (files().assist().checking())
             if (const CheckStatus c = port_.checkStatus(); files().assist().takeCheckResult(c.revision))
@@ -3168,7 +3175,7 @@ namespace playground::ui
                 if (sameDials)
                     guiView_->place(panelSpec_);
             }
-            panelProgram_ = s.ok ? s.request : port_.program();
+            panelProgram_ = s.program != 0 ? s.program : port_.program();   // what plays (a refine's too)
             if (!sameDials)
                 layout();
             statusChanged = true;
@@ -3773,8 +3780,21 @@ namespace playground::ui
         if (i < 0 || i >= static_cast<int>(std::size(kExamples)))
             return;
         // The example replaces the program's text as one edit (Cmd-Z brings the text back), and runs; the other files
-        // stay.
+        // stay. The library files it #includes come as tabs first, as LIBRARY adds them (never over a tab of that
+        // name), when there is room for them.
+        const Sources need = withLibraryIncludes(singleFile(kExamples[static_cast<std::size_t>(i)].source));
+        int missing = 0;
+        for (std::size_t k = 1; k < need.size(); ++k)
+            missing += files().find(need[k].name) < 0 ? 1 : 0;
+        if (files().count() + missing > static_cast<int>(kMaxFiles))
+        {
+            notice("THE EXAMPLE NEEDS ROOM FOR ITS LIBRARY FILES: CLOSE A TAB");
+            return;
+        }
         files().endRename();
+        for (std::size_t k = 1; k < need.size(); ++k)
+            if (files().find(need[k].name) < 0)
+                files().addFile(need[k].name, need[k].text);
         files().select(0);
         funkgui::TextEditor& program = files().editor();
         program.selectAll();

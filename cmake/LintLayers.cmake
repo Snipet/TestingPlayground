@@ -5,9 +5,10 @@
 # algorithms build and run in any host (a probe, a benchmark, another plugin) and the audio code cannot reach the GUI.
 # The DSP library has no JUCE include path, so such an include already fails to compile; this test names the line.
 #
-# FMinus's internals ("frontend/...", "ir/...", "jit/...", "support/...", "runtime/...") and LLVM's headers appear
-# nowhere in Source/: FMinus's public header, fminus/FMinus.h, is the way in (FMinus::FMinus gives no other include
-# path, so such an include already fails to compile; this test names the line).
+# FMinus's internals ("frontend/...", "ir/...", "jit/...", "support/...", "runtime/...", its circuit compiler's
+# "circuit/...") and LLVM's headers appear nowhere in Source/: FMinus's public headers, fminus/FMinus.h and
+# fminus/Circuit.h (the circuit compiler's: Source/fminus/Circuits.cpp and Source/dsp/SelfTester.cpp), are the way in
+# (FMinus::FMinus gives no other include path, so such an include already fails to compile; this test names the line).
 if(NOT FP_SOURCE_DIR)
   message(FATAL_ERROR "LintLayers.cmake: pass -DFP_SOURCE_DIR=<project root>")
 endif()
@@ -36,15 +37,16 @@ endif()
 
 # Source/sandbox/** (the GUI sandbox's helper, CMakeLists.txt's FP_SANDBOX_SHARED) draws a .gui file with the editor's
 # .gui code and reads programs without compiling them: it includes nothing of the plugin (Source/plugin), of the audio
-# side (dsp/Engine.h, Compiler.h, Measure.h) or of what compiles a program (fminus/Patch.h, FMinus), nor the editor's
-# Panel, which holds all of those.
+# side (dsp/Engine.h, Compiler.h, Measure.h) or of what compiles a program (fminus/Patch.h, FMinus and its circuit
+# compiler, fminus/Circuit.h, and the netlists' generator, fminus/Circuits.h), nor the editor's Panel, which holds all
+# of those.
 file(GLOB_RECURSE _sandbox ${FP_SOURCE_DIR}/Source/sandbox/*)
 set(_inPlugin "")
 foreach(_f IN LISTS _sandbox)
   if(NOT _f MATCHES "\\.(h|hpp|cpp|cc|mm|inl)$")
     continue()
   endif()
-  file(STRINGS ${_f} _lines REGEX "^[ \t]*#[ \t]*include[ \t]*[<\"]((\\.\\./)*plugin/|fminus/Patch\\.h|fminus/FMinus\\.h|dsp/(Engine|Compiler|Measure)\\.h|editor/Panel\\.h)")
+  file(STRINGS ${_f} _lines REGEX "^[ \t]*#[ \t]*include[ \t]*[<\"]((\\.\\./)*plugin/|fminus/Patch\\.h|fminus/FMinus\\.h|fminus/Circuits?\\.h|dsp/(Engine|Compiler|Measure)\\.h|editor/Panel\\.h)")
   foreach(_l IN LISTS _lines)
     file(RELATIVE_PATH _rel ${FP_SOURCE_DIR} ${_f})
     string(STRIP "${_l}" _l)
@@ -63,7 +65,7 @@ foreach(_f IN LISTS _all)
   if(NOT _f MATCHES "\\.(h|hpp|cpp|cc|mm|inl|def)$")
     continue()
   endif()
-  file(STRINGS ${_f} _lines REGEX "^[ \t]*#[ \t]*include[ \t]*[<\"](llvm/|llvm-c/|frontend/|ir/|jit/|support/|runtime/)")
+  file(STRINGS ${_f} _lines REGEX "^[ \t]*#[ \t]*include[ \t]*[<\"](llvm/|llvm-c/|frontend/|ir/|jit/|support/|runtime/|circuit/)")
   foreach(_l IN LISTS _lines)
     file(RELATIVE_PATH _rel ${FP_SOURCE_DIR} ${_f})
     string(STRIP "${_l}" _l)
@@ -72,11 +74,11 @@ foreach(_f IN LISTS _all)
 endforeach()
 if(_inside)
   list(JOIN _inside "\n  " _msg)
-  message(FATAL_ERROR "lint.layers: FMinus's internals and LLVM stay inside FMinus (include fminus/FMinus.h, its "
-                      "public API):\n  ${_msg}")
+  message(FATAL_ERROR "lint.layers: FMinus's internals, its circuit compiler's and LLVM stay inside FMinus (include "
+                      "fminus/FMinus.h and fminus/Circuit.h, its public API):\n  ${_msg}")
 endif()
 list(LENGTH _files _n)
 list(LENGTH _sandbox _ns)
 message(STATUS "lint.layers: ${_n} files under Source/dsp, Source/fsdsp and Source/fminus, no JUCE/FunkGui/plugin/"
                "editor include; ${_ns} under Source/sandbox, no plugin, audio or compiler include; FMinus through "
-               "fminus/FMinus.h only")
+               "fminus/FMinus.h and fminus/Circuit.h only")

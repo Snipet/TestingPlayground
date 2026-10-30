@@ -1,0 +1,46 @@
+* otalp.cir: a synth's two-pole OTA low-pass, its cutoff the OTAs' bias current: an analog filter as a module.
+*
+* Two buffered OTA one-poles (LM13700-style): each OTA's + input at the signal through a 100k / 220 attenuator, its -
+* input at its stage's buffered output through another, its current into 1 nF with the OTA's 10 MEG output
+* resistance. The cutoff follows the bias current Iabc, a law input the program gives every sample (its expo
+* converter is the program's: an expf): 83 Hz at 10 uA to 13.5 kHz at 2 mA, x2 an octave. No resonance, no rails. A
+* netlist: FMinus's circuit compiler makes it a module (the playground's README, "Circuits").
+*
+*   OtaLp filter;                  a field of your voice (the program has #include "otalp.cir")
+*   filter.init(rate);             in init: the host's rate, every state at rest
+*   y = filter.tick(x, iabc);      one sample: x volts in (1.0 = 1 V), y volts out; iabc in amps, every sample, kept
+*                                  within 10u to 2m: 1e-5f * expf(0.6931472f * octaves). The 10 MEG leak lowers
+*                                  the gain at a low Iabc (3.7 dB at 10 uA, nothing to speak of from 100 uA)
+*   filter.clear();                silence: in start, for a note from silence
+*
+* Configuration (fixed, so it never changes as it plays): 4x IIR halfbands, the previous step's v + 1 Newton step,
+* what fminus otalp.cir --self-test chose without these three lines: "the self-test chose .oversample 4, .adaa off,
+* .solver newton(1)" (T1 -89.0, T2 -73.2, T3 0.13 dB). 1x and 2x fail T3 (the trapezoidal rule's warp of the third
+* harmonic at 9 kHz through two poles). About 3.5 host samples of delay.
+.title OtaLp
+.input  u    in   scale=1          ; 1.0 = 1 V
+.input  iabc -    kind=current range=10u:2m
+.output vout y2b
+.oversample 4 iir blocks=auto
+.adaa off
+.solver newton(1)
+.target solver=-60dB alias=-60dB level=5V freq=3k
+* stage 1
+R1   in   a1   100k
+R2   a1   0    220
+R3   y1b  m1   100k
+R4   m1   0    220
+G1   0    y1   OTA a1 m1 {iabc}    ; i = Iabc tanh((V(a1) - V(m1)) / 2 Vt), into y1
+C1   y1   0    1n
+R5   y1   0    10meg
+X1   y1   y1b  y1b  opamp          ; the buffer
+* stage 2
+R6   y1b  a2   100k
+R7   a2   0    220
+R8   y2b  m2   100k
+R9   m2   0    220
+G2   0    y2   OTA a2 m2 {iabc}
+C2   y2   0    1n
+R10  y2   0    10meg
+X2   y2   y2b  y2b  opamp
+.end

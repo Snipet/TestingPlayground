@@ -1711,9 +1711,10 @@ namespace playground
             juce::var name = prop("string", "The library file's name, as THE LIBRARY lists it");
             name.getDynamicObject()->setProperty("enum", names);
             tools.add(tool("add_library_file",
-                           "Add one of the plugin's ready-made building blocks (THE LIBRARY in your instructions) to the "
-                           "editor as a tab of its own, and get its whole text back. #include it in the program to use "
-                           "it. A file of that name in the editor already is left as it is.",
+                           "Add one of the plugin's ready-made building blocks (THE LIBRARY in your instructions: FMinus "
+                           "files, and .cir circuit netlists the plugin turns into modules) to the editor as a tab of its "
+                           "own, and get its whole text back. #include it in the program to use it. A file of that name "
+                           "in the editor already is left as it is.",
                            claude::object({ { "name", name } }), { "name" }));
         }
         tools.add(tool("run_program",

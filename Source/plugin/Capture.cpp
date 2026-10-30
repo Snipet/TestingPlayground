@@ -433,19 +433,23 @@ namespace playground::capture
             forget();
     }
 
-    void Recorder::noteProgram(uint64_t program, const Sources& files, const Controls& controls)
+    void Recorder::noteProgram(uint64_t program, const Sources& files, const Controls& controls, const CircuitPins& pins)
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         programs_.erase(std::remove_if(programs_.begin(), programs_.end(), [&](const auto& p) { return p.first == program; }),
                         programs_.end());
         programDials_.erase(std::remove_if(programDials_.begin(), programDials_.end(), [&](const auto& p) { return p.first == program; }),
                             programDials_.end());
+        programPins_.erase(std::remove_if(programPins_.begin(), programPins_.end(), [&](const auto& p) { return p.first == program; }),
+                           programPins_.end());
         programs_.emplace_back(program, files);
         programDials_.emplace_back(program, controls);
+        programPins_.emplace_back(program, pins);
         if (programs_.size() > kPrograms)
         {
             programs_.erase(programs_.begin());
             programDials_.erase(programDials_.begin());
+            programPins_.erase(programPins_.begin());
         }
     }
 
@@ -741,6 +745,7 @@ namespace playground::capture
                     {
                         t->programs.push_back(programs_[k]);
                         t->programDials.push_back(programDials_[k]);
+                        t->programPins.push_back(programPins_[k]);
                     }
         return t;
     }

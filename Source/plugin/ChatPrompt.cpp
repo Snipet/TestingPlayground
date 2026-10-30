@@ -6,6 +6,7 @@
 // Patch.h, PanelSpec.h, the README's "Writing a program" and FMinus's README: what it says is what Claude writes.
 #include "plugin/ChatAgent.h"
 
+#include "fminus/LibraryIncludes.h"
 #include "fminus/Patch.h"
 
 #include "Examples.h"
@@ -339,17 +340,47 @@ scope and spectrum take width= and height=. Sixteen displays at most (each live=
         const char* const kLibraryIntro = R"(
 THE LIBRARY
 
-The plugin carries ready-made building blocks, tested and tuned: band-limited, smooth under modulation, cheap. add_library_file adds one to the editor as a tab of its own, under its name below, and returns its whole text; #include it in the program and use what it declares. Prefer them to writing your own, and combine them freely: their names do not clash. A library file in the editor belongs to the program like any other file: edit it when it lacks something, or write a block of your own. What each one is and how to use it, as its header says:
+The plugin carries ready-made building blocks, tested and tuned: band-limited, smooth under modulation, cheap. add_library_file adds one to the editor as a tab of its own, under its name below, and returns its whole text; #include it in the program and use what it declares. Prefer them to writing your own, and combine them freely: their names do not clash. A library file in the editor belongs to the program like any other file: edit it when it lacks something, or write a block of your own. The .cir files are circuit netlists, analog circuits that the plugin turns into modules (CIRCUITS, at the end). What each one is and how to use it, as its header says:
 
 )";
 
-        // A library file's header: the comment lines it starts with.
+        // CIRCUITS: the netlists (fminus/Circuits.h, FMinus's docs/circuits.md), the guide's part "circuits".
+        const char* const kCircuits = R"CIR(
+CIRCUITS: .cir NETLISTS
+
+A file whose name ends in .cir is a SPICE-style netlist of an analog circuit, which the plugin turns into one FMinus module (FMinus's circuit compiler): a pedal's clipper, a tone stack, an OTA filter, modelled from the schematic. The program #includes it and uses the module as any other. Use one when the user wants a circuit's sound (an overdrive pedal, an analog filter); for an ordinary filter or shaper the library's .fm blocks are cheaper.
+
+  #include "pedal.cir"         the module: named by .title (else the file's name, its first letter capitalised)
+  Pedal pedal;                 a field of the main module (a voice's: one a note)
+  pedal.init(rate);            in init: every state at rest, the pots at their .pot defaults
+  pedal.set(drive, tone);      the pots, 0 to 1, in .pot order, then the switches' positions (ints, .switch order): on the 16-sample grid, a counter from init (a voice's from start), before the first sample and every 16 after, so a dial's glide reaches it and a switch ramps (it must be called every grid tick while one does); no set without pots or switches
+  y = pedal.tick(x);           one sample: x volts in (1.0 = the .input's scale), y volts out; law inputs follow the signal, every sample: pedal.tick(x, iabc)
+  pedal.clear();               silence: in a voice's start
+Leave its other methods and fields alone (they depend on its configuration). Its errors come at the netlist's lines (pedal.cir:7:1: error: ...), FMinus's on its module too.
+
+The netlist: an element or a directive a line; * lines and ; tails are comments, a line starting with + continues the one before; nodes are names, 0 and gnd ground. Values take SPICE's suffixes (t g meg k m u n p f): 1M is a milliohm in SPICE, so write 1meg for a megohm (a warning says so).
+  R1 a b 10k                         C1 a 0 47n              L1 a b 500m
+  P1 e1 w e2 100k {drive} taper=audio   a pot (lin, audio or rlog), its wiper w; P2 a b 25k {1 - tone} a rheostat; {} an expression of pots
+  D1 a 0 1N914                       a diode: two back to back are a pair, in series a string, two models an asymmetric pair; 1N914 and 1N4148 are built in; for another part copy its SPICE model's IS, N and RS: .model 1N34A D(IS=2.6e-6 N=1.6 RS=7) (the rest is ignored)
+  X1 inp inn out opamp               an ideal op amp, with negative feedback
+  V1 vb 0 4.5   I1 a 0 1m            DC sources (the module runs in offsets from the DC point)
+  E1 o 0 a b 10   G1 o 0 a b 1m      a linear VCVS and VCCS;  G1 0 y OTA a b {iabc}  an OTA (LM13700's), its gain a law input
+  S1 a b mode 1 ron=1 roff=10meg     a switch, closed at the positions listed of .switch mode 2 0 (2 positions, default 0)
+Directives: .title Pedal; .input u in scale=1 (the signal, one); .input iabc - kind=current range=10u:2m (a law input, every sample, clamped to its range; kind=cv is 0 to 1 unless it says); .output y out; .pot drive 0.5 audio (a pot, its default, its taper); .switch mode 2 0; .channels 2 (float2 in and out); .oversample, .adaa and .solver, below.
+
+Its configuration (the oversampling, ADAA, the solver) is the self-test's to choose, on the circuit's stress tests (the solver's accuracy, the aliasing, the response, within targets). Leave .oversample, .adaa and .solver out, and a provisional configuration plays, safe and costly (8x oversampling for diodes, 2x for an OTA), which run_program's result says in a note ("pedal.cir: note: the self-test chooses this circuit's configuration; provisional: 8x IIR, omega(2)"). Meanwhile the plugin runs the self-test in the background (a second to a minute; run_program never waits for it), then compiles the program that plays again with its answer, which plays from then on (a synth's once no note sounds, never while capture records); get_status's last compile then ends with a note of what it chose ("pedal.cir: note: the self-test chose this circuit's configuration: 4x, ADAA, omega(1)"), and measure_output and the other renders compile with it too. A run of other files cancels a test they no longer need. The answer is kept with the session and with each project version saved, so the program plays it from the first block when it loads again, and a netlist already answered (in any instance) is not tested again. Pin it with the directives the self-test chose, so that it never changes as it plays (the library's netlists do, the line in their header): .oversample 4 iir, .adaa on, .solver omega(1) for a diode or newton(1) for an OTA; FMinus's command line, fminus pedal.cir --self-test, prints the line to paste. A warning that no configuration meets the targets means the circuit is harder than the search goes: it plays the most accurate under the cost cap. A test that finds none at all (nothing finite under its cost cap, or its budget spent) gives no answer and is not tried again while the plugin runs: get_status's last compile says so where the provisional note was ("pedal.cir: note: the self-test found no configuration for this circuit (...), so the provisional one plays on: 8x IIR, omega(2)"), and the provisional configuration plays on; pin a configuration by hand, or simplify the circuit. A circuit costs a few hundred to a few thousand cycles a sample, as much as many oscillators: a voice's filter counts sixteen times.
+
+Not yet (FMinus's Phase 2): a second nonlinear part in a stage (one diode pair or one OTA a block between op amps), so no resonance: no resonant OTA filters, SVFs or ladders, no self-oscillation; transistors (BJTs, JFETs), tubes, junction capacitances; a diode with a DC voltage across it (a biased junction); op amps beyond ideal (no rails: it never clips at its supply); .subckt, .param, .include. The library's netlists: screamer.cir (the Tube Screamer's clipping stage, tone and level), diodetone.cir (a diode clipper into a tone pot) and otalp.cir (a synth's two-pole OTA low-pass, Iabc a law input); the examples Tube screamer (the effect's) and OTA filter (the synth's) use them.
+)CIR";
+
+        // A library file's header: the comment lines it starts with (// lines; a netlist's, SPICE's * lines).
         std::string headerOf(const char* source)
         {
             std::string out;
             const std::string text = source;
+            const std::string comment = text.rfind('*', 0) == 0 ? "*" : "//";
             std::size_t at = 0;
-            while (at < text.size() && text.compare(at, 2, "//") == 0)
+            while (at < text.size() && text.compare(at, comment.size(), comment) == 0)
             {
                 const std::size_t end = text.find('\n', at);
                 out += text.substr(at, end == std::string::npos ? std::string::npos : end + 1 - at);
@@ -725,8 +756,15 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
             s += "\nTHIS PLUGIN'S EXAMPLES (the editor's EXAMPLES menu; the first, Init, is the program a new instance plays: "
                  "the classic init patch, a neutral start to build on, its comments saying where)\n";
             for (const Example& e : kExamples)
-                s += std::string("\n<example title=\"") + e.title + "\">\n" + e.source
-                   + (std::string(e.source).empty() || std::string(e.source).back() == '\n' ? "" : "\n") + "</example>\n";
+            {
+                // An example that #includes library files names them: they come with it (EXAMPLES adds their tabs).
+                const Sources files = withLibraryIncludes(singleFile(e.source));
+                std::string with;
+                for (std::size_t k = 1; k < files.size(); ++k)
+                    with += (k == 1 ? "" : " ") + files[k].name;
+                s += std::string("\n<example title=\"") + e.title + "\"" + (with.empty() ? "" : " uses=\"" + with + "\"") + ">\n"
+                   + e.source + (std::string(e.source).empty() || std::string(e.source).back() == '\n' ? "" : "\n") + "</example>\n";
+            }
             s += "\nRANDOM AND PROJECTS\n\nThe editor's RANDOM button puts a program together from the library's building blocks, with "
                  "random settings, a panel and a name, for inspiration; its first line says so, with its seed (\"(random 4821)\"). "
                  "When the user asks you to build on one, it is theirs: keep what they like and change what they ask.\n"
@@ -736,6 +774,7 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
                  "you have no tool for it, so when they ask, tell them to use PROJECTS (a name in its field, then Save) or the "
                  "explorer's PROJECTS and PRESETS. A preset suits sounds that differ only in their dials; a sound that needs other "
                  "code is a project of its own.\n";
+            s += kCircuits;
             return s;
         }
     }

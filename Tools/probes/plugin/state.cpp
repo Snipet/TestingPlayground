@@ -16,11 +16,20 @@
 //           its errors in the status, and the draft the session's
 //   EMPTY   a session saved without a program (an older version's) plays the first example
 //   NAN     a dial saved as NaN loads as 0.5
+//   CIRCUITS a program with a netlist whose configuration is the self-test's (AutoClipper.h), refined (the tests off,
+//           Compiler::selfTestNow), saved: the state keeps the answer (<PROGRAM><CIRCUITS><ANSWER key text/>); loaded
+//           into a fresh processor with the store emptied (circuits::Answers::clearForTests), it restores the answer
+//           before it compiles, so that compile wants no self-test and says nothing, and it plays the saved
+//           processor's bits (half a second, below the freezer's 3 s); an answer that does not read back as this
+//           FMinus's (another key, a damaged line) is not restored, and the program plays its provisional configuration
 #include "Probe.h"
 
 #include "Audio.h"
+#include "AutoClipper.h"
 #include "Rig.h"
 
+#include "dsp/Compiler.h"
+#include "fminus/Circuits.h"
 #include "plugin/EditorPort.h"
 #include "plugin/Processor.h"
 
@@ -269,6 +278,75 @@ PROBE(plugin, state)
         p.poll();
         P.eq("empty.first_example", p.editorPort().running() == pg::singleFile(pg::kExamples[0].source) ? 1 : 0, 1);
         P.near("nan.half", static_cast<double>(p.getParameters()[0]->getValue()), 0.5, 1e-6);
+    }
+
+    // CIRCUITS
+    {
+        pg::circuits::Answers& store = pg::circuits::answers();
+        store.clearForTests();
+        const pg::Sources files = { { pg::kProgramName, probe::clipperProgram("clipper.cir", "Clipper", false) },
+                                    { "clipper.cir", probe::kAutoClipper } };
+        const std::vector<std::string> keys = pg::circuits::keysOf(files);
+        const std::string key = keys.empty() ? std::string() : keys.front();
+        pg::Processor a;
+        a.compiler().setSelfTesting(false);
+        runAndSettle(a, files);
+        const pg::CompileStatus provisional = a.editorPort().status();
+        const bool refined = a.compiler().selfTestNow();
+        a.settle();
+        const std::string answer = store.find(key).value_or("");
+        std::printf("circuits: provisional: %s; refined %d: %s", provisional.notes.c_str(), refined ? 1 : 0,
+                    a.editorPort().status().notes.c_str());
+        P.eq("circuits.refined", provisional.ok && !provisional.notes.empty() && refined && a.editorPort().status().ok && !answer.empty()
+                                     ? 1 : 0, 1);
+        juce::MemoryBlock saved;
+        a.getStateInformation(saved);
+        const std::unique_ptr<juce::XmlElement> xml = juce::AudioProcessor::getXmlFromBinary(saved.getData(),
+                                                                                            static_cast<int>(saved.getSize()));
+        const juce::XmlElement* program = xml != nullptr ? xml->getChildByName("PROGRAM") : nullptr;
+        const juce::XmlElement* kept = program != nullptr ? program->getChildByName("CIRCUITS") : nullptr;
+        const juce::XmlElement* one = kept != nullptr ? kept->getChildByName("ANSWER") : nullptr;
+        P.eq("circuits.saved", kept != nullptr && kept->getNumChildElements() == 1 && one != nullptr
+                                   && one->getStringAttribute("key").toStdString() == key
+                                   && one->getStringAttribute("text").toStdString() == answer ? 1 : 0, 1);
+
+        store.clearForTests();
+        pg::Processor b;
+        b.compiler().setSelfTesting(false);
+        b.setStateInformation(saved.getData(), static_cast<int>(saved.getSize()));
+        b.poll();
+        const pg::CompileStatus s = b.editorPort().status();
+        std::printf("circuits: loaded: %s%s\n", s.errors.c_str(), s.notes.empty() ? "no messages" : s.notes.c_str());
+        P.eq("circuits.restored", store.find(key) == answer ? 1 : 0, 1);
+        P.eq("circuits.no_job_no_note", s.ok && s.notes.empty() && !b.compiler().selfTesting() && b.editorPort().running() == files
+                                            ? 1 : 0, 1);
+        const probe::Stereo oa = play(a), ob = play(b);
+        P.eq("circuits.same_bits", probe::sameBits(oa.l, ob.l) && probe::sameBits(oa.r, ob.r) && probe::rmsDb(oa.l, 0, oa.size()) > -80.0
+                                       ? 1 : 0, 1);
+
+        // An answer that is not this key's (or not an answer) is not restored: the provisional configuration plays.
+        std::unique_ptr<juce::XmlElement> other = juce::AudioProcessor::getXmlFromBinary(saved.getData(), static_cast<int>(saved.getSize()));
+        if (juce::XmlElement* p = other != nullptr ? other->getChildByName("PROGRAM") : nullptr)
+            if (juce::XmlElement* c = p->getChildByName("CIRCUITS"))
+                if (juce::XmlElement* x = c->getChildByName("ANSWER"))
+                {
+                    x->setAttribute("key", "0123456789abcdef");
+                    auto* damaged = c->createNewChildElement("ANSWER");
+                    damaged->setAttribute("key", juce::String(key));
+                    damaged->setAttribute("text", "fminus-circuit-choice 99 nonsense");
+                }
+        juce::MemoryBlock crafted;
+        if (other != nullptr)
+            juce::AudioProcessor::copyXmlToBinary(*other, crafted);
+        store.clearForTests();
+        pg::Processor c;
+        c.compiler().setSelfTesting(false);
+        c.setStateInformation(crafted.getData(), static_cast<int>(crafted.getSize()));
+        c.poll();
+        P.eq("circuits.foreign_not_restored", store.size() == 0 && c.editorPort().status().ok
+                                                  && c.editorPort().status().notes == provisional.notes && c.compiler().selfTesting()
+                                                  ? 1 : 0, 1);
+        store.clearForTests();
     }
     return P.finish();
 }

@@ -7,6 +7,7 @@
 #include "Examples.h"
 #include "Product.h"
 
+#include "fminus/Circuits.h"
 #include "fsdsp/core/Sanitize.h"
 
 #include <funkgui/gpu/ShaderLibrary.h>
@@ -23,9 +24,13 @@ namespace playground
     namespace
     {
         // The program in the plugin state, beside the parameters: <PROGRAM active=".."> with <RUN> (the files that
-        // play) and <DRAFT> (the editor's), each of <FILE name=".." text=".."/>s. The version before files saved
-        // <PROGRAM source=".." draft=".."/>, one file each.
+        // play) and <DRAFT> (the editor's), each of <FILE name=".." text=".."/>s, and <CIRCUITS> when its netlists
+        // have the circuit self-test's answers (fminus/Circuits.h), each an <ANSWER key=".." text=".."/>: stored
+        // before the program compiles on load, so it plays its refined configuration from its first block (a build
+        // from before circuits reads past them). The version before files saved <PROGRAM source=".." draft=".."/>,
+        // one file each.
         const juce::Identifier kProgramTag{ "PROGRAM" }, kRunTag{ "RUN" }, kDraftTag{ "DRAFT" }, kFileTag{ "FILE" };
+        const juce::Identifier kCircuitsTag{ "CIRCUITS" }, kAnswerTag{ "ANSWER" }, kKey{ "key" };
         const juce::Identifier kActive{ "active" }, kName{ "name" }, kText{ "text" }, kPreset{ "preset" },
                                kProject{ "project" }, kProjectVersion{ "projectVersion" }, kProjectPreset{ "projectPreset" };
         const juce::Identifier kSource{ "source" }, kDraft{ "draft" };   // the version before files
@@ -644,15 +649,32 @@ namespace playground
     void Processor::apply(const CompileStatus& s, bool reset)
     {
         if (!s.ok)
-            return;                                              // the program that played plays on
-        capture_.noteProgram(s.request, s.sources, s.controls);  // a recording's replay compiles these files
+        {
+            // The program that played plays on, unless a refine (Compiler.h, "The self-test") compiled it again since
+            // this compile failed: a new program, the same files and dials.
+            if (!s.refined)
+                return;
+            Sources files;
+            Controls controls;
+            {
+                const std::lock_guard<std::mutex> lock(programMutex_);
+                if (s.program == 0 || s.program == program_)
+                    return;
+                program_ = s.program;
+                files = running_;
+                controls = controls_;
+            }
+            capture_.noteProgram(s.program, files, controls, s.circuits);
+            return;
+        }
+        capture_.noteProgram(s.program, s.sources, s.controls, s.circuits);   // a recording's replay compiles these
         Controls before;
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
             before = controls_;
             controls_ = s.controls;
             panel_ = s.panel;
-            program_ = s.request;
+            program_ = s.program;
             running_ = s.sources;
         }
         if (reset)
@@ -731,8 +753,11 @@ namespace playground
             seen_ = s.revision;
             const uint64_t run = editorRun_.load();
             apply(s, run != 0 && s.request == run);
-            if (s.request == userRun_.load())
+            if (s.request == userRun_.load() && s.request != journaled_)
+            {
+                journaled_ = s.request;                          // a refine's status answers it again (Compiler.h)
                 journal_.note(Journal::Who::you, runWords(s));
+            }
             // A version's program (or a preset's): its dials, by name, once it compiled (an older request's result
             // waits for its own).
             if (dialsRequest_ != 0 && s.request >= dialsRequest_)
@@ -795,6 +820,7 @@ namespace playground
     {
         juce::ValueTree state = apvts_.copyState();
         juce::ValueTree program{ kProgramTag };
+        std::vector<std::string> keys;
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
             program.setProperty(kActive, draft_.active, nullptr);
@@ -807,6 +833,22 @@ namespace playground
             }
             program.appendChild(filesTree(kRunTag, running_), nullptr);
             program.appendChild(filesTree(kDraftTag, draft_.files), nullptr);
+            keys = circuits::keysOf(running_);
+            for (std::string& k : circuits::keysOf(draft_.files))
+                keys.push_back(std::move(k));
+        }
+        // The self-test's answers for the netlists of the program that plays and of the draft (Answers::of: each once).
+        if (const std::vector<std::pair<std::string, std::string>> answers = circuits::answers().of(keys); !answers.empty())
+        {
+            juce::ValueTree tree{ kCircuitsTag };
+            for (const auto& [key, text] : answers)
+            {
+                juce::ValueTree answer{ kAnswerTag };
+                answer.setProperty(kKey, juce::String::fromUTF8(key.c_str()), nullptr);
+                answer.setProperty(kText, juce::String::fromUTF8(text.c_str()), nullptr);
+                tree.appendChild(answer, nullptr);
+            }
+            program.appendChild(tree, nullptr);
         }
         state.appendChild(program, nullptr);
         juce::ValueTree chat{ kChatTag };
@@ -909,6 +951,12 @@ namespace playground
             draft_ = std::move(draft);
             ++draftRevision_;
         }
+        // The self-test's answers it kept (each read back as this FMinus's answer for its key, or left out), stored
+        // before it compiles: the program plays its refined configuration from the first block.
+        const juce::ValueTree kept = program.getChildWithName(kCircuitsTag);
+        for (int k = 0; kept.isValid() && k < kept.getNumChildren() && k < static_cast<int>(circuits::Answers::kCapacity); ++k)
+            if (const juce::ValueTree a = kept.getChild(k); a.hasType(kAnswerTag))
+                circuits::restore(a.getProperty(kKey).toString().toStdString(), a.getProperty(kText).toString().toStdString());
         // The session's program, compiled now, its dials as the session has them.
         const CompileStatus s = compiler_.compileNow(std::move(run));
         seen_ = s.revision;
@@ -1143,6 +1191,8 @@ namespace playground
             baseDials_ = v.dials;
         }
         projectDials_ = v.dials;
+        for (const projectstore::Answer& a : v.circuits)            // its netlists' answers, before it compiles
+            circuits::restore(a.key, a.text);
         const uint64_t id = compiler_.request(d.files);
         dialsRequest_ = id;
         editorRun_.store(id);
@@ -1176,7 +1226,11 @@ namespace playground
             active = draft_.active;
         }
         const std::vector<projectstore::Dial> dials = dialsNow();
-        const std::optional<projectstore::Saved> r = projectstore::saveVersion(name, files, active, dials, &why);
+        // The self-test's answers for its netlists (fminus/Circuits.h), kept with the version.
+        std::vector<projectstore::Answer> answers;
+        for (auto& [key, text] : circuits::answers().of(circuits::keysOf(files)))
+            answers.push_back({ std::move(key), std::move(text) });
+        const std::optional<projectstore::Saved> r = projectstore::saveVersion(name, files, active, dials, answers, &why);
         if (!r)
             return false;
         saved = { r->number, r->unchanged, r->created };

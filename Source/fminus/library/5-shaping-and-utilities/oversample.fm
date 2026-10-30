@@ -1,0 +1,337 @@
+// oversample.fm: 2x and 4x oversampling: a nonlinearity run at twice or four times the rate, so that it aliases less.
+//
+// A shaper (a tanh drive, a clipper, a wavefolder) makes harmonics above the host's Nyquist, which fold back as
+// inharmonic aliases. Run it at a higher rate instead: up() turns each host sample into 2 (or 4) at that rate, the
+// shaper runs on each, and down() filters them back into one. The halfbands are those FMinus's circuit compiler emits
+// for a netlist's .oversample (the same coefficients, the same arithmetic), designed for a 48 kHz host: flat to 20 kHz,
+// images and aliases from 28 kHz up at or below their stopband.
+//
+//   Oversample4 os;                a field: 4x, polyphase allpass IIR halfbands (little delay, the phase bent a little)
+//   float v[4];                    in process, a host sample's four at 4x
+//   os.up(x, v);                   x into v[0] to v[3]
+//   v[k] = tanhf(3 * v[k]);        the shaper on each of the four (a loop over k)
+//   y = os.down(v);                the four back into one host sample
+//   os.clear();                    silence (in a voice's start)
+//   Oversample2 os2;               the same at 2x: os2.up(x, v) into v[0] and v[1] (float v[2]), os2.down(v) back
+//   Oversample4Fir osf;            linear-phase Kaiser FIRs instead (Oversample2Fir at 2x): the phase kept, more delay
+// The delay at 1 kHz, up and then down, in host samples: Oversample2 2.7, Oversample4 3.5, Oversample2Fir 40,
+// Oversample4Fir 47. The stopband at a 48 kHz host: the first stage (48 <-> 96 kHz) -96 dB IIR and -94 dB FIR from
+// 28 kHz; the second (96 <-> 192 kHz, at 4x) -101 dB IIR and -93 dB FIR from 76 kHz.
+module Oversample2
+{
+    float ux[6];                // up: the allpass sections' last inputs and outputs
+    float uy[6];
+    float dx[6];                // and down
+    float dy[6];
+
+    // One allpass section of the way up (k its state): (s - y) a + x.
+    float upSection(float s, int k, float a)
+    {
+        const float r = (s - uy[k]) * a + ux[k];
+        ux[k] = s;
+        uy[k] = r;
+        return r;
+    }
+
+    float downSection(float s, int k, float a)
+    {
+        const float r = (s - dy[k]) * a + dx[k];
+        dx[k] = s;
+        dy[k] = r;
+        return r;
+    }
+
+    void up(float x, float* restrict o)
+    {
+        float s0 = x;
+        float s1 = x;
+        s0 = upSection(s0, 0, 0.04418191f);
+        s1 = upSection(s1, 1, 0.16418886f);
+        s0 = upSection(s0, 2, 0.33074415f);
+        s1 = upSection(s1, 3, 0.51508695f);
+        s0 = upSection(s0, 4, 0.70205283f);
+        s1 = upSection(s1, 5, 0.89488965f);
+        o[0] = s0;
+        o[1] = s1;
+    }
+
+    float down(float* restrict v)
+    {
+        float s0 = v[1];
+        float s1 = v[0];
+        s0 = downSection(s0, 0, 0.04418191f);
+        s1 = downSection(s1, 1, 0.16418886f);
+        s0 = downSection(s0, 2, 0.33074415f);
+        s1 = downSection(s1, 3, 0.51508695f);
+        s0 = downSection(s0, 4, 0.70205283f);
+        s1 = downSection(s1, 5, 0.89488965f);
+        return 0.5f * (s0 + s1);
+    }
+
+    void clear()
+    {
+        for (int i = 0; i < 6; ++i)
+        {
+            ux[i] = 0;
+            uy[i] = 0;
+            dx[i] = 0;
+            dy[i] = 0;
+        }
+    }
+};
+
+module Oversample4
+{
+    Oversample2 first;          // 48 <-> 96 kHz
+    float ux[3];                // 96 <-> 192 kHz, up: the allpass sections' last inputs and outputs
+    float uy[3];
+    float dx[3];                // and down
+    float dy[3];
+
+    float upSection(float s, int k, float a)
+    {
+        const float r = (s - uy[k]) * a + ux[k];
+        ux[k] = s;
+        uy[k] = r;
+        return r;
+    }
+
+    float downSection(float s, int k, float a)
+    {
+        const float r = (s - dy[k]) * a + dx[k];
+        dx[k] = s;
+        dy[k] = r;
+        return r;
+    }
+
+    // The second stage: one sample at twice the rate into two at 4x, and back.
+    void stageUp(float x, float* restrict o)
+    {
+        float s0 = x;
+        float s1 = x;
+        s0 = upSection(s0, 0, 0.06378784f);
+        s1 = upSection(s1, 1, 0.26678097f);
+        s0 = upSection(s0, 2, 0.6685488f);
+        o[0] = s0;
+        o[1] = s1;
+    }
+
+    float stageDown(float v0, float v1)
+    {
+        float s0 = v1;
+        float s1 = v0;
+        s0 = downSection(s0, 0, 0.06378784f);
+        s1 = downSection(s1, 1, 0.26678097f);
+        s0 = downSection(s0, 2, 0.6685488f);
+        return 0.5f * (s0 + s1);
+    }
+
+    void up(float x, float* restrict o)
+    {
+        float h[2];
+        float q[2];
+        first.up(x, h);
+        stageUp(h[0], q);
+        o[0] = q[0];
+        o[1] = q[1];
+        stageUp(h[1], q);
+        o[2] = q[0];
+        o[3] = q[1];
+    }
+
+    float down(float* restrict v)
+    {
+        float h[2];
+        h[0] = stageDown(v[0], v[1]);
+        h[1] = stageDown(v[2], v[3]);
+        return first.down(h);
+    }
+
+    void clear()
+    {
+        first.clear();
+        for (int i = 0; i < 3; ++i)
+        {
+            ux[i] = 0;
+            uy[i] = 0;
+            dx[i] = 0;
+            dy[i] = 0;
+        }
+    }
+};
+
+module Oversample2Fir
+{
+    float ud[80];               // up: the input, a doubled ring (each sample at i and i + 40)
+    int upos;
+    float de[42];               // and down: the even samples, a doubled ring
+    float dod[80];              // the odd ones
+    int dpe;
+    int dpo;
+
+    void up(float x, float* restrict o)
+    {
+        upos = upos == 0 ? 39 : upos - 1;
+        ud[upos] = x;
+        ud[upos + 40] = x;
+        const int p = upos;
+        o[0] = ud[p + 20];
+        o[1] = 0.63474184f * (ud[p + 20] + ud[p + 19])
+            - 0.2066321f * (ud[p + 21] + ud[p + 18])
+            + 0.11822675f * (ud[p + 22] + ud[p + 17])
+            - 0.07860357f * (ud[p + 23] + ud[p + 16])
+            + 0.055513296f * (ud[p + 24] + ud[p + 15])
+            - 0.040202327f * (ud[p + 25] + ud[p + 14])
+            + 0.029319683f * (ud[p + 26] + ud[p + 13])
+            - 0.021298118f * (ud[p + 27] + ud[p + 12])
+            + 0.015291072f * (ud[p + 28] + ud[p + 11])
+            - 0.010783467f * (ud[p + 29] + ud[p + 10])
+            + 0.0074278535f * (ud[p + 30] + ud[p + 9])
+            - 0.0049690907f * (ud[p + 31] + ud[p + 8])
+            + 0.0032079264f * (ud[p + 32] + ud[p + 7])
+            - 0.0019829655f * (ud[p + 33] + ud[p + 6])
+            + 0.0011616226f * (ud[p + 34] + ud[p + 5])
+            - 0.0006353947f * (ud[p + 35] + ud[p + 4])
+            + 0.00031703082f * (ud[p + 36] + ud[p + 3])
+            - 0.00013833749f * (ud[p + 37] + ud[p + 2])
+            + 4.8015903e-05f * (ud[p + 38] + ud[p + 1])
+            - 9.309245e-06f * (ud[p + 39] + ud[p]);
+    }
+
+    // Two samples at twice the rate into one host sample: down's, on two floats.
+    float downPair(float v0, float v1)
+    {
+        dpe = dpe == 0 ? 20 : dpe - 1;
+        de[dpe] = v0;
+        de[dpe + 21] = v0;
+        const int q = dpo;
+        const float y = 0.5f * de[dpe + 20]
+            + 0.31737092f * (dod[q + 20] + dod[q + 19])
+            - 0.10331605f * (dod[q + 21] + dod[q + 18])
+            + 0.059113376f * (dod[q + 22] + dod[q + 17])
+            - 0.039301787f * (dod[q + 23] + dod[q + 16])
+            + 0.027756648f * (dod[q + 24] + dod[q + 15])
+            - 0.020101164f * (dod[q + 25] + dod[q + 14])
+            + 0.014659842f * (dod[q + 26] + dod[q + 13])
+            - 0.010649059f * (dod[q + 27] + dod[q + 12])
+            + 0.007645536f * (dod[q + 28] + dod[q + 11])
+            - 0.0053917337f * (dod[q + 29] + dod[q + 10])
+            + 0.0037139268f * (dod[q + 30] + dod[q + 9])
+            - 0.0024845453f * (dod[q + 31] + dod[q + 8])
+            + 0.0016039632f * (dod[q + 32] + dod[q + 7])
+            - 0.0009914828f * (dod[q + 33] + dod[q + 6])
+            + 0.0005808113f * (dod[q + 34] + dod[q + 5])
+            - 0.00031769736f * (dod[q + 35] + dod[q + 4])
+            + 0.00015851541f * (dod[q + 36] + dod[q + 3])
+            - 6.9168746e-05f * (dod[q + 37] + dod[q + 2])
+            + 2.4007952e-05f * (dod[q + 38] + dod[q + 1])
+            - 4.6546224e-06f * (dod[q + 39] + dod[q]);
+        dpo = dpo == 0 ? 39 : dpo - 1;
+        dod[dpo] = v1;
+        dod[dpo + 40] = v1;
+        return y;
+    }
+
+    float down(float* restrict v)
+    {
+        return downPair(v[0], v[1]);
+    }
+
+    void clear()
+    {
+        upos = 0;
+        dpe = 0;
+        dpo = 0;
+        for (int i = 0; i < 80; ++i)
+        {
+            ud[i] = 0;
+            dod[i] = 0;
+        }
+        for (int i = 0; i < 42; ++i)
+            de[i] = 0;
+    }
+};
+
+module Oversample4Fir
+{
+    Oversample2Fir first;       // 48 <-> 96 kHz
+    float ud[28];               // 96 <-> 192 kHz, up: the input, a doubled ring (each sample at i and i + 14)
+    int upos;
+    float de[16];               // and down: the even samples, a doubled ring
+    float dod[28];              // the odd ones
+    int dpe;
+    int dpo;
+
+    // The second stage: one sample at twice the rate into two at 4x, and back.
+    void stageUp(float x, float* restrict o)
+    {
+        upos = upos == 0 ? 13 : upos - 1;
+        ud[upos] = x;
+        ud[upos + 14] = x;
+        const int p = upos;
+        o[0] = ud[p + 7];
+        o[1] = 0.62081707f * (ud[p + 7] + ud[p + 6])
+            - 0.16880718f * (ud[p + 8] + ud[p + 5])
+            + 0.06640502f * (ud[p + 9] + ud[p + 4])
+            - 0.024111941f * (ud[p + 10] + ud[p + 3])
+            + 0.0068400674f * (ud[p + 11] + ud[p + 2])
+            - 0.0012024791f * (ud[p + 12] + ud[p + 1])
+            + 4.4779877e-05f * (ud[p + 13] + ud[p]);
+    }
+
+    float stageDown(float v0, float v1)
+    {
+        dpe = dpe == 0 ? 7 : dpe - 1;
+        de[dpe] = v0;
+        de[dpe + 8] = v0;
+        const int q = dpo;
+        const float y = 0.5f * de[dpe + 7]
+            + 0.31040853f * (dod[q + 7] + dod[q + 6])
+            - 0.08440359f * (dod[q + 8] + dod[q + 5])
+            + 0.03320251f * (dod[q + 9] + dod[q + 4])
+            - 0.012055971f * (dod[q + 10] + dod[q + 3])
+            + 0.0034200337f * (dod[q + 11] + dod[q + 2])
+            - 0.00060123956f * (dod[q + 12] + dod[q + 1])
+            + 2.2389939e-05f * (dod[q + 13] + dod[q]);
+        dpo = dpo == 0 ? 13 : dpo - 1;
+        dod[dpo] = v1;
+        dod[dpo + 14] = v1;
+        return y;
+    }
+
+    void up(float x, float* restrict o)
+    {
+        float h[2];
+        float q[2];
+        first.up(x, h);
+        stageUp(h[0], q);
+        o[0] = q[0];
+        o[1] = q[1];
+        stageUp(h[1], q);
+        o[2] = q[0];
+        o[3] = q[1];
+    }
+
+    float down(float* restrict v)
+    {
+        float h[2];
+        h[0] = stageDown(v[0], v[1]);
+        h[1] = stageDown(v[2], v[3]);
+        return first.down(h);
+    }
+
+    void clear()
+    {
+        first.clear();
+        upos = 0;
+        dpe = 0;
+        dpo = 0;
+        for (int i = 0; i < 28; ++i)
+        {
+            ud[i] = 0;
+            dod[i] = 0;
+        }
+        for (int i = 0; i < 16; ++i)
+            de[i] = 0;
+    }
+};

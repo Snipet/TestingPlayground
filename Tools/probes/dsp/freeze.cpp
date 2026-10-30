@@ -17,8 +17,9 @@
 //   REFUSED  a copy at other values than the dials' is not taken; nor a copy of another program
 //   BLOCKS   the frozen copy in blocks of 64 and of 333: the same samples as each other and as the unfrozen program
 //   SPEED    sixteen voices for two seconds, live and frozen: the time each takes (printed)
-//   EXAMPLES each example, frozen at its defaults (an instrument's with eight voices): it plays, the same spectrum as
-//            unfrozen; the time each takes (the best of five) and both differences (printed), and the time a copy in
+//   EXAMPLES each example (with the library files it includes), frozen at its defaults (an instrument's with eight
+//            voices): it plays, the same spectrum as unfrozen; the time each takes (the best of five) and both
+//            differences (printed), and the time a copy in
 //            exact math (the program's Math::Vector, which the plugin does not use) would take, and whether it plays
 //            the program's bits (printed)
 //   LONG     no copy runs away: each example and RANDOM's programs of seeds 1 to kLongSeeds, ten seconds (an
@@ -33,6 +34,7 @@
 
 #include "Rig.h"
 
+#include "fminus/LibraryIncludes.h"
 #include "fminus/Patch.h"
 
 #include "fminus/Random.h"
@@ -365,7 +367,8 @@ PROBE(dsp, freeze)
     for (const pg::Example& e : pg::kExamples)
     {
         probe::Rig a(kFs, 256), b(kFs, 256), c(kFs, 256);   // c: a copy in exact math, measured only
-        if (!a.load(e.source) || !b.load(e.source) || !c.load(e.source))
+        const pg::Sources files = pg::withLibraryIncludes(pg::singleFile(e.source));   // and the library files it includes
+        if (!a.load(files) || !b.load(files) || !c.load(files))
             continue;
         const int voices = kInstrument ? 8 : 1;
         a.run(input(4096, 12), 256, chord(voices));
@@ -396,7 +399,7 @@ PROBE(dsp, freeze)
         };
         std::vector<Case> cases;
         for (const pg::Example& e : pg::kExamples)
-            cases.push_back({ e.title, pg::singleFile(e.source) });
+            cases.push_back({ e.title, pg::withLibraryIncludes(pg::singleFile(e.source)) });
         for (uint32_t seed = 1; seed <= static_cast<uint32_t>(kLongSeeds); ++seed)
         {
             const pg::random::Program p = pg::random::make(seed);

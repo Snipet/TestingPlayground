@@ -3,7 +3,8 @@
 //   request(files)      the editor's RUN: compiled on the compiler's own thread, so the editor never waits for LLVM.
 //                       A request made while another compiles replaces any still waiting: the last one wins.
 //   compileNow(files)   the same on the calling thread, for the processor's construction and a host's state load,
-//                       which want the program playing when they return (and the probes, which want determinism)
+//                       which want the program playing when they return (and the probes, which want determinism);
+//                       after the compile the thread runs, if one does (below, "One compile offers at a time")
 //   check(files)        the editor's check while typing: Patch::check on the compiler's thread, after any RUN waiting,
 //                       its messages in checkStatus(); nothing is offered, the program that plays plays on. A check
 //                       asked while another waits replaces it
@@ -35,10 +36,39 @@
 // printed and the texts held here are let go (a program compiled while someone looked keeps FMinus's own copy in its
 // fminus::Program until it is replaced: FMinus holds what it printed). Never on the audio thread, never on the message
 // thread.
+//
+// The self-test (fminus/Circuits.h; SelfTester.h). A netlist that leaves its configuration to FMinus's circuit
+// self-test plays a provisional one, and its compile wants the test (Patch::Result::circuitJobs): the jobs of a compile
+// that plays (RUN's, compileNow's, a refine's; never a check's, a failed compile's or Measure's) go to this compiler's
+// SelfTester, which runs them on threads of its own and stores each answer in circuits::answers() (process-wide), and
+// cancels a test the newest program no longer wants. RUN never waits for a test, and a check never asks for one. When
+// an answer lands for a netlist the program that plays used provisionally, this thread refines, at a pass of its own
+// (never the one whose compile made it due, so a RUN's waiter has that compile's status first): it compiles the files
+// of the program that plays (the recipe's, never the draft and never a failed RUN's) again under a new program id, now
+// with the answer, and offers it as any program (the effect crossfades; the synth's old voices would fade). It waits
+// while a RUN is queued (which reads the store itself: the refine is then dropped), while a recording is armed
+// (Engine::ownCode) and, for an instrument, until no voice sounds, fades or is held (Meters), so no held note starts
+// again; and it looks again once the compile is done, just before it offers: a refine that may not play then is held,
+// and offered at the first pass that may (dropped when another program plays first, or when an answer it lacks lands).
+// A refine answers no request: it brings the status up to date (CompileStatus::refined), which still answers the
+// request before it (`request`, `ok`, and a failed compile's `errors` and `sources`, which the editor and Claude go on
+// showing), with the refined program as `program` and, when that request compiled, the refine's notes ending with what
+// the self-test chose ("pedal.cir: note: the self-test chose this circuit's configuration: 4x, ADAA, omega(1)").
+// A test that gives no answer (nothing under the cost cap finite on every signal, the budget spent, an internal error)
+// is not tried again (circuits::Answers::Outcome): this thread then brings the status up to date (its revision the
+// next), the netlist's provisional note there replaced by why ("pedal.cir: note: the self-test found no configuration
+// for this circuit (...), so the provisional one plays on: 8x IIR, omega(2)"), and the provisional configuration
+// plays on; a refine's note of the choice carries the test's own warnings (a block that rings at Nyquist).
+// setSelfTesting(false) stops both the tests and the refines (the probes'); selfTestNow() runs the jobs waiting and then
+// the refine on the calling thread, as freezeNow does.
+//
+// One compile offers at a time: compileNow waits for the compile the thread runs (a RUN's, a refine's), and the thread
+// starts none while compileNow compiles, so the program offered last is the one compiled last.
 #pragma once
 
 #include "dsp/Controls.h"
 #include "dsp/Engine.h"
+#include "dsp/SelfTester.h"
 #include "dsp/Sources.h"
 #include "fminus/Patch.h"
 #include "fminus/PanelSpec.h"
@@ -53,6 +83,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace playground
 {
@@ -70,6 +101,15 @@ namespace playground
         Controls    controls{};                // the program's dials, when ok
         PanelSpec   panel;                     // how its #pragma panel lines lay them out, when ok
         Sources     sources;                   // the files compiled
+        std::vector<std::string> circuitKeys;  // the self-test's keys of the netlists it generated with a configuration
+                                               // to choose (Patch::Result::circuitKeys): the answers its state keeps
+        uint64_t    program = 0;               // the program that plays once it is out (Patch::program, Meters::program):
+                                               // `request` when it compiled; else the one that plays on (0: none yet),
+                                               // or the refine's (above, "The self-test")
+        bool        refined = false;           // a refine brought it up to date (above): `program` is the refine's, and
+                                               // when `ok`, all but `request`; else the failed compile's outcome stays
+        CircuitPins circuits;                  // the configuration each netlist of `program` was generated with
+                                               // (Patch::Recipe::pins): what a recording's replay compiles it with
     };
 
     // The last check's outcome (Compiler::check).
@@ -137,6 +177,18 @@ namespace playground
         int freezes() const noexcept { return freezes_.load(std::memory_order_relaxed); }
         static constexpr double kFreezeAfterSeconds = 3.0;
 
+        // The self-test (above): the tests and the refines on or off (on by default); selfTestNow() runs the jobs
+        // waiting, then the refine when one is due or held and may run (no RUN queued, no recording armed, an instrument
+        // silent: looked at before it compiles and again before it offers), on the calling thread: true when it offered
+        // the refined program; selfTesting() says whether a test waits or runs, or an answer waits to be compiled in or
+        // offered; selfTests() counts the tests this compiler's tester started.
+        void setSelfTesting(bool on);
+        bool selfTestNow();
+        bool selfTesting() const;
+        int selfTests() const noexcept { return tester_.tests(); }
+        // The steps a test may take (SelfTester::setBudget; 0: FMinus's default). Probes only.
+        void setSelfTestBudget(std::int64_t steps) noexcept { tester_.setBudget(steps); }
+
         // The IR (above): whether someone looks (the processor counts the editor's IR views), and what there is.
         // Any thread.
         void setIrWanted(bool on);
@@ -148,16 +200,42 @@ namespace playground
         static std::shared_ptr<const IrText> irText(const std::string& text);
 
     private:
+        struct Built;                          // a compile not offered yet (Compiler.cpp)
+        // `files` compiled at `rate` as program `id` (CompileStatus::request and program, Patch::program: Meters::program
+        // names it), not offered.
+        static std::unique_ptr<Built> build(float rate, Sources files, uint64_t id, const ShaderTools& tools,
+                                            ShaderCache& cache, bool keepIr);
+
         void run();
         void freezer();                        // the freezer's thread
         bool freeze(const DialState& d);       // compiles and offers the copy (the recipe under mutex_)
-        void finish(CompileStatus s);
+        // A compile's status published (its revision the next; a failed one's `program` the one that plays on), and
+        // the status as stored.
+        CompileStatus finish(CompileStatus s);
+        // A compile the caller ran (compileNow's, a RUN's: its patch offered here when it compiled), published.
+        CompileStatus land(std::unique_ptr<Built> b, uint64_t landed);
         // The IR: a program taken (its texts when the compile kept them; else, when someone looks, the IR-only compile
         // due; run() makes it), the frozen copy's. Each takes mutex_ itself and bumps the revision.
         void tookProgram(uint64_t id, const std::string& file, bool kept, const Patch::Ir& ir);
         void frozenIr(const DialState& d);     // the freezer's: the frozen copy that plays, when its text is not held
         void setFrozenIr(const DialState& d, const std::string& text);
         void bumpIr();                         // under mutex_
+        // The self-test's (under mutex_): refineDue_ from the answers landed since the program that plays was compiled
+        // (a refine held then is stale: handed back, for the caller to let go once mutex_ is); whether a refine may run
+        // now, and whether one built may be offered now (no recording armed, an instrument silent); the refine itself,
+        // true when it offered (mutex_ held on entry and on return, let go while it compiles and once it offered).
+        [[nodiscard]] std::unique_ptr<Built> checkLanded();
+        // The outcomes reported since last looked at (circuits::Answers::reported): a test of the program that plays
+        // that gave no answer says why in the status (above). Under mutex_.
+        void checkOutcomes();
+        bool mayRefine() const;
+        bool quiet() const;
+        bool refine(std::unique_lock<std::mutex>& lock);
+        // The status brought up to date by a refine that plays (above): its notes end with `chosen`.
+        void finishRefine(CompileStatus s, const std::string& chosen);
+        // A compile that plays: its recipe, the self-tests it wants and the landed() count read before it began (a
+        // refine held is stale then: let go).
+        void played(Patch::Recipe recipe, std::vector<circuits::Job> jobs, uint64_t landed);
 
         Engine& engine_;
         mutable std::mutex mutex_;
@@ -190,6 +268,15 @@ namespace playground
         std::atomic<uint64_t> irRevision_{ 0 };
         uint64_t irFrozenTried_ = 0;
         std::array<float, kMaxControls> irFrozenValues_{};
+        // The self-test's (mutex_): the jobs of the compile that plays (its netlists' provisional configurations), the
+        // landed() count last looked at, an answer for one of them landed, the tests and refines on.
+        std::vector<circuits::Job> playing_;
+        uint64_t landedSeen_ = 0;
+        uint64_t reportedSeen_ = 0;
+        bool refineDue_ = false;
+        bool selfTesting_ = true;
+        std::unique_ptr<Built> held_;          // a refine compiled, not offered yet (above): mutex_
+        SelfTester tester_;                    // its own threads; before thread_, so it outlives the loop
         std::mutex freezeMutex_;               // one freeze at a time (the freezer's, freezeNow's)
         std::condition_variable freezerWake_;
         std::thread thread_;                   // last: started once everything above is

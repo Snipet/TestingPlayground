@@ -10,6 +10,7 @@
 //   gui.code.problems.png    a check while typing: the squiggle, the mark, the count in the status line, the card
 //   gui.code.find.png        the find and replace bar, its matches marked
 //   gui.code.paper.png       PAPER: the completion list over the program
+//   gui.code.cir.png         a netlist's tab (screamer.cir) highlighted, a check's squiggle on a broken line
 // and checks:
 //   LOOK      the program's tabs have the code editor's looks (indent guides, the bracket pair, auto-closing pairs,
 //             brace indent, the minimap, the mark column) and draw them; the chat's message box has none of them;
@@ -36,6 +37,12 @@
 //   RUN ONLY  a note only RUN gives stays after RUN (no check of what it compiled replaces it); an edit's check takes
 //             it away, and undone (the files RUN compiled) RUN's messages come back
 //   FIND TABS Escape after the bar was open over two tabs leaves no match marked in either
+//   CIRCUIT   a netlist's tab (the library's screamer.cir, added by LIBRARY with its #include): its own highlighter
+//             (lang::lexCirLine) in the code's palette, SPICE in the status line, no completion (Ctrl-Space) and no
+//             Format (Shift-Alt-F changes nothing); a broken line typed into it (a transistor, Phase 2's): the check
+//             generates the netlist and squiggles that line, the program that plays playing on; its #include taken
+//             out, RUN compiles and plays, and the tab keeps the check's squiggle after RUN (RUN generates only the
+//             netlists an #include reaches)
 #include "Probe.h"
 
 #include "editor/CodeAssist.h"
@@ -633,6 +640,83 @@ PROBE(gui, code)
         host.tick(2);
         writePng(P, host, "gui.code.paper.png", "paper");
         host.keys("escape");
+    }
+
+    // ---- CIRCUIT ----------------------------------------------------------------------------------------------------
+    {
+        funkgui::UiPreferences::get().setTheme(0);
+        pg::ui::Panel panel(processor.ports(), port);
+        funkgui::HeadlessHost host(panel, 0, 2.0f);
+        host.setZoom({ 100, 125, 150, 200 }, 100);
+        host.settle();
+        pg::ui::CodeAssist& code = panel.codeAssist();
+        P.eq("cir.library_tab", panel.addLibraryFile("screamer.cir") ? 1 : 0, 1);
+        int tab = -1;
+        for (int i = 0; i < 12; ++i)
+            if (panel.fileName(i) == "screamer.cir")
+                tab = i;
+        const funkgui::Point at = panel.centreOfTab(tab);
+        host.click(at.x, at.y);
+        host.settle();
+        funkgui::TextEditor& ed = panel.editor();
+        P.eq("cir.shown", tab > 0 && panel.activeFile() == tab && ed.text() == pg::findLibraryFile("screamer.cir")->source ? 1 : 0, 1);
+        P.eq("cir.highlighter", dynamic_cast<const pg::ui::CircuitHighlighter*>(ed.highlighter()) != nullptr ? 1 : 0, 1);
+        P.eq("cir.palette", static_cast<int64_t>(ed.palette().size()), static_cast<int64_t>(pg::ui::csCount));
+        P.eq("cir.language", std::string(code.language(tab)) == "SPICE" && std::string(code.language(0)) == "FMinus" ? 1 : 0, 1);
+        focusEditor(panel, host);
+        ed.setCaret(posIn(ed, "R4 "));
+        host.keys("ctrl+space");
+        P.eq("cir.no_completion", code.completionOpen() ? 0 : 1, 1);
+        const std::string before = ed.text();
+        host.keys("shift+alt+f");
+        P.eq("cir.no_format", ed.text() == before ? 1 : 0, 1);
+        // A broken line: the check generates the netlist (the program does not use its module) and squiggles it.
+        settleChecks(panel, host);
+        const uint64_t runs = port.statusRevision();
+        const funkgui::TextPos line = posIn(ed, "C4 ");
+        ed.setCaret({ line.line, 0 });
+        type(panel, host, "Q1     n1  0   v2  2N3904\n");
+        const bool marked = waitFor(host, [&] { return code.errorCount() > 0 && !code.checking(); });
+        bool squiggle = false, mark = false;
+        for (const funkgui::Decoration& d : ed.decorations())
+            squiggle = squiggle || (d.kind == funkgui::DecorationKind::error && d.from.line == line.line);
+        for (const funkgui::LineMark& m : ed.lineMarks())
+            mark = mark || (m.line == line.line && m.kind == funkgui::LineMark::Kind::error);
+        P.eq("cir.check_in_time", marked ? 1 : 0, 1);
+        P.eq("cir.check_squiggle", squiggle && mark ? 1 : 0, 1);
+        P.eq("cir.check_no_run", port.statusRevision() == runs ? 1 : 0, 1);
+        const funkgui::Point p = ed.pointOf({ line.line, 1 });   // on "Q1", which the squiggle covers
+        host.move(p.x + 2.0f, p.y + ed.rowHeight() * 0.5f);
+        host.tick(40);
+        P.eq("cir.hover_says", code.hoverText().find("transistor Q1") != std::string::npos ? 1 : 0, 1);
+        writePng(P, host, "gui.code.cir.png", "cir");
+        host.move(10.0f, 10.0f);
+        // Its #include taken out: RUN does not generate it (the program compiles and plays), and its tab keeps the
+        // check's squiggle after RUN, and after the check of the files RUN compiled.
+        const funkgui::Point tab0 = panel.centreOfTab(0);
+        host.click(tab0.x, tab0.y);
+        host.settle();
+        funkgui::TextEditor& prog = panel.editor();
+        std::string text = prog.text();
+        const std::string include = "#include \"screamer.cir\"\n";
+        const std::size_t cut = text.find(include);
+        if (cut != std::string::npos)
+            text.erase(cut, include.size());
+        prog.selectAll();
+        prog.insert(text);
+        host.keys("cmd+return");
+        settleRun(processor, host);
+        settleChecks(panel, host);
+        host.click(at.x, at.y);
+        host.settle();
+        const auto squiggled = [&] {
+            bool on = false;
+            for (const funkgui::Decoration& d : panel.editor().decorations())
+                on = on || (d.kind == funkgui::DecorationKind::error && d.from.line == line.line);
+            return on;
+        };
+        P.eq("cir.uninclude_runs", cut != std::string::npos && port.status().ok && panel.activeFile() == tab ? 1 : 0, 1);
+        P.eq("cir.uninclude_keeps_squiggle", squiggled() && code.errorCount() > 0 ? 1 : 0, 1);
     }
     funkgui::UiPreferences::get().setTheme(0);
     return P.finish();

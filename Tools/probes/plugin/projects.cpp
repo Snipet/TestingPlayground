@@ -27,8 +27,18 @@
 //            draft is untouched
 //   DELETE   a preset deleted (no longer applied); a version deleted, never the only one; a project deleted: gone from
 //            the list, project() none
+//   CIRCUITS a program with a netlist whose configuration is the self-test's (AutoClipper.h), saved before its test (no
+//            "circuits" in the version), refined (the tests off, Compiler::selfTestNow) and saved again unchanged: no
+//            version added, and version 1 now keeps the answer (its "circuits": key and text), as an export's JSON
+//            does; opened by a fresh processor with the store emptied, the answer is restored before it compiles (no
+//            self-test wanted, no note); a project from before circuits (the field taken out) opens as before, its
+//            files, playing the provisional configuration
 #include "Probe.h"
 
+#include "AutoClipper.h"
+
+#include "dsp/Compiler.h"
+#include "fminus/Circuits.h"
 #include "plugin/EditorPort.h"
 #include "plugin/ProjectStore.h"
 #include "plugin/Processor.h"
@@ -361,6 +371,70 @@ PROBE(plugin, projects)
     std::printf("only version: %s\n", why.c_str());
     P.eq("delete.project", pa.deleteProject("glass bloom", why) && !listed(pa, "glass bloom") ? 1 : 0, 1);
     P.eq("delete.none_open", pa.project().name.empty() ? 1 : 0, 1);
+
+    // CIRCUITS
+    {
+        pg::circuits::Answers& store = pg::circuits::answers();
+        store.clearForTests();
+        const pg::Sources pedal = { { pg::kProgramName, probe::clipperProgram("clipper.cir", "Clipper", false) },
+                                    { "clipper.cir", probe::kAutoClipper } };
+        const std::vector<std::string> keys = pg::circuits::keysOf(pedal);
+        const std::string key = keys.empty() ? std::string() : keys.front();
+        const juce::File pedalFile = dir.getChildFile("Circuit Pedal.fmproject");
+        const auto keptOf = [](const juce::File& f) {
+            return juce::JSON::parse(f.loadFileAsString())["versions"][0]["circuits"];
+        };
+        pg::Processor c;
+        c.compiler().setSelfTesting(false);
+        pg::EditorPort& pc = c.editorPort();
+        pc.setDraft({ pedal, 0 });
+        pc.run(pedal);
+        c.settle();
+        const pg::CompileStatus provisional = pc.status();
+        P.eq("circuits.saved_provisional", provisional.ok && !provisional.notes.empty() && pc.saveVersion("Circuit Pedal", saved, why)
+                                               && saved.created && keptOf(pedalFile).isVoid() ? 1 : 0, 1);
+        const bool refined = c.compiler().selfTestNow();
+        c.settle();
+        const std::string answer = store.find(key).value_or("");
+        P.eq("circuits.refined", refined && pc.status().ok && !answer.empty() ? 1 : 0, 1);
+        P.eq("circuits.unchanged_keeps_answer", pc.saveVersion("Circuit Pedal", saved, why) && saved.unchanged && saved.number == 1
+                                                    && pc.versions("Circuit Pedal").size() == 1 ? 1 : 0, 1);
+        const juce::var kept = keptOf(pedalFile);
+        std::printf("circuits: version 1 keeps %s\n", juce::JSON::toString(kept, true).toRawUTF8());
+        P.eq("circuits.version_field", kept.size() == 1 && kept[0]["key"].toString().toStdString() == key
+                                           && kept[0]["text"].toString().toStdString() == answer ? 1 : 0, 1);
+        {
+            const std::optional<ps::Project> p = ps::load("Circuit Pedal", &why);
+            const std::optional<ps::Project> back = p ? ps::fromJson(ps::toJson(*p), "Circuit Pedal", &why) : std::nullopt;
+            P.eq("circuits.json_round_trip", back && back->versions.size() == 1 && back->versions[0].circuits.size() == 1
+                                                 && back->versions[0].circuits[0].key == key && back->versions[0].circuits[0].text == answer
+                                                 ? 1 : 0, 1);
+        }
+        store.clearForTests();
+        pg::Processor d;
+        d.compiler().setSelfTesting(false);
+        P.eq("circuits.opens", d.editorPort().openProject("Circuit Pedal", 0, why) ? 1 : 0, 1);
+        d.settle();
+        const pg::CompileStatus opened = d.editorPort().status();
+        std::printf("circuits: opened: %s%s\n", opened.errors.c_str(), opened.notes.empty() ? "no messages" : opened.notes.c_str());
+        P.eq("circuits.restored_on_open", store.find(key) == answer && opened.ok && opened.notes.empty() && !d.compiler().selfTesting()
+                                              && d.editorPort().running() == pedal ? 1 : 0, 1);
+
+        // A project from before circuits: the version without the field.
+        rewrite(dir, "Circuit Pedal", "Older Pedal", [](juce::var& root) {
+            root.getDynamicObject()->setProperty("name", "Older Pedal");
+            root["versions"][0].getDynamicObject()->removeProperty("circuits");
+        });
+        store.clearForTests();
+        pg::Processor e;
+        e.compiler().setSelfTesting(false);
+        P.eq("circuits.older_opens", e.editorPort().openProject("Older Pedal", 0, why) ? 1 : 0, 1);
+        e.settle();
+        P.eq("circuits.older_plays_provisional", e.editorPort().draft().files == pedal && e.editorPort().status().ok
+                                                     && e.editorPort().status().notes == provisional.notes && store.size() == 0
+                                                     && e.compiler().selfTesting() ? 1 : 0, 1);
+        store.clearForTests();
+    }
 
     ps::setDirectoryForTests({});
     dir.deleteRecursively();
