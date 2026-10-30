@@ -35,33 +35,53 @@ namespace playground
             }
         }
 
-        // `keepIr`: the program's IR into `ir` too (Patch::compile's); `jobs`: the self-tests its netlists want.
-        CompileStatus build(Engine& engine, Sources files, uint64_t id, const ShaderTools& tools, ShaderCache& cache,
-                            Patch::Recipe& recipe, bool keepIr, Patch::Ir& ir, std::vector<circuits::Job>& jobs)
+        std::string fileOf(const CompileStatus& s)
         {
-            Patch::Result r = Patch::compile(files, engine.rate(), keepIr);
-            ir = std::move(r.ir);
-            jobs = std::move(r.circuitJobs);
-            CompileStatus s;
-            s.request = id;
-            s.ok = r.patch != nullptr;
-            s.errors = std::move(r.errors);
-            s.notes = std::move(r.notes);
-            s.ms = r.compileMs;
-            s.sources = std::move(files);
-            s.circuitKeys = std::move(r.circuitKeys);
-            if (r.patch)
-            {
-                s.controls = r.patch->controls();
-                s.panel = r.patch->panel();
-                if (!s.panel.shaders.empty())
-                    buildShaders(s.panel, s.sources, tools, cache, s.notes);
-                r.patch->setProgram(id);                    // CompileStatus::request: Meters::program names it
-                recipe = r.patch->recipe();                 // the freezer's
-                engine.offer(std::move(r.patch));
-            }
-            return s;
+            return s.sources.empty() ? std::string(kProgramName) : s.sources.front().name;
         }
+    }
+
+    // A compile done and not offered yet: its status, its program (null when it did not compile), and what the compiler
+    // keeps of it once it plays.
+    struct Compiler::Built
+    {
+        CompileStatus status;
+        std::unique_ptr<Patch> patch;
+        Patch::Recipe recipe;                        // the freezer's
+        Patch::Ir ir;                                // when `keepIr` (Patch::compile's)
+        bool keepIr = false;
+        std::vector<circuits::Job> jobs;             // the self-tests its netlists want
+        uint64_t landed = 0;                         // circuits::answers().landed() before it began (a refine's)
+    };
+
+    std::unique_ptr<Compiler::Built> Compiler::build(float rate, Sources files, uint64_t id, const ShaderTools& tools,
+                                                     ShaderCache& cache, bool keepIr)
+    {
+        auto b = std::make_unique<Built>();
+        Patch::Result r = Patch::compile(files, rate, keepIr);
+        b->ir = std::move(r.ir);
+        b->keepIr = keepIr;
+        b->jobs = std::move(r.circuitJobs);
+        CompileStatus& s = b->status;
+        s.request = id;
+        s.ok = r.patch != nullptr;
+        s.errors = std::move(r.errors);
+        s.notes = std::move(r.notes);
+        s.ms = r.compileMs;
+        s.sources = std::move(files);
+        s.circuitKeys = std::move(r.circuitKeys);
+        if (r.patch)
+        {
+            s.controls = r.patch->controls();
+            s.panel = r.patch->panel();
+            if (!s.panel.shaders.empty())
+                buildShaders(s.panel, s.sources, tools, cache, s.notes);
+            r.patch->setProgram(id);
+            s.program = id;
+            b->recipe = r.patch->recipe();
+            b->patch = std::move(r.patch);
+        }
+        return b;
     }
 
     Compiler::Compiler(Engine& engine)
@@ -294,37 +314,50 @@ namespace playground
     CompileStatus Compiler::compileNow(Sources files)
     {
         uint64_t id = 0;
-        {
-            const std::lock_guard<std::mutex> lock(mutex_);
-            id = ++nextId_;
-        }
         ShaderTools tools;
         {
-            const std::lock_guard<std::mutex> lock(mutex_);
+            // One compile offers at a time (above): the thread's (a RUN's, a refine's) ends first, and the thread starts
+            // none while this one compiles, so this program, offered last, is the one that plays.
+            std::unique_lock<std::mutex> lock(mutex_);
+            idle_.wait(lock, [this] { return !compiling_ || stop_; });
+            compiling_ = true;
+            id = ++nextId_;
             tools = tools_;
         }
         // Never the IR here (the calling thread may be the message thread): someone looking has it made on the
         // compiler's thread (tookProgram).
-        Patch::Recipe recipe;
-        Patch::Ir ir;
-        std::vector<circuits::Job> jobs;
         const uint64_t landed = circuits::answers().landed();
-        CompileStatus s = build(engine_, std::move(files), id, tools, shaders_, recipe, false, ir, jobs);
-        if (s.ok)
+        CompileStatus s = land(build(engine_.rate(), std::move(files), id, tools, shaders_, false), landed);
         {
-            played(std::move(recipe), std::move(jobs), landed);
-            tookProgram(id, s.sources.empty() ? std::string(kProgramName) : s.sources.front().name, false, ir);
+            const std::lock_guard<std::mutex> lock(mutex_);
+            compiling_ = false;
         }
-        finish(s);
-        return status();
+        idle_.notify_all();
+        wake_.notify_all();                        // a RUN that waited for it
+        return s;
     }
 
-    void Compiler::finish(CompileStatus s)
+    CompileStatus Compiler::land(std::unique_ptr<Built> b, uint64_t landed)
+    {
+        if (b->patch)
+        {
+            engine_.offer(std::move(b->patch));
+            played(std::move(b->recipe), std::move(b->jobs), landed);
+            // Its IR before its status: a view that sees the status has the text.
+            tookProgram(b->status.request, fileOf(b->status), b->keepIr, b->ir);
+        }
+        return finish(std::move(b->status));
+    }
+
+    CompileStatus Compiler::finish(CompileStatus s)
     {
         const std::lock_guard<std::mutex> lock(mutex_);
+        if (!s.ok)
+            s.program = recipe_.program;           // the program that played plays on
         s.revision = status_.revision + 1;
         status_ = std::move(s);
         revision_.store(status_.revision, std::memory_order_release);
+        return status_;
     }
 
     void Compiler::setShaderTools(ShaderTools tools)
@@ -372,11 +405,13 @@ namespace playground
         std::unique_lock<std::mutex> lock(mutex_);
         while (!stop_)
         {
+            // A RUN waits while compileNow (or selfTestNow's refine) compiles on another thread.
             wake_.wait_for(lock, std::chrono::milliseconds(100),
-                           [this] { return hasQueued_ || hasCheck_ || irDue_ || stop_; });
+                           [this] { return (hasQueued_ && !compiling_) || hasCheck_ || irDue_ || stop_; });
             if (stop_)
                 break;
-            if (hasQueued_)
+            bool compiled = false;
+            if (hasQueued_ && !compiling_)
             {
                 Sources files = std::move(queued_);
                 const uint64_t id = queuedId_;
@@ -385,22 +420,12 @@ namespace playground
                 hasQueued_ = false;
                 compiling_ = true;
                 lock.unlock();
-                Patch::Recipe recipe;
-                Patch::Ir ir;
-                std::vector<circuits::Job> jobs;
                 const uint64_t landed = circuits::answers().landed();
-                CompileStatus s = build(engine_, std::move(files), id, tools, shaders_, recipe, keepIr, ir, jobs);
-                if (s.ok)
-                {
-                    played(std::move(recipe), std::move(jobs), landed);
-                    // Its IR before its status: a view that sees the status has the text.
-                    tookProgram(id, s.sources.empty() ? std::string(kProgramName) : s.sources.front().name, keepIr, ir);
-                }
-                finish(std::move(s));
+                land(build(engine_.rate(), std::move(files), id, tools, shaders_, keepIr), landed);
                 lock.lock();
                 compiling_ = false;
-                if (!hasQueued_)
-                    idle_.notify_all();
+                compiled = true;
+                idle_.notify_all();                    // wait() (when no other RUN waits) and compileNow
             }
             if (hasCheck_ && !hasQueued_ && !stop_)
             {
@@ -439,11 +464,14 @@ namespace playground
                 ir_.making = irDue_;
                 bumpIr();
             }
-            // The self-test's answer for the program that plays, compiled in when it may be (above).
-            checkLanded();
-            if (selfTesting_ && mayRefine())
+            // The self-test's answer for the program that plays, compiled in when it may be (above), at a pass of its
+            // own: never the one whose compile made it due (a RUN's waiter and the processor have that compile's status
+            // first).
+            std::unique_ptr<Built> stale = checkLanded();
+            if (selfTesting_ && !compiled && mayRefine())
                 refine(lock);
             lock.unlock();
+            stale.reset();
             engine_.collect();                     // what the audio thread handed back
             lock.lock();
         }
@@ -453,31 +481,36 @@ namespace playground
     // ---- the self-test --------------------------------------------------------------------------------------------------
     void Compiler::played(Patch::Recipe recipe, std::vector<circuits::Job> jobs, uint64_t landed)
     {
+        std::unique_ptr<Built> stale;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             recipe_ = std::move(recipe);
             playing_ = jobs;
             landedSeen_ = landed;                  // an answer that lands from now on is looked at (checkLanded)
             refineDue_ = false;
+            stale = std::move(held_);              // a refine of the program before: never offered now
         }
         tester_.want(std::move(jobs));            // and a test the newest program does not want is cancelled
     }
 
-    void Compiler::checkLanded()
+    std::unique_ptr<Compiler::Built> Compiler::checkLanded()
     {
         const uint64_t landed = circuits::answers().landed();
         if (landed == landedSeen_)
-            return;
+            return nullptr;
         landedSeen_ = landed;
+        bool due = false;
         for (const circuits::Job& j : playing_)
             if (circuits::answers().find(j.key))
-                refineDue_ = true;
+                due = true;
+        if (!due)
+            return nullptr;
+        refineDue_ = true;
+        return std::move(held_);                   // built before this answer: compiled again, with it
     }
 
-    bool Compiler::mayRefine() const
+    bool Compiler::quiet() const
     {
-        if (!refineDue_ || hasQueued_ || compiling_ || stop_ || recipe_.program == 0)
-            return false;
         if (engine_.ownCode())
             return false;                          // a recording is armed: what plays stays what it records
         if constexpr (product::kIsInstrument)
@@ -489,35 +522,104 @@ namespace playground
         return true;
     }
 
-    void Compiler::refine(std::unique_lock<std::mutex>& lock)
+    bool Compiler::mayRefine() const
     {
-        refineDue_ = false;
-        Sources files = recipe_.files;            // the program that plays, never the draft or a failed RUN's
-        std::string notes;
+        if (!(refineDue_ || held_) || hasQueued_ || compiling_ || stop_ || recipe_.program == 0)
+            return false;
+        return quiet();
+    }
+
+    bool Compiler::refine(std::unique_lock<std::mutex>& lock)
+    {
+        if (!held_)
+        {
+            // The program that plays (the recipe's files: never the draft, never a failed RUN's), compiled again under a
+            // new program id, now with the answers stored.
+            refineDue_ = false;
+            Sources files = recipe_.files;
+            const uint64_t base = recipe_.program;
+            const uint64_t id = ++nextId_;
+            const ShaderTools tools = tools_;
+            const bool keepIr = irWanted_;
+            const uint64_t landed = circuits::answers().landed();
+            compiling_ = true;
+            lock.unlock();
+            std::unique_ptr<Built> b = build(engine_.rate(), std::move(files), id, tools, shaders_, keepIr);
+            b->landed = landed;
+            lock.lock();
+            compiling_ = false;
+            idle_.notify_all();
+            wake_.notify_all();                    // a RUN that waited for it (selfTestNow's, on another thread)
+            if (!b->patch)
+            {
+                // It compiled before, so this should not happen: say so, and let the provisional configuration play on
+                // (until another answer lands, or another compile).
+                CompileStatus s = status_;
+                const std::string& e = b->status.errors;
+                for (const circuits::Job& j : playing_)
+                    if (circuits::answers().find(j.key))
+                        s.notes += j.file + ": note: the self-test's configuration does not compile in this program, so the "
+                                   "provisional one plays on: " + e.substr(0, e.find('\n')) + "\n";
+                s.revision = status_.revision + 1;
+                status_ = std::move(s);
+                revision_.store(status_.revision, std::memory_order_release);
+                lock.unlock();
+                b.reset();
+                lock.lock();
+                return false;
+            }
+            if (recipe_.program != base || refineDue_ || stop_)
+            {
+                // Another program plays, or another answer landed meanwhile (compiled again with it, later).
+                lock.unlock();
+                b.reset();
+                lock.lock();
+                return false;
+            }
+            held_ = std::move(b);
+        }
+        // Looked at again now that it is built: a RUN queued since (which plays instead), a recording armed or a key
+        // pressed while it compiled hold it, for the next pass that may.
+        if (hasQueued_ || stop_ || !quiet())
+            return false;
+        std::unique_ptr<Built> b = std::move(held_);
+        std::string chosen;
         for (const circuits::Job& j : playing_)
             if (const std::optional<std::string> answer = circuits::answers().find(j.key))
-                notes += circuits::chosenNote(j.file, *answer);
-        const uint64_t id = ++nextId_;
-        const ShaderTools tools = tools_;
-        const bool keepIr = irWanted_;
-        const uint64_t landed = circuits::answers().landed();
-        compiling_ = true;
+                chosen += circuits::chosenNote(j.file, *answer);
+        engine_.offer(std::move(b->patch));        // under mutex_: no RUN is queued between the look and the offer
+        compiling_ = true;                         // nothing else offers before its status is out
         lock.unlock();
-        Patch::Recipe recipe;
-        Patch::Ir ir;
-        std::vector<circuits::Job> jobs;
-        CompileStatus s = build(engine_, std::move(files), id, tools, shaders_, recipe, keepIr, ir, jobs);
-        if (s.ok)
-        {
-            s.notes += notes;
-            played(std::move(recipe), std::move(jobs), landed);
-            tookProgram(id, s.sources.empty() ? std::string(kProgramName) : s.sources.front().name, keepIr, ir);
-        }
-        finish(std::move(s));
+        played(std::move(b->recipe), std::move(b->jobs), b->landed);
+        tookProgram(b->status.request, fileOf(b->status), b->keepIr, b->ir);
+        finishRefine(std::move(b->status), chosen);
+        b.reset();
         lock.lock();
         compiling_ = false;
-        if (!hasQueued_)
-            idle_.notify_all();
+        idle_.notify_all();
+        wake_.notify_all();
+        return true;
+    }
+
+    void Compiler::finishRefine(CompileStatus s, const std::string& chosen)
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        CompileStatus out;
+        if (status_.ok)
+        {
+            out = std::move(s);                    // what plays: the refine's (the same files and dials)
+            out.request = status_.request;         // still the answer to the request before it
+        }
+        else
+        {
+            out = status_;                         // a failed compile's outcome stays: its errors, its files
+            out.program = s.program;
+        }
+        out.notes += chosen;
+        out.refined = true;
+        out.revision = status_.revision + 1;
+        status_ = std::move(out);
+        revision_.store(status_.revision, std::memory_order_release);
     }
 
     void Compiler::setSelfTesting(bool on)
@@ -533,12 +635,15 @@ namespace playground
     bool Compiler::selfTestNow()
     {
         tester_.runNow();
-        std::unique_lock<std::mutex> lock(mutex_);
-        checkLanded();
-        if (!mayRefine())
-            return false;
-        refine(lock);
-        return true;
+        std::unique_ptr<Built> stale;
+        bool offered = false;
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            stale = checkLanded();
+            if (mayRefine())
+                offered = refine(lock);
+        }
+        return offered;
     }
 
     bool Compiler::selfTesting() const
@@ -546,7 +651,8 @@ namespace playground
         if (tester_.busy())
             return true;
         const std::lock_guard<std::mutex> lock(mutex_);
-        return refineDue_ || std::any_of(playing_.begin(), playing_.end(),
-                                         [](const circuits::Job& j) { return circuits::answers().find(j.key).has_value(); });
+        return refineDue_ || held_ || std::any_of(playing_.begin(), playing_.end(), [](const circuits::Job& j) {
+                   return circuits::answers().find(j.key).has_value();
+               });
     }
 }

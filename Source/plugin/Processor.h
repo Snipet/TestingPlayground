@@ -258,7 +258,7 @@ namespace playground
         uint64_t draftRevision_ = 1;
         Controls controls_{};
         PanelSpec panel_;                                        // the running program's (programMutex_)
-        uint64_t program_ = 0;                                   // its compile (CompileStatus::request)
+        uint64_t program_ = 0;                                   // its compile's id (CompileStatus::program)
         // The project open (ProjectStore.h; programMutex_): the one opened or saved last, its version, the preset
         // applied last; the version's files (project().edited compares the draft's) and the dials it or the preset set
         // (project().dialsEdited compares the dials').
@@ -297,6 +297,7 @@ namespace playground
         std::vector<std::pair<int, float>> pendingDials_;
 
         uint64_t seen_ = 0;                                      // the compiler's revision poll() last applied
+        uint64_t journaled_ = 0;                                 // the editor's RUN poll() last journalled
         std::atomic<uint64_t> editorRun_{ 0 };                   // the request of the last run (the editor's or Claude's)
         std::atomic<uint32_t> alerts_{ 0 };
         std::atomic<int> editorW_{ 0 }, editorH_{ 0 };

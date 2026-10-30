@@ -172,11 +172,17 @@ place (its `products/<key>.cmake`, and its names in the docs).
   joined for each test, at the utility QoS class), never on the audio thread, the message thread or the compiler's,
   and never holding the Compiler's mutex. RUN and the audio thread never wait for it; a test the newest program no
   longer wants is cancelled and stores nothing; two instances never test one key (`Answers::claim`). Once an answer
-  lands for a key the program that plays used provisionally, the compiler's thread refines: it compiles
-  `recipe_.files`, what plays (never the draft, never a failed RUN's `status_.sources`), under a new request id and
-  offers it as any program, its status ending with `circuits::chosenNote`; it waits while a RUN is queued (which reads
+  lands for a key the program that plays used provisionally, the compiler's thread refines, at a pass of its own (never
+  the one whose compile made it due): it compiles `recipe_.files`, what plays (never the draft, never a failed RUN's
+  `status_.sources`), under a new program id and offers it as any program; it waits while a RUN is queued (which reads
   the store itself, and the refine is dropped), while a recording is armed (`Engine::ownCode`), and in the synth until
-  `Meters` shows no voice sounding, fading or held (no held note restarts). The answers are kept with the session
+  `Meters` shows no voice sounding, fading or held (no held note restarts), and it looks again just before the offer
+  (a refine that may not play then is held, `held_`, and offered later). A refine answers no request: its status keeps
+  the request before it (`request`, `ok`, a failed RUN's `errors` and `sources`: the editor and Claude still see why the
+  draft fails), the refined program in `CompileStatus::program` (what `Meters::program` names; `Processor::apply` and
+  the panel read it, never `request`) and `refined` set; when that request compiled, the refine's notes, ending with
+  `circuits::chosenNote`. One compile offers at a time: `compileNow` waits while the compiler's thread compiles, and the
+  thread starts no RUN while `compileNow` (or `selfTestNow`'s refine) does. The answers are kept with the session
   (`<PROGRAM><CIRCUITS><ANSWER key text/>`) and with each project version (its `circuits`), and stored again
   (`circuits::restore`) before that program compiles. A probe that wants no test in the background turns them off
   (`Compiler::setSelfTesting(false)`) and runs them with `selfTestNow` (the jobs waiting, then the refine); a probe's

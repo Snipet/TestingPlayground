@@ -3175,7 +3175,7 @@ namespace playground::ui
                 if (sameDials)
                     guiView_->place(panelSpec_);
             }
-            panelProgram_ = s.ok ? s.request : port_.program();
+            panelProgram_ = s.program != 0 ? s.program : port_.program();   // what plays (a refine's too)
             if (!sameDials)
                 layout();
             statusChanged = true;

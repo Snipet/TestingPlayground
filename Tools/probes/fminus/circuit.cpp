@@ -33,15 +33,20 @@
 // and the plugin's self-test (dsp/SelfTester.h, Compiler.h's "The self-test"), a Compiler offering to an Engine played
 // in blocks of 256, on AutoClipper.h's netlists (no assertion is on time; every wait has a deadline):
 //   SELFTEST     with the tests off (setSelfTesting(false)) a RUN plays the provisional configuration and no test runs;
-//                selfTestNow() runs the test and the refine: the status's revision and request move on, it compiled,
-//                the Engine's Meters::program names the refined program, and its note names the self-test's choice
-//                (circuits::chosenNote); the same files compiled again read the store: no job, no note
-//   REFRESH      after a RUN that does not compile, the refine compiles the files that play; while a recording is armed
-//                (Engine::ownCode) the refine waits, and comes when it ends; a RUN queued before the refine wins (it
-//                reads the store: no note, no job) and the refine is dropped; an instrument's refine waits while a key
-//                is held (no new program id), and lands after the release, once the voice has ended; with the tests on,
-//                a RUN whose files drop the netlist cancels its test, which stores nothing, and a RUN made while the
-//                test runs has its status before landed() moves (by order), the refine after it
+//                selfTestNow() runs the test and the refine: the status's revision and program move on (refined, still
+//                the RUN's request), it compiled, the Engine's Meters::program names the refined program, and its note
+//                names the self-test's choice (circuits::chosenNote); the same files compiled again read the store: no
+//                job, no note
+//   REFRESH      after a RUN that does not compile, the refine compiles the files that play (the Engine plays them, with
+//                the module the store's answer generates) and the status still answers that RUN: not ok, its errors and
+//                its files, the refined program as `program`; while a recording is armed (Engine::ownCode) the refine
+//                waits, and comes when it ends; one armed (and an instrument's key pressed) while the refine compiles
+//                holds it, and it is offered later without compiling again; compileNow waits for a refine running on
+//                another thread, and its program plays; a RUN queued before the refine wins (it reads the store: no
+//                note, no job) and the refine is dropped; an instrument's refine waits while a key is held (no new
+//                program id), and lands after the release, once the voice has ended; with the tests on, a RUN whose
+//                files drop the netlist cancels its test, which stores nothing, and a RUN made while the test runs has
+//                its status before landed() moves (by order), the refine after it
 //   DEDUP        two Compilers wanting one key run one test (the in-flight set), and both refine
 #include "Probe.h"
 
@@ -363,9 +368,10 @@ namespace
             answer = store.find(key).value_or("");
             std::printf("selftest: refined %d, the answer %s\n  its status: %s%s", refined ? 1 : 0, answer.c_str(), b.errors.c_str(), b.notes.c_str());
             P.eq("selftest.now_tests_and_refines", refined && live.compiler->selfTests() == 1 && store.landed() == landed + 1 ? 1 : 0, 1);
-            P.eq("selftest.revision_request_advance", b.revision == a.revision + 1 && b.request > a.request ? 1 : 0, 1);
+            P.eq("selftest.revision_program_advance", b.revision == a.revision + 1 && b.refined && b.request == a.request
+                                                          && b.program > a.program ? 1 : 0, 1);
             P.eq("selftest.ok", b.ok && b.sources == files ? 1 : 0, 1);
-            P.eq("selftest.meters_program", m.program == b.request ? 1 : 0, 1);
+            P.eq("selftest.meters_program", m.program == b.program ? 1 : 0, 1);
             const std::string note = pg::circuits::chosenNote("clipper.cir", answer);
             P.eq("selftest.note_names_choice", !note.empty() && has(b.notes, note) && !has(b.notes, "provisional") ? 1 : 0, 1);
             const pg::CompileStatus c = live.compiler->compileNow(files);
@@ -376,11 +382,15 @@ namespace
             return;
 
         // ---- REFRESH ----------------------------------------------------------------------------------------------------
-        // After a RUN that does not compile, the refine compiles the files that play.
+        // After a RUN that does not compile, the refine compiles the files that play, and the status still says why the
+        // RUN failed.
         {
             store.clearForTests();
             Live live(false);
             const pg::CompileStatus a = live.compiler->compileNow(files);
+            live.play(1);
+            const pg::Sources provisional = live.engine.playingPatch() != nullptr ? live.engine.playingPatch()->recipe().circuits
+                                                                                  : pg::Sources{};
             pg::Sources broken = files;
             broken[0].text += "module {\n";
             live.compiler->request(broken);
@@ -388,8 +398,73 @@ namespace
             const pg::CompileStatus bad = live.compiler->status();
             const bool refined = live.compiler->selfTestNow();
             const pg::CompileStatus s = live.compiler->status();
+            const pg::Meters m = live.play(8);
+            const pg::Patch* playing = live.engine.playingPatch();
+            const pg::Patch::Result fresh = pg::Patch::compile(files, static_cast<float>(kFs));   // with the answer stored
             std::printf("refresh: after a broken RUN: refined %d, %s%s", refined ? 1 : 0, s.errors.c_str(), s.notes.c_str());
-            P.eq("refresh.failed_run_refines_what_plays", a.ok && !bad.ok && refined && s.ok && s.sources == files && chose(s) ? 1 : 0, 1);
+            P.eq("refresh.failed_run_keeps_errors", a.ok && !bad.ok && !bad.errors.empty() && refined && s.refined && !s.ok
+                                                        && s.request == bad.request && s.errors == bad.errors && s.sources == broken
+                                                        && chose(s) ? 1 : 0, 1);
+            P.eq("refresh.failed_run_refines_what_plays", s.program > bad.request && m.program == s.program && playing != nullptr
+                                                              && playing->sources() == files && fresh.patch != nullptr
+                                                              && playing->recipe().circuits == fresh.patch->recipe().circuits
+                                                              && !provisional.empty() && !(provisional == playing->recipe().circuits)
+                                                              ? 1 : 0, 1);
+        }
+        // A refine that may not play once it is compiled (a recording armed, an instrument's key pressed while it
+        // compiled) is held, and offered at the first pass that may, without compiling again.
+        {
+            store.clearForTests();
+            Live live(false);
+            const pg::CompileStatus a = live.compiler->compileNow(files);
+            store.store(key, answer);                    // the answer lands: a refine is due
+            std::atomic<bool> stop{ false }, armed{ false };
+            std::thread watcher([&] {
+                // Once the refine compiles: a recording armed, and an instrument's key pressed (as the audio thread).
+                if (until([&] { return stop.load() || live.compiler->busy(); }, 30.0) && !stop.load())
+                {
+                    live.engine.setOwnCode(true);
+                    if constexpr (kInstrument)
+                        live.play(1, { pg::Event{ 0, pg::EventKind::noteOn, 60, 0.8f } });
+                    armed = true;
+                }
+            });
+            const uint64_t before = pg::circuits::generations();
+            const bool offered = live.compiler->selfTestNow();
+            stop = true;
+            watcher.join();
+            const uint64_t built = pg::circuits::generations();
+            const pg::Meters m = live.play(8);
+            std::printf("refresh: armed while the refine compiled: armed %d, offered %d\n", armed.load() ? 1 : 0, offered ? 1 : 0);
+            P.eq("refresh.held_once_compiled", a.ok && armed.load() && !offered && built > before && live.compiler->revision() == a.revision
+                                                   && m.program == a.program && live.compiler->selfTesting() ? 1 : 0, 1);
+            live.engine.setOwnCode(false);
+            pg::Meters q = live.play(1, kInstrument ? std::vector<pg::Event>{ pg::Event{ 0, pg::EventKind::noteOff, 60, 0.0f } }
+                                                    : std::vector<pg::Event>{});
+            for (int k = 0; k < 400 && (q.voices != 0 || q.fading != 0 || q.held != 0); ++k)
+                q = live.play(1);
+            const bool later = live.compiler->selfTestNow();
+            const pg::CompileStatus s = live.compiler->status();
+            P.eq("refresh.held_offered_later", later && pg::circuits::generations() == built && s.refined && s.ok && chose(s)
+                                                   && s.revision == a.revision + 1 && live.play(8).program == s.program ? 1 : 0, 1);
+        }
+        // compileNow waits for a refine the compiler runs on another thread: its program, compiled last, plays.
+        {
+            store.clearForTests();
+            Live live(false);
+            const pg::CompileStatus a = live.compiler->compileNow(files);
+            store.store(key, answer);
+            std::thread refining([&] { live.compiler->selfTestNow(); });
+            until([&] { return live.compiler->busy(); }, 30.0);
+            const pg::Sources other = pg::singleFile(silentMain());
+            const pg::CompileStatus b = live.compiler->compileNow(other);
+            refining.join();
+            live.compiler->wait();
+            const pg::Meters m = live.play(8);
+            const pg::CompileStatus s = live.compiler->status();
+            const pg::Patch* playing = live.engine.playingPatch();
+            P.eq("refresh.compile_now_plays_last", a.ok && b.ok && s.request == b.request && m.program == b.program && playing != nullptr
+                                                       && playing->sources() == other && !live.compiler->selfTesting() ? 1 : 0, 1);
         }
         // While a recording is armed the refine waits; it comes when the recording ends.
         {
@@ -404,7 +479,7 @@ namespace
             live.engine.setOwnCode(false);
             const bool after = live.compiler->selfTestNow();
             const pg::CompileStatus s = live.compiler->status();
-            P.eq("refresh.after_recording", after && s.ok && s.revision == a.revision + 1 && chose(s) && live.play(8).program == s.request
+            P.eq("refresh.after_recording", after && s.ok && s.revision == a.revision + 1 && chose(s) && live.play(8).program == s.program
                                                 ? 1 : 0, 1);
         }
         // A RUN queued before the refine wins: it reads the store itself, and the refine is dropped.
@@ -446,7 +521,7 @@ namespace
             const bool after = live.compiler->selfTestNow();
             const pg::CompileStatus s = live.compiler->status();
             const pg::Meters now = live.play(8);
-            P.eq("refresh.synth_after_release", releasing && !sounding && silent && after && s.ok && chose(s) && now.program == s.request
+            P.eq("refresh.synth_after_release", releasing && !sounding && silent && after && s.ok && chose(s) && now.program == s.program
                                                     ? 1 : 0, 1);
         }
         // With the tests on: a RUN whose files drop the netlist cancels its test, which stores nothing.
@@ -492,7 +567,7 @@ namespace
             const pg::CompileStatus b = live.compiler->status();
             const bool refined = until([&] {
                 const pg::CompileStatus s = live.compiler->status();
-                return s.request > run && chose(s);
+                return s.program > run && chose(s);
             }, 60.0);
             const pg::CompileStatus s = live.compiler->status();
             std::printf("refresh: a RUN while the test runs: answered first %d (landed %llu then %llu); refined %d: %s", answered ? 1 : 0,

@@ -649,15 +649,32 @@ namespace playground
     void Processor::apply(const CompileStatus& s, bool reset)
     {
         if (!s.ok)
-            return;                                              // the program that played plays on
-        capture_.noteProgram(s.request, s.sources, s.controls);  // a recording's replay compiles these files
+        {
+            // The program that played plays on, unless a refine (Compiler.h, "The self-test") compiled it again since
+            // this compile failed: a new program, the same files and dials.
+            if (!s.refined)
+                return;
+            Sources files;
+            Controls controls;
+            {
+                const std::lock_guard<std::mutex> lock(programMutex_);
+                if (s.program == 0 || s.program == program_)
+                    return;
+                program_ = s.program;
+                files = running_;
+                controls = controls_;
+            }
+            capture_.noteProgram(s.program, files, controls);
+            return;
+        }
+        capture_.noteProgram(s.program, s.sources, s.controls);  // a recording's replay compiles these files
         Controls before;
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
             before = controls_;
             controls_ = s.controls;
             panel_ = s.panel;
-            program_ = s.request;
+            program_ = s.program;
             running_ = s.sources;
         }
         if (reset)
@@ -736,8 +753,11 @@ namespace playground
             seen_ = s.revision;
             const uint64_t run = editorRun_.load();
             apply(s, run != 0 && s.request == run);
-            if (s.request == userRun_.load())
+            if (s.request == userRun_.load() && s.request != journaled_)
+            {
+                journaled_ = s.request;                          // a refine's status answers it again (Compiler.h)
                 journal_.note(Journal::Who::you, runWords(s));
+            }
             // A version's program (or a preset's): its dials, by name, once it compiled (an older request's result
             // waits for its own).
             if (dialsRequest_ != 0 && s.request >= dialsRequest_)
