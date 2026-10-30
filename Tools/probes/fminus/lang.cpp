@@ -37,7 +37,8 @@
 //             copies of each (no indent; tokens single-spaced, braces K&R; no space at all where none is needed) format
 //             back to it (comment gaps aside), each result formatted again unchanged; a messy program formats to the
 //             house style; text with a character FMinus does not read is left as it is, with why
-//   RENDER    each example of this product, formatted, renders what it rendered before, bit for bit (measure::Session:
+//   RENDER    each example of this product (with the library files it includes), formatted, renders what it rendered
+//             before, bit for bit (measure::Session:
 //             an effect over noise, an instrument's chord); RANDOM programs with every file formatted (the program and
 //             its library files) the same, until every library file this product's RANDOM uses has been through it;
 //             the other library files formatted compile alone with the same modules, fields and methods
@@ -49,6 +50,7 @@
 #include "dsp/Measure.h"
 #include "dsp/Sources.h"
 #include "fminus/Lang.h"
+#include "fminus/LibraryIncludes.h"
 #include "fminus/Patch.h"
 #include "fminus/Random.h"
 
@@ -803,7 +805,7 @@ PROBE(fminus, lang)
         for (const pg::Example& e : pg::kExamples)
         {
             ++examples;
-            const pg::Sources files = pg::singleFile(e.source);
+            const pg::Sources files = pg::withLibraryIncludes(pg::singleFile(e.source));
             bool ok = false;
             const pg::Sources formatted = formatAll(files, ok);
             pg::measure::Session::Render a, b;
@@ -869,8 +871,9 @@ PROBE(fminus, lang)
         double checkMs = 0.0, compileMs = 0.0;
         for (const pg::Example& e : pg::kExamples)
         {
-            const pg::Patch::Result c = pg::Patch::check(pg::singleFile(e.source));
-            const pg::Patch::Result full = pg::Patch::compile(pg::singleFile(e.source), 48000.0f);
+            const pg::Sources files = pg::withLibraryIncludes(pg::singleFile(e.source));
+            const pg::Patch::Result c = pg::Patch::check(files);
+            const pg::Patch::Result full = pg::Patch::compile(files, 48000.0f);
             clean += c.errors.empty() && c.patch == nullptr ? 1 : 0;
             checkMs += c.compileMs;
             compileMs += full.compileMs;

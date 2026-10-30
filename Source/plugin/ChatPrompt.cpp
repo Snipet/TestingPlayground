@@ -6,6 +6,7 @@
 // Patch.h, PanelSpec.h, the README's "Writing a program" and FMinus's README: what it says is what Claude writes.
 #include "plugin/ChatAgent.h"
 
+#include "fminus/LibraryIncludes.h"
 #include "fminus/Patch.h"
 
 #include "Examples.h"
@@ -726,8 +727,15 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
             s += "\nTHIS PLUGIN'S EXAMPLES (the editor's EXAMPLES menu; the first, Init, is the program a new instance plays: "
                  "the classic init patch, a neutral start to build on, its comments saying where)\n";
             for (const Example& e : kExamples)
-                s += std::string("\n<example title=\"") + e.title + "\">\n" + e.source
-                   + (std::string(e.source).empty() || std::string(e.source).back() == '\n' ? "" : "\n") + "</example>\n";
+            {
+                // An example that #includes library files names them: they come with it (EXAMPLES adds their tabs).
+                const Sources files = withLibraryIncludes(singleFile(e.source));
+                std::string with;
+                for (std::size_t k = 1; k < files.size(); ++k)
+                    with += (k == 1 ? "" : " ") + files[k].name;
+                s += std::string("\n<example title=\"") + e.title + "\"" + (with.empty() ? "" : " uses=\"" + with + "\"") + ">\n"
+                   + e.source + (std::string(e.source).empty() || std::string(e.source).back() == '\n' ? "" : "\n") + "</example>\n";
+            }
             s += "\nRANDOM AND PROJECTS\n\nThe editor's RANDOM button puts a program together from the library's building blocks, with "
                  "random settings, a panel and a name, for inspiration; its first line says so, with its seed (\"(random 4821)\"). "
                  "When the user asks you to build on one, it is theirs: keep what they like and change what they ask.\n"

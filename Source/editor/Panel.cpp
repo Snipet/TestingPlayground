@@ -21,6 +21,7 @@
 #include "dsp/Compiler.h"
 #include "dsp/Controls.h"
 #include "dsp/Engine.h"
+#include "fminus/LibraryIncludes.h"
 #include "fminus/Random.h"
 
 #include "Examples.h"
@@ -3779,8 +3780,21 @@ namespace playground::ui
         if (i < 0 || i >= static_cast<int>(std::size(kExamples)))
             return;
         // The example replaces the program's text as one edit (Cmd-Z brings the text back), and runs; the other files
-        // stay.
+        // stay. The library files it #includes come as tabs first, as LIBRARY adds them (never over a tab of that
+        // name), when there is room for them.
+        const Sources need = withLibraryIncludes(singleFile(kExamples[static_cast<std::size_t>(i)].source));
+        int missing = 0;
+        for (std::size_t k = 1; k < need.size(); ++k)
+            missing += files().find(need[k].name) < 0 ? 1 : 0;
+        if (files().count() + missing > static_cast<int>(kMaxFiles))
+        {
+            notice("THE EXAMPLE NEEDS ROOM FOR ITS LIBRARY FILES: CLOSE A TAB");
+            return;
+        }
         files().endRename();
+        for (std::size_t k = 1; k < need.size(); ++k)
+            if (files().find(need[k].name) < 0)
+                files().addFile(need[k].name, need[k].text);
         files().select(0);
         funkgui::TextEditor& program = files().editor();
         program.selectAll();

@@ -1,0 +1,49 @@
+// Tube screamer: an overdrive pedal modelled from its circuit. The library's screamer.cir is the TS808's clipping
+// stage, tone control and level as a netlist, which the plugin turns into a module, Screamer (FMinus's circuit
+// compiler), one for each channel. DRIVE, TONE and LEVEL are its pots, 0 to 1 as on the pedal; INPUT sets how many
+// volts reach it (0 dB: full scale is 1 V, a hot guitar) and OUTPUT trims what comes out. A circuit's pots move on the
+// 16-sample grid: set() every 16 samples, counted from init, so the sound never depends on the host's block size.
+#include "screamer.cir"
+#pragma panel section "PEDAL" drive tone level
+#pragma panel section "TRIM" input output in out
+#pragma panel meter in "IN"
+#pragma panel meter out "OUT"
+#pragma panel style drive tone level vintage
+#pragma panel color "PEDAL" green
+module Effect
+{
+    param float drive [[fminus::range(0, 1)]] [[fminus::default(0.5)]];      // the pots, as the pedal's
+    param float tone [[fminus::range(0, 1)]] [[fminus::default(0.5)]];
+    param float level [[fminus::range(0, 1)]] [[fminus::default(0.7)]];
+    param float input [[fminus::range(-24, 12)]] [[fminus::default(-6)]];    // dB: 0 is 1 V at full scale
+    param float output [[fminus::range(-24, 24)]] [[fminus::default(6)]];    // dB
+    Screamer pedalL;                                                         // screamer.cir's module, a channel each
+    Screamer pedalR;
+    int grid;                                                                // samples to the next set()
+
+    void init(float rate)
+    {
+        pedalL.init(rate);
+        pedalR.init(rate);
+        grid = 0;
+    }
+
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            // The pots on the grid: a dial that glides reaches the circuit every 16 samples.
+            if (grid == 0)
+            {
+                pedalL.set(drive[i], tone[i], level[i]);
+                pedalR.set(drive[i], tone[i], level[i]);
+                grid = 16;
+            }
+            grid -= 1;
+            const float in = expf(0.115129255f * input[i]);
+            const float out = expf(0.115129255f * output[i]);
+            left[i] = out * pedalL.tick(in * left[i]);
+            right[i] = out * pedalR.tick(in * right[i]);
+        }
+    }
+};
