@@ -75,6 +75,52 @@ namespace playground::projectstore
             return out;
         }
 
+        juce::var answersVar(const std::vector<Answer>& answers)
+        {
+            juce::Array<juce::var> out;
+            for (const Answer& a : answers)
+            {
+                auto* o = new juce::DynamicObject();
+                o->setProperty("key", str(a.key));
+                o->setProperty("text", str(a.text));
+                out.add(juce::var(o));
+            }
+            return out;
+        }
+
+        // A version's answers: each a key and a line, at most kMaxAnswers, a key once (what the store's restore checks
+        // is checked there: circuits::restore).
+        std::vector<Answer> answersOf(const juce::var& v)
+        {
+            std::vector<Answer> out;
+            if (const juce::Array<juce::var>* a = v.getArray())
+                for (const juce::var& e : *a)
+                {
+                    if (!e.isObject() || out.size() >= kMaxAnswers)
+                        continue;
+                    Answer x{ e["key"].toString().toStdString(), e["text"].toString().toStdString() };
+                    if (x.key.empty() || x.key.size() > 64 || x.text.empty() || x.text.size() > 2000
+                        || std::any_of(out.begin(), out.end(), [&](const Answer& o) { return o.key == x.key; }))
+                        continue;
+                    out.push_back(std::move(x));
+                }
+            return out;
+        }
+
+        // `more` over `kept`, by key (a newer answer for a key replaces the older), at most kMaxAnswers.
+        std::vector<Answer> mergedAnswers(std::vector<Answer> kept, const std::vector<Answer>& more)
+        {
+            for (const Answer& a : more)
+            {
+                const auto it = std::find_if(kept.begin(), kept.end(), [&](const Answer& k) { return k.key == a.key; });
+                if (it != kept.end())
+                    it->text = a.text;
+                else if (kept.size() < kMaxAnswers)
+                    kept.push_back(a);
+            }
+            return kept;
+        }
+
         juce::var filesVar(const Sources& files)
         {
             juce::Array<juce::var> out;
@@ -162,6 +208,7 @@ namespace playground::projectstore
                     ver.active = static_cast<int>(v["active"]);
                     ver.files = filesOf(v["files"]);
                     ver.dials = dialsOf(v["dials"]);
+                    ver.circuits = answersOf(v["circuits"]);
                     if (!ver.files.empty() && ver.number > 0)
                         p.versions.push_back(std::move(ver));
                 }
@@ -274,6 +321,8 @@ namespace playground::projectstore
                 o->setProperty("active", v.active);
                 o->setProperty("files", filesVar(v.files));
                 o->setProperty("dials", dialsVar(v.dials));
+                if (!v.circuits.empty())
+                    o->setProperty("circuits", answersVar(v.circuits));
                 versions.add(juce::var(o));
             }
             root->setProperty("versions", versions);
@@ -519,7 +568,7 @@ namespace playground::projectstore
     }
 
     std::optional<Saved> saveVersion(std::string_view name, const Sources& files, int active, const std::vector<Dial>& dials,
-                                     std::string* why)
+                                     const std::vector<Answer>& circuits, std::string* why)
     {
         const std::string tidy = tidyName(name);
         if (tidy.empty())
@@ -540,12 +589,16 @@ namespace playground::projectstore
             if (!old)
                 return std::nullopt;
             p = std::move(*old);
-            const Version& last = p.latest();
+            Version& last = p.versions.back();
             if (last.files == files && last.active == active && sameDials(last.dials, dials))
             {
                 saved.number = last.number;
                 saved.unchanged = true;
-                if (p.name != tidy)                      // the same project, named in another case now
+                // The same program: answers it lacks (a refine since it was saved) join it, as no version is added.
+                std::vector<Answer> merged = mergedAnswers(last.circuits, circuits);
+                const bool more = merged != last.circuits;
+                last.circuits = std::move(merged);
+                if (p.name != tidy || more)              // the same project, named in another case now, or answered
                 {
                     p.name = tidy;
                     if (!write(std::move(p), why))
@@ -564,6 +617,7 @@ namespace playground::projectstore
         v.files = files;
         v.active = active;
         v.dials = dials;
+        v.circuits = mergedAnswers({}, circuits);
         p.versions.push_back(std::move(v));
         if (p.versions.size() > static_cast<std::size_t>(kMaxVersions))
             p.versions.erase(p.versions.begin(), p.versions.end() - kMaxVersions);

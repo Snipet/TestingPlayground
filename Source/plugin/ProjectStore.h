@@ -8,9 +8,16 @@
 //     "name": "Glass Bloom",
 //     "versions": [ { "number": 1, "saved": 1761580000000, "note": "first save", "active": 0,
 //                     "files": [ { "name": "program.fm", "text": "..." }, ... ],
-//                     "dials": [ { "name": "cutoff", "value": 900 }, ... ] }, ... ],        oldest first
+//                     "dials": [ { "name": "cutoff", "value": 900 }, ... ],
+//                     "circuits": [ { "key": "0123456789abcdef", "text": "fminus-circuit-choice 1 ..." } ] },
+//                   ... ],                                                                     oldest first
 //     "presets":  [ { "name": "Bright", "saved": 1761580100000, "from": 1, "dials": [ ... ] }, ... ],  by name
 //     "info":     { "description": "...", "author": "...", "category": "Pad", "tags": [ "warm" ], "genres": [ ... ] } }
+//
+// A version's "circuits" (optional: an older project has none, and an older build reads past it) are the circuit
+// self-test's answers for its netlists (fminus/Circuits.h: a netlist's key and fminus::circuit::Choice::text()), so a
+// version opened plays its refined configuration from its first block instead of a provisional one until the test is
+// run again; saving the same program again with answers its latest version lacks adds them to that version.
 //
 // The dials by parameter name, in the program's own units, so a version's or a preset's values land in whichever
 // slots its program's parameters take, and a preset saved with one version applies to the next. A version's note says
@@ -62,6 +69,16 @@ namespace playground::projectstore
         float value = 0.0f;
     };
 
+    // A circuit self-test's answer kept with a version (above): its netlist's key (16 hex digits) and the answer's
+    // line (Choice::text()).
+    struct Answer
+    {
+        std::string key;
+        std::string text;
+        friend bool operator==(const Answer&, const Answer&) = default;
+    };
+    inline constexpr std::size_t kMaxAnswers = 16;       // a version's, at most
+
     struct Version
     {
         int number = 0;
@@ -70,6 +87,7 @@ namespace playground::projectstore
         Sources files;
         int active = 0;                                  // the tab shown
         std::vector<Dial> dials;
+        std::vector<Answer> circuits;                    // the self-test's answers for its netlists (may be none)
     };
 
     struct Preset
@@ -138,9 +156,11 @@ namespace playground::projectstore
         bool created = false;                            // a new project
     };
     // A new version of the project `name` (tidied; a new project when there is none), its note what changed since the
-    // latest. Nothing, with why, when it cannot be written.
+    // latest, with the self-test's answers for its netlists (`circuits`: at most kMaxAnswers kept; when the files, the
+    // tab and the dials are the latest's, answers it lacks are added to it and no version is). Nothing, with why, when
+    // it cannot be written.
     std::optional<Saved> saveVersion(std::string_view name, const Sources& files, int active, const std::vector<Dial>& dials,
-                                     std::string* why = nullptr);
+                                     const std::vector<Answer>& circuits = {}, std::string* why = nullptr);
     // A preset of the project (over one of that name, case aside, which takes the new name's case).
     bool savePreset(std::string_view project, std::string_view preset, const std::vector<Dial>& dials, int from,
                     std::string* why = nullptr);
