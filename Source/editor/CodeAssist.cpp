@@ -155,7 +155,7 @@ namespace playground::ui
             return out;
         }
 
-        bool fmName(std::string_view name) { return !(name.size() > 4 && name.substr(name.size() - 4) == ".gui"); }
+        bool fmName(std::string_view name) { return fileKindOf(name) == FileKind::FMinus; }
 
         // A key that would change the text: typing (Alt's symbols, Shift-Alt-F's Format too), Return, Space, Backspace,
         // Delete, cut, paste, undo and redo, and the line commands (Cmd-/, Cmd-] and Cmd-[, Shift-Cmd-K, Alt-Up and
@@ -367,6 +367,45 @@ namespace playground::ui
         return inComment ? 1u : 0u;
     }
 
+    uint32_t CircuitHighlighter::line(std::string_view l, uint32_t, std::vector<funkgui::text::Span>& out) const
+    {
+        std::vector<lang::Token> toks;
+        lang::lexCirLine(l, 0, toks);
+        for (std::size_t i = 0; i < toks.size(); ++i)
+        {
+            const lang::Token& t = toks[i];
+            const lang::Token* next = i + 1 < toks.size() ? &toks[i + 1] : nullptr;
+            uint16_t st = csPlain;
+            switch (t.kind)
+            {
+                case lang::Tok::comment:   st = csComment; break;
+                case lang::Tok::directive: st = csDirective; break;
+                case lang::Tok::keyword:   st = csKeyword; break;
+                case lang::Tok::number:    st = csNumber; break;
+                case lang::Tok::op:        st = csOperator; break;
+                case lang::Tok::punct:     st = csPunct; break;
+                case lang::Tok::type:
+                case lang::Tok::unknown:   st = csPlain; break;
+                case lang::Tok::identifier:
+                {
+                    std::string w(t.text);
+                    for (char& c : w)
+                        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                    if (w == "opamp" || w == "ota")
+                        st = csType;
+                    else if (next != nullptr && next->text == "(")
+                        st = csFunction;              // a model's card, D(IS=...), or a solver's steps, omega(2)
+                    else if (next != nullptr && next->text == "=")
+                        st = csMember;                // a key: scale=, taper=, kind=
+                    break;
+                }
+            }
+            if (t.len > 0)
+                out.push_back({ t.col, t.col + t.len, st });
+        }
+        return 0u;
+    }
+
     std::vector<funkgui::text::HighlightStyle> codePalette(const funkgui::Theme& th)
     {
         using Ink = funkgui::text::HighlightStyle::Ink;
@@ -394,6 +433,14 @@ namespace playground::ui
     funkgui::TextEditor& CodeAssist::ed() const { return tabs_.editor(tabs_.active()); }
     int CodeAssist::activeTab() const { return tabs_.active(); }
     bool CodeAssist::fmFile(int tab) const { return tab >= 0 && tab < tabs_.count() && fmName(tabs_.name(tab)); }
+
+    const char* CodeAssist::language(int tab) const
+    {
+        if (tab < 0 || tab >= tabs_.count())
+            return "LLVM IR";
+        const FileKind k = fileKindOf(tabs_.name(tab));
+        return k == FileKind::FMinus ? "FMinus" : k == FileKind::Circuit ? "SPICE" : "GUI";
+    }
     bool CodeAssist::viewShown() const { return activeTab() >= tabs_.count(); }
 
     void CodeAssist::configure(funkgui::TextEditor& e, std::string_view fileName)
@@ -409,19 +456,21 @@ namespace playground::ui
         o.highlightLine = true;
         o.inks.info = custom(note_);                     // a note's squiggle and ring: Theme.h's codeSecond, not signal
         e.setOptions(o);
-        if (fmName(fileName))
+        const FileKind kind = fileKindOf(fileName);
+        if (kind == FileKind::Gui)
         {
-            e.setHighlighter(std::make_unique<CodeHighlighter>(types_));
-            if (!palette_.empty())
-                e.setPalette(palette_);
-            else
-                e.setPalette(codePalette(funkgui::Theme::graphite()));
-        }
-        else
-        {
-            e.setHighlighter(std::make_unique<funkgui::text::KeywordHighlighter>(guiRules()));
+            e.setHighlighter(std::make_unique<funkgui::text::KeywordHighlighter>(rulesFor(kind)));
             e.setPalette(funkgui::TextEditor::defaultPalette());
+            return;
         }
+        if (kind == FileKind::Circuit)
+            e.setHighlighter(std::make_unique<CircuitHighlighter>());
+        else
+            e.setHighlighter(std::make_unique<CodeHighlighter>(types_));
+        if (!palette_.empty())
+            e.setPalette(palette_);
+        else
+            e.setPalette(codePalette(funkgui::Theme::graphite()));
     }
 
     void CodeAssist::setTheme(const funkgui::Theme& th)
@@ -439,7 +488,7 @@ namespace playground::ui
             funkgui::TextEditorOptions o = e.options();
             o.inks.info = custom(note_);
             e.setOptions(o);
-            if (fmFile(i))
+            if (fileKindOf(tabs_.name(i)) != FileKind::Gui)  // FMinus and netlists: the code's palette
                 e.setPalette(palette_);
         }
     }
@@ -1255,7 +1304,10 @@ namespace playground::ui
                 {
                     bool inC = false;
                     std::vector<lang::Token> toks;
-                    lang::lexLine(text, ln, inC, toks);
+                    if (fileKindOf(name) == FileKind::Circuit)
+                        lang::lexCirLine(text, ln, toks);    // a netlist's words: an element's name, a value, a node
+                    else
+                        lang::lexLine(text, ln, inC, toks);
                     end = col + 1;
                     for (const lang::Token& t : toks)
                         if (t.col <= col && col < t.col + t.len && t.kind != lang::Tok::comment && t.kind != lang::Tok::directive)
@@ -1991,7 +2043,7 @@ namespace playground::ui
             return Rect{ x, r.y, w, r.h };
         };
         s.formatOnRun = take("Format on Run", 14.0f);
-        s.language = take(viewShown() ? "LLVM IR" : fmFile(activeTab()) ? "FMinus" : "GUI", 0.0f);
+        s.language = take(viewShown() ? "LLVM IR" : language(activeTab()), 0.0f);
         s.indent = take(viewShown() ? "Spaces: 2" : "Spaces: 4", 0.0f);
         const funkgui::TextEditor& E = ed();
         char buf[64];
@@ -2066,7 +2118,7 @@ namespace playground::ui
                 std::snprintf(buf, sizeof buf, "Ln %d, Col %d", E.caret().line + 1, E.caret().col + 1);
             c.text(buf, parts.position.right() - 8.0f, top, st, p.soft, funkgui::Align::right);
             c.text(viewShown() ? "Spaces: 2" : "Spaces: 4", parts.indent.right() - 8.0f, top, st, p.faint, funkgui::Align::right);
-            c.text(viewShown() ? "LLVM IR" : fmFile(activeTab()) ? "FMinus" : "GUI", parts.language.right() - 8.0f, top, st, p.faint,
+            c.text(viewShown() ? "LLVM IR" : language(activeTab()), parts.language.right() - 8.0f, top, st, p.faint,
                    funkgui::Align::right);
             const bool on = formatOnRun();
             const Rect box{ parts.formatOnRun.x + 6.0f, mid - 5.0f, 10.0f, 10.0f };

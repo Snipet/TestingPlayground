@@ -4,7 +4,9 @@
 //
 //   the look       line numbers, a column for the problems' marks, the caret's line, indent guides, the bracket pair at
 //                  the caret, a minimap; FMinus highlighted by its own lexer (keywords, types and the program's module
-//                  names, functions, members, numbers, comments, directives, attributes) in inks of the theme
+//                  names, functions, members, numbers, comments, directives, attributes) in inks of the theme; a
+//                  netlist (a .cir tab, SPICE's: fminus/Circuits.h) by lang::lexCirLine in the same inks (its
+//                  elements' names as keywords, directives, values as numbers, an expression's operators, comments)
 //   keys           ( [ { and the quotes close themselves, Return after an opener indents and a closer outdents; and
 //                    Ctrl-Space          completion (it also opens on a typed name, after `.` and `->`); Up, Down,
 //                                        Page Up/Down choose, Return or Tab accept, Escape closes
@@ -35,6 +37,10 @@
 //
 // The completion list, the signature and the hover card are drawn over everything (drawOverlays, after the Panel's
 // items); the find bar and the status line with the editor. Message thread only.
+//
+// A netlist's tab (.cir) has its highlighter, the problems (RUN's and the check's: the check generates every netlist,
+// one the program does not include too) and the editing keys, and no language feature (completion, signature help,
+// hover, occurrences, go to the definition, Format, Format on Run, Cmd-/): its status line says SPICE.
 //
 // A view (the IR tab, IrView.h: the one past the files, Tabs::active() == Tabs::count()) is none of the program's files:
 // no language feature reaches it (completion, signature help, hover, occurrences, the problems, Format, go to the
@@ -100,6 +106,15 @@ namespace playground::ui
         std::shared_ptr<const TypeNames> types_;
     };
 
+    // A netlist (a .cir file) by lang::lexCirLine, a line at a time (no state: a SPICE line stands alone), in the code's
+    // palette: an element's name a keyword, a directive, a value a number, a key (scale=) a member, a model's or a
+    // solver's parentheses (D(...), omega(2)) a function, opamp and OTA types.
+    class CircuitHighlighter final : public funkgui::text::Highlighter
+    {
+    public:
+        uint32_t line(std::string_view line, uint32_t stateIn, std::vector<funkgui::text::Span>& out) const override;
+    };
+
     // The highlighter's palette for a theme (GRAPHITE or PAPER): the theme's inks, and a few colours of its own.
     std::vector<funkgui::text::HighlightStyle> codePalette(const funkgui::Theme& th);
 
@@ -133,7 +148,8 @@ namespace playground::ui
         CodeAssist(const CodeAssist&) = delete;
         CodeAssist& operator=(const CodeAssist&) = delete;
 
-        // A tab's editor made a code editor for this file (an FMinus file or a .gui file: its highlighter, options).
+        // A tab's editor made a code editor for this file (an FMinus file, a .gui file or a netlist: its highlighter,
+        // options; Items.h's FileKind).
         void configure(funkgui::TextEditor& ed, std::string_view fileName);
         void setTheme(const funkgui::Theme& th);         // every tab's palette follows it
         void setLibrary(const Sources& library);         // the library's files (completion offers their modules)
@@ -230,6 +246,7 @@ namespace playground::ui
         bool goToOpen() const noexcept { return gotoOpen_; }
         int findCount() const noexcept { return static_cast<int>(matches_.size()); }
         int findCurrent() const noexcept { return current_; }
+        const char* language(int tab) const;             // the status line's: FMinus, SPICE, GUI (LLVM IR: a view)
         lang::Service& service();                        // the index, brought up to date
 
     private:
@@ -247,7 +264,8 @@ namespace playground::ui
 
         funkgui::TextEditor& ed() const;
         int activeTab() const;
-        bool fmFile(int tab) const;                      // one of the program's FMinus files (not a .gui, not a view)
+        bool fmFile(int tab) const;                      // one of the program's FMinus files (not a .gui, not a
+                                                         // netlist, not a view)
         bool viewShown() const;                          // the tab shown is a view (the IR): no file of the program
         bool goToKey(const funkgui::KeyEvent& e);
         void sync();                                     // the service follows the tabs

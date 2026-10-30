@@ -10,8 +10,20 @@
 //                      directives (a line whose first non-blank character is #: #include "file" and #pragma, one
 //                      token each). FMinus has no strings: a quote outside a directive, and any other character
 //                      FMinus does not read, is `unknown`.
+//   lexCirLine(),      a circuit netlist's tokens (a .cir file, SPICE's: fminus/Circuits.h), on the same kinds: a
+//   lexCir()           comment (a line whose first non-blank character is *, and ; to the line's end), a directive
+//                      (.title, .pot, ...: the word), a keyword (an element's name, the line's first word: R1, Ptone,
+//                      XU1), a number (SPICE's values: 2.2k, 10meg, 1u, -60dB; 1N914 is a name), punctuation ({ } ( )
+//                      = , : and a continuation line's leading +), an operator (+ - * / ^ inside braces) and the
+//                      identifiers (nodes, pots, models, keys). Never FMinus's lexer: a netlist is no FMinus.
 //   Service            an index of the program's files, host.fm (the plugin's own file, Patch::hostSource) and the
-//                      library's (Library.h, offered by name), rebuilt when a file changes:
+//                      library's (Library.h, offered by name), rebuilt when a file changes. A netlist (a .cir file,
+//                      the program's or the library's) is read line by line into the one module it generates: its
+//                      name (.title, else the file's stem, its first letter capitalised), its documentation (the *
+//                      lines it starts with), and the methods every configuration has, as the generated module
+//                      declares them: init(float rate), set(its pots' floats, then its switches' ints; none without
+//                      either), tick(the signal, then the law inputs: float2 and floats with .channels 2) and clear()
+//                      (step and the fields depend on the configuration, which the self-test may change: left out);
 //     symbols          every declaration: modules, their fields, params and methods, functions, their arguments and
 //                      the locals of their bodies, each with its type, signature, place, the scope it is seen in and
 //                      its documentation (the comment lines over it, else the one after it on its line; a module's
@@ -95,6 +107,11 @@ namespace playground::lang
 
     // `#include "name"` on this line: the name and its columns (inside the quotes); false for any other line.
     bool includeOn(std::string_view line, std::string& name, int& from, int& to);
+
+    // A netlist's line's tokens appended to `out` (no line break in `line`; a netlist has no state across lines: a
+    // continuation line's leading + is punctuation), and every line's, in order.
+    void lexCirLine(std::string_view line, int lineNo, std::vector<Token>& out);
+    std::vector<Token> lexCir(std::string_view text);
 
     // ---- the index --------------------------------------------------------------------------------------------------
     enum class Kind : uint8_t

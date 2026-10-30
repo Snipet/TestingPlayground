@@ -5,6 +5,16 @@
 //   LEXER     a line of each kind of token: names, keywords, type words, C's numbers (.5f, 0x1Fp-3, 1e-3), operators
 //             longest first (->, ++, &&, ::), punctuation, a // comment; a directive is one token; a block comment
 //             carries over the line's end; a character FMinus does not read is `unknown`
+//   NETLIST   a circuit netlist's tokens (lexCirLine, a .cir file's): a * line a comment, .title a directive, R1 (an
+//             element's name) a keyword, 2.2k, 10u and -60dB numbers, 1N914 a name, {1 - tone} punctuation, a number,
+//             an operator and a name, a ; comment, a continuation's +; every line of every library netlist lexes so
+//             (nothing unknown, a * line one comment, a . line a directive first, an element's line its name first)
+//   SUMMARY   a netlist as the module it generates, line by line (no FMinus): the library's screamer.cir is module
+//             Screamer, its documentation its * header, with void init(float rate), void set(float drive, float tone,
+//             float level), float tick(float u) and void clear(); otalp.cir's tick takes its law input, float tick(float
+//             u, float iabc), and it has no set (no pot); a netlist without .title is named by its file; in a program
+//             that does not include it, completion offers Screamer, adding its #include "screamer.cir"; one that does
+//             gets its methods after `pedal.`, with the usage header's line for each, and goes to its .input line
 //   INDEX     a program of three files (program.fm, tools.fm it includes, svf.fm the library's) and host.fm: the
 //             modules (Effect, Host, Svf), a param with its range in its signature, fields with their types, methods
 //             with their parameters, a function of another file, locals and arguments with the scope they are seen in
@@ -22,7 +32,8 @@
 //   OCCUR     a field's uses in its file (the declaration, the calls); a loop variable's, not another loop's
 //   UNCLOSED  a module whose `{` has no partner (a closer missing in a method, the file cut short) holds the rest of
 //             the file: its members are completed, hovered and found there
-//   FORMAT    every example and library file is the house style already (format changes nothing); three scrambled
+//   FORMAT    every example and library file is the house style already (format changes nothing; a netlist is no
+//             FMinus and is left out: the editor never formats one); three scrambled
 //             copies of each (no indent; tokens single-spaced, braces K&R; no space at all where none is needed) format
 //             back to it (comment gaps aside), each result formatted again unchanged; a messy program formats to the
 //             house style; text with a character FMinus does not read is left as it is, with why
@@ -295,6 +306,11 @@ namespace
         ok = true;
         for (const pg::SourceFile& f : files)
         {
+            if (pg::isCircuitFile(f.name))
+            {
+                out.push_back(f);                      // a netlist: never formatted (the editor's Format is FMinus's)
+                continue;
+            }
             const lg::Formatted r = lg::format(f.text, s.typeNames());
             ok = ok && r.ok;
             out.push_back({ f.name, r.text });
@@ -360,6 +376,142 @@ PROBE(fminus, lang)
         t.clear();
         lg::lexLine("x @ 'c'", 0, inComment, t);
         P.eq("lexer.unknown", t.size() >= 2 && t[1].kind == lg::Tok::unknown ? 1 : 0, 1);
+    }
+
+    // ---- NETLIST ----------------------------------------------------------------------------------------------------
+    {
+        const auto lexed = [](std::string_view line) {
+            std::vector<lg::Token> t;
+            lg::lexCirLine(line, 0, t);
+            return t;
+        };
+        // The kinds of a line's tokens, a letter each: c comment, d directive, k keyword, n number, p punct, o op,
+        // i identifier, ? anything else.
+        const auto kinds = [&](std::string_view line) {
+            std::string out;
+            for (const lg::Token& t : lexed(line))
+                out += t.kind == lg::Tok::comment     ? 'c'
+                     : t.kind == lg::Tok::directive   ? 'd'
+                     : t.kind == lg::Tok::keyword     ? 'k'
+                     : t.kind == lg::Tok::number      ? 'n'
+                     : t.kind == lg::Tok::punct       ? 'p'
+                     : t.kind == lg::Tok::op          ? 'o'
+                     : t.kind == lg::Tok::identifier  ? 'i'
+                                                      : '?';
+            return out;
+        };
+        // A library netlist's line that starts with `start`, as it is there.
+        const auto lineOf = [](const char* file, std::string_view start) {
+            const std::string text = libraryText(file);
+            for (const std::string_view l : lg::splitLines(text))
+                if (l.rfind(start, 0) == 0)
+                    return std::string(l);
+            return std::string();
+        };
+        const std::string pot = lineOf("diodetone.cir", "Ptone");
+        std::printf("netlist: '%s' -> %s\n", pot.c_str(), kinds(pot).c_str());
+        P.eq("netlist.comment_line", kinds(lineOf("diodetone.cir", "* diodetone.cir")) == "c" ? 1 : 0, 1);
+        P.eq("netlist.directive", kinds(lineOf("diodetone.cir", ".title")) == "di" && kinds(".title X") == "di" ? 1 : 0, 1);
+        const std::string r1Line = lineOf("diodetone.cir", "R1");
+        const std::vector<lg::Token> r1 = lexed(r1Line);   // its tokens' texts are views of r1Line
+        P.eq("netlist.element_keyword", kinds(r1Line) == "kiin" && r1.size() == 4 && r1[0].text == "R1" && r1[3].text == "2.2k" ? 1 : 0, 1);
+        P.eq("netlist.expression", kinds(pot) == "kiinpnoipc" ? 1 : 0, 1);
+        const std::vector<lg::Token> pt = lexed(pot);
+        P.eq("netlist.expression_text", pt.size() == 10 && pt[4].text == "{" && pt[5].text == "1" && pt[6].text == "-"
+                                            && pt[7].text == "tone" && pt[8].text == "}" && pt[9].text == "; a rheostat" ? 1 : 0, 1);
+        P.eq("netlist.model_card", kinds(".model 1N914 D(IS=2.52n N=1.752)") == "diipipnipnp" ? 1 : 0, 1);
+        P.eq("netlist.model_name", lexed("D1 a 0 1N914")[3].kind == lg::Tok::identifier ? 1 : 0, 1);
+        P.eq("netlist.law_input", kinds(lineOf("otalp.cir", ".input  iabc")) == "diiipiipnpn" ? 1 : 0, 1);
+        P.eq("netlist.negative_value", kinds(".target solver=-60dB level=4.5V") == "dipnipn" ? 1 : 0, 1);
+        P.eq("netlist.continuation", kinds("+ scale=1") == "pipn" && kinds("  + R2 a b 1k") == "piiin" ? 1 : 0, 1);
+        int lines = 0, good = 0;
+        for (const pg::LibraryFile& f : pg::kLibrary)
+        {
+            if (!pg::isCircuitFile(f.name))
+                continue;
+            for (const std::string_view l : lg::splitLines(f.source))
+            {
+                std::size_t a = 0;
+                while (a < l.size() && l[a] == ' ')
+                    ++a;
+                if (a == l.size())
+                    continue;
+                ++lines;
+                const std::string k = kinds(l);
+                const bool ok = k.find('?') == std::string::npos
+                             && (l[a] == '*'   ? k == "c"
+                                 : l[a] == '.' ? k[0] == 'd'
+                                 : l[a] == '+' ? k[0] == 'p'
+                                               : k[0] == 'k');
+                good += ok ? 1 : 0;
+                if (!ok)
+                    std::printf("netlist %s: '%s' -> %s\n", f.name, std::string(l).c_str(), k.c_str());
+            }
+        }
+        std::printf("netlist: %d library netlist lines lexed\n", lines);
+        P.ge("netlist.library_lines", static_cast<double>(lines), 60.0);
+        P.eq("netlist.library_lexes", good, lines);
+    }
+
+    // ---- SUMMARY ----------------------------------------------------------------------------------------------------
+    {
+        pg::Sources library;
+        for (const pg::LibraryFile& f : pg::kLibrary)
+            library.push_back({ f.name, f.source });
+        const std::string uses = std::string(pg::product::kIsInstrument ? "module Voice\n" : "module Effect\n")
+                               + "{\n    Screamer pedal;\n    float x;\n    void init(float rate)\n    {\n        pedal.\n    }\n};\n";
+        lg::Service c;
+        c.setLibrary(library);
+        c.setFiles({ { "program.fm", "#include \"screamer.cir\"\n" + uses }, { "screamer.cir", libraryText("screamer.cir") },
+                     { "otalp.cir", libraryText("otalp.cir") }, { "bare.cir", ".input u in\n.output y y\nR1 in y 1k\nC1 y 0 1n\n" } });
+        const auto method = [&](std::string_view module, std::string_view name) -> const lg::Symbol* {
+            for (const lg::Symbol& x : c.symbols())
+                if (x.kind == lg::Kind::method && x.container == module && x.name == name)
+                    return &x;
+            return nullptr;
+        };
+        const auto signature = [&](std::string_view module, std::string_view name) {
+            const lg::Symbol* m = method(module, name);
+            return m != nullptr ? m->signature : std::string("(none)");
+        };
+        const lg::Symbol* screamer = nullptr;
+        for (const lg::Symbol& x : c.symbols())
+            if (x.kind == lg::Kind::module && x.name == "Screamer")
+                screamer = &x;
+        std::printf("summary: Screamer's %s; %s; %s; %s\n", signature("Screamer", "init").c_str(), signature("Screamer", "set").c_str(),
+                    signature("Screamer", "tick").c_str(), signature("Screamer", "clear").c_str());
+        P.eq("summary.module", screamer != nullptr && screamer->file == c.fileIndex("screamer.cir")
+                                   && screamer->doc.rfind("screamer.cir: the Tube Screamer's", 0) == 0 ? 1 : 0, 1);
+        P.eq("summary.init", signature("Screamer", "init") == "void init(float rate)" ? 1 : 0, 1);
+        P.eq("summary.set", signature("Screamer", "set") == "void set(float drive, float tone, float level)" ? 1 : 0, 1);
+        P.eq("summary.tick", signature("Screamer", "tick") == "float tick(float u)" ? 1 : 0, 1);
+        P.eq("summary.clear", signature("Screamer", "clear") == "void clear()" ? 1 : 0, 1);
+        P.eq("summary.no_step", method("Screamer", "step") == nullptr ? 1 : 0, 1);
+        P.eq("summary.law_input", signature("OtaLp", "tick") == "float tick(float u, float iabc)" && method("OtaLp", "set") == nullptr ? 1 : 0, 1);
+        P.eq("summary.named_by_file", signature("Bare", "tick") == "float tick(float u)" ? 1 : 0, 1);
+        const std::vector<std::string>& types = c.typeNames();
+        P.eq("summary.a_type", std::find(types.begin(), types.end(), "Screamer") != types.end() ? 1 : 0, 1);
+        // Its methods after `pedal.`, with the usage header's line.
+        const std::string program = "#include \"screamer.cir\"\n" + uses;
+        const lg::CompletionList m = c.complete(0, posOf(program, "pedal.\n", 6));
+        std::printf("summary: pedal. -> %s\n", labels(m).c_str());
+        bool tick = false;
+        for (const lg::Completion& k : m.items)
+            tick = tick || (k.label == "tick" && k.detail == "float tick(float u)" && k.doc.find("one sample") != std::string::npos);
+        P.eq("summary.members", m.member && tick && m.items.size() == 4 ? 1 : 0, 1);
+        const std::optional<lg::Location> d = c.definition(0, posOf(program, "Screamer pedal", 2));
+        P.eq("summary.definition", d && d->fileName == "screamer.cir" && d->at == posOf(libraryText("screamer.cir"), ".title Screamer", 7) ? 1 : 0, 1);
+        // A program that does not include it: the library's module, which adds its #include.
+        lg::Service lib;
+        lib.setLibrary(library);
+        const std::string none = std::string(pg::product::kIsInstrument ? "module Voice\n" : "module Effect\n") + "{\n    Scr\n};\n";
+        lib.setFiles({ { "program.fm", none } });
+        const lg::CompletionList offered = lib.complete(0, posOf(none, "    Scr\n", 7));
+        std::printf("summary: Scr -> %s\n", labels(offered).c_str());
+        bool adds = false;
+        for (const lg::Completion& k : offered.items)
+            adds = adds || (k.label == "Screamer" && k.kind == lg::Kind::module && k.include == "screamer.cir");
+        P.eq("summary.library_module_adds_include", adds ? 1 : 0, 1);
     }
 
     // ---- INDEX ------------------------------------------------------------------------------------------------------
@@ -574,7 +726,8 @@ PROBE(fminus, lang)
         for (const pg::Example& e : pg::kExamples)
             corpus.push_back({ std::string("example ") + e.title, e.source });
         for (const pg::LibraryFile& f : pg::kLibrary)
-            corpus.push_back({ f.name, f.source });
+            if (!pg::isCircuitFile(f.name))
+                corpus.push_back({ f.name, f.source });
         int house = 0, back = 0, again = 0, refused = 0;
         for (const auto& [name, text] : corpus)
         {
@@ -698,8 +851,8 @@ PROBE(fminus, lang)
         int alone = 0, aloneSame = 0;
         for (const pg::LibraryFile& f : pg::kLibrary)
         {
-            if (rendered.count(f.name) != 0)
-                continue;
+            if (rendered.count(f.name) != 0 || pg::isCircuitFile(f.name))
+                continue;                              // a netlist is never formatted
             ++alone;
             std::string e1, e2;
             const std::string before = shapeOf(f.source, e1);

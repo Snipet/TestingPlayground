@@ -1,0 +1,54 @@
+* screamer.cir: the Tube Screamer's clipping stage, tone control and level: an overdrive pedal's circuit as a module.
+*
+* The TS808's op amp with two 1N914s in its feedback loop and a 500k drive pot, its active treble control and its
+* level pot, from Yeh, Abel and Smith (DAFx-07, figs. 14 and 15): the research report's example 2. The 4.5 V reference
+* is AC ground (the op amps ideal, inside their rails); the input and output buffers are left out. A netlist: FMinus's
+* circuit compiler makes it a module (the playground's README, "Circuits").
+*
+*   Screamer pedal;                a field of your module (the program has #include "screamer.cir")
+*   pedal.init(rate);              in init: the host's rate, every state at rest, the pots at their defaults
+*   pedal.set(drive, tone, level); 0 to 1 each (drive and level audio-taper pots): on the 16-sample grid, before the
+*                                  first sample and every 16 samples after (a dial's glide reaches it there)
+*   y = pedal.tick(x);             one sample: x volts in (1.0 = 1 V), y volts out: a guitar's 0.45 V drives it into
+*                                  the diodes; the level pot takes the output back down
+*   pedal.clear();                 silence
+*
+* Configuration (fixed, so it never changes as it plays): 4x IIR halfbands, ADAA, omega3 + 1 Newton step, the tone
+* block a matched design at 1x: what fminus screamer.cir --self-test chose without these three lines: "the self-test
+* chose .oversample 4, .adaa on, .solver omega(1)" (T1 -81.1, T2 -66.6, T3 0.21 dB). About 3.6 host samples of delay.
+.title Screamer
+.input  u    in   scale=1
+.output vout out
+.pot    drive 0.5 audio
+.pot    tone  0.5 lin
+.pot    level 0.7 audio
+.oversample 4 iir blocks=auto
+.adaa on
+.solver omega(1)
+.target solver=-60dB alias=-60dB level=0.45V freq=3k
+* clipping stage (fig. 14)
+C1     in  p1  1u
+R1     p1  0   10k
+XU1    p1  n1  v2  opamp            ; ideal: V(n1) = V(p1), no input current
+R4     n1  z1  4.7k
+C3     z1  0   47n
+R6     n1  f1  51k
+Pdrive f1  v2  500k {drive} taper=audio
+C4     n1  v2  51p
+D1     n1  v2  1N914
+D2     v2  n1  1N914
+* tone control (fig. 15, eq. 24): an active treble control
+R7     v2  t1  1k
+C5     t1  0   0.22u
+R8     t1  0   10k
+XU2    t1  tn  v3  opamp
+R9     v3  tn  1k
+Ptone  tn  tw  t1  20k {tone}       ; R(tw-t1) = tone 20k on the + input side, as Yeh's R_l = T 20k
+R10    tw  tz  220
+C6     tz  0   0.22u
+* level
+C7     v3  o1  1u
+R11    o1  o2  1k
+Plevel o2  out 0   100k {level} taper=audio
+.model 1N914 D(IS=2.52n N=1.752)
+.end

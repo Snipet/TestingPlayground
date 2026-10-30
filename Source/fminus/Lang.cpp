@@ -739,8 +739,150 @@ namespace playground::lang
             int file_;
         };
 
+        // A netlist (a .cir file) as the module it generates (Lang.h): read line by line, never as FMinus. Its
+        // logical lines are its lines with their continuations (a leading +) joined, comments left out; the
+        // directives say the module's name and its methods' parameters.
+        void indexCircuit(FileData& f, int index)
+        {
+            f.lines = splitLines(f.text);
+            f.all = lexCir(f.text);
+            f.code.clear();
+            f.match.clear();
+            f.includes.clear();
+            f.decls.clear();
+            f.bodies.clear();
+            f.modules.clear();
+            // The header: the * lines it starts with, each without its * and the space after it.
+            f.header.clear();
+            for (const std::string_view l : f.lines)
+            {
+                const std::string t = trimmed(l);
+                if (t.empty() || t[0] != '*')
+                    break;
+                std::string body = t.substr(1);
+                if (!body.empty() && body.front() == ' ')
+                    body.erase(body.begin());
+                f.header += (f.header.empty() ? "" : "\n") + body;
+            }
+            std::vector<std::vector<Token>> logical;
+            for (std::size_t ln = 0; ln < f.lines.size(); ++ln)
+            {
+                std::vector<Token> toks, code;
+                lexCirLine(f.lines[ln], static_cast<int>(ln), toks);
+                for (const Token& t : toks)
+                    if (t.kind != Tok::comment)
+                        code.push_back(t);
+                if (code.empty())
+                    continue;
+                if (code[0].kind == Tok::punct && code[0].text == "+")
+                {
+                    // A continuation (lexCirLine's leading +): its tokens are the line's before it.
+                    if (!logical.empty())
+                        logical.back().insert(logical.back().end(), code.begin() + 1, code.end());
+                    continue;
+                }
+                logical.push_back(std::move(code));
+            }
+            std::string title;
+            Pos titleAt{};
+            struct Arg
+            {
+                std::string name;
+                Pos at{};
+            };
+            std::vector<Arg> pots, switches, laws;
+            std::optional<Arg> signal;
+            bool two = false;
+            for (const std::vector<Token>& l : logical)
+            {
+                if (l.empty() || l[0].kind != Tok::directive)
+                    continue;
+                const std::string d = lowered(l[0].text);
+                if (d == ".end")
+                    break;
+                if (l.size() < 2)
+                    continue;
+                const Arg arg{ std::string(l[1].text), startOf(l[1]) };
+                if (d == ".title" && title.empty())
+                {
+                    title = arg.name;
+                    titleAt = arg.at;
+                }
+                else if (d == ".pot")
+                    pots.push_back(arg);
+                else if (d == ".switch")
+                    switches.push_back(arg);
+                else if (d == ".input")
+                {
+                    if (l.size() >= 3 && l[2].text == "-")
+                        laws.push_back(arg);
+                    else if (!signal)
+                        signal = arg;
+                }
+                else if (d == ".channels")
+                    two = l[1].text == "2";
+            }
+            std::string name = title;
+            if (name.empty())
+            {
+                name = f.name;
+                if (const std::size_t dot = name.rfind('.'); dot != std::string::npos && dot > 0)
+                    name.resize(dot);
+                if (!name.empty() && name[0] >= 'a' && name[0] <= 'z')
+                    name[0] = static_cast<char>(name[0] - 'a' + 'A');
+            }
+            Symbol m;
+            m.kind = Kind::module;
+            m.name = name;
+            m.type = name;
+            m.signature = "module " + name;
+            m.doc = f.header;
+            m.file = index;
+            m.at = titleAt;
+            f.decls.push_back(m);
+            const auto method = [&](const std::string& type, const char* n, std::vector<std::string> params, Pos at) {
+                Symbol s;
+                s.kind = Kind::method;
+                s.name = n;
+                s.type = type;
+                s.container = name;
+                s.signature = type + " " + n + "(";
+                for (std::size_t k = 0; k < params.size(); ++k)
+                    s.signature += (k == 0 ? "" : ", ") + params[k];
+                s.signature += ")";
+                s.params = std::move(params);
+                s.file = index;
+                s.at = at;
+                s.body = true;
+                f.decls.push_back(std::move(s));
+            };
+            method("void", "init", { "float rate" }, titleAt);
+            if (!pots.empty() || !switches.empty())
+            {
+                std::vector<std::string> params;
+                for (const Arg& a : pots)
+                    params.push_back("float " + a.name);
+                for (const Arg& a : switches)
+                    params.push_back("int " + a.name);
+                method("void", "set", std::move(params), !pots.empty() ? pots.front().at : switches.front().at);
+            }
+            {
+                const std::string sample = two ? "float2" : "float";
+                std::vector<std::string> params{ sample + " " + (signal ? signal->name : std::string("u")) };
+                for (const Arg& a : laws)
+                    params.push_back("float " + a.name);
+                method(sample, "tick", std::move(params), signal ? signal->at : titleAt);
+            }
+            method("void", "clear", {}, titleAt);
+        }
+
         void indexFile(FileData& f, int index)
         {
+            if (isCircuitFile(f.name))
+            {
+                indexCircuit(f, index);
+                return;
+            }
             f.lines = splitLines(f.text);
             f.all = lex(f.text);
             f.code.clear();
@@ -1067,6 +1209,169 @@ namespace playground::lang
         int ln = 0;
         for (const std::string_view l : splitLines(text))
             lexLine(l, ln++, inComment, out);
+        return out;
+    }
+
+    // ---- a netlist's tokens -------------------------------------------------------------------------------------------
+    namespace
+    {
+        bool isLetter(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
+
+        // The length of the SPICE value at the start of `w` ([+-]digits[.digits][e[+-]digits][suffix][letters]: 2.2k,
+        // 10meg, 1u, 4.5V, -60dB; a sign only where `sign` allows one), or 0 when none starts there or what follows
+        // its letters makes it a name (1N914, 2N3904: digits again).
+        std::size_t spiceValue(std::string_view w, bool sign)
+        {
+            std::size_t k = 0;
+            const auto at = [&](std::size_t i) { return i < w.size() ? w[i] : '\0'; };
+            if (sign && (at(k) == '+' || at(k) == '-'))
+                ++k;
+            int digits = 0;
+            while (isDigit(at(k)))
+            {
+                ++k;
+                ++digits;
+            }
+            if (at(k) == '.')
+            {
+                ++k;
+                while (isDigit(at(k)))
+                {
+                    ++k;
+                    ++digits;
+                }
+            }
+            if (digits == 0)
+                return 0;
+            if ((at(k) == 'e' || at(k) == 'E')
+                && (isDigit(at(k + 1)) || ((at(k + 1) == '+' || at(k + 1) == '-') && isDigit(at(k + 2)))))
+            {
+                k += isDigit(at(k + 1)) ? 1 : 2;
+                while (isDigit(at(k)))
+                    ++k;
+            }
+            while (isLetter(at(k)))
+                ++k;
+            if (isDigit(at(k)) || at(k) == '_')
+                return 0;
+            return k;
+        }
+    }
+
+    void lexCirLine(std::string_view s, int ln, std::vector<Token>& out)
+    {
+        const int n = static_cast<int>(s.size());
+        const auto push = [&](Tok k, int from, int to) {
+            Token t;
+            t.kind = k;
+            t.line = ln;
+            t.col = from;
+            t.len = to - from;
+            t.text = s.substr(static_cast<std::size_t>(from), static_cast<std::size_t>(to - from));
+            out.push_back(t);
+        };
+        const auto at = [&](int k) { return k < n ? s[static_cast<std::size_t>(k)] : '\0'; };
+        const auto lastNonBlank = [&]() {
+            int last = n;
+            while (last > 0 && isSpaceChar(at(last - 1)))
+                --last;
+            return last;
+        };
+        int i = 0;
+        while (i < n && isSpaceChar(at(i)))
+            ++i;
+        if (i >= n)
+            return;
+        if (at(i) == '*')
+        {
+            push(Tok::comment, i, lastNonBlank());       // a comment line
+            return;
+        }
+        bool first = true;                                // the line's first word: an element's name, or a directive
+        if (at(i) == '+')
+        {
+            push(Tok::punct, i, i + 1);                   // a continuation of the line before
+            ++i;
+            first = false;
+        }
+        int braces = 0;                                   // inside { }: an expression of pots
+        constexpr std::string_view kDelimiters = ";{}()=,:";
+        while (i < n)
+        {
+            const char c = at(i);
+            if (isSpaceChar(c))
+            {
+                ++i;
+                continue;
+            }
+            if (c == ';')
+            {
+                push(Tok::comment, i, lastNonBlank());
+                return;
+            }
+            if (kDelimiters.find(c) != std::string_view::npos)
+            {
+                push(Tok::punct, i, i + 1);
+                braces += c == '{' ? 1 : c == '}' && braces > 0 ? -1 : 0;
+                ++i;
+                first = false;
+                continue;
+            }
+            if (braces > 0)
+            {
+                if (c == '+' || c == '-' || c == '*' || c == '/' || c == '^')
+                {
+                    push(Tok::op, i, i + 1);
+                    ++i;
+                    continue;
+                }
+                if (isDigit(c) || (c == '.' && isDigit(at(i + 1))))
+                {
+                    const std::size_t len = spiceValue(s.substr(static_cast<std::size_t>(i)), false);
+                    if (len > 0)
+                    {
+                        push(Tok::number, i, i + static_cast<int>(len));
+                        i += static_cast<int>(len);
+                        continue;
+                    }
+                }
+                if (isIdentStart(c))
+                {
+                    int j = i;
+                    while (j < n && isIdentChar(at(j)))
+                        ++j;
+                    push(Tok::identifier, i, j);
+                    i = j;
+                    continue;
+                }
+                push(Tok::unknown, i, i + 1);
+                ++i;
+                continue;
+            }
+            // A word, up to a blank or a delimiter: an element's name, a directive, a value or a name.
+            int j = i;
+            while (j < n && !isSpaceChar(at(j)) && kDelimiters.find(at(j)) == std::string_view::npos)
+                ++j;
+            const std::string_view w = s.substr(static_cast<std::size_t>(i), static_cast<std::size_t>(j - i));
+            Tok k = Tok::identifier;
+            if (first && w.size() > 1 && w[0] == '.' && isLetter(w[1]))
+                k = Tok::directive;
+            else if (first && isLetter(w[0]))
+                k = Tok::keyword;
+            else if (spiceValue(w, true) == w.size())
+                k = Tok::number;
+            push(k, i, j);
+            first = false;
+            i = j;
+        }
+    }
+
+    std::vector<Token> lexCir(std::string_view text)
+    {
+        std::vector<Token> out;
+        int ln = 0;
+        for (const std::string_view l : splitLines(text))
+            lexCirLine(l, ln++, out);
         return out;
     }
 

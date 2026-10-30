@@ -4,7 +4,8 @@
 // 48 kHz:
 //   PROMPT   the system prompt has the large-program section, the tools' workflow (measure_output, add_library_file),
 //            what the editor's RANDOM button makes and what PROJECTS keeps (versions, presets),
-//            THE INTERFACE with the .gui file's language, THE LIBRARY with every library file's header word for word, and
+//            THE INTERFACE with the .gui file's language, THE LIBRARY with every library file's header word for word (a
+//            netlist's * lines too), and
 //            the program built from the library and its panel.gui, word for word; the program's other files are the
 //            library's, as it has them
 //   EXAMPLE  that program (ChatAgent::promptExample, this plugin's kind) compiles with no message (its panel.gui
@@ -58,11 +59,13 @@ namespace
     bool has(const std::string& s, const std::string& part) { return s.find(part) != std::string::npos; }
 
     // A file's header: the comment lines it starts with.
+    // A library file's header: the comment lines it starts with (a netlist's are SPICE's, * lines).
     std::string header(const std::string& text)
     {
         std::string out;
+        const std::string comment = text.rfind('*', 0) == 0 ? "*" : "//";
         std::size_t at = 0;
-        while (at < text.size() && text.compare(at, 2, "//") == 0)
+        while (at < text.size() && text.compare(at, comment.size(), comment) == 0)
         {
             const std::size_t end = text.find('\n', at);
             out += text.substr(at, end == std::string::npos ? std::string::npos : end + 1 - at);

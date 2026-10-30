@@ -2,6 +2,8 @@
 // the Panel ticks, draws, hit-tests, focuses and feeds input to; and the small text helpers they share.
 #pragma once
 
+#include "dsp/Sources.h"
+
 #include <funkgui/a11y/A11yItem.h>
 #include <funkgui/canvas/Canvas.h>
 #include <funkgui/core/Geometry.h>
@@ -90,10 +92,43 @@ namespace playground::ui
         return r;
     }
 
-    // The rules a file's tab highlights with, by its name.
-    inline funkgui::text::KeywordRules rulesFor(std::string_view name)
+    // What a file of the program is, by its name: FMinus (the program and what it includes), a .gui file (the
+    // interface, fminus/GuiSpec.h) or a circuit netlist (.cir, SPICE's, fminus/Circuits.h). A tab's highlighter and what
+    // the code editor offers in it follow it (CodeAssist.h): renamed to another kind, a tab is made again.
+    enum class FileKind : uint8_t
     {
-        return name.size() > 4 && name.substr(name.size() - 4) == ".gui" ? guiRules() : fminusRules();
+        FMinus,
+        Gui,
+        Circuit,
+    };
+
+    inline FileKind fileKindOf(std::string_view name)
+    {
+        if (name.size() > 4 && name.substr(name.size() - 4) == ".gui")
+            return FileKind::Gui;
+        return isCircuitFile(name) ? FileKind::Circuit : FileKind::FMinus;
+    }
+
+    // A netlist's words, for a highlighter of keyword rules (a tab's is CodeAssist's CircuitHighlighter, over
+    // lang::lexCirLine): its devices and the directives' words as types, ; comments.
+    inline funkgui::text::KeywordRules circuitRules()
+    {
+        funkgui::text::KeywordRules r;
+        r.keywords = { ".adaa", ".channels", ".end", ".input", ".method", ".model", ".op", ".output", ".oversample",
+                       ".pot", ".prewarp", ".solver", ".switch", ".target", ".title" };
+        r.types = { "OTA", "opamp" };
+        r.lineComment = ";";
+        r.blockOpen = "";
+        r.blockClose = "";
+        r.quotes = "";
+        r.preprocessor = '\0';
+        return r;
+    }
+
+    // The keyword rules of a file's kind.
+    inline funkgui::text::KeywordRules rulesFor(FileKind kind)
+    {
+        return kind == FileKind::Gui ? guiRules() : kind == FileKind::Circuit ? circuitRules() : fminusRules();
     }
 
     inline std::string upper(std::string_view s)

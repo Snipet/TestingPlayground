@@ -812,7 +812,7 @@ namespace playground::ui
                     continue;
                 }
                 Tab t = std::move(old[static_cast<std::size_t>(match[i])]);
-                if (rulesFor(t.name).types != rulesFor(f.name).types)   // renamed to or from a .gui file
+                if (fileKindOf(t.name) != fileKindOf(f.name))   // renamed to another kind (a .gui file, a netlist)
                     assist_.configure(*t.editor, f.name);
                 t.name = f.name;
                 replaceText(*t.editor, f.text);
@@ -1046,7 +1046,7 @@ namespace playground::ui
                     return false;
                 }
                 Tab& tab = tabs_[static_cast<std::size_t>(renaming_)];
-                if (rulesFor(tab.name).types != rulesFor(typed).types)
+                if (fileKindOf(tab.name) != fileKindOf(typed))
                     assist_.configure(*tab.editor, typed);
                 tab.name = typed;
                 structure_ += kStructureStep;
@@ -1475,9 +1475,11 @@ namespace playground::ui
             o.softTabs = true;
             o.tabWidth = 4;
             o.a11yTitle = "File";
-            o.placeholder = tabs_.empty()                          ? "An FMinus program: EXAMPLES has some to start from"
-                          : n.size() > 4 && n.substr(n.size() - 4) == ".gui" ? "The program's interface: rows, sections, knobs, displays"
-                                                                             : "A file the program can #include by its name";
+            const FileKind kind = fileKindOf(n);
+            o.placeholder = tabs_.empty()                ? "An FMinus program: EXAMPLES has some to start from"
+                          : kind == FileKind::Gui     ? "The program's interface: rows, sections, knobs, displays"
+                          : kind == FileKind::Circuit ? "A circuit netlist (SPICE): the program #includes it as a module"
+                                                      : "A file the program can #include by its name";
             t.editor->setOptions(o);
             t.editor->setBounds(assist_.editorRect());
             assist_.configure(*t.editor, n);
@@ -2637,8 +2639,11 @@ namespace playground::ui
             {
                 ExplorerItem::Row r;
                 r.label = files().name(i);
-                const bool gui = r.label.size() > 4 && r.label.substr(r.label.size() - 4) == ".gui";
-                r.icon = i == 0 ? chat::Icon::code : gui ? chat::Icon::dial : chat::Icon::file;
+                const FileKind kind = fileKindOf(r.label);
+                r.icon = i == 0                     ? chat::Icon::code
+                       : kind == FileKind::Gui     ? chat::Icon::dial
+                       : kind == FileKind::Circuit ? chat::Icon::chip
+                                                   : chat::Icon::file;
                 r.active = i == files().active() && !files().irShown();
                 r.error = erred(r.label);
                 r.closable = i > 0;
@@ -2736,7 +2741,7 @@ namespace playground::ui
                 }
                 ExplorerItem::Row r;
                 r.label = f.name;
-                r.icon = chat::Icon::blocks;
+                r.icon = isCircuitFile(f.name) ? chat::Icon::chip : chat::Icon::blocks;   // a netlist: a circuit's
                 r.marked = files().find(f.name) >= 0;
                 r.index = static_cast<int>(i);
                 g.rows.push_back(std::move(r));

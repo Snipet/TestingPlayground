@@ -3,7 +3,10 @@
 // fminus.library: the editor's LIBRARY (Source/fminus/library, compiled in as Library.h), each file #included by a
 // harness of its own and run by FMinus's JIT at 48 kHz, its output measured here:
 //   FILES     every file's first line names it and says what it is, a usage header follows, and its name is a tab's;
-//             each compiles alone with no message, and all of them together (no names clash)
+//             each compiles alone with no message, and all of them together (no names clash); a circuit netlist (.cir,
+//             fminus/Circuits.h) the same in its own comments ('* name: ...', a '*' line, then its usage), #included
+//             as the module it generates: each generates with no message and a configuration of its own (no
+//             self-test waits on it), and compiles alone and with the others
 //   SVF       low-pass: -3 dB at the cutoff with resonance 0.3 (Butterworth), below -38 dB a decade above; high-pass
 //             the mirror; band-pass 0 dB at the cutoff; notch below -60 dB there; resonance 1 peaks 20 to 30 dB
 //   G         svfG, ladderG and onePoleG are tan(pi fc / rate), clamped as set clamps the cutoff; each filter swept from
@@ -48,7 +51,9 @@
 
 #include "dsp/Measure.h"
 #include "dsp/Sources.h"
+#include "fminus/Circuits.h"
 
+#include "fminus/Circuit.h"
 #include "fminus/FMinus.h"
 
 #include <algorithm>
@@ -67,18 +72,32 @@ namespace
     constexpr double kFs = 48000.0;
     constexpr float kRate = 48000.0f;
 
-    // A harness that #includes library files, compiled with the library behind its #includes.
+    // A harness that #includes library files, compiled with the library behind its #includes (a netlist: the module
+    // generated from it, as the plugin reads it, its messages first).
     std::unique_ptr<fminus::Program> compileHarness(const std::string& source, std::string& errors)
     {
+        pg::Sources library;
+        for (const pg::LibraryFile& f : pg::kLibrary)
+            library.push_back({ f.name, f.source });
+        pg::circuits::Generator circuits(library);
         fminus::Program::Options o;
         o.fileName = "harness.fm";
         o.denormals = fminus::Program::Denormals::Flush;
-        o.include = [](std::string_view name, std::string_view) -> std::optional<fminus::Program::IncludedFile> {
-            if (const pg::LibraryFile* f = pg::findLibraryFile(name))
-                return fminus::Program::IncludedFile{ f->name, f->source };
-            return std::nullopt;
+        o.include = [&circuits](std::string_view name, std::string_view) -> std::optional<fminus::Program::IncludedFile> {
+            const pg::LibraryFile* f = pg::findLibraryFile(name);
+            if (f == nullptr)
+                return std::nullopt;
+            if (pg::isCircuitFile(f->name))
+            {
+                const std::string* text = circuits.module(f->name);
+                return text != nullptr ? std::optional(fminus::Program::IncludedFile{ std::string(f->name) + ".fm", *text })
+                                       : std::nullopt;
+            }
+            return fminus::Program::IncludedFile{ f->name, f->source };
         };
-        return fminus::Program::compile(source, errors, o);
+        std::unique_ptr<fminus::Program> p = fminus::Program::compile(source, errors, o);
+        errors = circuits.errors() + circuits.warnings() + circuits.notes() + circuits.recite(errors);
+        return circuits.errors().empty() ? std::move(p) : nullptr;
     }
 
     template <typename Signature>
@@ -531,13 +550,24 @@ PROBE(fminus, library)
 
     // ---- FILES -----------------------------------------------------------------------------------------------------
     {
-        int named = 0, headed = 0, alone = 0;
+        int named = 0, headed = 0, alone = 0, netlists = 0, generated = 0;
         std::string all;
         for (const pg::LibraryFile& f : pg::kLibrary)
         {
             const std::string text = f.source;
-            named += text.rfind(std::string("// ") + f.name + ": ", 0) == 0 && pg::validFileName(f.name) ? 1 : 0;
-            headed += text.find("\n//\n") != std::string::npos ? 1 : 0;
+            const bool netlist = pg::isCircuitFile(f.name);
+            const std::string comment = netlist ? "*" : "//";   // a netlist's comments are SPICE's
+            named += text.rfind(comment + " " + f.name + ": ", 0) == 0 && pg::validFileName(f.name) ? 1 : 0;
+            headed += text.find("\n" + comment + "\n") != std::string::npos ? 1 : 0;
+            if (netlist)
+            {
+                ++netlists;
+                const fminus::circuit::Result r = fminus::circuit::generate(text, f.name);
+                const bool clean = r.errors.empty() && r.warnings.empty() && !r.provisional && !r.source.empty();
+                generated += clean ? 1 : 0;
+                std::printf("%s: module %s; %s%s%s", f.name, r.module.c_str(), r.configuration.c_str(),
+                            clean ? "\n" : "\n", (r.errors + r.warnings).c_str());
+            }
             std::string errors;
             const auto p = compileHarness(std::string("#include \"") + f.name + "\"\nfloat one() { return 1; }\n", errors);
             alone += p != nullptr && errors.empty() ? 1 : 0;
@@ -551,6 +581,8 @@ PROBE(fminus, library)
         P.eq("files.first_line_names_it", named, count);
         P.eq("files.usage_header", headed, count);
         P.eq("files.compile_alone", alone, count);
+        P.ge("files.netlists", static_cast<double>(netlists), 3.0);
+        P.eq("files.netlists_generate", generated, static_cast<int64_t>(netlists));
         std::string errors;
         const auto together = compileHarness(all + "float one() { return 1; }\n", errors);
         if (!errors.empty())

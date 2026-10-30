@@ -339,17 +339,18 @@ scope and spectrum take width= and height=. Sixteen displays at most (each live=
         const char* const kLibraryIntro = R"(
 THE LIBRARY
 
-The plugin carries ready-made building blocks, tested and tuned: band-limited, smooth under modulation, cheap. add_library_file adds one to the editor as a tab of its own, under its name below, and returns its whole text; #include it in the program and use what it declares. Prefer them to writing your own, and combine them freely: their names do not clash. A library file in the editor belongs to the program like any other file: edit it when it lacks something, or write a block of your own. What each one is and how to use it, as its header says:
+The plugin carries ready-made building blocks, tested and tuned: band-limited, smooth under modulation, cheap. add_library_file adds one to the editor as a tab of its own, under its name below, and returns its whole text; #include it in the program and use what it declares. Prefer them to writing your own, and combine them freely: their names do not clash. A library file in the editor belongs to the program like any other file: edit it when it lacks something, or write a block of your own. The .cir files are circuit netlists, analog circuits that the plugin turns into modules. What each one is and how to use it, as its header says:
 
 )";
 
-        // A library file's header: the comment lines it starts with.
+        // A library file's header: the comment lines it starts with (// lines; a netlist's, SPICE's * lines).
         std::string headerOf(const char* source)
         {
             std::string out;
             const std::string text = source;
+            const std::string comment = text.rfind('*', 0) == 0 ? "*" : "//";
             std::size_t at = 0;
-            while (at < text.size() && text.compare(at, 2, "//") == 0)
+            while (at < text.size() && text.compare(at, comment.size(), comment) == 0)
             {
                 const std::size_t end = text.find('\n', at);
                 out += text.substr(at, end == std::string::npos ? std::string::npos : end + 1 - at);
