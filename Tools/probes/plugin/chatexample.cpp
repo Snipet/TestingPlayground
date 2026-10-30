@@ -5,7 +5,8 @@
 //   PROMPT   the system prompt has the large-program section, the tools' workflow (measure_output, add_library_file),
 //            what the editor's RANDOM button makes and what PROJECTS keeps (versions, presets),
 //            THE INTERFACE with the .gui file's language, THE LIBRARY with every library file's header word for word (a
-//            netlist's * lines too), the circuit example naming the library files it comes with, and
+//            netlist's * lines too), CIRCUITS (the .cir netlists, last) and the circuit example naming the library files
+//            it comes with, and
 //            the program built from the library and its panel.gui, word for word; the program's other files are the
 //            library's, as it has them
 //   EXAMPLE  that program (ChatAgent::promptExample, this plugin's kind) compiles with no message (its panel.gui
@@ -310,7 +311,11 @@ PROBE(plugin, chatexample)
         headers += has(prompt, std::string("<library_file name=\"") + f.name + "\" category=\"" + f.category + "\">\n"
                                    + header(f.source) + "</library_file>") ? 1 : 0;
     P.eq("prompt.library_headers", headers, static_cast<int64_t>(std::size(pg::kLibrary)));
-    // The circuit example names the library files it comes with.
+    // CIRCUITS, last before the tools' notes, and the circuit example naming the library files it comes with.
+    P.eq("prompt.circuits", has(prompt, "\nCIRCUITS: .cir NETLISTS\n") && has(prompt, "#include \"pedal.cir\"")
+                                && has(prompt, "pedal.set(drive, tone);") && has(prompt, "write 1meg for a megohm")
+                                && has(prompt, "--self-test") && has(prompt, "provisional")
+                                && prompt.rfind("\nCIRCUITS: .cir NETLISTS\n") > prompt.rfind("\nRANDOM AND PROJECTS\n") ? 1 : 0, 1);
     P.eq("prompt.example_uses", has(prompt, pg::product::kIsInstrument ? "<example title=\"OTA filter\" uses=\"osc.fm adsr.fm otalp.cir\">"
                                                                        : "<example title=\"Tube screamer\" uses=\"screamer.cir\">")
                                     ? 1 : 0, 1);

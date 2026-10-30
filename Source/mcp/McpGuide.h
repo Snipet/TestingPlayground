@@ -18,6 +18,8 @@
 //                         start) says when to use each
 //   examples              THIS PLUGIN'S EXAMPLES
 //   projects              RANDOM AND PROJECTS
+//   circuits              CIRCUITS: .cir NETLISTS (analog circuits as modules); a guide from before it (an older
+//                         plugin's guide.md) cuts as it did, without the part
 //   all                   all of it
 // The tools' notes are the guide's last section: one <tool name=".." part="..">..</tool> a tool, each in the part it
 // names. std only: the server includes it as well as the plugin.
@@ -39,10 +41,12 @@ namespace playground::mcp::guide
     inline constexpr const char* kBuilt = "A PROGRAM BUILT FROM THE LIBRARY";
     inline constexpr const char* kExamples = "THIS PLUGIN'S EXAMPLES";
     inline constexpr const char* kProjects = "RANDOM AND PROJECTS";
+    inline constexpr const char* kCircuits = "CIRCUITS: .cir NETLISTS";
     inline constexpr const char* kNotes = "THE TOOLS: WHAT THEIR SHORT DESCRIPTIONS LEAVE OUT";
 
     // The parts a caller may ask for (library:<file> and library:<file>:code aside).
-    inline constexpr const char* kParts[] = { "start", "large-program", "interface", "library", "debugging", "examples", "projects", "all" };
+    inline constexpr const char* kParts[] = { "start", "large-program", "interface", "library", "debugging", "examples", "projects",
+                                              "circuits", "all" };
     inline constexpr const char* kDebugging = "WHAT PLAYS NOW AND WHAT WENT WRONG";   // the debugging part's title
 
     namespace detail
@@ -84,8 +88,9 @@ namespace playground::mcp::guide
 
         struct Cuts
         {
-            std::size_t threads, large, interface, library, built, examples, projects, notes;
+            std::size_t threads, large, interface, library, built, examples, projects, circuits, notes;
             bool ok = false;
+            bool hasCircuits = false;                    // a guide from before the circuits has none
         };
 
         inline Cuts cuts(const std::string& g)
@@ -98,13 +103,18 @@ namespace playground::mcp::guide
             c.built = heading(g, kBuilt, c.library == std::string::npos ? 0 : c.library);
             c.examples = heading(g, kExamples, c.built == std::string::npos ? 0 : c.built);
             c.projects = heading(g, kProjects, c.examples == std::string::npos ? 0 : c.examples);
-            c.notes = heading(g, kNotes, c.projects == std::string::npos ? 0 : c.projects);
+            c.circuits = heading(g, kCircuits, c.projects == std::string::npos ? 0 : c.projects);
+            c.notes = heading(g, kNotes, c.circuits != std::string::npos ? c.circuits
+                                       : c.projects == std::string::npos ? 0 : c.projects);
             if (c.notes == std::string::npos)
                 c.notes = g.size();                      // a guide from before the notes (an older plugin's guide.md)
+            c.hasCircuits = c.circuits != std::string::npos && c.circuits < c.notes;
+            if (!c.hasCircuits)
+                c.circuits = c.notes;                    // a guide from before the circuits: projects ends where it did
             c.ok = c.threads != std::string::npos && c.large != std::string::npos && c.interface != std::string::npos && c.library != std::string::npos
                 && c.built != std::string::npos && c.examples != std::string::npos && c.projects != std::string::npos
                 && c.threads < c.large && c.large < c.interface && c.interface < c.library && c.library < c.built && c.built < c.examples
-                && c.examples < c.projects && c.projects <= c.notes;
+                && c.examples < c.projects && c.projects <= c.circuits && c.circuits <= c.notes;
             return c;
         }
 
@@ -192,6 +202,7 @@ namespace playground::mcp::guide
                    "first use one of them: when the user says something sounds wrong, or a measurement shows a problem.\n"
                    "- \"examples\": this plugin's examples (its EXAMPLES menu), whole.\n"
                    "- \"projects\": RANDOM, and the user's projects and presets.\n"
+                   "- \"circuits\": .cir netlists, analog circuits as modules. Read it before you write or #include one.\n"
                    "- \"all\": all of it at once (about " + std::to_string((g.size() / 4 + 500) / 1000) + "K tokens).\n";
         }
         if (n == "large-program")
@@ -221,7 +232,14 @@ namespace playground::mcp::guide
         if (n == "examples")
             return g.substr(c.examples, c.projects - c.examples);
         if (n == "projects")
-            return trimmed(g.substr(c.projects, c.notes - c.projects)) + "\n";
+            return trimmed(g.substr(c.projects, c.circuits - c.projects)) + "\n";
+        if (n == "circuits")
+        {
+            if (c.hasCircuits)
+                return trimmed(g.substr(c.circuits, c.notes - c.circuits)) + "\n" + notes(g, c.notes, "circuits");
+            found = false;
+            return "This guide has no part \"circuits\" (it is an older plugin's): read part \"all\".";
+        }
         if (n.rfind("library:", 0) == 0)
         {
             std::string file = n.substr(8);
