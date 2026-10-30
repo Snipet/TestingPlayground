@@ -1027,7 +1027,8 @@ the processor does (the synth's notes at absolute samples).
 `fminus/FMinus.h` (`fminus::Program`): `Source/fminus/Patch.cpp` compiles a program twice (once to read its module
 and parameters, once with each float parameter bound as a stream and the plugin's calls appended), at `-O2`, flushing
 subnormals, and in the synth makes 32 instances of Voice. Its circuit compiler comes in through `fminus/Circuit.h`
-(`fminus::circuit`: generate, the self-test's key and answers), in `Source/fminus/Circuits.cpp` alone.
+(`fminus::circuit`: generate, the self-test's key and answers), in `Source/fminus/Circuits.cpp` and
+`Source/dsp/SelfTester.cpp` alone.
 
 - **Which FMinus**: the commit `FP_FMINUS_SHA` in `cmake/Deps.cmake`, from `~/audio/libraries/FMinus`. To try a change
   to FMinus before committing it, configure with `-DFETCHCONTENT_SOURCE_DIR_FMINUS=$HOME/audio/libraries/FMinus`:
