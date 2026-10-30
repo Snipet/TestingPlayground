@@ -290,6 +290,15 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `Lang` reads a netlist line by line into the module it generates (its name, header, init, set, tick and clear, never
   step or the fields, which its configuration decides), which the FMinus tabs complete, hover and go to. Never lex a
   netlist with FMinus's lexer, nor format one.
+- **A netlist's `*@` lines are its schematic's drawing, invisible to the program** (`fminus/CirDoc.h`): FMinus, its
+  self-test's key, ngspice and LTspice read them as comments, and every comparison of the draft with what plays goes
+  through `cir::sameProgram` (a `.cir` compared without its `*@` lines): the edited light (and the IR view's), CodeAssist's
+  RUN-kept messages and its check request (a change to `*@` lines alone asks for none), plugin_state's "What plays" and
+  get_status, listen's; messages land on a netlist's tab through `cir::lineMap` when only its `*@` lines moved;
+  plugin_state sends a `.cir` without them (a line says how many) and hashes it so, a change to them alone sends nothing;
+  the journal says "redrew". A new site that compares the draft with what plays uses `sameProgram`. The project's unsaved
+  mark still counts them (they are part of the file), and the header readers (Lang's module doc, ChatPrompt's `headerOf`)
+  skip them.
 - **`fminus/Lang.h` is the language, as an editor sees it**: plain C++ over the files' text, no FMinus call. Its
   tables (keywords, type words, the builtins with their signatures, the attributes, `#pragma panel`'s words) follow
   FMinus at its pin and PanelSpec: a pin move that adds a keyword or a builtin adds it there, with `fminus.lang` rows.

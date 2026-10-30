@@ -14,7 +14,8 @@
 //             float level), float tick(float u) and void clear(); otalp.cir's tick takes its law input, float tick(float
 //             u, float iabc), and it has no set (no pot); a netlist without .title is named by its file; in a program
 //             that does not include it, completion offers Screamer, adding its #include "screamer.cir"; one that does
-//             gets its methods after `pedal.`, with the usage header's line for each, and goes to its .input line
+//             gets its methods after `pedal.`, with the usage header's line for each, and goes to its .input line; a
+//             netlist whose first lines are the schematic's *@ lines still has its * header as its documentation
 //   INDEX     a program of three files (program.fm, tools.fm it includes, svf.fm the library's) and host.fm: the
 //             modules (Effect, Host, Svf), a param with its range in its signature, fields with their types, methods
 //             with their parameters, a function of another file, locals and arguments with the scope they are seen in
@@ -465,7 +466,10 @@ PROBE(fminus, lang)
         lg::Service c;
         c.setLibrary(library);
         c.setFiles({ { "program.fm", "#include \"screamer.cir\"\n" + uses }, { "screamer.cir", libraryText("screamer.cir") },
-                     { "otalp.cir", libraryText("otalp.cir") }, { "bare.cir", ".input u in\n.output y y\nR1 in y 1k\nC1 y 0 1n\n" } });
+                     { "otalp.cir", libraryText("otalp.cir") }, { "bare.cir", ".input u in\n.output y y\nR1 in y 1k\nC1 y 0 1n\n" },
+                     { "drawn.cir", "*@ schematic 1 (the playground's drawing; SPICE reads *@ lines as comments)\n*@ part R1 0,0\n"
+                                    "* drawn.cir: a netlist whose drawing comes first\n*@ net y 2,0 4,0\n* its usage\n"
+                                    ".input u in\n.output y y\nR1 in y 1k\nC1 y 0 1n\n" } });
         const auto method = [&](std::string_view module, std::string_view name) -> const lg::Symbol* {
             for (const lg::Symbol& x : c.symbols())
                 if (x.kind == lg::Kind::method && x.container == module && x.name == name)
@@ -491,6 +495,12 @@ PROBE(fminus, lang)
         P.eq("summary.no_step", method("Screamer", "step") == nullptr ? 1 : 0, 1);
         P.eq("summary.law_input", signature("OtaLp", "tick") == "float tick(float u, float iabc)" && method("OtaLp", "set") == nullptr ? 1 : 0, 1);
         P.eq("summary.named_by_file", signature("Bare", "tick") == "float tick(float u)" ? 1 : 0, 1);
+        // The schematic's *@ lines (fminus/CirDoc.h) are no part of the header, even before it.
+        const lg::Symbol* drawn = nullptr;
+        for (const lg::Symbol& x : c.symbols())
+            if (x.kind == lg::Kind::module && x.name == "Drawn")
+                drawn = &x;
+        P.eq("summary.layout_lines_no_header", drawn != nullptr && drawn->doc == "drawn.cir: a netlist whose drawing comes first\nits usage" ? 1 : 0, 1);
         const std::vector<std::string>& types = c.typeNames();
         P.eq("summary.a_type", std::find(types.begin(), types.end(), "Screamer") != types.end() ? 1 : 0, 1);
         // Its methods after `pedal.`, with the usage header's line.

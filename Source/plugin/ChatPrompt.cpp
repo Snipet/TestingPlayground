@@ -383,7 +383,9 @@ Not yet (FMinus's Phase 2): a second nonlinear part in a stage (one diode pair o
             while (at < text.size() && text.compare(at, comment.size(), comment) == 0)
             {
                 const std::size_t end = text.find('\n', at);
-                out += text.substr(at, end == std::string::npos ? std::string::npos : end + 1 - at);
+                // a netlist's *@ lines are its schematic's drawing (fminus/CirDoc.h), no part of its header
+                if (comment != "*" || text.compare(at, 2, "*@") != 0)
+                    out += text.substr(at, end == std::string::npos ? std::string::npos : end + 1 - at);
                 if (end == std::string::npos)
                     break;
                 at = end + 1;

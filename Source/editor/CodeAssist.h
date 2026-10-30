@@ -180,13 +180,17 @@ namespace playground::ui
         bool specLine(char* out, std::size_t n, funkgui::Point pointer) const;   // the footer's, over the status line
 
         // ---- problems ---------------------------------------------------------------------------------------------
-        // Messages for `compiled`: squiggles and marks in each tab whose text was compiled. RUN's are kept: a check of
-        // the same files shows them again instead of its own, which are fewer (no notes, nothing only RUN's second
-        // pass finds), but for a netlist RUN said nothing of (one no #include reaches, which RUN does not generate):
-        // the last check's on it stay, after RUN too, while its text is the one that check saw.
+        // Messages for `compiled`: squiggles and marks in each tab whose text was compiled, or, a netlist, whose text is
+        // the compiled one but for its drawing's *@ lines (each message on the line it was on: cir::lineMap). RUN's are
+        // kept: a check of the same files (cir::sameProgram: a netlist's *@ lines aside) shows them again instead of
+        // its own, which are fewer (no notes, nothing only RUN's second pass finds), but for a netlist RUN said
+        // nothing of (one no #include reaches, which RUN does not generate): the last check's on it stay, after RUN
+        // too, while its netlist is the one that check saw.
         void setRunDiagnostics(const std::vector<Diagnostic>& messages, const Sources& compiled);
         void setCheckDiagnostics(const std::vector<Diagnostic>& messages, const Sources& compiled);
-        // A check is due: the files changed and have rested (true once for each such rest).
+        // A check is due: the files changed and have rested (true once for each such rest), and they are not the
+        // program the last check asked for or RUN compiled (cir::sameProgram: a change to a netlist's *@ lines alone,
+        // its drawing, asks for none).
         bool takeCheckRequest();
         void cancelCheck();                              // RUN: the files as they are need no check
         // A check sent; `revisionBefore` is the check status's revision as it was before (CheckStatus::revision):
@@ -324,6 +328,7 @@ namespace playground::ui
         Sources runSources_;
         std::vector<Diagnostic> checkMessages_;          // the last check's, and the files it checked
         Sources checkSources_;
+        Sources asked_;                                  // the files the last check asked for, or RUN compiled
         bool checking_ = false;
         uint64_t checkSeen_ = 0;
         uint64_t editedRevision_ = 0;                    // the files' revision at the last edit seen

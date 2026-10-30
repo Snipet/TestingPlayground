@@ -5,6 +5,8 @@
 #include "editor/Items.h"
 #include "editor/Theme.h"
 
+#include "fminus/CirDoc.h"
+
 #include <funkgui/canvas/Tags.h>
 #include <funkgui/core/TypeScale.h>
 #include <funkgui/panel/HostServices.h>
@@ -173,10 +175,33 @@ namespace playground::ui
                     continue;
                 const SourceFile* now = findFile(ran, d.file);
                 const SourceFile* then = findFile(checked, d.file);
-                if (now != nullptr && then != nullptr && now->text == then->text)
+                if (now == nullptr || then == nullptr)
+                    continue;
+                if (now->text == then->text)
                     run.push_back(d);
+                else if (const std::vector<int> map = cir::lineMap(then->text, now->text); !map.empty())
+                {
+                    // the same netlist with its drawing's *@ lines elsewhere: the message on the line it was on
+                    Diagnostic moved = d;
+                    if (d.line >= 1 && d.line <= static_cast<int>(map.size()))
+                    {
+                        if (map[static_cast<std::size_t>(d.line - 1)] < 0)
+                            continue;
+                        moved.line = map[static_cast<std::size_t>(d.line - 1)] + 1;
+                    }
+                    run.push_back(moved);
+                }
             }
             return run;
+        }
+
+        // The tabs' files as the check would send them.
+        Sources filesOf(const CodeAssist::Tabs& tabs)
+        {
+            Sources out;
+            for (int i = 0; i < tabs.count(); ++i)
+                out.push_back({ tabs.name(i), tabs.editor(i).text() });
+            return out;
         }
 
         // A key that would change the text: typing (Alt's symbols, Shift-Alt-F's Format too), Return, Space, Backspace,
@@ -1256,6 +1281,11 @@ namespace playground::ui
         if (!checkDue_ || sinceEdit_ < kCheckDelay)
             return false;
         checkDue_ = false;
+        // A change to a netlist's *@ lines alone (its drawing) is no change to the program: nothing to check.
+        Sources now = filesOf(tabs_);
+        if (cir::sameProgram(now, asked_))
+            return false;
+        asked_ = std::move(now);
         return true;
     }
 
@@ -1263,6 +1293,7 @@ namespace playground::ui
     {
         editedRevision_ = filesRevision();
         checkDue_ = false;
+        asked_ = filesOf(tabs_);                         // RUN compiles them: they need no check
     }
 
     void CodeAssist::updateOccurrences()
@@ -1294,11 +1325,12 @@ namespace playground::ui
     {
         checkMessages_ = messages;
         checkSources_ = compiled;
-        // The files RUN compiled (the editor opened on them, an edit undone, a check that waited behind RUN): RUN's
-        // messages, which hold the check's and what only RUN finds (its second pass, the notes), but for a netlist no
-        // #include reaches, which RUN does not generate: the check's on it.
-        if (compiled == runSources_)
-            setDiagnostics(withNetlists(runMessages_, runSources_, messages, compiled), compiled);
+        // The files RUN compiled (the editor opened on them, an edit undone, a check that waited behind RUN; a
+        // netlist's *@ lines aside, cir::sameProgram): RUN's messages, which hold the check's and what only RUN finds
+        // (its second pass, the notes), but for a netlist no #include reaches, which RUN does not generate: the check's
+        // on it. They land on RUN's lines (a netlist's moved through cir::lineMap).
+        if (cir::sameProgram(compiled, runSources_))
+            setDiagnostics(withNetlists(runMessages_, runSources_, messages, compiled), runSources_);
         else
             setDiagnostics(messages, compiled);
     }
@@ -1310,18 +1342,38 @@ namespace playground::ui
             const std::string name = tabs_.name(i);
             funkgui::TextEditor& E = tabs_.editor(i);
             const SourceFile* f = findFile(compiled, name);
-            if (f == nullptr || funkgui::TextEditor::sanitise(f->text) != E.text())
-                continue;                                // not what was compiled: the next check's
+            if (f == nullptr)
+                continue;
+            // The text compiled, or (a netlist) the same netlist with its drawing's *@ lines elsewhere: each message
+            // on the line it was on (cir::lineMap; the columns are the line's). Else the next check's.
+            const std::string was = funkgui::TextEditor::sanitise(f->text);
+            const std::string now = E.text();
+            std::vector<int> moved;
+            if (was != now)
+            {
+                if (fileKindOf(name) == FileKind::Circuit)
+                    moved = cir::lineMap(was, now);
+                if (moved.empty())
+                    continue;
+            }
             DiagSet set;
             set.revision = E.revision();
             std::vector<funkgui::Decoration> decos;
             std::vector<funkgui::LineMark> marks;
             for (const Diagnostic& d : messages)
             {
-                if (d.file != name || d.line > E.lineCount())
+                if (d.file != name)
                     continue;
                 // A message about the file without a place (a method the main module lacks): its first line.
-                const int ln = std::max(1, d.line) - 1;
+                int ln = std::max(1, d.line) - 1;
+                if (!moved.empty())
+                {
+                    if (ln >= static_cast<int>(moved.size()) || moved[static_cast<std::size_t>(ln)] < 0)
+                        continue;
+                    ln = moved[static_cast<std::size_t>(ln)];
+                }
+                if (ln >= E.lineCount())
+                    continue;
                 const std::string& text = E.line(ln);
                 int col = std::clamp(d.column - 1, 0, static_cast<int>(text.size()));
                 // The token there: a word, a number, else one character (nothing at a line's end, or without a place).

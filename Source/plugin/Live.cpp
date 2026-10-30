@@ -17,6 +17,7 @@
 
 #include "dsp/Measure.h"
 #include "dsp/TextDiff.h"
+#include "fminus/CirDoc.h"
 
 #include "Product.h"
 
@@ -662,7 +663,7 @@ namespace playground
         const Meters& m1 = last.meters;
         const double rate = static_cast<double>(last.rate > 0.0f ? last.rate : r.rate);
         const uint32_t noteOns = m1.noteOns - m0.noteOns, steals = m1.steals - m0.steals, dropped = m1.dropped - m0.dropped;
-        const bool playsDraft = host_.chatRunning() == host_.chatDraft().files;
+        const bool playsDraft = cir::sameProgram(host_.chatRunning(), host_.chatDraft().files);   // *@ lines aside
 
         Bands outB = bandsOf(outS, rate, false), inB = bandsOf(inS, rate, false);
         double outCentroid = 0.0, inCentroid = 0.0;

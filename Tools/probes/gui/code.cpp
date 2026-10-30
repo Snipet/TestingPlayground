@@ -43,10 +43,15 @@
 //             generates the netlist and squiggles that line, the program that plays playing on; its #include taken
 //             out, RUN compiles and plays, and the tab keeps the check's squiggle after RUN (RUN generates only the
 //             netlists an #include reaches)
+//   CIRLAYOUT the schematic's *@ lines are invisible to the program: a *@ part line typed into the netlist's tab and
+//             edited leaves the status RUNNING, asks for no check, and the check's squiggle stays; a RUN in flight
+//             (the netlist included again, Q1 an error) lands its messages on the moved lines after a write gathers
+//             *@ lines from mid-file before .end (cir::lineMap)
 #include "Probe.h"
 
 #include "editor/CodeAssist.h"
 #include "editor/Panel.h"
+#include "fminus/CirDoc.h"
 #include "fminus/Lang.h"
 #include "plugin/EditorPort.h"
 #include "plugin/Processor.h"
@@ -68,6 +73,7 @@
 #include <thread>
 
 namespace pg = playground;
+namespace cir = playground::cir;
 
 namespace
 {
@@ -717,6 +723,68 @@ PROBE(gui, code)
         };
         P.eq("cir.uninclude_runs", cut != std::string::npos && port.status().ok && panel.activeFile() == tab ? 1 : 0, 1);
         P.eq("cir.uninclude_keeps_squiggle", squiggled() && code.errorCount() > 0 ? 1 : 0, 1);
+
+        // ---- CIRLAYOUT -------------------------------------------------------------------------------------------------
+        // The schematic's *@ lines (fminus/CirDoc.h) are invisible to the program: a *@ part line typed into the
+        // netlist's tab, then edited, leaves the status RUNNING, asks for no check, and the check's squiggle stays.
+        settleChecks(panel, host);
+        waitFor(host, [&] { return panel.statusText().rfind("RUNNING", 0) == 0; });   // past Format's notice
+        P.eq("cirlayout.running_before", panel.statusText().rfind("RUNNING", 0) == 0 ? 1 : 0, 1);
+        const uint64_t checks = port.checkStatus().revision;
+        funkgui::TextEditor& net = panel.editor();
+        focusEditor(panel, host);
+        net.setCaret(posIn(net, ".end"));
+        type(panel, host, "*@ part R4 3,4\n");
+        host.tick(50);                                    // past the check's rest
+        net.setCaret(posIn(net, "*@ part R4 3,4", 14));
+        host.keys("backspace");
+        type(panel, host, "9");
+        for (int k = 0; k < 6; ++k)
+        {
+            host.tick(20);
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        settleChecks(panel, host);
+        P.eq("cirlayout.edited_line", posIn(net, "*@ part R4 3,9").line > 0 ? 1 : 0, 1);
+        P.eq("cirlayout.status_running", panel.statusText().rfind("RUNNING", 0) == 0 ? 1 : 0, 1);
+        P.eq("cirlayout.no_check", port.checkStatus().revision == checks && !code.checking() ? 1 : 0, 1);
+        P.eq("cirlayout.squiggle_stays", squiggled() && code.errorCount() > 0 ? 1 : 0, 1);
+
+        // A RUN in flight lands its messages on the lines they moved to: *@ lines written mid-file, the netlist
+        // included again (its Q1 an error RUN gives), RUN, and at once a write that gathers the *@ lines before .end
+        // (the element lines move up); RUN's messages land on Q1's line where it is now.
+        host.click(tab0.x, tab0.y);
+        host.settle();
+        prog.setCaret({ 0, 0 });
+        prog.insert(include);
+        host.click(at.x, at.y);
+        host.settle();
+        net.setCaret({ 1, 0 });
+        net.insert("*@ part R1 30,20\n*@ part C1 26,20 r90\n");
+        host.tick(2);
+        const int mid = posIn(net, "Q1 ").line;
+        const std::string sent = net.text();
+        host.keys("cmd+return");
+        const cir::Applied gathered = cir::apply(sent, cir::reconcile(sent), {});
+        std::vector<funkgui::TextEdit> edits;
+        for (const cir::Edit& e : gathered.edits)
+            edits.push_back({ { e.from.line, e.from.col }, { e.to.line, e.to.col }, e.text });
+        const bool wrote = net.applyEdits(edits) && net.text() == gathered.text;
+        net.setDecorations({}, funkgui::kDiagnosticDecorations);   // only RUN's messages from here on
+        settleRun(processor, host);
+        waitFor(host, [&] { return !port.compiling(); });
+        host.settle();
+        const int now = posIn(net, "Q1 ").line;
+        bool landed = false, elsewhere = false;
+        for (const funkgui::Decoration& d : net.decorations())
+        {
+            landed = landed || (d.kind == funkgui::DecorationKind::error && d.from.line == now);
+            elsewhere = elsewhere || (d.kind == funkgui::DecorationKind::error && d.from.line != now);
+        }
+        std::printf("cirlayout: Q1 on line %d when RUN was sent, %d after the write; RUN %s\n", mid + 1, now + 1,
+                    port.status().ok ? "compiled" : "failed");
+        P.eq("cirlayout.gathered", wrote && now == mid - 2 && cir::sameNetlist(sent, net.text()) ? 1 : 0, 1);
+        P.eq("cirlayout.run_lands_moved", !port.status().ok && landed && !elsewhere ? 1 : 0, 1);
     }
     funkgui::UiPreferences::get().setTheme(0);
     return P.finish();

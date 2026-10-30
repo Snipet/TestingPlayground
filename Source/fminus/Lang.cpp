@@ -752,11 +752,14 @@ namespace playground::lang
             f.decls.clear();
             f.bodies.clear();
             f.modules.clear();
-            // The header: the * lines it starts with, each without its * and the space after it.
+            // The header: the * lines it starts with, each without its * and the space after it; the schematic's *@
+            // lines (its drawing, fminus/CirDoc.h) are no part of it, wherever they are.
             f.header.clear();
             for (const std::string_view l : f.lines)
             {
                 const std::string t = trimmed(l);
+                if (t.size() >= 2 && t[0] == '*' && t[1] == '@')
+                    continue;
                 if (t.empty() || t[0] != '*')
                     break;
                 std::string body = t.substr(1);

@@ -47,6 +47,9 @@
 //            never saw them); a file the chat's Claude wrote is new to Claude Desktop: get_status since shows the plugin's
 //            own chat editing it, and the lines it added since the token (what Claude Desktop read before it is no
 //            change); with the next token, nothing
+//   LAYOUT   a netlist's drawing (its *@ lines) is invisible to the chat: a .cir goes without them, with a line saying
+//            how many it left out; a change to them alone sends no state; with a dial moved too, the state says these
+//            files play and sends no file again; get_status says these files
 //   MEASURE  measure_output through the agent: its result is the render's report, with the dials asked for
 //   VIEW     view_panel through the agent: its result a PNG of the panel (and one of the whole editor) and a line of
 //            what it shows, drawn on the message thread by the GPU on this Mac (the text says so); the user's view
@@ -137,6 +140,7 @@
 #include "plugin/Processor.h"
 
 #include "dsp/Measure.h"
+#include "fminus/CirDoc.h"
 
 #include "Library.h"
 #include "Product.h"
@@ -163,6 +167,7 @@
 
 namespace pg = playground;
 namespace claude = playground::claude;
+namespace cir = playground::cir;
 
 namespace
 {
@@ -936,6 +941,56 @@ PROBE(plugin, chat)
                                                    && has(since, "+// the chat's own") && !has(since, "+// the user's second") ? 1 : 0, 1);
         const std::string after = firstText(agent.mcpCall("get_status", input({ { "since", juce::String(tokenOf(since)) } })));
         P.eq("seen.then_as_desktop_saw_it", has(after, "Nothing changed since your last look") && has(after, "The files are as they were at that token") ? 1 : 0, 1);
+
+        // ---- LAYOUT --------------------------------------------------------------------------------------------------
+        // A netlist's drawing (its *@ lines, fminus/CirDoc.h) is no change to the program: a netlist goes without its
+        // *@ lines, saying how many it left out; a change to them alone sends no state; with a dial moved too, the
+        // state says these files play and sends no file again; get_status says these files.
+        {
+            const std::string drawn = cir::written(pg::findLibraryFile("diodetone.cir")->source);
+            int layoutLines = 0;
+            for (std::size_t at = 0; at < drawn.size();)
+            {
+                const std::size_t end = std::min(drawn.find('\n', at), drawn.size());
+                layoutLines += cir::isLayoutLine(std::string_view(drawn).substr(at, end - at)) ? 1 : 0;
+                at = end + 1;
+            }
+            pg::Draft dl = processor.editorPort().draft();
+            dl.files.push_back({ "pedal.cir", drawn });
+            processor.editorPort().setDraft(dl);
+            processor.editorPort().run(dl.files);
+            processor.settle();
+            script->add(fake::Response::ok(fake::Sse().start().text("A circuit.").end()));
+            agent.send("there is a circuit");
+            agent.waitIdle();
+            const std::string first = lastState();
+            P.eq("layout.netlist_without_its_drawing", layoutLines > 10 && has(first, "<file name=\"pedal.cir\">") && has(first, "R1     in a  2.2k")
+                                                           && !has(first, "*@ ") && has(first, "(" + std::to_string(layoutLines) + " layout lines left out: read_file shows them)") ? 1 : 0, 1);
+            P.eq("layout.plays", has(first, "What plays: these files") ? 1 : 0, 1);
+            const auto moved = [&](const std::string& from, const std::string& to) {
+                pg::Draft d2 = processor.editorPort().draft();
+                const std::size_t at = d2.files.back().text.find(from);
+                if (at != std::string::npos)
+                    d2.files.back().text.replace(at, from.size(), to);
+                processor.editorPort().setDraft(d2);
+                return at != std::string::npos;
+            };
+            const bool redrawn = moved("*@ part R1 6,0", "*@ part R1 6,-4");
+            script->add(fake::Response::ok(fake::Sse().start().text("Same.").end()));
+            agent.send("I moved a part");
+            agent.waitIdle();
+            P.eq("layout.redraw_sends_no_state", redrawn && lastState().empty() ? 1 : 0, 1);
+            processor.getParameters()[0]->setValueNotifyingHost(0.6f);
+            moved("*@ part R1 6,-4", "*@ part R1 6,-8");
+            script->add(fake::Response::ok(fake::Sse().start().text("Noted.").end()));
+            agent.send("and a dial");
+            agent.waitIdle();
+            const std::string second = lastState();
+            std::printf("plugin_state after a redraw and a dial:\n%s\n", second.c_str());
+            P.eq("layout.state_these_files", has(second, "What plays: these files") && has(second, "<file name=\"pedal.cir\" lines=")
+                                                 && has(second, "unchanged=\"true\"") && !has(second, "R1     in a  2.2k") ? 1 : 0, 1);
+            P.eq("layout.get_status_these_files", has(firstText(agent.mcpCall("get_status", input({}))), "What plays: these files") ? 1 : 0, 1);
+        }
     }
 
     // ---- MEASURE -------------------------------------------------------------------------------------------------------

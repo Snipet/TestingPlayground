@@ -24,6 +24,8 @@
 //           Claude Desktop's own write no change but in the diff; a host move just before a preset that leaves that
 //           dial alone still a move; a bypass ending after a token: that token's reader reads the end, an older
 //           token's one line, never "still"
+//   LAYOUT  a netlist redrawn (its *@ lines alone): listen says the editor's files play, get_status since says "you
+//           redrew pedal.cir"
 //   CANCEL  two cancels before a listen starts: the first one's listen still stops at once
 //   NEWCHAT New chat while a call of Claude Desktop's runs: the chat stays busy until it ends
 #include "Probe.h"
@@ -35,6 +37,9 @@
 #include "plugin/Processor.h"
 #include "plugin/ProjectStore.h"
 
+#include "fminus/CirDoc.h"
+
+#include "Library.h"
 #include "Product.h"
 
 #include <funkgui/panel/HeadlessGuiScope.h>
@@ -53,6 +58,7 @@
 #include <vector>
 
 namespace pg = playground;
+namespace cir = playground::cir;
 
 namespace
 {
@@ -526,6 +532,29 @@ PROBE(plugin, live)
         P.eq("since.bypass_ended", has(bypassOld, "the host bypassed the plugin, until ") && !has(bypassOld, "it still is")
                                        && !has(bypassOld, "un-bypassed") ? 1 : 0, 1);
         P.eq("since.unbypass_after_token", has(bypassNew, "the host un-bypassed the plugin\n") && !has(bypassNew, "bypassed the plugin,") ? 1 : 0, 1);
+
+        // ---- LAYOUT ----------------------------------------------------------------------------------------------------
+        // A netlist redrawn (its *@ lines alone, fminus/CirDoc.h) is no edit: listen says the editor's files play, and
+        // since says the user redrew it.
+        {
+            pg::Draft dl = q.editorPort().draft();
+            dl.files.push_back({ "pedal.cir", cir::written(pg::findLibraryFile("diodetone.cir")->source) });
+            q.editorPort().setDraft(dl);
+            q.editorPort().run(dl.files);
+            q.settle();
+            const std::string beforeRedraw = tokenOf(textOf(a.mcpCall("get_status", none)));
+            dl = q.editorPort().draft();
+            const std::string from = "*@ part R1 6,0";
+            const std::size_t at = dl.files.back().text.find(from);
+            if (at != std::string::npos)
+                dl.files.back().text.replace(at, from.size(), "*@ part R1 6,-6");
+            q.editorPort().setDraft(dl);
+            const std::string heard = textOf(a.mcpCall("listen", object({ { "seconds", 0.1 } })));
+            const std::string redrew = textOf(a.mcpCall("get_status", object({ { "since", juce::String(beforeRedraw) } })));
+            std::printf("get_status since, a netlist redrawn:\n%s", redrew.c_str());
+            P.eq("layout.listen_plays_draft", at != std::string::npos && has(heard, "What plays is the editor's files.") ? 1 : 0, 1);
+            P.eq("layout.since_redrew", has(redrew, "you redrew pedal.cir\n") && !has(redrew, "you edited pedal.cir") ? 1 : 0, 1);
+        }
 
         // Cancels that come before a listen starts, two of them: each stops its own listen at once.
         a.mcpCancel(9001);

@@ -21,6 +21,7 @@
 #include "dsp/Compiler.h"
 #include "dsp/Controls.h"
 #include "dsp/Engine.h"
+#include "fminus/CirDoc.h"
 #include "fminus/LibraryIncludes.h"
 #include "fminus/Random.h"
 
@@ -3182,7 +3183,7 @@ namespace playground::ui
         }
         compiling_ = port_.compiling();
         if (textChanged || statusChanged)
-            edited_ = files().draft().files != running_;
+            edited_ = !cir::sameProgram(files().draft().files, running_);   // a netlist's *@ lines are no edit
         syncIr();
         const std::string statusBefore = status_;
 

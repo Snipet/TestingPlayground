@@ -124,9 +124,16 @@ namespace playground
         const int64_t now = nowMs();
         const std::string key = "file:" + name;
         const std::lock_guard<std::mutex> lock(mutex_);
-        if (Change* c = mergeable(key, who, kTypingMs, now); c != nullptr && (c->words == what || what == "edited"))
+        if (Change* c = mergeable(key, who, kTypingMs, now);
+            c != nullptr
+            && (c->words == what || what == "edited"
+                || (what == "redrew" && (c->words == "edited" || c->words == "added" || c->words == "wrote"))))
         {
-            c->toMs = now;                                // typing on: one line (an added file typed in stays "added")
+            // typing on: one line (an added file typed in stays "added"; a netlist redrawn, then edited, was edited;
+            // a redraw adds nothing to an edit)
+            if (what == "edited" && c->words == "redrew")
+                c->words = what;
+            c->toMs = now;
             return;
         }
         Change c;

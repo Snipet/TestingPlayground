@@ -11,6 +11,7 @@
 #include "dsp/Measure.h"
 #include "dsp/SoundView.h"
 #include "dsp/Tune.h"
+#include "fminus/CirDoc.h"
 
 #include "plugin/SoundPicture.h"
 
@@ -1539,10 +1540,30 @@ namespace playground
         return std::min(kMaxTokensCap, model != models_.end() ? model->maxTokens : kDefaultMaxTokens);
     }
 
+    // What Claude is told of a file and remembered to have seen: a netlist's text without its drawing's *@ lines
+    // (cir::stripLayout: they change nothing the program does), any other file's whole.
+    static std::string seenText(const std::string& name, const std::string& text)
+    {
+        return isCircuitFile(name) ? cir::stripLayout(text) : text;
+    }
+
+    static int layoutLines(const std::string& text)
+    {
+        int n = 0;
+        std::size_t start = 0;
+        while (start <= text.size())
+        {
+            const std::size_t end = std::min(text.find('\n', start), text.size());
+            n += cir::isLayoutLine(std::string_view(text).substr(start, end - start)) ? 1 : 0;
+            start = end + 1;
+        }
+        return n;
+    }
+
     void ChatAgent::markSeen(const std::string& name, const std::string& text)
     {
         if (!mcpWorking_.load())                   // Claude Desktop's views are its own (Live.cpp's marks)
-            seen_[name] = hashText(text);
+            seen_[name] = hashText(seenText(name, text));
     }
 
     void ChatAgent::addEntry(ChatEntry::Kind kind, std::string t)
@@ -1631,17 +1652,19 @@ namespace playground
             d.files.empty() ? std::string(kProgramName)
                             : d.files[static_cast<std::size_t>(std::clamp(d.active, 0, static_cast<int>(d.files.size()) - 1))].name;
         std::string tail = "What plays: "
-                         + std::string(running == d.files ? "these files" : "an earlier version of the files (they "
-                                                                            "were edited since the last run)")
+                         + std::string(cir::sameProgram(running, d.files) ? "these files"
+                                                                           : "an earlier version of the files (they "
+                                                                             "were edited since the last run)")
                          + "\nLast compile: " + compileLine(status) + "Dials of the program that plays:\n"
                          + dialLines(host_.chatDials(), host_) + (status.ok ? panelLine(status.panel, status.controls) : "");
         const uint32_t a = host_.chatAlerts();
         tail += "Output alerts: ";
         tail += a == 0 ? "none" : ((a & 1u) != 0 ? ((a & 2u) != 0 ? "NaN or inf replaced, clipped" : "NaN or inf replaced")
                                                  : "clipped (beyond +-4)");
+        // A netlist counts without its *@ lines: a change to its drawing alone sends no new block.
         uint64_t signature = hashText(tail + '\x1f' + shown);
         for (const SourceFile& f : d.files)
-            signature = (signature ^ hashText(f.name + '\x1f' + f.text)) * 1099511628211ull;
+            signature = (signature ^ hashText(f.name + '\x1f' + seenText(f.name, f.text))) * 1099511628211ull;
 
         const std::lock_guard<std::mutex> lock(mutex_);
         if (signature == lastSignature_)
@@ -1652,15 +1675,18 @@ namespace playground
         bool unchanged = false;
         for (const SourceFile& f : d.files)
         {
+            const std::string text = seenText(f.name, f.text);
             const auto it = seen_.find(f.name);
-            if (it != seen_.end() && it->second == hashText(f.text))
+            if (it != seen_.end() && it->second == hashText(text))
             {
                 c += "<file name=\"" + f.name + "\" lines=\"" + std::to_string(lineCount(f.text)) + "\" unchanged=\"true\"/>\n";
                 unchanged = true;
                 continue;
             }
-            c += "<file name=\"" + f.name + "\">\n" + f.text + (f.text.empty() || f.text.back() == '\n' ? "" : "\n")
-               + "</file>\n";
+            c += "<file name=\"" + f.name + "\">\n" + text + (text.empty() || text.back() == '\n' ? "" : "\n") + "</file>\n";
+            // a netlist's drawing (the schematic's *@ lines) left out, and said
+            if (const int layout = isCircuitFile(f.name) ? layoutLines(f.text) : 0; layout > 0)
+                c += "(" + std::to_string(layout) + " layout lines left out: read_file shows them)\n";
             markSeen(f.name, f.text);
         }
         if (unchanged)
@@ -3792,7 +3818,8 @@ namespace playground
                 out += (i == 0 ? "" : ", ") + d.files[i].name + " (" + std::to_string(lineCount(d.files[i].text))
                      + " lines" + (static_cast<int>(i) == d.active ? ", shown" : "") + ")";
             out += "\nWhat plays: ";
-            out += running == d.files ? "these files\n" : "an earlier version (the files were edited since the run)\n";
+            out += cir::sameProgram(running, d.files) ? "these files\n"
+                                                      : "an earlier version (the files were edited since the run)\n";
             out += "Last compile: " + compileLine(host_.chatLastStatus());
             out += "Dials:\n" + dialLines(host_.chatDials(), host_);
             out += "CPU: " + number(std::round(host_.chatLoad() * 1000.0f) / 10.0) + "% of the audio thread's time "
