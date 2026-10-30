@@ -14,9 +14,9 @@
 #                         GitHub): the JIT compiler, its library and runtime only. Its LLVM, Bison and Flex are the
 #                         ones FMinus's own builds put in its deps cache (FP_FMINUS_DEPS_DIR), read, never built here.
 #                         0ce818e (its main: ir-text merged) brought Program::Options::keepIr (a program's LLVM IR as
-#                         text: the editor's IR view); 210afe2 (its branch circuit1) the analog circuit compiler,
-#                         Phase 1 (fminus/Circuit.h: a .cir netlist to an FMinus module, and the self-test that
-#                         chooses its configuration)
+#                         text: the editor's IR view); 36a6404 (its main: circuit1 merged) the analog circuit
+#                         compiler, Phase 1 (fminus/Circuit.h: a .cir netlist to an FMinus module, and the self-test
+#                         that chooses its configuration)
 #
 # ~/audio/.deps is a read-only cache written by FCompressor's Scripts/deps.sh: this build reads it and never writes it.
 # FETCHCONTENT_SOURCE_DIR_<NAME> bypasses GIT_TAG, which is why every dependency's version and commit are checked after
@@ -39,7 +39,7 @@ set(FP_BGFX_SUB_SHAS     bgfx=c7684e20da1e385edc439ef39cdb42b8c661016f
 set(FP_FUNKGUI_TAG       v0.23.1)
 set(FP_FUNKGUI_SHA       913dafae2df9047589f31cb1e7bf92af1c1f5f45)
 set(FP_FUNKGUI_VERSION   0.23.1)
-set(FP_FMINUS_SHA        210afe26f70b10c0aebfa9164ce38bca1f799ca4)   # no tags: a commit (the circuit compiler)
+set(FP_FMINUS_SHA        36a64042dd272e73ee0392e7692e2f8a3a3ef6ce)   # no tags: a commit (the circuit compiler)
 set(FP_FMINUS_LLVM       23.1.3)                                     # the LLVM that commit pins (cmake/FMinusPins.cmake)
 
 # ---- helpers ---------------------------------------------------------------------------------------------------------
