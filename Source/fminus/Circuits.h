@@ -26,7 +26,12 @@
 //               from testing one key at once; landed() counts the answers stored, so a compiler sees one land and
 //               compiles the program that plays again with it. A saved session and a project's version keep the
 //               answers for their netlists (keysOf, restore), so a program loaded plays its refined configuration
-//               from its first block.
+//               from its first block. Beside them, each test's outcome (Outcome): its warnings, and why when it gave
+//               no answer; a key given up on is not tested again in this process, and its compiles say why
+//               (gaveUpNote) where the provisional note was. An answer stored that its netlist cannot take (a damaged
+//               session's or project's: generate() refuses it, or ignores it and plays the provisional configuration)
+//               is erased by the first compile that meets it, which generates without it, so the self-test answers
+//               the key again.
 //
 // Thread-safe: answers() under its own mutex; a Generator is one compile's, on the thread that compiles (never the
 // audio thread: generating allocates).
@@ -79,14 +84,39 @@ namespace playground::circuits
         // moves).
         uint64_t landed() const noexcept { return landed_.load(std::memory_order_acquire); }
         std::size_t size() const;
-        // Probes only: nothing stored, nothing in flight (landed() keeps counting).
+        // `key`'s answer taken out of the store (a compile found that its netlist cannot take it): the self-test may
+        // claim the key again. landed() does not move.
+        void erase(std::string_view key);
+
+        // What a test said beyond its answer: the self-test's own warnings (a block that rings at Nyquist), and, when
+        // it gave no answer (nothing under the cost cap finite on every signal, the budget spent, an internal error;
+        // never a cancel), why. Kept by key beside the answers, the newest kCapacity. A key given up on is not tested
+        // again in this process (the test is deterministic: it would give up again): claim() refuses it, and a
+        // compile of its netlist wants no job and says gaveUpNote() where the provisional note was.
+        struct Outcome
+        {
+            bool answered = false;   // an answer was stored with it
+            std::string warnings;    // the self-test's own warnings, one a line ("pedal.cir:9:1: warning: ...")
+            std::string why;         // no answer: why, in the self-test's words ("no candidate under 3500 model ...")
+            std::string provisional; // the netlist's provisional note, what played while it was tested
+        };
+        void report(const std::string& key, Outcome outcome);
+        std::optional<Outcome> outcome(std::string_view key) const;
+        // Whether `key`'s test gave no answer (an outcome, not answered).
+        bool gaveUp(std::string_view key) const;
+        // How many outcomes have been reported since the process started (a compiler that saw a number looks at the
+        // program that plays again when it moves).
+        uint64_t reported() const noexcept { return reported_.load(std::memory_order_acquire); }
+        // Probes only: nothing stored, nothing in flight, no outcome (landed() and reported() keep counting).
         void clearForTests();
 
     private:
         mutable std::mutex mutex_;
         std::vector<std::pair<std::string, std::string>> entries_;   // oldest first
+        std::vector<std::pair<std::string, Outcome>> outcomes_;      // oldest first
         std::set<std::string, std::less<>> flight_;
         std::atomic<uint64_t> landed_{ 0 };
+        std::atomic<uint64_t> reported_{ 0 };
     };
 
     Answers& answers();
@@ -100,8 +130,25 @@ namespace playground::circuits
     std::vector<std::string> keysOf(const Sources& files);
 
     // The note a refined compile ends with (Compiler.h): "pedal.cir: note: the self-test chose this circuit's
-    // configuration: 4x, ADAA, omega(1)", from the answer `text` (Choice::text()); "" when it does not read back.
-    std::string chosenNote(std::string_view file, std::string_view text);
+    // configuration: 4x, ADAA, omega(1)", from the answer `text` (Choice::text()), then the test's warnings
+    // (Outcome::warnings, when `key` has an outcome); "" when the answer does not read back.
+    std::string chosenNote(std::string_view file, std::string_view text, std::string_view key = {});
+
+    // What a compile says, in place of `provisional` (a netlist's provisional note: "pedal.cir: note: the self-test
+    // chooses this circuit's configuration; provisional: 8x IIR, omega(2)"), for a netlist whose test gave no answer:
+    // "pedal.cir: note: the self-test found no configuration for this circuit (why), so the provisional one plays on:
+    // 8x IIR, omega(2)", then the test's warnings.
+    std::string gaveUpNote(std::string_view provisional, const Answers::Outcome& outcome);
+
+    // `notes` (a compile's status) with what the tests of `jobs` that gave no answer said (gaveUpNote): in place of
+    // each one's provisional note, or after the rest when it has none; unchanged where it says so already.
+    std::string withOutcomes(const std::string& notes, const std::vector<Job>& jobs);
+
+    // `job`'s test's outcome, from what fminus::circuit::selfTest returned (SelfTestResult's warnings, notes and
+    // errors; `answered`: an answer is stored): the warnings less the netlist's own (which its compiles say anyway),
+    // why when it gave no answer (its last note, or its first error), and the netlist's provisional note.
+    Answers::Outcome outcomeOf(const Job& job, bool answered, const std::string& warnings, const std::string& notes,
+                               const std::string& errors);
 
     class Generator
     {

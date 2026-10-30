@@ -48,6 +48,12 @@
 //                files drop the netlist cancels its test, which stores nothing, and a RUN made while the test runs has
 //                its status before landed() moves (by order), the refine after it
 //   DEDUP        two Compilers wanting one key run one test (the in-flight set), and both refine
+//   GIVEUP       a test that gives no answer (a budget of one step) is not tried again: the status says why in place of
+//                the provisional note (a new revision, the same program), and a compile of the same files wants no job
+//                and says why too
+//   MISFIT       an answer stored with the netlist's key that the netlist cannot take (ADAA with BDF2, as a damaged
+//                session's would be, restored) neither fails the compile nor stays: provisional, one job, the answer
+//                erased
 #include "Probe.h"
 
 #include "Audio.h"
@@ -75,6 +81,7 @@
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
@@ -592,6 +599,55 @@ namespace
             P.eq("dedup.both_wanted", a.ok && b.ok && has(a.notes, "provisional: ") && has(b.notes, "provisional: ") ? 1 : 0, 1);
             P.eq("dedup.one_test", x.compiler->selfTests() + y.compiler->selfTests(), 1);
             P.eq("dedup.both_refine", both ? 1 : 0, 1);
+        }
+
+        // ---- GIVEUP -----------------------------------------------------------------------------------------------------
+        // A test that gives no answer (here a budget of one step: it stops before its references) is not tried again: the
+        // status says why where the provisional note was, the provisional configuration plays on, and a compile of the
+        // same files wants no job and says why too.
+        {
+            store.clearForTests();
+            Live live(false);
+            live.compiler->setSelfTestBudget(1);
+            const pg::CompileStatus a = live.compiler->compileNow(files);
+            const bool refined = live.compiler->selfTestNow();
+            const pg::CompileStatus b = live.compiler->status();
+            const pg::Patch::Result again = pg::Patch::compile(files, static_cast<float>(kFs));
+            std::printf("giveup: refined %d; the status: %s%s  a compile again: %s", refined ? 1 : 0, b.errors.c_str(), b.notes.c_str(),
+                        again.notes.c_str());
+            const std::string says = "clipper.cir: note: the self-test found no configuration for this circuit (the self-test stops "
+                                     "before ";
+            P.eq("giveup.provisional_first", a.ok && has(a.notes, "provisional: 8x IIR, omega(2)") ? 1 : 0, 1);
+            P.eq("giveup.status_says_why", !refined && b.ok && b.revision == a.revision + 1 && b.program == a.program && has(b.notes, says)
+                                               && has(b.notes, "), so the provisional one plays on: 8x IIR, omega(2)\n")
+                                               && !has(b.notes, "chooses this circuit's configuration") ? 1 : 0, 1);
+            P.eq("giveup.not_again", live.compiler->selfTests() == 1 && !live.compiler->selfTesting() && store.gaveUp(key) && !store.find(key)
+                                         && !store.claim(key) ? 1 : 0, 1);
+            P.eq("giveup.compile_says_why", again.patch != nullptr && again.circuitJobs.empty() && has(again.notes, says)
+                                                && !has(again.notes, "chooses this circuit's configuration") ? 1 : 0, 1);
+        }
+
+        // ---- MISFIT -----------------------------------------------------------------------------------------------------
+        // An answer stored with the netlist's key that the netlist cannot take (a damaged session's or project's: ADAA with
+        // BDF2) neither fails the compile nor stays: the compile plays the provisional configuration and wants the test,
+        // and the answer is erased, so the self-test may claim the key again.
+        {
+            store.clearForTests();
+            std::optional<fminus::circuit::Choice> bad = fminus::circuit::Choice::parse(answer);
+            const bool parsed = bad.has_value();
+            if (bad)
+            {
+                bad->adaa = true;
+                bad->method = fminus::circuit::Method::Bdf2;
+            }
+            const bool restored = parsed && pg::circuits::restore(key, bad->text());
+            const pg::Patch::Result r = pg::Patch::compile(files, static_cast<float>(kFs));
+            std::printf("misfit: restored %d; %s%s", restored ? 1 : 0, r.errors.c_str(), r.notes.c_str());
+            P.eq("misfit.restored", restored ? 1 : 0, 1);
+            P.eq("misfit.compiles_provisional", r.patch != nullptr && r.errors.empty() && has(r.notes, "provisional: 8x IIR, omega(2)")
+                                                    && r.circuitJobs.size() == 1 && r.circuitJobs[0].key == key ? 1 : 0, 1);
+            P.eq("misfit.erased", !store.find(key) && store.claim(key) ? 1 : 0, 1);
+            store.release(key);
         }
         store.clearForTests();
     }

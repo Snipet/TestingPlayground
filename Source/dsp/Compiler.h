@@ -54,6 +54,11 @@
 // request before it (`request`, `ok`, and a failed compile's `errors` and `sources`, which the editor and Claude go on
 // showing), with the refined program as `program` and, when that request compiled, the refine's notes ending with what
 // the self-test chose ("pedal.cir: note: the self-test chose this circuit's configuration: 4x, ADAA, omega(1)").
+// A test that gives no answer (nothing under the cost cap finite on every signal, the budget spent, an internal error)
+// is not tried again (circuits::Answers::Outcome): this thread then brings the status up to date (its revision the
+// next), the netlist's provisional note there replaced by why ("pedal.cir: note: the self-test found no configuration
+// for this circuit (...), so the provisional one plays on: 8x IIR, omega(2)"), and the provisional configuration
+// plays on; a refine's note of the choice carries the test's own warnings (a block that rings at Nyquist).
 // setSelfTesting(false) stops both the tests and the refines (the probes'); selfTestNow() runs the jobs waiting and then
 // the refine on the calling thread, as freezeNow does.
 //
@@ -181,6 +186,8 @@ namespace playground
         bool selfTestNow();
         bool selfTesting() const;
         int selfTests() const noexcept { return tester_.tests(); }
+        // The steps a test may take (SelfTester::setBudget; 0: FMinus's default). Probes only.
+        void setSelfTestBudget(std::int64_t steps) noexcept { tester_.setBudget(steps); }
 
         // The IR (above): whether someone looks (the processor counts the editor's IR views), and what there is.
         // Any thread.
@@ -218,6 +225,9 @@ namespace playground
         // now, and whether one built may be offered now (no recording armed, an instrument silent); the refine itself,
         // true when it offered (mutex_ held on entry and on return, let go while it compiles and once it offered).
         [[nodiscard]] std::unique_ptr<Built> checkLanded();
+        // The outcomes reported since last looked at (circuits::Answers::reported): a test of the program that plays
+        // that gave no answer says why in the status (above). Under mutex_.
+        void checkOutcomes();
         bool mayRefine() const;
         bool quiet() const;
         bool refine(std::unique_lock<std::mutex>& lock);
@@ -262,6 +272,7 @@ namespace playground
         // landed() count last looked at, an answer for one of them landed, the tests and refines on.
         std::vector<circuits::Job> playing_;
         uint64_t landedSeen_ = 0;
+        uint64_t reportedSeen_ = 0;
         bool refineDue_ = false;
         bool selfTesting_ = true;
         std::unique_ptr<Built> held_;          // a refine compiled, not offered yet (above): mutex_

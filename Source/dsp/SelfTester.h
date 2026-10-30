@@ -18,8 +18,10 @@
 // ends. All of them run at the utility QoS class (macOS), below the host's audio and its UI. Never the audio thread,
 // the message thread or the compiler's: nothing here waits for them, nor they for it but on its own mutex, held only
 // to read or change what is wanted. A test is cancelled through the atomic SelfTestOptions::cancelled reads (polled
-// between jobs and every 4096 reference steps); one cancelled, over the budget, or with no answer stores nothing (a
-// key that gave none is not tried again by this tester).
+// between jobs and every 4096 reference steps); one cancelled, over the budget, or with no answer stores nothing. A
+// test that ends uncancelled reports its outcome (circuits::Answers::Outcome: its own warnings, and why when it gave
+// no answer) before its answer is stored; a key that gave none is not tried again in this process, by any tester
+// (circuits::answers().gaveUp), and its compiles say why where the provisional note was.
 #pragma once
 
 #include "fminus/Circuits.h"
@@ -28,7 +30,6 @@
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
-#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -55,6 +56,9 @@ namespace playground
 
         // Whether a job wanted waits (no answer stored, none given up on) or a test runs.
         bool busy() const;
+        // The steps a test may take (SelfTestOptions::budget; 0, the default: FMinus's). Probes only: a budget of 1
+        // gives up at once.
+        void setBudget(std::int64_t steps) noexcept { budget_.store(steps, std::memory_order_relaxed); }
         // The tests this tester has started (each a selfTest call), counted: the probes' DEDUP.
         int tests() const noexcept { return tests_.load(std::memory_order_relaxed); }
         // The threads a test adds to the one that runs it: min(4, max(1, cores - 2)).
@@ -71,7 +75,6 @@ namespace playground
         mutable std::mutex mutex_;
         std::condition_variable wake_;
         std::vector<circuits::Job> wanted_;      // mutex_
-        std::set<std::string> givenUp_;          // keys whose test gave no answer (not cancelled): mutex_
         std::string running_;                    // the key under test ("" for none): mutex_
         bool enabled_ = true;                    // mutex_
         bool changed_ = false;                   // want() or setEnabled() since the coordinator last looked: mutex_
@@ -79,6 +82,7 @@ namespace playground
         std::atomic<bool> cancel_{ false };      // the test that runs: SelfTestOptions::cancelled
         std::atomic<bool> stopping_{ false };
         std::atomic<int> tests_{ 0 };
+        std::atomic<std::int64_t> budget_{ 0 };
         std::mutex testMutex_;                   // one test at a time (the coordinator's, runNow's)
         std::thread thread_;                     // the coordinator, made with the first job wanted (mutex_)
     };

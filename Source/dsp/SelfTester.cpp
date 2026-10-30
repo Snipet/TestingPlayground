@@ -171,7 +171,7 @@ namespace playground
         if (!running_.empty())
             return true;
         for (const circuits::Job& j : wanted_)
-            if (givenUp_.count(j.key) == 0 && !circuits::answers().find(j.key))
+            if (!circuits::answers().gaveUp(j.key) && !circuits::answers().find(j.key))
                 return true;
         return false;
     }
@@ -181,7 +181,7 @@ namespace playground
         if (stop_ || (!any && !enabled_) || !running_.empty())
             return false;
         for (const circuits::Job& j : wanted_)
-            if (givenUp_.count(j.key) == 0 && circuits::answers().claim(j.key))
+            if (circuits::answers().claim(j.key))   // neither stored, given up on, nor in flight
             {
                 job = j;
                 running_ = j.key;
@@ -202,18 +202,22 @@ namespace playground
             o.cancelled = [this] {
                 return cancel_.load(std::memory_order_relaxed) || stopping_.load(std::memory_order_relaxed);
             };
+            o.budget = budget_.load(std::memory_order_relaxed);
             const fminus::circuit::SelfTestResult r = fminus::circuit::selfTest(job.netlist, job.file, {}, o);
             // Cancelled once it was over is cancelled too: a key the newest program dropped stores nothing.
             cancelled = r.cancelled || cancel_.load(std::memory_order_relaxed) || stopping_.load(std::memory_order_relaxed);
             answered = r.choice.has_value() && !cancelled && r.key == job.key;
+            // What it said beyond the answer, before the answer (a compiler that sees landed() move reads it): its own
+            // warnings, and why when it gave none (errors, over the budget, nothing finite under the cost cap): such a
+            // key is not tested again, and its compiles say why.
+            if (!cancelled)
+                circuits::answers().report(job.key, circuits::outcomeOf(job, answered, r.warnings, r.notes, r.errors));
             if (answered)
                 circuits::answers().store(job.key, r.choice->text());
         }
         circuits::answers().release(job.key);       // after the store: the key is never neither stored nor in flight
         const std::lock_guard<std::mutex> lock(mutex_);
         running_.clear();
-        if (!answered && !cancelled)
-            givenUp_.insert(job.key);               // no answer (errors, over the budget): not again
     }
 
     void SelfTester::runNow()

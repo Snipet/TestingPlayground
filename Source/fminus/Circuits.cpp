@@ -90,10 +90,49 @@ namespace playground::circuits
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         if (key.empty() || flight_.count(key) != 0
-            || std::any_of(entries_.begin(), entries_.end(), [&](const auto& e) { return e.first == key; }))
+            || std::any_of(entries_.begin(), entries_.end(), [&](const auto& e) { return e.first == key; })
+            || std::any_of(outcomes_.begin(), outcomes_.end(),
+                           [&](const auto& o) { return o.first == key && !o.second.answered; }))
             return false;
         flight_.insert(key);
         return true;
+    }
+
+    void Answers::erase(std::string_view key)
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        entries_.erase(std::remove_if(entries_.begin(), entries_.end(), [&](const auto& e) { return e.first == key; }),
+                       entries_.end());
+    }
+
+    void Answers::report(const std::string& key, Outcome outcome)
+    {
+        if (key.empty())
+            return;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            outcomes_.erase(std::remove_if(outcomes_.begin(), outcomes_.end(), [&](const auto& o) { return o.first == key; }),
+                            outcomes_.end());
+            outcomes_.emplace_back(key, std::move(outcome));
+            while (outcomes_.size() > kCapacity)
+                outcomes_.erase(outcomes_.begin());
+        }
+        reported_.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    std::optional<Answers::Outcome> Answers::outcome(std::string_view key) const
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& [k, o] : outcomes_)
+            if (k == key)
+                return o;
+        return std::nullopt;
+    }
+
+    bool Answers::gaveUp(std::string_view key) const
+    {
+        const std::optional<Outcome> o = outcome(key);
+        return o && !o->answered;
     }
 
     void Answers::release(const std::string& key)
@@ -118,6 +157,7 @@ namespace playground::circuits
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         entries_.clear();
+        outcomes_.clear();
         flight_.clear();
     }
 
@@ -145,7 +185,7 @@ namespace playground::circuits
         return out;
     }
 
-    std::string chosenNote(std::string_view file, std::string_view text)
+    std::string chosenNote(std::string_view file, std::string_view text, std::string_view key)
     {
         const std::optional<fminus::circuit::Choice> c = fminus::circuit::Choice::parse(text);
         if (!c)
@@ -157,7 +197,101 @@ namespace playground::circuits
         words += std::to_string(c->solver.steps) + ")";
         if (c->method == fminus::circuit::Method::Bdf2)
             words += ", BDF2";
-        return std::string(file) + ": note: the self-test chose this circuit's configuration: " + words + "\n";
+        std::string out = std::string(file) + ": note: the self-test chose this circuit's configuration: " + words + "\n";
+        if (!key.empty())
+            if (const std::optional<Answers::Outcome> o = answers().outcome(key); o && o->answered)
+                out += o->warnings;
+        return out;
+    }
+
+    std::string gaveUpNote(std::string_view provisional, const Answers::Outcome& outcome)
+    {
+        // "pedal.cir: note: the self-test chooses this circuit's configuration; provisional: 8x IIR, omega(2)"
+        constexpr std::string_view kSays = ": note: the self-test chooses this circuit's configuration; provisional: ";
+        const std::size_t at = provisional.find(kSays);
+        if (at == std::string_view::npos)
+            return std::string(provisional);
+        std::string_view configuration = provisional.substr(at + kSays.size());
+        while (!configuration.empty() && (configuration.back() == '\n' || configuration.back() == '\r'))
+            configuration.remove_suffix(1);
+        const std::string why = outcome.why.empty() ? std::string() : " (" + outcome.why + ")";
+        return std::string(provisional.substr(0, at)) + ": note: the self-test found no configuration for this circuit"
+             + why + ", so the provisional one plays on: " + std::string(configuration) + "\n" + outcome.warnings;
+    }
+
+    std::string withOutcomes(const std::string& notes, const std::vector<Job>& jobs)
+    {
+        std::string out = notes;
+        for (const Job& job : jobs)
+        {
+            const std::optional<Answers::Outcome> o = answers().outcome(job.key);
+            if (!o || o->answered)
+                continue;
+            // the job's provisional note, in its file's words: what a compile of it said
+            const std::string says = job.file + ": note: the self-test chooses this circuit's configuration; provisional: ";
+            const std::size_t at = out.find(says);
+            if (at != std::string::npos && (at == 0 || out[at - 1] == '\n'))
+            {
+                const std::size_t end = out.find('\n', at);
+                const std::size_t stop = end == std::string::npos ? out.size() : end + 1;
+                out.replace(at, stop - at, gaveUpNote(std::string_view(out).substr(at, stop - at), *o));
+                continue;
+            }
+            const std::string gave = job.file + ": note: the self-test found no configuration for this circuit";
+            if (out.find(gave) != std::string::npos)
+                continue;                                    // said already (the compile read the outcome)
+            if (!out.empty() && out.back() != '\n')
+                out += '\n';
+            out += gaveUpNote(o->provisional, *o);
+        }
+        return out;
+    }
+
+    Answers::Outcome outcomeOf(const Job& job, bool answered, const std::string& warnings, const std::string& notes,
+                               const std::string& errors)
+    {
+        Answers::Outcome o;
+        o.answered = answered;
+        const fminus::circuit::Result own = fminus::circuit::generate(job.netlist, job.file);
+        o.provisional = provisionalNote(own.notes);
+        // the self-test's own warnings: its warnings less the netlist's
+        std::size_t at = 0;
+        while (at < warnings.size())
+        {
+            const std::size_t end = std::min(warnings.find('\n', at), warnings.size());
+            const std::string line = warnings.substr(at, end - at);
+            at = end + 1;
+            if (!line.empty() && own.warnings.find(line) == std::string::npos)
+                o.warnings += line + "\n";
+        }
+        if (answered)
+            return o;
+        // why: the last note that says "no answer" ("x.cir: note: self-test: no candidate under ...; no answer"), else
+        // the first error's words
+        auto words = [](std::string line, std::string_view after) {
+            const std::size_t from = line.find(after);
+            line = from == std::string::npos ? line : line.substr(from + after.size());
+            constexpr std::string_view kSelfTest = "self-test: ";
+            if (line.rfind(kSelfTest, 0) == 0)
+                line = line.substr(kSelfTest.size());
+            constexpr std::string_view kNone = "; no answer";
+            if (line.size() >= kNone.size() && line.compare(line.size() - kNone.size(), kNone.size(), kNone) == 0)
+                line.resize(line.size() - kNone.size());
+            return line;
+        };
+        const std::size_t last = notes.rfind("no answer");
+        if (last != std::string::npos)
+        {
+            const std::size_t from = notes.rfind('\n', last);
+            const std::size_t begin = from == std::string::npos ? 0 : from + 1;
+            const std::size_t end = notes.find('\n', last);
+            o.why = words(notes.substr(begin, (end == std::string::npos ? notes.size() : end) - begin), ": note: ");
+        }
+        else if (!errors.empty())
+            o.why = words(errors.substr(0, errors.find('\n')), ": error: ");
+        else
+            o.why = "it gave no answer";
+        return o;
     }
 
     uint64_t generations() noexcept { return gGenerations.load(std::memory_order_relaxed); }
@@ -201,17 +335,41 @@ namespace playground::circuits
         }
         if (answer)
             options.chosen = fminus::circuit::Choice::parse(*answer);
-        const fminus::circuit::Result r = fminus::circuit::generate(netlist.text, netlist.name, options);
+        fminus::circuit::Result r = fminus::circuit::generate(netlist.text, netlist.name, options);
         gGenerations.fetch_add(1, std::memory_order_relaxed);
+        if (options.chosen && (!r.errors.empty() || r.provisional))
+        {
+            // An answer its netlist cannot take (a damaged session's or project's): generate() refused it, or ignored
+            // it (its note says why) and plays the provisional configuration. Generated without it; the store's is
+            // erased (a pin's is a recording's: kept), so the self-test answers the key again.
+            fminus::circuit::Options without;
+            const fminus::circuit::Result again = fminus::circuit::generate(netlist.text, netlist.name, without);
+            gGenerations.fetch_add(1, std::memory_order_relaxed);
+            if (again.errors.empty())
+            {
+                if (pins_ == nullptr || std::none_of(pins_->begin(), pins_->end(), [&](const CircuitPin& p) { return p.key == key; }))
+                    answers().erase(key);
+                r = again;
+                options.chosen.reset();
+            }
+        }
         errors_ += r.errors;
         warnings_ += r.warnings;
         if (r.errors.empty())
         {
             if (r.provisional)
             {
-                notes_ += provisionalNote(r.notes);
-                if (job && !r.selfTestKey.empty())
-                    jobs_.push_back({ r.selfTestKey, netlist.name, netlist.text });
+                // A key whose test gave no answer is not tested again: why, in place of the provisional note, and no
+                // job (Answers::Outcome).
+                const std::optional<Answers::Outcome> o = r.selfTestKey.empty() ? std::nullopt : answers().outcome(r.selfTestKey);
+                if (o && !o->answered)
+                    notes_ += gaveUpNote(provisionalNote(r.notes), *o);
+                else
+                {
+                    notes_ += provisionalNote(r.notes);
+                    if (job && !r.selfTestKey.empty())
+                        jobs_.push_back({ r.selfTestKey, netlist.name, netlist.text });
+                }
             }
             if (!r.selfTestKey.empty() && std::find(keys_.begin(), keys_.end(), r.selfTestKey) == keys_.end())
             {

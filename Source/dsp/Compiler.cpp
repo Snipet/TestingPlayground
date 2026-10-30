@@ -472,6 +472,7 @@ namespace playground
             // own: never the one whose compile made it due (a RUN's waiter and the processor have that compile's status
             // first).
             std::unique_ptr<Built> stale = checkLanded();
+            checkOutcomes();
             if (selfTesting_ && !compiled && mayRefine())
                 refine(lock);
             lock.unlock();
@@ -511,6 +512,20 @@ namespace playground
             return nullptr;
         refineDue_ = true;
         return std::move(held_);                   // built before this answer: compiled again, with it
+    }
+
+    void Compiler::checkOutcomes()
+    {
+        const uint64_t reported = circuits::answers().reported();
+        if (reported == reportedSeen_)
+            return;
+        reportedSeen_ = reported;
+        std::string notes = circuits::withOutcomes(status_.notes, playing_);
+        if (notes == status_.notes)
+            return;
+        status_.notes = std::move(notes);
+        status_.revision += 1;
+        revision_.store(status_.revision, std::memory_order_release);
     }
 
     bool Compiler::quiet() const
@@ -590,7 +605,7 @@ namespace playground
         std::string chosen;
         for (const circuits::Job& j : playing_)
             if (const std::optional<std::string> answer = circuits::answers().find(j.key))
-                chosen += circuits::chosenNote(j.file, *answer);
+                chosen += circuits::chosenNote(j.file, *answer, j.key);
         engine_.offer(std::move(b->patch));        // under mutex_: no RUN is queued between the look and the offer
         compiling_ = true;                         // nothing else offers before its status is out
         lock.unlock();
@@ -645,6 +660,7 @@ namespace playground
         {
             std::unique_lock<std::mutex> lock(mutex_);
             stale = checkLanded();
+            checkOutcomes();
             if (mayRefine())
                 offered = refine(lock);
         }
