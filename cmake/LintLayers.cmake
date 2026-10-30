@@ -7,8 +7,8 @@
 #
 # FMinus's internals ("frontend/...", "ir/...", "jit/...", "support/...", "runtime/...", its circuit compiler's
 # "circuit/...") and LLVM's headers appear nowhere in Source/: FMinus's public headers, fminus/FMinus.h and
-# fminus/Circuit.h (the circuit compiler's: Source/fminus/Circuits.cpp), are the way in (FMinus::FMinus gives no other
-# include path, so such an include already fails to compile; this test names the line).
+# fminus/Circuit.h (the circuit compiler's: Source/fminus/Circuits.cpp and Source/dsp/SelfTester.cpp), are the way in
+# (FMinus::FMinus gives no other include path, so such an include already fails to compile; this test names the line).
 if(NOT FP_SOURCE_DIR)
   message(FATAL_ERROR "LintLayers.cmake: pass -DFP_SOURCE_DIR=<project root>")
 endif()

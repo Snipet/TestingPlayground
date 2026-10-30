@@ -45,9 +45,11 @@
 // generated module are cited at the netlist's lines (circuits::Generator::recite); its warnings, and the provisional
 // note of a netlist whose configuration waits for the self-test, are notes. The program itself (the first file) is
 // FMinus, never a netlist. Result::circuitJobs are the self-tests the compile wants (a netlist with an open
-// configuration and no answer: its provisional configuration plays meanwhile), Result::circuitKeys the keys of every
-// netlist generated with a configuration to choose; the recipe keeps the generated texts (Recipe::circuits), so
-// freeze(), ir() and frozenIr() read the modules the program was compiled with and never generate again.
+// configuration and no answer: its provisional configuration plays meanwhile; the Compiler hands those of a compile
+// that plays to its SelfTester, and compiles the program again once an answer lands: Compiler.h, "The self-test"),
+// Result::circuitKeys the keys of every netlist generated with a configuration to choose; the recipe keeps the
+// generated texts (Recipe::circuits), so freeze(), ir() and frozenIr() read the modules the program was compiled with
+// and never generate again: a frozen copy keeps its program's layout whatever the store holds by then.
 //
 // The methods the audio thread calls (process, start, stop) must not allocate: FMinus refuses a program whose methods
 // could reach calloc, malloc or free from them (init and end may: a delay line's memory). They need no
