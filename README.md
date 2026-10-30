@@ -233,10 +233,11 @@ module Voice
   Its errors name it ("filters.fm:3:12: error: ..."). FMinus has no other directive: no macros, no `#if`.
 - **The library.** Ready-made building blocks, tested by `fminus.library`: filters (`svf.fm`, `ladder.fm`,
   `onepole.fm`, `biquad.fm`), delays and reverb (`delay.fm`, `reverb.fm`), sources (`osc.fm`, `wavetable.fm`,
-  `noise.fm`), modulation (`adsr.fm`, `lfo.fm`, `follower.fm`), shaping and utilities (`shaper.fm`, `util.fm`), and
-  circuits (`diodetone.cir`, `screamer.cir`, `otalp.cir`: netlists, below). LIBRARY (the editor) or Claude adds one as
-  a tab of the program's own; `#include` it and use its modules (each file's header says how). It is then the
-  program's file like any other, saved with it, and yours to change. They live in
+  `noise.fm`), modulation (`adsr.fm`, `lfo.fm`, `follower.fm`), shaping and utilities (`shaper.fm`, `util.fm`, and
+  `oversample.fm`: 2x and 4x oversampling, IIR or FIR, the halfbands the circuits' modules use, for a shaper that would
+  alias), and circuits (`diodetone.cir`, `screamer.cir`, `otalp.cir`: netlists, below). LIBRARY (the editor) or Claude
+  adds one as a tab of the program's own; `#include` it and use its modules (each file's header says how). It is then
+  the program's file like any other, saved with it, and yours to change. They live in
   `Source/fminus/library/<n>-<category>/`, the same in both products.
 - **Circuits: a .cir file.** A file whose name ends in `.cir` is a SPICE-style netlist of an analog circuit (resistors,
   capacitors, inductors, pots, switches, diodes, OTAs, ideal op amps, DC and controlled sources; FMinus's

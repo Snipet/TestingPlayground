@@ -42,6 +42,11 @@
 //             the threshold, -(1 - 1/ratio) of the excess over it, the soft knee's middle
 //   SHAPER    drive and fold keep -1..1 (drive maps 1 to 1); soft clipping stays under 1; the crusher's steps
 //   UTIL      the conversions (440 Hz at note 69, a fifth, cents, dB), equal-power panning, the smoother's time
+//   OVERSAMPLE each of Oversample2, Oversample4 (IIR), Oversample2Fir and Oversample4Fir: a 1 kHz sine up and then down
+//             within 0.01 dB of its level, delayed by its header's figure (IIR 2.7 and 3.5 host samples, within 0.1;
+//             FIR 40 and 47, within 0.5); a 15 kHz tone's images after up (33, 63 and 81 kHz) at or below the
+//             stopband its header quotes, plus 1 dB; a tanh driven by a 5 kHz sine through Oversample4 aliases at
+//             least 20 dB less than at 1x
 #include "Probe.h"
 
 #include "Audio.h"
@@ -60,6 +65,7 @@
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <numbers>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -172,6 +178,19 @@ namespace
                 worst = std::max(worst, p.db);
         }
         return worst;
+    }
+
+    // The phase of the component at `hz` in x over [from, from + count) (a whole number of cycles), radians.
+    double phaseAt(const std::vector<float>& x, double hz, double fs, std::size_t from, std::size_t count)
+    {
+        double re = 0.0, im = 0.0;
+        for (std::size_t i = from; i < from + count && i < x.size(); ++i)
+        {
+            const double ph = 2.0 * std::numbers::pi * hz * static_cast<double>(i) / fs;
+            re += static_cast<double>(x[i]) * std::cos(ph);
+            im -= static_cast<double>(x[i]) * std::sin(ph);
+        }
+        return std::atan2(im, re);
     }
 
     // ---- the harnesses: each library file's modules run over buffers ------------------------------------------------
@@ -538,6 +557,70 @@ float smooth(float ms, int samples)
     for (int i = 0; i < samples; ++i)
         v = s.tick(1);
     return v;
+}
+)FM";
+
+const char* const kOversample = R"FM(#include "oversample.fm"
+
+// x (n host samples) up through one of the four (0 Oversample2, 1 Oversample4, 2 Oversample2Fir, 3 Oversample4Fir) into
+// hi (n times its factor), and straight back down into y.
+void osRun(float* x, float* hi, float* y, int n, int which)
+{
+    Oversample2 a;
+    Oversample4 b;
+    Oversample2Fir c;
+    Oversample4Fir d;
+    float v[4];
+    for (int i = 0; i < n; ++i)
+    {
+        if (which == 0)
+        {
+            a.up(x[i], v);
+            hi[2 * i] = v[0];
+            hi[2 * i + 1] = v[1];
+            y[i] = a.down(v);
+        }
+        else if (which == 1)
+        {
+            b.up(x[i], v);
+            for (int k = 0; k < 4; ++k)
+                hi[4 * i + k] = v[k];
+            y[i] = b.down(v);
+        }
+        else if (which == 2)
+        {
+            c.up(x[i], v);
+            hi[2 * i] = v[0];
+            hi[2 * i + 1] = v[1];
+            y[i] = c.down(v);
+        }
+        else
+        {
+            d.up(x[i], v);
+            for (int k = 0; k < 4; ++k)
+                hi[4 * i + k] = v[k];
+            y[i] = d.down(v);
+        }
+    }
+}
+
+// x through tanh(g x), at 1x (which 0) or at 4x through an Oversample4 (1), into y.
+void tanhRun(float* x, float* y, int n, float g, int which)
+{
+    Oversample4 os;
+    float v[4];
+    for (int i = 0; i < n; ++i)
+    {
+        if (which == 0)
+            y[i] = tanhf(g * x[i]);
+        else
+        {
+            os.up(x[i], v);
+            for (int k = 0; k < 4; ++k)
+                v[k] = tanhf(g * v[k]);
+            y[i] = os.down(v);
+        }
+    }
 }
 )FM";
 
@@ -1079,6 +1162,87 @@ PROBE(fminus, library)
         }
         if (smooth != nullptr)
             P.near("util.smooth_63_at_its_time", static_cast<double>(smooth(10.0f, 480)), 0.632, 0.002);
+    }
+
+    // ---- OVERSAMPLE ----------------------------------------------------------------------------------------------------
+    {
+        std::string errors;
+        const auto p = compileHarness(kOversample, errors);
+        P.eq("oversample.compile", p != nullptr && errors.empty() ? 1 : 0, 1);
+        if (!errors.empty())
+            std::printf("%s", errors.c_str());
+        P.eq("oversample.listed", pg::findLibraryFile("oversample.fm") != nullptr ? 1 : 0, 1);
+        auto* run = function<void(float*, float*, float*, int, int)>(p.get(), "osRun");
+        auto* drive = function<void(float*, float*, int, float, int)>(p.get(), "tanhRun");
+        const pg::LibraryFile* file = pg::findLibraryFile("oversample.fm");
+        const std::string header = file != nullptr ? file->source : "";
+        struct Kind
+        {
+            const char* name;
+            const char* key;                              // its rows'
+            int factor;
+            double delay, within;                         // the header's round trip at 1 kHz, host samples
+            double stopband;                              // the header's (the worse stage's, at 4x), dB
+            const char* quoted;                           // as the header says it
+        };
+        const Kind kinds[] = { { "Oversample2", "iir2", 2, 2.7, 0.1, -96.0, "-96 dB IIR" },
+                               { "Oversample4", "iir4", 4, 3.5, 0.1, -96.0, "-101 dB IIR" },
+                               { "Oversample2Fir", "fir2", 2, 40.0, 0.5, -94.0, "-94 dB FIR" },
+                               { "Oversample4Fir", "fir4", 4, 47.0, 0.5, -93.0, "-93 dB FIR" } };
+        if (run != nullptr)
+            for (int which = 0; which < 4; ++which)
+            {
+                const Kind& k = kinds[which];
+                const std::string key = std::string("oversample.") + k.key;
+                std::vector<float> x = probe::sine(1000.0, 0.5, kFs, n), hi(n * static_cast<std::size_t>(k.factor)), y(n);
+                run(x.data(), hi.data(), y.data(), N, which);
+                const std::size_t from = n / 2, count = n / 2;
+                const double level = probe::dbFromLin(probe::toneAmplitude(y, 1000.0, kFs, from, count) / probe::toneAmplitude(x, 1000.0, kFs, from, count));
+                double dphi = phaseAt(x, 1000.0, kFs, from, count) - phaseAt(y, 1000.0, kFs, from, count);
+                while (dphi < 0.0)
+                    dphi += 2.0 * std::numbers::pi;
+                while (dphi >= 2.0 * std::numbers::pi)
+                    dphi -= 2.0 * std::numbers::pi;
+                const double delay = dphi / (2.0 * std::numbers::pi) * (kFs / 1000.0);
+                // A 15 kHz tone up: its images at the higher rate (33 kHz, and at 4x 63 and 81 kHz) against the tone.
+                std::vector<float> t = probe::sine(15000.0, 0.5, kFs, n);
+                run(t.data(), hi.data(), y.data(), N, which);
+                const double fsHi = kFs * k.factor;
+                const std::size_t hiFrom = hi.size() / 2, hiCount = hi.size() / 2;
+                const double tone = probe::toneAmplitude(hi, 15000.0, fsHi, hiFrom, hiCount);
+                double image = 0.0;
+                for (const double f : { 33000.0, 63000.0, 81000.0 })
+                    if (f < fsHi / 2)
+                        image = std::max(image, probe::toneAmplitude(hi, f, fsHi, hiFrom, hiCount));
+                const double imageDb = probe::dbFromLin(image / tone);
+                std::printf("%s: 1 kHz %+.5f dB, delayed %.3f host samples; a 15 kHz tone's image %.1f dB (the header: %.0f dB)\n", k.name,
+                            level, delay, imageDb, k.stopband);
+                P.near(key + ".level_1k_db", level, 0.0, 0.01);
+                P.near(key + ".delay_1k_samples", delay, k.delay, k.within);
+                P.le(key + ".image_15k_db", imageDb, k.stopband + 1.0);
+                P.eq(key + ".header_quotes", header.find(k.quoted) != std::string::npos ? 1 : 0, 1);
+            }
+        if (drive != nullptr)
+        {
+            // tanh(4 x) of a 5 kHz sine at 0.5: its harmonics above 24 kHz fold back at 1x; what lands below 20 kHz on
+            // no harmonic of 5 kHz is the alias (every fold lands on a multiple of 1 kHz).
+            const std::vector<float> x = probe::sine(5000.0, 0.5, kFs, n);
+            const auto aliasDb = [&](int which) {
+                std::vector<float> y(n);
+                drive(const_cast<float*>(x.data()), y.data(), N, 4.0f, which);
+                double alias = 0.0;
+                for (int f = 1000; f <= 20000; f += 1000)
+                    if (f % 5000 != 0)
+                    {
+                        const double a = probe::toneAmplitude(y, f, kFs, n / 2, n / 2);
+                        alias += a * a;
+                    }
+                return 10.0 * std::log10(std::max(alias, 1e-30)) - probe::dbFromLin(probe::toneAmplitude(y, 5000.0, kFs, n / 2, n / 2));
+            };
+            const double at1 = aliasDb(0), at4 = aliasDb(1);
+            std::printf("tanh at 5 kHz: aliases %.1f dB at 1x, %.1f dB at 4x through Oversample4\n", at1, at4);
+            P.ge("oversample.tanh_aliases_20db_less", at1 - at4, 20.0);
+        }
     }
     return P.finish();
 }
