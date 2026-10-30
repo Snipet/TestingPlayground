@@ -1161,6 +1161,14 @@ namespace playground::cir
                 rest.push_back(static_cast<int>(k));
         std::stable_sort(rest.begin(), rest.end(), [&](int a, int b) { return naturalLess(d.parts[static_cast<std::size_t>(a)].name, d.parts[static_cast<std::size_t>(b)].name); });
         Taken taken;
+        // A stored wire counts where the router's grid can hold it (the placed parts' box and 18 around it): one drawn
+        // far out by hand neither pulls a part nor pushes an island away (the router drops it).
+        Box near;
+        for (const Part& p : d.parts)
+            if (p.placed)
+                near = near.joined(p.body);
+        near = near.grown(18);
+        const auto nearEdge = [&](const UnitEdge& e) { return near.contains(e.a) && near.contains(e.a + (e.h ? Pt{ 1, 0 } : Pt{ 0, 1 })); };
         const auto anchorsOf = [&](const Part& p, int net) {
             std::vector<Pt> out;
             const Net& n = d.nets[static_cast<std::size_t>(net)];
@@ -1171,10 +1179,11 @@ namespace playground::cir
                     out.push_back(q.pins[static_cast<std::size_t>(r.pin)].at);
             }
             for (const UnitEdge& e : n.edges)
-            {
-                out.push_back(e.a);
-                out.push_back(e.a + (e.h ? Pt{ 1, 0 } : Pt{ 0, 1 }));
-            }
+                if (nearEdge(e))
+                {
+                    out.push_back(e.a);
+                    out.push_back(e.a + (e.h ? Pt{ 1, 0 } : Pt{ 0, 1 }));
+                }
             return out;
         };
         while (!rest.empty())
@@ -1252,7 +1261,7 @@ namespace playground::cir
                         for (const int dx : { -ax, ax })
                         {
                             put(trial, target + Pt{ dx, dy }, o);
-                            bool clear = !taken.meets(trial.body.grown(1));
+                            bool clear = withinReach(trial.origin) && !taken.meets(trial.body.grown(1));
                             for (const PinAt& pin : trial.pins)
                                 if (clear && pin.net >= 0 && tagged(d.nets[static_cast<std::size_t>(pin.net)]))
                                     clear = !taken.meets(flagBox(pin.at, pin.out).grown(1));
@@ -1294,7 +1303,8 @@ namespace playground::cir
                     before = before.joined(p.body);
             for (const Net& n : d.nets)
                 for (const UnitEdge& e : n.edges)
-                    before = before.joined(Box::of(e.a, e.a + (e.h ? Pt{ 1, 0 } : Pt{ 0, 1 })));
+                    if (nearEdge(e))
+                        before = before.joined(Box::of(e.a, e.a + (e.h ? Pt{ 1, 0 } : Pt{ 0, 1 })));
             FullLayout(d, group).run();
             Box island;
             for (const int k : group)
@@ -1328,6 +1338,18 @@ namespace playground::cir
                     order_.clear();
                     order();
                     grid();
+                    if (wide_)
+                    {
+                        // the parts span more than the grid holds: no net is routed, every wired one is name tags
+                        budget_.wide = true;
+                        for (Net& net : d_.nets)
+                            if (net.style == Style::wired && !net.unroutable)
+                            {
+                                net.edges.clear();
+                                net.unroutable = net.pins.size() >= 2;
+                            }
+                        return;
+                    }
                     // 1. drop what is no longer valid, each net against those before it
                     for (const int n : order_)
                         validate(n);
@@ -1398,19 +1420,37 @@ namespace playground::cir
                 return d_.parts[static_cast<std::size_t>(r.part)].pins[static_cast<std::size_t>(r.pin)];
             }
 
+            // The grid: the drawing's box (its bodies and stored wires) and 18 around it, within what a line can say
+            // (kCoordLimit). Past kRouteCells points, the parts' box alone (a stored wire outside its 18 is dropped by
+            // validation); past them still, no grid at all (wide_: nothing is routed).
             void grid()
             {
-                Box b;
+                const auto areaOf = [](Box b) {
+                    if (b.empty())
+                        b = { 0, 0, 0, 0 };
+                    const Box g = b.grown(18);
+                    return Box{ std::max(g.x0, -kCoordLimit), std::max(g.y0, -kCoordLimit), std::min(g.x1, kCoordLimit),
+                                std::min(g.y1, kCoordLimit) };
+                };
+                const auto pointsOf = [](const Box& b) { return static_cast<long>(b.x1 - b.x0 + 1) * static_cast<long>(b.y1 - b.y0 + 1); };
+                Box parts;
                 for (const Part& p : d_.parts)
                     if (p.placed)
-                        b = b.joined(p.body);
+                        parts = parts.joined(p.body);
+                Box b = parts;
                 for (const Net& n : d_.nets)
                     for (const UnitEdge& e : n.edges)
                         b = b.joined(Box::of(e.a, e.a + (e.h ? Pt{ 1, 0 } : Pt{ 0, 1 })));
+                if (pointsOf(areaOf(b)) > kRouteCells)
+                    b = parts;
                 if (b.empty())
                     b = { 0, 0, 0, 0 };
                 bounds_ = b;
-                area_ = b.grown(18);
+                area_ = areaOf(b);
+                wide_ = pointsOf(area_) > kRouteCells;  // the parts' box alone decides it: the first pass's
+                budget_.cells = wide_ ? 0 : pointsOf(area_);
+                if (wide_)
+                    return;
                 w_ = area_.x1 - area_.x0 + 1;
                 h_ = area_.y1 - area_.y0 + 1;
                 const std::size_t cells = static_cast<std::size_t>(w_) * static_cast<std::size_t>(h_);
@@ -1755,7 +1795,9 @@ namespace playground::cir
                 const auto inRegion = [&](Pt p) { return region.contains(p); };
                 const std::size_t cells = static_cast<std::size_t>(w_) * static_cast<std::size_t>(h_);
                 // goals
-                std::vector<uint8_t> goal(cells, 0);
+                // (each search's state in the router's own arrays, filled again: no allocation once they are sized)
+                std::vector<uint8_t>& goal = searchGoal_;
+                goal.assign(cells, 0);
                 std::vector<Pt> goals;
                 for (const Pt p : tree.points)
                 {
@@ -1771,7 +1813,8 @@ namespace playground::cir
                 if (goals.empty())
                     return false;
                 // the heuristic: the L1 distance to the nearest goal (a two-pass transform)
-                std::vector<int> h(cells, INT_MAX / 4);
+                std::vector<int>& h = searchH_;
+                h.assign(cells, INT_MAX / 4);
                 for (const Pt p : goals)
                     h[at(p)] = 0;
                 for (int y = area_.y0; y <= area_.y1; ++y)
@@ -1793,7 +1836,8 @@ namespace playground::cir
                             v = std::min(v, h[at({ x, y + 1 })] + 1);
                     }
                 // the net's other pieces and its pins outside the tree and the source are walls
-                std::vector<uint8_t> blocked(cells, 0);
+                std::vector<uint8_t>& blocked = searchBlocked_;
+                blocked.assign(cells, 0);
                 for (const UnitEdge& e : edges_[static_cast<std::size_t>(n)])
                 {
                     blocked[at(e.a)] = 1;
@@ -1811,9 +1855,12 @@ namespace playground::cir
                     }
                 };
                 std::priority_queue<Node, std::vector<Node>, std::greater<Node>> open;
-                std::vector<int> g(cells * 5, INT_MAX);
-                std::vector<int> parent(cells * 5, -1);
-                std::vector<uint8_t> isGoal(cells * 5, 0);
+                std::vector<int>& g = searchG_;
+                std::vector<int>& parent = searchParent_;
+                std::vector<uint8_t>& isGoal = searchIsGoal_;
+                g.assign(cells * 5, INT_MAX);
+                parent.assign(cells * 5, -1);
+                isGoal.assign(cells * 5, 0);
                 const auto key = [&](Pt p, int head) { return at(p) * 5 + static_cast<std::size_t>(head); };
                 const auto push = [&](Pt p, int head, int cost, int par, bool done) {
                     const std::size_t k = key(p, head);
@@ -1913,6 +1960,9 @@ namespace playground::cir
             std::vector<int8_t> pinOut_;
             std::vector<int> hEdge_, vEdge_;
             std::vector<std::set<UnitEdge>> edges_;
+            bool wide_ = false;
+            std::vector<uint8_t> searchGoal_, searchBlocked_, searchIsGoal_;
+            std::vector<int> searchH_, searchG_, searchParent_;
         };
     }
 

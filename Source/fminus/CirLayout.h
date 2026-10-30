@@ -27,8 +27,8 @@
 // from the input, three barycentre sweeps, orientation by score, shunts and feedback rows as satellites, coordinates),
 // incremental placement of parts without a position (stable: it moves nothing placed), and repair of every wired net
 // (its stored route pruned of what is no longer valid, then extended by A* on the grid: a step 1, a bend 4, a crossing
-// 8). Integer arithmetic only, every sort with a total key, no hash map iterated, budgets counted (A* pops), never
-// timed: the same text gives the same drawing on every machine.
+// 8). Integer arithmetic only, every sort with a total key, no hash map iterated, budgets counted (A* pops, the grid's
+// points), never timed: the same text gives the same drawing on every machine.
 #pragma once
 
 #include <array>
@@ -57,6 +57,14 @@ namespace playground::cir
     };
 
     inline constexpr int kCoordLimit = 9999;      // a stored coordinate is -9999..9999
+    // A part's (or a terminal's) point is within -9979..9979: its body and pins reach 3 units further, the router's
+    // wires at most 16 beyond the drawing, so that everything a write says reads back. A part line past it is placed
+    // again (with a note), placement keeps within it, and an op that would go past it is refused.
+    inline constexpr int kPartLimit = kCoordLimit - 20;
+    constexpr bool withinReach(Pt p) noexcept
+    {
+        return p.x >= -kPartLimit && p.x <= kPartLimit && p.y >= -kPartLimit && p.y <= kPartLimit;
+    }
 
     enum class Dir : uint8_t { E, S, W, N };
     constexpr Pt unit(Dir d) noexcept
@@ -141,11 +149,19 @@ namespace playground::cir
     // bounds + 16), kPopsPerLayout a reconcile; past them a net is drawn as labels, with a note.
     inline constexpr long kPopsPerConnection = 50000;
     inline constexpr long kPopsPerLayout = 2000000;
+    // The router's grid is the drawing's box (bodies and stored wires) and 18 units around it, at most kRouteCells
+    // points (a 200-part drawing spans about 50,000), so that its memory and each search's setup stay bounded as the
+    // pops bound the searches. Past that, the parts' box alone is the grid (a stored wire outside it is dropped and its
+    // net routed again); a drawing whose parts alone span more (one moved thousands of units away) routes nothing:
+    // every wired net is drawn as name tags, with one note, and an op that would make a drawing so is refused.
+    inline constexpr long kRouteCells = 1L << 18;
 
     struct Budget
     {
         long pops = 0;                            // spent in this reconcile
         long most = 0;                            // the most one connection took
+        long cells = 0;                           // the router's grid, in points (the last pass's)
+        bool wide = false;                        // the parts span more than kRouteCells: nothing routed
     };
 
     // Every part of the drawing laid out from nothing (spec 7.2-7.7), every route cleared.

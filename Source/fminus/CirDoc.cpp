@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdlib>
 #include <map>
 #include <set>
 #include <utility>
@@ -43,6 +44,16 @@ namespace playground::cir
             return l;
         }
 
+        // A line as a write keeps it: a CRLF line's CR dropped (FMinus drops one CR, the editor every CR LF), a line
+        // that ends in more CRs kept as it is (FMinus reads the rest of them as part of the line, so they stay), so that
+        // FMinus reads the same, and writing again changes nothing.
+        std::string_view lfLine(std::string_view l) noexcept
+        {
+            if (l.size() >= 2 && l[l.size() - 1] == '\r' && l[l.size() - 2] == '\r')
+                return l;
+            return withoutCr(l);
+        }
+
         std::string joined(const std::vector<std::string>& lines)
         {
             std::string out;
@@ -60,6 +71,12 @@ namespace playground::cir
         }
 
         std::string ptText(Pt p) { return std::to_string(p.x) + "," + std::to_string(p.y); }
+
+        // An op's refusal of a point past kPartLimit.
+        std::string farOut(Pt p)
+        {
+            return ptText(p) + " is too far out (a part's point is within -" + std::to_string(kPartLimit) + ".." + std::to_string(kPartLimit) + ")";
+        }
 
         std::optional<Pt> ptOf(std::string_view s)
         {
@@ -514,7 +531,7 @@ namespace playground::cir
                 continue;
             if (!first)
                 out += '\n';
-            out += l;
+            out += lfLine(l);                         // CRLF and LF: the same netlist
             first = false;
         }
         if (!out.empty() && out.back() != '\n')
@@ -727,7 +744,9 @@ namespace playground::cir
         for (const std::string_view raw : splitAt(text))
         {
             ++ln;
-            const std::string_view l = withoutCr(raw);
+            std::string_view l = raw;
+            while (!l.empty() && l.back() == '\r')
+                l.remove_suffix(1);                       // a comment FMinus never reads: every CR at its end goes
             if (!isLayoutLine(l))
                 continue;
             lay.lines.push_back(ln);
@@ -1333,12 +1352,22 @@ namespace playground::cir
         }
 
         // Positions: the lines', then the session's.
+        // A point past kPartLimit (its wires could not be written) is not taken: the part is placed again.
+        const auto inReach = [&](const std::string& kw, const std::string& name, Pt at, int line) {
+            if (withinReach(at))
+                return true;
+            d.notes.push_back((line >= 0 ? "line " + std::to_string(line + 1) + ": " : std::string()) + "*@ " + kw + " " + name + ": "
+                              + farOut(at) + ": placed again");
+            return false;
+        };
         for (std::size_t k = 0; k < d.parts.size(); ++k)
         {
             Part& p = d.parts[k];
             if (p.element >= 0 && partLine[k] >= 0)
             {
                 const PartLine& l = layout.parts[static_cast<std::size_t>(partLine[k])];
+                if (!inReach("part", p.name, l.at, l.line))
+                    continue;
                 put(p, l.at, l.orient);
                 p.extra = l.extra;
                 p.source = Source::stored;
@@ -1348,7 +1377,10 @@ namespace playground::cir
                 const int t = p.kind == Kind::Input ? 0 : 1;
                 if (termLine[t] >= 0)
                 {
-                    put(p, (t == 0 ? layout.inputs : layout.outputs)[static_cast<std::size_t>(termLine[t])].at, Orient::r0);
+                    const TerminalLine& l = (t == 0 ? layout.inputs : layout.outputs)[static_cast<std::size_t>(termLine[t])];
+                    if (!inReach(t == 0 ? "input" : "output", p.name, l.at, l.line))
+                        continue;
+                    put(p, l.at, Orient::r0);
                     p.source = Source::stored;
                 }
             }
@@ -1360,7 +1392,7 @@ namespace playground::cir
             if (p.element >= 0)
             {
                 for (const PartLine& l : pins.parts)
-                    if (folded(l.name) == folded(p.name))
+                    if (folded(l.name) == folded(p.name) && withinReach(l.at))
                     {
                         put(p, l.at, l.orient);
                         p.extra = l.extra;
@@ -1370,7 +1402,7 @@ namespace playground::cir
             }
             else
                 for (const TerminalLine& l : p.kind == Kind::Input ? pins.inputs : pins.outputs)
-                    if (folded(l.name) == folded(p.name))
+                    if (folded(l.name) == folded(p.name) && withinReach(l.at))
                     {
                         put(p, l.at, Orient::r0);
                         p.source = Source::session;
@@ -1403,10 +1435,24 @@ namespace playground::cir
             layoutAll(d, nl);
         else
             placeRest(d, nl);
+        // within reach (a ladder of a thousand sections, an island right of a drawing at the edge): the nearest point
+        for (Part& p : d.parts)
+            if (p.placed && !withinReach(p.origin))
+                put(p, { std::clamp(p.origin.x, -kPartLimit, kPartLimit), std::clamp(p.origin.y, -kPartLimit, kPartLimit) }, p.orient);
         repairAll(d, d.budget);
-        for (const Net& n : d.nets)
-            if (n.unroutable)
-                d.notes.push_back("net " + n.name + ": no route within the budget: drawn as name tags");
+        if (d.budget.wide)
+        {
+            Box b;
+            for (const Part& p : d.parts)
+                b = b.joined(p.body);
+            d.notes.push_back("the parts span " + std::to_string(b.x1 - b.x0 + 1) + " x " + std::to_string(b.y1 - b.y0 + 1)
+                              + " units, past what the router wires (" + std::to_string(kRouteCells)
+                              + " grid points): every net is drawn as name tags");
+        }
+        else
+            for (const Net& n : d.nets)
+                if (n.unroutable)
+                    d.notes.push_back("net " + n.name + ": no route within the budget: drawn as name tags");
         finish(d);
         return d;
     }
@@ -1493,11 +1539,13 @@ namespace playground::cir
             lines.pop_back();                             // the empty piece after the last line break
         if (text.empty())
             lines.clear();
+        // every line as it is written (lfLine): a CRLF text comes out as the same text in LF, as the editor keeps a text
+        // (TextEditor::sanitise), not with its block's lines alone in LF
         std::vector<std::string_view> kept;
         for (const std::string_view l : lines)
             if (!isLayoutLine(l))
-                kept.push_back(l);
-        // the first .end, as FMinus finds it
+                kept.push_back(lfLine(l));
+        // the first .end, as FMinus finds it in the lines written
         std::size_t at = kept.size();
         for (std::size_t i = 0; i < kept.size(); ++i)
         {
@@ -1660,7 +1708,10 @@ namespace playground::cir
     namespace
     {
         // The edits that make `before` into `after`: whole lines matched by their longest common subsequence, a run of
-        // changed lines replaced by as many patched between their common prefix and suffix, any other run whole.
+        // changed lines replaced by as many patched between their common prefix and suffix, any other run whole. Past
+        // kLcsCells (thousands of lines between the first and the last change) the lines between them are one run.
+        constexpr std::size_t kLcsCells = std::size_t{ 1 } << 22;
+
         std::vector<Edit> diffEdits(std::string_view before, std::string_view after)
         {
             std::vector<Edit> out;
@@ -1676,16 +1727,21 @@ namespace playground::cir
                 ++suf;
             const std::size_t a0 = pre, a1 = nA - suf, b0 = pre, b1 = nB - suf;
             const std::size_t n = a1 - a0, m = b1 - b0;
-            std::vector<int> lcs((n + 1) * (m + 1), 0);
+            const bool whole = (n + 1) > kLcsCells / (m + 1);
+            std::vector<int> lcs(whole ? 0 : (n + 1) * (m + 1), 0);
             const auto L = [&](std::size_t i, std::size_t j) -> int& { return lcs[i * (m + 1) + j]; };
-            for (std::size_t i = n; i-- > 0;)
-                for (std::size_t j = m; j-- > 0;)
-                    L(i, j) = A[a0 + i] == B[b0 + j] ? L(i + 1, j + 1) + 1 : std::max(L(i + 1, j), L(i, j + 1));
+            if (!whole)
+                for (std::size_t i = n; i-- > 0;)
+                    for (std::size_t j = m; j-- > 0;)
+                        L(i, j) = A[a0 + i] == B[b0 + j] ? L(i + 1, j + 1) + 1 : std::max(L(i + 1, j), L(i, j + 1));
             struct Hunk
             {
                 std::size_t i0, i1, j0, j1;
             };
             std::vector<Hunk> hunks;
+            if (whole)
+                hunks.push_back({ a0, a1, b0, b1 });
+            else
             {
                 std::size_t i = 0, j = 0;
                 Hunk h{ a0, a0, b0, b0 };
@@ -1724,6 +1780,8 @@ namespace playground::cir
                     for (std::size_t k = 0; k < h.i1 - h.i0; ++k)
                     {
                         const std::string_view a = A[h.i0 + k], b = B[h.j0 + k];
+                        if (a == b)
+                            continue;                     // (a whole run's line that did not change)
                         std::size_t c = 0;
                         while (c < a.size() && c < b.size() && a[c] == b[c])
                             ++c;
@@ -2000,6 +2058,8 @@ namespace playground::cir
         {
             if (op.lines.empty())
                 return "nothing to add";
+            if (op.at && !withinReach(*op.at))
+                return farOut(*op.at);
             std::vector<std::string> directives;
             std::string element, elementName;
             for (const std::string& line : op.lines)
@@ -2117,6 +2177,8 @@ namespace playground::cir
             }
             if (!op.at)
                 return "place needs X,Y";
+            if (!withinReach(*op.at))
+                return farOut(*op.at);
             const Part part = w.d.parts[static_cast<std::size_t>(p)];
             if (part.element >= 0)
             {
@@ -2290,20 +2352,13 @@ namespace playground::cir
                         for (const Pt p : pinAt)
                             if (find(p) == find(l))
                                 unite(net.labels.front(), p);
-            int anchor = 0;
-            for (std::size_t k = 0; k < net.pins.size(); ++k)
-                if (w.d.parts[static_cast<std::size_t>(net.pins[k].part)].kind == Kind::Input)
-                {
-                    anchor = static_cast<int>(k);
-                    break;
-                }
-            if (anchor == 0)
-                for (std::size_t k = 0; k < net.pins.size(); ++k)
-                    if (w.d.parts[static_cast<std::size_t>(net.pins[k].part)].kind == Kind::Output)
-                    {
+            // the anchor (as the router's): the input's pin, else the output's, else the first pin in line order
+            int anchor = -1;
+            for (int pass = 0; pass < 2 && anchor < 0; ++pass)
+                for (std::size_t k = 0; k < net.pins.size() && anchor < 0; ++k)
+                    if (w.d.parts[static_cast<std::size_t>(net.pins[k].part)].kind == (pass == 0 ? Kind::Input : Kind::Output))
                         anchor = static_cast<int>(k);
-                        break;
-                    }
+            anchor = std::max(anchor, 0);
             if (net.pins.empty())
                 return net.name + " has no pin drawn";
             const Pt home = find(pinAt[static_cast<std::size_t>(anchor)]);
@@ -2984,10 +3039,24 @@ namespace playground::cir
                 for (const std::string& l : linesOf(patched(text, std::move(repl))))
                     lines.push_back(l);
             }
+            // the drawing: positions from the selection's top-left to `at`, every one within what a line says
+            const Pt to = op.at.value_or(Pt{ 0, 0 });
+            for (const PartLine& p : lay.parts)
+                if (names.find(folded(p.name)) != names.end() && !withinReach(p.at + to))
+                    return p.name + ": " + farOut(p.at + to);
+            for (const NetLine& n : lay.nets)
+            {
+                if (nodes.find(nodeKey(n.node)) == nodes.end())
+                    continue;                             // not pasted (ground's, or a node no element names)
+                std::vector<Pt> points = n.labels;
+                for (const Polyline& poly : n.route)
+                    points.insert(points.end(), poly.begin(), poly.end());
+                for (const Pt q : points)
+                    if (std::abs(q.x + to.x) > kCoordLimit || std::abs(q.y + to.y) > kCoordLimit)
+                        return "net " + n.node + ": " + ptText(q + to) + " is past -" + std::to_string(kCoordLimit) + ".." + std::to_string(kCoordLimit);
+            }
             const int at = w.nl.lastElementLine >= 0 ? w.nl.lastElementLine + 1 : w.nl.endLine >= 0 ? w.nl.endLine : 1 << 30;
             w.text = withLines(w.text, at, lines);
-            // the drawing: positions from the selection's top-left to `at`
-            const Pt to = op.at.value_or(Pt{ 0, 0 });
             for (const PartLine& p : lay.parts)
                 if (const auto it = names.find(folded(p.name)); it != names.end())
                     w.layout.parts.push_back({ it->second, p.at + to, p.orient, p.extra, -1 });
@@ -3073,6 +3142,15 @@ namespace playground::cir
                 case Op::Type::style: why = doLabel(w, op, out, true); break;
                 case Op::Type::paste: why = doPaste(w, op, out); break;
                 case Op::Type::layout: why = doLayout(w, op, out); break;
+            }
+            // a drawing the router wires stays one: its parts never spread past its grid (Budget::wide)
+            if (why.empty() && !d.budget.wide && w.d.budget.wide)
+            {
+                Box b;
+                for (const Part& p : w.d.parts)
+                    b = b.joined(p.body);
+                why = "the parts would span " + std::to_string(b.x1 - b.x0 + 1) + " x " + std::to_string(b.y1 - b.y0 + 1)
+                    + " units, past what the router wires (" + std::to_string(kRouteCells) + " grid points)";
             }
             if (!why.empty())
             {

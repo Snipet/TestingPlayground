@@ -309,7 +309,8 @@ namespace playground::cir
     // The drawing as a block's lines (every part placed, every route): what writeBlock writes, as a Layout.
     Layout layoutOf(const Netlist& nl, const Drawing& d);
     std::string writeBlock(const Netlist& nl, const Drawing& d);   // §4.4: each line ends in LF
-    // `text` with every *@ line removed and `block` placed (§4.4.6).
+    // `text` with every *@ line removed and `block` placed (§4.4.6), in LF: a CRLF line's CR dropped, as FMinus and the
+    // editor drop it (a line that ends in more CRs is kept as it is: FMinus reads the rest as part of the line).
     std::string withBlock(std::string_view text, std::string_view block);
     // `text` with its drawing written: what the first gesture on a text-only netlist writes (the drawing reconciled).
     std::string written(std::string_view text, const SessionPins& pins = {});
@@ -389,7 +390,8 @@ namespace playground::cir
 
     // ---- the text helpers -------------------------------------------------------------------------------------------
     bool isLayoutLine(std::string_view line) noexcept;   // its first non-blank characters are "*@"
-    // `text` without its *@ lines, ending in a line break when anything is left (FMinus reads both the same).
+    // `text` without its *@ lines, in LF as withBlock writes it, ending in a line break when anything is left (FMinus
+    // reads all these the same: the block or not, CRLF or LF, the final line break or not).
     std::string stripLayout(std::string_view text);
     bool sameNetlist(std::string_view a, std::string_view b);
     // When sameNetlist(from, to): for each line of `from`, the line of `to` with the same ordinal among the lines that

@@ -4,11 +4,12 @@
 // comment lines, which FMinus never reads. On the library's netlists (Library.h's .cir files, the ones the examples
 // #include) and on planted ones:
 //   FORMAT     write(read(x)) is a fixed point (the block, and the text written with it); the block's lines shuffled,
-//              spaced oddly, its keywords upper-case, the text in CRLF, the block split around the file or after .end:
-//              all write the same bytes; unknown *@ lines are kept; a `*@ schematic 2` block is read only (never
+//              spaced oddly, its keywords upper-case, the text in CRLF (written in LF, the same netlist), the block
+//              split around the file or after .end: all write the same bytes; unknown *@ lines are kept; a `*@ schematic 2` block is read only (never
 //              rewritten, every op refused); 120 mutated texts (lines deleted, swapped, a character changed, nodes,
-//              parts and *@ lines planted, two elements of one name): every write a fixed point that changes no
-//              netlist line, and the edits of an op list applied to one make the text apply() says
+//              parts and *@ lines planted, two elements of one name, parts and stray routes far out, CRs): every write
+//              a fixed point that changes no netlist line, and the edits of an op list applied to one make the text
+//              apply() says
 //   INVISIBLE  for every library netlist, generate() with and without its block gives the same source, errors,
 //              warnings and notes byte for byte and the same selfTestKey; a + continuation across a *@ line joins
 //   LAYOUT     two runs give the same bytes; no two bodies, flags or terminals overlap; every wired net's route reaches
@@ -19,18 +20,25 @@
 //   STABLE     a shunt, a series part and a feedback part added by text, then written: every earlier part line and
 //              every untouched net's line byte for byte as it was
 //   EDITS      every op of the spec's §6.3 gives the exact expected text (merge naming: ground, then a directive's
-//              node, then a user's name over n<k>, then the earlier mention; a cut: the anchor's side keeps the name);
-//              the edits are sorted, apart, and make the text the result says; a failing op in a list changes nothing
-//              and names that op; parseOp reads edit_circuit's grammar
+//              node, then a user's name over n<k>, then the earlier mention; a cut: the anchor's side keeps the name,
+//              the input's when it is the net's first pin and the output is on it too); label's tags, connect's drawn
+//              path and a cut's split wires as the exact net lines, on netlists drawn by hand; the edits are sorted,
+//              apart, and make the text the result says (on a text of 2,500 lines too); a failing op in a list changes
+//              nothing and names that op; parseOp reads edit_circuit's grammar
 //   PINS       placing each of the 13 kinds writes the spec's §5 line; `connect R4.2 XU1.inn` rewrites XU1's token 2;
 //              for every library netlist each drawn pin's token is the one FMinus's Netlist.cpp reads for it (this
 //              probe's own reading of its tokens and table); screamer's feedback is found on inn-out (inn's end left)
 //   RECONCILE  a part renamed in the text keeps its place; renames of two kinds at once both keep theirs; a renamed
 //              node keeps its route; two renames of one kind are placed again, with a note; a deleted part loses its
-//              line and its stubs, nothing else; session pins hold an unplaced part where the view drew it
+//              line and its stubs, nothing else; session pins hold an unplaced part where the view drew it; a part line
+//              past reach (-9979..9979) is placed again, with a note
 //   TEXT       stripLayout, sameNetlist, lineMap and sameProgram on planted cases
 //   BUDGET     the A* pops of each library netlist's layout, printed, below the caps; the times of a reconcile and a
-//              full layout at 60 parts printed (never asserted)
+//              full layout at 60 parts printed (never asserted); the router's grid bounded: a part moved 9,000 units
+//              away routes nothing (every wired net name tags, one note, the write a fixed point), an op that would do
+//              so is refused, as is a point past reach (place, add, paste); a stray route far out is dropped and the
+//              net routed again; a drawing at the edge of reach places a new part within it and writes only what
+//              reads back
 #include "Probe.h"
 
 #include "Library.h"
@@ -45,6 +53,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <map>
 #include <optional>
 #include <set>
@@ -181,6 +190,8 @@ namespace
         }
         return whole;
     }
+
+    std::string ptText(cir::Pt p) { return std::to_string(p.x) + "," + std::to_string(p.y); }
 
     std::string partLine(const std::string& text, const std::string& name)
     {
@@ -423,7 +434,8 @@ PROBE(fminus, schematic)
             same(P, "format.upper_case", cir::written(joined(t)), base);
             const std::string crlf = replacedAll(base, "\n", "\r\n");
             same(P, "format.crlf_block", blockOf(crlf), blockOf(base));
-            same(P, "format.crlf_text", cir::sanitised(cir::written(crlf)), base);
+            same(P, "format.crlf_text", cir::written(crlf), base);   // in LF, as the editor keeps a text
+            P.eq("format.crlf_same_netlist", cir::sameNetlist(crlf, base) && cir::lineMap(crlf, base).size() == linesOf(crlf).size() ? 1 : 0, 1);
         }
         // split around the file; after .end
         {
@@ -439,7 +451,8 @@ PROBE(fminus, schematic)
             same(P, "format.after_end", cir::written(joined(after) + "\n"), base);
         }
         // mutated texts (lines deleted and swapped, a character changed, a node, a part and *@ lines planted, two
-        // elements of one name): every write a fixed point that changes no netlist line, and an op list applied
+        // elements of one name, a part anywhere a line can say, a stray route far out, CRs at the lines' ends): every
+        // write a fixed point that changes no netlist line, and an op list applied
         {
             uint32_t seed = 12345;
             const auto next = [&seed] {
@@ -458,7 +471,7 @@ PROBE(fminus, schematic)
                     for (uint32_t k = 0; k < edits && !l.empty(); ++k)
                     {
                         const std::size_t i = next() % l.size();
-                        switch (next() % 7)
+                        switch (next() % 10)
                         {
                             case 0: l.erase(l.begin() + static_cast<std::ptrdiff_t>(i)); break;
                             case 1: std::swap(l[i], l[next() % l.size()]); break;
@@ -479,8 +492,21 @@ PROBE(fminus, schematic)
                                                                                       + std::to_string(static_cast<int>(next() % 80) - 20) + ","
                                                                                       + std::to_string(static_cast<int>(next() % 40) - 20));
                                 break;
-                            default:
+                            case 6:
                                 l.insert(l.begin() + static_cast<std::ptrdiff_t>(i), "*@ net " + nodes[next() % nodes.size()] + " 0,0 " + std::to_string(next() % 30) + ",0");
+                                break;
+                            case 7:   // a part anywhere a line can say, past reach too
+                                l.insert(l.begin() + static_cast<std::ptrdiff_t>(i), "*@ part R" + std::to_string(next() % 12) + " "
+                                                                                      + std::to_string(static_cast<int>(next() % 19999) - 9999) + ","
+                                                                                      + std::to_string(static_cast<int>(next() % 19999) - 9999));
+                                break;
+                            case 8:   // a stray route far out
+                                l.insert(l.begin() + static_cast<std::ptrdiff_t>(i), "*@ net " + nodes[next() % nodes.size()] + " "
+                                                                                      + std::to_string(static_cast<int>(next() % 19999) - 9999) + ",5 9999,5 9999,-9999");
+                                break;
+                            default:  // a CR at every line's end (twice: two)
+                                for (std::string& x : l)
+                                    x += "\r";
                                 break;
                         }
                     }
@@ -491,7 +517,7 @@ PROBE(fminus, schematic)
                     kept += cir::sameNetlist(t, w) ? 1 : 0;
                     std::string why;
                     std::vector<cir::Op> ops;
-                    for (const char* o : { "place R1 3,-7 r90", "connect R1.2 0", "rename R1 R77", "delete C1", "layout" })
+                    for (const char* o : { "place R1 3,-7 r90", "connect R1.2 0", "rename R1 R77", "place C1 9000,40", "delete C1", "layout" })
                         if (const std::optional<cir::Op> op = cir::parseOp(o, why))
                             ops.push_back(*op);
                     const cir::Applied a = cir::apply(w, cir::reconcile(w), std::span<const cir::Op>(ops.data(), 1 + next() % ops.size()));
@@ -784,6 +810,95 @@ PROBE(fminus, schematic)
             label.name = "c";
             const cir::Applied b = cir::apply(drawn, cir::reconcile(drawn), std::span<const cir::Op>(&label, 1));
             P.eq("edits.label_none", b.error.find("no net c") != std::string::npos ? 1 : 0, 1);
+            // two tags on net a's route (given in any order): written sorted, before the route, in its line alone
+            const cir::Drawing d = cir::reconcile(drawn);
+            const cir::Net& na = d.nets[static_cast<std::size_t>(d.net("a"))];
+            label.name = "a";
+            label.points = { na.edges.back().a, na.edges.front().a };
+            std::vector<cir::Pt> tags = label.points;
+            std::sort(tags.begin(), tags.end());
+            const cir::Applied c = cir::apply(drawn, d, std::span<const cir::Op>(&label, 1));
+            const std::string was = netLine(drawn, "a");
+            const std::string want = "*@ net a label=" + ptText(tags[0]) + " label=" + ptText(tags[1]) + was.substr(std::string("*@ net a").size());
+            same(P, "edits.label", netLine(c.text, "a"), want);
+            P.eq("edits.label_line_only", cir::stripLayout(c.text) == base && joined(layoutLines(c.text)) == replaced(joined(layoutLines(drawn)), was, want) ? 1 : 0, 1);
+        }
+        // a drawn netlist (its block written by hand, canonical): one net of four pins, m
+        {
+            const std::string ladder = "* ladder.cir: a planted netlist, drawn\n"
+                                       ".input u in\n"
+                                       ".output y o\n"
+                                       "R1 in m 1k\n"
+                                       "C1 m 0 10n\n"
+                                       "C2 m 0 22n\n"
+                                       "R2 m o 1k\n"
+                                       "*@ schematic 1 (the playground's drawing; SPICE reads *@ lines as comments)\n"
+                                       "*@ input u 0,0\n"
+                                       "*@ output y 27,0\n"
+                                       "*@ part C1 10,5 r90\n"
+                                       "*@ part C2 14,5 r90\n"
+                                       "*@ part R1 6,0\n"
+                                       "*@ part R2 21,0\n"
+                                       "*@ net in 0,0 4,0\n"
+                                       "*@ net m 8,0 19,0 | 10,0 10,3 | 14,0 14,3\n"
+                                       "*@ net o 23,0 27,0\n"
+                                       ".end\n";
+            P.eq("edits.planted_drawn", cir::written(ladder) == ladder ? 1 : 0, 1);
+            const std::string plain = cir::stripLayout(ladder);
+            // connect with a drawn path: o into in (the input's node), the path joining in's route as drawn
+            cir::Op con;
+            con.type = cir::Op::Type::connect;
+            con.a = { "R2", "2", "" };
+            con.b = { "R1", "1", "" };
+            con.path = { { 23, 0 }, { 24, 0 }, { 24, -4 }, { 3, -4 }, { 3, 0 }, { 4, 0 } };
+            const cir::Applied a = cir::apply(ladder, cir::reconcile(ladder), std::span<const cir::Op>(&con, 1));
+            same(P, "edits.connect_path", cir::stripLayout(a.text), with(with(plain, ".output y o", ".output y in"), "R2 m o 1k", "R2 m in 1k"));
+            same(P, "edits.connect_path_route", netLine(a.text, "in") + " / " + netLine(a.text, "o"),
+                 "*@ net in 0,0 4,0 | 3,0 3,-4 24,-4 24,0 | 23,0 27,0 / (none)");
+            // cut between C1's and C2's drops: R1's side (m's first pin) keeps m, the other side's wires go to n1
+            cir::Op cut;
+            cut.type = cir::Op::Type::cut;
+            cut.name = "m";
+            cut.path = { { 10, 0 }, { 14, 0 } };
+            const cir::Applied r = cir::apply(ladder, cir::reconcile(ladder), std::span<const cir::Op>(&cut, 1));
+            same(P, "edits.cut_split", cir::stripLayout(r.text), with(with(plain, "C2 m 0 22n", "C2 n1 0 22n"), "R2 m o 1k", "R2 n1 o 1k"));
+            same(P, "edits.cut_split_routes", netLine(r.text, "m") + " / " + netLine(r.text, "n1"), "*@ net m 8,0 10,0 10,3 / *@ net n1 14,3 14,0 19,0");
+        }
+        // cut: the input's side keeps the name when the input is the net's first pin and the output is on it too
+        {
+            const std::string chain = "* chain.cir: a planted netlist, drawn\n"
+                                      ".input  u x\n"
+                                      ".output y x\n"
+                                      "R1 x 0 1k\n"
+                                      "C1 x 0 10n\n"
+                                      "*@ schematic 1 (the playground's drawing; SPICE reads *@ lines as comments)\n"
+                                      "*@ input u 0,0\n"
+                                      "*@ output y 11,0\n"
+                                      "*@ part C1 2,5 r90\n"
+                                      "*@ part R1 6,5 r90\n"
+                                      "*@ net x 0,0 11,0 | 2,0 2,3 | 6,0 6,3\n"
+                                      ".end\n";
+            P.eq("edits.planted_chain", cir::written(chain) == chain ? 1 : 0, 1);
+            cir::Op cut;
+            cut.type = cir::Op::Type::cut;
+            cut.name = "x";
+            cut.path = { { 6, 0 }, { 11, 0 } };
+            const cir::Applied r = cir::apply(chain, cir::reconcile(chain), std::span<const cir::Op>(&cut, 1));
+            same(P, "edits.cut_input_first", cir::stripLayout(r.text), with(cir::stripLayout(chain), ".output y x", ".output y n1"));
+        }
+        // a long text (2,500 comment lines between R1 and the block, past what the line diff matches line by line):
+        // the edits still make the text, the unchanged lines untouched
+        {
+            std::string t = "* long.cir\n.input u in\n.output y out\nR1 in out 1k\n";
+            for (int k = 0; k < 2500; ++k)
+                t += "* filler " + std::to_string(k) + "\n";
+            t += ".end\n";
+            const std::string w = cir::written(t);
+            const cir::Applied a = run(w, { "rename R1 R2" });
+            bool apart = false;
+            P.eq("edits.long_text", a.error.empty() && edited(w, a.edits, apart) == a.text && apart && a.edits.size() == 2 && partLine(a.text, "R2") != "(none)" ? 1 : 0, 1);
+            const cir::Applied b = run(w, { "add R5 in 0 1k" });
+            P.eq("edits.long_text_add", b.error.empty() && edited(w, b.edits, apart) == b.text && apart && partLine(b.text, "R5") != "(none)" ? 1 : 0, 1);
         }
         // paste: the names that collide take the next free, every node a fresh one but ground, positions offset
         {
@@ -989,6 +1104,19 @@ PROBE(fminus, schematic)
             P.eq("reconcile.session_written", partLine(cir::written(t, pins), "C9") == "*@ part C9 2,12 r90" ? 1 : 0, 1);
             P.eq("reconcile.others_still", at(d, "R2") == r2 ? 1 : 0, 1);
         }
+        {
+            // a part line past reach (its pins' wires could not be written): placed again, with a note; the write of
+            // that a fixed point
+            const std::string t = replaced(tone, partLine(tone, "R1"), "*@ part R1 9990,0");
+            const cir::Drawing d = cir::reconcile(t);
+            const cir::Part* p = partOf(d, "R1");
+            const bool noted = std::any_of(d.notes.begin(), d.notes.end(), [](const std::string& n) {
+                return n.find("*@ part R1: 9990,0 is too far out") != std::string::npos && n.find("placed again") != std::string::npos;
+            });
+            P.eq("reconcile.far_part_placed", p != nullptr && p->source == cir::Source::placed && cir::withinReach(p->origin) && noted ? 1 : 0, 1);
+            const std::string w = cir::written(t);
+            P.eq("reconcile.far_part_fixed", cir::written(w) == w ? 1 : 0, 1);
+        }
     }
 
     // ---- TEXT ---------------------------------------------------------------------------------------------------------
@@ -996,6 +1124,7 @@ PROBE(fminus, schematic)
         same(P, "text.strip", cir::stripLayout("a\n*@ part R1 0,0\nb\n  *@ net a 0,0 1,0\n"), "a\nb\n");
         same(P, "text.strip_end", cir::stripLayout("a\n*@ x"), "a\n");
         same(P, "text.strip_only", cir::stripLayout("*@ x\n"), "");
+        same(P, "text.strip_crlf", cir::stripLayout("a\r\n*@ x\r\nb\r\n"), "a\nb\n");
         P.eq("text.not_layout", cir::isLayoutLine("* @ x") || cir::isLayoutLine("R1 a b 1k ;*@") || !cir::isLayoutLine("\t*@x") ? 0 : 1, 1);
         P.eq("text.same_netlist", cir::sameNetlist("R1 a b 1k\n*@ part R1 0,0\n.end\n", "*@ net a 1,0 2,0\nR1 a b 1k\n.end") ? 1 : 0, 1);
         P.eq("text.other_netlist", cir::sameNetlist("R1 a b 1k\n", "R1 a b 2k\n") ? 0 : 1, 1);
@@ -1033,7 +1162,8 @@ PROBE(fminus, schematic)
         for (const pg::SourceFile& f : library)
         {
             const cir::Drawing d = cir::reconcile(f.text);
-            std::printf("budget: %s: %ld A* pops, at most %ld a connection\n", f.name.c_str(), d.budget.pops, d.budget.most);
+            std::printf("budget: %s: %ld A* pops, at most %ld a connection, a grid of %ld points\n", f.name.c_str(), d.budget.pops, d.budget.most,
+                        d.budget.cells);
             P.le("budget." + f.name + ".connection", static_cast<double>(d.budget.most), static_cast<double>(cir::kPopsPerConnection));
             P.le("budget." + f.name + ".layout", static_cast<double>(d.budget.pops), static_cast<double>(cir::kPopsPerLayout));
         }
@@ -1054,6 +1184,95 @@ PROBE(fminus, schematic)
         std::printf("budget: 60 parts: the full layout %.2f ms, a reconcile of its drawing %.2f ms, %ld pops\n",
                     std::chrono::duration<double, std::milli>(t1 - t0).count(), std::chrono::duration<double, std::milli>(t2 - t1).count(), d.budget.pops);
         P.eq("budget.sixty_drawn", d.parts.size() == 62 && d.overlaps.empty() ? 1 : 0, 1);
+    }
+    // The router's grid stays bounded (kRouteCells), and everything a write says reads back (kPartLimit).
+    {
+        const std::string tone = cir::written(libraryText("diodetone.cir"));
+        // a part moved thousands of units away by hand: nothing routed, every wired net name tags, one note
+        const std::string far = replaced(tone, partLine(tone, "C2"), "*@ part C2 9000,9000 r90");
+        const cir::Drawing d = cir::reconcile(far);
+        int wired = 0, tags = 0;
+        for (const cir::Net& n : d.nets)
+            if (n.style == cir::Style::wired && n.pins.size() >= 2)
+            {
+                ++wired;
+                tags += n.unroutable ? 1 : 0;
+            }
+        const bool noted = std::any_of(d.notes.begin(), d.notes.end(), [](const std::string& n) { return n.find("past what the router wires") != std::string::npos; });
+        std::printf("budget: C2 at 9000,9000: %s, %d of %d wired nets name tags, %zu note(s)\n", d.budget.wide ? "too wide to route" : "routed", tags, wired,
+                    d.notes.size());
+        P.eq("budget.wide_tags", d.budget.wide && d.budget.cells == 0 && d.budget.pops == 0 && wired > 0 && tags == wired && noted ? 1 : 0, 1);
+        const std::string w = cir::written(far);
+        P.eq("budget.wide_fixed_point", cir::written(w) == w && cir::sameNetlist(w, tone) ? 1 : 0, 1);
+        // an op that would spread the parts so is refused, and so is a point past reach
+        std::string why;
+        run(tone, { "place C2 9000,9000" }, &why);
+        P.eq("budget.wide_refused", why.rfind("op 1 (place C2 9000,9000): the parts would span", 0) == 0 && why.find("past what the router wires") != std::string::npos ? 1 : 0, 1);
+        run(tone, { "place C2 9999,0" }, &why);
+        P.eq("budget.far_place_refused", why.rfind("op 1 (place C2 9999,0): 9999,0 is too far out", 0) == 0 ? 1 : 0, 1);
+        run(tone, { "add C9 b 0 1n at 0,-9990" }, &why);
+        P.eq("budget.far_add_refused", why.find("0,-9990 is too far out") != std::string::npos ? 1 : 0, 1);
+        cir::Op paste;
+        paste.type = cir::Op::Type::paste;
+        paste.lines = { "R1 p q 1k", "C1 q 0 1n", "*@ part R1 0,0", "*@ part C1 4,2 r90", "*@ net q 2,0 4,0" };
+        paste.at = cir::Pt{ 9978, 0 };
+        const cir::Applied pasted = cir::apply(tone, cir::reconcile(tone), std::span<const cir::Op>(&paste, 1));
+        P.eq("budget.far_paste_refused", pasted.edits.empty() && pasted.error.find("C1: 9982,2 is too far out") != std::string::npos ? 1 : 0, 1);
+        // a stray route far out: dropped (the grid holds the parts' box), the net routed again within it
+        const std::string stray = replaced(tone, netLine(tone, "a"), "*@ net a -9999,-9999 -9999,9999 9999,9999");
+        const cir::Drawing s = cir::reconcile(stray);
+        std::string bad;
+        const bool clean = routesClean(s, bad);
+        std::printf("budget: a stray route: a grid of %ld points%s%s\n", s.budget.cells, clean ? "" : ", ", bad.c_str());
+        P.eq("budget.stray_route", !s.budget.wide && s.budget.cells < 20000 && clean && !s.nets[static_cast<std::size_t>(s.net("a"))].unroutable ? 1 : 0, 1);
+        const std::string sw = cir::written(stray);
+        P.eq("budget.stray_fixed_point", cir::written(sw) == sw ? 1 : 0, 1);
+        // at the edge of reach (the drawing moved right, its right end at the limit), a shunt added by text: placed
+        // within reach, every point written within what a line says, the write a fixed point
+        std::vector<std::string> shifted;
+        for (const std::string& l : linesOf(tone))
+        {
+            if (!cir::isLayoutLine(l))
+            {
+                shifted.push_back(l);
+                continue;
+            }
+            std::string moved;
+            std::size_t i = 0;
+            while (i < l.size())
+            {
+                const std::size_t e = std::min(l.find(' ', i), l.size());
+                std::string tok = l.substr(i, e - i);
+                const std::size_t comma = tok.find(',');
+                if (comma != std::string::npos && comma > 0 && (std::isdigit(static_cast<unsigned char>(tok[0])) != 0 || tok[0] == '-'))
+                    tok = std::to_string(std::stoi(tok.substr(0, comma)) + 9936) + tok.substr(comma);
+                moved += (moved.empty() ? "" : " ") + tok;
+                i = e + 1;
+            }
+            shifted.push_back(moved);
+        }
+        const std::string edge = joined(shifted);
+        const std::string grown = replaced(edge, "C2     b  0  22n\n", "C2     b  0  22n\nC9     b  0  1n\n");
+        const std::string ew = cir::written(grown);
+        bool readable = true;
+        for (const std::string& l : layoutLines(ew))
+        {
+            std::size_t i = 0;
+            while ((i = l.find_first_of("-0123456789", i)) != std::string::npos)
+            {
+                std::size_t e = i + 1;
+                while (e < l.size() && std::isdigit(static_cast<unsigned char>(l[e])) != 0)
+                    ++e;
+                if (e - i > 1 || l[i] != '-')
+                    readable = readable && std::abs(std::stoi(l.substr(i, e - i))) <= cir::kCoordLimit;
+                i = e;
+            }
+        }
+        const cir::Drawing ed = cir::reconcile(ew);
+        const cir::Part* c9 = partOf(ed, "C9");
+        std::printf("budget: at the edge of reach: %s\n", partLine(ew, "C9").c_str());
+        P.eq("budget.edge_drawn", cir::reconcile(edge).notes.empty() && cir::stripLayout(edge) == cir::stripLayout(tone) ? 1 : 0, 1);
+        P.eq("budget.edge_placed", c9 != nullptr && cir::withinReach(c9->origin) && readable && cir::written(ew) == ew ? 1 : 0, 1);
     }
     return P.finish();
 }
