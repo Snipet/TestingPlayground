@@ -44,9 +44,10 @@
 //   UTIL      the conversions (440 Hz at note 69, a fifth, cents, dB), equal-power panning, the smoother's time
 //   OVERSAMPLE each of Oversample2, Oversample4 (IIR), Oversample2Fir and Oversample4Fir: a 1 kHz sine up and then down
 //             within 0.01 dB of its level, delayed by its header's figure (IIR 2.7 and 3.5 host samples, within 0.1;
-//             FIR 40 and 47, within 0.5); a 15 kHz tone's images after up (33, 63 and 81 kHz) at or below the
-//             stopband its header quotes, plus 1 dB; a tanh driven by a 5 kHz sine through Oversample4 aliases at
-//             least 20 dB less than at 1x
+//             FIR 40 and 47, within 0.5); tones from 15 to 20 kHz up, each stage's worst image (the first's at 48 kHz
+//             - f, from 33 down to its stopband's edge at 28 kHz; at 4x the second's at 96 kHz - f, down to 76 kHz) at
+//             or below the stopband its header quotes for that stage, plus 1 dB; a tanh driven by a 5 kHz sine through
+//             Oversample4 aliases at least 20 dB less than at 1x
 #include "Probe.h"
 
 #include "Audio.h"
@@ -1182,13 +1183,14 @@ PROBE(fminus, library)
             const char* key;                              // its rows'
             int factor;
             double delay, within;                         // the header's round trip at 1 kHz, host samples
-            double stopband;                              // the header's (the worse stage's, at 4x), dB
-            const char* quoted;                           // as the header says it
+            double stage1, stage2;                        // the header's stopbands, dB: the first stage's, the second's (4x)
+            const char* quoted1;                          // as the header says them
+            const char* quoted2;
         };
-        const Kind kinds[] = { { "Oversample2", "iir2", 2, 2.7, 0.1, -96.0, "-96 dB IIR" },
-                               { "Oversample4", "iir4", 4, 3.5, 0.1, -96.0, "-101 dB IIR" },
-                               { "Oversample2Fir", "fir2", 2, 40.0, 0.5, -94.0, "-94 dB FIR" },
-                               { "Oversample4Fir", "fir4", 4, 47.0, 0.5, -93.0, "-93 dB FIR" } };
+        const Kind kinds[] = { { "Oversample2", "iir2", 2, 2.7, 0.1, -96.0, 0.0, "-96 dB IIR", nullptr },
+                               { "Oversample4", "iir4", 4, 3.5, 0.1, -96.0, -101.0, "-96 dB IIR", "-101 dB IIR" },
+                               { "Oversample2Fir", "fir2", 2, 40.0, 0.5, -94.0, 0.0, "-94 dB FIR", nullptr },
+                               { "Oversample4Fir", "fir4", 4, 47.0, 0.5, -94.0, -93.0, "-94 dB FIR", "-93 dB FIR" } };
         if (run != nullptr)
             for (int which = 0; which < 4; ++which)
             {
@@ -1204,23 +1206,34 @@ PROBE(fminus, library)
                 while (dphi >= 2.0 * std::numbers::pi)
                     dphi -= 2.0 * std::numbers::pi;
                 const double delay = dphi / (2.0 * std::numbers::pi) * (kFs / 1000.0);
-                // A 15 kHz tone up: its images at the higher rate (33 kHz, and at 4x 63 and 81 kHz) against the tone.
-                std::vector<float> t = probe::sine(15000.0, 0.5, kFs, n);
-                run(t.data(), hi.data(), y.data(), N, which);
+                // Tones from 15 to 20 kHz up, every 500 Hz (whole cycles in the half second measured): each stage's
+                // image against the tone, the worst of them, the first stage's at 48 kHz - f (33 down to 28 kHz, its
+                // stopband's edge) and, at 4x, the second's at 96 kHz - f (81 down to 76 kHz).
                 const double fsHi = kFs * k.factor;
                 const std::size_t hiFrom = hi.size() / 2, hiCount = hi.size() / 2;
-                const double tone = probe::toneAmplitude(hi, 15000.0, fsHi, hiFrom, hiCount);
-                double image = 0.0;
-                for (const double f : { 33000.0, 63000.0, 81000.0 })
-                    if (f < fsHi / 2)
-                        image = std::max(image, probe::toneAmplitude(hi, f, fsHi, hiFrom, hiCount));
-                const double imageDb = probe::dbFromLin(image / tone);
-                std::printf("%s: 1 kHz %+.5f dB, delayed %.3f host samples; a 15 kHz tone's image %.1f dB (the header: %.0f dB)\n", k.name,
-                            level, delay, imageDb, k.stopband);
+                double worst1 = 0.0, worst2 = 0.0;
+                for (double f = 15000.0; f <= 20000.0; f += 500.0)
+                {
+                    std::vector<float> t = probe::sine(f, 0.5, kFs, n);
+                    run(t.data(), hi.data(), y.data(), N, which);
+                    const double tone = probe::toneAmplitude(hi, f, fsHi, hiFrom, hiCount);
+                    worst1 = std::max(worst1, probe::toneAmplitude(hi, kFs - f, fsHi, hiFrom, hiCount) / tone);
+                    if (k.factor == 4)
+                        worst2 = std::max(worst2, probe::toneAmplitude(hi, 2.0 * kFs - f, fsHi, hiFrom, hiCount) / tone);
+                }
+                const double image1 = probe::dbFromLin(worst1), image2 = k.factor == 4 ? probe::dbFromLin(worst2) : 0.0;
+                std::printf("%s: 1 kHz %+.5f dB, delayed %.3f host samples; 15 to 20 kHz tones' worst images: the first stage's "
+                            "%.1f dB (the header: %.0f dB)", k.name, level, delay, image1, k.stage1);
+                if (k.factor == 4)
+                    std::printf(", the second's %.1f dB (the header: %.0f dB)", image2, k.stage2);
+                std::printf("\n");
                 P.near(key + ".level_1k_db", level, 0.0, 0.01);
                 P.near(key + ".delay_1k_samples", delay, k.delay, k.within);
-                P.le(key + ".image_15k_db", imageDb, k.stopband + 1.0);
-                P.eq(key + ".header_quotes", header.find(k.quoted) != std::string::npos ? 1 : 0, 1);
+                P.le(key + ".image_stage1_db", image1, k.stage1 + 1.0);
+                if (k.factor == 4)
+                    P.le(key + ".image_stage2_db", image2, k.stage2 + 1.0);
+                P.eq(key + ".header_quotes", header.find(k.quoted1) != std::string::npos
+                                                 && (k.quoted2 == nullptr || header.find(k.quoted2) != std::string::npos) ? 1 : 0, 1);
             }
         if (drive != nullptr)
         {
