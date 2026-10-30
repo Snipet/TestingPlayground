@@ -53,6 +53,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace playground
 {
@@ -70,6 +71,8 @@ namespace playground
         Controls    controls{};                // the program's dials, when ok
         PanelSpec   panel;                     // how its #pragma panel lines lay them out, when ok
         Sources     sources;                   // the files compiled
+        std::vector<std::string> circuitKeys;  // the self-test's keys of the netlists it generated with a configuration
+                                               // to choose (Patch::Result::circuitKeys): the answers its state keeps
     };
 
     // The last check's outcome (Compiler::check).

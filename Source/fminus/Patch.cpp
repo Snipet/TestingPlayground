@@ -6,7 +6,9 @@
 // -O2, flushing subnormals as the audio thread does (Program::Options::denormals). FMinus reports a mistake in how a
 // method is declared as an error in one of those lines, which the program's author never wrote: such a message is
 // rewritten to say which method the plugin calls, and how. Both passes read the program's other files through
-// Program::Options::include, by name: an #include of a name no file has is FMinus's "'name' file not found".
+// Program::Options::include, by name: an #include of a name no file has is FMinus's "'name' file not found". A
+// netlist's (a .cir file's) #include reads the module generated from it (fminus/Circuits.h): the compile's Generator
+// generates it when the first pass's #include first reaches it, and the second pass reads it again.
 #include "fminus/Patch.h"
 
 #include "fminus/GuiSpec.h"
@@ -195,17 +197,40 @@ namespace playground
             return c;
         }
 
-        // The program's files to FMinus's #include, by name, and host.fm where the program has no file of that name
-        // (compile() keeps its own, which also notes the files it reads). It reads `files` while FMinus compiles.
-        fminus::Program::IncludeResolver includeOf(const Sources& files)
+        // The program's files to FMinus's #include, by name: a file's text; a netlist's (.cir), the module `circuits`
+        // has for it (its "x.cir.fm": the Generator of compile() and check() generates it the first time, freeze()'s,
+        // ir()'s and frozenIr()'s serves the recipe's); and host.fm where the program has no file of that name.
+        // `read`, when given, gets each FMinus file read, in the order first read (the panel's lines come from them).
+        // It reads `files` and `circuits` while FMinus compiles.
+        fminus::Program::IncludeResolver includeOf(const Sources& files, circuits::Generator& circuits,
+                                                   std::vector<const SourceFile*>* read = nullptr)
         {
-            return [&files](std::string_view name, std::string_view) -> std::optional<fminus::Program::IncludedFile> {
+            return [&files, &circuits, read](std::string_view name,
+                                             std::string_view) -> std::optional<fminus::Program::IncludedFile> {
                 if (const SourceFile* f = findFile(files, name))
+                {
+                    if (isCircuitFile(f->name))
+                    {
+                        const std::string* text = circuits.module(f->name);
+                        if (text == nullptr)
+                            return std::nullopt;
+                        return fminus::Program::IncludedFile{ f->name + ".fm", *text };
+                    }
+                    if (read != nullptr && std::find(read->begin(), read->end(), f) == read->end())
+                        read->push_back(f);
                     return fminus::Program::IncludedFile{ f->name, f->text };
+                }
                 if (name == kHostFileName)
                     return fminus::Program::IncludedFile{ kHostFileName, std::string(Patch::hostSource()) };
                 return std::nullopt;
             };
+        }
+
+        // The plugin's error for a program whose first file is a netlist: the program is FMinus, which #includes it.
+        std::string netlistFirst(const std::string& file)
+        {
+            return file + ": error: the program is an FMinus file; #include the netlist (#include \"" + file
+                 + "\" in a program.fm before it)\n";
         }
 
         // compile()'s second pass's options but for the #include: the audio thread's denormal mode, and each dial a
@@ -312,21 +337,18 @@ namespace playground
         }
         const std::string file = files.front().name;
         const std::string_view source = files.front().text;
-        // An #include finds the file of that name; the program's own included again reads nothing, as FMinus reads
-        // each file once. The files read, in the order first read: the panel's lines come from them.
+        if (isCircuitFile(file))
+        {
+            r.errors = netlistFirst(file);
+            r.compileMs = msSince(t0);
+            return r;
+        }
+        // An #include finds the file of that name (a netlist: the module generated from it); the program's own
+        // included again reads nothing, as FMinus reads each file once. The files read, in the order first read: the
+        // panel's lines come from them.
         std::vector<const SourceFile*> compiled{ &files.front() };
-        const fminus::Program::IncludeResolver include =
-            [&files, &compiled](std::string_view name, std::string_view) -> std::optional<fminus::Program::IncludedFile> {
-            if (const SourceFile* f = findFile(files, name))
-            {
-                if (std::find(compiled.begin(), compiled.end(), f) == compiled.end())
-                    compiled.push_back(f);
-                return fminus::Program::IncludedFile{ f->name, f->text };
-            }
-            if (name == kHostFileName)
-                return fminus::Program::IncludedFile{ kHostFileName, std::string(Patch::hostSource()) };
-            return std::nullopt;
-        };
+        circuits::Generator circuits(files);
+        const fminus::Program::IncludeResolver include = includeOf(files, circuits, &compiled);
 
         // Pass 1: the program as written.
         fminus::Program::Options read;
@@ -335,6 +357,16 @@ namespace playground
         read.fileName = file;
         read.include = include;
         std::unique_ptr<fminus::Program> first = fminus::Program::compile(source, r.errors, read);
+        r.circuitJobs = circuits.jobs();
+        r.circuitKeys = circuits.keys();
+        if (!circuits.errors().empty())
+        {
+            // A netlist's errors stop the compile, ahead of FMinus's own (which they cause: its module is empty).
+            r.errors = circuits.errors();
+            r.compileMs = msSince(t0);
+            return r;
+        }
+        r.errors = circuits.recite(r.errors);
         if (!first)
         {
             r.compileMs = msSince(t0);
@@ -417,7 +449,7 @@ namespace playground
         patch->s_->program = fminus::Program::compile(full, errors, build);
         if (!patch->s_->program)
         {
-            r.errors = translate(errors, file, firstShim, shims);
+            r.errors = translate(circuits.recite(errors), file, firstShim, shims);
             r.compileMs = msSince(t0);
             return r;
         }
@@ -474,6 +506,7 @@ namespace playground
         {
             Recipe& rc = patch->recipe_;
             rc.files = files;
+            rc.circuits = circuits.generated();
             rc.source = full;
             rc.names = names;
             rc.streams = streams;
@@ -624,6 +657,8 @@ namespace playground
             r.ir.lowered = program.loweredIr();
             r.ir.optimised = program.optimisedIr();
         }
+        // The netlists' warnings and provisional notes first: what they say is about the files the program reads.
+        r.notes = circuits.warnings() + circuits.notes() + r.notes;
         r.compileMs = msSince(t0);
         r.patch = std::move(patch);
         return r;
@@ -770,7 +805,8 @@ namespace playground
             return nullptr;
         }
         fminus::Program::Options build = frozenOptions(r, plain, exactMath);
-        build.include = includeOf(r.files);
+        circuits::Generator circuits(r.files, r.circuits);    // the modules the program was compiled with
+        build.include = includeOf(r.files, circuits);
         build.keepIr = ir != nullptr ? fminus::Program::KeepIr::Optimised : fminus::Program::KeepIr::None;
         auto f = std::unique_ptr<Frozen>(new Frozen());
         std::string errors;
@@ -826,7 +862,8 @@ namespace playground
             return false;
         }
         fminus::Program::Options o = playOptions(r.files.front().name, r.names, r.streams);
-        o.include = includeOf(r.files);
+        circuits::Generator circuits(r.files, r.circuits);
+        o.include = includeOf(r.files, circuits);
         o.keepIr = fminus::Program::KeepIr::Both;
         std::string errors;
         const std::unique_ptr<fminus::Program> program = fminus::Program::compile(r.source, errors, o);
@@ -848,7 +885,8 @@ namespace playground
             return false;
         }
         fminus::Program::Options o = frozenOptions(r, plain, false);
-        o.include = includeOf(r.files);
+        circuits::Generator circuits(r.files, r.circuits);
+        o.include = includeOf(r.files, circuits);
         o.keepIr = fminus::Program::KeepIr::Optimised;
         std::string errors;
         const std::unique_ptr<fminus::Program> program = fminus::Program::compile(r.source, errors, o);
@@ -1067,7 +1105,9 @@ namespace playground
     }
 
     // The front of compile()'s pass 1, kept in step with it: FMinus over the program as written (its messages), then the
-    // main module and its required methods. Nothing appended, no second pass, no instance.
+    // main module and its required methods. Nothing appended, no second pass, no instance. Every netlist of the files is
+    // generated, the ones the program does not include too, so that a tab's mistakes show while it is typed; its
+    // warnings join the messages. No job: the self-test waits for a RUN.
     Patch::Result Patch::check(const Sources& files)
     {
         const auto t0 = std::chrono::steady_clock::now();
@@ -1078,25 +1118,36 @@ namespace playground
             return r;
         }
         const std::string file = files.front().name;
-        const fminus::Program::IncludeResolver include =
-            [&files](std::string_view name, std::string_view) -> std::optional<fminus::Program::IncludedFile> {
-            if (const SourceFile* f = findFile(files, name))
-                return fminus::Program::IncludedFile{ f->name, f->text };
-            if (name == kHostFileName)
-                return fminus::Program::IncludedFile{ kHostFileName, std::string(Patch::hostSource()) };
-            return std::nullopt;
-        };
+        circuits::Generator circuits(files);
+        if (isCircuitFile(file))
+        {
+            r.errors = netlistFirst(file);
+            circuits.generateRest();
+            r.errors += circuits.errors() + circuits.warnings();
+            r.compileMs = msSince(t0);
+            return r;
+        }
         fminus::Program::Options read;
         read.optimisation = 0;
         read.knobVersions = 0;
         read.fileName = file;
-        read.include = include;
+        read.include = includeOf(files, circuits);
         const std::unique_ptr<fminus::Program> first = fminus::Program::compile(files.front().text, r.errors, read);
+        const bool netlistErrors = !circuits.errors().empty();
+        circuits.generateRest();
+        if (netlistErrors)
+        {
+            // As compile(): a netlist's errors stop it, ahead of FMinus's own; every netlist's messages.
+            r.errors = circuits.errors() + circuits.warnings();
+            r.compileMs = msSince(t0);
+            return r;
+        }
+        r.errors = circuits.recite(r.errors) + circuits.errors() + circuits.warnings();
         if (first)
         {
             const fminus::Program::Module* main = first->module(kModule);
             if (main == nullptr)
-                r.errors = file + ": error: the plugin plays a module " + kModule + " (README.md, \"Writing a program\")\n";
+                r.errors += file + ": error: the plugin plays a module " + kModule + " (README.md, \"Writing a program\")\n";
             else
                 for (std::size_t k = 0; k < callCount(); ++k)
                 {

@@ -45,6 +45,7 @@ namespace playground
             s.notes = std::move(r.notes);
             s.ms = r.compileMs;
             s.sources = std::move(files);
+            s.circuitKeys = std::move(r.circuitKeys);
             if (r.patch)
             {
                 s.controls = r.patch->controls();

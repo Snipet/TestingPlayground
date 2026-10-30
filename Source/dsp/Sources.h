@@ -42,6 +42,18 @@ namespace playground
         return true;
     }
 
+    // Whether `name` is a circuit netlist (a SPICE-style .cir file, any case: fminus/Circuits.h): the program's
+    // #include reads the FMinus module FMinus's circuit compiler generates from it, never its text. Here, apart from
+    // Circuits.h, since the language service and the editor (no FMinus) tell the files apart too.
+    inline bool isCircuitFile(std::string_view name)
+    {
+        if (name.size() < 5)
+            return false;
+        const std::string_view ext = name.substr(name.size() - 4);
+        const auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; };
+        return ext[0] == '.' && lower(ext[1]) == 'c' && lower(ext[2]) == 'i' && lower(ext[3]) == 'r';
+    }
+
     // The file named `name`, or nullptr.
     inline const SourceFile* findFile(const Sources& files, std::string_view name)
     {

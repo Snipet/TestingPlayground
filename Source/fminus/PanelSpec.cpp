@@ -184,8 +184,8 @@ namespace playground
         std::vector<Line> lines;
         for (const SourceFile* f : files)
         {
-            if (f == nullptr)
-                continue;
+            if (f == nullptr || isCircuitFile(f->name))
+                continue;                                // a netlist's lines are SPICE's, never a panel's
             std::string_view text = f->text;
             int lineNo = 0;
             while (!text.empty())
