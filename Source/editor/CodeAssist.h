@@ -172,7 +172,14 @@ namespace playground::ui
         // A check is due: the files changed and have rested (true once for each such rest).
         bool takeCheckRequest();
         void cancelCheck();                              // RUN: the files as they are need no check
-        void checkSent() noexcept { checking_ = true; }
+        // A check sent; `revisionBefore` is the check status's revision as it was before (CheckStatus::revision):
+        // an outcome from then (an earlier check's, or one this window never asked for: a window opened after them) is
+        // not this check's.
+        void checkSent(uint64_t revisionBefore) noexcept
+        {
+            checking_ = true;
+            checkSeen_ = revisionBefore;
+        }
         void checkDone() noexcept { checking_ = false; }
         bool checking() const noexcept { return checking_; }
         // A check's outcome not seen yet (CheckStatus::revision): true once for each.

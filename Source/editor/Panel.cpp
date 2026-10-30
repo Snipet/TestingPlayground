@@ -3110,8 +3110,9 @@ namespace playground::ui
         // The editor's check while typing (CodeAssist.h): the files once they have rested, its messages when it is done.
         if (files().assist().takeCheckRequest())
         {
+            const uint64_t before = port_.checkStatus().revision;   // read first: the check may finish at once
             port_.check(files().draft().files);
-            files().assist().checkSent();
+            files().assist().checkSent(before);
         }
         if (files().assist().checking())
             if (const CheckStatus c = port_.checkStatus(); files().assist().takeCheckResult(c.revision))
