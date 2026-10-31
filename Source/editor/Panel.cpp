@@ -1877,6 +1877,12 @@ namespace playground::ui
             persist_ = std::move(persist);
             changed_ = std::move(changed);
         }
+        // The Panel's: a netlist's session pins, as its view reconciles (EditorPort::setSchematicPins).
+        void setPinsHook(std::function<void(const std::string&, const std::string&)> pins)
+        {
+            pins_ = pins;
+            schematic_.setPinsHook(std::move(pins));
+        }
         const SchematicFile* viewOf(const std::string& file) const
         {
             const auto it = views_.find(file);
@@ -1946,6 +1952,9 @@ namespace playground::ui
             SchematicFile f = std::move(it->second);
             views_.erase(it);
             viewRenamed_ = viewRenamed_ || f.stored;     // the session's entry follows (syncSchematic keeps it)
+            if (!f.published.empty() && pins_)
+                pins_(from, {});                         // its pins go under the new name at the next reconcile
+            f.published.clear();
             if (fileKindOf(to) == FileKind::Circuit)
                 views_[to] = std::move(f);
         }
@@ -2097,6 +2106,7 @@ namespace playground::ui
         // The netlists' views, by file name (SchematicView.h): std::map, so that a view's address holds.
         std::map<std::string, SchematicFile> views_;
         std::function<void()> persist_, changed_;
+        std::function<void(const std::string&, const std::string&)> pins_;
         bool viewRenamed_ = false;                   // a stored view's file was renamed: the session follows
         mutable uint64_t playedRev_ = ~uint64_t{ 0 };
         mutable std::string playedName_;
@@ -2691,6 +2701,8 @@ namespace playground::ui
                 layout();
             dirty_ = true;
         });
+        // The schematic's session pins, published as its view reconciles (Claude's edit_circuit and pictures draw them).
+        files().setPinsHook([this](const std::string& file, const std::string& lines) { port_.setSchematicPins(file, lines); });
         files().load(port_.draft());
         files().setFileViews(port_.fileViews());
         seenDraft_ = port_.draftRevision();

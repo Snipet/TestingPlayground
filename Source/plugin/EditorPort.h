@@ -24,6 +24,8 @@
 //                     (PanelSpec.h)
 //   fileViews()       each netlist's view (Netlist or Schematic), zoom and pan, as the editor's user left them; kept in
 //                     the session, set with setFileViews() on the user's gestures only
+//   schematicPins()   each netlist's session pins, the places its Schematic view drew for parts with no part line, set
+//                     with setSchematicPins() whenever the view reconciles; in memory only
 //   panelView()       the editor shows the PANEL view (the interface across the left column) rather than the CODE view;
 //                     kept in the session, set with setPanelView()
 //   program()         the compile it came from (CompileStatus::request): the meters' taps are its fields once
@@ -293,6 +295,18 @@ namespace playground
         // gestures (switching a view, zooming, panning), never when it opens or fits, and reads them when it opens.
         virtual std::vector<FileView> fileViews() const = 0;
         virtual void setFileViews(const std::vector<FileView>& views) = 0;
+
+        // The schematic's session pins (editor/SchematicView.h): for each netlist, the places its view drew for parts
+        // that have no *@ part line, as *@ part lines ("" for none). A Panel sets them whenever its view reconciles the
+        // file; they live in the processor's memory only (never in the session, a project or an export), and Claude's
+        // edit_circuit (ChatHost::chatSchematicPins) and view_panel's schematic picture reconcile with them, so that
+        // every writer and every viewer draws what the user sees.
+        virtual void setSchematicPins(const std::string& file, const std::string& lines) { (void)file; (void)lines; }
+        virtual std::string schematicPins(const std::string& file) const
+        {
+            (void)file;
+            return {};
+        }
 
         // A note from the panel's keyboard (a .gui file's keyboard element): `velocity` 0..1 plays it, 0 releases it.
         // An instrument plays it at the start of its next block; an effect ignores it. 64 can wait at once; past that

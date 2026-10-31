@@ -10,11 +10,11 @@
 // (a view of a file, never a tab: it adds no file). It reaches the Panel only through its hooks and the processor not
 // at all; the session's file views (EditorPort::fileViews) are the Panel's to keep.
 //
-//   toolbar      Select, Ground (G); R C L D P X S, each its symbol; More (A: E, Shift-G, O, V, I, Shift-P, Input,
-//                Output); at the right Undo, Redo (the tab's own), Tidy, -, the zoom (a click fits), +
+//   toolbar      Select, Ground (G), Label (N); R C L D P X S, each its symbol; More (A: E, Shift-G, O, V, I, Shift-P,
+//                Input, Output); at the right Undo, Redo (the tab's own), Tidy, -, the zoom (a click fits), +
 //   canvas       the drawing (SchematicDraw.h) on a grid of one pin pitch, 10 px at 100 % (25 % to 400 %): parts, wires,
 //                flags, names and values, the problems' badges, the structural marks, the ghost of a part carried,
-//                the wire being drawn, the parts being moved with their wires rubber-banded, the marquee
+//                the wire being drawn, the parts being moved with their wires rubber-banded, the marquee, the field
 //   info strip   a gesture's notice (4 s: a refusal, a change of nets), else the dial under the pointer, else the
 //                selection, else a hint; at its right the problems' count (a click steps to the next, Shift-click back),
 //                a banner before it (Not drawn: ..., else Not played: ... with its button, Play this circuit, else
@@ -35,17 +35,27 @@
 // click selects (Shift toggles), a drag moves the selection; on a pin: a click selects its part, a drag draws a wire;
 // on a wire: a click selects its run, a drag draws a wire from that grid point (a T); on nothing: a click clears, a
 // drag is a marquee (Shift adds). Carrying a part: a click places it and carries on, a drag places it where released, a
-// popup click turns the ghost. The Ground tool: a click grounds that pin's or wire's net. A popup click opens the part's,
-// the wire's or the canvas's menu; a popup drag, or a drag with Alt, pans in every mode and cancels nothing. A double
-// click on a part (and Return with one selected) opens the Netlist view at its value (s4 edits it in place); on a
-// badge at its message's line; on a wire it selects the whole net. A left drag or a carried part within 16 px of the
+// popup click turns the ghost. The Ground tool: a click grounds that pin's or wire's net; the Label tool: a click opens
+// that net's name field (on a wire, its tag goes there). A popup click opens the part's (Edit, Rotate, Rotate back,
+// Mirror, Copy, Cut, Duplicate, Delete, Show in netlist; on a pin of a net drawn as tags, Show it as wires), the wire's
+// (Rename net, Show as labels, Delete wire, Select net, Copy, Cut, Show in netlist) or the canvas's menu (Select all,
+// Paste, Fit, Tidy, Netlist view, Undo, Redo); a popup drag, or a drag with Alt, pans in every mode and cancels nothing.
+// A double click on a part (and Return with one selected, and a click on its value) edits it in place (the field,
+// below); on a badge it opens the Netlist view at its message's line; on a wire it selects the whole net. A press
+// outside an open field writes what can be written and closes it. A left drag or a carried part within 16 px of the
 // canvas's edge pans the view in tick(), 600 px/s at the edge, so headless settles are exact.
 //
 // Keys while the canvas has them (FilesItem takes every key in this view; Escape leaves it): the parts' keys (R C L D
 // P X S E V I, Shift-G, O, Shift-P: carried under the pointer, or placed at the view's centre, or 4 units right of the
-// selection, when the pointer is away), A the More menu, G the Ground tool, Escape (a gesture, then the tool, then the
-// selection, then the canvas), Cmd-R, Cmd-Shift-R, Cmd-E, Delete and Backspace, Cmd-Z, Cmd-Shift-Z, Cmd-Y, Cmd-A,
-// Tab and Shift-Tab (the parts in line order), the arrows (a unit; Shift 4), F and Home (fit), Cmd-0, Cmd-=, Cmd--.
+// selection, when the pointer is away), A the More menu, G the Ground tool, N the Label tool, Escape (a gesture, then
+// the tool, then the selection, then the canvas), Return (the field), Cmd-R, Cmd-Shift-R, Cmd-E, Delete and Backspace,
+// Cmd-Z, Cmd-Shift-Z, Cmd-Y, Cmd-A, Cmd-C, Cmd-X, Cmd-V, Cmd-D (the clipboard: netlist text, fminus/CirDoc.h's copied
+// and apply's paste op; Duplicate pastes 2 units right and down), Tab and Shift-Tab (the parts in line order), the
+// arrows (a unit; Shift 4), F and Home (fit), Cmd-0, Cmd-=, Cmd--. While a field is open it takes every key.
+//
+// Session pins: the places the view drew for parts that have no part line (SchematicFile::pins, reconciled with
+// each revision so they stay put) go to the Panel as *@ part lines whenever they change (setPinsHook:
+// EditorPort::setSchematicPins), so Claude's edit_circuit and view_panel's picture draw them where the user sees them.
 //
 // Accessibility: one group "Schematic, <file>" (the item's Tab stop), a list of parts ("R4, resistor 4.7k, from n1 to
 // z1") and a list of nets ("net n1: R4.1, C4.1, XU1.inn"), ids kA11yBase plus a 24-bit hash of "p:"+name or
@@ -64,6 +74,7 @@
 #include <funkgui/core/Geometry.h>
 #include <funkgui/core/Theme.h>
 #include <funkgui/panel/Input.h>
+#include <funkgui/text/LineEdit.h>
 #include <funkgui/widgets/TextEditor.h>
 
 #include <cstdint>
@@ -95,6 +106,7 @@ namespace playground::ui
         float cx = 0.0f, cy = 0.0f;                  // the world point at the canvas's centre, grid units
         std::vector<std::string> selected;           // parts, by name: the selection survives undo
         cir::SessionPins pins;                       // the places drawn for parts without a part line
+        std::string published;                       // ... as *@ part lines, as the Panel last published them
         bool merged = false;                         // a draft merged into the tab: what it moved flashes
     };
 
@@ -114,11 +126,11 @@ namespace playground::ui
         static constexpr float kKnobR = 8.0f;          // a circuit dial's knob on the drawing: 16 px across
         static constexpr float kChipW = 20.0f, kChipH = 14.0f;   // ... a switch's position chip
 
-        enum class Tool : uint8_t { select, ground, place };
+        enum class Tool : uint8_t { select, ground, label, place };
         // The toolbar's buttons, in order (the parts' are R C L D P X S).
         enum class Button : uint8_t
         {
-            select, ground, r, c, l, d, p, x, s, more, undo, redo, tidy, zoomOut, zoom, zoomIn, count
+            select, ground, label, r, c, l, d, p, x, s, more, undo, redo, tidy, zoomOut, zoom, zoomIn, count
         };
 
         struct Hooks
@@ -148,6 +160,9 @@ namespace playground::ui
         void setGestures(funkgui::GestureController* g) noexcept { gestures_ = g; }
 
         void attach(funkgui::HostServices* host) { host_ = host; }
+        // The session pins (EditorPort::setSchematicPins): called with the file and its *@ part lines whenever a
+        // reconcile changes the places drawn for parts that have no part line ("" when there are none).
+        void setPinsHook(std::function<void(const std::string& file, const std::string& lines)> pins) { pins_ = std::move(pins); }
         // The file shown in Schematic view: its tab's editor, its name and its state (FilesItem's; null: none shown).
         void show(funkgui::TextEditor* ed, const std::string& file, SchematicFile* state);
         bool showing() const noexcept { return ed_ != nullptr && st_ != nullptr; }
@@ -210,6 +225,36 @@ namespace playground::ui
         bool gestureOn() const noexcept;                 // a drag in progress (moving, wiring, a marquee)
         float flashOf(const std::string& part) const;    // Claude's flash: 1 just merged, 0 none
 
+        // ---- the field (editing in place, the spec's §3.11; the Label tool's name) ------------------------------------
+        // A part's names and values, a row each (R C L: name, value; D: name, model; a pot: name, value, pot, taper; X:
+        // name; E, G: name, gain; an OTA: name, its gain expression; V, I: name, value; S: name, switch, positions; the
+        // input and the output: name, scale), or a net's name (the Label tool), on the drawing beside it, drawn and keyed
+        // as a tab's name is. Tab and Shift-Tab move between rows; Up and Down step a value through E12 (Shift: a
+        // decade); Return writes every row changed as one gesture (refused, the field stays open and says why); Escape
+        // cancels; Cmd-V pastes. A value of an R or a pot written in milliohms shows FMinus's warning under it: Return
+        // keeps it as typed, Alt-Return writes megohms. A pot's name renames its .pot line and every {} that names it.
+        bool editing() const noexcept { return field_.on; }
+        std::vector<std::string> fieldKeys() const;      // its rows' keys: "name", "value", "model", "pot", "taper",
+                                                         // "gain", "switch", "positions", "scale"; a net's: "net"
+        std::string fieldText(const std::string& key) const;   // a row's text now
+        std::string fieldRow() const;                    // the row with the caret's key
+        std::string fieldWhy() const { return field_.why; }    // a refusal ("" for none)
+        std::string fieldWarning() const;                // FMinus's milliohm warning for the row shown ("" for none)
+        funkgui::Rect fieldRect() const;                 // the field's card on screen (empty when none)
+        bool editPart(const std::string& name, const std::string& row = {});   // a part's field (row: the caret's)
+        bool editNetAt(funkgui::Point p);                // the Label tool's field for the net under a point
+        bool commitField(bool megohms = false);          // Return (Alt-Return): false when refused (it stays open)
+        void closeField();                               // Escape
+        std::optional<funkgui::Point> centreOfValue(const std::string& part) const;   // its value label (a click edits it)
+
+        // ---- the clipboard (§3.14): parts as .cir text (fminus/CirDoc.h's copied; a paste op takes it back) ----------
+        bool copySelection();                            // Cmd-C
+        bool cutSelection();                             // Cmd-X
+        bool paste();                                    // Cmd-V: at the pointer over the canvas, else the view's centre
+        bool duplicate();                                // Cmd-D: a copy pasted 2 units right of and below the selection
+        // Show as labels / Show as wires (§3.8): a signal net drawn as name tags at its pins, or wired again.
+        bool showAsLabels(const std::string& net, bool labels);
+
         // ---- actions (the menus', the keys', the Panel's) ------------------------------------------------------------
         void setTool(Tool t, cir::Kind kind = cir::Kind::Unknown);
         void selectPart(const std::string& name, bool centre);
@@ -247,14 +292,7 @@ namespace playground::ui
             std::string net;                             // its key (folded)
             std::vector<cir::UnitEdge> edges;            // sorted
         };
-        struct Mark                                      // a message on the file, mapped to what it marks
-        {
-            int line = 0, col = 0;                       // 0-based
-            int severity = 0;                            // 0 error, 1 warning, 2 note
-            std::string text;
-            std::vector<int> parts;                      // the parts it marks (none: the count only)
-            std::vector<std::pair<int, int>> pins;       // the pins its column falls on: (part, pin)
-        };
+        using Mark = sch::Mark;                          // a message on the file, mapped to what it marks
         enum class Drag : uint8_t { none, press, move, wire, marquee, pan, carry, knob, control };
         // A circuit dial on the drawing (above): its part, its slot, a switch's chip (and its positions), its centre.
         struct Knob
@@ -280,7 +318,13 @@ namespace playground::ui
         Hit hitAt(funkgui::Point p) const;
         Run runAt(int net, cir::UnitEdge e) const;
         std::vector<Run> runsOf(int net) const;
-        bool commit(const std::vector<cir::Op>& ops);    // one gesture; false (and a notice) when refused
+        // One gesture; false (and a notice, or the refusal in `why`) when refused; the parts and nets it changed.
+        bool commit(const std::vector<cir::Op>& ops, std::string* why = nullptr, std::vector<std::string>* touched = nullptr);
+        bool pasteText(const std::string& text, cir::Pt at);    // a paste op of `text` at `at`, the pasted parts selected
+        void publishPins() const;                        // the session pins, to the Panel when they changed
+        bool fieldKey(const funkgui::KeyEvent& e);       // a key while the field is open
+        void stepField(int dir, bool decade);            // Up, Down in a value row: E12
+        void drawField(funkgui::Canvas& c, const funkgui::Theme& th, const sch::View& v, const sch::Inks& k) const;
         bool commitText(const std::string& text);        // a text made by several applies, as one gesture
         void say(const std::string& text);               // the info strip's notice, for 4 s (or until the text moves)
         void quiet();                                    // ... gone
@@ -303,6 +347,27 @@ namespace playground::ui
 
         Hooks hooks_;
         DialHooks dials_;
+        std::function<void(const std::string&, const std::string&)> pins_;
+        // The field (above): its rows, the one with the caret, what it edits, the text's revision it opened on.
+        struct Row
+        {
+            std::string key, label, was;
+            funkgui::text::LineEdit edit;
+        };
+        struct Field
+        {
+            bool on = false;
+            std::string part;                            // the part (an element's or a terminal's name), else ""
+            std::string net;                             // the Label tool's net, else ""
+            std::optional<cir::Pt> tag;                  // ... and where its tag goes (a wire's point clicked)
+            cir::Kind kind = cir::Kind::Unknown;
+            std::vector<Row> rows;
+            int row = 0;
+            std::string why;                             // a refusal, until a key
+            uint32_t rev = 0;
+            funkgui::Point world{};                      // where it sits (world): under the part's body, or the point
+        } field_;
+        mutable std::vector<funkgui::Rect> valueRects_;  // each part's value label as the last frame drew it
         funkgui::GestureController* gestures_ = nullptr;
         float knobFrom_ = 0.0f, knobY_ = 0.0f;           // a knob's drag: the value it started at, the pointer's y
         int knobPart_ = -1;                              // ... and its part

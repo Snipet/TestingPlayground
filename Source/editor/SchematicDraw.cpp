@@ -1,8 +1,14 @@
 // Source/editor/SchematicDraw.cpp: see SchematicDraw.h.
 #include "editor/SchematicDraw.h"
 
+#include "editor/CodeAssist.h"
+
+#include <funkgui/text/FontService.h>
+#include <funkgui/text/TextFit.h>
+
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <initializer_list>
@@ -831,5 +837,200 @@ namespace playground::ui::sch
         c.rrect(at.x - 0.5f * w, at.y - 0.5f * h, w, h, 0.5f * h, k.ground, 1.0f, ink);
         const funkgui::TextStyle st = labelStyle(9.0f);
         c.text(text.c_str(), at.x, c.capCentreTop(at.y, st), st, ink, funkgui::Align::centre);
+    }
+
+    funkgui::Rect valueRect(const LabelSpot& s, const std::string& name, const std::string& value, float px)
+    {
+        if (px <= 0.0f || !s.shown || value.empty())
+            return {};
+        const funkgui::TextStyle st = labelStyle(px);
+        const auto& atlas = funkgui::FontService::get().atlas();
+        const float line = std::round(px * 1.2f);
+        const auto left = [&](float w) { return s.align == funkgui::Align::centre ? s.x - 0.5f * w : s.align == funkgui::Align::right ? s.x - w : s.x; };
+        if (s.oneLine)
+        {
+            const float wn = funkgui::text::width(atlas, (name + " ").c_str(), st), w = funkgui::text::width(atlas, (name + " " + value).c_str(), st);
+            return { left(w) + wn, s.top - 1.0f, w - wn, line + 1.0f };
+        }
+        const float wv = funkgui::text::width(atlas, value.c_str(), st);
+        return { left(wv), s.top + line - 1.0f, wv, line + 1.0f };
+    }
+
+    // ---- the problems on the drawing ----------------------------------------------------------------------------------
+    namespace
+    {
+        std::string lowered(std::string s)
+        {
+            for (char& ch : s)
+                ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            return s;
+        }
+    }
+
+    std::vector<Mark> mapMarks(const cir::Netlist& nl, const cir::Drawing& d, const std::vector<Diagnostic>& problems)
+    {
+        std::vector<Mark> marks;
+        const auto partOfElement = [&](int element) {
+            for (std::size_t i = 0; i < d.parts.size(); ++i)
+                if (d.parts[i].element == element)
+                    return static_cast<int>(i);
+            return -1;
+        };
+        const auto terminal = [&](cir::Kind k) {
+            for (std::size_t i = 0; i < d.parts.size(); ++i)
+                if (d.parts[i].kind == k)
+                    return static_cast<int>(i);
+            return -1;
+        };
+        for (const Diagnostic& g : problems)
+        {
+            Mark m;
+            m.line = std::max(0, g.line - 1);
+            m.col = std::max(0, g.column - 1);
+            m.severity = g.severity == Diagnostic::Severity::error ? 0 : g.severity == Diagnostic::Severity::warning ? 1 : 2;
+            m.text = g.text;
+            // an element's logical line: that part
+            for (std::size_t e = 0; e < nl.elements.size(); ++e)
+                if (nl.elements[e].firstLine <= m.line && m.line <= nl.elements[e].lastLine)
+                    if (const int p = partOfElement(static_cast<int>(e)); p >= 0)
+                    {
+                        m.parts.push_back(p);
+                        // ... and the pin, when the column falls on a node token
+                        const cir::Element& el = nl.elements[e];
+                        for (std::size_t k = 0; k < el.nodes.size() && k < el.tokenOf.size(); ++k)
+                        {
+                            const cir::Token& t = el.nodes[k];
+                            if (t.at.line != m.line || m.col < t.at.col || m.col >= t.at.col + std::max(1, t.len))
+                                continue;
+                            const std::vector<cir::PinAt>& pins = d.parts[static_cast<std::size_t>(p)].pins;
+                            for (std::size_t j = 0; j < pins.size() && j < 8; ++j)
+                                if (pins[j].token == el.tokenOf[k])
+                                    m.pins.push_back({ p, static_cast<int>(j) });
+                        }
+                    }
+            // a .pot line: every part whose expression names it
+            for (const cir::PotLine& pot : nl.pots)
+                if (pot.line == m.line)
+                    for (std::size_t e = 0; e < nl.elements.size(); ++e)
+                        for (const cir::Token& t : nl.elements[e].tokens)
+                        {
+                            if (t.text.empty() || t.text.front() != '{')
+                                continue;
+                            const std::string body = lowered(t.text), word = lowered(pot.name);
+                            bool uses = false;
+                            for (std::size_t at = body.find(word); at != std::string::npos && !uses; at = body.find(word, at + 1))
+                            {
+                                const auto ident = [](char ch) { return std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '_'; };
+                                uses = (at == 0 || !ident(body[at - 1])) && (at + word.size() >= body.size() || !ident(body[at + word.size()]));
+                            }
+                            if (uses)
+                                if (const int p = partOfElement(static_cast<int>(e)); p >= 0)
+                                    m.parts.push_back(p);
+                        }
+            // a .model line: every diode of that model
+            for (const auto& [model, line] : nl.models)
+                if (line == m.line)
+                    for (std::size_t e = 0; e < nl.elements.size(); ++e)
+                    {
+                        const cir::Element& el = nl.elements[e];
+                        if (el.kind == cir::Kind::D && el.valueToken >= 0
+                            && cir::folded(el.tokens[static_cast<std::size_t>(el.valueToken)].text) == cir::folded(model))
+                            if (const int p = partOfElement(static_cast<int>(e)); p >= 0)
+                                m.parts.push_back(p);
+                    }
+            // an .input or .output line: its terminal
+            if (nl.input && nl.input->line == m.line)
+                if (const int p = terminal(cir::Kind::Input); p >= 0)
+                    m.parts.push_back(p);
+            if (nl.output && nl.output->line == m.line)
+                if (const int p = terminal(cir::Kind::Output); p >= 0)
+                    m.parts.push_back(p);
+            std::sort(m.parts.begin(), m.parts.end());
+            m.parts.erase(std::unique(m.parts.begin(), m.parts.end()), m.parts.end());
+            marks.push_back(std::move(m));
+        }
+        std::stable_sort(marks.begin(), marks.end(), [](const Mark& a, const Mark& b) {
+            return a.line != b.line ? a.line < b.line : a.col < b.col;
+        });
+        return marks;
+    }
+
+    std::vector<PartMarks> partMarksOf(const cir::Drawing& d, const std::vector<Mark>& marks)
+    {
+        std::vector<PartMarks> out(d.parts.size());
+        for (const Mark& m : marks)
+            for (const int p : m.parts)
+                if (p >= 0 && p < static_cast<int>(out.size()))
+                {
+                    PartMarks& pm = out[static_cast<std::size_t>(p)];
+                    (m.severity == 0 ? pm.errors : m.severity == 1 ? pm.warnings : pm.notes) += 1;
+                    pm.outline = pm.outline || m.severity == 0;
+                }
+        for (const Mark& m : marks)
+            for (const auto& [p, pin] : m.pins)
+                if (p >= 0 && p < static_cast<int>(out.size()))
+                    out[static_cast<std::size_t>(p)].pinMask[std::clamp(m.severity, 0, 2)] |= static_cast<uint8_t>(1u << pin);
+        // a hand edit's overlap: both outlined
+        for (const auto& [a, b] : d.overlaps)
+            for (const std::string& item : { a, b })
+            {
+                std::string name = item;
+                if (const std::size_t at = name.find("'s"); at != std::string::npos)
+                    name.resize(at);
+                if (const std::size_t dot = name.find('.'); dot != std::string::npos)
+                    name.resize(dot);
+                if (const int p = d.part(name); p >= 0)
+                    out[static_cast<std::size_t>(p)].outline = true;
+            }
+        return out;
+    }
+
+    int still(funkgui::Canvas& c, const View& v, const cir::Netlist& nl, const cir::Drawing& d, const std::vector<PartMarks>& marks,
+              const Inks& k, const funkgui::Rect& clip, float px)
+    {
+        int labelled = 0;
+        const float sw = v.stroke();
+        grid(c, v, clip, k.grid);
+        for (const cir::Net& n : d.nets)
+        {
+            if (n.style != cir::Style::wired || n.unroutable || n.edges.empty())
+                continue;
+            wires(c, v, n, sw, k.wire);
+            junctions(c, v, n, k.wire);
+        }
+        for (const cir::Net& n : d.nets)
+            if (n.style == cir::Style::wired && !n.unroutable)       // a net drawn as tags at its pins says its name there
+                for (const cir::Pt& at : n.labels)
+                    tag(c, v, at, n.name, k.name, px);
+        for (const cir::Flag& f : d.flags)
+        {
+            const cir::Net& n = d.nets[static_cast<std::size_t>(f.net)];
+            const cir::Style style = n.unroutable && n.style == cir::Style::wired ? cir::Style::flag : n.style;
+            flag(c, v, f, style, n.positive, n.name, sw, k.symbol, k.name, px);
+        }
+        std::vector<std::string> values;
+        values.reserve(d.parts.size());
+        for (const cir::Part& p : d.parts)
+            values.push_back(valueText(nl, p));
+        const std::vector<LabelSpot> spots = placeLabels(c, v, d, values, px);
+        for (std::size_t i = 0; i < d.parts.size(); ++i)
+        {
+            const cir::Part& p = d.parts[i];
+            const float x = static_cast<float>(p.origin.x), y = static_cast<float>(p.origin.y);
+            if (p.element < 0)
+                terminal(c, v, p, sw, k.symbol, k.name, px);
+            else if (lodBox(v, p.kind))
+                bodyBox(c, v, p.kind, p.orient, x, y, sw, k.symbol);
+            else
+                symbol(c, v, p.kind, p.orient, x, y, sw, k.symbol);
+            if (p.element >= 0 && px > 0.0f && i < spots.size())
+            {
+                labels(c, spots[i], p.name, values[i], k.name, k.value, k.ground, px);
+                labelled += spots[i].shown ? 1 : 0;
+            }
+        }
+        for (std::size_t i = 0; i < d.parts.size() && i < marks.size(); ++i)
+            sch::marks(c, v, d.parts[i], marks[i], k);
+        return labelled;
     }
 }

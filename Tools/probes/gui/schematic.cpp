@@ -222,6 +222,56 @@ namespace
                                "*@ net out 19,0 23,0 | 22,0 22,-2 30,-2 30,0 31,0\n"
                                ".end\n";
 
+    // A part of every kind the schematic draws, and the terminals (not one circuit: what the fields edit).
+    const std::string kKinds = "* g.cir: a part of every kind\n"
+                               ".input  u in\n"
+                               ".output vout out\n"
+                               ".pot tone 0.5 lin\n"
+                               ".switch mode 2 0\n"
+                               ".model 1N34A D(IS=2.6e-6 N=1.6 RS=7)\n"
+                               "R1 in a 1k\n"
+                               "R2 a 0 10k\n"
+                               "C1 a 0 10n\n"
+                               "L1 a b 10m\n"
+                               "D1 b 0 1N914\n"
+                               "P1 b w out 100k {tone}\n"
+                               "XU1 c w d opamp\n"
+                               "E1 e 0 c 0 10\n"
+                               "G1 f 0 c 0 1m\n"
+                               "G2 0 g OTA c 0 {100u * tone}\n"
+                               "V1 vb 0 DC 9\n"
+                               "I1 h 0 DC 1m\n"
+                               "S1 h 0 mode 1\n"
+                               ".end\n";
+
+    cir::Op setOp(const std::string& part, const std::string& key, const std::string& value)
+    {
+        cir::Op op;
+        op.type = cir::Op::Type::set;
+        op.name = part;
+        op.key = key;
+        op.value = value;
+        return op;
+    }
+
+    cir::Op renameOp(const std::string& from, const std::string& to)
+    {
+        cir::Op op;
+        op.type = cir::Op::Type::rename;
+        op.name = from;
+        op.to = to;
+        return op;
+    }
+
+    bool has(const std::string& s, const std::string& part) { return s.find(part) != std::string::npos; }
+
+    // Each character of `text` typed (a comma cannot be: paste it).
+    void typed(funkgui::HeadlessHost& host, const std::string& text)
+    {
+        for (const char ch : text)
+            host.keys(std::string(1, ch).c_str());
+    }
+
     // A processor, a Panel on it and a headless host; the processor's draft set first.
     struct Rig
     {
@@ -1807,6 +1857,459 @@ PROBE(gui, schematic)
         host.click(u.x, u.y);
         host.tick(2);
         P.eq("play.undo_one_step", port.draft().files[0].text == init && v.stripButton() == "Play this circuit" ? 1 : 0, 1);
+    }
+
+    // ---- EDIT: the fields, the Label tool, labels and wires, the clipboard, the menus' new items (s4) -----------------
+    {
+        const std::string kinds = cir::written(kKinds);
+        Rig r(draftWith(std::string(pg::kExamples[0].source), { { "g.cir", kinds } }, 1));
+        pg::ui::Panel& panel = *r.panel;
+        funkgui::HeadlessHost& host = *r.host;
+        panel.setSchematic(true);
+        host.settle();
+        SV& v = r.view();
+        funkgui::TextEditor& ed = r.ed();
+        const funkgui::Rect canvas = v.canvasRect();
+        // the view at 100 %, a world point at the canvas's centre
+        const auto look = [&](float x, float y) {
+            v.zoomTo(1.0f, { canvas.centreX(), canvas.centreY() });
+            const funkgui::Point a = v.view().at(x, y);
+            v.panBy(canvas.centreX() - a.x, canvas.centreY() - a.y);
+            host.tick(1);
+        };
+        const auto on = [&](const char* part) {
+            const cir::Part* q = partOf(v.drawing(), part);
+            if (q != nullptr)
+                look(0.5f * static_cast<float>(q->body.x0 + q->body.x1), 0.5f * static_cast<float>(q->body.y0 + q->body.y1));
+            return partAt(v, part);
+        };
+        const auto gridOf = [&](funkgui::Point p) {
+            const funkgui::Point w = v.view().world(p);
+            return cir::Pt{ static_cast<int>(std::lround(w.x)), static_cast<int>(std::lround(w.y)) };
+        };
+        // an empty place: left of the drawing's box, at its middle height
+        const cir::Box all = v.drawing().bounds();
+        const auto emptyPoint = [&] {
+            look(static_cast<float>(all.x0 - 14), static_cast<float>((all.y0 + all.y1) / 2));
+            return funkgui::Point{ canvas.centreX(), canvas.centreY() };
+        };
+        const auto rowsTyped = [&](const std::vector<std::pair<std::string, std::string>>& rows) {
+            const std::vector<std::string> keys = v.fieldKeys();
+            for (std::size_t k = 0; k < keys.size(); ++k)
+            {
+                for (const auto& [key, text] : rows)
+                    if (key == keys[k])
+                    {
+                        host.setClipboard(text);
+                        host.keys("cmd+a");
+                        host.keys("cmd+v");
+                    }
+                if (k + 1 < keys.size())
+                    host.keys("tab");
+            }
+        };
+        P.eq("edit.kinds_drawn", static_cast<int64_t>(v.drawing().parts.size()), 15);   // 13 elements, 2 terminals
+
+        // each kind's fields: the exact tokens, one undo step
+        struct Case
+        {
+            const char* part;
+            std::vector<std::pair<std::string, std::string>> rows;
+            std::vector<cir::Op> ops;
+            std::vector<std::string> lines;
+        };
+        const std::vector<Case> cases = {
+            { "R1", { { "name", "R7" }, { "value", "2.2k" } }, { setOp("R1", "", "2.2k"), renameOp("R1", "R7") }, { "R7 in a 2.2k" } },
+            { "C1", { { "value", "22n" } }, { setOp("C1", "", "22n") }, { "C1 a 0 22n" } },
+            { "L1", { { "value", "47m" } }, { setOp("L1", "", "47m") }, { "L1 a b 47m" } },
+            { "D1", { { "model", "1N34A" } }, { setOp("D1", "model", "1N34A") }, { "D1 b 0 1N34A" } },
+            { "P1", { { "name", "P9" }, { "value", "250k" }, { "pot", "drive" }, { "taper", "audio" } },
+              { setOp("P1", "", "250k"), setOp("P1", "pot", "drive"), setOp("P1", "taper", "audio"), renameOp("P1", "P9") },
+              { "P9 b w out 250k {drive}", ".pot drive 0.5 audio", "G2 0 g OTA c 0 {100u * drive}" } },
+            { "XU1", { { "name", "XU2" } }, { renameOp("XU1", "XU2") }, { "XU2 c w d opamp" } },
+            { "E1", { { "gain", "20" } }, { setOp("E1", "gain", "20") }, { "E1 e 0 c 0 20" } },
+            { "G1", { { "gain", "2m" } }, { setOp("G1", "gain", "2m") }, { "G1 f 0 c 0 2m" } },
+            { "G2", { { "gain", "{200u * tone}" } }, { setOp("G2", "gain", "{200u * tone}") }, { "G2 0 g OTA c 0 {200u * tone}" } },
+            { "V1", { { "value", "12" } }, { setOp("V1", "", "12") }, { "V1 vb 0 DC 12" } },
+            { "I1", { { "value", "2m" } }, { setOp("I1", "", "2m") }, { "I1 h 0 DC 2m" } },
+            { "S1", { { "switch", "sel" }, { "positions", "0,1" } }, { setOp("S1", "switch", "sel"), setOp("S1", "positions", "0,1") },
+              { "S1 h 0 sel 0,1", ".switch sel 2 0" } },
+            { "u", { { "scale", "2" } }, { setOp("u", "scale", "2") }, { ".input  u in scale=2" } },
+            { "vout", { { "name", "y" } }, { renameOp("vout", "y") }, { ".output y out" } },
+        };
+        int exact = 0, oneStep = 0;
+        for (const Case& c : cases)
+        {
+            const std::string before = ed.text();
+            const funkgui::Point at = on(c.part);
+            host.doubleClick(at.x, at.y);
+            host.tick(1);
+            const bool opened = v.editing();
+            rowsTyped(c.rows);
+            host.keys("return");
+            host.tick(1);
+            const std::string after = ed.text();
+            bool lines = true;
+            for (const std::string& l : c.lines)
+                lines = lines && after.find(l + "\n") != std::string::npos;
+            const bool same = opened && !v.editing() && after == applied(before, c.ops).text && lines;
+            exact += same ? 1 : 0;
+            ed.undo();
+            host.tick(1);
+            oneStep += ed.text() == before ? 1 : 0;
+            if (!same)
+                std::printf("fields: %s did not edit as expected (opened %d)\n", c.part, opened ? 1 : 0);
+        }
+        P.eq("edit.fields_exact", exact, static_cast<int64_t>(cases.size()));
+        P.eq("edit.fields_one_step", oneStep, static_cast<int64_t>(cases.size()));
+        // the rows each kind has
+        {
+            const funkgui::Point at = on("P1");
+            host.doubleClick(at.x, at.y);
+            host.tick(1);
+            P.eq("edit.pot_rows", v.fieldKeys() == std::vector<std::string>{ "name", "value", "pot", "taper" } ? 1 : 0, 1);
+            host.keys("escape");
+            host.tick(1);
+            const funkgui::Point x = on("XU1");
+            host.doubleClick(x.x, x.y);
+            host.tick(1);
+            P.eq("edit.opamp_rows", v.fieldKeys() == std::vector<std::string>{ "name" } ? 1 : 0, 1);
+            host.keys("escape");
+            host.tick(1);
+            P.eq("edit.escape_closes", !v.editing() && ed.text() == kinds ? 1 : 0, 1);
+        }
+        // Return with one part selected, and a click on its value label, open it (the caret on the value)
+        {
+            const funkgui::Point at = on("C1");
+            host.click(at.x, at.y);
+            host.keys("return");
+            host.tick(1);
+            P.eq("edit.return_opens", v.editing() && v.fieldRow() == "name" ? 1 : 0, 1);
+            host.keys("escape");
+            host.draw();
+            const std::optional<funkgui::Point> value = v.centreOfValue("C1");
+            if (value)
+                host.click(value->x, value->y);
+            host.tick(1);
+            P.eq("edit.value_click_opens", value && v.editing() && v.fieldRow() == "value" && v.fieldText("value") == "10n" ? 1 : 0, 1);
+            host.keys("escape");
+            host.tick(1);
+        }
+        // Up and Down: E12, keeping the suffix's style; Shift a decade
+        {
+            const funkgui::Point at = on("R1");
+            host.doubleClick(at.x, at.y);
+            host.keys("tab");
+            host.setClipboard("820");
+            host.keys("cmd+a");
+            host.keys("cmd+v");
+            host.keys("up");
+            const std::string up = v.fieldText("value");
+            host.keys("shift+up");
+            const std::string decade = v.fieldText("value");
+            host.keys("down");
+            const std::string down = v.fieldText("value");
+            host.keys("shift+down");
+            const std::string back = v.fieldText("value");
+            std::printf("E12: 820 up %s, a decade %s, down %s, a decade down %s\n", up.c_str(), decade.c_str(), down.c_str(), back.c_str());
+            P.eq("edit.e12_up", up == "1k" ? 1 : 0, 1);
+            P.eq("edit.e12_decade", decade == "10k" && down == "8.2k" && back == "820" ? 1 : 0, 1);
+            host.keys("escape");
+            host.tick(1);
+            P.eq("edit.e12_wrote_nothing", ed.text() == kinds ? 1 : 0, 1);
+        }
+        // a name or a value FMinus cannot take: refused in the field, which stays open
+        {
+            const funkgui::Point at = on("R1");
+            host.doubleClick(at.x, at.y);
+            host.setClipboard("Q5");
+            host.keys("cmd+a");
+            host.keys("cmd+v");
+            host.keys("return");
+            host.tick(1);
+            const std::string letter = v.fieldWhy();
+            host.setClipboard("R2");
+            host.keys("cmd+a");
+            host.keys("cmd+v");
+            host.keys("return");
+            host.tick(1);
+            const std::string taken = v.fieldWhy();
+            host.setClipboard("R1");
+            host.keys("cmd+a");
+            host.keys("cmd+v");
+            host.keys("tab");
+            host.setClipboard("abc");
+            host.keys("cmd+a");
+            host.keys("cmd+v");
+            host.keys("return");
+            host.tick(1);
+            const std::string value = v.fieldWhy();
+            std::printf("refused: %s | %s | %s\n", letter.c_str(), taken.c_str(), value.c_str());
+            P.eq("edit.refused_letter", v.editing() && has(letter, "letter") ? 1 : 0, 1);
+            P.eq("edit.refused_taken", has(taken, "R2 exists") ? 1 : 0, 1);
+            P.eq("edit.refused_value", v.editing() && has(value, "not a SPICE number") && ed.text() == kinds ? 1 : 0, 1);
+            host.keys("escape");
+            host.tick(1);
+        }
+        // 1M on an R: FMinus's warning under the field; Return keeps 1M, Alt-Return writes 1meg (edit.png)
+        {
+            const funkgui::Point at = on("R1");
+            host.doubleClick(at.x, at.y);
+            host.keys("tab");
+            host.keys("cmd+a");
+            typed(host, "1M");
+            host.tick(1);
+            const std::string warning = v.fieldWarning();
+            std::printf("1M: %s\n", warning.c_str());
+            P.eq("edit.milli_warning", warning == "'1M' is 1 milliohm in SPICE; write 1meg for a megohm" ? 1 : 0, 1);
+            writePng(P, host, "gui.schematic.edit.png", "edit");
+            host.keys("return");
+            host.tick(1);
+            P.eq("edit.milli_return_keeps", has(ed.text(), "\nR1 in a 1M\n") ? 1 : 0, 1);
+            ed.undo();
+            host.tick(1);
+            const funkgui::Point again = on("R1");
+            host.doubleClick(again.x, again.y);
+            host.keys("tab");
+            host.keys("cmd+a");
+            typed(host, "1M");
+            host.keys("alt+return");
+            host.tick(1);
+            P.eq("edit.milli_alt_meg", has(ed.text(), "\nR1 in a 1meg\n") ? 1 : 0, 1);
+            ed.undo();
+            host.tick(1);
+            P.eq("edit.milli_undone", ed.text() == kinds ? 1 : 0, 1);
+        }
+        // the Label tool: a net renamed in every element and directive line; a name another net has merges them
+        {
+            const auto labelled = [&](const char* part, const char* pin, const std::string& to) {
+                const funkgui::Point a = on(part);
+                (void)a;
+                const funkgui::Point p = pinAt(v, part, pin);
+                host.click(p.x, p.y);
+                host.tick(1);
+                const bool opened = v.editing() && v.fieldKeys() == std::vector<std::string>{ "net" };
+                host.setClipboard(to);
+                host.keys("cmd+a");
+                host.keys("cmd+v");
+                host.keys("return");
+                host.tick(1);
+                return opened;
+            };
+            const funkgui::Point a = on("R1");
+            host.move(a.x, a.y);
+            host.keys("n");
+            P.eq("edit.label_tool", v.tool() == SV::Tool::label ? 1 : 0, 1);
+            const bool opened = labelled("R1", "1", "src");
+            const std::string renamed = ed.text();
+            P.eq("edit.label_renames", opened && renamed == applied(kinds, { renameOp("in", "src") }).text
+                                           && has(renamed, ".input  u src\n") && has(renamed, "\nR1 src a 1k\n") ? 1 : 0, 1);
+            ed.undo();
+            host.tick(1);
+            labelled("L1", "2", "a");
+            const std::string merged = ed.text();
+            std::printf("label merge: %s\n", v.notice().c_str());
+            P.eq("edit.label_merges", merged == applied(kinds, { renameOp("b", "a") }).text && has(merged, "\nL1 a a 10m\n")
+                                          && has(v.notice(), "the nets merged") ? 1 : 0, 1);
+            ed.undo();
+            host.tick(1);
+            // on a wire: its name tag too (label= on the net's line)
+            if (const std::optional<cir::Pt> mid = midWire(v.drawing(), "a"))
+            {
+                look(static_cast<float>(mid->x), static_cast<float>(mid->y));
+                const funkgui::Point w = v.screenOf(*mid);
+                host.click(w.x, w.y);
+                host.tick(1);
+                host.setClipboard("mid");
+                host.keys("cmd+a");
+                host.keys("cmd+v");
+                host.keys("return");
+                host.tick(1);
+                cir::Op tag;
+                tag.type = cir::Op::Type::label;
+                tag.name = "a";
+                tag.points = { *mid };
+                const std::string tagged = ed.text();
+                P.eq("edit.label_tag", tagged == applied(kinds, { tag, renameOp("a", "mid") }).text
+                                           && has(tagged, "*@ net mid label=" + std::to_string(mid->x) + "," + std::to_string(mid->y)) ? 1 : 0, 1);
+            }
+            else
+                P.eq("edit.label_tag", 0, 1);
+            host.keys("escape");
+            host.tick(1);
+            P.eq("edit.label_tool_ends", v.tool() == SV::Tool::select ? 1 : 0, 1);
+        }
+        // Show as labels writes flag; Show as wires (a pin's menu: a tag has no wire) takes it out (labels.png)
+        {
+            const std::string before = ed.text();
+            if (const std::optional<cir::Pt> mid = midWire(v.drawing(), "mid"))
+            {
+                look(static_cast<float>(mid->x), static_cast<float>(mid->y));
+                const funkgui::Point w = v.screenOf(*mid);
+                host.click(w.x, w.y, popupMods());
+                P.eq("edit.show_as_labels", choose(host, "Show as labels") && has(ed.text(), "\n*@ net mid flag") ? 1 : 0, 1);
+            }
+            else
+                P.eq("edit.show_as_labels", 0, 1);
+            host.settle();
+            writePng(P, host, "gui.schematic.labels.png", "labels");
+            const funkgui::Point a = on("R2");
+            (void)a;
+            const funkgui::Point pin = pinAt(v, "R2", "1");
+            host.click(pin.x, pin.y, popupMods());
+            P.eq("edit.show_as_wires", choose(host, "Show mid as wires") && !has(ed.text(), "*@ net mid flag")
+                                           && has(ed.text(), "\n*@ net mid ") ? 1 : 0, 1);
+            ed.undo();
+            ed.undo();
+            host.tick(1);
+            P.eq("edit.labels_undone", ed.text() == before ? 1 : 0, 1);
+            ed.undo();
+            host.tick(1);
+            P.eq("edit.tag_undone", ed.text() == kinds ? 1 : 0, 1);
+        }
+        // copy, then paste: the exact text, parts renamed, fresh nodes (ground kept), places offset to the pointer
+        {
+            const funkgui::Point r1 = on("R1");
+            host.click(r1.x, r1.y);
+            const funkgui::Point c1 = partAt(v, "C1");
+            host.click(c1.x, c1.y, funkgui::Mods{ true, false, false, false });
+            host.keys("cmd+c");
+            const std::string clip = host.clipboardText();
+            const std::string want = cir::copied(kinds, cir::reconcile(kinds), { "R1", "C1" });
+            std::printf("copied:\n%s", clip.c_str());
+            P.eq("edit.copy_text", !clip.empty() && clip == want && has(clip, "R1 in a 1k\n") && has(clip, "C1 a 0 10n\n")
+                                       && has(clip, "*@ part R1 ") && has(clip, "*@ part C1 ") && !has(clip, "R2 ") ? 1 : 0, 1);
+            const funkgui::Point empty = emptyPoint();
+            host.move(empty.x, empty.y);
+            const cir::Pt to = gridOf(empty);
+            host.keys("cmd+v");
+            host.tick(1);
+            cir::Op paste;
+            paste.type = cir::Op::Type::paste;
+            paste.at = to;
+            for (std::size_t at = 0; at < clip.size();)
+            {
+                const std::size_t end = std::min(clip.find('\n', at), clip.size());
+                paste.lines.push_back(clip.substr(at, end - at));
+                at = end + 1;
+            }
+            paste.lines.push_back("");
+            const std::string pasted = ed.text();
+            P.eq("edit.paste_exact", pasted == applied(kinds, { paste }).text ? 1 : 0, 1);
+            // the pasted parts (selected): new names, fresh nodes but ground, at the pointer
+            const std::vector<std::string> sel = v.selection();
+            const cir::Netlist nl = cir::read(pasted);
+            const cir::Drawing d = cir::reconcile(pasted);
+            bool fresh = sel.size() == 2, grounded = false, placed = true;
+            cir::Box box;
+            for (const std::string& n : sel)
+                if (const cir::Part* q = partOf(d, n.c_str()))
+                    box = box.joined(q->body);
+            for (const std::string& n : sel)
+            {
+                const int e = nl.element(n);
+                fresh = fresh && e >= 0 && n != "R1" && n != "C1";
+                if (e < 0)
+                    continue;
+                for (const cir::Token& t : nl.elements[static_cast<std::size_t>(e)].nodes)
+                {
+                    fresh = fresh && t.text != "in" && t.text != "a";
+                    grounded = grounded || t.text == "0";
+                }
+            }
+            placed = !box.empty() && box.x0 == to.x && box.y0 == to.y;
+            std::printf("pasted %zu: %s %s; their box %d,%d\n", sel.size(), sel.empty() ? "" : sel[0].c_str(),
+                        sel.size() > 1 ? sel[1].c_str() : "", box.x0, box.y0);
+            P.eq("edit.paste_fresh", fresh && grounded ? 1 : 0, 1);
+            P.eq("edit.paste_at_pointer", placed ? 1 : 0, 1);
+            // cut: copied and gone; pasted back
+            const std::string cutName = sel.empty() ? std::string() : sel.front();
+            v.selectPart(cutName, true);
+            host.tick(1);
+            host.keys("cmd+x");
+            host.tick(1);
+            const bool gone = cir::read(ed.text()).element(cutName) < 0 && has(host.clipboardText(), cutName + " ");
+            host.move(empty.x, empty.y);
+            host.keys("cmd+v");
+            host.tick(1);
+            P.eq("edit.cut_paste", gone && cir::read(ed.text()).element(cutName) >= 0 ? 1 : 0, 1);
+            // duplicate: a copy at +2,+2
+            const std::string dupBefore = ed.text();
+            const funkgui::Point l1 = on("L1");
+            host.click(l1.x, l1.y);
+            host.keys("cmd+d");
+            host.tick(1);
+            cir::Pt origin;
+            const std::string lone = cir::copied(dupBefore, cir::reconcile(dupBefore), { "L1" }, &origin);
+            cir::Op dup;
+            dup.type = cir::Op::Type::paste;
+            dup.at = origin + cir::Pt{ 2, 2 };
+            for (std::size_t at = 0; at < lone.size();)
+            {
+                const std::size_t end = std::min(lone.find('\n', at), lone.size());
+                dup.lines.push_back(lone.substr(at, end - at));
+                at = end + 1;
+            }
+            dup.lines.push_back("");
+            P.eq("edit.duplicate", ed.text() == applied(dupBefore, { dup }).text && cir::read(ed.text()).element("L2") >= 0 ? 1 : 0, 1);
+            // what is no netlist is refused
+            const std::string refusedBefore = ed.text();
+            host.setClipboard("hello world\nthis is not a netlist\n");
+            host.move(empty.x, empty.y);
+            host.keys("cmd+v");
+            host.tick(1);
+            std::printf("paste refused: %s\n", v.notice().c_str());
+            P.eq("edit.paste_refused", ed.text() == refusedBefore && has(v.notice(), "Paste takes netlist lines") ? 1 : 0, 1);
+            ed.setText(kinds);
+            host.tick(1);
+        }
+        // the menus' new items
+        {
+            const auto partMenu = [&](const char* part, const std::string& item) {
+                const funkgui::Point c = on(part);
+                host.click(c.x, c.y, popupMods());
+                const bool ok = choose(host, item);
+                host.tick(1);
+                return ok;
+            };
+            P.eq("menus.part_edit", partMenu("C1", "Edit") && v.editing() && v.fieldText("value") == "10n" ? 1 : 0, 1);
+            host.keys("escape");
+            host.setClipboard("");
+            P.eq("menus.part_copy", partMenu("C1", "Copy") && host.clipboardText() == cir::copied(kinds, cir::reconcile(kinds), { "C1" }) ? 1 : 0, 1);
+            P.eq("menus.part_duplicate", partMenu("C1", "Duplicate") && cir::read(ed.text()).element("C2") >= 0 ? 1 : 0, 1);
+            ed.undo();
+            host.tick(1);
+            P.eq("menus.part_cut", partMenu("C1", "Cut") && cir::read(ed.text()).element("C1") < 0 ? 1 : 0, 1);
+            ed.undo();
+            host.tick(1);
+            if (const std::optional<cir::Pt> mid = midWire(v.drawing(), "a"))
+            {
+                look(static_cast<float>(mid->x), static_cast<float>(mid->y));
+                const funkgui::Point w = v.screenOf(*mid);
+                host.click(w.x, w.y, popupMods());
+                const std::vector<std::string> labels = menuLabels(host);
+                P.eq("menus.wire_items", hasLabel(labels, "Rename net") && hasLabel(labels, "Show as labels") && hasLabel(labels, "Copy")
+                                             && hasLabel(labels, "Cut") ? 1 : 0, 1);
+                P.eq("menus.wire_rename", choose(host, "Rename net") && v.editing() && v.fieldText("net") == "a" ? 1 : 0, 1);
+                host.keys("escape");
+                // with parts selected, the wire's Copy and Cut take them
+                host.keys("cmd+a");
+                host.click(w.x, w.y, popupMods());
+                host.setClipboard("");
+                P.eq("menus.wire_copy", choose(host, "Copy") && has(host.clipboardText(), "R1 in a 1k") ? 1 : 0, 1);
+                host.click(w.x, w.y, popupMods());
+                P.eq("menus.wire_cut", choose(host, "Cut") && cir::read(ed.text()).elements.empty() ? 1 : 0, 1);
+                ed.undo();
+                host.tick(1);
+            }
+            else
+                P.eq("menus.wire_items", 0, 1);
+            P.eq("menus.edit_restored", ed.text() == kinds ? 1 : 0, 1);
+            host.setClipboard(cir::copied(kinds, cir::reconcile(kinds), { "D1" }));
+            const funkgui::Point empty = emptyPoint();
+            host.click(empty.x, empty.y, popupMods());
+            P.eq("menus.canvas_paste", choose(host, "Paste") && cir::read(ed.text()).element("D2") >= 0 ? 1 : 0, 1);
+        }
     }
 
     // ---- MARKS, the structural ones (and errors.png): kMarks, with an error, a warning and a note planted as above ------

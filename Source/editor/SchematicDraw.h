@@ -35,6 +35,11 @@
 #include <string>
 #include <vector>
 
+namespace playground::ui
+{
+    struct Diagnostic;                                   // editor/CodeAssist.h
+}
+
 namespace playground::ui::sch
 {
     // The schematic's primitive tags (after CodeAssist's +20 and +21): the canvas (its ground, grid, toolbar, info
@@ -177,4 +182,31 @@ namespace playground::ui::sch
     // The text a part shows as its value: the netlist's own spelling (R4's "4.7k", a pot's "100k {tone}", a switch's
     // "sw1: 1", an OTA's gain expression); "" for an op amp or a terminal.
     std::string valueText(const cir::Netlist& nl, const cir::Part& p);
+
+    // Where labels() draws a part's value at its spot, on screen (empty when it draws none): a click there edits it.
+    funkgui::Rect valueRect(const LabelSpot& s, const std::string& name, const std::string& value, float px);
+
+    // ---- the problems on the drawing (the view's marks, a picture's) -------------------------------------------------
+    // A message on the file, mapped to what it marks (the spec's table): an element's logical line marks its part (and
+    // the pin whose node token the column falls on), a .pot line every part whose {expr} names it, a .model line every
+    // diode of it, an .input or .output line its terminal; any other line marks nothing (the count only).
+    struct Mark
+    {
+        int line = 0, col = 0;                           // 0-based
+        int severity = 0;                                // 0 error, 1 warning, 2 note
+        std::string text;
+        std::vector<int> parts;                          // Drawing::parts it marks
+        std::vector<std::pair<int, int>> pins;           // the pins its column falls on: (part, pin)
+    };
+    // `problems` (the file's messages, their lines 1-based, as the tab's decorations place them), in line order.
+    std::vector<Mark> mapMarks(const cir::Netlist& nl, const cir::Drawing& d, const std::vector<Diagnostic>& problems);
+    // Each part's marks (Drawing::parts' order) from them; a hand edit's overlap outlines both bodies.
+    std::vector<PartMarks> partMarksOf(const cir::Drawing& d, const std::vector<Mark>& marks);
+
+    // A drawing as it stands, with nothing of the pointer's, the selection's or a gesture's: the grid over `clip`, the
+    // wires and junctions, the name tags and flags, the symbols and terminals, every name and value (at `px`; 0: none),
+    // and the problems' marks (`marks`: Drawing::parts' order, or empty). view_panel's schematic picture. The parts
+    // labelled: how many names were drawn.
+    int still(funkgui::Canvas& c, const View& v, const cir::Netlist& nl, const cir::Drawing& d, const std::vector<PartMarks>& marks,
+              const Inks& k, const funkgui::Rect& clip, float px);
 }

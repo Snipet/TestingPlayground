@@ -461,6 +461,22 @@ namespace playground
         fileViews_ = std::move(kept);
     }
 
+    void Processor::setSchematicPins(const std::string& file, const std::string& lines)
+    {
+        const std::lock_guard<std::mutex> lock(pinsMutex_);
+        if (lines.empty())
+            schematicPins_.erase(file);
+        else if (schematicPins_.size() < 4 * kMaxFiles || schematicPins_.count(file) != 0)
+            schematicPins_[file] = lines;               // a file renamed or gone leaves a few entries behind: bounded
+    }
+
+    std::string Processor::schematicPins(const std::string& file) const
+    {
+        const std::lock_guard<std::mutex> lock(pinsMutex_);
+        const auto it = schematicPins_.find(file);
+        return it == schematicPins_.end() ? std::string() : it->second;
+    }
+
     void Processor::setWindowHooks(WindowHooks hooks) { windowHooks_ = std::move(hooks); }
 
     void Processor::placeWindowButtons(float x, float middle)

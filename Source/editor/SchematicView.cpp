@@ -85,13 +85,6 @@ namespace playground::ui
                 || said.find(": it is ground now") != std::string::npos;
         }
 
-        std::string lower(std::string s)
-        {
-            for (char& ch : s)
-                ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-            return s;
-        }
-
         // A run's points in order, unit step by unit step (a polyline cut() takes).
         std::vector<cir::Pt> pathOf(const std::vector<cir::UnitEdge>& edges)
         {
@@ -202,6 +195,7 @@ namespace playground::ui
         };
         put(Button::select, kButtonW);
         put(Button::ground, kButtonW);
+        put(Button::label, kButtonW);
         x += 6.0f;
         put(Button::r, kButtonW);
         put(Button::c, kButtonW);
@@ -267,6 +261,7 @@ namespace playground::ui
         tool_ = Tool::select;
         kind_ = cir::Kind::Unknown;
         orient_ = cir::Orient::r0;
+        closeField();
     }
 
     // ---- the model ----------------------------------------------------------------------------------------------------
@@ -289,6 +284,7 @@ namespace playground::ui
             if (p.element >= 0 && p.source != cir::Source::stored)
                 pins.parts.push_back({ p.name, p.origin, p.orient, p.extra, -1 });
         st_->pins = std::move(pins);
+        publishPins();
         // What a part looks like (its place, its turn, its value): a merge flashes those it changed.
         shapes_.clear();
         for (const cir::Part& p : d_.parts)
@@ -409,111 +405,8 @@ namespace playground::ui
         partMarks_.assign(d_.parts.size(), {});
         if (!showing())
             return;
-        std::vector<Diagnostic> problems = hooks_.problems ? hooks_.problems() : std::vector<Diagnostic>{};
-        const auto partOfElement = [&](int element) {
-            for (std::size_t i = 0; i < d_.parts.size(); ++i)
-                if (d_.parts[i].element == element)
-                    return static_cast<int>(i);
-            return -1;
-        };
-        const auto terminal = [&](cir::Kind k) {
-            for (std::size_t i = 0; i < d_.parts.size(); ++i)
-                if (d_.parts[i].kind == k)
-                    return static_cast<int>(i);
-            return -1;
-        };
-        for (const Diagnostic& g : problems)
-        {
-            Mark m;
-            m.line = std::max(0, g.line - 1);
-            m.col = std::max(0, g.column - 1);
-            m.severity = g.severity == Diagnostic::Severity::error ? 0 : g.severity == Diagnostic::Severity::warning ? 1 : 2;
-            m.text = g.text;
-            // an element's logical line: that part
-            for (std::size_t e = 0; e < nl_.elements.size(); ++e)
-                if (nl_.elements[e].firstLine <= m.line && m.line <= nl_.elements[e].lastLine)
-                    if (const int p = partOfElement(static_cast<int>(e)); p >= 0)
-                    {
-                        m.parts.push_back(p);
-                        // ... and the pin, when the column falls on a node token
-                        const cir::Element& el = nl_.elements[e];
-                        for (std::size_t k = 0; k < el.nodes.size() && k < el.tokenOf.size(); ++k)
-                        {
-                            const cir::Token& t = el.nodes[k];
-                            if (t.at.line != m.line || m.col < t.at.col || m.col >= t.at.col + std::max(1, t.len))
-                                continue;
-                            const std::vector<cir::PinAt>& pins = d_.parts[static_cast<std::size_t>(p)].pins;
-                            for (std::size_t j = 0; j < pins.size() && j < 8; ++j)
-                                if (pins[j].token == el.tokenOf[k])
-                                    m.pins.push_back({ p, static_cast<int>(j) });
-                        }
-                    }
-            // a .pot line: every part whose expression names it
-            for (const cir::PotLine& pot : nl_.pots)
-                if (pot.line == m.line)
-                    for (std::size_t e = 0; e < nl_.elements.size(); ++e)
-                        for (const cir::Token& t : nl_.elements[e].tokens)
-                        {
-                            if (t.text.empty() || t.text.front() != '{')
-                                continue;
-                            const std::string body = lower(t.text), word = lower(pot.name);
-                            bool uses = false;
-                            for (std::size_t at = body.find(word); at != std::string::npos && !uses; at = body.find(word, at + 1))
-                            {
-                                const auto ident = [](char ch) { return std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '_'; };
-                                uses = (at == 0 || !ident(body[at - 1])) && (at + word.size() >= body.size() || !ident(body[at + word.size()]));
-                            }
-                            if (uses)
-                                if (const int p = partOfElement(static_cast<int>(e)); p >= 0)
-                                    m.parts.push_back(p);
-                        }
-            // a .model line: every diode of that model
-            for (const auto& [model, line] : nl_.models)
-                if (line == m.line)
-                    for (std::size_t e = 0; e < nl_.elements.size(); ++e)
-                    {
-                        const cir::Element& el = nl_.elements[e];
-                        if (el.kind == cir::Kind::D && el.valueToken >= 0
-                            && cir::folded(el.tokens[static_cast<std::size_t>(el.valueToken)].text) == cir::folded(model))
-                            if (const int p = partOfElement(static_cast<int>(e)); p >= 0)
-                                m.parts.push_back(p);
-                    }
-            // an .input or .output line: its terminal
-            if (nl_.input && nl_.input->line == m.line)
-                if (const int p = terminal(cir::Kind::Input); p >= 0)
-                    m.parts.push_back(p);
-            if (nl_.output && nl_.output->line == m.line)
-                if (const int p = terminal(cir::Kind::Output); p >= 0)
-                    m.parts.push_back(p);
-            std::sort(m.parts.begin(), m.parts.end());
-            m.parts.erase(std::unique(m.parts.begin(), m.parts.end()), m.parts.end());
-            marks_.push_back(std::move(m));
-        }
-        std::stable_sort(marks_.begin(), marks_.end(), [](const Mark& a, const Mark& b) {
-            return a.line != b.line ? a.line < b.line : a.col < b.col;
-        });
-        for (const Mark& m : marks_)
-            for (const int p : m.parts)
-            {
-                sch::PartMarks& pm = partMarks_[static_cast<std::size_t>(p)];
-                (m.severity == 0 ? pm.errors : m.severity == 1 ? pm.warnings : pm.notes) += 1;
-                pm.outline = pm.outline || m.severity == 0;
-            }
-        for (const Mark& m : marks_)
-            for (const auto& [p, pin] : m.pins)
-                partMarks_[static_cast<std::size_t>(p)].pinMask[std::clamp(m.severity, 0, 2)] |= static_cast<uint8_t>(1u << pin);
-        // a hand edit's overlap: both outlined
-        for (const auto& [a, b] : d_.overlaps)
-            for (const std::string& item : { a, b })
-            {
-                std::string name = item;
-                if (const std::size_t at = name.find("'s"); at != std::string::npos)
-                    name.resize(at);
-                if (const std::size_t dot = name.find('.'); dot != std::string::npos)
-                    name.resize(dot);
-                if (const int p = d_.part(name); p >= 0)
-                    partMarks_[static_cast<std::size_t>(p)].outline = true;
-            }
+        marks_ = sch::mapMarks(nl_, d_, hooks_.problems ? hooks_.problems() : std::vector<Diagnostic>{});
+        partMarks_ = sch::partMarksOf(d_, marks_);
     }
 
     int SchematicView::problemCount() const { return static_cast<int>(marks_.size()); }
@@ -672,22 +565,45 @@ namespace playground::ui
         return ed_ != nullptr && ed_->revision() == noticeRev_ ? notice_ : std::string();
     }
 
-    bool SchematicView::commit(const std::vector<cir::Op>& ops)
+    void SchematicView::publishPins() const
+    {
+        if (!showing() || !pins_)
+            return;
+        std::string lines;
+        for (const cir::PartLine& p : st_->pins.parts)
+        {
+            lines += "*@ part " + p.name + " " + std::to_string(p.at.x) + "," + std::to_string(p.at.y);
+            if (p.orient != cir::Orient::r0)
+                lines += std::string(" ") + cir::orientName(p.orient);
+            for (const std::string& x : p.extra)
+                lines += " " + x;
+            lines += "\n";
+        }
+        if (lines == st_->published)
+            return;
+        st_->published = lines;
+        pins_(file_, lines);
+    }
+
+    bool SchematicView::commit(const std::vector<cir::Op>& ops, std::string* why, std::vector<std::string>* touched)
     {
         if (!showing())
             return false;
         ensure();
-        if (d_.readOnly)
-        {
-            say("Drawn by a newer playground: read only here");
+        const auto refuse = [&](const std::string& text) {
+            if (why != nullptr)
+                *why = text;
+            else
+                say(text);
             return false;
-        }
+        };
+        if (d_.readOnly)
+            return refuse("Drawn by a newer playground: read only here");
         const cir::Applied a = cir::apply(text_, d_, ops, st_->pins);
         if (!a.error.empty())
-        {
-            say(friendly(a.error));
-            return false;
-        }
+            return refuse(friendly(a.error));
+        if (touched != nullptr)
+            *touched = a.touched;
         // What the strip says: every op's words when nothing changed (why not), else the changes of nets alone, in
         // order (the strip cuts what does not fit).
         std::string words;
@@ -704,10 +620,7 @@ namespace playground::ui
         for (const cir::Edit& e : a.edits)
             edits.push_back({ { e.from.line, e.from.col }, { e.to.line, e.to.col }, e.text });
         if (!ed_->applyEdits(std::move(edits)))
-        {
-            say("The edit could not be made (its parts overlapped): nothing changed");
-            return false;
-        }
+            return refuse("The edit could not be made (its parts overlapped): nothing changed");
         ensure();
         words.empty() ? quiet() : say(words);            // the notice of this revision
         return true;
@@ -1270,6 +1183,558 @@ namespace playground::ui
         say(m.text);
     }
 
+    // ---- the field: a part's names and values edited in place, a net's name (the Label tool) ----------------------------
+    namespace
+    {
+        constexpr int kFieldMax = 64;                    // a row's characters
+        constexpr float kRowH = 20.0f, kLabelW = 64.0f, kCardPad = 6.0f;
+
+        std::string trimmed(std::string t)
+        {
+            while (!t.empty() && (t.back() == ' ' || t.back() == '\t'))
+                t.pop_back();
+            std::size_t a = 0;
+            while (a < t.size() && (t[a] == ' ' || t[a] == '\t'))
+                ++a;
+            return t.substr(a);
+        }
+
+        // The first pot a pot's {expr} names (its .pot line's), "" for none.
+        std::string firstPot(const cir::Netlist& nl, const cir::Element& e)
+        {
+            for (const cir::Token& t : e.tokens)
+            {
+                if (t.text.empty() || t.text.front() != '{')
+                    continue;
+                std::string word;
+                for (std::size_t c = 0; c <= t.text.size(); ++c)
+                {
+                    const char ch = c < t.text.size() ? t.text[c] : ' ';
+                    if (std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '_')
+                    {
+                        word += ch;
+                        continue;
+                    }
+                    if (!word.empty() && std::isalpha(static_cast<unsigned char>(word.front())) != 0)
+                        for (const cir::PotLine& p : nl.pots)
+                            if (cir::folded(p.name) == cir::folded(word))
+                                return p.name;
+                    word.clear();
+                }
+            }
+            return {};
+        }
+
+        bool ohms(cir::Kind k) noexcept { return k == cir::Kind::R || k == cir::Kind::Pot || k == cir::Kind::Rheostat; }
+    }
+
+    std::vector<std::string> SchematicView::fieldKeys() const
+    {
+        std::vector<std::string> out;
+        for (const Row& r : field_.rows)
+            out.push_back(r.key);
+        return out;
+    }
+
+    std::string SchematicView::fieldText(const std::string& key) const
+    {
+        for (const Row& r : field_.rows)
+            if (r.key == key)
+                return r.edit.buffer;
+        return {};
+    }
+
+    std::string SchematicView::fieldRow() const
+    {
+        return field_.on && field_.row >= 0 && field_.row < static_cast<int>(field_.rows.size())
+                   ? field_.rows[static_cast<std::size_t>(field_.row)].key
+                   : std::string();
+    }
+
+    std::string SchematicView::fieldWarning() const
+    {
+        if (!field_.on || !ohms(field_.kind))
+            return {};
+        return cir::milliWarning(trimmed(fieldText("value")));
+    }
+
+    bool SchematicView::editPart(const std::string& name, const std::string& rowKey)
+    {
+        ensure();
+        if (!showing())
+            return false;
+        if (d_.readOnly)
+        {
+            say("Drawn by a newer playground: read only here");
+            return false;
+        }
+        const int i = d_.part(name);
+        if (i < 0)
+            return false;
+        const cir::Part& p = d_.parts[static_cast<std::size_t>(i)];
+        Field f;
+        f.on = true;
+        f.part = p.name;
+        f.kind = p.kind;
+        f.rev = ed_->revision();
+        const auto row = [&](const char* key, const char* label, const std::string& text) {
+            Row r;
+            r.key = key;
+            r.label = label;
+            r.was = text;
+            r.edit.set(text, kFieldMax);
+            f.rows.push_back(std::move(r));
+        };
+        row("name", "NAME", p.name);
+        if (p.element >= 0)
+        {
+            const cir::Element& e = nl_.elements[static_cast<std::size_t>(p.element)];
+            const auto tok = [&](int k) { return k >= 0 && k < static_cast<int>(e.tokens.size()) ? e.tokens[static_cast<std::size_t>(k)].text : std::string(); };
+            switch (e.kind)
+            {
+                case cir::Kind::R:
+                case cir::Kind::C:
+                case cir::Kind::L:
+                case cir::Kind::V:
+                case cir::Kind::I:
+                    row("value", "VALUE", tok(e.valueToken));
+                    break;
+                case cir::Kind::D:
+                    row("model", "MODEL", tok(e.valueToken));
+                    break;
+                case cir::Kind::Pot:
+                case cir::Kind::Rheostat:
+                {
+                    row("value", "VALUE", tok(e.valueToken));
+                    if (const std::string pot = firstPot(nl_, e); !pot.empty())
+                    {
+                        row("pot", "POT", pot);
+                        std::string taper = "lin";
+                        for (const cir::PotLine& pl : nl_.pots)
+                            if (cir::folded(pl.name) == cir::folded(pot) && !pl.taper.empty())
+                                taper = pl.taper;
+                        row("taper", "TAPER", taper);
+                    }
+                    break;
+                }
+                case cir::Kind::Vcvs:
+                case cir::Kind::Vccs:
+                case cir::Kind::Ota:
+                    row("gain", "GAIN", tok(e.valueToken));
+                    break;
+                case cir::Kind::S:
+                {
+                    row("switch", "SWITCH", tok(3));
+                    std::string positions;
+                    for (std::size_t k = 4; k < e.tokens.size() && e.tokens[k].text.find('=') == std::string::npos; ++k)
+                        positions += (positions.empty() ? "" : " ") + e.tokens[k].text;
+                    row("positions", "POSITIONS", positions);
+                    break;
+                }
+                case cir::Kind::OpAmp:
+                case cir::Kind::Input:
+                case cir::Kind::Output:
+                case cir::Kind::Unknown:
+                    break;
+            }
+        }
+        else
+        {
+            // a terminal: its scale (none written: 1)
+            const std::optional<cir::Terminal>& t = p.kind == cir::Kind::Input ? nl_.input : nl_.output;
+            std::string scale;
+            if (t)
+                for (const cir::Token& x : t->tokens)
+                    if (cir::folded(x.text).rfind("scale=", 0) == 0)
+                        scale = x.text.substr(6);
+            row("scale", "SCALE", scale);
+        }
+        f.row = 0;
+        for (std::size_t k = 0; k < f.rows.size(); ++k)
+            if (!rowKey.empty() && (f.rows[k].key == rowKey || (rowKey == "value" && k == 1)))
+            {
+                f.row = static_cast<int>(k);
+                break;
+            }
+        f.world = { 0.5f * static_cast<float>(p.body.x0 + p.body.x1), static_cast<float>(p.body.y1) };
+        if (drag_ == Drag::carry || tool_ != Tool::select)
+            setTool(Tool::select);
+        field_ = std::move(f);
+        setSelection({ p.name }, {});
+        return true;
+    }
+
+    bool SchematicView::editNetAt(funkgui::Point p)
+    {
+        ensure();
+        if (!showing())
+            return false;
+        if (d_.readOnly)
+        {
+            say("Drawn by a newer playground: read only here");
+            return false;
+        }
+        const Hit h = hitAt(p);
+        if ((h.kind != Hit::Kind::pin && h.kind != Hit::Kind::wire) || h.net < 0)
+            return false;
+        const cir::Net& n = d_.nets[static_cast<std::size_t>(h.net)];
+        if (n.style == cir::Style::ground)
+        {
+            say("Ground is node 0: it keeps its name");
+            return false;
+        }
+        Field f;
+        f.on = true;
+        f.net = n.name;
+        f.rev = ed_->revision();
+        Row r;
+        r.key = "net";
+        r.label = "NET";
+        r.was = n.name;
+        r.edit.set(n.name, kFieldMax);
+        f.rows.push_back(std::move(r));
+        if (h.kind == Hit::Kind::wire && n.style == cir::Style::wired && !n.unroutable)
+            f.tag = h.at;                                // its name tag goes where the wire was clicked
+        f.world = view().world(p);
+        field_ = std::move(f);
+        return true;
+    }
+
+    void SchematicView::closeField()
+    {
+        field_ = Field{};
+    }
+
+    bool SchematicView::commitField(bool megohms)
+    {
+        if (!field_.on)
+            return true;
+        ensure();
+        if (ed_->revision() != field_.rev)
+        {
+            closeField();
+            say("The circuit changed: edit it again");
+            return false;
+        }
+        std::vector<cir::Op> ops;
+        std::string to;
+        for (const Row& r : field_.rows)
+        {
+            std::string text = trimmed(r.edit.buffer);
+            if (megohms && r.key == "value" && ohms(field_.kind))
+            {
+                std::string meg;
+                if (!cir::milliWarning(text, &meg).empty())
+                    text = meg;                          // Alt-Return: the megohms FMinus's warning says to write
+            }
+            if (text == r.was)
+                continue;
+            if (text.empty())
+            {
+                field_.why = r.label + " is empty: write one, or Escape";
+                return false;
+            }
+            if (r.key == "name" || r.key == "net")
+            {
+                to = text;
+                continue;
+            }
+            cir::Op op;
+            op.type = cir::Op::Type::set;
+            op.name = field_.part;
+            op.key = r.key == "value" ? std::string() : r.key;
+            op.value = text;
+            ops.push_back(std::move(op));
+        }
+        if (!field_.net.empty() && field_.tag)
+        {
+            // the Label tool: its name tag where the wire was clicked (label= on the net's line)
+            const int n = d_.net(field_.net);
+            cir::Op op;
+            op.type = cir::Op::Type::label;
+            op.name = field_.net;
+            if (n >= 0)
+                op.points = d_.nets[static_cast<std::size_t>(n)].labels;
+            if (std::find(op.points.begin(), op.points.end(), *field_.tag) == op.points.end())
+            {
+                op.points.push_back(*field_.tag);
+                ops.push_back(std::move(op));
+            }
+        }
+        if (!to.empty())
+        {
+            cir::Op op;
+            op.type = cir::Op::Type::rename;
+            op.name = field_.part.empty() ? field_.net : field_.part;
+            op.to = to;
+            ops.push_back(std::move(op));             // last: the sets name the part as it was
+        }
+        if (ops.empty())
+        {
+            closeField();
+            return true;
+        }
+        std::string why;
+        if (!commit(ops, &why))
+        {
+            field_.why = why;                            // refused in the field: it stays open
+            return false;
+        }
+        const std::string part = field_.part.empty() ? std::string() : (to.empty() ? field_.part : to);
+        closeField();
+        if (!part.empty())
+            if (const int i = d_.part(part); i >= 0)
+                setSelection({ d_.parts[static_cast<std::size_t>(i)].name }, {});
+        return true;
+    }
+
+    void SchematicView::stepField(int dir, bool decade)
+    {
+        Row& r = field_.rows[static_cast<std::size_t>(field_.row)];
+        if (r.key != "value" && r.key != "gain")
+            return;
+        if (const std::optional<std::string> v = cir::e12Stepped(trimmed(r.edit.buffer), dir, decade))
+        {
+            r.edit.set(*v, kFieldMax);
+            r.edit.allSelected = false;
+            field_.why.clear();
+        }
+    }
+
+    bool SchematicView::fieldKey(const funkgui::KeyEvent& e)
+    {
+        if (field_.rows.empty())
+        {
+            closeField();
+            return true;
+        }
+        field_.row = std::clamp(field_.row, 0, static_cast<int>(field_.rows.size()) - 1);
+        Row& r = field_.rows[static_cast<std::size_t>(field_.row)];
+        if (e.key == funkgui::Key::enter)
+        {
+            commitField(e.mods.alt);
+            return true;
+        }
+        if (e.key == funkgui::Key::escape)
+        {
+            closeField();
+            return true;
+        }
+        if (e.key == funkgui::Key::tab)
+        {
+            const int n = static_cast<int>(field_.rows.size());
+            field_.row = ((field_.row + (e.mods.shift ? -1 : 1)) % n + n) % n;
+            Row& next = field_.rows[static_cast<std::size_t>(field_.row)];
+            next.edit.caret = static_cast<int>(next.edit.buffer.size());
+            next.edit.allSelected = !next.edit.buffer.empty();
+            return true;
+        }
+        if (e.key == funkgui::Key::up || e.key == funkgui::Key::down)
+        {
+            stepField(e.key == funkgui::Key::up ? 1 : -1, e.mods.shift);
+            return true;
+        }
+        if (e.key == funkgui::Key::character && e.mods.cmd && (e.ch == 'v' || e.ch == 'V'))
+        {
+            if (host_ != nullptr && r.edit.paste(host_->clipboardText(), kFieldMax))
+                field_.why.clear();
+            return true;
+        }
+        if (e.key == funkgui::Key::character && e.mods.cmd && (e.ch == 'a' || e.ch == 'A'))
+        {
+            r.edit.allSelected = !r.edit.buffer.empty();
+            return true;
+        }
+        if (r.edit.key(e, kFieldMax))
+            field_.why.clear();
+        return true;                                     // the field takes every key
+    }
+
+    funkgui::Rect SchematicView::fieldRect() const
+    {
+        if (!field_.on || !showing())
+            return {};
+        const auto& atlas = funkgui::FontService::get().atlas();
+        const funkgui::TextStyle& st = chat::kSmall;
+        float textW = 120.0f;
+        for (const Row& r : field_.rows)
+            textW = std::max(textW, funkgui::text::width(atlas, r.edit.buffer.c_str(), st) + 16.0f);
+        float w = kLabelW + textW + 2.0f * kCardPad;
+        float h = kRowH * static_cast<float>(field_.rows.size()) + 2.0f * kCardPad;
+        for (const std::string& line : { fieldWarning(), fieldWarning().empty() ? std::string() : std::string("Return keeps it as typed   Alt-Return writes megohms"),
+                                         field_.why })
+            if (!line.empty())
+            {
+                w = std::max(w, funkgui::text::width(atlas, line.c_str(), st) + 2.0f * kCardPad + 4.0f);
+                h += 16.0f;
+            }
+        // under the part (a net's: under the point), kept on the canvas
+        const sch::View v = view();
+        const funkgui::Point at = v.at(field_.world.x, field_.world.y);
+        float x = at.x - 0.5f * w, y = at.y + 8.0f;
+        if (y + h > canvas_.bottom() - 2.0f)
+            y = at.y - 8.0f - h - (field_.part.empty() ? 0.0f : 3.0f * v.scale);
+        x = std::max(canvas_.x + 2.0f, std::min(x, canvas_.right() - w - 2.0f));
+        y = std::max(canvas_.y + 2.0f, std::min(y, canvas_.bottom() - h - 2.0f));
+        return { x, y, w, h };
+    }
+
+    void SchematicView::drawField(funkgui::Canvas& c, const funkgui::Theme& th, const sch::View& v, const sch::Inks& k) const
+    {
+        (void)v;
+        if (!field_.on)
+            return;
+        const chat::Palette pal = chat::palette(th);
+        const funkgui::TextStyle& st = chat::kSmall;
+        const funkgui::Rect card = fieldRect();
+        c.rrect(card.x, card.y, card.w, card.h, 8.0f, pal.card, 1.0f, pal.cardEdge);
+        float y = card.y + kCardPad;
+        for (std::size_t i = 0; i < field_.rows.size(); ++i, y += kRowH)
+        {
+            const Row& r = field_.rows[i];
+            const bool active = static_cast<int>(i) == field_.row;
+            const float top = c.capCentreTop(y + 0.5f * kRowH, st);
+            c.text(r.label.c_str(), card.x + kCardPad + 2.0f, top, st, pal.faint);
+            const funkgui::Rect box{ card.x + kCardPad + kLabelW, y + 1.0f, card.w - 2.0f * kCardPad - kLabelW, kRowH - 2.0f };
+            c.rrect(box.x, box.y, box.w, box.h, 5.0f, pal.composer, 1.0f, active ? pal.accent : pal.composerEdge);
+            // the text, the selection (all of it, until a key), the caret: as a tab's name being edited
+            const std::string& b = r.edit.buffer;
+            const float tw = c.textWidth(b.c_str(), st);
+            if (active && r.edit.allSelected && !b.empty())
+                c.rrect(box.x + 5.0f, box.y + 3.0f, std::min(tw, box.w - 10.0f) + 2.0f, box.h - 6.0f, 2.0f, th.accentDim);
+            const bool bad = active && !field_.why.empty();
+            c.text(fitText(c, b, st, box.w - 12.0f).c_str(), box.x + 6.0f, top, st, bad ? pal.danger : pal.text);
+            if (active)
+            {
+                const std::string head = b.substr(0, static_cast<std::size_t>(std::clamp(r.edit.caret, 0, static_cast<int>(b.size()))));
+                const float cx = box.x + 6.0f + std::min(c.textWidth(head.c_str(), st), box.w - 12.0f);
+                c.rrect(cx, box.y + 3.0f, 1.5f, box.h - 6.0f, 0.0f, pal.accent);
+            }
+        }
+        y += 2.0f;
+        const std::string warning = fieldWarning();
+        if (!warning.empty())
+        {
+            c.text(warning.c_str(), card.x + kCardPad + 2.0f, y, st, k.warning);
+            y += 16.0f;
+            c.text("Return keeps it as typed   Alt-Return writes megohms", card.x + kCardPad + 2.0f, y, st, pal.soft);
+            y += 16.0f;
+        }
+        if (!field_.why.empty())
+            c.text(field_.why.c_str(), card.x + kCardPad + 2.0f, y, st, pal.danger);
+    }
+
+    std::optional<funkgui::Point> SchematicView::centreOfValue(const std::string& part) const
+    {
+        ensure();
+        const int i = d_.part(part);
+        if (i < 0 || i >= static_cast<int>(valueRects_.size()) || valueRects_[static_cast<std::size_t>(i)].w <= 0.0f)
+            return std::nullopt;
+        const funkgui::Rect r = valueRects_[static_cast<std::size_t>(i)];
+        return funkgui::Point{ r.centreX(), r.centreY() };
+    }
+
+    // ---- the clipboard, labels and wires -------------------------------------------------------------------------------
+    bool SchematicView::copySelection()
+    {
+        ensure();
+        if (!showing() || st_ == nullptr)
+            return false;
+        const std::string text = cir::copied(text_, d_, st_->selected);
+        if (text.empty())
+        {
+            say("Copy takes parts: select one or more (the input and the output stay)");
+            return false;
+        }
+        if (host_ != nullptr)
+            host_->copyText(text);
+        return true;
+    }
+
+    bool SchematicView::cutSelection()
+    {
+        if (!copySelection())
+            return false;
+        // the parts copied go (the input and the output, which Copy leaves out, stay)
+        std::vector<std::string> parts;
+        for (const std::string& n : st_->selected)
+            if (const int i = d_.part(n); i >= 0 && d_.parts[static_cast<std::size_t>(i)].element >= 0)
+                parts.push_back(n);
+        st_->selected = parts;
+        return deleteSelection();
+    }
+
+    bool SchematicView::pasteText(const std::string& text, cir::Pt at)
+    {
+        cir::Op op;
+        op.type = cir::Op::Type::paste;
+        op.at = at;
+        std::size_t start = 0;
+        while (start <= text.size())
+        {
+            const std::size_t end = std::min(text.find('\n', start), text.size());
+            std::string line = text.substr(start, end - start);
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
+            op.lines.push_back(std::move(line));
+            start = end + 1;
+        }
+        std::string why;
+        std::vector<std::string> touched;
+        if (!commit({ op }, &why, &touched))
+        {
+            say(why.rfind("nothing to paste", 0) == 0 || why.rfind("paste takes", 0) == 0
+                    ? "Paste takes netlist lines (a copy of parts): " + why
+                    : why);
+            return false;
+        }
+        std::vector<std::string> parts;
+        for (const std::string& n : touched)
+            if (const int i = d_.part(n); i >= 0)
+                parts.push_back(d_.parts[static_cast<std::size_t>(i)].name);
+        setSelection(std::move(parts), {});
+        return true;
+    }
+
+    bool SchematicView::paste()
+    {
+        ensure();
+        if (!showing())
+            return false;
+        const std::string text = host_ != nullptr ? host_->clipboardText() : std::string();
+        if (text.find_first_not_of(" \t\r\n") == std::string::npos)
+        {
+            say("Nothing to paste: copy parts first");
+            return false;
+        }
+        const cir::Pt at = canvas_.contains(pointer_) ? gridAt(pointer_) : gridAt({ canvas_.centreX(), canvas_.centreY() });
+        return pasteText(text, at);
+    }
+
+    bool SchematicView::duplicate()
+    {
+        ensure();
+        if (!showing() || st_ == nullptr)
+            return false;
+        cir::Pt origin;
+        const std::string text = cir::copied(text_, d_, st_->selected, &origin);
+        if (text.empty())
+        {
+            say("Duplicate takes parts: select one or more");
+            return false;
+        }
+        return pasteText(text, origin + cir::Pt{ 2, 2 });
+    }
+
+    bool SchematicView::showAsLabels(const std::string& net, bool labels)
+    {
+        cir::Op op;
+        op.type = cir::Op::Type::style;
+        op.name = net;
+        op.flag = labels;
+        return commit({ op });
+    }
+
     // ---- the pointer ----------------------------------------------------------------------------------------------------
     cir::End SchematicView::endOf(const Hit& h) const
     {
@@ -1314,6 +1779,28 @@ namespace playground::ui
         ensure();
         const funkgui::Point p{ e.x, e.y };
         pointer_ = p;
+        if (field_.on)
+        {
+            // In the field: a row's press puts the caret there. Elsewhere: what was typed, when it can be written (else
+            // nothing), and the press goes on.
+            const funkgui::Rect card = fieldRect();
+            if (card.contains(p))
+            {
+                const int r = static_cast<int>((p.y - card.y - kCardPad) / kRowH);
+                if (r >= 0 && r < static_cast<int>(field_.rows.size()))
+                {
+                    field_.row = r;
+                    Row& row = field_.rows[static_cast<std::size_t>(r)];
+                    row.edit.allSelected = false;
+                    row.edit.caret = static_cast<int>(row.edit.buffer.size());
+                }
+                drag_ = Drag::none;
+                return;
+            }
+            if (!commitField())
+                closeField();
+            ensure();
+        }
         if (toolbar_.contains(p))
         {
             drag_ = Drag::none;
@@ -1328,6 +1815,7 @@ namespace playground::ui
                 {
                     case Button::select: setTool(Tool::select); break;
                     case Button::ground: setTool(tool_ == Tool::ground ? Tool::select : Tool::ground); break;
+                    case Button::label: setTool(tool_ == Tool::label ? Tool::select : Tool::label); break;
                     case Button::r: case Button::c: case Button::l: case Button::d: case Button::p: case Button::x:
                     case Button::s:
                         setTool(Tool::place, kBarKinds[b - static_cast<int>(Button::r)]);
@@ -1666,7 +2154,7 @@ namespace playground::ui
         {
             if (tool_ == Tool::place)
                 orient_ = cir::rotatedCw(orient_);       // the ghost turns; the part stays carried
-            else if (tool_ == Tool::ground)
+            else if (tool_ == Tool::ground || tool_ == Tool::label)
                 setTool(Tool::select);
             else
                 openMenu(press_.at);
@@ -1691,6 +2179,19 @@ namespace playground::ui
             }
             return;
         }
+        if (tool_ == Tool::label)
+        {
+            editNetAt(press_.at);                        // its net's name field (the tool stays)
+            return;
+        }
+        // a part's value label: its field, the caret on the value
+        if (!press_.mods.shift && (h.kind == Hit::Kind::none || h.kind == Hit::Kind::wire))
+            for (std::size_t i = 0; i < valueRects_.size() && i < d_.parts.size(); ++i)
+                if (valueRects_[i].contains(press_.at))
+                {
+                    editPart(d_.parts[i].name, "value");
+                    return;
+                }
         const bool shift = press_.mods.shift;
         std::vector<std::string> parts = st_->selected;
         std::vector<Run> runs = runs_;
@@ -1791,7 +2292,7 @@ namespace playground::ui
             case Hit::Kind::part:
             case Hit::Kind::pin:
                 if (tool_ == Tool::select)
-                    openNetlistAtPart(h.part);           // s4: edits it in place
+                    editPart(d_.parts[static_cast<std::size_t>(h.part)].name);   // edited in place
                 return;
             case Hit::Kind::wire:
                 setSelection({}, runsOf(h.net));
@@ -1828,6 +2329,8 @@ namespace playground::ui
         if (!showing())
             return false;
         ensure();
+        if (field_.on)
+            return fieldKey(e);                          // the field takes every key (Escape closes it)
         const bool cmd = e.mods.cmd, shift = e.mods.shift;
         switch (e.key)
         {
@@ -1853,7 +2356,7 @@ namespace playground::ui
                 return true;
             case funkgui::Key::enter:
                 if (!cmd && st_->selected.size() == 1)
-                    openNetlistAtPart(d_.part(st_->selected.front()));
+                    editPart(st_->selected.front());     // edited in place
                 return !cmd;
             case funkgui::Key::backspace:
             case funkgui::Key::del:
@@ -1883,6 +2386,14 @@ namespace playground::ui
                 case 'z': shift ? redo() : undo(); return true;
                 case 'y': redo(); return true;
                 case 'a': selectAll(); return true;
+                case 'c': copySelection(); return true;
+                case 'x': cutSelection(); return true;
+                case 'v': paste(); return true;
+                case 'd':
+                    if (shift)
+                        return false;                    // Cmd-Shift-D is the Panel's (the views)
+                    duplicate();
+                    return true;
                 case 'r': rotate(!shift); return true;
                 case 'e': mirror(); return true;
                 case '0': zoomTo(1.0f, { canvas_.centreX(), canvas_.centreY() }); persist(); return true;
@@ -1890,7 +2401,7 @@ namespace playground::ui
                 case '+': zoomTo(zoom() * kStepZoom, { canvas_.centreX(), canvas_.centreY() }); persist(); return true;
                 case '-':
                 case '_': zoomTo(zoom() / kStepZoom, { canvas_.centreX(), canvas_.centreY() }); persist(); return true;
-                default: return false;                   // the clipboard's keys are s4's; the rest the host's
+                default: return false;                   // the rest are the host's
             }
         }
         cir::Kind kind = cir::Kind::Unknown;
@@ -1898,6 +2409,9 @@ namespace playground::ui
         {
             case 'f': fit(false); persist(); return true;
             case 'a': openMenu(centreOfButton(Button::more)); return true;
+            case 'n':
+                setTool(tool_ == Tool::label ? Tool::select : Tool::label);
+                return true;
             case 'g':
                 if (!shift)
                 {
@@ -1976,9 +2490,24 @@ namespace playground::ui
             const std::string name = d_.parts[static_cast<std::size_t>(h.part)].name;
             if (std::find(st_->selected.begin(), st_->selected.end(), name) == st_->selected.end())
                 setSelection({ name }, {});
-            request.items = { { 1, "Rotate   Cmd-R" }, { 2, "Rotate back   Cmd-Shift-R" }, { 3, "Mirror   Cmd-E" },
-                              { 4, "Delete   Delete" }, { 0, {}, true, false, true }, { 5, "Show in netlist" } };
-            host_->showMenu(request, [this, name](int chosen) {
+            const bool terminal = d_.parts[static_cast<std::size_t>(h.part)].element < 0;
+            request.items = { { 6, "Edit   Return" },          { 0, {}, true, false, true },
+                              { 1, "Rotate   Cmd-R" },         { 2, "Rotate back   Cmd-Shift-R" }, { 3, "Mirror   Cmd-E" },
+                              { 0, {}, true, false, true },    { 7, "Copy   Cmd-C", !terminal },  { 8, "Cut   Cmd-X", !terminal },
+                              { 9, "Duplicate   Cmd-D", !terminal }, { 4, "Delete   Delete" }, { 0, {}, true, false, true },
+                              { 5, "Show in netlist" } };
+            // on a pin of a net drawn as name tags: its wires again (a tag has no wire to open the wire's menu on)
+            std::string tagged;
+            if (h.kind == Hit::Kind::pin && h.net >= 0)
+            {
+                const cir::Net& n = d_.nets[static_cast<std::size_t>(h.net)];
+                if (n.style == cir::Style::flag)
+                {
+                    tagged = n.name;
+                    request.items.push_back({ 10, "Show " + n.name + " as wires" });
+                }
+            }
+            host_->showMenu(request, [this, name, tagged](int chosen) {
                 if (!showing())
                     return;
                 switch (chosen)
@@ -1988,6 +2517,11 @@ namespace playground::ui
                     case 3: mirror(); break;
                     case 4: deleteSelection(); break;
                     case 5: openNetlistAtPart(d_.part(name)); break;
+                    case 6: editPart(name); break;
+                    case 7: copySelection(); break;
+                    case 8: cutSelection(); break;
+                    case 9: duplicate(); break;
+                    case 10: showAsLabels(tagged, false); break;
                     default: break;
                 }
             });
@@ -2000,15 +2534,25 @@ namespace playground::ui
             if (!selected)
                 setSelection({}, { r });
             const std::string net = d_.nets[static_cast<std::size_t>(h.net)].name;
-            request.items = { { 11, "Delete wire   Delete" }, { 12, "Select net" }, { 0, {}, true, false, true },
-                              { 13, "Show in netlist" } };
-            host_->showMenu(request, [this, net](int chosen) {
+            const bool parts = !st_->selected.empty();
+            request.items = { { 14, "Rename net   N" },       { 15, "Show as labels" },          { 0, {}, true, false, true },
+                              { 11, "Delete wire   Delete" }, { 12, "Select net" },              { 16, "Copy   Cmd-C", parts },
+                              { 17, "Cut   Cmd-X", parts },   { 0, {}, true, false, true },      { 13, "Show in netlist" } };
+            host_->showMenu(request, [this, net, at](int chosen) {
                 if (!showing())
                     return;
                 ensure();
                 const int n = d_.net(net);
                 if (chosen == 11)
                     deleteSelection();
+                else if (chosen == 14)
+                    editNetAt(at);
+                else if (chosen == 15 && n >= 0)
+                    showAsLabels(net, true);
+                else if (chosen == 16)
+                    copySelection();
+                else if (chosen == 17)
+                    cutSelection();
                 else if (chosen == 12 && n >= 0)
                     setSelection({}, runsOf(n));
                 else if (chosen == 13 && n >= 0 && hooks_.showNetlist)
@@ -2025,15 +2569,21 @@ namespace playground::ui
             });
             return;
         }
-        request.items = { { 21, "Select all   Cmd-A" }, { 22, "Fit   F" }, { 23, "Tidy" }, { 0, {}, true, false, true },
-                          { 24, "Netlist view   Cmd-Shift-D" }, { 0, {}, true, false, true },
+        const bool clip = host_->clipboardText().find_first_not_of(" \t\r\n") != std::string::npos;
+        const cir::Pt pasteAt = gridAt(at);
+        request.items = { { 21, "Select all   Cmd-A" }, { 27, "Paste   Cmd-V", clip }, { 22, "Fit   F" }, { 23, "Tidy" },
+                          { 0, {}, true, false, true },   { 24, "Netlist view   Cmd-Shift-D" }, { 0, {}, true, false, true },
                           { 25, "Undo   Cmd-Z", ed_->canUndo() }, { 26, "Redo   Cmd-Shift-Z", ed_->canRedo() } };
-        host_->showMenu(request, [this](int chosen) {
+        host_->showMenu(request, [this, pasteAt](int chosen) {
             if (!showing())
                 return;
             switch (chosen)
             {
                 case 21: selectAll(); break;
+                case 27:
+                    if (host_ != nullptr)
+                        pasteText(host_->clipboardText(), pasteAt);   // where the menu was opened
+                    break;
                 case 22: fit(false); persist(); break;
                 case 23: tidy(); break;
                 case 24:
@@ -2080,6 +2630,12 @@ namespace playground::ui
         {
             it->second -= dt;
             it = it->second <= 0.0f ? flash_.erase(it) : std::next(it);
+        }
+        // A field whose base the text left: closed, nothing written (as a gesture is cancelled below).
+        if (field_.on && ed_->revision() != field_.rev)
+        {
+            closeField();
+            say("The circuit changed: edit it again");
         }
         // A gesture whose base the text left (Claude's write merged, a session loaded): cancelled, nothing applied.
         if ((drag_ == Drag::move || drag_ == Drag::wire || drag_ == Drag::marquee || drag_ == Drag::carry || drag_ == Drag::press)
@@ -2161,8 +2717,10 @@ namespace playground::ui
             return funkgui::Cursor::copy;
         if (const int k = tool_ == Tool::select ? knobAt(p) : -1; k >= 0)
             return knobs()[static_cast<std::size_t>(k)].chip ? funkgui::Cursor::pointingHand : funkgui::Cursor::upDown;
+        if (field_.on && fieldRect().contains(p))
+            return funkgui::Cursor::normal;
         const Hit h = hitAt(p);
-        if (tool_ == Tool::ground)
+        if (tool_ == Tool::ground || tool_ == Tool::label)
             return h.kind == Hit::Kind::pin || h.kind == Hit::Kind::wire ? funkgui::Cursor::crosshair : funkgui::Cursor::normal;
         switch (h.kind)
         {
@@ -2330,6 +2888,8 @@ namespace playground::ui
                 return std::string("Click to place a ") + cir::symbol(kind_).word + "   Cmd-R turns it   Escape ends";
             case Tool::ground:
                 return "Click a pin or a wire: its net goes to ground   Escape ends";
+            case Tool::label:
+                return "Click a pin or a wire: name its net (a name it has merges them)   Escape ends";
             case Tool::select:
                 break;
         }
@@ -2553,6 +3113,7 @@ namespace playground::ui
         static const char* const kButtonWords[] = {
             "SELECT   CLICK A PART, A WIRE OR NOTHING; DRAG TO MOVE OR TO DRAW A MARQUEE",
             "GROUND (G)   CLICK A PIN OR A WIRE: ITS NET GOES TO GROUND",
+            "LABEL (N)   CLICK A PIN OR A WIRE: NAME ITS NET; A NAME ANOTHER NET HAS MERGES THEM",
             "RESISTOR (R)   CLICK, THEN CLICK THE CANVAS TO PLACE ONE",
             "CAPACITOR (C)   CLICK, THEN CLICK THE CANVAS TO PLACE ONE",
             "INDUCTOR (L)   CLICK, THEN CLICK THE CANVAS TO PLACE ONE",
@@ -2604,7 +3165,7 @@ namespace playground::ui
                 return true;
             }
             case Hit::Kind::part:
-                std::snprintf(out, n, "%s   DRAG MOVES IT   DOUBLE-CLICK SHOWS ITS VALUE IN THE NETLIST   CMD-R TURNS IT",
+                std::snprintf(out, n, "%s   DRAG MOVES IT   DOUBLE-CLICK OR RETURN EDITS IT   CMD-R TURNS IT",
                               upper(asciiText(partWords(h.part))).c_str());
                 return true;
             case Hit::Kind::wire:
@@ -2768,6 +3329,8 @@ namespace playground::ui
                     active = tool_ == Tool::select;
                 else if (btn == Button::ground)
                     active = tool_ == Tool::ground;
+                else if (btn == Button::label)
+                    active = tool_ == Tool::label;
                 else if (btn >= Button::r && btn <= Button::s)
                     active = tool_ == Tool::place && kind_ == kBarKinds[b - static_cast<int>(Button::r)];
                 else if (btn == Button::more)
@@ -2799,6 +3362,15 @@ namespace playground::ui
                         c.segment(cx - 3.8f, cy + 2.0f, cx + 3.8f, cy + 2.0f, 1.3f, ink);
                         c.segment(cx - 1.6f, cy + 5.0f, cx + 1.6f, cy + 5.0f, 1.3f, ink);
                         break;
+                    case Button::label:
+                    {
+                        // a name tag: a pointed tab on a lead
+                        const float xs[6] = { cx - 6.0f, cx + 2.0f, cx + 6.0f, cx + 2.0f, cx - 6.0f, cx - 6.0f };
+                        const float ys[6] = { cy - 4.0f, cy - 4.0f, cy, cy + 4.0f, cy + 4.0f, cy - 4.0f };
+                        c.polyline(xs, ys, 6, 1.3f, ink);
+                        c.disc(cx - 2.5f, cy, 1.3f, ink);
+                        break;
+                    }
                     case Button::r: case Button::c: case Button::l: case Button::d: case Button::p: case Button::x:
                     case Button::s:
                         sch::icon(c, kBarKinds[b - static_cast<int>(Button::r)], cx, cy, 18.0f, ink);
@@ -2939,8 +3511,9 @@ namespace playground::ui
         {
             const funkgui::Canvas::Scope s(c, sch::kPartTag, false);
             for (const cir::Net& n : d_.nets)
-                for (const cir::Pt& at : n.labels)
-                    sch::tag(c, v, at, n.name, k.name, px);
+                if (n.style == cir::Style::wired && !n.unroutable)   // a net drawn as tags at its pins says its name there
+                    for (const cir::Pt& at : n.labels)
+                        sch::tag(c, v, at, n.name, k.name, px);
             for (const cir::Flag& f : d_.flags)
             {
                 if (!viewBox.meets(f.box))
@@ -2971,6 +3544,10 @@ namespace playground::ui
                 knobRects.push_back(kn.chip ? funkgui::Rect{ kn.at.x - 0.5f * kChipW, kn.at.y - 0.5f * kChipH, kChipW, kChipH }
                                             : funkgui::Rect{ kn.at.x - kKnobR, kn.at.y - kKnobR, 2.0f * kKnobR, 2.0f * kKnobR });
             const std::vector<sch::LabelSpot> spots = sch::placeLabels(c, v, d_, values, px, knobRects);
+            valueRects_.assign(d_.parts.size(), {});     // a click on a value edits it
+            for (std::size_t i = 0; i < d_.parts.size() && i < spots.size(); ++i)
+                if (d_.parts[i].element >= 0 && !moving(static_cast<int>(i)))
+                    valueRects_[i] = sch::valueRect(spots[i], d_.parts[i].name, values[i], px);
             for (std::size_t i = 0; i < d_.parts.size(); ++i)
             {
                 const cir::Part& p = d_.parts[i];
@@ -3094,6 +3671,8 @@ namespace playground::ui
                 c.rrect(x, y, std::fabs(b.x - a.x), std::fabs(b.y - a.y), 0.0f, k.halo.withAlpha(0.3f),
                         1.0f, k.halo);
             }
+            // the field, over the drawing
+            drawField(c, th, v, k);
             // nothing drawn: what to do (Start a circuit only in an empty netlist)
             if (d_.parts.empty())
             {

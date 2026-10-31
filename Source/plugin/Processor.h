@@ -65,6 +65,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <condition_variable>
 #include <mutex>
@@ -223,6 +224,8 @@ namespace playground
         void setGuiPages(const std::vector<std::string>& titles) override;
         std::vector<FileView> fileViews() const override;
         void setFileViews(const std::vector<FileView>& views) override;
+        void setSchematicPins(const std::string& file, const std::string& lines) override;
+        std::string schematicPins(const std::string& file) const override;
         WindowButtons windowButtons() const override { return windowHooks_.buttons; }
         void placeWindowButtons(float x, float middle) override;
         void dragWindow(int clicks) override;
@@ -310,6 +313,10 @@ namespace playground
         std::vector<std::string> guiPages_;                      // its interface's pages (guiPages), in the session
         std::vector<FileView> fileViews_;                        // its netlists' views (fileViews), in the session
                                                                  // (under pagesMutex_)
+        // The netlists' session pins (schematicPins: *@ part lines by file), in memory only, under a mutex of their own
+        // (the agent's worker reads them while a Panel sets them).
+        mutable std::mutex pinsMutex_;
+        std::map<std::string, std::string> schematicPins_;
         WindowHooks windowHooks_;                                // the Standalone's window (message thread)
         uint64_t settingsAsked_ = 0;                             // showSettings()'s count (message thread)
         int irViewers_ = 0;                                      // the editors' IR views open (message thread)
