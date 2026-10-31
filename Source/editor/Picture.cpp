@@ -68,10 +68,12 @@ namespace playground
                               bool window, const std::string& page)
     {
         PanelPicture out;
-        // What the user has, given back after: the view, the chat's fold, the pages.
+        // What the user has, given back after: the view, the chat's fold, the pages, the netlists' views (a picture's
+        // Panel writes none of them on a gesture, as it has none, but what it lays out is never the session's).
         const bool view = port.panelView();
         const bool chatOpen = port.chatOpen();
         const std::vector<std::string> pages = port.guiPages();
+        const std::vector<FileView> fileViews = port.fileViews();
         {
             ui::Panel panel(ports, port);
             waitForMeters(port);
@@ -140,6 +142,7 @@ namespace playground
         port.setPanelView(view);
         port.setChatOpen(chatOpen);
         port.setGuiPages(pages);
+        port.setFileViews(fileViews);
         return out;
     }
 }

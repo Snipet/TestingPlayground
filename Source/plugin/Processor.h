@@ -221,6 +221,8 @@ namespace playground
         void playWheel(bool pitch, float value) override;
         std::vector<std::string> guiPages() const override;
         void setGuiPages(const std::vector<std::string>& titles) override;
+        std::vector<FileView> fileViews() const override;
+        void setFileViews(const std::vector<FileView>& views) override;
         WindowButtons windowButtons() const override { return windowHooks_.buttons; }
         void placeWindowButtons(float x, float middle) override;
         void dragWindow(int clicks) override;
@@ -306,6 +308,8 @@ namespace playground
         std::atomic<bool> explorerOpen_{ true };                     // its explorer open, in the session
         mutable std::mutex pagesMutex_;
         std::vector<std::string> guiPages_;                      // its interface's pages (guiPages), in the session
+        std::vector<FileView> fileViews_;                        // its netlists' views (fileViews), in the session
+                                                                 // (under pagesMutex_)
         WindowHooks windowHooks_;                                // the Standalone's window (message thread)
         uint64_t settingsAsked_ = 0;                             // showSettings()'s count (message thread)
         int irViewers_ = 0;                                      // the editors' IR views open (message thread)
