@@ -464,6 +464,23 @@ namespace playground::cir
             }
             return out;
         }
+
+        // A directive's physical lines: its first and the + lines after it, past comment and blank lines, as FMinus
+        // joins them (a .model's parameters may go on).
+        std::vector<int> directiveLines(const std::vector<std::string>& lines, int first)
+        {
+            std::vector<int> out{ first };
+            for (int ln = first + 1; ln < static_cast<int>(lines.size()); ++ln)
+            {
+                bool cont = false, comment = false;
+                (void)scanLine(lines[static_cast<std::size_t>(ln)], ln, cont, comment);
+                if (cont)
+                    out.push_back(ln);
+                else if (!comment)
+                    break;
+            }
+            return out;
+        }
     }
 
     // ---- names ------------------------------------------------------------------------------------------------------
@@ -1064,23 +1081,25 @@ namespace playground::cir
                 std::string name;
                 Box box;
                 int part;
-                bool flag;
+                int net;                                  // a flag's; -1 for a body
             };
             std::vector<Item> items;
             for (std::size_t i = 0; i < d.parts.size(); ++i)
                 if (d.parts[i].placed)
-                    items.push_back({ d.parts[i].name, d.parts[i].body, static_cast<int>(i), false });
+                    items.push_back({ d.parts[i].name, d.parts[i].body, static_cast<int>(i), -1 });
             for (const Flag& f : d.flags)
             {
                 const Part& p = d.parts[static_cast<std::size_t>(f.pin.part)];
                 const std::string pin = p.element >= 0 ? "." + p.pins[static_cast<std::size_t>(f.pin.pin)].name : std::string();
-                items.push_back({ p.name + pin + "'s flag", f.box, f.pin.part, true });
+                items.push_back({ p.name + pin + "'s flag", f.box, f.pin.part, f.net });
             }
             for (std::size_t i = 0; i < items.size(); ++i)
                 for (std::size_t j = i + 1; j < items.size(); ++j)
                 {
                     if (items[i].part == items[j].part)
                         continue;                         // a part's own flags touch where its symbol puts pins close
+                    if (items[i].net >= 0 && items[i].net == items[j].net)
+                        continue;                         // two tags of one net carry one name: they say the same
                     if (items[i].box.meets(items[j].box))
                         d.overlaps.emplace_back(items[i].name, items[j].name);
                 }
@@ -2439,6 +2458,28 @@ namespace playground::cir
             return out;
         }
 
+        // The pot a pot's {expr} is alone ({tone}: tone, as FMinus's Expr::Op::Name), "" when it is more than a name.
+        std::string potAlone(const Netlist& nl, const Element& e)
+        {
+            for (const Token& t : e.tokens)
+            {
+                if (t.text.empty() || t.text.front() != '{')
+                    continue;
+                std::string inner = t.text.substr(1, t.text.back() == '}' && t.text.size() >= 2 ? t.text.size() - 2 : t.text.size() - 1);
+                while (!inner.empty() && blank(inner.back()))
+                    inner.pop_back();
+                std::size_t a = 0;
+                while (a < inner.size() && blank(inner[a]))
+                    ++a;
+                inner = inner.substr(a);
+                for (const PotLine& p : nl.pots)
+                    if (folded(p.name) == folded(inner))
+                        return p.name;
+                return {};
+            }
+            return {};
+        }
+
         // Every {expr} reference to pot `from` spelled `to`.
         std::vector<std::pair<Token, std::string>> potRenames(const Netlist& nl, const std::string& from, const std::string& to)
         {
@@ -2536,6 +2577,8 @@ namespace playground::cir
                 }
                 return e.name + "'s line is too short to set";
             };
+            // where its value is, or goes: a half-typed line with none ("R1 a b") gets it at its end
+            const int valueAt = e.valueToken >= 0 ? e.valueToken : static_cast<int>(e.tokens.size());
             const Kind k = e.kind;
             int brace = -1;
             for (std::size_t i = 1; i < e.tokens.size(); ++i)
@@ -2558,7 +2601,7 @@ namespace playground::cir
                     case Kind::Ota:
                         if (!goodValue(v))
                             return "'" + v + "' is not a SPICE number or {expr}";
-                        if (std::string why = setToken(e.valueToken, v); !why.empty())
+                        if (std::string why = setToken(valueAt, v); !why.empty())
                             return why;
                         said = e.name + "'s value";
                         break;
@@ -2605,7 +2648,7 @@ namespace playground::cir
                         return "gain= is an E's, a G's or an OTA's";
                     if (!goodValue(v))
                         return "'" + v + "' is not a SPICE number or {expr}";
-                    if (std::string why = setToken(e.valueToken, v); !why.empty())
+                    if (std::string why = setToken(valueAt, v); !why.empty())
                         return why;
                     said = e.name + "'s gain";
                 }
@@ -2644,11 +2687,24 @@ namespace playground::cir
                         return "taper= is a pot's";
                     if (!isTaper(v))
                         return "a taper is lin, audio or rlog";
-                    const std::vector<std::string> pots = potsOf(w.nl, e);
-                    if (pots.empty())
-                        return e.name + "'s {expr} names no .pot";
+                    // where FMinus reads it (taperOf): the line's taper=, else its .pot's word when its {expr} is that
+                    // pot alone; with neither, a taper= goes on the line (a .pot's word would not reach this part)
+                    Token own;
+                    for (const Token& t : e.tokens)
+                        if (folded(t.text).rfind("taper=", 0) == 0)
+                            own = t;
+                    if (own.len > 0)
+                        repl.emplace_back(own, "taper=" + v);
+                    const std::string alone = potAlone(w.nl, e);
+                    if (alone.empty() && own.len == 0)
+                    {
+                        Token end = e.tokens.back();
+                        end.at.col += end.len;
+                        end.len = 0;
+                        repl.emplace_back(end, " taper=" + v);
+                    }
                     for (const PotLine& p : w.nl.pots)
-                        if (folded(p.name) == folded(pots.front()))
+                        if (!alone.empty() && folded(p.name) == folded(alone))
                         {
                             Token at;
                             for (std::size_t i = 2; i < p.tokens.size(); ++i)
@@ -2664,9 +2720,6 @@ namespace playground::cir
                                 repl.emplace_back(end, (p.tokens.size() == 2 ? " 0.5 " : " ") + v);
                             }
                         }
-                    for (const Token& t : e.tokens)
-                        if (folded(t.text).rfind("taper=", 0) == 0)
-                            repl.emplace_back(t, "taper=" + v);
                     said = e.name + "'s taper";
                 }
                 else if (key == "pot")
@@ -2944,11 +2997,53 @@ namespace playground::cir
             for (const auto& [word, line] : src.directives)
                 if (word != ".pot" && word != ".switch" && word != ".model")
                     return "paste takes element, .pot, .switch and .model lines (and *@ lines), not " + word;
-            // text that is no netlist of drawn parts ("hello world" reads as an element H...): refused whole
+            // text that is no netlist of drawn parts ("hello world" reads as an element H..., "Lorem ipsum dolor sit"
+            // as an inductor of 'sit'): refused whole. A part's value is a SPICE number or {expr}, a diode's model a
+            // .model's (pasted, or the netlist's) or a built-in's, a switch's name a .switch's.
+            const auto known = [&](const std::vector<std::pair<std::string, int>>& a, const std::vector<std::pair<std::string, int>>& b,
+                                   const std::string& name) {
+                for (const auto* list : { &a, &b })
+                    for (const auto& [m, l] : *list)
+                        if (folded(m) == folded(name))
+                            return true;
+                return false;
+            };
             for (const Element& e : src.elements)
-                if (!e.drawn())
-                    return "paste takes the lines of parts the schematic draws, and '" + e.name + "' starts no such line ("
-                         + e.why + ")";
+            {
+                std::string why = e.drawn() ? std::string() : e.why;
+                const std::string value = e.valueToken >= 0 && e.valueToken < static_cast<int>(e.tokens.size())
+                                              ? e.tokens[static_cast<std::size_t>(e.valueToken)].text
+                                              : std::string();
+                if (!why.empty())
+                    return "paste takes the lines of parts the schematic draws, and '" + e.name + "' starts no such line (" + why + ")";
+                if (e.kind == Kind::D)
+                {
+                    const std::string f = folded(value);
+                    if (value.empty())
+                        why = "a diode with no model";
+                    else if (f != "1n914" && f != "1n4148" && !known(src.models, w.nl.models, value))
+                        why = "no .model " + value;
+                }
+                else if (e.kind == Kind::S)
+                {
+                    bool found = false;
+                    if (e.tokens.size() >= 4)
+                        for (const std::vector<SwitchLine>* list : { &src.switches, &std::as_const(w.nl).switches })
+                            for (const SwitchLine& x : *list)
+                                found = found || folded(x.name) == folded(e.tokens[3].text);
+                    if (!found)
+                        why = e.tokens.size() >= 4 ? "no .switch " + e.tokens[3].text : std::string("a switch with no .switch");
+                }
+                else if (e.kind != Kind::OpAmp)
+                {
+                    if (value.empty())
+                        why = "no value";
+                    else if (!goodValue(value))
+                        why = "'" + value + "' is no SPICE number or {expr}";
+                }
+                if (!why.empty())
+                    return "paste takes the lines of parts the schematic draws, and '" + e.name + "' starts no such line (" + why + ")";
+            }
             std::set<std::string> taken;
             const auto fresh = [&](const std::string& name) {
                 std::string base = name;
@@ -2986,7 +3081,11 @@ namespace playground::cir
             for (const auto& [word, line] : src.directives)
             {
                 std::vector<std::pair<Token, std::string>> repl;
-                std::string text = src.lines[static_cast<std::size_t>(line)];
+                // the directive's own physical lines (a .model's + lines with it), its name patched where it is
+                const std::vector<int> own = directiveLines(src.lines, line);
+                std::string text;
+                for (const int l : own)
+                    text += (text.empty() ? "" : "\n") + src.lines[static_cast<std::size_t>(l)];
                 if (word == ".pot")
                     for (const PotLine& p : src.pots)
                         if (p.line == line)
@@ -3006,8 +3105,12 @@ namespace playground::cir
                         continue;                         // the netlist's own .model of that name serves
                 }
                 for (auto& r : repl)
-                    r.first.at.line = 0;
-                lines.push_back(patched(text, std::move(repl)));
+                {
+                    const auto it = std::find(own.begin(), own.end(), r.first.at.line);
+                    r.first.at.line = it == own.end() ? 0 : static_cast<int>(it - own.begin());
+                }
+                for (const std::string& l : linesOf(patched(text, std::move(repl))))
+                    lines.push_back(l);
             }
             for (const Element& e : src.elements)
             {
@@ -3129,10 +3232,13 @@ namespace playground::cir
         w.nl = read(text);
         w.d = d;
         w.layout = layoutOf(w.nl, d);
-        std::vector<std::string> placedNames;
+        std::vector<std::string> placedNames;           // the parts an add, a place or a paste put down ...
+        std::vector<std::size_t> placedBy;               // ... and the op that did
+        std::vector<std::pair<std::string, std::size_t>> tagged;   // the nets a style op shows as name tags, and the op
         for (std::size_t i = 0; i < ops.size(); ++i)
         {
             const Op& op = ops[i];
+            const std::size_t touchedBefore = out.touched.size();
             std::string why;
             switch (op.type)
             {
@@ -3165,28 +3271,48 @@ namespace playground::cir
                 failed.error = "op " + std::to_string(i + 1) + " (" + opText(op) + "): " + why;
                 return failed;
             }
+            if (op.type == Op::Type::paste)
+                for (std::size_t t = touchedBefore; t < out.touched.size(); ++t)
+                    placedNames.push_back(out.touched[t]);
+            placedBy.resize(placedNames.size(), i);
+            if (op.type == Op::Type::style && op.flag)
+                tagged.emplace_back(op.name, i);
         }
-        // a part placed onto another: refused, as a drop is
+        const auto refused = [&](std::size_t k, const std::string& a, const std::string& b) {
+            Applied failed;
+            failed.text = std::string(text);
+            failed.error = "op " + std::to_string(k + 1) + " (" + opText(ops[k]) + "): " + a + " would overlap " + b;
+            return failed;
+        };
+        // a part placed (or pasted) onto another: refused, as a drop is
         for (const auto& [a, b] : w.d.overlaps)
-            for (const std::string& name : placedNames)
+            for (std::size_t k = 0; k < placedNames.size(); ++k)
             {
+                const std::string n = folded(placedNames[k]);
                 const auto names = [&](const std::string& item) {
                     const std::string f = folded(item);
-                    const std::string n = folded(name);
                     return f == n || f.rfind(n + ".", 0) == 0 || f == n + "'s flag";
                 };
                 if (names(a) || names(b))
-                {
-                    Applied failed;
-                    failed.text = std::string(text);
-                    std::size_t k = 0;
-                    for (std::size_t i = 0; i < ops.size(); ++i)
-                        if ((ops[i].type == Op::Type::place || ops[i].type == Op::Type::add) && (folded(ops[i].name) == folded(name) || (!ops[i].lines.empty() && folded(ops[i].lines.back()).rfind(folded(name) + " ", 0) == 0)))
-                            k = i;
-                    failed.error = "op " + std::to_string(k + 1) + " (" + opText(ops[k]) + "): " + a + " would overlap " + b;
-                    return failed;
-                }
+                    return refused(placedBy[k], a, b);
             }
+        // a net shown as name tags whose tags meet another net's or a body (and did not before): refused too
+        for (const auto& [net, k] : tagged)
+        {
+            const int n = w.d.net(net);
+            if (n < 0)
+                continue;                                 // renamed by a later op: its tags are that name's
+            std::set<std::string> tags;
+            for (const Flag& f : w.d.flags)
+                if (f.net == n)
+                {
+                    const Part& p = w.d.parts[static_cast<std::size_t>(f.pin.part)];
+                    tags.insert(p.name + (p.element >= 0 ? "." + p.pins[static_cast<std::size_t>(f.pin.pin)].name : std::string()) + "'s flag");
+                }
+            for (const auto& o : w.d.overlaps)
+                if ((tags.count(o.first) != 0 || tags.count(o.second) != 0) && std::find(d.overlaps.begin(), d.overlaps.end(), o) == d.overlaps.end())
+                    return refused(k, o.first, o.second);
+        }
         out.text = withBlock(w.text, writeBlock(w.nl, w.d));
         out.edits = diffEdits(text, out.text);
         return out;
@@ -3229,32 +3355,21 @@ namespace playground::cir
             if (el.kind == Kind::D && el.valueToken >= 0 && el.valueToken < static_cast<int>(el.tokens.size()))
                 models.insert(folded(el.tokens[static_cast<std::size_t>(el.valueToken)].text));
         }
-        std::set<int> directiveLines;
+        std::set<int> needed;
         for (const PotLine& p : nl.pots)
             if (pots.count(folded(p.name)) != 0)
-                directiveLines.insert(p.line);
+                needed.insert(p.line);
         for (const SwitchLine& s : nl.switches)
             if (switches.count(folded(s.name)) != 0)
-                directiveLines.insert(s.line);
+                needed.insert(s.line);
         for (const auto& [m, line] : nl.models)
             if (models.count(folded(m)) != 0)
-                directiveLines.insert(line);
+                needed.insert(line);
         std::string out;
         const auto put = [&](int line) { out += std::string(lfLine(nl.lines[static_cast<std::size_t>(line)])) + "\n"; };
-        for (const int line : directiveLines)
-        {
-            put(line);
-            // its + lines (a .model's parameters may go on), past comment lines, as FMinus joins them
-            for (int ln = line + 1; ln < static_cast<int>(nl.lines.size()); ++ln)
-            {
-                bool cont = false, comment = false;
-                (void)scanLine(nl.lines[static_cast<std::size_t>(ln)], ln, cont, comment);
-                if (cont)
-                    put(ln);
-                else if (!comment || isLayoutLine(nl.lines[static_cast<std::size_t>(ln)]))
-                    break;
-            }
-        }
+        for (const int line : needed)
+            for (const int ln : directiveLines(nl.lines, line))   // its + lines too
+                put(ln);
         for (const int e : elements)
         {
             const Element& el = nl.elements[static_cast<std::size_t>(e)];
@@ -3360,7 +3475,7 @@ namespace playground::cir
                 {
                     const bool eneg = k + 1 < out.mantissa.size() && out.mantissa[k + 1] == '-';
                     for (std::size_t j = k + 1; j < out.mantissa.size(); ++j)
-                        if (digit(out.mantissa[j]))
+                        if (digit(out.mantissa[j]) && exp < 1000)   // past any double's range: no more digits needed
                             exp = exp * 10 + (out.mantissa[j] - '0');
                     exp = eneg ? -exp : exp;
                     break;
@@ -3398,6 +3513,8 @@ namespace playground::cir
             out.suffix = std::string(s.substr(i, used));
             out.tail = std::string(s.substr(i + used));
             out.value = (neg ? -v : v) * mul;
+            if (!std::isfinite(out.value))
+                return std::nullopt;                     // 1e400: no step, no warning
             return out;
         }
     }
@@ -3405,7 +3522,7 @@ namespace playground::cir
     std::optional<std::string> e12Stepped(std::string_view value, int dir, bool decade)
     {
         const std::optional<Spice> sp = spiceParts(value);
-        if (!sp || dir == 0 || !(sp->value > 0.0))
+        if (!sp || dir == 0 || !(sp->value > 0.0) || !std::isfinite(sp->value))
             return std::nullopt;
         // the value as a mantissa index on the series and a decade (exponent of ten), exactly: E12's values in tenths of
         // their decade's first, so 4.7k is index 8 of decade 3
@@ -3483,6 +3600,18 @@ namespace playground::cir
             if (s.dec == thousands)
                 suffix = upper ? s.upperText : s.lowerText;
         return digits + suffix + sp->tail;
+    }
+
+    std::string taperOf(const Netlist& nl, const Element& e)
+    {
+        for (const Token& t : e.tokens)
+            if (folded(t.text).rfind("taper=", 0) == 0)
+                return t.text.substr(6);
+        if (const std::string pot = potAlone(nl, e); !pot.empty())
+            for (const PotLine& p : nl.pots)
+                if (folded(p.name) == folded(pot) && !p.taper.empty())
+                    return p.taper;
+        return "lin";
     }
 
     std::string milliWarning(std::string_view value, std::string* meg)

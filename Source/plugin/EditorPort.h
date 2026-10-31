@@ -24,8 +24,8 @@
 //                     (PanelSpec.h)
 //   fileViews()       each netlist's view (Netlist or Schematic), zoom and pan, as the editor's user left them; kept in
 //                     the session, set with setFileViews() on the user's gestures only
-//   schematicPins()   each netlist's session pins, the places its Schematic view drew for parts with no part line, set
-//                     with setSchematicPins() whenever the view reconciles; in memory only
+//   schematicPins()   each netlist's session pins, the places its Schematic view drew for parts and terminals with no
+//                     line of their own, set with setSchematicPins() whenever the view reconciles; in memory only
 //   panelView()       the editor shows the PANEL view (the interface across the left column) rather than the CODE view;
 //                     kept in the session, set with setPanelView()
 //   program()         the compile it came from (CompileStatus::request): the meters' taps are its fields once
@@ -110,12 +110,12 @@ namespace playground
     // What a picture shows (ChatHost::chatPicture): the program's panel, the whole editor, or a netlist's schematic.
     enum class PictureView : uint8_t { panel, window, schematic };
     // A netlist's schematic (view_panel's view "schematic"): the .cir file `file` of the port's draft, reconciled with
-    // the port's session pins (schematicPins: the places the user's view drew for parts without a part line, so the
-    // picture is the user's drawing), drawn at 100 % (10 px a grid unit; smaller only to fit 1,400 x 900 logical px),
-    // every name and value shown, the last compile's marks on it when that compile's netlist is this one (its *@ lines
-    // aside), by a small Panel of its own that holds no editor Panel: it owns no probe, reads and writes no file view,
-    // and changes nothing of the user's. `about` lists each part (its kind, value, place, orientation and pins' points),
-    // each net's pins, the problems and the parts not drawn. Message thread only (Picture.cpp).
+    // the port's session pins (schematicPins: the places the user's view drew for parts and terminals without a line,
+    // so the picture is the user's drawing), drawn at 100 % (10 px a grid unit; smaller only to fit 1,400 x 900
+    // logical px), every name and value shown, the last compile's marks on it when that compile's netlist is this one
+    // (its *@ lines aside), by a small Panel of its own that holds no editor Panel: it owns no probe, reads and writes
+    // no file view, and changes nothing of the user's. `about` lists each part (its kind, value, place, orientation and
+    // pins' points), each net's pins, the problems and the parts not drawn. Message thread only (Picture.cpp).
     PanelPicture pictureSchematic(EditorPort& port, const std::string& file);
 
     // The pictures' GPU context. With no editor open in the process, a picture starts bgfx headless and FunkGui holds
@@ -307,10 +307,10 @@ namespace playground
         virtual void setFileViews(const std::vector<FileView>& views) = 0;
 
         // The schematic's session pins (editor/SchematicView.h): for each netlist, the places its view drew for parts
-        // that have no *@ part line, as *@ part lines ("" for none). A Panel sets them whenever its view reconciles the
-        // file; they live in the processor's memory only (never in the session, a project or an export), and Claude's
-        // edit_circuit (ChatHost::chatSchematicPins) and view_panel's schematic picture reconcile with them, so that
-        // every writer and every viewer draws what the user sees.
+        // and terminals that have no *@ line, as *@ part, input and output lines ("" for none). A Panel sets them
+        // whenever its view reconciles the file; they live in the processor's memory only (never in the session, a
+        // project or an export), and Claude's edit_circuit (ChatHost::chatSchematicPins) and view_panel's schematic
+        // picture reconcile with them, so that every writer and every viewer draws what the user sees.
         virtual void setSchematicPins(const std::string& file, const std::string& lines) { (void)file; (void)lines; }
         virtual std::string schematicPins(const std::string& file) const
         {

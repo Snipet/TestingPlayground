@@ -316,8 +316,8 @@ namespace playground
         std::vector<std::string> guiPages_;                      // its interface's pages (guiPages), in the session
         std::vector<FileView> fileViews_;                        // its netlists' views (fileViews), in the session
                                                                  // (under pagesMutex_)
-        // The netlists' session pins (schematicPins: *@ part lines by file), in memory only, under a mutex of their own
-        // (the agent's worker reads them while a Panel sets them).
+        // The netlists' session pins (schematicPins: *@ part, input and output lines by file), in memory only, under a
+        // mutex of their own (the agent's worker reads them while a Panel sets them).
         mutable std::mutex pinsMutex_;
         std::map<std::string, std::string> schematicPins_;
         WindowHooks windowHooks_;                                // the Standalone's window (message thread)

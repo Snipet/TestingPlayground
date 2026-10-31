@@ -50,12 +50,14 @@
 // selection, when the pointer is away), A the More menu, G the Ground tool, N the Label tool, Escape (a gesture, then
 // the tool, then the selection, then the canvas), Return (the field), Cmd-R, Cmd-Shift-R, Cmd-E, Delete and Backspace,
 // Cmd-Z, Cmd-Shift-Z, Cmd-Y, Cmd-A, Cmd-C, Cmd-X, Cmd-V, Cmd-D (the clipboard: netlist text, fminus/CirDoc.h's copied
-// and apply's paste op; Duplicate pastes 2 units right and down), Tab and Shift-Tab (the parts in line order), the
+// and apply's paste op; Duplicate pastes just below the selection, else beside it, where the copy meets nothing; a
+// paste onto parts is refused, as a drop is), Tab and Shift-Tab (the parts in line order), the
 // arrows (a unit; Shift 4), F and Home (fit), Cmd-0, Cmd-=, Cmd--. While a field is open it takes every key.
 //
-// Session pins: the places the view drew for parts that have no part line (SchematicFile::pins, reconciled with
-// each revision so they stay put) go to the Panel as *@ part lines whenever they change (setPinsHook:
-// EditorPort::setSchematicPins), so Claude's edit_circuit and view_panel's picture draw them where the user sees them.
+// Session pins: the places the view drew for parts and terminals that have no line of their own (SchematicFile::pins,
+// reconciled with each revision so they stay put) go to the Panel as *@ part, *@ input and *@ output lines whenever
+// they change (setPinsHook: EditorPort::setSchematicPins), so Claude's edit_circuit and view_panel's picture draw them
+// where the user sees them.
 //
 // Accessibility: one group "Schematic, <file>" (the item's Tab stop), a list of parts ("R4, resistor 4.7k, from n1 to
 // z1") and a list of nets ("net n1: R4.1, C4.1, XU1.inn"), ids kA11yBase plus a 24-bit hash of "p:"+name or
@@ -105,8 +107,8 @@ namespace playground::ui
         float zoom = 1.0f;                           // 1: 100 % (10 px a grid unit)
         float cx = 0.0f, cy = 0.0f;                  // the world point at the canvas's centre, grid units
         std::vector<std::string> selected;           // parts, by name: the selection survives undo
-        cir::SessionPins pins;                       // the places drawn for parts without a part line
-        std::string published;                       // ... as *@ part lines, as the Panel last published them
+        cir::SessionPins pins;                       // the places drawn for parts and terminals without a line
+        std::string published;                       // ... as *@ lines, as the Panel last published them
         bool merged = false;                         // a draft merged into the tab: what it moved flashes
     };
 
@@ -160,8 +162,9 @@ namespace playground::ui
         void setGestures(funkgui::GestureController* g) noexcept { gestures_ = g; }
 
         void attach(funkgui::HostServices* host) { host_ = host; }
-        // The session pins (EditorPort::setSchematicPins): called with the file and its *@ part lines whenever a
-        // reconcile changes the places drawn for parts that have no part line ("" when there are none).
+        // The session pins (EditorPort::setSchematicPins): called with the file and its *@ part, *@ input and *@ output
+        // lines whenever a reconcile changes the places drawn for parts and terminals that have no line of their own
+        // ("" when there are none).
         void setPinsHook(std::function<void(const std::string& file, const std::string& lines)> pins) { pins_ = std::move(pins); }
         // The file shown in Schematic view: its tab's editor, its name and its state (FilesItem's; null: none shown).
         void show(funkgui::TextEditor* ed, const std::string& file, SchematicFile* state);
@@ -251,7 +254,8 @@ namespace playground::ui
         bool copySelection();                            // Cmd-C
         bool cutSelection();                             // Cmd-X
         bool paste();                                    // Cmd-V: at the pointer over the canvas, else the view's centre
-        bool duplicate();                                // Cmd-D: a copy pasted 2 units right of and below the selection
+        bool duplicate();                                // Cmd-D: a copy just below the selection (else beside it)
+                                                         // where it meets nothing
         // Show as labels / Show as wires (§3.8): a signal net drawn as name tags at its pins, or wired again.
         bool showAsLabels(const std::string& net, bool labels);
 

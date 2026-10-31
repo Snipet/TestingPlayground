@@ -145,7 +145,7 @@ namespace playground
         // false, and nothing set, when a gesture of the user's changed it meanwhile (or the file is gone). The other
         // files stay as they are now.
         virtual bool chatSetDraftIf(const Draft& draft, const std::string& file, const std::string& expected) = 0;
-        // A netlist's session pins (EditorPort::schematicPins: *@ part lines, "" for none).
+        // A netlist's session pins (EditorPort::schematicPins: *@ part, input and output lines, "" for none).
         virtual std::string chatSchematicPins(const std::string& file) const = 0;
         virtual CompileStatus chatRun(const Sources& files) = 0;    // RUN, then the compile's outcome
         virtual CompileStatus chatLastStatus() const = 0;

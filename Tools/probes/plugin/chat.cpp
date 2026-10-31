@@ -60,7 +60,8 @@
 //            layout) gives apply's exact text, merged into the tab as one undo step, and the parts it changed flash; a
 //            list with one bad command changes nothing and names it; an add without at gets a part line (placed beside
 //            what it connects to); the view publishes its session pins, and a part with no part line keeps the place
-//            they give it in Claude's block; a gesture planted between the tool's read and its write is never
+//            they give it in Claude's block; a netlist with no *@ lines: the view publishes its terminals' places too,
+//            and Claude's write keeps them; a gesture planted between the tool's read and its write is never
 //            overwritten (the commands run again on the new text), a second fails ("pedal.cir changed while drawing: try
 //            again"); the result holds generate()'s error and warning; a short netlist's result is its whole text, and
 //            seen; write_file of a netlist without *@ lines keeps the drawing and says so; view_panel's view
@@ -1279,6 +1280,41 @@ PROBE(plugin, chat)
             processor.editorPort().setSchematicPins("pedal.cir", "*@ part R11 70,-14\n");
             const Turn t = drawTurn("toolu_c_pins", "pedal.cir", { "set R7 1.2k" }, "R7");
             P.eq("circuit.pins_kept", !t.error && has(t.after, "\n*@ part R11 70,-14\n") && has(t.after, "R7     v2  t1  1.2k") ? 1 : 0, 1);
+        }
+        {
+            // a netlist with no *@ lines at all: the view lays it out and publishes its terminals' places with its
+            // parts', so Claude's block and picture put the input and the output where the user sees them
+            const std::string drawn = panel.editor().text();
+            const std::string bare = cir::stripLayout(drawn);
+            panel.editor().setText(bare);
+            host.tick(2);
+            const cir::Drawing seen = v.drawing();
+            const std::string published = processor.editorPort().schematicPins("pedal.cir");
+            const cir::Drawing theirs = cir::reconcile(bare, cir::readLayout(published));
+            int same = 0;
+            for (const cir::Part& q : seen.parts)
+            {
+                const int i = theirs.part(q.name);
+                same += i >= 0 && theirs.parts[static_cast<std::size_t>(i)].origin == q.origin && theirs.parts[static_cast<std::size_t>(i)].orient == q.orient ? 1 : 0;
+            }
+            const cir::Part* in = nullptr;
+            const cir::Part* out = nullptr;
+            for (const cir::Part& q : seen.parts)
+            {
+                if (q.kind == cir::Kind::Input)
+                    in = &q;
+                if (q.kind == cir::Kind::Output)
+                    out = &q;
+            }
+            const auto at = [](const cir::Part* q) { return q == nullptr ? std::string("?") : std::to_string(q->origin.x) + "," + std::to_string(q->origin.y); };
+            P.eq("circuit.pins_terminals", in != nullptr && out != nullptr && has(published, "*@ input " + in->name + " " + at(in) + "\n")
+                                               && has(published, "*@ output " + out->name + " " + at(out) + "\n") ? 1 : 0, 1);
+            P.eq("circuit.pins_whole_drawing", same, static_cast<int64_t>(seen.parts.size()));
+            const Turn t = drawTurn("toolu_c_bare", "pedal.cir", { "set R7 1.5k" }, "R7");
+            P.eq("circuit.terminals_kept", !t.error && in != nullptr && out != nullptr && has(t.after, "\n*@ input " + in->name + " " + at(in) + "\n")
+                                               && has(t.after, "\n*@ output " + out->name + " " + at(out) + "\n") ? 1 : 0, 1);
+            panel.editor().setText(drawn);               // the drawing as it was, for the rows after
+            host.tick(2);
         }
         {
             // a gesture planted between the read and the write: never overwritten, the commands run again on it

@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <iterator>
 #include <set>
+#include <span>
 #include <utility>
 
 namespace playground::ui
@@ -278,11 +279,18 @@ namespace playground::ui
         text_ = ed_->text();
         nl_ = cir::read(text_);
         d_ = cir::reconcile(text_, st_->pins);
-        // Session pins: the places drawn for parts without a part line, so that the next reconcile keeps them.
+        // Session pins: the places drawn for parts and terminals without a line of their own, so that the next
+        // reconcile (and Claude's, the picture's) keeps them where the user sees them.
         cir::SessionPins pins;
         for (const cir::Part& p : d_.parts)
-            if (p.element >= 0 && p.source != cir::Source::stored)
+        {
+            if (!p.placed || p.source == cir::Source::stored)
+                continue;
+            if (p.element >= 0)
                 pins.parts.push_back({ p.name, p.origin, p.orient, p.extra, -1 });
+            else
+                (p.kind == cir::Kind::Input ? pins.inputs : pins.outputs).push_back({ p.name, p.origin, -1 });
+        }
         st_->pins = std::move(pins);
         publishPins();
         // What a part is (its place, its turn, its line's tokens: its nodes and its value): a merge flashes those it
@@ -589,6 +597,10 @@ namespace playground::ui
                 lines += " " + x;
             lines += "\n";
         }
+        for (const auto* terminals : { &st_->pins.inputs, &st_->pins.outputs })
+            for (const cir::TerminalLine& t : *terminals)
+                lines += std::string(terminals == &st_->pins.inputs ? "*@ input " : "*@ output ") + t.name + " " + std::to_string(t.at.x)
+                       + "," + std::to_string(t.at.y) + "\n";
         if (lines == st_->published)
             return;
         st_->published = lines;
@@ -1196,7 +1208,7 @@ namespace playground::ui
     // ---- the field: a part's names and values edited in place, a net's name (the Label tool) ----------------------------
     namespace
     {
-        constexpr int kFieldMax = 64;                    // a row's characters
+        constexpr int kFieldMax = 256;                   // a row's characters (a long {expr} fits)
         constexpr float kRowH = 20.0f, kLabelW = 64.0f, kCardPad = 6.0f;
 
         std::string trimmed(std::string t)
@@ -1291,8 +1303,8 @@ namespace playground::ui
             Row r;
             r.key = key;
             r.label = label;
-            r.was = text;
             r.edit.set(text, kFieldMax);
+            r.was = r.edit.buffer;                       // as the row holds it (cut, made printable): untouched is unchanged
             f.rows.push_back(std::move(r));
         };
         row("name", "NAME", p.name);
@@ -1319,11 +1331,7 @@ namespace playground::ui
                     if (const std::string pot = firstPot(nl_, e); !pot.empty())
                     {
                         row("pot", "POT", pot);
-                        std::string taper = "lin";
-                        for (const cir::PotLine& pl : nl_.pots)
-                            if (cir::folded(pl.name) == cir::folded(pot) && !pl.taper.empty())
-                                taper = pl.taper;
-                        row("taper", "TAPER", taper);
+                        row("taper", "TAPER", cir::taperOf(nl_, e));   // the one FMinus plays it with
                     }
                     break;
                 }
@@ -1400,8 +1408,8 @@ namespace playground::ui
         Row r;
         r.key = "net";
         r.label = "NET";
-        r.was = n.name;
         r.edit.set(n.name, kFieldMax);
+        r.was = r.edit.buffer;
         f.rows.push_back(std::move(r));
         if (h.kind == Hit::Kind::wire && n.style == cir::Style::wired && !n.unroutable)
             f.tag = h.at;                                // its name tag goes where the wire was clicked
@@ -1569,6 +1577,8 @@ namespace playground::ui
         float textW = 120.0f;
         for (const Row& r : field_.rows)
             textW = std::max(textW, funkgui::text::width(atlas, r.edit.buffer.c_str(), st) + 16.0f);
+        // never wider than the canvas (a long expression is cut on the row, as it is drawn)
+        textW = std::min(textW, std::max(120.0f, canvas_.w - kLabelW - 2.0f * kCardPad - 4.0f));
         float w = kLabelW + textW + 2.0f * kCardPad;
         float h = kRowH * static_cast<float>(field_.rows.size()) + 2.0f * kCardPad;
         for (const std::string& line : { fieldWarning(), fieldWarning().empty() ? std::string() : std::string("Return keeps it as typed   Alt-Return writes megohms"),
@@ -1674,21 +1684,31 @@ namespace playground::ui
         return deleteSelection();
     }
 
+    namespace
+    {
+        // A paste op of clipboard text at a point (its lines, a CR before each LF left out).
+        cir::Op pasteOp(const std::string& text, cir::Pt at)
+        {
+            cir::Op op;
+            op.type = cir::Op::Type::paste;
+            op.at = at;
+            std::size_t start = 0;
+            while (start <= text.size())
+            {
+                const std::size_t end = std::min(text.find('\n', start), text.size());
+                std::string line = text.substr(start, end - start);
+                if (!line.empty() && line.back() == '\r')
+                    line.pop_back();
+                op.lines.push_back(std::move(line));
+                start = end + 1;
+            }
+            return op;
+        }
+    }
+
     bool SchematicView::pasteText(const std::string& text, cir::Pt at)
     {
-        cir::Op op;
-        op.type = cir::Op::Type::paste;
-        op.at = at;
-        std::size_t start = 0;
-        while (start <= text.size())
-        {
-            const std::size_t end = std::min(text.find('\n', start), text.size());
-            std::string line = text.substr(start, end - start);
-            if (!line.empty() && line.back() == '\r')
-                line.pop_back();
-            op.lines.push_back(std::move(line));
-            start = end + 1;
-        }
+        const cir::Op op = pasteOp(text, at);
         std::string why;
         std::vector<std::string> touched;
         if (!commit({ op }, &why, &touched))
@@ -1733,7 +1753,22 @@ namespace playground::ui
             say("Duplicate takes parts: select one or more");
             return false;
         }
-        return pasteText(text, origin + cir::Pt{ 2, 2 });
+        // The copy goes just below the selection's box (else right of it, then further), at the first place where it
+        // meets nothing: a paste onto parts is refused, as a drop is.
+        cir::Box box;
+        for (const std::string& n : st_->selected)
+            if (const int i = d_.part(n); i >= 0 && d_.parts[static_cast<std::size_t>(i)].element >= 0)
+                box = box.joined(d_.parts[static_cast<std::size_t>(i)].body);
+        const int w = box.x1 - box.x0 + 2, h = box.y1 - box.y0 + 2;
+        for (int k = 1; k <= 4; ++k)
+            for (const cir::Pt off : { cir::Pt{ 0, k * h }, cir::Pt{ k * w, 0 } })
+            {
+                const cir::Op op = pasteOp(text, origin + off);
+                if (cir::apply(text_, d_, std::span<const cir::Op>(&op, 1), st_->pins).error.empty())
+                    return pasteText(text, origin + off);
+            }
+        say("No room for a copy beside the selection: copy it and paste it where there is");
+        return false;
     }
 
     bool SchematicView::showAsLabels(const std::string& net, bool labels)

@@ -40,8 +40,11 @@
 //              net routed again; a drawing at the edge of reach places a new part within it and writes only what
 //              reads back
 //   CLIP       copied(): parts as text (their lines, no terminal, part lines from the selection's top-left), pasted at a
-//              point (new names, fresh nodes, the top-left there), text no netlist's refused; e12Stepped's steps and
-//              decades in the suffix's style; milliWarning, FMinus's words
+//              point (new names, fresh nodes, the top-left there), text no netlist's refused (prose of any first letter:
+//              a value no number, a model or a switch never declared), a paste onto parts refused, a .model's + lines
+//              copied and pasted with it; e12Stepped's steps and decades in the suffix's style, nothing (at once) past a
+//              double's range; milliWarning, FMinus's words; a half-typed line given its value; taperOf, FMinus's
+//              rule; every library net shown as name tags refused or overlapping nothing new (one net's tags may touch)
 #include "Probe.h"
 
 #include "Library.h"
@@ -788,7 +791,11 @@ PROBE(fminus, schematic)
             check("edits.set_value", { "set R1 4.7k" }, with(base, "R1 in a 1k", "R1 in a 4.7k"));
             check("edits.set_expr", { "set Ptone {tone}" }, with(base, "{1 - tone}", "{tone}"));
             check("edits.set_pot_value", { "set Ptone 50k" }, with(base, "Ptone n3 out 25k", "Ptone n3 out 50k"));
-            check("edits.set_taper", { "set Ptone taper=audio" }, with(base, ".pot    tone 0.5 lin", ".pot    tone 0.5 audio"));
+            // a taper where FMinus reads it: {1 - tone} is no pot alone, so its own taper= (the .pot's word would
+            // not reach it); {tone} alone takes its .pot's word
+            check("edits.set_taper", { "set Ptone taper=audio" }, with(base, "{1 - tone}", "{1 - tone} taper=audio"));
+            check("edits.set_taper_alone", { "set Ptone {tone}", "set Ptone taper=audio" },
+                  with(with(base, "{1 - tone}", "{tone}"), ".pot    tone 0.5 lin", ".pot    tone 0.5 audio"));
             check("edits.set_pot_rename", { "set Ptone pot=bright" }, with(with(base, ".pot    tone", ".pot    bright"), "{1 - tone}", "{1 - bright}"));
             check("edits.set_scale", { "set vout 2" }, with(base, ".output vout out", ".output vout out scale=2"));
             const std::string sw = cir::written(".input u in\n.output y out\n.switch sel 3 1\nS1 in out sel 1\nD1 out 0 1N914\nE1 out 0 in 0 10\n.end\n");
@@ -907,11 +914,14 @@ PROBE(fminus, schematic)
         {
             cir::Op paste;
             paste.type = cir::Op::Type::paste;
-            paste.lines = { "R1 p q 1k", "C1 q 0 1n", "*@ part R1 0,0", "*@ part C1 4,2 r90", "*@ net q 2,0 4,0" };
+            paste.lines = { "R1 p q 1k", "C1 q 0 1n", "*@ part R1 0,0", "*@ part C1 4,4 r90", "*@ net q 2,0 4,0 4,2" };
             paste.at = cir::Pt{ 40, 20 };
             const cir::Applied a = cir::apply(drawn, cir::reconcile(drawn), std::span<const cir::Op>(&paste, 1));
+            if (!a.error.empty())
+                std::printf("edits.paste: %s\n", a.error.c_str());
             same(P, "edits.paste", cir::stripLayout(a.text), with(base, "R4 y 0 10k\n", "R4 y 0 10k\nR5 n1 n2 1k\nC2 n2 0 1n\n"));
-            same(P, "edits.paste_places", partLine(a.text, "R5") + " / " + partLine(a.text, "C2"), "*@ part R5 40,20 / *@ part C2 44,22 r90");
+            same(P, "edits.paste_places", partLine(a.text, "R5") + " / " + partLine(a.text, "C2"), "*@ part R5 40,20 / *@ part C2 44,24 r90");
+            P.eq("edits.paste_clear", a.error.empty() && cir::reconcile(a.text).overlaps.empty() ? 1 : 0, 1);
         }
         // layout: one part placed again; everything (Tidy) as from nothing
         {
@@ -1331,6 +1341,98 @@ PROBE(fminus, schematic)
         P.eq("clip.milli", cir::milliWarning("1M", &meg) == "'1M' is 1 milliohm in SPICE; write 1meg for a megohm" && meg == "1meg"
                                && cir::milliWarning("4.7m").size() > 0 && cir::milliWarning("1meg").empty() && cir::milliWarning("10k").empty()
                                && cir::milliWarning("1000m").empty() ? 1 : 0, 1);
+        // numbers past a double's range: no step and no warning, at once (Up on 1e400 once looped for ever)
+        P.eq("clip.huge", !cir::e12Stepped("1e400", 1, false) && !cir::e12Stepped("1e400", -1, true) && !cir::e12Stepped("1e2000000000", 1, false)
+                              && !cir::e12Stepped("1e99999999999", 1, false) && !cir::e12Stepped("1e-400", 1, false)
+                              && cir::milliWarning("1e2000000000m").empty() && cir::milliWarning("1e400m").empty()
+                              && cir::e12Stepped("1e3", 1, false) == "1.2k" ? 1 : 0, 1);
+        // a .model on two lines (a + line) copied and pasted into a netlist without it: both lines come
+        {
+            const std::string from = cir::written(".input u in\n.output y out\nR1 in a 1k\nD1 a 0 1N34A\n.model 1N34A D(IS=2.6e-6\n* its emission\n+ N=1.6 RS=7)\nC1 a out 10n\n.end\n");
+            const std::string clipped = cir::copied(from, cir::reconcile(from), { "D1" });
+            const std::string b = cir::written(".input u in\n.output y out\nR1 in out 1k\n.end\n");
+            cir::Op op;
+            op.type = cir::Op::Type::paste;
+            op.at = cir::Pt{ 40, 20 };
+            op.lines = linesOf(clipped);
+            const cir::Applied r = cir::apply(b, cir::reconcile(b), std::span<const cir::Op>(&op, 1));
+            std::printf("clip: a two-line .model copied:\n%spasted: %s\n", clipped.c_str(), r.error.c_str());
+            P.eq("clip.model_lines", r.error.empty() && clipped.find(".model 1N34A D(IS=2.6e-6\n+ N=1.6 RS=7)\n") != std::string::npos
+                                         && r.text.find(".model 1N34A D(IS=2.6e-6\n+ N=1.6 RS=7)\n") != std::string::npos ? 1 : 0, 1);
+        }
+        // prose is no netlist, whatever its first letter: a value that is no number, a model or a switch never declared
+        {
+            int refused = 0;
+            const std::vector<std::string> prose = { "Lorem ipsum dolor sit amet", "Remember to buy milk", "Dear John how are you",
+                                                     "Sam went to the shop", "Carrots are orange", "Vote for me today", "R1 a b" };
+            for (const std::string& t : prose)
+            {
+                cir::Op op = paste;
+                op.lines = { t, "" };
+                const cir::Applied r = cir::apply(tone, d, std::span<const cir::Op>(&op, 1));
+                if (!r.error.empty() && r.error.find("paste takes the lines of parts the schematic draws") != std::string::npos)
+                    ++refused;
+                else
+                    std::printf("clip: '%s' pasted: %s\n", t.c_str(), r.error.c_str());
+            }
+            P.eq("clip.prose_refused", refused, static_cast<int64_t>(prose.size()));
+            cir::Op ok = paste;
+            ok.lines = { "D7 x 0 1N4148", "R7 x 0 4.7k", "" };
+            P.eq("clip.builtin_model_pastes", cir::apply(tone, d, std::span<const cir::Op>(&ok, 1)).error.empty() ? 1 : 0, 1);
+        }
+        // a paste onto parts is refused, as a drop is (it names the op)
+        {
+            cir::Op onto = paste;
+            onto.at = cir::Pt{ box.x0, box.y0 };
+            const cir::Applied r = cir::apply(tone, d, std::span<const cir::Op>(&onto, 1));
+            std::printf("clip: pasted onto itself: %s\n", r.error.c_str());
+            P.eq("clip.paste_overlap_refused", r.error.rfind("op 1 (paste): ", 0) == 0 && r.error.find(" would overlap ") != std::string::npos
+                                                   && r.text == tone ? 1 : 0, 1);
+        }
+        // a half-typed line with no value takes one at its end
+        {
+            const std::string t = cir::written(".input u in\n.output y out\nR1 in out\nE1 out 0 in 0\n.end\n");
+            const cir::Applied r = run(t, { "set R1 1k", "set E1 gain=10" });
+            P.eq("clip.set_no_value", r.error.empty() && cir::stripLayout(r.text) == ".input u in\n.output y out\nR1 in out 1k\nE1 out 0 in 0 10\n.end\n" ? 1 : 0, 1);
+        }
+        // the taper FMinus plays: the line's taper=, else the .pot's word for a pot alone, else lin
+        {
+            const cir::Netlist pots = cir::read(".pot tone 0.5 rlog\n.pot drive 0.5\nP1 a w b 100k {tone}\nP2 a w b 100k {tone} taper=audio\n"
+                                              "P3 a b 50k {1-tone}\nP4 a w b 100k {drive}\nP5 a b 50k {1-tone} taper=audio\n.end\n");
+            std::string tapers;
+            for (const cir::Element& e : pots.elements)
+                tapers += (tapers.empty() ? "" : " ") + cir::taperOf(pots, e);
+            same(P, "clip.taper_of", tapers, "rlog audio lin lin audio");
+        }
+        // two name tags of one net may touch (one name); every net of the library shown as tags: refused, or no new overlap
+        {
+            int accepted = 0, clean = 0;
+            for (const pg::SourceFile& f : netlists())
+            {
+                const std::string t = cir::written(f.text);
+                const cir::Drawing dd = cir::reconcile(t);
+                for (const cir::Net& n : dd.nets)
+                {
+                    if (n.style != cir::Style::wired || n.pins.size() < 2 || n.name == "0")
+                        continue;
+                    cir::Op st;
+                    st.type = cir::Op::Type::style;
+                    st.name = n.name;
+                    st.flag = true;
+                    const cir::Applied r = cir::apply(t, dd, std::span<const cir::Op>(&st, 1));
+                    if (!r.error.empty())
+                        continue;
+                    ++accepted;
+                    const cir::Drawing tagged = cir::reconcile(r.text);
+                    bool more = false;
+                    for (const auto& o : tagged.overlaps)
+                        more = more || std::find(dd.overlaps.begin(), dd.overlaps.end(), o) == dd.overlaps.end();
+                    clean += more ? 0 : 1;
+                }
+            }
+            std::printf("clip: library nets shown as name tags: %d accepted, %d with no new overlap\n", accepted, clean);
+            P.eq("clip.tags_no_overlap", accepted > 0 && clean == accepted ? 1 : 0, 1);
+        }
     }
     return P.finish();
 }

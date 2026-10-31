@@ -23,8 +23,8 @@
 //   apply()         edits (§6.3 of the spec: add, place, connect, disconnect, cut, set, rename, delete, label, style,
 //                   paste, layout) as the smallest patches of the text plus the regenerated block, all or none.
 //   parseOp()       edit_circuit's grammar, a command a line.
-//   copied()        the parts selected as .cir text (the view's clipboard; apply's paste op takes it back); e12Stepped()
-//                   and milliWarning(), the view's value fields.
+//   copied()        the parts selected as .cir text (the view's clipboard; apply's paste op takes it back); e12Stepped(),
+//                   milliWarning() and taperOf(), the view's value fields.
 //   stripLayout(), sameNetlist(), lineMap(), sameProgram()   the text helpers of "layout lines are invisible".
 //
 // The block (keywords and names compare case-folded; tokens split at blanks; a point is "x,y", -9999..9999):
@@ -294,7 +294,8 @@ namespace playground::cir
         std::vector<std::string> unknown;         // the block's other lines, kept
         std::vector<std::string> notes;           // the view's notes (never a compile's): orphans, unroutable nets
         std::vector<std::string> notDrawn;        // "Q1 (a BJT: Phase 2)"
-        std::vector<std::pair<std::string, std::string>> overlaps;   // bodies, terminals or flags that overlap
+        std::vector<std::pair<std::string, std::string>> overlaps;   // bodies, terminals or flags that overlap (two
+                                                                      // flags of one net never count: one name)
         bool readOnly = false;                    // a block of a newer version: drawn, never rewritten
         int version = 1;
         Budget budget;                            // the A* pops this reconcile spent
@@ -369,7 +370,9 @@ namespace playground::cir
     };
 
     // `ops` applied to `text` (drawn as `d`: reconcile(text, pins)) in order, all or none: the netlist's lines patched
-    // token by token, then the canonical block written in. A drawing of a newer version refuses every op.
+    // token by token, then the canonical block written in. A drawing of a newer version refuses every op; so is a list
+    // whose add, place or paste puts a part onto another body, terminal or flag (as a drop is), or whose style shows a
+    // net as name tags that meet another net's tag or a body (two tags of one net may touch: they carry one name).
     Applied apply(std::string_view text, const Drawing& d, std::span<const Op> ops, const SessionPins& pins = {});
     // The smallest line patches that make `to` of `from` (apply's own: the lines both keep are untouched), sorted, none
     // overlapping or touching: what the view applies when one gesture takes several applies (a delete of wires on
@@ -411,6 +414,9 @@ namespace playground::cir
     // compiler words it ("'1M' is 1 milliohm in SPICE; write 1meg for a megohm"), and in `meg` what to write for the
     // megohms ("1meg"); "" (and `meg` untouched) for any other value.
     std::string milliWarning(std::string_view value, std::string* meg = nullptr);
+    // The taper FMinus plays a pot or a rheostat with (its Plan.cpp's rule): the line's taper= ("taper=audio": audio),
+    // else its .pot's taper word when its {expr} is that pot alone ({tone}), else lin.
+    std::string taperOf(const Netlist& nl, const Element& e);
 
     // ---- the text helpers -------------------------------------------------------------------------------------------
     bool isLayoutLine(std::string_view line) noexcept;   // its first non-blank characters are "*@"

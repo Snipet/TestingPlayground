@@ -58,6 +58,11 @@
 //             gives program.fm's text back in one step
 //   PERSIST   nothing kept by opening; a Panel opened again keeps each file's view, zoom and pan (the session's views);
 //             a view switched but never zoomed nor panned keeps no zoom, and fits again when opened again
+//   EDIT      each kind's field (all 13 kinds and both terminals) writing the exact tokens as one undo step, its rows,
+//             the taper FMinus plays (a line's taper= before its .pot's word), a row past 64 characters left alone;
+//             E12 steps; refusals; 1M's warning; the Label tool; Show as labels (its tags overlapping nothing new);
+//             copy, paste, cut, duplicate (where the copy meets nothing), text no netlist's and prose refused; each new
+//             menu item
 #include "Probe.h"
 
 #include "editor/CodeAssist.h"
@@ -235,6 +240,7 @@ namespace
                                "L1 a b 10m\n"
                                "D1 b 0 1N914\n"
                                "P1 b w out 100k {tone}\n"
+                               "P2 c x 50k {1-tone} taper=audio\n"
                                "XU1 c w d opamp\n"
                                "E1 e 0 c 0 10\n"
                                "G1 f 0 c 0 1m\n"
@@ -1908,7 +1914,7 @@ PROBE(gui, schematic)
                     host.keys("tab");
             }
         };
-        P.eq("edit.kinds_drawn", static_cast<int64_t>(v.drawing().parts.size()), 15);   // 13 elements, 2 terminals
+        P.eq("edit.kinds_drawn", static_cast<int64_t>(v.drawing().parts.size()), 16);   // 14 elements (13 kinds), 2 terminals
 
         // each kind's fields: the exact tokens, one undo step
         struct Case
@@ -1925,7 +1931,10 @@ PROBE(gui, schematic)
             { "D1", { { "model", "1N34A" } }, { setOp("D1", "model", "1N34A") }, { "D1 b 0 1N34A" } },
             { "P1", { { "name", "P9" }, { "value", "250k" }, { "pot", "drive" }, { "taper", "audio" } },
               { setOp("P1", "", "250k"), setOp("P1", "pot", "drive"), setOp("P1", "taper", "audio"), renameOp("P1", "P9") },
-              { "P9 b w out 250k {drive}", ".pot drive 0.5 audio", "G2 0 g OTA c 0 {100u * drive}" } },
+              { "P9 b w out 250k {drive}", ".pot drive 0.5 audio", "G2 0 g OTA c 0 {100u * drive}", "P2 c x 50k {1-drive} taper=audio" } },
+            // a rheostat whose {expr} is no pot alone: its own taper= is the one written (the .pot's word is P1's)
+            { "P2", { { "value", "47k" }, { "taper", "rlog" } }, { setOp("P2", "", "47k"), setOp("P2", "taper", "rlog") },
+              { "P2 c x 47k {1-tone} taper=rlog", ".pot tone 0.5 lin" } },
             { "XU1", { { "name", "XU2" } }, { renameOp("XU1", "XU2") }, { "XU2 c w d opamp" } },
             { "E1", { { "gain", "20" } }, { setOp("E1", "gain", "20") }, { "E1 e 0 c 0 20" } },
             { "G1", { { "gain", "2m" } }, { setOp("G1", "gain", "2m") }, { "G1 f 0 c 0 2m" } },
@@ -1968,6 +1977,15 @@ PROBE(gui, schematic)
             host.doubleClick(at.x, at.y);
             host.tick(1);
             P.eq("edit.pot_rows", v.fieldKeys() == std::vector<std::string>{ "name", "value", "pot", "taper" } ? 1 : 0, 1);
+            const std::string p1Taper = v.fieldText("taper");
+            host.keys("escape");
+            host.tick(1);
+            // the taper FMinus plays: P1's .pot word ({tone} alone), P2's own taper= ({1-tone} is no pot alone)
+            const funkgui::Point p2 = on("P2");
+            host.doubleClick(p2.x, p2.y);
+            host.tick(1);
+            P.eq("edit.taper_shown", p1Taper == "lin" && v.fieldKeys() == std::vector<std::string>{ "name", "value", "pot", "taper" }
+                                         && v.fieldText("taper") == "audio" ? 1 : 0, 1);
             host.keys("escape");
             host.tick(1);
             const funkgui::Point x = on("XU1");
@@ -1977,6 +1995,25 @@ PROBE(gui, schematic)
             host.keys("escape");
             host.tick(1);
             P.eq("edit.escape_closes", !v.editing() && ed.text() == kinds ? 1 : 0, 1);
+        }
+        // a row longer than 64 characters (an OTA's long expression) left alone: the name alone is written
+        {
+            const std::string longGain = "{100u * tone + 0 * tone + 0 * tone + 0 * tone + 0 * tone + 0 * tone + 0 * tone}";
+            std::string t = kinds;
+            t.replace(t.find("{100u * tone}"), 13, longGain);
+            ed.setText(t);
+            host.tick(1);
+            const funkgui::Point at = on("G2");
+            host.doubleClick(at.x, at.y);
+            host.tick(1);
+            const bool whole = v.fieldText("gain") == longGain;
+            rowsTyped({ { "name", "G3" } });
+            host.keys("return");
+            host.tick(1);
+            P.eq("edit.long_row_kept", whole && longGain.size() > 64 && !v.editing() && ed.text() == applied(t, { renameOp("G2", "G3") }).text
+                                           && has(ed.text(), "\nG3 0 g OTA c 0 " + longGain + "\n") ? 1 : 0, 1);
+            ed.setText(kinds);
+            host.tick(1);
         }
         // Return with one part selected, and a click on its value label, open it (the caret on the value)
         {
@@ -2147,7 +2184,14 @@ PROBE(gui, schematic)
                 look(static_cast<float>(mid->x), static_cast<float>(mid->y));
                 const funkgui::Point w = v.screenOf(*mid);
                 host.click(w.x, w.y, popupMods());
+                const cir::Drawing wired = cir::reconcile(ed.text());
                 P.eq("edit.show_as_labels", choose(host, "Show as labels") && has(ed.text(), "\n*@ net mid flag") ? 1 : 0, 1);
+                // its tags touch nothing they did not (two of one net may: one name), so nothing is outlined
+                const cir::Drawing tagged = cir::reconcile(ed.text());
+                int fresh = 0;
+                for (const auto& o : tagged.overlaps)
+                    fresh += std::find(wired.overlaps.begin(), wired.overlaps.end(), o) == wired.overlaps.end() ? 1 : 0;
+                P.eq("edit.labels_no_overlap", fresh, 0);
             }
             else
                 P.eq("edit.show_as_labels", 0, 1);
@@ -2233,17 +2277,28 @@ PROBE(gui, schematic)
             host.keys("cmd+v");
             host.tick(1);
             P.eq("edit.cut_paste", gone && cir::read(ed.text()).element(cutName) >= 0 ? 1 : 0, 1);
-            // duplicate: a copy at +2,+2
+            // duplicate: a copy where it meets nothing, just below L1 (else beside it): no overlap, L1's turn
             const std::string dupBefore = ed.text();
             const funkgui::Point l1 = on("L1");
             host.click(l1.x, l1.y);
             host.keys("cmd+d");
             host.tick(1);
             cir::Pt origin;
-            const std::string lone = cir::copied(dupBefore, cir::reconcile(dupBefore), { "L1" }, &origin);
+            const cir::Drawing beforeDup = cir::reconcile(dupBefore);
+            const std::string lone = cir::copied(dupBefore, beforeDup, { "L1" }, &origin);
+            const cir::Drawing afterDup = cir::reconcile(ed.text());
+            const cir::Part* l1Was = partOf(beforeDup, "L1");
+            const cir::Part* l2 = partOf(afterDup, "L2");
+            const cir::Pt off = l2 != nullptr && l1Was != nullptr ? l2->origin - l1Was->origin : cir::Pt{};
+            int dupOverlaps = 0;
+            for (const auto& o : afterDup.overlaps)
+                dupOverlaps += std::find(beforeDup.overlaps.begin(), beforeDup.overlaps.end(), o) == beforeDup.overlaps.end() ? 1 : 0;
+            std::printf("duplicate: L2 at %d,%d off L1, %d new overlaps\n", off.x, off.y, dupOverlaps);
+            P.eq("edit.duplicate_clear", l2 != nullptr && l1Was != nullptr && (off.x != 0 || off.y != 0) && l2->orient == l1Was->orient
+                                             && !l2->body.meets(l1Was->body) && dupOverlaps == 0 ? 1 : 0, 1);
             cir::Op dup;
             dup.type = cir::Op::Type::paste;
-            dup.at = origin + cir::Pt{ 2, 2 };
+            dup.at = origin + off;
             for (std::size_t at = 0; at < lone.size();)
             {
                 const std::size_t end = std::min(lone.find('\n', at), lone.size());
@@ -2260,6 +2315,17 @@ PROBE(gui, schematic)
             host.tick(1);
             std::printf("paste refused: %s\n", v.notice().c_str());
             P.eq("edit.paste_refused", ed.text() == refusedBefore && has(v.notice(), "Paste takes netlist lines") ? 1 : 0, 1);
+            // prose of a part's first letter too: an inductor 'Lorem' of 'sit', a resistor 'Remember' of 'milk'
+            int prose = 0;
+            for (const char* t : { "Lorem ipsum dolor sit amet", "Remember to buy milk" })
+            {
+                host.setClipboard(t);
+                host.keys("cmd+v");
+                host.tick(1);
+                prose += ed.text() == refusedBefore && has(v.notice(), "Paste takes netlist lines") ? 1 : 0;
+            }
+            std::printf("prose refused: %s\n", v.notice().c_str());
+            P.eq("edit.paste_prose_refused", prose, 2);
             ed.setText(kinds);
             host.tick(1);
         }
