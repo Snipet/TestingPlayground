@@ -1,0 +1,93 @@
+# Publishes a release's installers on the website. When a release is published (or by hand, with its tag), this
+# downloads its .dmg and .pkg, checks each against the SHA-256 GitHub recorded, uploads them to the website's R2 bucket
+# under the tag (the site serves them at /downloads/<tag>/<file>), and asks the website's repository to put the release
+# on its download page. A pre-release stops after the upload: it tests the path without changing the page.
+#
+# Publish a release only once both files are attached: `gh release create <tag> --draft ... <files>`, then
+# `gh release edit <tag> --draft=false`.
+#
+# Secrets: R2_ACCOUNT_ID, R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY (an R2 API token with Object Read & Write on the
+# bucket alone), and WEBSITE_DISPATCH_TOKEN (a fine-grained GitHub token for the website's repository with Contents
+# read and write).
+name: Publish downloads
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release's tag, like v0.1.0
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+  BUCKET: testingplayground-downloads
+  WEBSITE: Snipet/TestingPlaygroundBackend
+
+concurrency:
+  group: publish-downloads-${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir dist \
+            --pattern 'TestingPlayground-Installer-*.dmg' --pattern 'TestingPlayground-*.pkg'
+          dmgs=$(find dist -name '*.dmg' | wc -l)
+          pkgs=$(find dist -name '*.pkg' | wc -l)
+          if [ "$dmgs" -ne 1 ] || [ "$pkgs" -ne 1 ]; then
+            echo "::error::The release needs exactly one TestingPlayground-Installer-<version>.dmg and one TestingPlayground-<version>.pkg; it has $dmgs and $pkgs."
+            exit 1
+          fi
+          ls -l dist
+
+      - name: Check them against GitHub's checksums
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > release.json
+          for file in dist/*; do
+            name=$(basename "$file")
+            want=$(jq -r --arg name "$name" '.assets[] | select(.name == $name) | .digest // ""' release.json)
+            have="sha256:$(sha256sum "$file" | cut -d ' ' -f 1)"
+            if [ "$want" != "$have" ]; then
+              echo "::error::$name does not match the SHA-256 GitHub recorded (${want:-none})."
+              exit 1
+            fi
+            echo "$name $have"
+          done
+          echo "prerelease=$(jq -r .prerelease release.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload them to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          # Newer AWS CLIs add checksums R2 may refuse; send only the ones a request requires.
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          for file in dist/*; do
+            case "$file" in
+              *.dmg) type=application/x-apple-diskimage ;;
+              *) type=application/octet-stream ;;
+            esac
+            aws s3 cp "$file" "s3://$BUCKET/$TAG/$(basename "$file")" \
+              --endpoint-url "$ENDPOINT" --content-type "$type" --no-progress
+          done
+
+      - name: Ask the website to offer the release
+        if: steps.check.outputs.prerelease == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
+        run: gh api "repos/$WEBSITE/dispatches" -f event_type=release-published -f "client_payload[tag]=$TAG"

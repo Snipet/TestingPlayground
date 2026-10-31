@@ -963,6 +963,21 @@ prints both identities) is its own, so the two load in one host beside each othe
 keeps keys for itself (some do for the space bar or the arrows, or play notes from the computer keyboard) may need its
 "keyboard to plugin" option on for typing in the editor.
 
+**Publishing.** A GitHub release puts both files on the website's download page. Create it as a draft with the .dmg
+and the .pkg attached, then publish it (so nothing sees it without its files):
+
+```sh
+gh release create v<version> --draft --title "TestingPlayground <version>" --notes-file <notes.md> \
+  build-release/dist/TestingPlayground-Installer-<version>.dmg build-release/dist/TestingPlayground-<version>.pkg
+gh release edit v<version> --draft=false
+```
+
+`.github/workflows/publish-downloads.yml` then checks both files against the SHA-256 GitHub recorded, uploads them to
+the website's R2 bucket under the tag, and asks the website's repository (Snipet/TestingPlaygroundBackend) to offer the
+release, which it does with each file's size and checksum. A pre-release stops after the upload. Its secrets:
+`R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `WEBSITE_DISPATCH_TOKEN`; run it by hand, with a tag,
+to redo a release.
+
 Each block the plugin reads the host's tempo, position, time signature and transport (and passes them to the program
 through host.fm); the synth also reads from the MIDI the notes, the mod wheel (CC 1), the pitch wheel, channel
 pressure, the sustain pedal (CC 64) and All Notes Off (CC 123).
@@ -1156,6 +1171,7 @@ Tools/probes/            tests that measure, each run for both products: fminus/
 scripts/                 plugin.py (the products' identities: info, add, rename, codesign, notarize), test.sh,
                          sync-dsp-core.sh, install.sh, package.sh (the installer .pkg; --installer: the installer
                          app's disk image), entitlements/ (the Standalones' hardened runtime, by kind)
+.github/workflows/       publish-downloads.yml (a published release's files to the website, above)
 cmake/                   Deps.cmake (the pins), Flags.cmake, Probes.cmake (the probes and lints), Product.h.in,
                          Installer.cmake (the installer, its payload, its probes) and InstallerPayload.cmake (the
                          payload put in the app), the lints
