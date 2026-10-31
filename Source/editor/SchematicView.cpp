@@ -3956,7 +3956,7 @@ namespace playground::ui
         if (!showing() || !probe_.meters || !sent_.armed())
             return false;
         const Meters& m = probe_.meters();
-        return m.probeSet == sent_ && m.probeInstance >= 0;
+        return m.probeSet == sent_ && m.probeProgram == sent_.program && m.probeInstance >= 0;   // applied, and reading
     }
 
     std::string SchematicView::probeWords(int slot) const
@@ -4114,16 +4114,17 @@ namespace playground::ui
             sentAny_ = true;
             probe_.arm(set);
         }
-        // what the audio thread says of this set: no voice sounding (an instrument's), or the rings to read
+        // what the audio thread says of this set, once it plays the set's program: no voice sounding (an instrument's
+        // newest, none), or the rings to read
         const Meters& m = probe_.meters();
-        const bool ours = set.armed() && m.probeSet == set;
+        const bool ours = set.armed() && m.probeSet == set && m.program == set.program;
         for (std::size_t k = 0; k < 4; ++k)
         {
             ProbeSlot& p = slots_[k];
             p.valid = 0;
             if (p.node < 0 || !ours)
                 continue;
-            if (m.probeInstance < 0)
+            if (m.probeInstance < 0 || m.probeProgram != set.program)
             {
                 p.reason = kNoVoice;
                 continue;
