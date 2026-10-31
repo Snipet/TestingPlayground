@@ -326,12 +326,15 @@ place (its `products/<key>.cmake`, and its names in the docs).
   place, the Label tool's net name) are a gesture too: what Return writes is one `cir::apply` of set and rename ops,
   refused in the field when apply refuses it, and closed when a merge moves the text under it; its clipboard is
   netlist text (`cir::copied`, then apply's paste op), never anything of its own. It publishes the places it drew for
-  parts that have no part line (its session pins: `EditorPort::setSchematicPins`, in the processor's memory only),
-  which Claude's edit_circuit and view_panel's schematic picture reconcile with, so every writer and viewer draws what
-  the user sees. The view, zoom and pan of each file
-  are the session's alone (`EditorPort::fileViews`; never in the Draft, a project, an export or Claude's view), kept on
-  the user's gestures only. Keep its colours the code editor's (the marks are the tab's own `DecorationInks`) and its
-  drawing in `SchematicDraw`, which a picture (s4) draws with no Panel.
+  parts and terminals that have no line of their own (its session pins: `EditorPort::setSchematicPins`, in the
+  processor's memory only), which Claude's edit_circuit and view_panel's schematic picture reconcile with, so every
+  writer and viewer draws what the user sees. Each gesture gives the files to the processor at once
+  (`EditorPort::setDraftIf`, through the Panel's sync hook), so Claude's conditional write sees it; when a write of
+  Claude's came first that the Panel has not merged, the gesture is undone and the strip says to do it again (neither
+  is overwritten). The view, zoom and pan of each file are the session's alone (`EditorPort::fileViews`; never in the
+  Draft, a project, an export or Claude's view), kept on the user's gestures only. Keep its colours the code editor's
+  (the marks are the tab's own `DecorationInks`) and its drawing in `SchematicDraw`, which a picture (s4) draws with no
+  Panel.
 - **`fminus/Lang.h` is the language, as an editor sees it**: plain C++ over the files' text, no FMinus call. Its
   tables (keywords, type words, the builtins with their signatures, the attributes, `#pragma panel`'s words) follow
   FMinus at its pin and PanelSpec: a pin move that adds a keyword or a builtin adds it there, with `fminus.lang` rows.
@@ -645,10 +648,10 @@ place (its `products/<key>.cmake`, and its names in the docs).
   netlist through the schematic's own operations (`cir::parseOp`, `cir::apply` on a copy, all or none, with the
   netlist's session pins, `ChatHost::chatSchematicPins`), written by `ChatHost::chatSetDraftIf`: only while that file's
   text is still the text the tool read (under `programMutex_`, the other files left as they are now), so a gesture of
-  the user's that synced meanwhile is never overwritten; the commands run once more on the new text, and a second
-  clash fails ("pedal.cir changed while drawing: try again"). Its result: what each command did, the netlist's lines
-  changed (its `*@` lines aside), `circuits::Generator`'s errors and warnings on the new text, the whole text when at
-  most 4,000 bytes (then seen). `plugin.chat` CIRCUIT plants the gesture through `ChatAgent::setCircuitWriteHookForTests`.
+  the user's (which the view gives the processor at once) is never overwritten; the commands run once more on the new
+  text, and a second clash fails ("pedal.cir changed while drawing: try again"). Its result: what each command did,
+  the netlist's lines changed (its `*@` lines aside), `circuits::Generator`'s errors and warnings on the new text, the
+  whole text when at most 4,000 bytes (then seen). `plugin.chat` CIRCUIT plants the gesture through `ChatAgent::setCircuitWriteHookForTests`.
   view_panel's view "schematic" is `pictureSchematic` (`editor/Picture.cpp`: a `SchematicPicture`, a Panel of its own
   that holds no editor Panel, so it owns no probe and reads or writes no file view; the drawing at 100 %, labels
   always). write_file of a `.cir` whose text has no `*@` line keeps the old ones and says so.
