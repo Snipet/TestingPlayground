@@ -103,7 +103,8 @@ namespace playground
     // (editor/Picture.h; where the GPU cannot, with SoftRaster, a shader as a striped placeholder, and `about` says so
     // and why), as PNG bytes. `window`: the whole editor as the user has it; else the program's panel in the PANEL
     // view, cropped to it. `page`: a tabs element's page to show, by its title ("" for the user's). The view, the chat's
-    // fold and the pages the user has stay as they were. Message thread only. Defined in Source/editor/Picture.cpp.
+    // fold, the pages and the probes the user has stay as they were (its Panel owns no probe: Panel::setOwnsProbes).
+    // Message thread only. Defined in Source/editor/Picture.cpp.
     struct PanelPicture
     {
         std::string png;                         // the PNG's bytes ("" when it could not be made: `why`)
