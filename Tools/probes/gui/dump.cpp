@@ -79,10 +79,10 @@
 //             a click on the switch flips it (one host gesture each); a fader's drag raises its dial; the host shows
 //             an option's name for the buttons' value. Another program run: until the audio thread takes it, its
 //             light reads 0 (never the last program's first field), then its own value
-//   RANDOM    a seed's program (fminus/Random.h) in place of the program's text, its library files as tabs (the
-//             library's), the program shown and run with no note; Cmd-Z gives the text back in one step; the RANDOM
-//             button makes another, which runs with no note; with twelve tabs of other files, a notice in the status
-//             and the text untouched
+//   RANDOM    a fresh start as EXAMPLES makes one: over the editor's changes it asks first, and on the menu's choice
+//             a seed's program (fminus/Random.h) and its library files (the library's) are the only tabs, the program
+//             shown and run with no note, no undo step back, nothing left to lose; the RANDOM button makes another,
+//             asking nothing, which runs with no note; over twelve tabs of other files, its own are all that is left
 //   PROJECTS  (a folder of the probe's own) the PROJECTS pill opens the card, the program's title in its field; a name
 //             typed and Return save the program and its dials as a new project: the card closes, the status says so,
 //             the pill names it with its version; an edit makes it EDITED; Cmd-S saves version 2, and again nothing
@@ -1210,12 +1210,15 @@ PROBE(gui, dump)
         settleRun(processor, host);
     }
 
-    // RANDOM
+    // RANDOM: a fresh start, as EXAMPLES makes one.
     {
         const std::string program = editor.text();
-        const int tabsBefore = panel.fileCount();
+        editor.setCaret(editor.endPos());                        // a change, which RANDOM would take away
+        editor.insert("\n// mine");
+        host.tick(1);
         const pg::random::Program want = pg::random::make(4242);
-        P.eq("random.made", panel.makeRandom(4242) ? 1 : 0, 1);
+        P.eq("random.asks_first", !panel.makeRandom(4242) && host.pendingMenu() != nullptr ? 1 : 0, 1);
+        P.eq("random.confirmed", host.chooseMenuItem(1) ? 1 : 0, 1);
         settleRun(processor, host);
         P.eq("random.text", panel.editor().text() == want.text ? 1 : 0, 1);
         P.eq("random.program_shown", panel.activeFile(), 0);
@@ -1234,17 +1237,17 @@ PROBE(gui, dump)
                 && d.files[static_cast<std::size_t>(i)].text == pg::findLibraryFile(f)->source;
         }
         P.eq("random.library_tabs", tabs ? 1 : 0, 1);
-        P.eq("random.tab_count", panel.fileCount(), tabsBefore + static_cast<int64_t>(want.library.size()));
+        P.eq("random.only_its_files", panel.fileCount(), 1 + static_cast<int64_t>(want.library.size()));
         P.eq("random.runs", port.status().ok && port.status().notes.empty() ? 1 : 0, 1);
         if (!port.status().ok || !port.status().notes.empty())
             std::printf("%s%s", port.status().errors.c_str(), port.status().notes.c_str());
         P.eq("random.plays_it", !port.running().empty() && port.running().front().text == want.text ? 1 : 0, 1);
-        P.eq("random.undo", panel.editor().undo() && panel.editor().text() == program ? 1 : 0, 1);
-        panel.editor().redo();
-        host.settle();
-        // The button: another program.
+        P.eq("random.no_undo_back", panel.editor().canUndo() ? 0 : 1, 1);
+        P.eq("random.nothing_to_lose", port.project().changed ? 0 : 1, 1);
+        // The button: another program, asking nothing (nothing changed since).
         const funkgui::Point button = panel.centreOfRandom();
         host.click(button.x, button.y);
+        P.eq("random.button_asks_nothing", host.pendingMenu() == nullptr ? 1 : 0, 1);
         settleRun(processor, host);
         const std::string made = panel.editor().text();
         P.eq("random.button_new", made != want.text && made.rfind("// ", 0) == 0 && made.find(" (random ") != std::string::npos
@@ -1252,8 +1255,23 @@ PROBE(gui, dump)
         P.eq("random.button_runs", port.status().ok && port.status().notes.empty() ? 1 : 0, 1);
         std::printf("RANDOM made: %s\n", made.substr(0, made.find('\n')).c_str());
         writePng(P, host, "gui.dump.random.png", "random");
-        // Back to the program alone, then twelve tabs of other files: no room.
+        // Twelve tabs (the program's and empty ones): RANDOM over them leaves its own only.
         const funkgui::Point tab0 = panel.centreOfTab(0);
+        while (panel.fileCount() < static_cast<int>(pg::kMaxFiles))
+        {
+            const funkgui::Point plus = panel.centreOfNewTab();
+            host.click(plus.x, plus.y);
+            host.keys("escape");
+            host.settle();
+        }
+        host.click(tab0.x, tab0.y);
+        const pg::random::Program other = pg::random::make(77);
+        P.eq("random.over_twelve_asks", !panel.makeRandom(77) && host.chooseMenuItem(1) ? 1 : 0, 1);
+        settleRun(processor, host);
+        P.eq("random.over_twelve_its_own", panel.fileCount() == 1 + static_cast<int>(other.library.size())
+                                               && panel.editor().text() == other.text && port.status().ok
+                                               ? 1 : 0, 1);
+        // Back to the program alone, as before.
         while (panel.fileCount() > 1)
         {
             const funkgui::Point x = panel.centreOfCloseTab(panel.fileCount() - 1);
@@ -1264,26 +1282,6 @@ PROBE(gui, dump)
         host.click(tab0.x, tab0.y);
         panel.editor().selectAll();
         panel.editor().insert(program);
-        while (panel.fileCount() < static_cast<int>(pg::kMaxFiles))
-        {
-            const funkgui::Point plus = panel.centreOfNewTab();
-            host.click(plus.x, plus.y);
-            host.keys("escape");
-            host.settle();
-        }
-        host.click(tab0.x, tab0.y);
-        P.eq("random.no_room", panel.makeRandom(77) ? 0 : 1, 1);
-        host.tick(1);
-        P.eq("random.no_room_says_so", panel.statusText().find("RANDOM NEEDS ROOM") != std::string::npos ? 1 : 0, 1);
-        P.eq("random.no_room_text_untouched", panel.editor().text() == program && panel.fileCount() == static_cast<int>(pg::kMaxFiles)
-                                                  ? 1 : 0, 1);
-        while (panel.fileCount() > 1)
-        {
-            const funkgui::Point x = panel.centreOfCloseTab(panel.fileCount() - 1);
-            host.click(x.x, x.y);
-            host.settle();
-        }
-        host.click(tab0.x, tab0.y);
         host.keys("cmd+return");
         settleRun(processor, host);
         P.eq("random.back", panel.fileCount() == 1 && port.status().ok ? 1 : 0, 1);

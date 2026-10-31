@@ -609,8 +609,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `fminus.examples` (`scripts/test.sh <key> -R fminus.examples`). Write it in the house style: the editor's Format
   (Shift-Alt-F) changes nothing in it, which `fminus.lang` checks for every example and library file. An example may
   `#include` library files (the circuit examples do): they come with it as tabs (EXAMPLES starts afresh from one:
-  `EditorPort::loadExample`, `gui.dump`'s and `gui.explorer`'s `examples.*` rows), and whatever plays an example takes
-  its files from `withLibraryIncludes` (`fminus/LibraryIncludes.h`), never `singleFile` alone.
+  `EditorPort::startAfresh`, as RANDOM does; `gui.dump`'s and `gui.explorer`'s `examples.*` rows), and whatever plays
+  an example takes its files from `withLibraryIncludes` (`fminus/LibraryIncludes.h`), never `singleFile` alone.
 - **A library file**: `Source/fminus/library/<n>-<category>/<name>.fm`, its first line `// <name>.fm: what it is`
   (the LIBRARY menu shows it, in both products), then `//` and a usage header (the comment lines it starts with, which
   Claude's instructions quote, and the editor's hover cards: a member's line, `filter.lp`, `y = filter.tick(x);`,

@@ -222,9 +222,9 @@ namespace playground::ui
         const std::string& projectText() const noexcept { return projectText_; }
         // Cmd-S: a new version of the project open (its name in the status), or, with none open, PROJECTS.
         void saveVersion();
-        // RANDOM (fminus/Random.h): the program for `seed` (its library files as tabs, those the editor lacks; its text
-        // in place of the program's, an edit Cmd-Z takes back), run. When the tabs left cannot hold its files, the next
-        // seeds are tried (up to 64); false, with a notice in the status, when none fits.
+        // RANDOM (fminus/Random.h): the program for `seed` and its library files, a fresh start as EXAMPLES makes one
+        // (the only tabs, the dials at their defaults, no project open), run. False when it asked first (a menu: the
+        // editor's changes would be lost), the menu's choice then making it.
         bool makeRandom(uint32_t seed);
         // LIBRARY's choice (Library.h): the file as a tab, #included by the program; shown when it is there. False for
         // a name the library has not, or no room for a tab.
@@ -267,8 +267,11 @@ namespace playground::ui
         ExplorerItem& explorer();
         const ExplorerItem& explorer() const;
         funkgui::Rect explorerCard() const noexcept { return explorerCard_; }
-        // EXAMPLES' choice (Examples.h): its text in place of the program's (one edit Cmd-Z takes back), run.
+        // EXAMPLES' choice (Examples.h): the example and its library files, a fresh start (startAfresh), run.
         void loadExample(int i);
+        // A fresh start (EditorPort::startAfresh) from `next`, asking first (a menu, its item `ask`) when the editor's
+        // files have changes nothing holds; `what` names it in the journal. True when it started at once.
+        bool startAfresh(const Sources& next, const std::string& what, const std::string& ask);
         // The IR tab (IrView.h): open, shown, its view (an irview::View) and name; openIrView() as the explorer's LLVM IR
         // row does (the tab opened on that view, shown, the editor focused), closeIrView() as its close box.
         bool irOpen() const;

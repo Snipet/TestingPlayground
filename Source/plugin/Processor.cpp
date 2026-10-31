@@ -8,7 +8,6 @@
 #include "Product.h"
 
 #include "fminus/Circuits.h"
-#include "fminus/LibraryIncludes.h"
 #include "fsdsp/core/Sanitize.h"
 
 #include <funkgui/gpu/ShaderLibrary.h>
@@ -768,7 +767,8 @@ namespace playground
                 projectDials_.clear();
                 dialsRequest_ = 0;
             }
-            // An example's program: every dial at its default once it compiled, as in a new instance.
+            // A fresh start's program (an example's, RANDOM's): every dial at its default once it compiled, as in a
+            // new instance.
             if (defaultsRequest_ != 0 && s.request >= defaultsRequest_)
             {
                 if (s.ok && s.request == defaultsRequest_)
@@ -1243,22 +1243,19 @@ namespace playground
         return true;
     }
 
-    // EXAMPLES (EditorPort::loadExample): the example as a new instance plays Init. Its files are the whole draft, no
-    // project is open, and the dials go to their defaults when it has compiled. A version's dials still on their way
-    // are dropped.
-    void Processor::loadExample(int index)
+    // EXAMPLES and RANDOM (EditorPort::startAfresh): `files` as a new instance plays Init. They are the whole draft, no
+    // project is open, and the dials go to their defaults when they have compiled. A version's dials still on their
+    // way are dropped.
+    void Processor::startAfresh(const Sources& files, const std::string& what)
     {
-        if (index < 0 || index >= static_cast<int>(std::size(kExamples)))
-            return;
-        const Example& e = kExamples[static_cast<std::size_t>(index)];
         Draft d;
-        d.files = withLibraryIncludes(singleFile(e.source));
-        if (d.files.size() > kMaxFiles)
-            d.files.resize(kMaxFiles);
+        d.files = tidyFiles(files);
+        if (d.files.empty())
+            return;
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
             draft_ = d;
-            ++draftRevision_;                                    // the editor shows the example's files
+            ++draftRevision_;                                    // the editor shows the new files
             projectName_.clear();
             projectVersion_ = projectLatest_ = 0;
             projectPreset_.clear();
@@ -1274,7 +1271,7 @@ namespace playground
         editorRun_.store(id);
         userRun_.store(id);
         journal_.note(Journal::Who::you,
-                      "loaded the example \"" + std::string(e.title) + "\" (its files only, every dial at its default)");
+                      "started afresh from " + what + " (its files only, every dial at its default)");
     }
 
     bool Processor::saveVersion(const std::string& name, SavedVersion& saved, std::string& why)
