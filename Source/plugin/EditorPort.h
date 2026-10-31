@@ -7,6 +7,9 @@
 //   draftRevision()   bumps when the draft changes other than by setDraft (a host loading a session), so an open editor
 //                     shows the new files
 //   setDraft()        the editor's files, as they are typed, and its tab
+//   setDraftIf()      setDraft only while draftRevision() is still `revision` (the editor has every change merged): a
+//                     schematic gesture's files, at once, so that Claude's conditional write (edit_circuit) sees it
+//                     and a write of Claude's not yet merged is never overwritten (false: nothing set)
 //   run()             RUN: compiles `files` off the message thread (Compiler.h) and plays them once they compile; the
 //                     dials of parameters the program did not have before move to their defaults then
 //   compiling()       a run is waiting or compiling
@@ -235,6 +238,7 @@ namespace playground
         virtual Draft draft() const = 0;
         virtual uint64_t draftRevision() const = 0;
         virtual void setDraft(const Draft& draft) = 0;
+        virtual bool setDraftIf(const Draft& draft, uint64_t revision) = 0;
 
         virtual void run(const Sources& files) = 0;
         virtual bool compiling() const = 0;

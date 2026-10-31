@@ -1883,6 +1883,8 @@ namespace playground::ui
             pins_ = pins;
             schematic_.setPinsHook(std::move(pins));
         }
+        // The Panel's: a schematic gesture's files to the processor at once (SchematicView::setSyncHook).
+        void setSyncHook(std::function<bool()> sync) { schematic_.setSyncHook(std::move(sync)); }
         const SchematicFile* viewOf(const std::string& file) const
         {
             const auto it = views_.find(file);
@@ -2703,6 +2705,17 @@ namespace playground::ui
         });
         // The schematic's session pins, published as its view reconciles (Claude's edit_circuit and pictures draw them).
         files().setPinsHook([this](const std::string& file, const std::string& lines) { port_.setSchematicPins(file, lines); });
+        // A schematic gesture's files, given to the processor at once unless a draft came that refresh has not merged
+        // (Claude's edit_circuit writes only over the text it read: it then sees the gesture and draws on it again).
+        files().setSyncHook([this] {
+            if (files().revision() == syncedFiles_)
+                return true;
+            if (!port_.setDraftIf(files().draft(), seenDraft_))
+                return false;
+            syncedFiles_ = files().revision();
+            pushedFiles_ = true;
+            return true;
+        });
         files().load(port_.draft());
         files().setFileViews(port_.fileViews());
         seenDraft_ = port_.draftRevision();
@@ -3790,7 +3803,7 @@ namespace playground::ui
     void Panel::refresh(double nowSec)
     {
         // The draft, when a host loaded a session while the editor was open, or Claude changed the files.
-        bool textChanged = false;
+        bool textChanged = std::exchange(pushedFiles_, false);   // a gesture's files, given at once
         if (const uint64_t d = port_.draftRevision(); d != seenDraft_)
         {
             seenDraft_ = d;

@@ -171,6 +171,7 @@ namespace playground
         Draft draft() const override;
         uint64_t draftRevision() const override;
         void setDraft(const Draft& draft) override;
+        bool setDraftIf(const Draft& draft, uint64_t revision) override;
         void run(const Sources& files) override;
         bool compiling() const override;
         CompileStatus status() const override;

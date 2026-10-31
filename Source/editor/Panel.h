@@ -562,6 +562,7 @@ namespace playground::ui
         // What refresh() last saw.
         uint64_t seenStatus_ = 0, seenDraft_ = 0;
         uint64_t syncedFiles_ = 0;                       // the files' revision last given to the port
+        bool pushedFiles_ = false;                       // ... by a schematic gesture since the last refresh
         bool edited_ = false;                            // the files differ from the program's that plays
         Sources running_;                                // the files of the program that plays, as statuses say them
         double meterAt_ = -1.0;                          // when meter_ was last made (the host's clock)

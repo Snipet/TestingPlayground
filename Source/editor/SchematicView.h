@@ -166,6 +166,10 @@ namespace playground::ui
         // lines whenever a reconcile changes the places drawn for parts and terminals that have no line of their own
         // ("" when there are none).
         void setPinsHook(std::function<void(const std::string& file, const std::string& lines)> pins) { pins_ = std::move(pins); }
+        // The files to the processor at once, right after a gesture writes the tab (the Panel's: EditorPort::setDraftIf),
+        // so that Claude's conditional write sees the gesture. False when a write of Claude's came in that the Panel has
+        // not merged yet: the gesture is undone (one step) and the strip says to do it again, so neither is overwritten.
+        void setSyncHook(std::function<bool()> sync) { sync_ = std::move(sync); }
         // The file shown in Schematic view: its tab's editor, its name and its state (FilesItem's; null: none shown).
         void show(funkgui::TextEditor* ed, const std::string& file, SchematicFile* state);
         bool showing() const noexcept { return ed_ != nullptr && st_ != nullptr; }
@@ -326,6 +330,7 @@ namespace playground::ui
         bool commit(const std::vector<cir::Op>& ops, std::string* why = nullptr, std::vector<std::string>* touched = nullptr);
         bool pasteText(const std::string& text, cir::Pt at);    // a paste op of `text` at `at`, the pasted parts selected
         void publishPins() const;                        // the session pins, to the Panel when they changed
+        bool synced();                                   // a gesture's files to the processor (else undone): sync_
         bool fieldKey(const funkgui::KeyEvent& e);       // a key while the field is open
         void stepField(int dir, bool decade);            // Up, Down in a value row: E12
         void drawField(funkgui::Canvas& c, const funkgui::Theme& th, const sch::View& v, const sch::Inks& k) const;
@@ -352,6 +357,7 @@ namespace playground::ui
         Hooks hooks_;
         DialHooks dials_;
         std::function<void(const std::string&, const std::string&)> pins_;
+        std::function<bool()> sync_;                     // setSyncHook
         // The field (above): its rows, the one with the caret, what it edits, the text's revision it opened on.
         struct Row
         {
@@ -444,6 +450,8 @@ namespace playground::ui
         std::string notice_;
         float noticeLeft_ = 0.0f;
         uint32_t noticeRev_ = 0;                         // the editor's revision it was said at
+        bool overtaken_ = false;                         // a gesture undone by synced(), to be said after the merge
+        uint32_t overtakenRev_ = 0;                      // ... the revision it left
         mutable std::map<std::string, float> flash_;     // part name -> seconds left
     };
 }

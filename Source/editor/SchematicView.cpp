@@ -32,6 +32,8 @@ namespace playground::ui
         constexpr float kButtonW = 24.0f, kButtonGap = 2.0f;
         constexpr float kEaseTau = 0.08f;                // a fit's motion
         constexpr float kStepZoom = 1.25f;               // -, +, Cmd-=, Cmd--
+        // A gesture a write of Claude's overtook before the Panel merged it (SchematicView::setSyncHook): undone.
+        constexpr const char* kOvertaken = "The circuit changed (Claude's edit came first): do it again";
 
         // The toolbar's parts, in order (R C L D P X S).
         constexpr cir::Kind kBarKinds[] = { cir::Kind::R, cir::Kind::C, cir::Kind::L, cir::Kind::D,
@@ -167,6 +169,7 @@ namespace playground::ui
         easing_ = false;
         notice_.clear();
         noticeLeft_ = 0.0f;
+        overtaken_ = false;
         structureKey_.clear();
         ++structure_;
         fitPending_ = st_ != nullptr && !st_->framed;
@@ -643,9 +646,22 @@ namespace playground::ui
             edits.push_back({ { e.from.line, e.from.col }, { e.to.line, e.to.col }, e.text });
         if (!ed_->applyEdits(std::move(edits)))
             return refuse("The edit could not be made (its parts overlapped): nothing changed");
+        if (!synced())
+            return refuse(kOvertaken);
         ensure();
         words.empty() ? quiet() : say(words);            // the notice of this revision
         return true;
+    }
+
+    bool SchematicView::synced()
+    {
+        if (!sync_ || sync_())
+            return true;
+        ed_->undo();                                     // a write of Claude's came first: it is merged at the next frame
+        ensure();
+        overtakenRev_ = ed_->revision();                 // said again once that merge moves the text (tick)
+        overtaken_ = true;
+        return false;
     }
 
     bool SchematicView::commitText(const std::string& text)
@@ -661,6 +677,11 @@ namespace playground::ui
         if (!ed_->applyEdits(std::move(edits)))
         {
             say("The edit could not be made: nothing changed");
+            return false;
+        }
+        if (!synced())
+        {
+            say(kOvertaken);
             return false;
         }
         ensure();
@@ -2677,6 +2698,12 @@ namespace playground::ui
         {
             it->second -= dt;
             it = it->second <= 0.0f ? flash_.erase(it) : std::next(it);
+        }
+        // A gesture undone for a write of Claude's: said again once its merge moved the text (a notice is its revision's).
+        if (overtaken_ && ed_->revision() != overtakenRev_)
+        {
+            overtaken_ = false;
+            say(kOvertaken);
         }
         // A field whose base the text left: closed, nothing written (as a gesture is cancelled below).
         if (field_.on && ed_->revision() != field_.rev)

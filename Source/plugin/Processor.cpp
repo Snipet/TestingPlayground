@@ -1067,6 +1067,19 @@ namespace playground
         journalDraft(before, draft, Journal::Who::you);
     }
 
+    bool Processor::setDraftIf(const Draft& draft, uint64_t revision)
+    {
+        Draft before;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            if (draftRevision_ != revision)
+                return false;                            // Claude's write (or a host's load) the editor has not merged
+            before = std::exchange(draft_, draft);
+        }
+        journalDraft(before, draft, Journal::Who::you);
+        return true;
+    }
+
     void Processor::run(const Sources& files)
     {
         const uint64_t id = compiler_.request(files);

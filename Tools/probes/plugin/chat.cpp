@@ -63,7 +63,8 @@
 //            they give it in Claude's block; a netlist with no *@ lines: the view publishes its terminals' places too,
 //            and Claude's write keeps them; a gesture planted between the tool's read and its write is never
 //            overwritten (the commands run again on the new text), a second fails ("pedal.cir changed while drawing: try
-//            again"); the result holds generate()'s error and warning; a short netlist's result is its whole text, and
+//            again"); nor is one made in the view no frame has synced yet (the view gives it to the processor at once);
+//            the result holds generate()'s error and warning; a short netlist's result is its whole text, and
 //            seen; write_file of a netlist without *@ lines keeps the drawing and says so; view_panel's view
 //            "schematic": a PNG at 100 % with every part labelled, its text giving each part line's place and the pins'
 //            points; the user's view, file views and tab as they were
@@ -172,6 +173,7 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -1349,6 +1351,49 @@ PROBE(plugin, chat)
             P.eq("circuit.clash_twice_fails", u.error && u.result == "pedal.cir changed while drawing: try again"
                                                   && has(fileText("pedal.cir"), "* the user again\n") && !has(fileText("pedal.cir"), "3.3k") ? 1 : 0, 1);
             agent.setCircuitWriteHookForTests({});
+        }
+        {
+            // a gesture in the view that no frame has synced yet, made while the tool writes: the view gives the files
+            // to the processor at once, so Claude's conditional write sees it and runs its commands again on it
+            std::atomic<int> stage{ 0 };
+            agent.setCircuitWriteHookForTests([&](int attempt) {
+                if (attempt != 0)
+                    return;
+                stage.store(1);
+                for (int k = 0; k < 5000 && stage.load() != 2; ++k)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            });
+            script->add(fake::Response::ok(fake::Sse().start().tool("toolu_c_race", "edit_circuit", input({ { "name", "pedal.cir" }, { "ops", juce::var(juce::Array<juce::var>{ juce::String("set R9 4.7k") }) } })).end("tool_use")));
+            script->add(fake::Response::ok(fake::Sse().start().text("Drawn.").end()));
+            host.tick(45);
+            const std::string before = panel.editor().text();
+            agent.send("change the circuit");
+            for (int k = 0; k < 4000 && stage.load() != 1; ++k)
+            {
+                processor.poll();
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            // the user nudges R8, no frame after it (Panel::refresh has not run)
+            v.selectPart("R8", false);
+            bool nudged = false;
+            for (const cir::Pt d : { cir::Pt{ 0, -1 }, cir::Pt{ 0, 1 }, cir::Pt{ -1, 0 }, cir::Pt{ 1, 0 } })
+                if (!nudged && v.nudge(d.x, d.y))
+                    nudged = panel.editor().text() != before;
+            const std::string gestured = panel.editor().text();
+            const cir::SessionPins pins = cir::readLayout(processor.editorPort().schematicPins("pedal.cir"));
+            std::string unread;
+            const std::vector<cir::Op> ops{ *cir::parseOp("set R9 4.7k", unread) };
+            const std::string want = cir::apply(gestured, cir::reconcile(gestured, pins), ops, pins).text;
+            stage.store(2);
+            agent.waitIdle();
+            processor.poll();
+            host.tick(2);
+            std::printf("a gesture no frame synced, nudged %d: %s\n", nudged ? 1 : 0, panel.editor().text() == want ? "kept" : "lost");
+            P.eq("circuit.unsynced_gesture_kept", nudged && stage.load() == 2 && panel.editor().text() == want && fileText("pedal.cir") == want
+                                                      && has(want, "R9     v3  tn  4.7k") ? 1 : 0, 1);
+            agent.setCircuitWriteHookForTests({});
+            panel.editor().setText(before);              // the netlist as it was, for the rows after
+            host.tick(2);
         }
         {
             // generate()'s messages for the new text: an error and a warning

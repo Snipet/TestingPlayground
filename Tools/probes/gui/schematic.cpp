@@ -29,7 +29,8 @@
 //             the view cannot draw (no Start, the Not drawn banner before the count)
 //   UNDO      Cmd-Z and Cmd-Shift-Z in either view undo and redo the other's steps; so do the toolbar's Undo and Redo
 //   OVERTAKEN a drag whose base a merge (Claude's write) moves is cancelled and changes nothing; that write moving a
-//             part's line flashes the part
+//             part's line flashes the part; a gesture made after Claude's write and before a frame merged it is undone
+//             (the write wins, the strip says to do it again)
 //   POINTER   a row per cell of the pointer's table: idle on a body, a pin, a wire, nothing; Alt; carrying a part (a
 //             popup click turns the ghost, a popup drag pans and carries on, placing ends only on Escape, Select or
 //             another tool); the Ground tool; a badge
@@ -922,6 +923,25 @@ PROBE(gui, schematic)
         P.eq("overtaken.flash_only_moved", v.flashOf("C1") == 0.0f && v.flashOf("R2") == 0.0f ? 1 : 0, 1);
         host.settle();
         P.eq("overtaken.flash_fades", v.flashOf("R1") == 0.0f ? 1 : 0, 1);
+        // a gesture made after Claude's write, before a frame merged it: undone (the processor's draft is Claude's),
+        // the write merged, and the strip saying to do it again
+        {
+            const std::string base2 = ed.text();
+            const cir::Part q = *partOf(cir::reconcile(base2), "R1");
+            const std::string at = "*@ part R1 " + std::to_string(q.origin.x) + "," + std::to_string(q.origin.y);
+            std::string moved2 = base2;
+            moved2.replace(moved2.find(at), at.size(), "*@ part R1 " + std::to_string(q.origin.x) + "," + std::to_string(q.origin.y - 3));
+            const pg::ChatAgent::McpResult w2 = r.processor.chatAgent().mcpCall(
+                "write_file", pg::claude::object({ { "name", "g.cir" }, { "content", juce::String(moved2) } }));
+            v.selectPart("R2", false);
+            const bool nudged = v.nudge(0, 1);
+            const bool untouched = ed.text() == base2;
+            host.tick(2);
+            std::printf("overtaken after the write: %s\n", v.notice().c_str());
+            P.eq("overtaken.gesture_after_write", !w2.isError && !nudged && untouched && ed.text() == moved2
+                                                      && r.processor.editorPort().draft().files[1].text == moved2
+                                                      && has(v.notice(), "Claude's edit came first") ? 1 : 0, 1);
+        }
     }
 
     // ---- POINTER, KEYS --------------------------------------------------------------------------------------------------
