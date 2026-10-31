@@ -107,6 +107,16 @@ namespace playground
     };
     PanelPicture picturePanel(std::span<funkgui::ParamPort* const> ports, EditorPort& port, int width, int height,
                               bool window, const std::string& page);
+    // What a picture shows (ChatHost::chatPicture): the program's panel, the whole editor, or a netlist's schematic.
+    enum class PictureView : uint8_t { panel, window, schematic };
+    // A netlist's schematic (view_panel's view "schematic"): the .cir file `file` of the port's draft, reconciled with
+    // the port's session pins (schematicPins: the places the user's view drew for parts without a part line, so the
+    // picture is the user's drawing), drawn at 100 % (10 px a grid unit; smaller only to fit 1,400 x 900 logical px),
+    // every name and value shown, the last compile's marks on it when that compile's netlist is this one (its *@ lines
+    // aside), by a small Panel of its own that holds no editor Panel: it owns no probe, reads and writes no file view,
+    // and changes nothing of the user's. `about` lists each part (its kind, value, place, orientation and pins' points),
+    // each net's pins, the problems and the parts not drawn. Message thread only (Picture.cpp).
+    PanelPicture pictureSchematic(EditorPort& port, const std::string& file);
 
     // The pictures' GPU context. With no editor open in the process, a picture starts bgfx headless and FunkGui holds
     // it for the next (funkgui/gpu/GpuPicture.h, "The context"). A plugin lives in its host's process, so the hold is

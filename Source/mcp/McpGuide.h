@@ -18,8 +18,9 @@
 //                         start) says when to use each
 //   examples              THIS PLUGIN'S EXAMPLES
 //   projects              RANDOM AND PROJECTS
-//   circuits              CIRCUITS: .cir NETLISTS (analog circuits as modules); a guide from before it (an older
-//                         plugin's guide.md) cuts as it did, without the part
+//   circuits              CIRCUITS: .cir NETLISTS (analog circuits as modules, and THE SCHEMATIC: the drawing's *@
+//                         lines and edit_circuit's grammar), and the notes of the tools it uses (edit_circuit's); a
+//                         guide from before it (an older plugin's guide.md) cuts as it did, without the part
 //   all                   all of it
 // The tools' notes are the guide's last section: one <tool name=".." part="..">..</tool> a tool, each in the part it
 // names. std only: the server includes it as well as the plugin.

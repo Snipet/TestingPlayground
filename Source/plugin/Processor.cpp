@@ -751,13 +751,13 @@ namespace playground
         return projectName_;
     }
 
-    PanelPicture Processor::chatPicture(bool window, const std::string& page)
+    PanelPicture Processor::chatPicture(PictureView view, const std::string& name)
     {
         std::unique_lock<std::mutex> lock(pictureMutex_);
         pictureAsked_ = true;
         pictureReady_ = false;
-        pictureWindow_ = window;
-        picturePage_ = page;
+        pictureView_ = view;
+        picturePage_ = name;
         if (!pictureDone_.wait_for(lock, std::chrono::seconds(10), [this] { return pictureReady_; }))
         {
             pictureAsked_ = false;
@@ -776,10 +776,13 @@ namespace playground
             if (pictureAsked_)
             {
                 pictureAsked_ = false;
-                const bool window = pictureWindow_;
+                const PictureView view = pictureView_;
                 const std::string page = picturePage_;
                 lock.unlock();
-                PanelPicture p = picturePanel(ports(), editorPort(), editorW_.load(), editorH_.load(), window, page);
+                PanelPicture p = view == PictureView::schematic
+                                     ? pictureSchematic(editorPort(), page)
+                                     : picturePanel(ports(), editorPort(), editorW_.load(), editorH_.load(),
+                                                    view == PictureView::window, page);
                 lock.lock();
                 picture_ = std::move(p);
                 pictureReady_ = true;
@@ -1505,6 +1508,39 @@ namespace playground
         if (!chat_.mcpWorking())                                 // the plugin's own chat (Claude Desktop knows its own)
             journalDraft(before, d, Journal::Who::chat);
     }
+
+    bool Processor::chatSetDraftIf(const Draft& draft, const std::string& file, const std::string& expected)
+    {
+        const auto named = [&](const SourceFile& f) { return f.name == file; };
+        const auto mine = std::find_if(draft.files.begin(), draft.files.end(), named);
+        if (mine == draft.files.end())
+            return false;
+        Draft before, d;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            const auto it = std::find_if(draft_.files.begin(), draft_.files.end(), named);
+            if (it == draft_.files.end() || it->text != expected)
+                return false;                            // a gesture synced meanwhile: never overwritten
+            // Only this file's text is written (and the tab shown): the others stay as they are now, whatever the user
+            // typed in them since the tool read the draft.
+            d = draft_;
+            d.files[static_cast<std::size_t>(it - draft_.files.begin())].text = mine->text;
+            const auto shown = draft.active >= 0 && draft.active < static_cast<int>(draft.files.size())
+                                   ? std::find_if(d.files.begin(), d.files.end(), [&](const SourceFile& f) {
+                                         return f.name == draft.files[static_cast<std::size_t>(draft.active)].name;
+                                     })
+                                   : d.files.end();
+            if (shown != d.files.end())
+                d.active = static_cast<int>(shown - d.files.begin());
+            before = std::exchange(draft_, d);
+            ++draftRevision_;                            // the editor merges it into its tabs
+        }
+        if (!chat_.mcpWorking())
+            journalDraft(before, d, Journal::Who::chat);
+        return true;
+    }
+
+    std::string Processor::chatSchematicPins(const std::string& file) const { return schematicPins(file); }
 
     CompileStatus Processor::chatRun(const Sources& files)
     {
