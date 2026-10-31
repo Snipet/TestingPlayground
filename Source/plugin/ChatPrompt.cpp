@@ -358,6 +358,8 @@ A file whose name ends in .cir is a SPICE-style netlist of an analog circuit, wh
   pedal.clear();               silence: in a voice's start
 Leave its other methods and fields alone (they depend on its configuration). Its errors come at the netlist's lines (pedal.cir:7:1: error: ...), FMinus's on its module too.
 
+Its pots can be dials with no code: when the program never calls the module's set(), each field of the main module that holds it (Pedal pedal; or Pedal amp[2]; for both channels) gets the netlist's pots as dials (0 to 100 %, at their .pot defaults) and its switches as int dials, after the program's params, named as the pots are (<field>_<pot> when another dial has that name), an array's elements sharing one set; the plugin calls set() on the grid itself as they move. Then leave set() and the pots' params out. Write set() yourself only to compute the pots from params of your own (a scaled range, one dial for two pots): that module then gets no dials of its own (any set() whose receiver could be it counts). Either way set_dial, tune_dials and get_status treat its dials as any other.
+
 The netlist: an element or a directive a line; * lines and ; tails are comments, a line starting with + continues the one before; nodes are names, 0 and gnd ground. Values take SPICE's suffixes (t g meg k m u n p f): 1M is a milliohm in SPICE, so write 1meg for a megohm (a warning says so).
   R1 a b 10k                         C1 a 0 47n              L1 a b 500m
   P1 e1 w e2 100k {drive} taper=audio   a pot (lin, audio or rlog), its wiper w; P2 a b 25k {1 - tone} a rheostat; {} an expression of pots
