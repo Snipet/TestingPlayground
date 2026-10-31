@@ -19,13 +19,15 @@
 //              cannot route
 //   STABLE     a shunt, a series part and a feedback part added by text, then written: every earlier part line and
 //              every untouched net's line byte for byte as it was
-//   EDITS      every op of the spec's §6.3 gives the exact expected text (merge naming: ground, then a directive's
+//   EDITS      every op of apply() gives the exact expected text (merge naming: ground, then a directive's
 //              node, then a user's name over n<k>, then the earlier mention; a cut: the anchor's side keeps the name,
 //              the input's when it is the net's first pin and the output is on it too); label's tags, connect's drawn
 //              path and a cut's split wires as the exact net lines, on netlists drawn by hand; the edits are sorted,
 //              apart, and make the text the result says (on a text of 2,500 lines too); a failing op in a list changes
-//              nothing and names that op; parseOp reads edit_circuit's grammar
-//   PINS       placing each of the 13 kinds writes the spec's §5 line; `connect R4.2 XU1.inn` rewrites XU1's token 2;
+//              nothing and names that op; parseOp reads edit_circuit's grammar (a line break refused); a directive
+//              added after another's + lines, a part deleted with its .pot's; a cut's name tag goes with its piece, a
+//              tag on no wire of its net dropped
+//   PINS       placing each of the 13 kinds writes its placement line; `connect R4.2 XU1.inn` rewrites XU1's token 2;
 //              for every library netlist each drawn pin's token is the one FMinus's Netlist.cpp reads for it (this
 //              probe's own reading of its tokens and table); screamer's feedback is found on inn-out (inn's end left)
 //   RECONCILE  a part renamed in the text keeps its place; renames of two kinds at once both keep theirs; a renamed
@@ -597,7 +599,7 @@ PROBE(fminus, schematic)
             P.eq("layout." + f.name + ".routable", std::none_of(d.nets.begin(), d.nets.end(), [](const cir::Net& n) { return n.unroutable; }) ? 1 : 0, 1);
             std::printf("layout: %s\n%s", f.name.c_str(), blockOf(f.text).c_str());
         }
-        // diodetone: the spec's §4.5 shape, pinned (R2 and Ptone are one chain, its net c a 2-unit wire)
+        // diodetone: its full layout's shape, pinned (R2 and Ptone are one chain, its net c a 2-unit wire)
         same(P, "layout.diodetone_pinned", blockOf(libraryText("diodetone.cir")),
              "*@ schematic 1 (the playground's drawing; SPICE reads *@ lines as comments)\n"
              "*@ input u 0,0\n"
@@ -873,6 +875,13 @@ PROBE(fminus, schematic)
             const cir::Applied r = cir::apply(ladder, cir::reconcile(ladder), std::span<const cir::Op>(&cut, 1));
             same(P, "edits.cut_split", cir::stripLayout(r.text), with(with(plain, "C2 m 0 22n", "C2 n1 0 22n"), "R2 m o 1k", "R2 n1 o 1k"));
             same(P, "edits.cut_split_routes", netLine(r.text, "m") + " / " + netLine(r.text, "n1"), "*@ net m 8,0 10,0 10,3 / *@ net n1 14,3 14,0 19,0");
+            // a name tag on the piece a cut splits off goes with it, to n1's line; a tag on no wire of its net is dropped
+            const std::string tagged = replaced(ladder, "*@ net m 8,0", "*@ net m label=16,0 8,0");
+            P.eq("edits.planted_tagged", cir::written(tagged) == tagged ? 1 : 0, 1);
+            const cir::Applied t = cir::apply(tagged, cir::reconcile(tagged), std::span<const cir::Op>(&cut, 1));
+            same(P, "edits.cut_moves_tag", netLine(t.text, "m") + " / " + netLine(t.text, "n1"), "*@ net m 8,0 10,0 10,3 / *@ net n1 label=16,0 14,3 14,0 19,0");
+            same(P, "edits.tag_off_wire", netLine(cir::written(replaced(ladder, "*@ net m 8,0", "*@ net m label=30,30 label=16,0 8,0")), "m"),
+                 "*@ net m label=16,0 8,0 19,0 | 10,0 10,3 | 14,0 14,3");
         }
         // cut: the input's side keeps the name when the input is the net's first pin and the output is on it too
         {
@@ -1359,6 +1368,27 @@ PROBE(fminus, schematic)
             std::printf("clip: a two-line .model copied:\n%spasted: %s\n", clipped.c_str(), r.error.c_str());
             P.eq("clip.model_lines", r.error.empty() && clipped.find(".model 1N34A D(IS=2.6e-6\n+ N=1.6 RS=7)\n") != std::string::npos
                                          && r.text.find(".model 1N34A D(IS=2.6e-6\n+ N=1.6 RS=7)\n") != std::string::npos ? 1 : 0, 1);
+        }
+        // a directive on two lines (a + line): a directive added goes after its + lines, never between them; a part
+        // deleted takes its .pot's + lines with it, so nothing joins the directive before them
+        {
+            const std::string t = cir::written(".input u in\n.output y out\n.pot level 0.7\n+ audio\n.pot tone 0.5 lin\n.pot mix 0.5\n"
+                                               "+ lin\nR1 in a 1k\nD1 a 0 1N34A\n.model 1N34A D(IS=2.6e-6\n+ N=1.6 RS=7)\n"
+                                               "Plevel a out 0 100k {level}\nPtone out 0 y 10k {tone}\nPmix y 0 0 10k {mix}\n.end\n");
+            const std::string b = cir::stripLayout(t);
+            const cir::Applied m = run(t, { "add .model D1X D(IS=1n N=2)" });
+            same(P, "edits.add_model_after_plus", cir::stripLayout(m.text), replaced(b, "+ N=1.6 RS=7)\n", "+ N=1.6 RS=7)\n.model D1X D(IS=1n N=2)\n"));
+            const cir::Applied q = run(t, { "add .pot drive 0.5" });
+            same(P, "edits.add_pot_after_plus", cir::stripLayout(q.text), replaced(b, ".pot mix 0.5\n+ lin\n", ".pot mix 0.5\n+ lin\n.pot drive 0.5\n"));
+            const cir::Applied g = run(t, { "delete Plevel" });
+            same(P, "edits.delete_pot_plus", cir::stripLayout(g.text), replaced(replaced(b, ".pot level 0.7\n+ audio\n", ""), "Plevel a out 0 100k {level}\n", ""));
+        }
+        // a command with a line break is refused whole (one netlist line a command); one at its end is no second line
+        {
+            std::string why;
+            P.eq("edits.parse_line_break", !cir::parseOp("add R5 a b 1k\nC3 b 0 10n", why) && why.find("line break") != std::string::npos
+                                               && !cir::parseOp("set R1 {1\r+ x}", why) && cir::parseOp("add R5 a b 1k\n", why)
+                                               && cir::parseOp("add R5 a b 1k\r\n", why) ? 1 : 0, 1);
         }
         // prose is no netlist, whatever its first letter: a value that is no number, a model or a switch never declared
         {

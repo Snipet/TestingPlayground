@@ -8,7 +8,7 @@
 // x -> -x; then the part turns N degrees clockwise on screen: r90 maps (x, y) to (-y, x), r180 to (-x, -y), r270 to
 // (y, -x). So r90 puts a two-pin part's first pin on top, and m180 is the up-down flip.
 //
-// The symbols (the spec's table of the part library, ANSI style). Pins sit on the body box's edge, in grid units at r0;
+// The symbols (the part library, ANSI style). Pins sit on the body box's edge, in grid units at r0;
 // a pin is named as the tools name it (R4.2, D1.k, Ptone.w, XU1.inn), and `Part.k` means netlist token k: the pins are
 // listed in token order, FMinus's (its Netlist.cpp), not the drawing's top to bottom:
 //   R, C, L, S        1 (-2,0) W, 2 (2,0) E                       body (-2,-1)..(2,1)

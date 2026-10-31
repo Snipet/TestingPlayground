@@ -20,7 +20,7 @@
 //                   placed (the full layout when nothing is, else incremental placement), every wired net repaired.
 //   writeBlock()    the canonical block; withBlock() puts it in a text (every `*@` line removed, the block just
 //                   before the first `.end` line, else at the end; never line 1; the file ending in one newline).
-//   apply()         edits (§6.3 of the spec: add, place, connect, disconnect, cut, set, rename, delete, label, style,
+//   apply()         edits (add, place, connect, disconnect, cut, set, rename, delete, label, style,
 //                   paste, layout) as the smallest patches of the text plus the regenerated block, all or none.
 //   parseOp()       edit_circuit's grammar, a command a line.
 //   copied()        the parts selected as .cir text (the view's clipboard; apply's paste op takes it back); e12Stepped(),
@@ -97,7 +97,7 @@ namespace playground::cir
         int firstLine = 0, lastLine = 0;          // its line and its last + continuation
         std::vector<Token> tokens;                // every token of its logical line
         std::vector<Token> nodes;                 // its node tokens, in token order (a part not drawn: its nodes too)
-        std::vector<int> tokenOf;                 // each node's token index (the spec's table: FMinus's order)
+        std::vector<int> tokenOf;                 // each node's token index (FMinus's order)
         std::vector<std::string> pinNames;        // each node's pin name ("1", "inn"); "" for a part not drawn
         int valueToken = -1;                      // its value's token (R C L: 3; P: before the {; V, I: the last; E, G:
                                                   // the gain; D: its model; S: its positions), -1 for none
@@ -311,8 +311,8 @@ namespace playground::cir
 
     // The drawing as a block's lines (every part placed, every route): what writeBlock writes, as a Layout.
     Layout layoutOf(const Netlist& nl, const Drawing& d);
-    std::string writeBlock(const Netlist& nl, const Drawing& d);   // §4.4: each line ends in LF
-    // `text` with every *@ line removed and `block` placed (§4.4.6), in LF: a CRLF line's CR dropped, as FMinus and the
+    std::string writeBlock(const Netlist& nl, const Drawing& d);   // each line ends in LF
+    // `text` with every *@ line removed and `block` placed, in LF: a CRLF line's CR dropped, as FMinus and the
     // editor drop it (a line that ends in more CRs is kept as it is: FMinus reads the rest as part of the line).
     std::string withBlock(std::string_view text, std::string_view block);
     // `text` with its drawing written: what the first gesture on a text-only netlist writes (the drawing reconciled).
@@ -392,7 +392,7 @@ namespace playground::cir
     std::optional<Op> parseOp(std::string_view line, std::string& why);
 
     // The lines a part of `kind` placed from the toolbar writes, in order (a pot's or switch's directive, then its
-    // element), with the next free name and fresh nodes (§5: "R3 n1 n2 10k", ".pot pot2 0.5 lin" and
+    // element), with the next free name and fresh nodes ("R3 n1 n2 10k", ".pot pot2 0.5 lin" and
     // "P2 n4 n5 n6 100k {pot2}"); its name in `name`.
     std::vector<std::string> placementLines(const Netlist& nl, Kind kind, std::string* name = nullptr);
     std::string freshNode(const Netlist& nl);     // "n<k>": the smallest k no node has (any case)

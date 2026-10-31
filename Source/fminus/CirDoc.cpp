@@ -1105,7 +1105,7 @@ namespace playground::cir
                 }
         }
 
-        // A route's canonical polylines (§4.4.4).
+        // A route's canonical polylines.
         std::vector<Polyline> chainsOf(const std::vector<UnitEdge>& edges)
         {
             struct Seg
@@ -1460,6 +1460,20 @@ namespace playground::cir
             if (p.placed && !withinReach(p.origin))
                 put(p, { std::clamp(p.origin.x, -kPartLimit, kPartLimit), std::clamp(p.origin.y, -kPartLimit, kPartLimit) }, p.orient);
         repairAll(d, d.budget);
+        // A name tag sits on its net's wire: one the wire left (a move, a cut, a reroute) is dropped, so the next write
+        // leaves it out and no tag names a wire of another net or empty canvas.
+        if (!d.budget.wide)
+            for (Net& n : d.nets)
+                if (n.style == Style::wired && !n.unroutable && !n.labels.empty())
+                {
+                    std::set<Pt> on;
+                    for (const UnitEdge& e : n.edges)
+                    {
+                        on.insert(e.a);
+                        on.insert(e.a + (e.h ? Pt{ 1, 0 } : Pt{ 0, 1 }));
+                    }
+                    std::erase_if(n.labels, [&](Pt t) { return on.count(t) == 0; });
+                }
         if (d.budget.wide)
         {
             Box b;
@@ -2149,8 +2163,8 @@ namespace playground::cir
                     int at = -1;
                     if (word == ".model")
                     {
-                        for (const auto& [m, l] : w.nl.models)
-                            at = std::max(at, l + 1);
+                        for (const auto& [m, l] : w.nl.models)   // after its + lines: FMinus joins them on
+                            at = std::max(at, directiveLines(w.nl.lines, l).back() + 1);
                         if (at < 0 && w.nl.lastElementLine >= 0)
                             at = w.nl.lastElementLine + 1;
                     }
@@ -2158,7 +2172,7 @@ namespace playground::cir
                     {
                         for (const auto& [d, l] : w.nl.directives)
                             if (d == word)
-                                at = std::max(at, l + 1);
+                                at = std::max(at, directiveLines(w.nl.lines, l).back() + 1);
                         if (at < 0 && !w.nl.elements.empty())
                             at = w.nl.elements.front().firstLine;
                     }
@@ -2228,7 +2242,7 @@ namespace playground::cir
             return {};
         }
 
-        // The name the merge of nets a and b keeps (§6.3): ground; a node a directive names (the input's first); a
+        // The name the merge of nets a and b keeps: ground; a node a directive names (the input's first); a
         // user's name over a generated n<k>; the earlier first mention. a, b: nodes, or -2 for ground not written yet.
         int kept(const Work& w, int a, int b)
         {
@@ -2415,9 +2429,23 @@ namespace playground::cir
                 }
                 for (const UnitEdge& e : mine)
                     l->route.push_back({ e.a, e.a + (e.h ? Pt{ 1, 0 } : Pt{ 0, 1 }) });
+                // a name tag on a piece split off goes with its wires, to the piece's net
+                std::map<std::string, std::vector<Pt>> theirTags;
+                std::vector<Pt> myTags;
+                for (const Pt t : l->labels)
+                {
+                    if (parent.find(t) != parent.end())
+                        if (const auto it = nameOf.find(find(t)); it != nameOf.end() && theirs.count(it->second) != 0)
+                        {
+                            theirTags[it->second].push_back(t);
+                            continue;
+                        }
+                    myTags.push_back(t);
+                }
+                l->labels = std::move(myTags);
                 for (const auto& [name, edges] : theirs)
                 {
-                    NetLine n{ name, false, {}, {}, -1 };
+                    NetLine n{ name, false, theirTags[name], {}, -1 };
                     for (const UnitEdge& e : edges)
                         n.route.push_back({ e.a, e.a + (e.h ? Pt{ 1, 0 } : Pt{ 0, 1 }) });
                     w.layout.nets.push_back(std::move(n));
@@ -2895,11 +2923,13 @@ namespace playground::cir
                     if (potsLeft.count(folded(p)) == 0)
                         for (const PotLine& x : w.nl.pots)
                             if (folded(x.name) == folded(p))
-                                gone.insert(x.line);
+                                for (const int l : directiveLines(w.nl.lines, x.line))   // its + lines too
+                                    gone.insert(l);
                 if (e.letter == 's' && e.tokens.size() >= 4 && switchesLeft.count(folded(e.tokens[3].text)) == 0)
                     for (const SwitchLine& x : w.nl.switches)
                         if (folded(x.name) == folded(e.tokens[3].text))
-                            gone.insert(x.line);
+                            for (const int l : directiveLines(w.nl.lines, x.line))
+                                gone.insert(l);
             }
             w.text = withoutLines(w.text, gone);
             w.redraw();
@@ -3662,7 +3692,14 @@ namespace playground::cir
     std::optional<Op> parseOp(std::string_view line, std::string& why)
     {
         why.clear();
-        std::string_view s = withoutCr(line);
+        std::string_view s = line;
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r'))   // a line break at its end is no second line
+            s.remove_suffix(1);
+        if (s.find_first_of("\r\n") != std::string_view::npos)   // one netlist line a command: never two unchecked
+        {
+            why = "one command a string (no line breaks): send each command as its own item";
+            return std::nullopt;
+        }
         const auto words = wordsOf(s);
         if (words.empty())
         {
