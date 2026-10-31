@@ -292,8 +292,8 @@ module Voice
   an array's elements sharing one set. The plugin then calls the module's `set` itself (`Source/fminus/Patch.h`,
   "Circuits": a shim appended to the program, nonblocking, for each such field) on the absolute 16-sample grid, with
   the dials' glided values there: at every grid tick while one glides, and for 20 ms of ticks after a switch moves
-  (its ramp), and once before an instance's first call (a new program's, a voice whose instance missed the dials
-  meanwhile); never while they stand still. While such a dial moves, the effect's `process` is called in parts that
+  (its ramp), and before an instance's first call (a new program's, a voice whose instance missed the dials
+  meanwhile; a switch then set at once, as the instance has played nothing yet); never while they stand still. While such a dial moves, the effect's `process` is called in parts that
   end on that grid (only then: a program that keeps state per call may differ there, as it may where any dial moves);
   the synth's voices run in such parts anyway. Projects, presets, the host's automation and Claude's tools treat
   them as any dial; the frozen copy plays the instances' pots where the dials left them, and a dial that moves drops

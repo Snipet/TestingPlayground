@@ -159,9 +159,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   its module through `set()`, which the Engine calls through the program's shim (`Patch::setCircuits`: no allocation,
   the values into a buffer the compile sized) on the absolute 16-sample grid, with the glided values at that sample,
   only while a bound dial glides, through the tick at or after it lands, and for ceil(0.02 rate / 16) + 1 ticks after
-  a switch changes (FMinus ramps a switch a step a call over 20 ms); and once before an instance's first process or
-  start (a new program's; an instrument's voice whose instance missed calls while free: `Engine::instanceGen_`, the fed
-  pattern). Never while they stand still (`Engine::circuitCalls`, `fminus.circuit` DIALS and SWITCH). A named exception
+  a switch changes (FMinus ramps a switch a step a call over 20 ms); and before an instance's first process or start (a
+  new program's; an instrument's voice whose instance missed calls while free: `Engine::instanceGen_`, the fed pattern)
+  once, or with a switch bound as many times in a row as its ramp takes, so it starts at the dial's position. Never while they stand still (`Engine::circuitCalls`, `fminus.circuit` DIALS and SWITCH). A named exception
   to the effect's calls: while a circuit dial moves, the effect's `process` is cut at those grid ticks, and then only,
   so a program that keeps state per call may differ there, as it may where any dial moves; the synth's parts are cut on
   the grid already. FMinus's `clear()` keeps each switch where `set()` left it (a guard's reset, a voice's start from

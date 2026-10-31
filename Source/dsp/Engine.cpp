@@ -118,7 +118,7 @@ namespace playground
         // The circuit dials: a window's ticks at this rate (a switch's ramp, ceil(0.02 rate / kGrid), and one more); no
         // window open, every instance to be called before its first process.
         circuitTicks_ = static_cast<int>(std::ceil(0.02 * static_cast<double>(fs_) / kGrid)) + 1;
-        circuitUntil_ = effectUntil_ = 0;
+        circuitUntil_ = 0;
         effectCalledAt_ = kNever;
         instanceGen_.fill(0);
         fedPatch_ = nullptr;                         // the next block snaps the dials
@@ -203,7 +203,7 @@ namespace playground
         old_ = current_;
         current_ = next;
         instanceGen_.fill(0);                        // its instances have no circuit dial's value yet
-        circuitUntil_ = effectUntil_ = 0;
+        circuitUntil_ = 0;
         effectCalledAt_ = kNever;
         if (old_ != nullptr)
             for (int c = 0; c < kMaxControls; ++c)   // the old program holds its dials still while it goes
@@ -440,10 +440,19 @@ namespace playground
         ++circuitCalls_;
     }
 
+    void Engine::firstCalls(int at, int instance) noexcept
+    {
+        // one call; with a switch bound, as many as its ramp takes, so the instance starts at the dial's position (it
+        // has played nothing yet: no step is heard)
+        const int calls = current_ != nullptr && current_->circuitRamps() ? circuitTicks_ : 1;
+        for (int k = 0; k < calls; ++k)
+            callCircuits(at, instance);
+        instanceGen_[static_cast<std::size_t>(instance)] = circuitGen_;
+    }
+
     void Engine::freeVoice(Voice& v, uint64_t at) noexcept
     {
-        if (v.patch == current_ && v.instance >= 0 && v.instance < Patch::kInstances
-            && (at == kNever || at < std::max(circuitUntil_, v.circuitUntil)))
+        if (v.patch == current_ && v.instance >= 0 && v.instance < Patch::kInstances && (at == kNever || at < circuitUntil_))
             instanceGen_[static_cast<std::size_t>(v.instance)] = 0;   // it missed the window's calls: a first call next
         v = Voice{};
     }
@@ -461,15 +470,13 @@ namespace playground
             p.process(left, right, n);
             return;
         }
-        // Its instance's first call (a new program's), at the block's first sample, and the ramp's window after it.
+        // Its instance's first calls (a new program's), at the block's first sample.
         if (instanceGen_[0] != circuitGen_)
         {
-            callCircuits(0, 0);
+            firstCalls(0, 0);
             effectCalledAt_ = clock_;
-            instanceGen_[0] = circuitGen_;
-            effectUntil_ = p.circuitRamps() ? gridCeil(clock_) + static_cast<uint64_t>(kGrid) * static_cast<uint64_t>(circuitTicks_) : 0;
         }
-        const uint64_t until = std::max(circuitUntil_, effectUntil_);
+        const uint64_t until = circuitUntil_;
         for (int a = 0; a < n;)
         {
             const uint64_t t = clock_ + static_cast<uint64_t>(a);
@@ -937,11 +944,8 @@ namespace playground
                 // part then calls.
                 if (current_->circuits() && fedPatch_ == current_ && instanceGen_[static_cast<std::size_t>(instance)] != circuitGen_)
                 {
-                    const uint64_t t = clock_ + static_cast<uint64_t>(callAt_);
-                    callCircuits(callAt_, instance);
-                    instanceGen_[static_cast<std::size_t>(instance)] = circuitGen_;
-                    v.calledAt = t;
-                    v.circuitUntil = current_->circuitRamps() ? gridCeil(t) + static_cast<uint64_t>(kGrid) * static_cast<uint64_t>(circuitTicks_) : 0;
+                    firstCalls(callAt_, instance);
+                    v.calledAt = clock_ + static_cast<uint64_t>(callAt_);
                 }
                 current_->start(instance, static_cast<float>(key), std::clamp(velocity, 0.0f, 1.0f));
                 return;
@@ -1067,12 +1071,10 @@ namespace playground
                 const std::size_t inst = static_cast<std::size_t>(v.instance);
                 if (instanceGen_[inst] != circuitGen_)
                 {
-                    callCircuits(from, v.instance);
-                    instanceGen_[inst] = circuitGen_;
+                    firstCalls(from, v.instance);
                     v.calledAt = t;
-                    v.circuitUntil = current_->circuitRamps() ? gridCeil(t) + static_cast<uint64_t>(kGrid) * static_cast<uint64_t>(circuitTicks_) : 0;
                 }
-                else if (t % kGrid == 0 && t < std::max(circuitUntil_, v.circuitUntil) && t != v.calledAt)
+                else if (t % kGrid == 0 && t < circuitUntil_ && t != v.calledAt)
                 {
                     callCircuits(from, v.instance);
                     v.calledAt = t;

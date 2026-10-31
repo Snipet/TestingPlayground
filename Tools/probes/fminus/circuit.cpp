@@ -48,8 +48,9 @@
 //                netlist's too
 //   SWITCH       a netlist with a switch (FMinus's switch.cir, open by default): its dial an int 0 to 1; still, no call;
 //                flipped to 1, exactly ceil(0.02 rate / 16) + 1 calls at 48 kHz, and its ramp at 1; an instrument's note
-//                from silence on that instance (its start's clear()) leaves it at 1 with no call; a NaN planted in a
-//                carried field is cleared by the circuit's guard and the switch stays at 1
+//                from silence on that instance (its start's clear()) leaves it at 1 with no call; a fresh instance with
+//                the dial at 1 is at 1 after its first 64 samples (its first calls, as many as the ramp takes); a NaN
+//                planted in a carried field is cleared by the circuit's guard and the switch stays at 1
 // and the plugin's self-test (dsp/SelfTester.h, Compiler.h's "The self-test"), a Compiler offering to an Engine played
 // in blocks of 256, on AutoClipper.h's netlists (no assertion is on time; every wait has a deadline):
 //   SELFTEST     with the tests off (setSelfTesting(false)) a RUN plays the provisional configuration and no test runs;
@@ -731,6 +732,17 @@ namespace
                             static_cast<unsigned long long>(rig.engine().circuitCalls() - quiet));
                 P.eq("switch.note_from_silence", rig.engine().activeVoices() == 1 && fieldOf(rig.engine(), "clip.sw_S1", 0) == 1.0
                                                      && rig.engine().circuitCalls() == quiet ? 1 : 0, 1);
+            }
+            {
+                // a fresh instance (a program's first block, a note's first part) starts at the dial's position at once
+                probe::Rig fresh(kFs, 256);
+                fresh.load(sw);
+                fresh.norm()[1] = 1.0f;
+                fresh.run(input(64), 64, note);
+                std::printf("a fresh instance, the switch's dial at 1: %g after 64 samples, %llu calls\n", fieldOf(fresh.engine(), "clip.sw_S1", 0),
+                            static_cast<unsigned long long>(fresh.engine().circuitCalls()));
+                P.eq("switch.fresh_at_position", fieldOf(fresh.engine(), "clip.sw_S1", 0) == 1.0
+                                                     && static_cast<int>(fresh.engine().circuitCalls()) == want ? 1 : 0, 1);
             }
             // a NaN planted in a carried field: the circuit's guard clears it, and the switch stays
             const bool planted = plantNaN(rig.engine(), "clip.x_C1", 0);

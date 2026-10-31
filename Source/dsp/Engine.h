@@ -32,9 +32,10 @@
 // values at that sample: at every grid tick while a bound dial glides, through the first tick at or after it lands,
 // and, after a bound switch changes, for ceil(0.02 rate / kGrid) + 1 ticks (its ramp: FMinus moves a switch a step a
 // set() call over 20 ms). An instance that has not had the dials' values yet (a new program's, a voice's instance that
-// missed calls while free) gets one call before its first process (an effect: at its block's first sample; a voice:
-// before its start, or before its first part when its note came with the program) and, when a switch is bound, the
-// ramp's ticks after it. While the dials stand still, no call. The effect's process is cut at those grid ticks, and
+// missed calls while free) gets a call before its first process (an effect: at its block's first sample; a voice:
+// before its start, or before its first part when its note came with the program); with a switch bound, as many calls
+// in a row as its ramp takes, so it starts at the dial's position (it has played nothing yet: no step is heard). While
+// the dials stand still, no call. The effect's process is cut at those grid ticks, and
 // then only (a named exception to block-size invariance: while a circuit dial moves, the effect's calls end on the
 // grid, so a program that keeps state per call may differ there, as it may where any dial moves); an instrument's
 // voices already run in parts cut on the grid, and each voice of the program that plays gets its own calls. The old
@@ -242,7 +243,6 @@ namespace playground
             bool pedal = false;         // its key let go while the sustain pedal was down: stopped when it comes up
             float gain = 1.0f, fall = 0.0f;   // per sample, while fading
             uint64_t fed = 0;           // the feedGen_ its instance's dials were last written at
-            uint64_t circuitUntil = 0;  // its own circuit calls (after its first: a switch's ramp) at ticks below this
             uint64_t calledAt = kNever; // the absolute sample of its last circuit call
         };
 
@@ -256,6 +256,9 @@ namespace playground
         void feed(Patch& p, int offset, int instance) noexcept;   // the dials into p: streams from `offset`
         // The circuit dials (above): current_'s shims in `instance` with the dials' values at the block's sample `at`.
         void callCircuits(int at, int instance) noexcept;
+        // An instance's first calls (a new program's, one that missed calls): one, and with a switch bound as many as its
+        // ramp takes; the instance's values current.
+        void firstCalls(int at, int instance) noexcept;
         // The effect's program over the block: its first circuit call, then its process cut at the grid ticks that call.
         void playEffect(float* left, float* right, int n) noexcept;
         // A voice of current_ let go at the absolute sample `at`: its instance missed calls if a window was open.
@@ -321,13 +324,12 @@ namespace playground
 
         // The circuit dials' calls (above): the ticks of a window after a switch changes, the window open now (calls at
         // absolute grid ticks below circuitUntil_), the bound values' generation (bumps when one changes), the
-        // generation each instance had its values at (0: none yet, or calls missed), the effect's own window and last
-        // call, the values a call passes, the block's sample a note-on's call is at, the count.
+        // generation each instance had its values at (0: none yet, or calls missed), the effect's last call, the values a
+        // call passes, the block's sample a note-on's call is at, the count.
         int circuitTicks_ = 61;
         uint64_t circuitUntil_ = 0;
         uint64_t circuitGen_ = 1;
         std::array<uint64_t, Patch::kInstances> instanceGen_{};
-        uint64_t effectUntil_ = 0;
         uint64_t effectCalledAt_ = kNever;
         std::array<float, kMaxControls> circuitPlain_{};
         int callAt_ = 0;
