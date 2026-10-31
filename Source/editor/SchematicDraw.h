@@ -126,20 +126,23 @@ namespace playground::ui::sch
     // The labels' size at this scale (0: hidden), in picture mode or not.
     float labelPx(const View& v, bool picture) noexcept;
     // Where a part's name and value go: above a horizontal part, right of a vertical one, the value under the name;
-    // where that covers another body, a flag, a label placed before or a wire, the first of the other sides (below,
-    // left; then name and value on one line) that covers least.
+    // where that covers another body, a flag, a label placed before, a pin, a junction or a wire, or sits nearer another
+    // part than its own, the first of the other spots that does so least (below, left; name and value on one line;
+    // half a unit along; beside the body off the line its leads run on).
     struct LabelSpot
     {
         float x = 0.0f, top = 0.0f;                      // the first line's anchor and top
         bool oneLine = false;                            // "R6 51k" on one line
         funkgui::Align align = funkgui::Align::centre;
         bool shown = false;
+        bool backdrop = true;                            // false: no spot clear of wires, pins and junctions (they show
+                                                         // through: a label never breaks a connection)
     };
     // Each part's (Drawing::parts' order; a terminal's is not shown: its name is in its flag), `values` theirs.
     std::vector<LabelSpot> placeLabels(const funkgui::Canvas& c, const View& v, const cir::Drawing& d,
                                        const std::vector<std::string>& values, float px);
-    // A part's name and value at its spot, upright, on a backdrop of the canvas's ground (a label that must cross a
-    // wire stays readable); (dx, dy): a move's offset, px.
+    // A part's name and value at its spot, upright, on a backdrop of the canvas's ground (none where the spot crosses a
+    // wire, a pin or a junction); (dx, dy): a move's offset, px.
     void labels(funkgui::Canvas& c, const LabelSpot& s, const std::string& name, const std::string& value,
                 funkgui::Col nameInk, funkgui::Col valueInk, funkgui::Col ground, float px, float dx = 0.0f, float dy = 0.0f);
     // Where a part's badge sits (its body's top-right corner, on screen), and its radius.

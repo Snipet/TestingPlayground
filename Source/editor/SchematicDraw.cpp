@@ -324,7 +324,9 @@ namespace playground::ui::sch
 
     void junctions(funkgui::Canvas& c, const View& v, const cir::Net& net, funkgui::Col ink)
     {
-        const float r = std::clamp(v.scale * 0.28f, 2.0f, 1.7f * v.stroke());
+        // 0.28 of a unit, at most 1.7 strokes, never under 2 px (min then max: below about 90 % the cap falls under
+        // the floor, which std::clamp may not be given)
+        const float r = std::max(2.0f, std::min(v.scale * 0.28f, 1.7f * v.stroke()));
         for (const cir::Pt& j : net.junctions)
         {
             const funkgui::Point p = v.at(j);
@@ -427,22 +429,42 @@ namespace playground::ui::sch
             return out;
         const funkgui::TextStyle st = labelStyle(px);
         const float line = std::round(px * 1.2f), gap = px * 0.3f;
-        // What a label should not cover: bodies and flags (much), the labels placed before (much), wires (a little).
-        std::vector<funkgui::Rect> bodies, wiresPx;
+        // What a label should not cover: bodies and flags, the labels placed before, pins and junctions (a connection
+        // it would hide), much; a wire's run, less.
+        std::vector<funkgui::Rect> bodies, posts, wiresPx;
+        const float postR = std::max(2.0f, 0.3f * v.scale);
+        const auto post = [&](cir::Pt at) {
+            const funkgui::Point q = v.at(at);
+            posts.push_back({ q.x - postR, q.y - postR, 2.0f * postR, 2.0f * postR });
+        };
         for (const cir::Part& p : d.parts)
+        {
             bodies.push_back(v.rect(p.body).expanded(1.0f));
+            for (const cir::PinAt& pin : p.pins)
+                post(pin.at);
+        }
         for (const cir::Flag& f : d.flags)
             bodies.push_back(v.rect(f.box));
         for (const cir::Net& n : d.nets)
             if (n.style == cir::Style::wired && !n.unroutable)
+            {
                 for (const auto& [a, b] : runs(n.edges))
                 {
                     const funkgui::Point p = v.at(a), q = v.at(b);
                     wiresPx.push_back({ std::min(p.x, q.x) - 1.0f, std::min(p.y, q.y) - 1.0f, std::fabs(q.x - p.x) + 2.0f, std::fabs(q.y - p.y) + 2.0f });
                 }
+                for (const cir::Pt& j : n.junctions)
+                    post(j);
+            }
         std::vector<funkgui::Rect> placed;
         const auto meets = [](const funkgui::Rect& a, const funkgui::Rect& b) {
             return a.x < b.right() && b.x < a.right() && a.y < b.bottom() && b.y < a.bottom();
+        };
+        const float half = 0.5f * v.scale;               // half a unit: a candidate's shifted variants
+        // A point's distance to a rect (0 inside): a label nearer another part's body than its own reads as the other's.
+        const auto away = [](funkgui::Point q, const funkgui::Rect& r) {
+            const float dx = std::max({ r.x - q.x, 0.0f, q.x - r.right() }), dy = std::max({ r.y - q.y, 0.0f, q.y - r.bottom() });
+            return std::sqrt(dx * dx + dy * dy);
         };
         for (std::size_t i = 0; i < d.parts.size(); ++i)
         {
@@ -460,53 +482,118 @@ namespace playground::ui::sch
                 LabelSpot spot;
                 funkgui::Rect box;
             };
+            const auto shifted = [](Cand k, float dx, float dy) {
+                k.spot.x += dx;
+                k.spot.top += dy;
+                k.box.x += dx;
+                k.box.y += dy;
+                return k;
+            };
             const auto above = [&](bool one) {
                 const float w = one ? w1 : w2, h = one ? line : h2;
-                return Cand{ { b.centreX(), b.y - gap - h, one, funkgui::Align::centre, true }, { b.centreX() - 0.5f * w, b.y - gap - h, w, h } };
+                return Cand{ { b.centreX(), b.y - gap - h, one, funkgui::Align::centre, true, true }, { b.centreX() - 0.5f * w, b.y - gap - h, w, h } };
             };
             const auto below = [&](bool one) {
                 const float w = one ? w1 : w2, h = one ? line : h2;
-                return Cand{ { b.centreX(), b.bottom() + gap, one, funkgui::Align::centre, true }, { b.centreX() - 0.5f * w, b.bottom() + gap, w, h } };
+                return Cand{ { b.centreX(), b.bottom() + gap, one, funkgui::Align::centre, true, true }, { b.centreX() - 0.5f * w, b.bottom() + gap, w, h } };
             };
             const auto right = [&](bool one) {
                 const float w = one ? w1 : w2, h = one ? line : h2;
                 const float top = b.centreY() - 0.5f * h;
-                return Cand{ { b.right() + gap, top, one, funkgui::Align::left, true }, { b.right() + gap, top, w, h } };
+                return Cand{ { b.right() + gap, top, one, funkgui::Align::left, true, true }, { b.right() + gap, top, w, h } };
             };
             const auto left = [&](bool one) {
                 const float w = one ? w1 : w2, h = one ? line : h2;
                 const float top = b.centreY() - 0.5f * h;
-                return Cand{ { b.x - gap, top, one, funkgui::Align::right, true }, { b.x - gap - w, top, w, h } };
+                return Cand{ { b.x - gap, top, one, funkgui::Align::right, true, true }, { b.x - gap - w, top, w, h } };
+            };
+            // Beside the body off its centre line, where a horizontal part's leads run (above it: up < 0)...
+            const auto besideOff = [&](bool toRight, float up, bool one) {
+                const Cand k = toRight ? right(one) : left(one);
+                const float top = up < 0.0f ? b.centreY() - postR - 1.0f - k.box.h : b.centreY() + postR + 1.0f;
+                return shifted(k, 0.0f, top - k.box.y);
+            };
+            // ... and above or below the body beside its centre line, where a vertical part's leads run.
+            const auto endOff = [&](bool atTop, bool toRight, bool one) {
+                Cand k = atTop ? above(one) : below(one);
+                const float x = toRight ? b.centreX() + postR + 1.0f : b.centreX() - postR - 1.0f;
+                k.spot.x = x;
+                k.spot.align = toRight ? funkgui::Align::left : funkgui::Align::right;
+                k.box.x = toRight ? x : x - k.box.w;
+                return k;
             };
             std::vector<Cand> cands;
             if (b.w >= b.h)
-                cands = { above(false), below(false), above(true), below(true), right(true), left(true) };
+            {
+                cands = { above(false), below(false), above(true), below(true) };
+                for (const float dx : { -half, half })
+                {
+                    cands.push_back(shifted(above(true), dx, 0.0f));
+                    cands.push_back(shifted(below(true), dx, 0.0f));
+                }
+                for (const bool one : { false, true })
+                    cands.insert(cands.end(), { besideOff(true, -1.0f, one), besideOff(false, -1.0f, one), besideOff(true, 1.0f, one),
+                                                besideOff(false, 1.0f, one) });
+                cands.insert(cands.end(), { right(true), left(true) });
+            }
             else
-                cands = { right(false), left(false), right(true), left(true), above(true), below(true) };
+            {
+                cands = { right(false), left(false), right(true), left(true) };
+                for (const float dy : { -half, half })
+                {
+                    cands.push_back(shifted(right(false), 0.0f, dy));
+                    cands.push_back(shifted(left(false), 0.0f, dy));
+                }
+                for (const bool one : { false, true })
+                    cands.insert(cands.end(), { endOff(true, true, one), endOff(true, false, one), endOff(false, true, one),
+                                                endOff(false, false, one) });
+                cands.insert(cands.end(), { above(true), below(true) });
+            }
             int best = -1;
             float bestScore = 0.0f;
+            bool bestCrosses = false;
             for (std::size_t k = 0; k < cands.size(); ++k)
             {
                 const funkgui::Rect& r = cands[k].box;
                 float score = 0.0f;
+                bool crosses = false;                    // a pin, a junction or a wire under it
                 for (std::size_t j = 0; j < bodies.size(); ++j)
                     if (j != i && meets(r, bodies[j]))
                         score += 10.0f;
                 for (const funkgui::Rect& l : placed)
                     if (meets(r, l))
                         score += 10.0f;
+                for (const funkgui::Rect& q : posts)
+                    if (meets(r, q))
+                    {
+                        score += 10.0f;
+                        crosses = true;
+                    }
                 for (const funkgui::Rect& w : wiresPx)
                     if (meets(r, w))
-                        score += 1.0f;
+                    {
+                        score += 3.0f;
+                        crosses = true;
+                    }
+                const funkgui::Point mid{ r.centreX(), r.centreY() };
+                const float own = away(mid, b);
+                for (std::size_t j = 0; j < d.parts.size(); ++j)
+                    if (j != i && away(mid, bodies[j]) < own)
+                    {
+                        score += 4.0f;
+                        break;
+                    }
                 if (best < 0 || score < bestScore)
                 {
                     best = static_cast<int>(k);
                     bestScore = score;
+                    bestCrosses = crosses;
                 }
                 if (score == 0.0f)
                     break;
             }
             out[i] = cands[static_cast<std::size_t>(best)].spot;
+            out[i].backdrop = !bestCrosses;              // over a wire, a pin or a junction, the connection shows through
             placed.push_back(cands[static_cast<std::size_t>(best)].box);
         }
         return out;
@@ -521,7 +608,8 @@ namespace playground::ui::sch
         const float line = std::round(px * 1.2f);
         const float x = s.x + dx, top = s.top + dy;
         const auto backdrop = [&](float x0, float w, float y, float h) {
-            c.rrect(x0 - 1.5f, y - 1.0f, w + 3.0f, h + 1.0f, 2.0f, ground.withAlpha(0.82f));
+            if (s.backdrop)
+                c.rrect(x0 - 1.5f, y - 1.0f, w + 3.0f, h + 1.0f, 2.0f, ground.withAlpha(0.82f));
         };
         const auto left = [&](float w) { return s.align == funkgui::Align::centre ? x - 0.5f * w : s.align == funkgui::Align::right ? x - w : x; };
         if (s.oneLine && !value.empty())
