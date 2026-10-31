@@ -2259,6 +2259,8 @@ namespace playground::ui
         if (!showing())
             return;
         ensure();
+        if (field_.on && fieldRect().contains({ e.x, e.y }))
+            return;                                      // in the field: its row, nothing of what lies under it
         // The second press began a knob's drag (FunkGui sends down, up, down, doubleClick, up): its gesture ends here,
         // so the host's change gesture is closed and the default below is a tap of its own.
         if (drag_ == Drag::knob && gestures_ != nullptr)
@@ -3145,6 +3147,12 @@ namespace playground::ui
         }
         if (!canvas_.contains(pointer))
             return false;
+        if (field_.on && fieldRect().contains(pointer))
+        {
+            std::snprintf(out, n, "%s   TAB: THE NEXT ROW   UP, DOWN: E12 (SHIFT: A DECADE)   RETURN WRITES   ESCAPE CANCELS",
+                          field_.part.empty() ? "THE NET'S NAME" : upper(field_.part).c_str());
+            return true;
+        }
         const Hit h = hitAt(pointer);
         switch (h.kind)
         {
