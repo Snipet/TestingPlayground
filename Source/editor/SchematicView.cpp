@@ -2861,7 +2861,9 @@ namespace playground::ui
             }
             if (!banner.empty())
             {
-                const float room = strip_.w * 0.5f - 8.0f - rightW - (rightW > 0.0f ? 12.0f : 0.0f);
+                // half the strip, three fifths with a button (the hint at the left gives way)
+                const float share = stripButton().empty() ? 0.5f : 0.6f;
+                const float room = strip_.w * share - 8.0f - rightW - (rightW > 0.0f ? 12.0f : 0.0f);
                 const std::string shown = fitText(c, banner, st, std::max(0.0f, room));
                 c.text(shown.c_str(), strip_.right() - 6.0f - rightW - (rightW > 0.0f ? 12.0f : 0.0f), top, st, pal.soft,
                        funkgui::Align::right);
