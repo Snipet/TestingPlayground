@@ -27,11 +27,11 @@ namespace playground::ui
 
         // Full-size dials in as few rows as the width holds; when those rows are taller than maxHeight, every dial
         // small (as many more a row as their width allows).
-        DialsLayout plainRows(const PanelSpec& spec, int used, float x, float width, float bottom, float maxHeight)
+        DialsLayout plainRows(const PanelSpec& spec, int used, float x, float width, float bottom, float maxHeight, float minGap)
         {
             const int n = std::max(used, 1);
             const auto rowsFor = [&](float cellW) {
-                const int fit = std::clamp(static_cast<int>(std::floor((width + kMinGap) / (cellW + kMinGap))), 1, kMaxControls);
+                const int fit = std::clamp(static_cast<int>(std::floor((width + minGap) / (cellW + minGap))), 1, kMaxControls);
                 return (n + fit - 1) / fit;
             };
             const bool allSmall = static_cast<float>(rowsFor(kDialW)) * (kDialH + kRowGap) - kRowGap > maxHeight;
@@ -42,7 +42,7 @@ namespace playground::ui
             out.cols = (n + out.rows - 1) / out.rows;
             const float gap = out.cols > 1 ? std::clamp((width - cellW * static_cast<float>(out.cols))
                                                             / static_cast<float>(out.cols - 1),
-                                                        kMinGap, kGap)
+                                                        minGap, kGap)
                                            : kGap;
             const float rowStep = cellH + kRowGap;
             out.top = bottom - cellH - static_cast<float>(out.rows - 1) * rowStep;
@@ -328,8 +328,10 @@ namespace playground::ui
     }
 
     DialsLayout layoutDials(const PanelSpec& spec, const Controls& controls, const DialMeasure& measure, float x,
-                            float width, float bottom, float maxHeight)
+                            float width, float bottom, float maxHeight, float minGap)
     {
+        if (!(minGap > 0.0f))
+            minGap = kMinGap;
         int used = 0;
         bool knobs = true;
         for (int c = 0; c < kMaxControls; ++c)
@@ -340,7 +342,7 @@ namespace playground::ui
                 knobs = knobs && (st == DialStyle::knob || st == DialStyle::vintage);
             }
         if (spec.sections.empty() && spec.displays.empty() && knobs)
-            return plainRows(spec, used, x, width, bottom, maxHeight);
+            return plainRows(spec, used, x, width, bottom, maxHeight, minGap);
         // No section line, but a style a plain row does not hold: one section, untitled, of every dial.
         std::vector<PanelSection> one;
         const std::vector<PanelSection>* sections = &spec.sections;

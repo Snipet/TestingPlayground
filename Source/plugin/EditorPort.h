@@ -123,7 +123,7 @@ namespace playground
     {
         std::string file;                        // a .cir file's name
         bool schematic = false;                  // its Schematic view (else its Netlist view)
-        float zoom = 1.0f;
+        float zoom = 1.0f;                       // 0: none chosen yet (the drawing fits when the view opens)
         float x = 0.0f, y = 0.0f;                // the world point at the canvas's centre
         std::vector<std::string> probes;         // pinned probes' node names (s6)
 

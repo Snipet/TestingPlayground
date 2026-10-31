@@ -3186,6 +3186,8 @@ namespace playground::cir
         return out;
     }
 
+    std::vector<Edit> editsBetween(std::string_view from, std::string_view to) { return diffEdits(from, to); }
+
     // ---- edit_circuit's grammar ---------------------------------------------------------------------------------------
     namespace
     {

@@ -369,6 +369,10 @@ namespace playground::cir
     // `ops` applied to `text` (drawn as `d`: reconcile(text, pins)) in order, all or none: the netlist's lines patched
     // token by token, then the canonical block written in. A drawing of a newer version refuses every op.
     Applied apply(std::string_view text, const Drawing& d, std::span<const Op> ops, const SessionPins& pins = {});
+    // The smallest line patches that make `to` of `from` (apply's own: the lines both keep are untouched), sorted, none
+    // overlapping or touching: what the view applies when one gesture takes several applies (a delete of wires on
+    // several nets, Start a circuit).
+    std::vector<Edit> editsBetween(std::string_view from, std::string_view to);
 
     // edit_circuit's grammar, one command a line:
     //   add <netlist line> [at X,Y [orient]]      an element line (R C L D P X E G V I S) or .pot .switch .model

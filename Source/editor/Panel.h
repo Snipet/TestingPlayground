@@ -26,7 +26,8 @@
 //             it, Escape cancels), the + adds a file (its name being edited), a tab's x closes its file (asking first
 //             when it has text). A tab whose file the last run's errors name has a mark before its name. At the bar's
 //             right end, apart, the IR tab while it is open (IrView.h: the program's LLVM IR, read only, none of its
-//             files), opened from the explorer's LLVM IR rows
+//             files), opened from the explorer's LLVM IR rows; left of it, while a netlist's tab shows, the Netlist /
+//             Schematic pills (SchematicView.h: its drawing, a view of the file that edits its text; Cmd-Shift-D)
 //   editor    a funkgui::TextEditor for each file, the shown file's drawn (the processor keeps the files and the tab:
 //             EditorPort::draft), made a code editor by CodeAssist.h: FMinus highlighted, the problems' squiggles and
 //             marks (RUN's, and a check while typing), completion, signature help, hover cards, Format Document, the
@@ -120,6 +121,7 @@ namespace playground::ui
     class ChatView;                                      // the chat's conversation (ChatView.h)
     class InputItem;                                     // the chat's message box (ChatItems.h)
     class CodeAssist;                                    // the editor's language features (CodeAssist.h)
+    class SchematicView;                                 // a netlist's Schematic view (SchematicView.h)
     class DisplayItem;                                   // a program's display (DisplayItem.h)
     class GuiControlItem;                                // a .gui file's control (GuiItems.h)
     class GuiView;                                       // a .gui file's interface: its items (GuiView.h)
@@ -280,6 +282,21 @@ namespace playground::ui
         funkgui::Point centreOfIrClose() const;
         funkgui::Rect irTabRect() const;                 // the IR tab (empty while it is closed)
         funkgui::Rect fileTabRect(int i) const;          // file i's tab
+        // A netlist's two views (SchematicView.h): the pills at the tab bar's right end while a .cir tab shows (Netlist,
+        // Schematic; icon-only when their labels would narrow the files' tabs below their least), Cmd-Shift-D, the view
+        // and its drawing. In the Schematic view the problems list is hidden, the editor keeps at least
+        // max(312, 55 % of the column), and dials that do not fit under it fold into a bar ("32 DIALS   SHOW").
+        bool schematicShown() const;
+        void setSchematic(bool on);                      // the netlist shown's view, as its pills set it
+        SchematicView& schematic();
+        funkgui::Point centreOfViewPill(bool schematic) const;
+        funkgui::Rect viewPillRect(bool schematic) const;
+        bool viewPillsShown() const;
+        bool viewPillsLabelled() const;
+        funkgui::Rect editorArea() const;                // the files' editor's rect (a view's, the status line's too)
+        bool dialsFolded() const noexcept { return dialsFolded_; }   // the dials in the fold's bar, hidden
+        bool dialsBarShown() const noexcept { return dialsBar_; }    // the bar (SHOW or HIDE) under the editor
+        funkgui::Point centreOfDialsBar() const;
         // Whether the program's card's header shows the whole status at the panel's size (no ellipsis).
         bool statusWhole() const;
         // The chat's column: open, or folded into a rail at the right (the editor and the panel take the room). The
@@ -368,6 +385,12 @@ namespace playground::ui
         FilesItem& files();
         const FilesItem& files() const;
         void layout();                                   // every item's place, for width_ x height_
+        bool layoutSchematic_ = false;                   // layout() gave the Schematic view its room
+        bool dialsOpen_ = false;                         // the fold's bar shows the dials (per Panel; folded at first)
+        bool dialsFolded_ = false;                       // the dials folded into the bar
+        bool dialsBar_ = false;                          // the bar shown
+        int dialsBarItem_ = -1;
+        void persistFileViews();                         // the session keeps the netlists' views (a user's gesture)
         int  textItem() const;                           // the focused item when it takes every key, else -1
 
         // The chat.

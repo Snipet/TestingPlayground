@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <utility>
 
 namespace playground::ui
@@ -413,6 +414,8 @@ namespace playground::ui
         }
         return inComment ? 1u : 0u;
     }
+
+    funkgui::Col codeGround(const funkgui::Theme& th) { return editorGround(th); }
 
     uint32_t CircuitHighlighter::line(std::string_view l, uint32_t, std::vector<funkgui::text::Span>& out) const
     {
@@ -1081,10 +1084,13 @@ namespace playground::ui
         if (statusRect().contains(p))
         {
             const StatusParts s = statusParts();
+            const bool words = statusWords_ && !statusWords_().empty();   // a netlist's drawing: no caret to move
             if (s.formatOnRun.contains(p))
                 setFormatOnRun(!formatOnRun());
-            else if (s.position.contains(p))
+            else if (s.position.contains(p) && !words)
                 openGoTo();
+            else if (s.problems.contains(p) && words && statusProblems_)
+                statusProblems_(e.mods.shift);           // the drawing's problems, its parts selected
             else if (s.problems.contains(p) && !viewShown())
             {
                 // The next problem after the caret, in the tab shown, else the first in another.
@@ -1443,6 +1449,55 @@ namespace playground::ui
             for (const funkgui::Decoration& d : tabs_.editor(i).decorations())
                 n += d.kind == funkgui::DecorationKind::warning ? 1 : 0;
         return n;
+    }
+
+    std::vector<Diagnostic> CodeAssist::diagnosticsOf(int tab) const
+    {
+        std::vector<Diagnostic> out;
+        if (tab < 0 || tab >= tabs_.count())
+            return out;
+        const funkgui::TextEditor& E = tabs_.editor(tab);
+        const std::string name = tabs_.name(tab);
+        const auto it = diags_.find(name);
+        if (it == diags_.end())
+            return out;
+        const DiagSet& set = it->second;
+        std::vector<const funkgui::Decoration*> now;
+        for (const funkgui::Decoration& d : E.decorations())
+            if (d.kind == funkgui::DecorationKind::error || d.kind == funkgui::DecorationKind::warning || d.kind == funkgui::DecorationKind::info)
+                now.push_back(&d);
+        // Each squiggle with its message: by order while none went (the editor keeps them by place, as set.list is),
+        // else the message of the same kind nearest its place when it was set.
+        for (std::size_t k = 0; k < now.size(); ++k)
+        {
+            const funkgui::Decoration& d = *now[k];
+            const Diag* m = nullptr;
+            if (now.size() == set.list.size())
+                m = &set.list[k];
+            else
+            {
+                int best = std::numeric_limits<int>::max();
+                for (const Diag& x : set.list)
+                    if (x.kind == d.kind)
+                        if (const int dist = std::abs(x.range.from.line - d.from.line); dist < best)
+                        {
+                            best = dist;
+                            m = &x;
+                        }
+            }
+            if (m == nullptr)
+                continue;
+            Diagnostic g;
+            g.file = name;
+            g.line = d.from.line + 1;
+            g.column = d.from.col + 1;
+            g.severity = d.kind == funkgui::DecorationKind::error     ? Diagnostic::Severity::error
+                       : d.kind == funkgui::DecorationKind::warning ? Diagnostic::Severity::warning
+                                                                      : Diagnostic::Severity::info;
+            g.text = m->text;
+            out.push_back(std::move(g));
+        }
+        return out;
     }
 
     std::vector<std::string> CodeAssist::diagnosticsAt(int tab, TextPos p) const
@@ -2195,12 +2250,18 @@ namespace playground::ui
                 c.text("Checking...", x, top, st, p.faint);
             const funkgui::TextEditor& E = ed();
             char buf[96];
-            if (E.hasSelection())
-                std::snprintf(buf, sizeof buf, "Ln %d, Col %d (%zu selected)", E.caret().line + 1, E.caret().col + 1, E.selectedText().size());
+            if (const std::string words = statusWords_ ? statusWords_() : std::string(); !words.empty())
+                c.text(fitText(c, words, st, std::max(0.0f, parts.indent.right() - 8.0f - x)).c_str(), parts.indent.right() - 8.0f,
+                       top, st, p.soft, funkgui::Align::right);
             else
-                std::snprintf(buf, sizeof buf, "Ln %d, Col %d", E.caret().line + 1, E.caret().col + 1);
-            c.text(buf, parts.position.right() - 8.0f, top, st, p.soft, funkgui::Align::right);
-            c.text(viewShown() ? "Spaces: 2" : "Spaces: 4", parts.indent.right() - 8.0f, top, st, p.faint, funkgui::Align::right);
+            {
+                if (E.hasSelection())
+                    std::snprintf(buf, sizeof buf, "Ln %d, Col %d (%zu selected)", E.caret().line + 1, E.caret().col + 1, E.selectedText().size());
+                else
+                    std::snprintf(buf, sizeof buf, "Ln %d, Col %d", E.caret().line + 1, E.caret().col + 1);
+                c.text(buf, parts.position.right() - 8.0f, top, st, p.soft, funkgui::Align::right);
+                c.text(viewShown() ? "Spaces: 2" : "Spaces: 4", parts.indent.right() - 8.0f, top, st, p.faint, funkgui::Align::right);
+            }
             c.text(viewShown() ? "LLVM IR" : language(activeTab()), parts.language.right() - 8.0f, top, st, p.faint,
                    funkgui::Align::right);
             const bool on = formatOnRun();
