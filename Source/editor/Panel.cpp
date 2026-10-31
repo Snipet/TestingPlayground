@@ -2734,6 +2734,18 @@ namespace playground::ui
             h.program = [this] { return probeProgram_; };
             h.meters = [this]() -> const Meters& { return meters_; };
             h.samples = [this](int slot, float* out, int n) { return port_.probe(slot, out, n); };
+            h.runs = [this](const std::string& file) {
+                for (const SourceFile& f : running_)
+                    if (fileKindOf(f.name) == FileKind::FMinus)
+                        for (const std::string_view line : lang::splitLines(f.text))
+                        {
+                            std::string inc;
+                            int a = 0, b = 0;
+                            if (lang::includeOn(line, inc, a, b) && inc == file)
+                                return true;
+                        }
+                return false;
+            };
             h.arm = [this](const ProbeSet& set) {
                 if (!ownsProbes_)
                     return;

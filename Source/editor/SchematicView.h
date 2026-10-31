@@ -64,9 +64,10 @@
 // of 1,024 samples, a rising crossing of the mean, auto-ranged in powers of two volts from 0.125 to 16, the chip and
 // Pin) and the pinned nets' lanes (36 px each, scrolling) are drawn over the canvas's bottom, at most 40 % of it, so
 // they never move the canvas; hovering a lane lights its wire. A net that does not resolve says why in the info strip
-// and to the screen reader (the files play the netlist but what plays does not: not playing; a node the program that
-// plays lacks: edited since RUN; ground, 0 V; a node a probe cannot read, its why; no voice sounding; no file
-// #includes it: not played), and so does the readout's accessibility item. The set is cleared (an empty one) when the view goes (another tab, the
+// and to the screen reader (the files play the netlist but what plays does not: not playing; what plays reads it but
+// holds no field of its module: so; a node the program that plays lacks: edited since RUN; ground, 0 V; a node a
+// probe cannot read, its why; no voice sounding; no file #includes it: not played), and so does the readout's
+// accessibility item. The set is cleared (an empty one) when the view goes (another tab, the
 // Netlist view, the PANEL view) and with the Panel; with nothing armed nothing is live and the view settles as before.
 //
 // Session pins: the places the view drew for parts and terminals that have no line of their own (SchematicFile::pins,
@@ -188,6 +189,7 @@ namespace playground::ui
             std::function<const Meters&()> meters;
             std::function<int(int slot, float* out, int n)> samples;
             std::function<void(const ProbeSet&)> arm;
+            std::function<bool(const std::string& file)> runs;   // the program that plays #includes this netlist
         };
         void setProbeHooks(ProbeHooks hooks) { probe_ = std::move(hooks); }
         // The Panel's GestureController, through which a knob writes (FilesItem hands it in with each pointer event).

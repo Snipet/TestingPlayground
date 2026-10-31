@@ -5,6 +5,8 @@
 #include "editor/Items.h"
 #include "editor/Theme.h"
 
+#include "Product.h"
+
 #include <funkgui/canvas/Canvas.h>
 #include <funkgui/core/Ease.h>
 #include <funkgui/core/TypeScale.h>
@@ -4081,7 +4083,12 @@ namespace playground::ui
             else if (!played)
                 p.reason = "not played: no program #includes " + file_;
             else if (program == 0 || c == nullptr)
-                p.reason = "not playing: Cmd-Return runs it";   // the files play it, what plays does not (yet)
+            {
+                // the files play it and what plays does not (yet); or what plays reads it but holds none of its module
+                const bool runs = program != 0 && probe_.runs && probe_.runs(file_);
+                p.reason = runs ? std::string(product::kIsInstrument ? "Voice" : "Effect") + " has no field of " + file_ + "'s module"
+                                : std::string("not playing: Cmd-Return runs it");
+            }
             else
             {
                 int node = -1;

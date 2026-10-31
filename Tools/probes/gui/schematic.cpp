@@ -66,8 +66,9 @@
 //             for diodetone.cir: a wire selected while what plays lacks the netlist says "not playing" (drawn in the
 //             strip, spoken) and moves neither the canvas nor the frame rate; after RUN a node typed since says it is
 //             not in the program that plays, screamer.cir's t1 why a probe cannot read it, ground (Alt-click on a
-//             grounded pin) that it is 0 V, a netlist no program #includes that it is not played, and the synth with no
-//             note that no voice sounds; playing, slot 0 follows the selected wire and Alt-click pins two nets (their
+//             grounded pin) that it is 0 V, a netlist no program #includes that it is not played, one the program
+//             #includes without a field of its module that it has none, and the synth with no note that no voice
+//             sounds; playing, slot 0 follows the selected wire and Alt-click pins two nets (their
 //             numbered flags), the card and the lanes taking at most 40 % of the canvas, their numbers the meters'
 //             within 1 %, each trace triggered on a rising crossing of its mean (the same window two frames apart) and
 //             ranged in a power of two volts, the readouts accessibility items; the wire's menu pins and unpins, and the
@@ -2219,6 +2220,23 @@ PROBE(gui, schematic)
                                              && std::find(r.host->log.announcements.begin(), r.host->log.announcements.end(),
                                                           "Probe: not played: no program #includes diodetone.cir") != r.host->log.announcements.end()
                                              ? 1 : 0, 1);
+    }
+
+    // a program that #includes the netlist and holds none of its module: says so
+    {
+        Rig r(draftWith(dialsProgram("diodetone.cir", 1), { { "diodetone.cir", libraryText("diodetone.cir") } }, 1));
+        r.run();
+        const funkgui::Point pill = r.panel->centreOfViewPill(true);
+        r.host->click(pill.x, pill.y);
+        r.host->settle();
+        SV& v = r.view();
+        const std::optional<cir::Pt> a = midWire(v.drawing(), "a");
+        const funkgui::Point at = a ? v.screenOf(*a) : funkgui::Point{ -1.0e4f, -1.0e4f };
+        r.host->click(at.x, at.y);
+        r.host->tick(2);
+        const std::string want = std::string(pg::product::kIsInstrument ? "Voice" : "Effect") + " has no field of diodetone.cir's module";
+        std::printf("probes: no field: \"%s\"\n", v.probeReason(0).c_str());
+        P.eq("probes.reason_no_field", v.probeReason(0) == want && v.stripRight() == "Probe: " + want ? 1 : 0, 1);
     }
 
     // ---- EDIT: the fields, the Label tool, labels and wires, the clipboard, the menus' new items (s4) -----------------
