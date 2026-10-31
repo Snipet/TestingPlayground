@@ -392,9 +392,12 @@ PROBE(gui, schematic)
         host.click(tab2.x, tab2.y);
         host.settle();
         P.eq("view.netlist_again", panel.schematicShown() ? 0 : 1, 1);
+        host.keys("cmd+f");                       // the find bar, open over the text: the drawing closes it
+        P.eq("view.find_open", panel.codeAssist().findOpen() ? 1 : 0, 1);
         host.keys("cmd+shift+d");
         host.settle();
         P.eq("view.cmd_shift_d", panel.schematicShown() ? 1 : 0, 1);
+        P.eq("view.find_closed", panel.codeAssist().findOpen() ? 0 : 1, 1);
         P.eq("view.not_played", v.stripRight() == "Not played: no program #includes screamer.cir" ? 1 : 0, 1);
         P.ge("view.screamer_zoom", v.zoom(), 0.6);
         {
@@ -424,6 +427,14 @@ PROBE(gui, schematic)
         host.tick(1);
         P.near("zoom.ceiling", v.zoom(), 4.0, 1e-6);
         writePng(P, host, "gui.schematic.zoom400.png", "zoom400");
+        // the find bar open over screamer.cir's text, then the tab of a netlist shown in its Schematic view: closed
+        host.keys("cmd+shift+d");
+        host.tick(1);
+        host.keys("cmd+f");
+        const funkgui::Point tab1 = panel.centreOfTab(1);
+        host.click(tab1.x, tab1.y);
+        host.settle();
+        P.eq("view.find_closed_by_tab", panel.schematicShown() && !panel.codeAssist().findOpen() ? 1 : 0, 1);
     }
 
     // ---- PERSIST: a view switched but never zoomed nor panned keeps no zoom: opened again, it fits again ------------
@@ -982,6 +993,25 @@ PROBE(gui, schematic)
             host.release();
             P.near("keys.edge_autopan_units", dx, 150.0 / static_cast<double>(s), 1e-3);
             P.near("keys.edge_autopan_level", v.centre().y - before.y, 0.0, 1e-6);
+            frame(v, host);
+        }
+        // the PANEL view: a part carried at the canvas's edge is let go, and the hidden drawing waits (no auto-pan,
+        // nothing written to the session)
+        {
+            host.move(canvas.right() - 8.0f, empty.y);
+            host.keys("r");
+            const bool carrying = v.tool() == SV::Tool::place;
+            const funkgui::Point before = v.centre();
+            const std::vector<pg::FileView> views = r.processor.editorPort().fileViews();
+            panel.setPanelView(true);
+            host.tick(1);
+            P.eq("keys.panel_view_ends_tool", carrying && v.tool() == SV::Tool::select ? 1 : 0, 1);
+            const funkgui::Rect hidden = v.canvasRect();
+            host.move(hidden.x + 4.0f, hidden.centreY());
+            host.tick(30);
+            P.eq("keys.panel_view_waits", !centreMoved(before) && r.processor.editorPort().fileViews() == views ? 1 : 0, 1);
+            panel.setPanelView(false);
+            host.settle();
             frame(v, host);
         }
         // Escape: a gesture, then the tool, then the selection, then the canvas

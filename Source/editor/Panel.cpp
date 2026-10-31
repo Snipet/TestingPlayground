@@ -1169,15 +1169,17 @@ namespace playground::ui
             pointer_ = pointer;
             if (schematicShown())
             {
-                // the drawing, not the text: no hover card for a word under the canvas
-                schematic_.tick(dt, pointer, focused_);
+                // the drawing, not the text: no hover card for a word under the canvas; hidden (the PANEL view), the
+                // drawing waits (no edge auto-pan under the dials, nothing written to the session)
+                if (!hidden_)
+                    schematic_.tick(dt, pointer, focused_);
                 assist_.tick(dt, { -1.0e4f, -1.0e4f }, focused_);
                 return;
             }
             editor().tick(dt);
             assist_.tick(dt, pointer, focused_);
         }
-        bool settled() const override { return assist_.settled() && schematic_.settled(); }
+        bool settled() const override { return assist_.settled() && (hidden_ || schematic_.settled()); }
 
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override
         {
@@ -1846,6 +1848,9 @@ namespace playground::ui
                 schematic_.show(&editorOf(active_), name(active_), &views_[name(active_)]);
             else
                 schematic_.show(nullptr, {}, nullptr);
+            // The find bar is the text's: over the drawing it would cover the toolbar and take no click nor key.
+            if (schematicShown() && assist_.findOpen())
+                assist_.closeFind();
             editor().setFocused(focused_ && !schematicShown() && !assist_.takesKeys());
             if (viewRenamed_)
             {
@@ -2028,7 +2033,13 @@ namespace playground::ui
         SchematicView schematic_;                    // after assist_: its hooks read it
 
     public:
-        void setHidden(bool hidden) { hidden_ = hidden; }
+        // The PANEL view hides the item: the Schematic view's gesture and tool end there, as on leaving the view.
+        void setHidden(bool hidden)
+        {
+            if (hidden && !hidden_)
+                schematic_.leave();
+            hidden_ = hidden;
+        }
         bool shown() const override { return !hidden_; }
     };
 

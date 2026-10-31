@@ -245,12 +245,14 @@ namespace playground::ui
 
     void SchematicView::leave()
     {
-        if (drag_ != Drag::none)
-            drag_ = Drag::none;
+        // (a fit pending stays: show() sets it again for a file shown anew, and a view hidden under the PANEL view
+        // fits when it shows again)
+        drag_ = Drag::none;
+        moveBy_ = {};
+        moveRefused_ = false;
         tool_ = Tool::select;
         kind_ = cir::Kind::Unknown;
         orient_ = cir::Orient::r0;
-        fitPending_ = false;
     }
 
     // ---- the model ----------------------------------------------------------------------------------------------------
