@@ -777,9 +777,9 @@ namespace playground::ui
         // The processor's draft into the tabs (a host loaded a session, or Claude changed the files): a file whose tab
         // is open keeps its editor (its caret, scroll and undo steps), its text replaced as one undoable edit when it
         // changed; a file at the place of a tab whose name is gone is that file renamed; a new file gets a tab, and a
-        // tab whose file is gone closes. The tabs follow the draft's order and the tab it shows. Fresh (an example:
-        // EditorPort::loadExample): a tab is kept only for a file of its name, its text set anew (no undo steps, the
-        // caret and the scroll at the top), as a new window has it; every other file gets a new tab.
+        // tab whose file is gone closes. The tabs follow the draft's order and the tab it shows. Fresh (an example or
+        // RANDOM's program: EditorPort::startAfresh): a tab is kept only for a file of its name, its text set anew (no
+        // undo steps, the caret and the scroll at the top), as a new window has it; every other file gets a new tab.
         void merge(const Draft& d, bool fresh = false)
         {
             renaming_ = -1;
@@ -3783,15 +3783,23 @@ namespace playground::ui
         host_->showMenu(request, [this](int chosen) { loadExample(chosen - 1); });
     }
 
-    // EXAMPLES: the example as a new instance would play it (EditorPort::loadExample): its files the only tabs, the
-    // dials at their defaults once it compiled, no project open. Asking first (a menu at the pointer) when the editor's
-    // files have changes that nothing opened, saved or loaded holds.
+    // EXAMPLES: the example and the library files it #includes, as a new instance would play it (startAfresh).
     void Panel::loadExample(int i)
     {
         if (i < 0 || i >= static_cast<int>(std::size(kExamples)))
             return;
-        const auto load = [this, i] {
-            port_.loadExample(i);
+        const Example& e = kExamples[static_cast<std::size_t>(i)];
+        startAfresh(withLibraryIncludes(singleFile(e.source)), "the example \"" + std::string(e.title) + "\"",
+                    std::string("Load ") + e.title);
+    }
+
+    // EXAMPLES' and RANDOM's fresh start (EditorPort::startAfresh): `next` the only tabs, the dials at their defaults
+    // once they compiled, no project open. Asking first (a menu at the pointer, its item `ask`) when the editor's files
+    // have changes that nothing opened, saved or loaded holds. True when it started at once.
+    bool Panel::startAfresh(const Sources& next, const std::string& what, const std::string& ask)
+    {
+        const auto load = [this, next, what] {
+            port_.startAfresh(next, what);
             // The editor as a new window shows it: its tabs anew (no undo steps, each at its top), the IR tab and the
             // find bar closed, no problems until it has compiled, the interface from its top at its first pages.
             closeIrView();
@@ -3815,17 +3823,17 @@ namespace playground::ui
         if (!port_.project().changed || host_ == nullptr)
         {
             load();
-            return;
+            return true;
         }
         funkgui::MenuRequest request;
-        request.items.push_back({ 1, std::string("Load ") + kExamples[static_cast<std::size_t>(i)].title
-                                         + " (the editor's changes are lost)" });
+        request.items.push_back({ 1, ask + " (the editor's changes are lost)" });
         request.anchor = { pointer_.x, pointer_.y, 1.0f, 1.0f };
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
         host_->showMenu(request, [load](int chosen) {
             if (chosen == 1)
                 load();
         });
+        return false;
     }
 
     // LIBRARY: the library's files by category, a tick on those the program has. One the program lacks becomes a tab
@@ -3860,40 +3868,17 @@ namespace playground::ui
         });
     }
 
-    // RANDOM: a program from the library's building blocks (Random.h), as EXAMPLES puts one in: the program's text
-    // replaced as one edit and run, the other files staying; the library files it #includes as tabs.
+    // RANDOM: a program from the library's building blocks (Random.h) and the library files it #includes, a fresh
+    // start as EXAMPLES makes one (startAfresh).
     bool Panel::makeRandom(uint32_t seed)
     {
-        random::Program p;
-        bool fits = false;
-        for (uint32_t k = 0; k < 64 && !fits; ++k)
-        {
-            p = random::make(seed + k);
-            int missing = 0;
-            for (const std::string& f : p.library)
-                missing += files().find(f) < 0 ? 1 : 0;
-            fits = files().count() + missing <= static_cast<int>(kMaxFiles);
-        }
-        if (!fits)
-        {
-            notice("RANDOM NEEDS ROOM FOR ITS LIBRARY FILES: CLOSE A TAB");
-            return false;
-        }
-        files().endRename();
+        const random::Program p = random::make(seed);
+        Sources next = singleFile(p.text);
         for (const std::string& name : p.library)
-            if (files().find(name) < 0)
-                if (const LibraryFile* f = findLibraryFile(name))
-                    files().addFile(f->name, f->source);
-        files().select(0);
-        funkgui::TextEditor& program = files().editor();
-        program.selectAll();
-        program.insert(p.text);
-        program.setCaret({ 0, 0 });
-        program.setScroll(0.0f, 0.0f);
-        setFocus(editorItem_);
-        runNow();
-        dirty_ = true;
-        return true;
+            if (const LibraryFile* f = findLibraryFile(name); f != nullptr && findFile(next, name) == nullptr)
+                next.push_back({ f->name, f->source });
+        return startAfresh(withLibraryIncludes(std::move(next)), "RANDOM's \"" + p.title + "\"",
+                           "Make " + p.title + ", a random program");
     }
 
     uint32_t Panel::nextSeed()
