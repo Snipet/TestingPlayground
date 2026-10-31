@@ -445,7 +445,7 @@ program play): the classic init patch, a neutral start that sounds right as it i
   cutoff is its bias current: each voice computes Iabc every sample from its note, CUTOFF and the envelope through one
   `expf`, and clears the circuit in start; the library's `osc.fm` and `adsr.fm` beside it).
 
-An example may `#include` library files (the circuit examples do): EXAMPLES adds them as tabs, as LIBRARY would.
+An example may `#include` library files (the circuit examples do): they come with it as tabs.
 
 To add one, add a file there whose first line is `// <Title>: what it is`.
 
@@ -466,7 +466,7 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   **Projects**, the ones on this Mac, the newest first, each with its newest version (a click opens it, asking first
   when the editor has changes no version holds; **+** opens PROJECTS to save); **Library**, the library's building
   blocks by category (a tick on those the program has; a click adds one as a tab, `#include`d, or shows it); and
-  **Examples** (a click puts one in the program and runs it; Cmd-Z gives yours back). Its **<** folds it away, the
+  **Examples** (a click starts afresh from one, as **Examples** below does). Its **<** folds it away, the
   program's card taking the room, and the button at the left of the program's card's header opens it again; the
   session keeps the fold. A window too narrow for it beside the chat leaves it folded, and its button then folds the
   chat to make room. The **Panel** view has no explorer: the plugin's interface keeps the whole left column.
@@ -474,9 +474,12 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   crossfades from the last program over 20 ms; in the synth the sounding voices fade out over 20 ms, and the keys
   still held start again on the new program. Compiling takes some tens of milliseconds, off the audio thread and off
   the editor's.
-- **Examples** replaces the program's text with an example (Cmd-Z gives yours back) and runs it; the other files
-  stay, and the library files it `#include`s that the program lacks come as tabs (never over a tab of that name; with
-  no room for them it says so and changes nothing).
+- **Examples** starts afresh from an example, as a new instance starts from Init: its file, and the library files
+  it `#include`s, become the only tabs (every other file goes, a `panel.gui` or a netlist too), it runs, and every
+  dial goes to its default. No project is open after it and no preset applied, Claude's checks are cleared, the IR
+  tab and the find bar close, and the interface starts at its top and its first pages. The chat's conversation and
+  the editor's look (its size, theme, zoom, view and folds) stay. When the editor's files have changes nothing
+  opened, saved or loaded holds, it asks first; there is no Cmd-Z back.
 - **Library** lists the library's files by category, a tick on those the program has. One it lacks becomes a tab,
   shown, and the program `#include`s it (a line after its description; Cmd-Z in the program takes it back); one it
   has is shown. With twelve tabs, the rest are greyed.

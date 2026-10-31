@@ -16,7 +16,8 @@
 //             the last run's errors name has its mark, and loses it once the program compiles
 //   LIBRARY   every library file, each category under its caption; a click adds one as a tab and the program
 //             #includes it; its row is then ticked; a second click shows it, adding no tab
-//   EXAMPLES  a click puts the example in the program (one edit: Cmd-Z takes it back) and runs it
+//   EXAMPLES  a click over the editor's changes asks first (a menu), then starts afresh from the example: its files
+//             the only tabs, the project closed, and it runs
 //   PROJECTS  the projects saved, each with its newest version, the one open marked; a click opens one (its files in
 //             the editor); with the editor's files edited it asks first (a menu), and opens on the menu's choice only;
 //             the header's + opens PROJECTS to save
@@ -38,6 +39,7 @@
 
 #include "editor/Explorer.h"
 #include "editor/Panel.h"
+#include "fminus/LibraryIncludes.h"
 #include "plugin/EditorPort.h"
 #include "plugin/ProjectStore.h"
 #include "plugin/Processor.h"
@@ -280,10 +282,23 @@ PROBE(gui, explorer)
     host.settle();
     ex.setSectionOpen(S::library, false);                // room for the examples in view
     host.settle();
+    const std::string projectBefore = port.project().name;
+    panel.editor().setCaret(panel.editor().endPos());     // a change, which the example would take away
+    panel.editor().insert("\n// mine");
+    host.tick(1);
     clickAt(host, ex.centreOfRow(S::examples, 1));
+    P.eq("examples.asks_first", host.pendingMenu() != nullptr && host.chooseMenuItem(1) ? 1 : 0, 1);
     settleRun(processor, host);
-    P.eq("examples.loads", port.draft().files[0].text == pg::kExamples[1].source ? 1 : 0, 1);
-    P.eq("examples.runs", port.running().front().text == pg::kExamples[1].source ? 1 : 0, 1);
+    const pg::Sources exampleFiles = pg::withLibraryIncludes(pg::singleFile(pg::kExamples[1].source));
+    P.eq("examples.loads", port.draft().files == exampleFiles && panel.fileCount() == static_cast<int>(exampleFiles.size())
+                               ? 1 : 0, 1);
+    P.eq("examples.closes_project", port.project().name.empty() ? 1 : 0, 1);
+    P.eq("examples.runs", port.running() == exampleFiles ? 1 : 0, 1);
+    {
+        std::string why;                                 // the project again, for the rows below (lib.fm's among them)
+        P.eq("examples.project_back", port.openProject(projectBefore, 0, why) ? 1 : 0, 1);
+        settleRun(processor, host);
+    }
 
     // ---- FOLD ----------------------------------------------------------------------------------------------------------
     ex.setSectionOpen(S::library, true);
