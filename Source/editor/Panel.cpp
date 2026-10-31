@@ -2644,7 +2644,7 @@ namespace playground::ui
                 const FileKind kind = fileKindOf(r.label);
                 r.icon = i == 0                     ? chat::Icon::code
                        : kind == FileKind::Gui     ? chat::Icon::dial
-                       : kind == FileKind::Circuit ? chat::Icon::chip
+                       : kind == FileKind::Circuit ? chat::Icon::circuit
                                                    : chat::Icon::file;
                 r.active = i == files().active() && !files().irShown();
                 r.error = erred(r.label);
@@ -2743,7 +2743,7 @@ namespace playground::ui
                 }
                 ExplorerItem::Row r;
                 r.label = f.name;
-                r.icon = isCircuitFile(f.name) ? chat::Icon::chip : chat::Icon::blocks;   // a netlist: a circuit's
+                r.icon = isCircuitFile(f.name) ? chat::Icon::circuit : chat::Icon::blocks;   // a netlist: a circuit's
                 r.marked = files().find(f.name) >= 0;
                 r.index = static_cast<int>(i);
                 g.rows.push_back(std::move(r));

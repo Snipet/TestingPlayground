@@ -73,7 +73,7 @@ namespace playground::ui::chat
     {
         none, plus, key, chevronDown, chevronRight, chevronUp, arrowUp, stop, copy, check, file, play, dial, wave, alert,
         pencil, bolt, chevronLeft, bubble, dice, blocks, list, sun, moon, code, book, question, globe, image, cross,
-        snowflake, gear, chip
+        snowflake, gear, chip, circuit, probe
     };
 
     inline void drawIcon(funkgui::Canvas& c, Icon icon, float cx, float cy, float size, funkgui::Col ink)
@@ -367,6 +367,25 @@ namespace playground::ui::chat
                     c.segment(cx - h - s * 0.32f, y, cx - h, y, w, ink);
                     c.segment(cx + h, y, cx + h + s * 0.32f, y, w, ink);
                 }
+                break;
+            }
+            case Icon::circuit:
+            {
+                // A circuit: a resistor's zigzag between two posts (a .cir netlist, its schematic).
+                const float xs[8] = { cx - s * 0.8f, cx - s * 0.5f, cx - s * 0.37f, cx - s * 0.12f, cx + s * 0.12f,
+                                      cx + s * 0.37f, cx + s * 0.5f, cx + s * 0.8f };
+                const float ys[8] = { cy, cy, cy - s * 0.5f, cy + s * 0.5f, cy - s * 0.5f, cy + s * 0.5f, cy, cy };
+                c.polyline(xs, ys, 8, w, ink);
+                c.disc(cx - s * 0.85f, cy, w * 1.3f, ink);
+                c.disc(cx + s * 0.85f, cy, w * 1.3f, ink);
+                break;
+            }
+            case Icon::probe:
+            {
+                // A probe: a pen-like body at a slant, its tip at the lower left, a ring at its tail (a live voltage).
+                c.segment(cx - s * 0.75f, cy + s * 0.75f, cx - s * 0.35f, cy + s * 0.35f, w, ink);
+                c.segment(cx - s * 0.35f, cy + s * 0.35f, cx + s * 0.3f, cy - s * 0.3f, w * 2.0f, ink);
+                c.disc(cx + s * 0.55f, cy - s * 0.55f, s * 0.28f, ink.withAlpha(0.0f), w, ink);
                 break;
             }
         }
