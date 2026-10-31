@@ -14,8 +14,9 @@
 //   gui.schematic.empty.png    an empty netlist: the hint and Start a circuit
 //   gui.schematic.zoom25.png   25 %: symbols as their boxes, no labels, no grid
 //   gui.schematic.zoom400.png  400 %
-//   gui.schematic.dials.png    a program driving screamer.cir's pots with dials: a knob beside each pot (100 %)
+//   gui.schematic.dials.png    a program driving screamer.cir's pots with dials: a knob beside each pot (fitted)
 //   gui.schematic.play.png     a netlist no program #included, played: program.fm now plays it, Undo in the info strip
+//   gui.schematic.own.png      a program that calls screamer.cir's set() itself: no knobs, the info strip saying why
 // and checks:
 //   VIEW      the pills (Netlist, Schematic) at the tab bar's right end while a .cir tab shows, labelled at the
 //             default size; a click shows the drawing: opening fits it, never under 60 %; the status line's words; the
@@ -49,8 +50,9 @@
 //             item visible, at 400 % too with parts off the canvas (bounds on it); the focus action selects and centres
 //   DIALS     a program holding screamer.cir's module, never calling its set(): a knob beside Pdrive, Ptone and Plevel
 //             on the slots of their dials; a drag up on one turns its dial (the program card's) and leaves the text
-//             alone, the info strip saying its value; a double-click its default; the body still moves the part; a
-//             switch's chip steps its position
+//             alone, the info strip saying its value; a double-click its default, closing the drag its second press
+//             began; the body still moves the part; a switch's chip steps its position; a program that calls the
+//             module's set() itself gets no knobs, and the info strip says why
 //   PLAY      a netlist no program #includes: the banner's Play this circuit writes program.fm (CirTemplates.h's host
 //             program, the library tabs it needs), runs it, the view staying on the netlist, and offers Undo, which
 //             gives program.fm's text back in one step
@@ -1650,18 +1652,22 @@ PROBE(gui, schematic)
         host.click(pill.x, pill.y);
         host.settle();
         SV& v = r.view();
-        frame(v, host);
-        host.settle();
+        host.settle();                            // opening fits the drawing (never under 60 %, where knobs show)
         std::printf("dials: %d knobs at %.0f%%; Pdrive's slot %d, Ptone's %d, Plevel's %d\n", v.knobCount(),
                     static_cast<double>(v.zoom() * 100.0f), v.knobSlot("Pdrive"), v.knobSlot("Ptone"), v.knobSlot("Plevel"));
         P.eq("dials.knobs", v.knobCount() == 3 && v.knobSlot("Pdrive") == 0 && v.knobSlot("Ptone") == 1 && v.knobSlot("Plevel") == 2 ? 1 : 0, 1);
         {
+            // each knob and its pot on the canvas
             bool inside = true;
+            const funkgui::Point none{ -1.0e4f, -1.0e4f };
             for (const char* part : { "Pdrive", "Ptone", "Plevel" })
-                inside = inside && v.canvasRect().contains(v.centreOfKnob(part).value_or(funkgui::Point{ -1.0e4f, -1.0e4f }));
+                inside = inside && v.canvasRect().contains(v.centreOfKnob(part).value_or(none))
+                      && v.canvasRect().contains(v.centreOfPart(part).value_or(none));
             P.eq("dials.knobs_on_canvas", inside ? 1 : 0, 1);
         }
         writePng(P, host, "gui.schematic.dials.png", "dials");
+        frame(v, host);                           // 100 %, the drawing centred: room in the canvas's lower left
+        host.settle();
         // dragging Pdrive's knob 60 px up turns the dial of its slot (the program card's): +0.4 of its range
         funkgui::ParamPort& drive = *r.processor.ports()[0];
         const float before = drive.value01();
@@ -1682,6 +1688,8 @@ PROBE(gui, schematic)
         host.doubleClick(k.x, k.y);
         host.tick(2);
         P.near("dials.double_click_default", drive.value01(), pg::normOf(port.controls()[0], port.controls()[0].def), 1e-6);
+        // its second press began a drag, which the double-click ends: the host's unbounded drag (beginDrag's) is off
+        P.eq("dials.double_click_gesture_closed", host.log.unbounded ? 0 : 1, 1);
         // the body still moves the part (into the canvas's empty lower left)
         const funkgui::Point body = partAt(v, "Pdrive");
         const cir::Pt was = partOf(v.drawing(), "Pdrive") != nullptr ? partOf(v.drawing(), "Pdrive")->origin : cir::Pt{};
@@ -1731,6 +1739,35 @@ PROBE(gui, schematic)
                     static_cast<double>(at2));
         P.eq("dials.chip_steps", chip && v.knobSlot("S1") == 0 && std::string(c.name) == "clip" && at0 == 0.0f && at1 == 1.0f && at2 == 0.0f
                                      ? 1 : 0, 1);
+    }
+    {
+        // A program that calls the module's set() itself: no knobs, and the info strip says why (own.png).
+        const std::string program = pg::product::kIsInstrument
+            ? "#include \"screamer.cir\"\nmodule Voice\n{\n    Screamer amp;\n    bool held;\n\n    void init(float rate)\n    {\n"
+              "        amp.init(rate);\n        amp.set(0.5f, 0.5f, 0.7f);\n    }\n\n"
+              "    void start(float note, float velocity)\n    {\n        held = true;\n    }\n\n"
+              "    void stop()\n    {\n        held = false;\n    }\n\n"
+              "    bool process(float* restrict left, float* restrict right, int n)\n    {\n        for (int i = 0; i < n; ++i)\n"
+              "        {\n            const float y = amp.tick(0);\n            left[i] += y;\n            right[i] += y;\n        }\n"
+              "        return held;\n    }\n};\n"
+            : "#include \"screamer.cir\"\nmodule Effect\n{\n    Screamer amp[2];\n\n    void init(float rate)\n    {\n"
+              "        amp[0].init(rate);\n        amp[1].init(rate);\n        amp[0].set(0.5f, 0.5f, 0.7f);\n"
+              "        amp[1].set(0.5f, 0.5f, 0.7f);\n    }\n\n"
+              "    void process(float* restrict left, float* restrict right, int n)\n    {\n        for (int i = 0; i < n; ++i)\n"
+              "        {\n            left[i] = amp[0].tick(left[i]);\n            right[i] = amp[1].tick(right[i]);\n        }\n    }\n};\n";
+        Rig r(draftWith(program, { { "screamer.cir", libraryText("screamer.cir") } }, 1));
+        r.run();
+        pg::ui::Panel& panel = *r.panel;
+        funkgui::HeadlessHost& host = *r.host;
+        const pg::CompileStatus st = r.processor.editorPort().status();
+        const funkgui::Point pill = panel.centreOfViewPill(true);
+        host.click(pill.x, pill.y);
+        host.settle();
+        SV& v = r.view();
+        const std::string why = "program.fm:10: Screamer's pots have no dials: the program calls its set()";
+        std::printf("own: %s%s; %d knobs; the strip \"%s\"\n", st.errors.c_str(), st.notes.c_str(), v.knobCount(), v.stripRight().c_str());
+        P.eq("dials.own_says_why", st.ok && st.notes.empty() && v.knobCount() == 0 && v.stripRight() == why ? 1 : 0, 1);
+        writePng(P, host, "gui.schematic.own.png", "own");
     }
 
     // ---- PLAY: Play this circuit (play.png) -------------------------------------------------------------------------

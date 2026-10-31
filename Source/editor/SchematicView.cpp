@@ -1758,6 +1758,10 @@ namespace playground::ui
         if (!showing())
             return;
         ensure();
+        // The second press began a knob's drag (FunkGui sends down, up, down, doubleClick, up): its gesture ends here,
+        // so the host's change gesture is closed and the default below is a tap of its own.
+        if (drag_ == Drag::knob && gestures_ != nullptr)
+            gestures_->endDrag();
         drag_ = Drag::none;
         // A knob's double-click: its dial's default (a chip's second click stepped it already).
         if (tool_ == Tool::select)
@@ -2356,7 +2360,13 @@ namespace playground::ui
         if (hooks_.played && !hooks_.played())
             return "Not played: no program #includes " + file_;
         if (dials_.playedNote)
-            return dials_.playedNote();                  // "program.fm now plays pedal.cir", while Undo can take it back
+            if (std::string note = dials_.playedNote(); !note.empty())
+                return note;                             // "program.fm now plays pedal.cir", while Undo can take it back
+        // Why its pots have no knobs: the program calls the module's set() itself (the binding's own note).
+        if (dials_.bindings)
+            for (const lang::CircuitBinding& b : dials_.bindings())
+                if (b.file == file_ && b.own && !b.why.empty())
+                    return b.why;                        // "program.fm:38: Screamer's pots have no dials: the program calls its set()"
         return {};
     }
 
@@ -2840,7 +2850,7 @@ namespace playground::ui
             c.hairlineH(strip_.x, strip_.y, strip_.w, th.ink16);
             const funkgui::TextStyle& st = chat::kSmall;
             const float top = c.capCentreTop(strip_.centreY(), st);
-            // at the right, the problems' count (a click steps through them) and before it a banner, in half the strip
+            // at the right, the problems' count (a click steps through them) and before it a banner
             const std::string count = stripCount(), banner = stripBanner();
             float rightW = 0.0f;
             if (!count.empty())
@@ -2861,8 +2871,9 @@ namespace playground::ui
             }
             if (!banner.empty())
             {
-                // half the strip, three fifths with a button (the hint at the left gives way)
-                const float share = stripButton().empty() ? 0.5f : 0.6f;
+                // three quarters of the strip, three fifths with a button (the hint at the left gives way: a banner
+                // says something about this netlist now, as "program.fm:38: Screamer's pots have no dials: ...")
+                const float share = stripButton().empty() ? 0.75f : 0.6f;
                 const float room = strip_.w * share - 8.0f - rightW - (rightW > 0.0f ? 12.0f : 0.0f);
                 const std::string shown = fitText(c, banner, st, std::max(0.0f, room));
                 c.text(shown.c_str(), strip_.right() - 6.0f - rightW - (rightW > 0.0f ? 12.0f : 0.0f), top, st, pal.soft,

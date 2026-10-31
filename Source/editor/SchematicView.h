@@ -18,11 +18,14 @@
 //   info strip   a gesture's notice (4 s: a refusal, a change of nets), else the dial under the pointer, else the
 //                selection, else a hint; at its right the problems' count (a click steps to the next, Shift-click back),
 //                a banner before it (Not drawn: ..., else Not played: ... with its button, Play this circuit, else
-//                "program.fm now plays pedal.cir" with its button, Undo, while program.fm's text is what Play wrote)
+//                "program.fm now plays pedal.cir" with its button, Undo, while program.fm's text is what Play wrote,
+//                else why its pots have no knobs: "program.fm:38: Screamer's pots have no dials: the program calls its
+//                set()")
 //
 // The circuit dials (the spec's §10.5): when the program that plays drives this file's pots and switches with dials
-// (CompileStatus::circuitDials, Patch.h's "Circuits"), a 16 px knob beside each pot symbol (below a horizontal one,
-// left of a vertical one; on the other side when its labels are there) and a position chip beside each switch. A drag
+// (CompileStatus::circuitDials, Patch.h's "Circuits"), a 16 px knob beside each pot symbol and a position chip beside
+// each switch, where it covers the fewest bodies, flags, pins and wires (below or above a horizontal body, left or right
+// of a vertical one, then the corners: SchematicDraw.h's placeKnobs); the labels then keep clear of it. A drag
 // on a knob turns its dial (up raises it) and a double-click sets its default, a click on a chip steps its switch, each
 // through the Panel's GestureController on the dial's own port, as the program card's dial writes; the pointer over
 // one shows the dial's value in the info strip. Dragging the symbol's body still moves the part. Hidden with the
