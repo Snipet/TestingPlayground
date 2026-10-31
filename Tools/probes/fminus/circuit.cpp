@@ -37,8 +37,9 @@
 //                amp_drive; two scalar fields two sets; with 31 params drive takes the 32nd slot and a note each says
 //                tone and level have none; a glide from sample 21312 (a block boundary of 64 and of 333) and another
 //                from 42624, 2 s: the same bits and the same calls in blocks of 64 and 333; still pots no call (an
-//                instrument's note on a free instance whose values are current none either); the frozen copy made at a
-//                drive and a level moved plays within 80 dB of the program, and a pot moved drops it
+//                instrument's note on a free instance whose values are current none either); the shim's whole text
+//                (every element's set()); the frozen copy made at a drive and a level moved plays within 80 dB of the
+//                program, and a pot moved drops it
 //   OWN          the circuit examples (the effect's tube screamer, the synth's OTA filter) keep exactly their own dials
 //                and no message: the screamer's fields say why they have none ("program.fm:L: Screamer's pots have no
 //                dials: the program calls its set()"), the OTA filter's has no pot; a set() on a receiver Lang cannot
@@ -519,8 +520,11 @@ namespace
         P.eq("dials.one_set", bs.size() == 1 && bs[0].field == "amp" && bs[0].module == "Screamer" && bs[0].file == "screamer.cir"
                                   && bs[0].count() == (kInstrument ? 1 : 2) && bs[0].slots == std::vector<int>{ 1, 2, 3 } && !bs[0].own ? 1 : 0, 1);
         const std::string& src = c.patch->recipe().source;
+        // the whole shim: every element's set() (both of the effect's amp[2])
         const std::string shim = std::string("void playground_circuit_0(") + (kInstrument ? "Voice" : "Effect")
-                               + "* self, float* restrict v) [[clang::nonblocking]] { ";
+                               + "* self, float* restrict v) [[clang::nonblocking]] { "
+                               + (kInstrument ? "" : "for (int i0 = 0; i0 < 2; ++i0) ") + "self->amp" + (kInstrument ? "" : "[i0]")
+                               + ".set(v[0], v[1], v[2]); }";
         P.eq("dials.shim_nonblocking", has(src, shim) && !has(src, "playground_circuit_1(") && c.patch->circuits()
                                            && c.patch->circuitSlots() == 0xEu ? 1 : 0, 1);
 
@@ -574,12 +578,13 @@ namespace
             // Still: no call.
             const uint64_t before = a.engine().circuitCalls();
             a.run(input(second / 2), 64, kInstrument ? std::vector<probe::Note>{ { 0, pg::EventKind::noteOn, 60, 0.8f } } : std::vector<probe::Note>{});
-            const uint64_t fresh = a.engine().circuitCalls() - before;   // the synth's new note on a free instance: one
+            const uint64_t fresh = a.engine().circuitCalls() - before;   // the synth's new note: on an instance freed after
+                                                                          // the windows closed, whose values are current
             const uint64_t after = a.engine().circuitCalls();
             a.run(input(second / 2), 64);
             std::printf("still: %llu calls, then %llu\n", static_cast<unsigned long long>(fresh),
                         static_cast<unsigned long long>(a.engine().circuitCalls() - after));
-            P.eq("dials.still_no_call", a.engine().circuitCalls() == after && fresh <= (kInstrument ? 1u : 0u) ? 1 : 0, 1);
+            P.eq("dials.still_no_call", a.engine().circuitCalls() == after && fresh == 0 ? 1 : 0, 1);
         }
 
         // The frozen copy plays with the pots where they are, and a pot that moves drops it.
