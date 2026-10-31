@@ -2749,6 +2749,8 @@ namespace playground::ui
                     dialsFolded_ = true;
                     panelTop = barTop;
                 }
+                // what is folded, or over the editor's room, draws no section's frame
+                std::erase_if(dials_.sections, [&](const SectionFrame& f) { return dialsFolded_ || f.r.y < hideAbove; });
             }
             else if (schematic && used == 0 && panelSpec_.displays.empty())
                 panelTop = inBottom + 8.0f;              // nothing under the drawing: it takes the column

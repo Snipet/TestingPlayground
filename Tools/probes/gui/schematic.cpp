@@ -1222,6 +1222,24 @@ PROBE(gui, schematic)
         P.eq("switch.apart", panel.fileTabRect(panel.fileCount() - 1).right() < panel.viewPillRect(false).x
                                  && panel.viewPillRect(true).right() <= panel.irTabRect().x ? 1 : 0, 1);
         P.near("switch.pill_width", panel.viewPillRect(true).w, 28.0, 1e-3);
+        // dials folded (the synth's Init, its sections taller than the room): no section's frame between the
+        // editor and the fold's bar
+        if (panel.dialsFolded())
+        {
+            const funkgui::PrimList& f = host.draw();
+            // the band between them (the bar's own box starts 12 px over its button's centre, its edge half a px more)
+            const float top = panel.editorArea().bottom() + 1.0f, bottom = panel.centreOfDialsBar().y - 14.0f;
+            int frames = 0;
+            for (const funkgui::Prim& p : f.prims)
+                if (p.tag == pg::ui::kSectionTag && p.y1 > top && p.y0 < bottom)
+                {
+                    ++frames;
+                    std::printf("a frame between the editor and the bar: %.1f,%.1f to %.1f,%.1f (band %.1f to %.1f)\n", static_cast<double>(p.x0),
+                                static_cast<double>(p.y0), static_cast<double>(p.x1), static_cast<double>(p.y1), static_cast<double>(top),
+                                static_cast<double>(bottom));
+                }
+            P.eq("switch.folded_no_frames", frames, 0);
+        }
         writePng(P, host, "gui.schematic.switch.png", "switch");
         // the pills to a screen reader: a radio group of two
         int radios = 0;
