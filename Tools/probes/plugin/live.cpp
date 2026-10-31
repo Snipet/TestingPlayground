@@ -25,7 +25,8 @@
 //           dial alone still a move; a bypass ending after a token: that token's reader reads the end, an older
 //           token's one line, never "still"
 //   LAYOUT  a netlist redrawn (its *@ lines alone): listen says the editor's files play, get_status since says "you
-//           redrew pedal.cir"
+//           redrew pedal.cir", and with files "changed" that only its drawing changed (no *@ line in the diff); a
+//           netlist line edited beside it: that line's diff alone
 //   CANCEL  two cancels before a listen starts: the first one's listen still stops at once
 //   NEWCHAT New chat while a call of Claude Desktop's runs: the chat stays busy until it ends
 #include "Probe.h"
@@ -554,6 +555,21 @@ PROBE(plugin, live)
             std::printf("get_status since, a netlist redrawn:\n%s", redrew.c_str());
             P.eq("layout.listen_plays_draft", at != std::string::npos && has(heard, "What plays is the editor's files.") ? 1 : 0, 1);
             P.eq("layout.since_redrew", has(redrew, "you redrew pedal.cir\n") && !has(redrew, "you edited pedal.cir") ? 1 : 0, 1);
+            // files "changed": a drawing's *@ lines are no diff (one line says so), a netlist line changed beside them is
+            const std::string changed = textOf(a.mcpCall("get_status", object({ { "since", juce::String(beforeRedraw) }, { "files", "changed" } })));
+            P.eq("layout.changed_drawing_only", has(changed, "pedal.cir: only its drawing (its *@ lines) changed.\n")
+                                                    && !has(changed, "\n+*@") && !has(changed, "\n-*@") ? 1 : 0, 1);
+            dl = q.editorPort().draft();
+            const std::string r1 = "\nR1 ";
+            const std::size_t line = dl.files.back().text.find(r1);
+            const std::size_t end = line == std::string::npos ? line : dl.files.back().text.find('\n', line + 1);
+            if (end != std::string::npos)
+                dl.files.back().text.insert(end, "  ; a comment typed");
+            q.editorPort().setDraft(dl);
+            const std::string both = textOf(a.mcpCall("get_status", object({ { "since", juce::String(beforeRedraw) }, { "files", "changed" } })));
+            std::printf("get_status since, files changed, a netlist line edited and the drawing moved:\n%s", both.c_str());
+            P.eq("layout.changed_netlist_lines", end != std::string::npos && has(both, "pedal.cir (+1 -1):\n") && has(both, "; a comment typed")
+                                                     && !has(both, "\n+*@") && !has(both, "\n-*@") && !has(both, "only its drawing") ? 1 : 0, 1);
         }
 
         // Cancels that come before a listen starts, two of them: each stops its own listen at once.
