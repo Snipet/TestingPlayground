@@ -120,6 +120,9 @@ namespace playground::lang
     // continuation line's leading + is punctuation), and every line's, in order.
     void lexCirLine(std::string_view line, int lineNo, std::vector<Token>& out);
     std::vector<Token> lexCir(std::string_view text);
+    // A netlist's number as FMinus's circuit compiler reads it ([+-]digits[.digits][e[+-]digits], then a suffix t g
+    // meg k m u n p f in any case, meg before m, then letters it ignores: 2.2k, 10meg, 1u, 100nF): nothing for none.
+    std::optional<double> spiceNumber(std::string_view text);
 
     // ---- the index --------------------------------------------------------------------------------------------------
     enum class Kind : uint8_t

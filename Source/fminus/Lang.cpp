@@ -271,7 +271,7 @@ namespace playground::lang
 
         // SPICE's number, as FMinus's circuit compiler reads one ([+-]digits[.digits][e[+-]digits], then t g meg k m u
         // n p f in any case, meg before m, then letters it ignores): nothing when `s` is none.
-        std::optional<double> spiceNumber(std::string_view s)
+        std::optional<double> readSpiceNumber(std::string_view s)
         {
             std::size_t i = 0;
             if (i < s.size() && (s[i] == '+' || s[i] == '-'))
@@ -880,7 +880,7 @@ namespace playground::lang
                         if (w == "lin" || w == "audio" || w == "rlog")
                             pot.taper = std::string(l[i].text);
                         else if (i == 2)
-                            if (const std::optional<double> v = spiceNumber(l[i].text); v && *v >= 0.0 && *v <= 1.0)
+                            if (const std::optional<double> v = readSpiceNumber(l[i].text); v && *v >= 0.0 && *v <= 1.0)
                                 pot.def = static_cast<float>(*v);
                     }
                     f.pots.push_back(std::move(pot));
@@ -1462,6 +1462,11 @@ namespace playground::lang
             first = false;
             i = j;
         }
+    }
+
+    std::optional<double> spiceNumber(std::string_view text)
+    {
+        return readSpiceNumber(text);
     }
 
     std::vector<Token> lexCir(std::string_view text)

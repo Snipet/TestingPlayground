@@ -30,6 +30,26 @@
 //                compile wants no job and says nothing, the module generated is generate()'s with that answer, and
 //                its key is the program's; the frozen copy of the provisional program keeps its own layout; the
 //                store's find, of, claim and release, and its 64 entries
+// and the circuit dials (Patch.h's "Circuits", Engine.h's "Circuit dials"):
+//   DIALS        a program holding screamer.cir's module (an Effect's Screamer amp[2], a Voice's one), never calling its
+//                set(): dials drive, tone and level after its own param, real 0 to 1 shown 0-100 %, linear, at the .pot
+//                defaults, one set for both elements, slots 1 to 3, one nonblocking shim; a param named drive gives
+//                amp_drive; two scalar fields two sets; with 31 params drive takes the 32nd slot and a note each says
+//                tone and level have none; a glide from sample 21312 (a block boundary of 64 and of 333) and another
+//                from 42624, 2 s: the same bits and the same calls in blocks of 64 and 333; still pots no call (an
+//                instrument's note on a free instance whose values are current none either); the frozen copy made at a
+//                drive and a level moved plays within 80 dB of the program, and a pot moved drops it
+//   OWN          the circuit examples (the effect's tube screamer, the synth's OTA filter) keep exactly their own dials
+//                and no message: the screamer's fields say why they have none ("program.fm:L: Screamer's pots have no
+//                dials: the program calls its set()"), the OTA filter's has no pot; a set() on a receiver Lang cannot
+//                type counts too
+//   TEMPLATE     Play this circuit's program (fminus/CirTemplates.h) for each library netlist compiles with no message,
+//                plays finitely, calls no set() (its pots dials of their own) and is in the house style; a two-channel
+//                netlist's too
+//   SWITCH       a netlist with a switch (FMinus's switch.cir, open by default): its dial an int 0 to 1; still, no call;
+//                flipped to 1, exactly ceil(0.02 rate / 16) + 1 calls at 48 kHz, and its ramp at 1; an instrument's note
+//                from silence on that instance (its start's clear()) leaves it at 1 with no call; a NaN planted in a
+//                carried field is cleared by the circuit's guard and the switch stays at 1
 // and the plugin's self-test (dsp/SelfTester.h, Compiler.h's "The self-test"), a Compiler offering to an Engine played
 // in blocks of 256, on AutoClipper.h's netlists (no assertion is on time; every wait has a deadline):
 //   SELFTEST     with the tests off (setSelfTesting(false)) a RUN plays the provisional configuration and no test runs;
@@ -68,6 +88,7 @@
 #include "dsp/Debug.h"
 #include "dsp/Engine.h"
 #include "dsp/Sources.h"
+#include "fminus/CirTemplates.h"
 #include "fminus/Circuits.h"
 #include "fminus/Lang.h"
 #include "fminus/LibraryIncludes.h"
@@ -636,6 +657,39 @@ namespace
             std::printf("unknown receiver: %s\n", d.bindings.empty() ? "no binding" : d.bindings[0].why.c_str());
             P.eq("own.unknown_receiver", d.bindings.size() == 1 && d.bindings[0].own && d.bindings[0].names.empty()
                                              && has(d.bindings[0].why, "Screamer's pots have no dials: the program calls mystery.set()") ? 1 : 0, 1);
+        }
+
+        // ---- TEMPLATE: Play this circuit's program for each library netlist (fminus/CirTemplates.h) ---------------------
+        for (const pg::LibraryFile& f : pg::kLibrary)
+        {
+            if (!pg::isCircuitFile(f.name))
+                continue;
+            const pg::cir::HostProgram hp = pg::cir::hostProgram(f.name, f.source, kInstrument);
+            const pg::Sources play = pg::withLibraryIncludes({ { pg::kProgramName, hp.text }, { f.name, f.source } });
+            probe::Rig rig(kFs, 512);
+            std::string messages;
+            const bool loaded = rig.load(play, &messages);
+            const probe::Stereo out = loaded ? rig.run(input(second), 256, chord()) : probe::Stereo(1);
+            std::printf("Play %s: %s; %s, %.1f dBFS%s\n", f.name, hp.module.c_str(), joined(dialNames(rig.controls())).c_str(),
+                        probe::rmsDb(out.l, 0, out.size()), messages.empty() ? "" : ("; " + messages).c_str());
+            const std::string key = std::string("template.") + std::string(f.name).substr(0, std::strlen(f.name) - 4);
+            P.eq(key + ".no_message", loaded && hp.why.empty() && messages.empty() ? 1 : 0, 1);
+            P.eq(key + ".plays", loaded && finite(out) && probe::rmsDb(out.l, 0, out.size()) > -80.0 ? 1 : 0, 1);
+            const bool own = std::any_of(rig.recipe().bindings.begin(), rig.recipe().bindings.end(),
+                                         [](const pg::lang::CircuitBinding& b) { return b.own; });
+            P.eq(key + ".pots_dials", loaded && !own && rig.recipe().circuitShims == (has(f.source, ".pot") ? 1 : 0) ? 1 : 0, 1);
+            P.eq(key + ".house_style", !pg::lang::format(hp.text).changed && pg::lang::format(hp.text).ok ? 1 : 0, 1);
+        }
+        {
+            // a two-channel netlist: one module over both channels
+            const std::string two = replaced(libraryText("diodetone.cir"), ".title DiodeTone\n", ".title DiodeTone\n.channels 2\n");
+            const pg::cir::HostProgram hp = pg::cir::hostProgram("stereo.cir", two, kInstrument);
+            std::string messages;
+            probe::Rig rig(kFs, 512);
+            const bool loaded = rig.load(pg::withLibraryIncludes({ { pg::kProgramName, hp.text }, { "stereo.cir", two } }), &messages);
+            const probe::Stereo out = loaded ? rig.run(input(second / 2), 256, chord()) : probe::Stereo(1);
+            std::printf("Play a two-channel netlist: %s\n", messages.c_str());
+            P.eq("template.two_channels", loaded && messages.empty() && has(hp.text, "(float2)(") && finite(out) ? 1 : 0, 1);
         }
 
         // ---- SWITCH: a switch dial keeps its position through clear() --------------------------------------------------
