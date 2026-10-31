@@ -1,6 +1,7 @@
 // Source/sandbox/Dials.h: the GUI sandbox's dials, mocked, never compiled: a program's parameter declarations as
 // FMinus's language service reads them (fminus/Lang.h: the main module's params, in order, with their
-// [[fminus::range]] and [[fminus::default]]), or a list Claude gives, or both (Claude's replacing a declaration of the
+// [[fminus::range]] and [[fminus::default]], then its circuits' pots and switches, lang::circuitDials, as the plugin
+// makes them dials: Patch.h's "Circuits"), or a list Claude gives, or both (Claude's replacing a declaration of the
 // same name); and the main module's fields, which the displays read. JUCE's var for the lists (juce_core).
 #pragma once
 
@@ -25,17 +26,21 @@ namespace playground::sandbox
         std::vector<std::string> options;         // an int's or a bool's values' names, from its low end
         std::string style;                        // the control a blank .gui gives it: knob, slider, switch, buttons, menu
         bool given = false;                       // Claude's (else the program's declaration)
+        bool circuit = false;                     // a circuit's pot or switch (a pot's Control is lang::potControl's:
+                                                  // shown 0 to 100 %, as the plugin's)
     };
 
-    // What a program's files declare (the .fm among `files`): its main module (Effect or Voice: "" when no file has it)
-    // and the file it is in, its params as dials (in order; past kMaxControls they are counted, as the plugin leaves
-    // them at their defaults), its fields.
+    // What a program's files declare (the .fm and .cir among `files`): its main module (Effect or Voice: "" when no
+    // file has it) and the file it is in, its params as dials (in order), then its circuits' pots and switches (each
+    // field's that the program leaves to the plugin: lang::circuitDials), past kMaxControls counted, as the plugin
+    // leaves them at their defaults; its fields; why a circuit's pots have no dials (the program drives them).
     struct Declared
     {
         std::string module, file;
         std::vector<Dial> dials;
-        int beyond = 0;                           // params past kMaxControls
+        int beyond = 0;                           // params and circuit dials past kMaxControls
         std::vector<PanelField> fields;
+        std::string notes;                        // a line each: lang::CircuitBinding::why
     };
     Declared readProgram(const Sources& files, bool instrument);
 

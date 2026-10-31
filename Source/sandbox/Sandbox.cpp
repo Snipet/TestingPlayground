@@ -449,7 +449,7 @@ namespace playground::sandbox
         gui_ = gui;
         declared_ = declared;
         dials_ = std::move(dials);
-        dialNotes_ = notes;
+        dialNotes_ = notes + declared.notes;   // and why a circuit's pots have no dials
         rebuild();
         if (static_cast<bool>(r["restore"]))
             return object({ { "ok", true }, { "text", "restored" }, { "state", state() } });
@@ -554,6 +554,17 @@ namespace playground::sandbox
             if (dials_.size() > static_cast<std::size_t>(kMaxControls))
                 out += " Only the first " + std::to_string(kMaxControls) + " are dials.";
             out += "\n";
+            // The circuits' (Patch.h, "Circuits"), with their defaults as the plugin shows them.
+            std::string circuits;
+            for (std::size_t k = 0; k < dials_.size() && k < static_cast<std::size_t>(kMaxControls); ++k)
+                if (dials_[k].circuit)
+                {
+                    const Control& c = controls_[k];
+                    circuits += (circuits.empty() ? "" : ", ") + dials_[k].name + " " + dialText(c, c.def);
+                }
+            if (!circuits.empty())
+                out += "Circuit dials (the program's circuits' pots and switches, after its params, as the plugin makes them): "
+                     + circuits + ".\n";
         }
         if (!declared_.module.empty())
         {
@@ -826,7 +837,7 @@ namespace playground::sandbox
                 if (d.given)
                     kept.push_back(d);
             dials_ = merge(merge(declared_.dials, kept), given);
-            dialNotes_ = notes;
+            dialNotes_ = notes + declared_.notes;
         }
         gui = next;
         rebuild();

@@ -21,6 +21,7 @@ namespace playground::sandbox
         }
 
         bool isFm(const std::string& name) { return name.size() > 3 && name.compare(name.size() - 3, 3, ".fm") == 0; }
+        bool isCir(const std::string& name) { return isCircuitFile(name); }
 
         // The numbers between the parentheses after `attribute` in a declaration's text ("fminus::range(- 36, 0)": -36
         // and 0; Lang's tokens are spaced, so a minus may stand apart from its number). Empty when it is not there.
@@ -102,7 +103,7 @@ namespace playground::sandbox
         Declared out;
         Sources programs;
         for (const SourceFile& f : files)
-            if (isFm(f.name))
+            if (isFm(f.name) || isCir(f.name))
                 programs.push_back(f);
         if (programs.empty())
             return out;
@@ -158,6 +159,38 @@ namespace playground::sandbox
             d.def = def.empty() ? d.min : static_cast<float>(def[0]);
             out.dials.push_back(std::move(d));
         }
+        // The circuits' dials, after the params, as the plugin makes them (Patch.h, "Circuits").
+        lang::CircuitDials circuits = lang::circuitDials(service, instrument);
+        lang::assignSlots(circuits, static_cast<int>(out.dials.size()));
+        for (const lang::CircuitBinding& b : circuits.bindings)
+        {
+            if (!b.why.empty())
+                out.notes += b.why + "\n";
+            for (int a = 0; a < b.args() && !b.names.empty(); ++a)
+            {
+                if (b.slots[static_cast<std::size_t>(a)] < 0)
+                {
+                    ++out.beyond;
+                    continue;
+                }
+                Dial d;
+                d.name = b.names[static_cast<std::size_t>(a)];
+                if (a < static_cast<int>(b.pots.size()))
+                {
+                    d.def = b.pots[static_cast<std::size_t>(a)].def;
+                    d.circuit = true;
+                }
+                else
+                {
+                    const lang::CircuitSwitch& w = b.switches[static_cast<std::size_t>(a) - b.pots.size()];
+                    d.type = ControlType::integer;
+                    d.max = static_cast<float>(w.positions - 1);
+                    d.def = static_cast<float>(w.def);
+                    d.circuit = true;
+                }
+                out.dials.push_back(std::move(d));
+            }
+        }
         return out;
     }
 
@@ -175,6 +208,7 @@ namespace playground::sandbox
         {
             Dial d;
             d.given = !v.hasProperty("given") || static_cast<bool>(v["given"]);
+            d.circuit = static_cast<bool>(v["circuit"]);   // the sandbox's own (toJson), never Claude's
             d.name = v["name"].toString().trim().toStdString();
             if (!identifier(d.name) || d.name.size() >= sizeof(Control{}.name))
             {
@@ -253,6 +287,8 @@ namespace playground::sandbox
             if (!d.style.empty())
                 o->setProperty("style", juce::String(d.style));
             o->setProperty("given", d.given);
+            if (d.circuit)
+                o->setProperty("circuit", true);
             out.add(juce::var(o));
         }
         return out;
@@ -278,6 +314,11 @@ namespace playground::sandbox
         {
             const Dial& d = dials[k];
             Control& c = out[k];
+            if (d.circuit && d.type == ControlType::real)
+            {
+                c = lang::potControl(d.name, d.def);   // a circuit's pot: 0 to 100 %, as the plugin's slot
+                continue;
+            }
             std::snprintf(c.name, sizeof c.name, "%s", d.name.c_str());
             // No unit: in the plugin a dial's unit comes from the .gui's unit= alone (GuiSpec), never from its
             // declaration (Patch's controlOf), so a dial's `unit` is only what a blank panel writes as unit=.
