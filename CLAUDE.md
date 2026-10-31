@@ -215,16 +215,17 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - The schematic's live probes (Engine.h's "Probes", Patch.h's, Circuits.h's): every netlist is generated with FMinus's
   probe fields (`Options::probes`: the same output bits, messages and self-test key), so the program, its frozen copy
   and every recompile share one layout and choosing a probe never compiles or swaps anything. The editor's set
-  (`ProbeSet`: a program id, a circuit field, an element, four nodes) goes through the processor (`EditorPort::
-  addProbeOwner`, `setProbes`, `removeProbeOwner`: the newest owner whose set is armed; a picture's Panel owns none)
-  to `Engine::setProbes`, a seqlock and a generation; the audio thread applies it at a block's start only to current_
-  of that program id (the synth's newest sounding voice, the one before disarmed), never writes into another Patch
-  (a swap and prepare() forget the target), and after each whole call (the followed voice's part) copies the newest
-  samples (at most 1,024) into its rings of atomics and reads and zeroes the stats into `Meters::probes`: no
-  allocation, no lock. **No call is ever cut for a probe**: the output's bits are the same probed or not
-  (`dsp.meters` PROBES). Their cost stays with whoever looks: with nothing armed, a generation load a block and the
-  module's one branch a sample; a Panel arms only while its Schematic view shows a net that resolves, and clears its
-  set when the view hides, the tab changes or it goes.
+  (`ProbeSet`: a program id, a circuit field, an element, four nodes) goes through the processor
+  (`EditorPort::addProbeOwner`, `setProbes`, `removeProbeOwner`: the newest owner whose set is armed; a picture's
+  Panel owns none) to `Engine::setProbes`, a seqlock and a generation; the audio thread applies it at a block's start
+  only to current_ of that program id (the synth's newest sounding voice, the one before disarmed), never writes into
+  another Patch (a swap and prepare() forget the target), and after each whole call (the followed voice's part) copies
+  the newest samples (at most 1,024; a longer call starts the run `Engine::probe` reports again, so no scope joins two
+  calls) into its rings of atomics and reads and zeroes the stats into `Meters::probes`: no allocation, no lock. **No
+  call is ever cut for a probe**: the output's bits are the same probed or not (`dsp.meters` PROBES). Their cost stays
+  with whoever looks: with nothing armed, a generation load a block (and the set's few words in the meters; nothing
+  computed) and the module's one branch a sample; a Panel arms only while its Schematic view shows a net that
+  resolves, and clears its set when the view hides, the tab changes or it goes.
 - The displays read what the audio thread publishes, without a lock: after each block the Engine measures the
   input (the effect's) and the output and reads the displays' fields (`Patch::tap`, a field of the effect's instance,
   or of the synth's newest sounding voice) into `Engine::Meters`, through an `fsdsp::Seqlock`, and writes the scope's

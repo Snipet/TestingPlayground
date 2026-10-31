@@ -33,11 +33,13 @@
 //             bits     the output with four slots armed is the output with none, bit for bit, in host blocks of 64, 333
 //                      and 4096 (a 1 s sine of 0.5 V at 1 kHz in; a synth's note held 0.6 s), and so is a program with
 //                      per-call state beside the circuit (a block-rate LFO: a probe never cuts a call)
-//             rings    over that second (a synth's A4 held 0.95 s) in blocks of 64 and 333, block by block: the .output
-//                      node's ring is the output times .output's scale (tick returns V / scale), the .input node's ring
-//                      the input times .input's scale (the synth's input, the saw, written to the right channel by a copy
-//                      of the program), bit for bit; each slot's peak, RMS and mean within 1 % of its last whole periods'
-//                      samples (the mean within 1 % of the RMS)
+//             rings    over that second (an effect's sine on 0.25 V of DC; a synth's A4 held 0.95 s) in blocks of 64, 333
+//                      and 2048, block by block: the .output node's ring is the output times .output's scale (tick returns
+//                      V / scale), the .input node's ring the input times .input's scale (the synth's input, the saw,
+//                      written to the right channel by a copy of the program), bit for bit, an effect's block of 2048
+//                      giving only its newest 1,024 (never two blocks joined); in blocks of 64 and 333 (a synth's 2048 too)
+//                      each slot's peak, RMS and mean within 1 % of its last whole periods' samples (the mean within 1 %
+//                      of the RMS, and the effect's input node's 0.25 V within 1 % of itself)
 //             applied  a set for another program id writes nothing; with nothing armed the module's count, the rings
 //                      and the writes stand still, and the meters say none; an unreadable node (screamer.cir's t1, in its
 //                      tone block computed as a whole) is refused, its why in the probe table, the other slots read; the
@@ -144,12 +146,17 @@ namespace
         return set;
     }
 
-    // The input: a 1 s sine of 0.5 V at 1 kHz (an effect's), or a synth's length; its notes.
-    probe::Stereo probeInput()
+    // The input: a 1 s sine of 0.5 V at 1 kHz (an effect's; on `dc` volts), or a synth's length; its notes.
+    probe::Stereo probeInput(double dc = 0.0)
     {
         probe::Stereo in(static_cast<std::size_t>(kFs));
         if constexpr (!kInstrument)
-            in.l = in.r = probe::sine(1000.0, 0.5, kFs, in.size());
+        {
+            in.l = probe::sine(1000.0, 0.5, kFs, in.size());
+            for (float& x : in.l)
+                x = static_cast<float>(static_cast<double>(x) + dc);
+            in.r = in.l;
+        }
         return in;
     }
     std::vector<probe::Note> probeNotes()
@@ -211,8 +218,8 @@ namespace
             P.eq(key + ".same", same ? 1 : 0, 1);
         }
 
-        // rings and stats, block by block, in blocks of 64 and 333
-        for (const int block : { 64, 333 })
+        // rings and stats, block by block, in blocks of 64, 333 and 2048
+        for (const int block : { 64, 333, 2048 })
         {
             const std::string key = "probes.rings_" + std::to_string(block);
             // the synth's input: its copy of the program writes the circuit's input (the saw) to the right channel
@@ -224,7 +231,7 @@ namespace
                 if (at != std::string::npos)
                     program.replace(at, from.size(), to);
             }
-            probe::Rig rig(kFs, 512);
+            probe::Rig rig(kFs, std::max(512, block));
             std::string why;
             const bool ok = rig.load(played(dt, program), &why);
             P.eq(key + ".compiles", ok ? 1 : 0, 1);
@@ -235,13 +242,13 @@ namespace
             }
             const pg::ProbeSet set = setOn(rig.engine(), { "b", "in", "a", "c" });
             rig.engine().setProbes(set);
-            const probe::Stereo in = probeInput();
+            const probe::Stereo in = probeInput(kInstrument ? 0.0 : 0.25);
             std::vector<probe::Note> notes;                        // the synth's: A4 held throughout
             if constexpr (kInstrument)
                 notes.push_back({ 0, pg::EventKind::noteOn, 69, 0.9f });
             constexpr double kScaleOut = 1.0, kScaleIn = 1.0;     // diodetone.cir's: .input scale=1, .output's default
             bool outSame = true, inSame = true, allValid = true;
-            std::size_t compared = 0;
+            std::size_t compared = 0, expected = 0;
             std::vector<float> ring(static_cast<std::size_t>(pg::Engine::kScopeLength)), ringIn(ring.size());
             std::vector<float> outL;
             std::size_t nextNote = 0;
@@ -271,8 +278,12 @@ namespace
                     pos += len;
                     continue;
                 }
-                allValid = allValid && got == n && gotIn == n;
-                for (int i = 0; i < n && got == n && gotIn == n; ++i)
+                // the block's samples, all of them; an effect's call longer than the module's ring, its newest 1,024
+                // (the synth's voice parts are 16 samples)
+                const int want = kInstrument ? n : std::min(n, pg::circuits::kProbeRing);
+                expected += static_cast<std::size_t>(want);
+                allValid = allValid && got == want && gotIn == want;
+                for (int i = n - want; i < n && got == want && gotIn == want; ++i)
                 {
                     const float wantOut = static_cast<float>(static_cast<double>(out.l[static_cast<std::size_t>(i)]) * kScaleOut);
                     const float wantIn = static_cast<float>(static_cast<double>(kInstrument ? out.r[static_cast<std::size_t>(i)]
@@ -284,15 +295,17 @@ namespace
                 outL.insert(outL.end(), out.l.begin(), out.l.end());
                 pos += len;
             }
-            std::printf("%s: %zu samples compared\n", key.c_str(), compared);
+            std::printf("%s: %zu samples compared (of %zu)\n", key.c_str(), compared, length - first);
             P.eq(key + ".valid", allValid ? 1 : 0, 1);
-            P.eq(key + ".output_ring", outSame && compared == length - first ? 1 : 0, 1);
-            P.eq(key + ".input_ring", inSame && compared == length - first ? 1 : 0, 1);
+            P.eq(key + ".output_ring", outSame && compared == expected && expected > 0 ? 1 : 0, 1);
+            P.eq(key + ".input_ring", inSame && compared == expected && expected > 0 ? 1 : 0, 1);
             // the stats against the last whole periods of each slot's ring: 85 of the effect's 1 kHz (4080 samples), 37
             // of the synth's 440 Hz (4036; the peak falls 20 dB a second between the saw's peaks, 0.5 % a period)
             pg::Meters m;
             rig.engine().meters(m);
             P.eq(key + ".meters_set", m.probeSet == set && m.probeProgram == rig.program() ? 1 : 0, 1);
+            if (!kInstrument && block > pg::circuits::kProbeRing)
+                continue;                                          // (its rings hold one block's newest 1,024)
             for (int slot = 0; slot < 4; ++slot)
             {
                 constexpr int kWindow = kInstrument ? 4036 : 4080;
@@ -315,6 +328,11 @@ namespace
                 P.near(s + ".peak", static_cast<double>(pm.peak), peak, 0.01 * peak);
                 P.near(s + ".rms", static_cast<double>(pm.rms), rms, 0.01 * rms);
                 P.near(s + ".mean", static_cast<double>(pm.mean), mean, 0.01 * rms);
+                if (!kInstrument && slot == 1)                     // the input node: its 0.25 V of DC, measured
+                {
+                    P.near(s + ".dc", mean, 0.25, 0.0025);
+                    P.near(s + ".mean_of_dc", static_cast<double>(pm.mean), mean, 0.01 * std::fabs(mean));
+                }
             }
         }
 

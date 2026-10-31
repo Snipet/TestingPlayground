@@ -800,13 +800,15 @@ namespace playground
             return 0;
         }
         const bool armed = ((probeMask_.load(std::memory_order_acquire) >> slot) & 1u) != 0;
-        const uint32_t end = probeAt_.load(std::memory_order_acquire);
-        const uint32_t from = probeFrom_.load(std::memory_order_relaxed);
-        const int valid = armed ? static_cast<int>(std::min<uint32_t>(end - from, static_cast<uint32_t>(count))) : 0;
+        // The end, then where the set's samples begin, loaded after it: never older than the end's, and newer when a
+        // re-arm or a call longer than the module's ring came since (then none of these samples are the set's).
+        const uint64_t end = probeAt_.load(std::memory_order_acquire);
+        const uint64_t from = probeFrom_.load(std::memory_order_relaxed);
+        const int valid = armed && end > from ? static_cast<int>(std::min<uint64_t>(end - from, static_cast<uint64_t>(count))) : 0;
         const std::array<std::atomic<float>, kScopeLength>& ring = probeRings_[static_cast<std::size_t>(slot)];
         for (int i = 0; i < count; ++i)
             out[i] = i >= count - valid
-                         ? ring[(end - static_cast<uint32_t>(count) + static_cast<uint32_t>(i)) & (kScopeLength - 1)].load(std::memory_order_relaxed)
+                         ? ring[(end - static_cast<uint64_t>(count) + static_cast<uint64_t>(i)) & (kScopeLength - 1)].load(std::memory_order_relaxed)
                          : 0.0f;
         return valid;
     }
@@ -901,7 +903,9 @@ namespace playground
         if (d == 0)
             return;
         const uint32_t take = std::min<uint32_t>(d, static_cast<uint32_t>(circuits::kProbeRing));
-        const uint32_t at = probeAt_.load(std::memory_order_relaxed);
+        const uint64_t at = probeAt_.load(std::memory_order_relaxed);
+        if (d > take)                                // a call longer than the module's ring: its newest kProbeRing samples,
+            probeFrom_.store(at, std::memory_order_relaxed);   // never joined to the call before (probe() says so)
         for (int k = 0; k < 4; ++k)
         {
             if (((probeSlots_ >> k) & 1u) == 0)
@@ -937,7 +941,22 @@ namespace playground
 
     void Engine::publishProbes(int n) noexcept
     {
-        const bool on = probeInstance_ >= 0 && probeSlots_ != 0 && probeTaken_ > 0;
+        frame_.probeGen = probeSeen_;
+        frame_.probeSet = probeWant_;
+        frame_.probeInstance = static_cast<int16_t>(probeInstance_);
+        if (probeInstance_ < 0)
+        {
+            // nothing armed: the meters say so (their slots cleared once), and nothing is computed
+            frame_.probeProgram = 0;
+            if (probeMetered_)
+            {
+                std::fill(std::begin(frame_.probes), std::end(frame_.probes), ProbeMeter{});
+                probeMetered_ = false;
+            }
+            return;
+        }
+        probeMetered_ = true;
+        const bool on = probeSlots_ != 0 && probeTaken_ > 0;
         const float seconds = static_cast<float>(n) / std::max(fs_, 1.0f);
         const float fall = std::exp(-2.30258509f * seconds);      // 20 dB a second, as the levels' peaks
         const float keep = std::exp(-seconds / 0.05f);             // the RMS's power over 50 ms
@@ -946,7 +965,7 @@ namespace playground
         for (std::size_t k = 0; k < 4; ++k)
         {
             ProbeMeter& m = frame_.probes[k];
-            const bool armed = probeInstance_ >= 0 && ((probeSlots_ >> k) & 1u) != 0;
+            const bool armed = ((probeSlots_ >> k) & 1u) != 0;
             if (!armed)
             {
                 m = ProbeMeter{};
@@ -976,10 +995,7 @@ namespace playground
         }
         if (on)
             probeFresh_ = false;
-        frame_.probeProgram = probeInstance_ >= 0 && current_ != nullptr ? current_->program() : 0;
-        frame_.probeGen = probeSeen_;
-        frame_.probeSet = probeWant_;
-        frame_.probeInstance = static_cast<int16_t>(probeInstance_);
+        frame_.probeProgram = current_ != nullptr ? current_->program() : 0;
         probeTaken_ = 0;
         probePeak_.fill(0.0f);
         probeSum_.fill(0.0);

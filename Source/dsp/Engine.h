@@ -68,10 +68,13 @@
 // armed slot into its own rings of atomics (kScopeLength each; probe()), what is not finite as 0, and reads and zeroes
 // the slots' peaks, sums and sums of squares, which publish() turns into Meters::probes (the peak falling 20 dB a
 // second, the RMS over 50 ms, the mean over 200 ms; a block whose stat is not finite is not valid), with the set
-// applied (probeSet, probeGen, probeProgram) and the instance followed. No call is ever cut for a probe: the output's
-// bits are the same probed or not. With nothing armed the audio thread pays one generation load a block (an
-// instrument's voices a look for the newest), the module one branch a sample; armed, a delta read, at most 4 x
-// kProbeRing ring copies and 12 stat reads and zeroes a call.
+// applied (probeSet, probeGen, probeProgram) and the instance followed. A call longer than kProbeRing (an effect's
+// host block over 1,024 samples) leaves only its newest kProbeRing in the rings, so probe() counts the set's samples
+// from there: a run of samples it gives is never two calls joined (the stats still take every sample). No call is
+// ever cut for a probe: the output's bits are the same probed or not. With nothing armed the audio thread pays one
+// generation load a block (and the set's few words in the meters), the module one branch a sample; armed, a delta
+// read, at most 4 x kProbeRing ring copies and 12 stat reads and zeroes a call (an instrument's voices a look for the
+// newest a block).
 //
 // Flush-to-zero. process() runs in it (fsdsp::ScopedFtz), the mode the programs are compiled for, whoever calls it:
 // the audio thread has it already; an offline render (Measure, the chat's tools) would otherwise make FMinus set and
@@ -195,12 +198,13 @@ namespace playground
         bool meters(Meters& out) const noexcept { return meters_.read(out); }
         // The probes (above, "Probes"): the set the audio thread applies from its next block (one writer: the
         // processor's message thread), and the last n samples (at most kScopeLength) of slot `slot`'s ring, oldest
-        // first: how many of them are of the set that plays (the older are 0); 0 for a slot not armed.
+        // first: how many of them are of the set that plays, in one run (the older are 0; since a call longer than
+        // kProbeRing, at most its newest kProbeRing); 0 for a slot not armed.
         void setProbes(const ProbeSet& set) noexcept;
         int probe(int slot, float* out, int n) const noexcept;
         uint64_t probeGeneration() const noexcept { return probeGenIn_.load(std::memory_order_relaxed); }
         // The samples copied into the probes' rings so far (they stand still while nothing is armed): the probes'.
-        uint32_t probeSamples() const noexcept { return probeAt_.load(std::memory_order_acquire); }
+        uint32_t probeSamples() const noexcept { return static_cast<uint32_t>(probeAt_.load(std::memory_order_acquire)); }
         // The last n samples (at most kScopeLength) of the input or the output, mono, oldest first.
         void scope(bool input, float* out, int n) const noexcept;
         // Who reads the meters and the scopes (above): each reader adds itself while it reads, and removes itself after.
@@ -410,8 +414,9 @@ namespace playground
         // The probes (above): the set (setProbes' seqlock and its generation), the set as the audio thread last read it
         // and the generation it read, the target armed (always current_: its field, element and instance, -1 for none;
         // the slots' nodes it was armed with and the slots armed), prn_ as last read, the block's stats so far (the
-        // samples taken, each slot's peak, sum, sum of squares, all finite), the stats' first block, the rings (the
-        // samples copied so far, and where the set that plays began: probe()'s), the slots armed for probe().
+        // samples taken, each slot's peak, sum, sum of squares, all finite), the stats' first block, whether the meters'
+        // slots hold numbers, the rings (the samples copied so far, and where the run of the set that plays began:
+        // probe()'s), the slots armed for probe().
         fsdsp::Seqlock<ProbeSet> probeSet_;
         std::atomic<uint64_t> probeGenIn_{ 0 };
         ProbeSet probeWant_{};
@@ -426,8 +431,9 @@ namespace playground
         std::array<double, 4> probeSum_{}, probeSquares_{};
         std::array<bool, 4> probeFinite_{};
         bool probeFresh_ = true;
+        bool probeMetered_ = false;
         std::array<std::array<std::atomic<float>, kScopeLength>, 4> probeRings_{};
-        std::atomic<uint32_t> probeAt_{ 0 }, probeFrom_{ 0 };
+        std::atomic<uint64_t> probeAt_{ 0 }, probeFrom_{ 0 };
         std::atomic<uint8_t> probeMask_{ 0 };
     };
 }
