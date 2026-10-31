@@ -2745,6 +2745,12 @@ namespace playground::ui
             fit(true);
         computeMarks();
         updateProbes();
+        if (probe_.meters)                               // the meters standing still: an audio thread that stopped
+        {
+            const uint32_t f = probe_.meters().frame;
+            probeStill_ = f != probeFrame_ ? 0.0f : probeStill_ + dt;
+            probeFrame_ = f;
+        }
         if (easing_)
         {
             st_->zoom = funkgui::ease::toward(st_->zoom, zoomTo_, dt, kEaseTau, 1e-4f);
@@ -2816,8 +2822,8 @@ namespace playground::ui
         if (!showing())
             return true;
         // (a notice's 4 s count down at the idle rate: it asks for no frames of its own)
-        if (easing_ || fitPending_ || !flash_.empty() || probesLive())
-            return false;                                // a live readout: 60 Hz while it shows
+        if (easing_ || fitPending_ || !flash_.empty() || (probesLive() && probeStill_ < kProbeStill))
+            return false;                                // a live readout: 60 Hz while it shows and its meters move
         if (drag_ == Drag::move || drag_ == Drag::wire || drag_ == Drag::marquee || drag_ == Drag::carry || drag_ == Drag::knob)
             return false;
         // a part carried near the edge pans
@@ -3059,12 +3065,15 @@ namespace playground::ui
         }
         if (hooks_.played && !hooks_.played())
             return "Not played: no program #includes " + file_;
-        // the selected net's probe, when it reads nothing: why (the spec's §9.3)
-        if (!slots_[0].reason.empty())
+        // the selected net's probe, when it reads nothing and no card says why (one shows for a net that resolves): why
+        // (the spec's §9.3)
+        if (!slots_[0].reason.empty() && slots_[0].node < 0)
             return "Probe: " + slots_[0].reason;
         if (dials_.playedNote)
             if (std::string note = dials_.playedNote(); !note.empty())
                 return note;                             // "program.fm now plays pedal.cir", while Undo can take it back
+        if (!slots_[0].reason.empty())
+            return "Probe: " + slots_[0].reason;         // ("no voice sounding": the card says it too)
         // Why its pots have no knobs: the program calls the module's set() itself (the binding's own note).
         if (dials_.bindings)
             for (const lang::CircuitBinding& b : dials_.bindings())
@@ -3079,7 +3088,10 @@ namespace playground::ui
             return {};
         if (hooks_.played && !hooks_.played())
             return dials_.play ? "Play this circuit" : std::string();
-        return dials_.playedNote && !dials_.playedNote().empty() ? "Undo" : std::string();
+        if (!dials_.playedNote)
+            return {};
+        const std::string note = dials_.playedNote();    // Undo only beside the note it takes back
+        return !note.empty() && stripBanner() == note ? "Undo" : std::string();
     }
 
     funkgui::Rect SchematicView::stripButtonRect() const
@@ -3439,8 +3451,8 @@ namespace playground::ui
             const funkgui::Rect r = k == 0 ? probeCard() : probeLane(static_cast<int>(k) - 1);
             it.bounds = clamp(r.h > 0.0f ? r : strip_);
             it.title = k == 0 ? "Probe " + p.net : "Probe " + std::to_string(k) + ", " + p.net;
-            const std::string words = probeWords(static_cast<int>(k));
-            it.value = asciiText(!p.reason.empty() ? p.reason : words.empty() ? std::string("waiting for the program") : words.substr(words.find(p.net) + p.net.size() + 3));
+            const std::string numbers = probeNumbers(static_cast<int>(k));
+            it.value = asciiText(!p.reason.empty() ? p.reason : numbers.empty() ? std::string("waiting for the program") : numbers);
             it.readOnly = true;
             out.push_back(std::move(it));
         }
@@ -3953,25 +3965,43 @@ namespace playground::ui
         return slot >= 0 && slot < 4 ? slots_[static_cast<std::size_t>(slot)].reason : std::string();
     }
 
-    bool SchematicView::probesLive() const
+    bool SchematicView::slotApplied(const Meters& m, std::size_t slot) const
     {
-        if (!showing() || !probe_.meters || !sent_.armed())
+        const ProbeSet& a = m.probeSet;
+        return sent_.armed() && slot < 4 && sent_.nodes[slot] >= 0 && a.program == sent_.program && a.circuit == sent_.circuit
+            && a.instance == sent_.instance && a.nodes[slot] == sent_.nodes[slot] && m.program == sent_.program;
+    }
+
+    bool SchematicView::slotLive(int slot) const
+    {
+        if (!showing() || !probe_.meters || slot < 0 || slot >= 4 || slots_[static_cast<std::size_t>(slot)].node < 0)
             return false;
         const Meters& m = probe_.meters();
-        return m.probeSet == sent_ && m.probeProgram == sent_.program && m.probeInstance >= 0;   // applied, and reading
+        return slotApplied(m, static_cast<std::size_t>(slot)) && m.probeProgram == sent_.program && m.probeInstance >= 0;
+    }
+
+    bool SchematicView::probesLive() const
+    {
+        for (int k = 0; k < 4; ++k)
+            if (slotLive(k))
+                return true;                             // applied, and reading
+        return false;
+    }
+
+    std::string SchematicView::probeNumbers(int slot) const
+    {
+        if (!slotLive(slot))
+            return {};
+        const ProbeMeter& m = probe_.meters().probes[slot];
+        if (!m.valid)
+            return "reading";
+        return "PEAK " + volts(m.peak, false) + "   RMS " + volts(m.rms, false) + "   MEAN " + volts(m.mean, true);
     }
 
     std::string SchematicView::probeWords(int slot) const
     {
-        if (slot < 0 || slot >= 4 || !probesLive())
-            return {};
-        const ProbeSlot& p = slots_[static_cast<std::size_t>(slot)];
-        if (p.node < 0)
-            return {};
-        const ProbeMeter& m = probe_.meters().probes[slot];
-        if (!m.valid)
-            return "PROBE " + p.net + "   reading";
-        return "PROBE " + p.net + "   PEAK " + volts(m.peak, false) + "   RMS " + volts(m.rms, false) + "   MEAN " + volts(m.mean, true);
+        const std::string numbers = probeNumbers(slot);
+        return numbers.empty() ? std::string() : "PROBE " + slots_[static_cast<std::size_t>(slot)].net + "   " + numbers;
     }
 
     int SchematicView::probeTable() const
@@ -4045,6 +4075,7 @@ namespace playground::ui
         sent_ = ProbeSet{};
         sentAny_ = true;
         spoken_.clear();
+        spokenNet_.clear();
         if (probeItems_ != 0)
         {
             probeItems_ = 0;
@@ -4124,12 +4155,11 @@ namespace playground::ui
         // what the audio thread says of this set, once it plays the set's program: no voice sounding (an instrument's
         // newest, none), or the rings to read
         const Meters& m = probe_.meters();
-        const bool ours = set.armed() && m.probeSet == set && m.program == set.program;
         for (std::size_t k = 0; k < 4; ++k)
         {
             ProbeSlot& p = slots_[k];
             p.valid = 0;
-            if (p.node < 0 || !ours)
+            if (p.node < 0 || !slotApplied(m, k))
                 continue;
             if (m.probeInstance < 0 || m.probeProgram != set.program)
             {
@@ -4142,13 +4172,16 @@ namespace playground::ui
                 p.valid = probe_.samples(static_cast<int>(k), p.trace.data(), 2 * kTraceSamples);
             }
         }
-        // the selected net's reason, spoken when it changes (the strip draws it)
-        const std::string reason = slots_[0].reason;
-        if (reason != spoken_)
+        // the selected net's reason, spoken when it changes (the strip or the card draws it); "no voice sounding" comes
+        // back after every note let go, so it is spoken once a net, not after each
+        const ProbeSlot& s0 = slots_[0];
+        const bool sounding = s0.reason.empty() && spoken_ == kNoVoice && spokenNet_ == s0.net;
+        if (!sounding && (s0.reason != spoken_ || (s0.reason == kNoVoice && s0.net != spokenNet_)))
         {
-            spoken_ = reason;
-            if (!reason.empty() && host_ != nullptr)
-                host_->announce("Probe: " + reason);
+            spoken_ = s0.reason;
+            spokenNet_ = s0.net;
+            if (!spoken_.empty() && host_ != nullptr)
+                host_->announce("Probe: " + spoken_);
         }
         int items = 0;
         for (const ProbeSlot& p : slots_)
@@ -4242,23 +4275,29 @@ namespace playground::ui
 
     std::vector<float> SchematicView::probeTrace(int slot) const
     {
-        if (slot < 0 || slot >= 4 || !probesLive())
+        if (!slotLive(slot))
             return {};
         const ProbeSlot& p = slots_[static_cast<std::size_t>(slot)];
-        if (p.node < 0 || p.valid <= 0 || p.trace.empty() || !p.reason.empty())
+        if (p.valid <= 0 || p.trace.empty() || !p.reason.empty())
             return {};
         const int n = static_cast<int>(p.trace.size());
+        const int valid = std::min(p.valid, n);
         const float mean = probe_.meters().probes[slot].mean;
-        const int window = std::min(p.valid, kTraceSamples);
-        int start = n - window;
-        if (p.valid > kTraceSamples)                     // triggered: the last rising crossing that leaves a window
-            for (int i = n - kTraceSamples; i > std::max(n - p.valid, 1); --i)
+        if (valid > kTraceSamples)
+        {
+            int start = n - kTraceSamples;               // triggered: the last rising crossing that leaves a window
+            for (int i = n - kTraceSamples; i > std::max(n - valid, 1); --i)
                 if (p.trace[static_cast<std::size_t>(i - 1)] < mean && mean <= p.trace[static_cast<std::size_t>(i)])
                 {
                     start = i;
                     break;
                 }
-        return { p.trace.begin() + start, p.trace.begin() + start + window };
+            return { p.trace.begin() + start, p.trace.begin() + start + kTraceSamples };
+        }
+        // No more than a window is of the set (a large block's newest 1,024, §9.3, or a set just armed): triggered on
+        // the first rising crossing inside them that leaves half a window, else all of them.
+        const int at = sch::risingCrossing(p.trace.data(), n - valid + 1, n - kTraceSamples / 2 + 1, mean);
+        return { p.trace.begin() + (at >= 0 ? at : n - valid), p.trace.end() };
     }
 
     float SchematicView::probeRange(int slot) const
@@ -4310,7 +4349,7 @@ namespace playground::ui
         const funkgui::TextStyle& st = chat::kSmall;
         const funkgui::TextStyle& strong = chat::kSmallStrong;
         const bool live = probesLive();
-        const Meters* m = live ? &probe_.meters() : nullptr;
+        const Meters* m = live ? &probe_.meters() : nullptr;   // (each slot drawn live only when it is: slotLive)
         // the pinned nets' numbers on their wires
         {
             const funkgui::Canvas::Scope s(c, sch::kProbeTag, false);
@@ -4332,7 +4371,7 @@ namespace playground::ui
                 return;
             }
             const float range = probeRange(slot);
-            sch::trace(c, r, w.data(), static_cast<int>(w.size()), m->probes[slot].mean, range, k);
+            sch::trace(c, r, w.data(), static_cast<int>(w.size()), m->probes[slot].mean, range, k, kTraceSamples);
         };
         // its range, right of the trace (the trace's edges are its mean +- this)
         const auto drawRange = [&](int slot, float right, float cy) {
@@ -4366,7 +4405,7 @@ namespace playground::ui
                 c.text(name.c_str(), r.x + 24.0f, c.capCentreTop(r.y + 11.0f, strong), strong, pal.text);
                 const float left = std::min(250.0f, 0.44f * r.w);
                 std::string words;
-                if (p.node >= 0 && m != nullptr && p.reason.empty())
+                if (m != nullptr && slotLive(slot) && p.reason.empty())
                 {
                     const ProbeMeter& pm = m->probes[slot];
                     words = pm.valid ? "pk " + volts(pm.peak, false) + "   rms " + volts(pm.rms, false) + "   mean " + volts(pm.mean, true)
@@ -4396,15 +4435,9 @@ namespace playground::ui
         const std::string head = "PROBE " + p.net;
         c.text(head.c_str(), x, c.capCentreTop(line, strong), strong, pal.text);
         x += c.textWidth(head.c_str(), strong) + 14.0f;
-        std::string words;
-        if (m != nullptr && p.reason.empty())
-        {
-            const ProbeMeter& pm = m->probes[0];
-            words = pm.valid ? "PEAK " + volts(pm.peak, false) + "   RMS " + volts(pm.rms, false) + "   MEAN " + volts(pm.mean, true)
-                             : std::string("reading");
-        }
-        else
-            words = p.reason.empty() ? std::string("waiting for the program") : p.reason;
+        std::string words = p.reason.empty() ? probeNumbers(0) : p.reason;
+        if (words.empty())
+            words = "waiting for the program";
         const std::optional<funkgui::Point> chip = centreOfChip(), pin = centreOfPin();
         const float right = chip ? chip->x - 32.0f - 8.0f : pin->x - 0.5f * kPinW - 8.0f;
         c.text(fitText(c, words, st, std::max(0.0f, right - x)).c_str(), x, c.capCentreTop(line, st), st, pal.soft);

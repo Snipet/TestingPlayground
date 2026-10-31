@@ -10,6 +10,7 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <initializer_list>
 #include <map>
@@ -840,7 +841,8 @@ namespace playground::ui::sch
     }
 
     // ---- the probes ---------------------------------------------------------------------------------------------------
-    void trace(funkgui::Canvas& c, const funkgui::Rect& r, const float* volts, int n, float centre, float range, const Inks& k)
+    void trace(funkgui::Canvas& c, const funkgui::Rect& r, const float* volts, int n, float centre, float range, const Inks& k,
+               int span)
     {
         c.rrect(r.x, r.y, r.w, r.h, 3.0f, k.ground, 1.0f, k.grid);
         c.hairlineH(r.x + 2.0f, r.centreY(), r.w - 4.0f, k.faint);
@@ -850,17 +852,38 @@ namespace playground::ui::sch
             c.hairlineV(r.x + r.w * static_cast<float>(i) / 4.0f, r.y + 2.0f, r.h - 4.0f, k.grid);
         if (n < 2 || volts == nullptr || !(range > 0.0f))
             return;
-        constexpr int kMaxPoints = 256;
-        float xs[kMaxPoints], ys[kMaxPoints];
-        const int m = std::min(n, kMaxPoints);
+        constexpr int kBuckets = 256;
+        float xs[2 * kBuckets], ys[2 * kBuckets];
+        const int width = std::max(span, n);             // the samples the width stands for
         const float half = 0.5f * r.h - 2.0f;
-        for (int i = 0; i < m; ++i)
-        {
-            const float v = volts[static_cast<std::size_t>(i) * static_cast<std::size_t>(n - 1) / static_cast<std::size_t>(std::max(m - 1, 1))];
-            const float y = std::clamp((v - centre) / range, -1.0f, 1.0f);
-            xs[i] = r.x + 2.0f + (r.w - 4.0f) * static_cast<float>(i) / static_cast<float>(m - 1);
-            ys[i] = r.centreY() - y * half;
-        }
+        int m = 0;
+        const auto point = [&](int i) {
+            const float y = std::clamp((volts[static_cast<std::size_t>(i)] - centre) / range, -1.0f, 1.0f);
+            xs[m] = r.x + 2.0f + (r.w - 4.0f) * static_cast<float>(i) / static_cast<float>(width - 1);
+            ys[m] = r.centreY() - y * half;
+            ++m;
+        };
+        if (n <= kBuckets)
+            for (int i = 0; i < n; ++i)
+                point(i);
+        else
+            for (int b = 0; b < kBuckets; ++b)
+            {
+                // the bucket's least and greatest, each at its own sample
+                const int from = static_cast<int>(static_cast<int64_t>(b) * n / kBuckets);
+                const int to = static_cast<int>(static_cast<int64_t>(b + 1) * n / kBuckets);
+                int lo = from, hi = from;
+                for (int i = from + 1; i < to; ++i)
+                {
+                    if (volts[static_cast<std::size_t>(i)] < volts[static_cast<std::size_t>(lo)])
+                        lo = i;
+                    if (volts[static_cast<std::size_t>(i)] > volts[static_cast<std::size_t>(hi)])
+                        hi = i;
+                }
+                point(std::min(lo, hi));
+                if (lo != hi)
+                    point(std::max(lo, hi));
+            }
         const funkgui::Canvas::ClipScope clip(c, r);
         c.polyline(xs, ys, m, 1.3f, k.symbol);
     }

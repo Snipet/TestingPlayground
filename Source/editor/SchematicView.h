@@ -302,6 +302,7 @@ namespace playground::ui
         static constexpr float kLaneH = 36.0f;       // a pinned net's lane
         static constexpr float kProbeShare = 0.4f;   // card and lanes take at most this much of the canvas
         static constexpr int kTraceSamples = 1024;   // a scope's window
+        static constexpr float kProbeStill = 0.25f;  // s of meters standing still before a live readout asks no frames
         // Pin a net to a slot (1 to 3; a fourth replaces the oldest), unpin it, or either (Alt-click): false when there
         // is no such net (ground cannot be pinned: it is 0 V). A user's gesture: the session keeps the pins.
         bool pinProbe(const std::string& net);
@@ -310,7 +311,9 @@ namespace playground::ui
         const std::vector<std::string>& pinnedProbes() const;
         // The nets the slots watch now ("" for none), the set sent last (EditorPort::setProbes), why a slot's net does
         // not resolve ("" when it does, or holds none), the readout's words ("PROBE a   PEAK 0.402 V   RMS 0.294 V
-        // MEAN +0.000 V"; "" while it reads nothing), and whether anything is live (the meters this set's).
+        // MEAN +0.000 V"; "" while it reads nothing), and whether anything is live: a slot is when the meters say the
+        // audio thread reads its node of this set (the same program, circuit, element and node in that slot; so a
+        // picture's Panel, which arms nothing, reads the slots it shares with the user's set).
         std::string probeNet(int slot) const;
         const ProbeSet& probeSet() const noexcept { return sent_; }
         std::string probeReason(int slot) const;
@@ -326,8 +329,10 @@ namespace playground::ui
         std::optional<funkgui::Point> centreOfPin() const;
         std::optional<funkgui::Point> centreOfChip() const;
         // A slot's scope as drawn: its window (the newest kTraceSamples from the last rising crossing of its mean that
-        // leaves one whole, else the newest; fewer while fewer are of the set that plays) and its range in volts (a power
-        // of two from 0.125 to 16 that holds the window about its mean; 0 while it reads nothing).
+        // leaves one whole, else the newest; while no more than a window is of the set that plays, as after an effect's
+        // host block over 1,024 samples, which leaves its newest 1,024, from the first rising crossing in them that leaves
+        // half a window, else all of them, drawn at the window's scale) and its range in volts (a power of two from 0.125
+        // to 16 that holds the window about its mean; 0 while it reads nothing).
         std::vector<float> probeTrace(int slot) const;
         float probeRange(int slot) const;
 
@@ -423,7 +428,8 @@ namespace playground::ui
         std::vector<cir::Pt> wirePath() const;
 
         // The probes (above): each slot's net and what it resolved to this frame, the samples read for its scope, the
-        // set sent, the lanes' scroll and the one under the pointer, the reason last spoken, the readouts' items' count.
+        // set sent, the lanes' scroll and the one under the pointer, the reason last spoken (and its net), the meters'
+        // frame and how long it stood still, the readouts' items' count.
         struct ProbeSlot
         {
             std::string net;                             // the net's name ("" for none)
@@ -433,6 +439,9 @@ namespace playground::ui
             std::vector<float> trace;                    // the last 2 x kTraceSamples of its ring
         };
         void updateProbes();                             // tick(): the slots resolved, the set sent, the rings read
+        bool slotApplied(const Meters& m, std::size_t slot) const;   // the meters' set has this slot of ours
+        bool slotLive(int slot) const;                   // ... and the audio thread reads it (a voice, its program)
+        std::string probeNumbers(int slot) const;        // "PEAK 0.402 V   RMS 0.294 V   MEAN +0.000 V", "reading", ""
         void clearProbes();                              // leave(): an empty set
         int probeTable() const;                          // the table's field for this file and the element chosen (-1)
         int probeElementIndex(int field) const;
@@ -446,7 +455,9 @@ namespace playground::ui
         ProbeSet sent_{};
         bool sentAny_ = false;
         float laneScroll_ = 0.0f;
-        std::string spoken_;
+        std::string spoken_, spokenNet_;
+        uint32_t probeFrame_ = 0;                        // the meters' frame last seen, and for how long (s)
+        float probeStill_ = 0.0f;
         uint32_t probeA11y_ = 0;
         int probeItems_ = 0;
 

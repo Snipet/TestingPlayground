@@ -180,9 +180,12 @@ namespace playground::ui::sch
     void chip(funkgui::Canvas& c, funkgui::Point at, float w, float h, const std::string& text, funkgui::Col ink, const Inks& k);
 
     // ---- the probes (SchematicView.h's "Live probes": its card and lanes, under the probes' tag, live) -------------
-    // A probe's trace over `r`: `n` volts (at most 256 points drawn), `centre` at the middle and +-`range` at the edges,
-    // on the canvas's ground with a hairline at the middle and the quarters (grid), the trace in the symbols' ink.
-    void trace(funkgui::Canvas& c, const funkgui::Rect& r, const float* volts, int n, float centre, float range, const Inks& k);
+    // A probe's trace over `r`: `n` volts from the left, the width standing for `span` samples (n when less), `centre`
+    // at the middle and +-`range` at the edges, on the canvas's ground with a hairline at the middle and the quarters
+    // (grid), the trace in the symbols' ink. Over 256 samples, each of 256 buckets draws its least and its greatest
+    // sample (in the order they come), so what lies between the points is drawn, never aliased.
+    void trace(funkgui::Canvas& c, const funkgui::Rect& r, const float* volts, int n, float centre, float range, const Inks& k,
+               int span = 0);
     // The scope's range for samples of half-span `span` volts about their centre: the smallest power of two from 0.125
     // to 16 that holds it.
     float traceRange(float span) noexcept;

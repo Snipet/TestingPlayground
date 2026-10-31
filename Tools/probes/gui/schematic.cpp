@@ -59,7 +59,8 @@
 //             module's set() itself gets no knobs, and the info strip says why
 //   PLAY      a netlist no program #includes: the banner's Play this circuit writes program.fm (CirTemplates.h's host
 //             program, the library tabs it needs), runs it, the view staying on the netlist, and offers Undo, which
-//             gives program.fm's text back in one step
+//             gives program.fm's text back in one step; a probe's reason the strip draws (a node typed since RUN)
+//             hides the Undo with the note it takes back, and a wire that resolves leaves both
 //   PERSIST   nothing kept by opening; a Panel opened again keeps each file's view, zoom and pan (the session's views);
 //             a view switched but never zoomed nor panned keeps no zoom, and fits again when opened again
 //   PROBES    the live probes (SchematicView.h's "Live probes", Engine.h's "Probes") on Play this circuit's program
@@ -71,11 +72,14 @@
 //             sounds; playing, slot 0 follows the selected wire and Alt-click pins two nets (their
 //             numbered flags), the card and the lanes taking at most 40 % of the canvas, their numbers the meters'
 //             within 1 %, each trace triggered on a rising crossing of its mean (the same window two frames apart) and
-//             ranged in a power of two volts, the readouts accessibility items; the wire's menu pins and unpins, and the
-//             effect's chip chooses amp[1] (and back); a view_panel window picture sends no set
-//             and a second Panel opened and closed leaves the set as it was; the Netlist view clears the set and the
-//             Schematic view arms the pins again (the session keeps them), a RUN arms them on the new program, and the
-//             Panel's going clears them
+//             ranged in a power of two volts, the readouts accessibility items (their values the numbers); with the
+//             meters standing still the view settles; the synth's "no voice sounding" is spoken once, not after each
+//             note let go; the wire's menu pins and unpins, and the effect's chip chooses amp[1] (and back); a
+//             view_panel window picture sends no set and a second Panel opened and closed leaves the set as it was, and
+//             a Panel that owns none (a picture's) reads the slots it shares with the user's set live; the
+//             Netlist view clears the set and the Schematic view arms the pins again (the session keeps them), a RUN
+//             arms them on the new program; in host blocks of 2048 an effect's scope shows each block's newest 1,024,
+//             triggered inside them (never two blocks joined), a synth's whole windows; and the Panel's going clears them
 //   EDIT      each kind's field (all 13 kinds and both terminals) writing the exact tokens as one undo step, its rows,
 //             the taper FMinus plays (a line's taper= before its .pot's word), a row past 64 characters left alone;
 //             E12 steps; refusals; 1M's warning; the Label tool; Show as labels (its tags overlapping nothing new);
@@ -1901,6 +1905,32 @@ PROBE(gui, schematic)
         P.eq("play.view_stays", panel.schematicShown() && v.file() == "diodetone.cir" ? 1 : 0, 1);
         P.eq("play.undo_offered", v.stripButton() == "Undo" && v.stripRight() == "program.fm now plays diodetone.cir" ? 1 : 0, 1);
         writePng(P, host, "gui.schematic.play.png", "play");
+        // a probe's reason the strip draws (a node typed since RUN: no card) takes the strip, and the Undo goes with
+        // the note it takes back; a wire that resolves (the card's) leaves the note and its Undo
+        {
+            funkgui::TextEditor& ed = r.ed();
+            const std::string was = ed.text();
+            const std::size_t end = was.find("\n.end");
+            ed.selectAll();
+            ed.insert(was.substr(0, end + 1) + "R9     b  n9  1k\nR10    n9 0   1k\n" + was.substr(end + 1));
+            host.tick(2);
+            const std::optional<cir::Pt> n9 = midWire(v.drawing(), "n9");
+            const funkgui::Point at9 = n9 ? v.screenOf(*n9) : funkgui::Point{ -1.0e4f, -1.0e4f };
+            host.click(at9.x, at9.y);
+            host.tick(2);
+            const std::string strip = v.stripRight(), button = v.stripButton();
+            ed.undo();
+            host.tick(2);
+            const std::optional<cir::Pt> a = midWire(v.drawing(), "a");
+            const funkgui::Point atA = a ? v.screenOf(*a) : funkgui::Point{ -1.0e4f, -1.0e4f };
+            host.click(atA.x, atA.y);
+            host.tick(2);
+            std::printf("play: n9 selected, strip \"%s\" [%s]; a, strip \"%s\" [%s]\n", strip.c_str(), button.c_str(),
+                        v.stripRight().c_str(), v.stripButton().c_str());
+            P.eq("play.reason_hides_undo", strip == "Probe: n9 is not in the program that plays (edited since RUN)" && button.empty() ? 1 : 0, 1);
+            P.eq("play.resolved_keeps_undo", ed.text() == was && v.probeNet(0) == "a" && v.stripButton() == "Undo"
+                                                 && v.stripRight() == "program.fm now plays diodetone.cir" ? 1 : 0, 1);
+        }
         const funkgui::Point u = v.centreOfStripButton().value_or(funkgui::Point{});
         host.click(u.x, u.y);
         host.tick(2);
@@ -2003,6 +2033,22 @@ PROBE(gui, schematic)
             std::printf("probes: no note, slot 0: \"%s\"\n", v.probeReason(0).c_str());
             P.eq("probes.reason_no_voice", v.probeReason(0) == "no voice sounding" && v.stripRight() == "Probe: no voice sounding"
                                                && spoken("Probe: no voice sounding") && !v.probesLive() ? 1 : 0, 1);
+            // a note, let go: "no voice sounding" again once it ends, drawn but not spoken again
+            push(1, true);
+            play(4);
+            const bool sounded = v.probeReason(0).empty() && v.probesLive();
+            {
+                juce::MidiBuffer midi;
+                midi.addEvent(juce::MidiMessage::noteOff(1, 69), 0);
+                buffer.clear();
+                r.processor.processBlock(buffer, midi);
+            }
+            for (int k = 0; k < 600 && v.probeReason(0) != "no voice sounding"; ++k)
+                play(1);
+            const auto times = std::count(host.log.announcements.begin(), host.log.announcements.end(), std::string("Probe: no voice sounding"));
+            std::printf("probes: a note let go, slot 0 \"%s\", \"no voice sounding\" spoken %d times\n", v.probeReason(0).c_str(),
+                        static_cast<int>(times));
+            P.eq("probes.no_voice_spoken_once", sounded && v.probeReason(0) == "no voice sounding" && times == 1 ? 1 : 0, 1);
             push(1, true);
         }
         // two nets pinned (Alt-click on their wires): lanes 1 and 2, numbered flags
@@ -2083,9 +2129,17 @@ PROBE(gui, schematic)
             int items = 0;
             for (const funkgui::A11yItem& it : host.accessibility())
                 if (it.title == "Probe a" || it.title == "Probe 1, c" || it.title == "Probe 2, b")
-                    items += it.value.find("PEAK") != std::string::npos ? 1 : 0;
+                    items += it.value.rfind("PEAK ", 0) == 0 && it.value.find(" V   RMS ") != std::string::npos ? 1 : 0;
             P.eq("probes.a11y_readouts", items, 3);
             writePng(P, host, "gui.schematic.probes.png", "probes");
+        }
+        // the meters standing still (an audio thread that stopped calling): the readouts stay, and the view settles
+        {
+            const bool moving = !v.settled();
+            host.tick(20);
+            P.eq("probes.still_settles", moving && v.probesLive() && v.settled() && !v.probeWords(0).empty() ? 1 : 0, 1);
+            play(2);
+            P.eq("probes.moving_again", v.probesLive() && !v.settled() ? 1 : 0, 1);
         }
         // ground: Alt-click on a grounded pin (C1's second) says it is 0 V, and pins nothing
         {
@@ -2145,6 +2199,23 @@ PROBE(gui, schematic)
             play(3);
             port.meters(m);
             P.eq("probes.second_panel_leaves_set", m.probeSet == armed && v.probeSet() == armed && v.probesLive() ? 1 : 0, 1);
+            // a Panel that owns no probe (a picture's) reads the slots it shares with the user's set: its lanes are
+            // live though it has no wire selected (the user's slot 0)
+            {
+                const uint64_t before = r.processor.engine().probeGeneration();
+                pg::ui::Panel third(r.processor.ports(), port);
+                third.setOwnsProbes(false);
+                funkgui::HeadlessHost h3(third, 0, 2.0f);
+                h3.tick(3);
+                push(2, false);
+                h3.tick(3);
+                SV& tv = third.schematic();
+                std::printf("probes: a picture's Panel, slots \"%s\" \"%s\" \"%s\", live %d, lane 1 \"%s\"\n", tv.probeNet(0).c_str(),
+                            tv.probeNet(1).c_str(), tv.probeNet(2).c_str(), tv.probesLive() ? 1 : 0, tv.probeWords(1).c_str());
+                P.eq("probes.unowned_reads_shared", third.schematicShown() && tv.probeNet(0).empty() && tv.probeNet(1) == "c" && tv.probesLive()
+                                                        && !tv.probeWords(1).empty() && !tv.probeWords(2).empty() && !tv.probeTrace(1).empty()
+                                                        && r.processor.engine().probeGeneration() == before ? 1 : 0, 1);
+            }
         }
         // the Netlist view clears the set; the Schematic view arms the pins again (the session keeps them)
         {
@@ -2176,6 +2247,47 @@ PROBE(gui, schematic)
                         static_cast<unsigned long long>(port.status().program), static_cast<unsigned long long>(m.probeSet.program));
             P.eq("probes.rearmed_after_run", port.status().program != was && m.probeSet.program == port.status().program
                                                  && m.probeProgram == port.status().program && v.probesLive() ? 1 : 0, 1);
+        }
+        // host blocks of 2048 (net a selected): an effect's rings hold each block's newest 1,024 (the call is longer
+        // than the module's ring), never two blocks joined, its scope triggered inside them; a synth's voice parts are
+        // whole, so its windows are
+        {
+            constexpr int kBig = 2048;
+            const funkgui::Point aw = wireOf("a");
+            host.click(aw.x, aw.y);
+            host.tick(1);
+            r.processor.prepareToPlay(kRate, kBig);
+            juce::AudioBuffer<float> big(2, kBig);
+            for (int blk = 0; blk < 4; ++blk)
+            {
+                juce::MidiBuffer midi;
+                if (kInstrument && blk == 0)
+                    midi.addEvent(juce::MidiMessage::noteOn(1, 69, static_cast<juce::uint8>(110)), 0);
+                for (int i = 0; i < kBig; ++i)
+                {
+                    const float x = kInstrument ? 0.0f : static_cast<float>(0.5 * std::sin(phase));
+                    phase += 2.0 * 3.14159265358979 * 1000.0 / kRate;
+                    big.setSample(0, i, x);
+                    big.setSample(1, i, x);
+                }
+                r.processor.processBlock(big, midi);
+                host.tick(1);
+            }
+            port.meters(m);
+            std::vector<float> ring(static_cast<std::size_t>(kBig));
+            const int valid = port.probe(0, ring.data(), kBig);
+            const std::vector<float> w = v.probeTrace(0);
+            const float mean = m.probes[0].mean;
+            const std::size_t at = ring.size() - std::min(w.size(), ring.size());
+            const bool tail = !w.empty() && std::equal(w.begin(), w.end(), ring.begin() + static_cast<std::ptrdiff_t>(at));
+            const bool rising = !w.empty() && at > 0 && ring[at - 1] < mean && mean <= w.front();
+            std::printf("probes: blocks of %d, net %s, %d valid, a trace of %zu from %.4f (mean %+.4f)\n", kBig, v.probeNet(0).c_str(), valid,
+                        w.size(), w.empty() ? 0.0 : static_cast<double>(w.front()), static_cast<double>(mean));
+            if constexpr (kInstrument)
+                P.eq("probes.large_blocks", v.probesLive() && valid == kBig && w.size() == static_cast<std::size_t>(SV::kTraceSamples) ? 1 : 0, 1);
+            else
+                P.eq("probes.large_blocks", v.probesLive() && valid == SV::kTraceSamples && w.size() >= static_cast<std::size_t>(SV::kTraceSamples / 2)
+                                                && w.size() <= static_cast<std::size_t>(SV::kTraceSamples) && tail && rising ? 1 : 0, 1);
         }
         // the Panel goes: its set with it
         r.close();
