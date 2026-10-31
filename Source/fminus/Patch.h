@@ -53,6 +53,25 @@
 // configuration each was generated with too (Recipe::pins, Sources.h's CircuitPins), which compile() takes back: a
 // recording's replay compiles the program that played with its pins, so it plays what played, not the store's answer.
 //
+// A circuit's pots become dials. A field of the main module (a scalar or an array) whose type is a netlist's module
+// gets that netlist's pots as dials and its switches as int dials (lang::circuitDials, Lang.h: what the GUI sandbox
+// reads too), after the program's own params, in field order, each field's pots in .pot order and then its switches,
+// within the kMaxControls slots (past them, a note; the argument stays at its default): a pot real 0 to 1 shown 0-100 %
+// at its .pot default, linear (its taper is set()'s), a switch an int over its positions at its default; named as the
+// pot is, or <field>_<pot> when another dial has that name. An array's elements share one set of dials. Unless the
+// program calls that module's set() itself: a member call named set in its FMinus files whose receiver is of that
+// module, or whose receiver Lang cannot type (the test is conservative, so a pot is never driven twice), leaves those
+// fields to the program, with no dials (the binding's `why` says so: never a compile message, since a program that
+// drives its own pots, as the examples do, is right). Each binding is checked against what FMinus compiled (the
+// field's type and extent, the generated set()'s arguments, the params' names): one that differs gets no dials and a
+// note. For each bound field compile() appends a shim, all of one type, `void playground_circuit_<k>(Effect* self,
+// float* restrict v) [[clang::nonblocking]]`, calling every element's set() with v (a switch's position cast to int);
+// the Engine calls them through setCircuits() on the absolute 16-sample grid, only while a bound dial moves or a
+// switch ramps, and once before an instance's first call (Engine.h, "Circuit dials"). These dials are no FMinus
+// parameters: a frozen copy folds none of them, and plays the instances' set() state as the program's code does; a pot
+// that moves drops it, as any dial does. The recipe keeps the bindings and the shims' count (Recipe::bindings), so
+// freeze(), ir() and frozenIr() find the shims the source carries.
+//
 // The methods the audio thread calls (process, start, stop) must not allocate: FMinus refuses a program whose methods
 // could reach calloc, malloc or free from them (init and end may: a delay line's memory). They need no
 // [[clang::nonblocking]] of their own: the plugin calls each through a function of its own with the type it calls it
@@ -90,6 +109,7 @@
 #include "dsp/Controls.h"
 #include "dsp/Events.h"
 #include "fminus/Circuits.h"
+#include "fminus/Lang.h"
 #include "fminus/PanelSpec.h"
 #include "dsp/Sources.h"
 
@@ -185,6 +205,9 @@ namespace playground
                                                        // generated again
             CircuitPins pins;                          // the configuration each was generated with, when it chose
                                                        // one (above, "Circuits")
+            std::vector<lang::CircuitBinding> bindings;   // the main module's circuit fields and their dials' slots
+                                                          // (above, "Circuits"), checked
+            int circuitShims = 0;                      // the shims appended: playground_circuit_0 to _<n - 1>
             std::string source;                        // the program with the plugin's calls appended
             std::array<std::string, kMaxControls> names{};   // each control's parameter, qualified ("" for none)
             std::array<bool, kMaxControls> streams{};        // bound as a stream (a float), else a knob
@@ -235,6 +258,17 @@ namespace playground
         void start(int i, float note, float velocity) noexcept;
         void stop(int i) noexcept;
         bool render(int i, float* left, float* right, int n) noexcept;
+
+        // The circuits' dials (above, "Circuits"): whether a dial drives a circuit's set(), which controls do (bit c:
+        // control c is an argument of a shim), and the shims' calls in instance i, every bound field's set() with each
+        // argument at plain[c] for its control c (the controls' plain values at the call's sample) or at its default
+        // when it has none. No allocation.
+        bool circuits() const noexcept { return !circuitCalls_.empty(); }
+        uint32_t circuitSlots() const noexcept { return circuitMask_; }
+        bool circuitRamps() const noexcept { return circuitRamps_; }   // a dial drives a switch (its set() ramps)
+        void setCircuits(const float* plain, int i) noexcept;
+        // The bindings, checked, with their slots (Recipe::bindings): the status's (CompileStatus::circuitDials).
+        const std::vector<lang::CircuitBinding>& circuitBindings() const noexcept { return recipe_.bindings; }
 
         // The field display t (PanelDisplay::tap) shows: its value in instance i, as a float (an int's number, a bool's
         // 0 or 1). After a block, on the audio thread.
@@ -303,6 +337,16 @@ namespace playground
         };
         std::array<Slot, kMaxControls> slots_{};
         static void store(void* instance, const Slot& slot, float plain) noexcept;
+        // Per shim (setCircuits): each argument's control (-1: none) and the value it has without one.
+        struct CircuitCall
+        {
+            std::vector<int> slots;
+            std::vector<float> fixed;
+        };
+        std::vector<CircuitCall> circuitCalls_;
+        std::vector<float> circuitArgs_;               // the arguments of one call (sized at compile)
+        uint32_t circuitMask_ = 0;
+        bool circuitRamps_ = false;
         Sources sources_;
         float rate_ = 48000.0f;
         uint64_t program_ = 0;

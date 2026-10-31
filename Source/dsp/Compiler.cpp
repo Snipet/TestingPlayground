@@ -80,6 +80,7 @@ namespace playground
             s.program = id;
             b->recipe = r.patch->recipe();
             s.circuits = b->recipe.pins;
+            s.circuitDials = b->recipe.bindings;
             b->patch = std::move(r.patch);
         }
         return b;
@@ -357,6 +358,7 @@ namespace playground
         {
             s.program = recipe_.program;           // the program that played plays on
             s.circuits = recipe_.pins;
+            s.circuitDials = recipe_.bindings;
         }
         s.revision = status_.revision + 1;
         status_ = std::move(s);
@@ -634,6 +636,7 @@ namespace playground
             out = status_;                         // a failed compile's outcome stays: its errors, its files
             out.program = s.program;
             out.circuits = std::move(s.circuits);
+            out.circuitDials = std::move(s.circuitDials);
         }
         out.notes += chosen;
         out.refined = true;

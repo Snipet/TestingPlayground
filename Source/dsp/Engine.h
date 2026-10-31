@@ -25,6 +25,21 @@
 // stream, and the value, while it holds still: FMinus's flat copy of the method); an integer or a toggle is set once a
 // block. A new program starts on the dials' values, without a glide.
 //
+// Circuit dials (Patch.h, "Circuits"). A dial that drives a circuit's pot glides as a real dial does (20 ms), and a
+// circuit's switch is an int dial; neither is an FMinus parameter: the Engine hands their values to the program through
+// the shims compile() appended (Patch::setCircuits), each call every bound field's set() in one instance. It calls
+// them on the absolute grid of kGrid samples (counted from prepare(), as the voices' parts are), with the dials' glided
+// values at that sample: at every grid tick while a bound dial glides, through the first tick at or after it lands,
+// and, after a bound switch changes, for ceil(0.02 rate / kGrid) + 1 ticks (its ramp: FMinus moves a switch a step a
+// set() call over 20 ms). An instance that has not had the dials' values yet (a new program's, a voice's instance that
+// missed calls while free) gets one call before its first process (an effect: at its block's first sample; a voice:
+// before its start, or before its first part when its note came with the program) and, when a switch is bound, the
+// ramp's ticks after it. While the dials stand still, no call. The effect's process is cut at those grid ticks, and
+// then only (a named exception to block-size invariance: while a circuit dial moves, the effect's calls end on the
+// grid, so a program that keeps state per call may differ there, as it may where any dial moves); an instrument's
+// voices already run in parts cut on the grid, and each voice of the program that plays gets its own calls. The old
+// program of a swap gets none (its dials hold still). circuitCalls() counts the calls (the probes').
+//
 // The output guard. Whatever a program computes, what leaves the Engine is finite and within +-4 (+12 dBFS): a NaN or
 // an infinity becomes 0, and a sample beyond is clipped. Either raises an alert (takeAlerts) the editor shows. A NaN in
 // a program's state stays there: running the program again starts it from scratch.
@@ -177,6 +192,9 @@ namespace playground
         // Offline only, after restart() and before the first process(): the clock's start, so that the voices' grid
         // (kGrid) has a recording's phase (a replay of the capture, Measure.h's Request::clock).
         void setClock(uint64_t samples) noexcept { clock_ = samples; }
+        // The circuit dials' calls made since the Engine was made (above, "Circuit dials"): each one an instance's set()
+        // of every bound field.
+        uint64_t circuitCalls() const noexcept { return circuitCalls_; }
         // The song's position at the next call's first sample (the audio thread's own: a recording keeps it where the
         // host gives no transport and the Engine's own runs at 120 BPM), and, offline only, where it starts (after
         // restart(), which sets it to 0: a replay of such a recording, Measure.h).
@@ -210,6 +228,7 @@ namespace playground
         };
 
         static constexpr int kGrid = 16;                  // the voices' calls end on multiples of it (absolute)
+        static constexpr uint64_t kNever = ~uint64_t{ 0 };
 
         struct Voice
         {
@@ -223,6 +242,8 @@ namespace playground
             bool pedal = false;         // its key let go while the sustain pedal was down: stopped when it comes up
             float gain = 1.0f, fall = 0.0f;   // per sample, while fading
             uint64_t fed = 0;           // the feedGen_ its instance's dials were last written at
+            uint64_t circuitUntil = 0;  // its own circuit calls (after its first: a switch's ramp) at ticks below this
+            uint64_t calledAt = kNever; // the absolute sample of its last circuit call
         };
 
         void takePending() noexcept;
@@ -233,6 +254,13 @@ namespace playground
         void retireFrozen() noexcept;                 // the held copies into the slots collect() empties
         void glideControls(int n) noexcept;           // the ramps over the block: streamBuf_, streaming_, feedGen_
         void feed(Patch& p, int offset, int instance) noexcept;   // the dials into p: streams from `offset`
+        // The circuit dials (above): current_'s shims in `instance` with the dials' values at the block's sample `at`.
+        void callCircuits(int at, int instance) noexcept;
+        // The effect's program over the block: its first circuit call, then its process cut at the grid ticks that call.
+        void playEffect(float* left, float* right, int n) noexcept;
+        // A voice of current_ let go at the absolute sample `at`: its instance missed calls if a window was open.
+        void freeVoice(Voice& v, uint64_t at) noexcept;
+        static uint64_t gridCeil(uint64_t t) noexcept { return (t + kGrid - 1) / kGrid * kGrid; }
         void processEffect(float* const* channels, int numChannels, int n) noexcept;
         void syncHost(int offset) noexcept;           // the Host block at the call's sample `offset`, into the programs
         void controller(const Event& e) noexcept;     // a controller, pitch bend or pressure event
@@ -290,6 +318,20 @@ namespace playground
         uint64_t effectFed_ = 0;                      // the effect's instance's
         bool streamingNow_ = false;                   // a dial streams in this block
         bool streamedLast_ = false;                   // one streamed in the block before
+
+        // The circuit dials' calls (above): the ticks of a window after a switch changes, the window open now (calls at
+        // absolute grid ticks below circuitUntil_), the bound values' generation (bumps when one changes), the
+        // generation each instance had its values at (0: none yet, or calls missed), the effect's own window and last
+        // call, the values a call passes, the block's sample a note-on's call is at, the count.
+        int circuitTicks_ = 61;
+        uint64_t circuitUntil_ = 0;
+        uint64_t circuitGen_ = 1;
+        std::array<uint64_t, Patch::kInstances> instanceGen_{};
+        uint64_t effectUntil_ = 0;
+        uint64_t effectCalledAt_ = kNever;
+        std::array<float, kMaxControls> circuitPlain_{};
+        int callAt_ = 0;
+        uint64_t circuitCalls_ = 0;
 
         std::array<Voice, 2 * Patch::kInstances> voices_{};
         std::array<bool, 128> held_{};

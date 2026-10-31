@@ -186,12 +186,24 @@ namespace playground::circuits
         // "In file included from ...cir.fm:L:") cited at the netlist's line generated line L comes from.
         std::string recite(const std::string& messages) const;
 
+        // What a netlist generated (`name`, its file) looks like to the program, as FMinus's circuit compiler says
+        // (Result's module, pots and switches: set()'s arguments, in order): what a compile checks the circuit dials
+        // Lang read against (Patch.h, "Circuits"). Null when it was not generated, or has errors, or this Generator
+        // serves a recipe's texts.
+        struct Shape
+        {
+            std::string module;
+            std::vector<std::string> pots, switches;
+        };
+        const Shape* shape(std::string_view name) const;
+
     private:
         struct Module
         {
             std::string name;                    // the netlist's file
             std::string text;                    // the module generated from it
             std::vector<int> lines;              // fminus::circuit::Result::lines: each generated line's netlist line
+            Shape shape;                         // its module, pots and switches (generate()'s)
         };
         Module* find(std::string_view name);
         Module& generate(const SourceFile& netlist, bool job);

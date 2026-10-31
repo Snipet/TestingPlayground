@@ -42,6 +42,13 @@
 //     hover()          what a word is: its declaration as code and its documentation; a keyword's meaning
 //     definition()     where the word under a place is declared (another file's too); an #include line: that file
 //     occurrences()    the places of the word under a place that name the same declaration, in its file
+//   circuitDials()     the dials a program's circuits get (Patch.h's "Circuits"): each field of the main module whose
+//                      type is a netlist's module (a scalar or an array), that netlist's pots and switches read line by
+//                      line (their defaults, a switch's positions), whether the program calls that module's set() itself
+//                      (a member call named set, in its FMinus files, whose receiver is of that module, or one whose
+//                      receiver is not known: the test is conservative, so a pot is never driven twice) and the dials'
+//                      names (the pot's when no other dial has it, else <field>_<pot>). The plugin's compile (Patch)
+//                      and the GUI sandbox both take them from here, so a panel drawn for a circuit program has its dials
 //   format()           the house style of the examples and the library (LangFormat.cpp): Allman braces, four spaces
 //                      a level, a single statement under its if/for/while/else a level deeper, continuation lines
 //                      under their open parenthesis (else a level deeper), C's spacing (binary operators and commas
@@ -56,6 +63,7 @@
 // runs on the calling thread; nothing here allocates on, or is meant for, the audio thread.
 #pragma once
 
+#include "dsp/Controls.h"
 #include "dsp/Sources.h"
 
 #include <cstdint>
@@ -183,6 +191,57 @@ namespace playground::lang
         bool instrument = false;                 // the product's kind: the contract's snippets (Voice or Effect)
     };
 
+    // ---- a program's circuits as dials (Patch.h's "Circuits"; circuitDials() below) ----------------------------------
+    struct CircuitPot
+    {
+        std::string name;                        // .pot NAME, as written: set()'s float argument, in .pot order
+        float def = 0.5f;                        // its default (the line's, else 0.5)
+        std::string taper;                       // its taper word as written ("audio"; "" when none): set()'s, never
+                                                 // the dial's, which is linear
+
+        friend bool operator==(const CircuitPot&, const CircuitPot&) = default;
+    };
+
+    struct CircuitSwitch
+    {
+        std::string name;                        // .switch NAME: set()'s int argument, after the pots
+        int positions = 2;                       // 2 to 8: 0 to positions - 1
+        int def = 0;                             // its default position
+
+        friend bool operator==(const CircuitSwitch&, const CircuitSwitch&) = default;
+    };
+
+    struct CircuitBinding
+    {
+        std::string field;                       // the main module's field ("amp")
+        std::string module;                      // its type: the module the netlist generates ("Screamer")
+        std::string file;                        // the netlist ("screamer.cir")
+        std::vector<int> dims;                   // a scalar's none, amp[2]'s { 2 }; an extent Lang cannot read: 0
+        std::vector<CircuitPot> pots;
+        std::vector<CircuitSwitch> switches;
+        bool own = false;                        // the program calls this module's set() itself: no dials
+        std::string why;                         // then the note that says so ("program.fm:31: Screamer's pots have
+                                                 // no dials: the program calls its set()")
+        std::vector<std::string> names;          // the dials' names, each pot's then each switch's (empty when own)
+        std::vector<int> slots;                  // each dial's control slot (assignSlots, Patch's), -1 for none: past
+                                                 // kMaxControls, or a binding the compile found otherwise
+
+        int count() const noexcept;              // its elements (1 for a scalar; 0 when an extent is unknown)
+        int args() const noexcept { return static_cast<int>(pots.size() + switches.size()); }
+        bool dialled() const noexcept;           // a dial drives it: not own, and a slot is not -1
+        // An element's path: amp[1] (amp for a scalar), element k in row-major order.
+        std::string path(int k) const;
+
+        friend bool operator==(const CircuitBinding&, const CircuitBinding&) = default;
+    };
+
+    struct CircuitDials
+    {
+        std::string module, file;                // the main module (Effect or Voice) and its file; "" when none
+        std::vector<std::string> params;         // its own params, in order: the dials before the circuits'
+        std::vector<CircuitBinding> bindings;    // its fields of a netlist's module, in declaration order
+    };
+
     class Service
     {
     public:
@@ -220,11 +279,26 @@ namespace playground::lang
         const std::vector<std::string>& typeNames() const noexcept;
         // The word (identifier) at a place: its range, empty when none touches it.
         Range wordAt(int file, Pos at) const;
+        // The program's circuits as dials (circuitDials() below).
+        CircuitDials circuitDials(bool instrument) const;
 
     private:
         struct Impl;
         Impl* impl_;
     };
+
+    // The dials of the program `s` holds (its files set; `instrument` names the main module: Voice, else Effect), Lang.h's
+    // header: the bindings' slots left empty (assignSlots).
+    CircuitDials circuitDials(const Service& s, bool instrument);
+    // Each binding's slots (CircuitBinding::slots) after the first `taken` controls (the program's own params with
+    // dials): in binding order, each pot then each switch, -1 past kMaxControls; an own binding's all -1.
+    void assignSlots(CircuitDials& d, int taken);
+
+    // A circuit dial's Control (Controls.h), as the plugin's slot holds it: a pot a real 0..1 at its default, shown 0 to
+    // 100 % (scale 100, no decimals), linear (the taper is set()'s); a switch an int over its positions at its default.
+    // Patch makes the plugin's from these, the GUI sandbox its mocks.
+    Control potControl(const std::string& name, float def);
+    Control switchControl(const std::string& name, int positions, int def);
 
     // ---- the formatter (LangFormat.cpp) -----------------------------------------------------------------------------
     struct Formatted

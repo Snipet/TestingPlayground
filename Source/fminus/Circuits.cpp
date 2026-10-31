@@ -302,7 +302,7 @@ namespace playground::circuits
     Generator::Generator(const Sources& files, const Sources& generated) : files_(files), replay_(true)
     {
         for (const SourceFile& g : generated)
-            modules_.push_back(std::make_unique<Module>(Module{ g.name, g.text, {} }));
+            modules_.push_back(std::make_unique<Module>(Module{ g.name, g.text, {}, {} }));
     }
 
     Generator::Module* Generator::find(std::string_view name)
@@ -377,8 +377,16 @@ namespace playground::circuits
                 used_.push_back({ r.selfTestKey, options.chosen ? *answer : std::string() });
             }
         }
-        modules_.push_back(std::make_unique<Module>(Module{ netlist.name, r.source, r.lines }));
+        modules_.push_back(std::make_unique<Module>(Module{ netlist.name, r.source, r.lines, Shape{ r.module, r.pots, r.switches } }));
         return *modules_.back();
+    }
+
+    const Generator::Shape* Generator::shape(std::string_view name) const
+    {
+        for (const std::unique_ptr<Module>& m : modules_)
+            if (m->name == name && !m->text.empty())
+                return &m->shape;
+        return nullptr;
     }
 
     const std::string* Generator::module(std::string_view name)

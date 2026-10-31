@@ -115,6 +115,12 @@ namespace playground
         clock_ = 0;
         if (current_ != nullptr && current_->rate() != fs_)
             current_->reset(fs_);
+        // The circuit dials: a window's ticks at this rate (a switch's ramp, ceil(0.02 rate / kGrid), and one more); no
+        // window open, every instance to be called before its first process.
+        circuitTicks_ = static_cast<int>(std::ceil(0.02 * static_cast<double>(fs_) / kGrid)) + 1;
+        circuitUntil_ = effectUntil_ = 0;
+        effectCalledAt_ = kNever;
+        instanceGen_.fill(0);
         fedPatch_ = nullptr;                         // the next block snaps the dials
         load_.store(0.0f, std::memory_order_relaxed);
     }
@@ -196,6 +202,9 @@ namespace playground
             return;
         old_ = current_;
         current_ = next;
+        instanceGen_.fill(0);                        // its instances have no circuit dial's value yet
+        circuitUntil_ = effectUntil_ = 0;
+        effectCalledAt_ = kNever;
         if (old_ != nullptr)
             for (int c = 0; c < kMaxControls; ++c)   // the old program holds its dials still while it goes
                 old_->setStream(c, nullptr);
@@ -328,6 +337,11 @@ namespace playground
         fedPatch_ = current_;
         moved_ = false;
         bool streaming = false;
+        // The circuit dials (Engine.h): the block's last sample at which a bound value changes (-1: none), and whether
+        // a switch did (its ramp's window).
+        const uint32_t bound = current_->circuitSlots();
+        int lastChange = -1;
+        bool switched = false;
         for (int c = 0; c < kMaxControls; ++c)
         {
             const Control& info = cs[static_cast<std::size_t>(c)];
@@ -335,10 +349,17 @@ namespace playground
             streaming_[static_cast<std::size_t>(c)] = false;
             if (!info.used)
                 continue;
+            const bool circuit = ((bound >> c) & 1u) != 0;
             const float target = normSet_ ? plainOf(info, norm_[static_cast<std::size_t>(c)]) : info.def;
             if (snap || info.type != ControlType::real)
             {
-                moved_ = moved_ || g.cur != target || g.moving();
+                const bool changed = g.cur != target || g.moving();
+                moved_ = moved_ || changed;
+                if (changed && circuit && !snap)
+                {
+                    lastChange = std::max(lastChange, 0);
+                    switched = switched || info.type != ControlType::real;
+                }
                 g.cur = g.tgt = target;
                 g.left = 0;
                 continue;
@@ -347,11 +368,30 @@ namespace playground
             if (!g.moving())
                 continue;
             moved_ = true;
+            if (circuit)                             // it changes at each sample until it lands
+                lastChange = std::max(lastChange, std::min(g.left, n) - 1);
             float* buf = streamBuf_.data() + static_cast<std::size_t>(c) * static_cast<std::size_t>(maxBlock_);
             for (int i = 0; i < n; ++i)
                 buf[i] = g.tick();
             streaming_[static_cast<std::size_t>(c)] = true;
             streaming = true;
+        }
+        if (lastChange >= 0)
+        {
+            // The calls run at every tick through the first at or after the last change; a switch's, the ramp's too.
+            // The instances that had the values before have these by the window's calls; the others wait for a first
+            // call of their own.
+            const uint64_t from = gridCeil(clock_ + static_cast<uint64_t>(lastChange));
+            circuitUntil_ = std::max(circuitUntil_, from + static_cast<uint64_t>(kGrid) * static_cast<uint64_t>(switched ? circuitTicks_ : 1));
+            const uint64_t was = circuitGen_++;
+            if constexpr (kInstrument)
+            {
+                for (const Voice& v : voices_)       // the sounding ones: the free ones miss the calls
+                    if (v.patch == current_ && instanceGen_[static_cast<std::size_t>(v.instance)] == was)
+                        instanceGen_[static_cast<std::size_t>(v.instance)] = circuitGen_;
+            }
+            else if (instanceGen_[0] == was)
+                instanceGen_[0] = circuitGen_;
         }
         // What feed() writes changes with a new program, a dial that moved, and a stream that starts, runs or ends
         // (its pointer goes back to null).
@@ -384,6 +424,73 @@ namespace playground
         }
     }
 
+    void Engine::callCircuits(int at, int instance) noexcept
+    {
+        if (current_ == nullptr)
+            return;
+        const uint32_t bound = current_->circuitSlots();
+        const int s = std::clamp(at, 0, std::max(maxBlock_ - 1, 0));
+        for (int c = 0; c < kMaxControls; ++c)
+            if (((bound >> c) & 1u) != 0)
+                circuitPlain_[static_cast<std::size_t>(c)] =
+                    streaming_[static_cast<std::size_t>(c)]
+                        ? streamBuf_[static_cast<std::size_t>(c) * static_cast<std::size_t>(maxBlock_) + static_cast<std::size_t>(s)]
+                        : glide_[static_cast<std::size_t>(c)].cur;
+        current_->setCircuits(circuitPlain_.data(), instance);
+        ++circuitCalls_;
+    }
+
+    void Engine::freeVoice(Voice& v, uint64_t at) noexcept
+    {
+        if (v.patch == current_ && v.instance >= 0 && v.instance < Patch::kInstances
+            && (at == kNever || at < std::max(circuitUntil_, v.circuitUntil)))
+            instanceGen_[static_cast<std::size_t>(v.instance)] = 0;   // it missed the window's calls: a first call next
+        v = Voice{};
+    }
+
+    void Engine::playEffect(float* left, float* right, int n) noexcept
+    {
+        Patch& p = *current_;
+        if (!p.circuits())
+        {
+            if (streamingNow_ || effectFed_ != feedGen_)   // the dials as they are now, unless the instance has them
+            {
+                feed(p, 0, -1);
+                effectFed_ = feedGen_;
+            }
+            p.process(left, right, n);
+            return;
+        }
+        // Its instance's first call (a new program's), at the block's first sample, and the ramp's window after it.
+        if (instanceGen_[0] != circuitGen_)
+        {
+            callCircuits(0, 0);
+            effectCalledAt_ = clock_;
+            instanceGen_[0] = circuitGen_;
+            effectUntil_ = p.circuitRamps() ? gridCeil(clock_) + static_cast<uint64_t>(kGrid) * static_cast<uint64_t>(circuitTicks_) : 0;
+        }
+        const uint64_t until = std::max(circuitUntil_, effectUntil_);
+        for (int a = 0; a < n;)
+        {
+            const uint64_t t = clock_ + static_cast<uint64_t>(a);
+            if (t % kGrid == 0 && t < until && t != effectCalledAt_)
+            {
+                callCircuits(a, 0);
+                effectCalledAt_ = t;
+            }
+            // to the next tick that calls, else to the block's end
+            const uint64_t next = gridCeil(t + 1);
+            const int b = next < until ? static_cast<int>(std::min<uint64_t>(static_cast<uint64_t>(n), next - clock_)) : n;
+            if (streamingNow_ || effectFed_ != feedGen_)
+            {
+                feed(p, a, -1);
+                effectFed_ = feedGen_;
+            }
+            p.process(left + a, right + a, b - a);
+            a = b;
+        }
+    }
+
     // ---- the audio thread: a block ---------------------------------------------------------------------------------------
     void Engine::process(float* const* channels, int numChannels, int numSamples, std::span<const Event> events) noexcept
     {
@@ -404,6 +511,7 @@ namespace playground
             if constexpr (kInstrument)
                 for (const Event& e : events)        // a block of 0 samples still plays its events
                 {
+                    callAt_ = 0;
                     heard(e);
                     if (e.kind == EventKind::noteOn)
                         noteOn(e.note, e.velocity);
@@ -439,7 +547,10 @@ namespace playground
         if constexpr (kInstrument)
             processInstrument(channels, numChannels, n, events);
         else
+        {
             processEffect(channels, numChannels, n);
+            clock_ += static_cast<uint64_t>(n);      // the grid's (Engine.h, "Circuit dials")
+        }
         publish(channels, numChannels, n, metering, fresh);
         samples_ += static_cast<uint64_t>(n);
         if (running_)                                // the song's position at the next call's first sample
@@ -654,13 +765,8 @@ namespace playground
         if (current_ == nullptr)
             return;                                  // no program yet: the input, as it came
         syncHost(0);
-        if (streamingNow_ || effectFed_ != feedGen_)  // the dials as they are now, unless the instance has them
-        {
-            feed(*current_, 0, -1);
-            effectFed_ = feedGen_;
-        }
         if (!xfading_)
-            current_->process(left, right, n);
+            playEffect(left, right, n);
         else
         {
             // The old program (or the dry input, before the first) on copies of the input, the new one in place.
@@ -668,7 +774,7 @@ namespace playground
             std::copy(right, right + n, dryR_.data());
             if (old_ != nullptr)
                 old_->process(dryL_.data(), dryR_.data(), n);
-            current_->process(left, right, n);
+            playEffect(left, right, n);
             guard(dryL_.data(), n);
             guard(dryR_.data(), n);
             guard(left, n);
@@ -709,6 +815,7 @@ namespace playground
                 done = at;
             }
             syncHost(at);                            // start and stop read the Host block at the event's sample
+            callAt_ = at;                            // a note-on's first circuit call: the dials at that sample
             heard(e);
             if (e.kind == EventKind::noteOn)
                 noteOn(e.note, e.velocity);
@@ -812,7 +919,7 @@ namespace playground
             if (quietest == nullptr)
                 return;
             instance = quietest->instance;
-            *quietest = Voice{};
+            freeVoice(*quietest, kNever);            // cut short: its instance is called afresh
             ++frame_.steals;
         }
         for (Voice& v : voices_)
@@ -825,6 +932,17 @@ namespace playground
                 v.age = ++noteCount_;
                 feed(*current_, 0, instance);
                 v.fed = feedGen_;
+                // The circuit dials, before its start, when its instance has not had them (Engine.h): unless the
+                // program came this block (a held key started again) and the dials are not its yet, which its first
+                // part then calls.
+                if (current_->circuits() && fedPatch_ == current_ && instanceGen_[static_cast<std::size_t>(instance)] != circuitGen_)
+                {
+                    const uint64_t t = clock_ + static_cast<uint64_t>(callAt_);
+                    callCircuits(callAt_, instance);
+                    instanceGen_[static_cast<std::size_t>(instance)] = circuitGen_;
+                    v.calledAt = t;
+                    v.circuitUntil = current_->circuitRamps() ? gridCeil(t) + static_cast<uint64_t>(kGrid) * static_cast<uint64_t>(circuitTicks_) : 0;
+                }
                 current_->start(instance, static_cast<float>(key), std::clamp(velocity, 0.0f, 1.0f));
                 return;
             }
@@ -943,6 +1061,23 @@ namespace playground
                 feed(*current_, from, v.instance);
                 v.fed = feedGen_;
             }
+            if (v.patch == current_ && current_->circuits())   // the circuit dials (Engine.h): a first call, else the grid's
+            {
+                const uint64_t t = clock_ + static_cast<uint64_t>(from);
+                const std::size_t inst = static_cast<std::size_t>(v.instance);
+                if (instanceGen_[inst] != circuitGen_)
+                {
+                    callCircuits(from, v.instance);
+                    instanceGen_[inst] = circuitGen_;
+                    v.calledAt = t;
+                    v.circuitUntil = current_->circuitRamps() ? gridCeil(t) + static_cast<uint64_t>(kGrid) * static_cast<uint64_t>(circuitTicks_) : 0;
+                }
+                else if (t % kGrid == 0 && t < std::max(circuitUntil_, v.circuitUntil) && t != v.calledAt)
+                {
+                    callCircuits(from, v.instance);
+                    v.calledAt = t;
+                }
+            }
             const bool sounding = v.patch->render(v.instance, voiceL_.data(), voiceR_.data(), len);
             bool finite = true;
             for (int i = 0; i < len && finite; ++i)
@@ -955,7 +1090,7 @@ namespace playground
                 frame_.droppedKey = v.key;
                 frame_.droppedAt = frame_.samples + static_cast<uint64_t>(from);
                 blockFlags_ |= BlockStat::alert;
-                v = Voice{};
+                freeVoice(v, kNever);                // its instance is called afresh
                 continue;
             }
             float* outL = accL_.data() + from;
@@ -979,7 +1114,7 @@ namespace playground
             }
             v.ending = v.ending || !sounding || (v.fading && v.gain <= 0.0f);
             if (v.ending && onGrid)
-                v = Voice{};
+                freeVoice(v, clock_ + static_cast<uint64_t>(to));
         }
     }
 

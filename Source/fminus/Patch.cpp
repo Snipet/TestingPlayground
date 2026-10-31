@@ -20,6 +20,7 @@
 #include "fsdsp/core/ScopedFtz.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -122,9 +123,10 @@ namespace playground
         }
 
         // `errors` with each message about one of the appended lines (lines from `firstShim`, shims[k] on line
-        // firstShim + k) said in the author's terms: the method, how the plugin calls it, and FMinus's reason.
+        // firstShim + k, then the circuit dials' shims, circuits[j] on the line after those) said in the author's terms:
+        // the method (or the field), how the plugin calls it, and FMinus's reason.
         std::string translate(const std::string& errors, std::string_view fileName, int firstShim,
-                              const std::vector<const Call*>& shims)
+                              const std::vector<const Call*>& shims, const std::vector<std::string>& circuits = {})
         {
             std::istringstream in(errors);
             std::string out, line;
@@ -132,9 +134,22 @@ namespace playground
             while (std::getline(in, line))
             {
                 int ln = 0, col = 0, used = 0;
+                const int shimCount = static_cast<int>(shims.size());
                 if (line.rfind(prefix, 0) == 0
                     && std::sscanf(line.c_str() + prefix.size(), "%d:%d: %n", &ln, &col, &used) >= 2 && used > 0
-                    && ln >= firstShim && ln - firstShim < static_cast<int>(shims.size()))
+                    && ln >= firstShim + shimCount && ln - firstShim - shimCount < static_cast<int>(circuits.size()))
+                {
+                    std::string rest = line.substr(prefix.size() + static_cast<std::size_t>(used));
+                    const std::size_t colon = rest.find(": ");
+                    const std::string kind = colon == std::string::npos ? "error" : rest.substr(0, colon);
+                    const std::string why = colon == std::string::npos ? rest : rest.substr(colon + 2);
+                    out += prefix + " " + kind + ": " + kModule + "::" + circuits[static_cast<std::size_t>(ln - firstShim - shimCount)]
+                         + " (its dials, on the audio thread): " + why + "\n";
+                    continue;
+                }
+                if (line.rfind(prefix, 0) == 0
+                    && std::sscanf(line.c_str() + prefix.size(), "%d:%d: %n", &ln, &col, &used) >= 2 && used > 0
+                    && ln >= firstShim && ln - firstShim < shimCount)
                 {
                     const Call& c = *shims[static_cast<std::size_t>(ln - firstShim)];
                     std::string rest = line.substr(prefix.size() + static_cast<std::size_t>(used));   // "error: ..."
@@ -169,6 +184,108 @@ namespace playground
             for (std::size_t at = open; at != std::string::npos; at = type.find('[', at + 1))
                 count *= static_cast<std::size_t>(std::max(1L, std::strtol(type.c_str() + at + 1, nullptr, 10)));
             return !base.empty();
+        }
+
+        bool sameFolded(std::string_view a, std::string_view b) noexcept
+        {
+            return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+                       return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y));
+                   });
+        }
+
+        // The circuit dials of `files` (Patch.h, "Circuits": lang::circuitDials), each binding checked against what
+        // pass 1 compiled: the main module's field of that name holds that netlist's module, with the extent Lang read
+        // (FMinus's type), the generated set() takes the pots and switches Lang read, in order (the Generator's shape),
+        // and no dial's name is a parameter's. One that differs gets no dials and a note; then the slots after the
+        // first `taken` (lang::assignSlots), and a note for each dial past kMaxControls.
+        std::vector<lang::CircuitBinding> checkedBindings(const Sources& files, const fminus::Program::Module& main,
+                                                          const circuits::Generator& gen, const std::string& file, int taken,
+                                                          std::string& notes)
+        {
+            Sources read;
+            for (const SourceFile& f : files)
+                if (!isGuiFile(f.name))
+                    read.push_back(f);
+            lang::Service service;
+            lang::Options o;
+            o.instrument = kInstrument;
+            service.setOptions(o);
+            service.setFiles(read);
+            lang::CircuitDials d = lang::circuitDials(service, kInstrument);
+            for (lang::CircuitBinding& b : d.bindings)
+            {
+                if (b.own || b.names.empty())
+                    continue;
+                std::string why;
+                const auto f = std::find_if(main.fields.begin(), main.fields.end(),
+                                            [&](const fminus::Program::Module::Field& x) { return x.name == b.field; });
+                std::string base;
+                std::size_t count = 0;
+                const circuits::Generator::Shape* shape = gen.shape(b.file);
+                if (f == main.fields.end())
+                    why = std::string(kModule) + " has no field " + b.field + " as FMinus compiled it";
+                else if (!heldModule(f->type, base, count) || base != b.module)
+                    why = "FMinus compiled it as " + f->type;
+                else if (b.count() <= 0 || count != static_cast<std::size_t>(b.count()))
+                    why = "its extent is not one the playground reads (" + f->type + ")";
+                else if (shape == nullptr || shape->module != b.module)
+                    why = b.file + " generated no module " + b.module;
+                else
+                {
+                    std::vector<std::string> pots, switches;
+                    for (const lang::CircuitPot& p : b.pots)
+                        pots.push_back(p.name);
+                    for (const lang::CircuitSwitch& w : b.switches)
+                        switches.push_back(w.name);
+                    if (pots != shape->pots || switches != shape->switches)
+                        why = "its set() is not what the playground read of " + b.file;
+                }
+                for (const std::string& n : b.names)
+                    for (const fminus::Program::Parameter& p : main.parameters)
+                        if (why.empty() && sameFolded(n, p.name))
+                            why = "its dial " + n + " would be the parameter " + p.name + "'s name";
+                if (why.empty())
+                    continue;
+                notes += file + ": note: " + b.field + ": " + why + ", so " + b.module + "'s pots have no dials\n";
+                b.names.clear();
+            }
+            lang::assignSlots(d, taken);
+            for (const lang::CircuitBinding& b : d.bindings)
+                if (!b.names.empty())
+                    for (int a = 0; a < b.args(); ++a)
+                        if (b.slots[static_cast<std::size_t>(a)] < 0)
+                            notes += file + ": note: " + b.field + "'s " + (a < static_cast<int>(b.pots.size()) ? "pot " : "switch ")
+                                   + b.names[static_cast<std::size_t>(a)] + " has no dial (the plugin has "
+                                   + std::to_string(kMaxControls) + "): it stays at its default\n";
+            return d.bindings;
+        }
+
+        // A bound field's shim (Patch.h, "Circuits"): one line, every element's set() with the dials' values, a switch's
+        // position cast to int.
+        std::string circuitShim(std::size_t k, const lang::CircuitBinding& b)
+        {
+            std::string args;
+            for (int a = 0; a < b.args(); ++a)
+                args += std::string(a == 0 ? "" : ", ") + (a < static_cast<int>(b.pots.size()) ? "" : "(int)") + "v["
+                      + std::to_string(a) + "]";
+            std::string loops, index;
+            for (std::size_t d = 0; d < b.dims.size(); ++d)
+            {
+                const std::string i = "i" + std::to_string(d);
+                loops += "for (int " + i + " = 0; " + i + " < " + std::to_string(b.dims[d]) + "; ++" + i + ") ";
+                index += "[" + i + "]";
+            }
+            return std::string("void playground_circuit_") + std::to_string(k) + "(" + kModule + "* self, float* restrict v) "
+                   "[[clang::nonblocking]] { " + loops + "self->" + b.field + index + ".set(" + args + "); }";
+        }
+
+        // How a message on a bound field's shim names it: "amp: the plugin calls amp[k].set(drive, tone, level)".
+        std::string circuitWords(const lang::CircuitBinding& b)
+        {
+            std::string args;
+            for (const std::string& n : b.names)
+                args += (args.empty() ? "" : ", ") + n;
+            return b.field + ": the plugin calls " + b.field + (b.dims.empty() ? "" : "[k]") + ".set(" + args + ")";
         }
 
         Control controlOf(const fminus::Program::Parameter& p)
@@ -271,6 +388,7 @@ namespace playground
         using Start = void(void*, float, float);
         using Init = void(void*, float);
         using Plain = void(void*);
+        using Circuit = void(void*, float*);           // a circuit dial's shim (Patch.h, "Circuits")
 
         std::unique_ptr<fminus::Program> program;
         const fminus::Program::Module* module = nullptr;
@@ -282,6 +400,7 @@ namespace playground
         Plain* end = nullptr;
         Init* sharedInit = nullptr;                // the module Shared's
         Plain* sharedEnd = nullptr;
+        std::vector<Circuit*> circuits;            // the circuit dials' shims, in order
     };
 
     Patch::Patch() : s_(std::make_unique<Compiled>()) {}
@@ -434,6 +553,48 @@ namespace playground
             streams[k] = p.type == "float";
             dials = k + 1;
         }
+        // The circuits' dials (above, "Circuits"), after the params: no FMinus parameter (no name, no slot in an
+        // instance), a shim's arguments each.
+        const std::vector<lang::CircuitBinding> bindings = checkedBindings(files, *main, circuits, file, static_cast<int>(dials),
+                                                                           r.notes);
+        std::vector<const lang::CircuitBinding*> bound;
+        std::size_t mostArgs = 0;
+        for (const lang::CircuitBinding& b : bindings)
+        {
+            if (!b.dialled())
+                continue;
+            bound.push_back(&b);
+            CircuitCall call;
+            const int pots = static_cast<int>(b.pots.size());
+            for (int a = 0; a < b.args(); ++a)
+            {
+                const int slot = b.slots[static_cast<std::size_t>(a)];
+                const std::string& name = b.names[static_cast<std::size_t>(a)];
+                call.slots.push_back(slot);
+                if (a < pots)
+                {
+                    const lang::CircuitPot& pot = b.pots[static_cast<std::size_t>(a)];
+                    call.fixed.push_back(pot.def);
+                    if (slot >= 0)
+                        patch->controls_[static_cast<std::size_t>(slot)] = lang::potControl(name, pot.def);
+                }
+                else
+                {
+                    const lang::CircuitSwitch& w = b.switches[static_cast<std::size_t>(a - pots)];
+                    call.fixed.push_back(static_cast<float>(w.def));
+                    if (slot >= 0)
+                    {
+                        patch->controls_[static_cast<std::size_t>(slot)] = lang::switchControl(name, w.positions, w.def);
+                        patch->circuitRamps_ = true;
+                    }
+                }
+                if (slot >= 0)
+                    patch->circuitMask_ |= 1u << slot;
+            }
+            mostArgs = std::max(mostArgs, call.slots.size());
+            patch->circuitCalls_.push_back(std::move(call));
+        }
+        patch->circuitArgs_.assign(mostArgs, 0.0f);
         fminus::Program::Options build = playOptions(file, names, streams);
         build.include = include;
         build.keepIr = keepIr ? fminus::Program::KeepIr::Both : fminus::Program::KeepIr::None;
@@ -445,11 +606,17 @@ namespace playground
         const int firstShim = lineCount(full);
         for (const Call* c : shims)
             full += std::string(c->shim) + "\n";
+        std::vector<std::string> circuitLines;
+        for (std::size_t k = 0; k < bound.size(); ++k)
+        {
+            full += circuitShim(k, *bound[k]) + "\n";
+            circuitLines.push_back(circuitWords(*bound[k]));
+        }
         std::string errors;
         patch->s_->program = fminus::Program::compile(full, errors, build);
         if (!patch->s_->program)
         {
-            r.errors = translate(circuits.recite(errors), file, firstShim, shims);
+            r.errors = translate(circuits.recite(errors), file, firstShim, shims, circuitLines);
             r.compileMs = msSince(t0);
             return r;
         }
@@ -485,6 +652,12 @@ namespace playground
             lookShared("playground_shared_init", s.sharedInit);
         if (sharedEnd)
             lookShared("playground_shared_end", s.sharedEnd);
+        for (std::size_t k = 0; k < bound.size(); ++k)
+        {
+            std::string missing;
+            s.circuits.push_back(program.function<Compiled::Circuit>("playground_circuit_" + std::to_string(k), missing));
+            r.errors += missing;
+        }
         if (!r.errors.empty() || s.module == nullptr)
         {
             r.compileMs = msSince(t0);
@@ -493,6 +666,8 @@ namespace playground
         patch->params_.assign(static_cast<std::size_t>(kMaxControls), nullptr);
         for (std::size_t k = 0; k < dials; ++k)
         {
+            if (names[k].empty())
+                continue;                              // a circuit's dial: no parameter
             const fminus::Program::Parameter* param = program.parameter(names[k]);
             patch->params_[k] = param;
             if (param == nullptr)
@@ -518,6 +693,8 @@ namespace playground
             rc.stop = s.stop != nullptr;
             rc.render = s.render != nullptr;
             rc.process = s.process != nullptr;
+            rc.bindings = bindings;
+            rc.circuitShims = static_cast<int>(bound.size());
         }
 
         // The instances: aligned, zeroed, their parameters at their defaults, init run.
@@ -775,6 +952,22 @@ namespace playground
             c.stop(instances_[static_cast<std::size_t>(i)]);
     }
 
+    void Patch::setCircuits(const float* plain, int i) noexcept
+    {
+        const Compiled& c = code();
+        if (i < 0 || i >= static_cast<int>(instances_.size()) || c.circuits.size() != circuitCalls_.size())
+            return;
+        void* self = instances_[static_cast<std::size_t>(i)];
+        for (std::size_t k = 0; k < circuitCalls_.size(); ++k)
+        {
+            const CircuitCall& call = circuitCalls_[k];
+            for (std::size_t a = 0; a < call.slots.size(); ++a)
+                circuitArgs_[a] = call.slots[a] >= 0 ? plain[call.slots[a]] : call.fixed[a];
+            if (c.circuits[k] != nullptr)
+                c.circuits[k](self, circuitArgs_.data());
+        }
+    }
+
     bool Patch::render(int i, float* left, float* right, int n) noexcept
     {
         const Compiled& c = code();
@@ -841,6 +1034,8 @@ namespace playground
         {
             look(r.process, "process", s.process);
         }
+        for (int k = 0; k < r.circuitShims; ++k)                  // the circuit dials' shims, which the source carries
+            s.circuits.push_back(program.function<Compiled::Circuit>("playground_circuit_" + std::to_string(k), missing));
         if (!missing.empty())
         {
             why = missing;
