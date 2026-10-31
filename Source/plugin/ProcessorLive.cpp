@@ -4,6 +4,8 @@
 // projects, the chat's tools, prepareToPlay) say so.
 #include "plugin/Processor.h"
 
+#include "fminus/CirDoc.h"
+
 #include "Product.h"
 
 #include <algorithm>
@@ -156,6 +158,10 @@ namespace playground
                     return &f;
             return nullptr;
         };
+        // A netlist whose *@ lines alone changed was redrawn (its schematic), not edited: the program is the same.
+        const auto changed = [](const SourceFile& was, const SourceFile& now) {
+            return isCircuitFile(now.name) && cir::sameNetlist(was.text, now.text) ? "redrew" : "edited";
+        };
         std::vector<const SourceFile*> added, gone;
         for (const SourceFile& f : after.files)
         {
@@ -163,7 +169,7 @@ namespace playground
             if (was == nullptr)
                 added.push_back(&f);
             else if (was->text != f.text)
-                journal_.file(who, f.name, "edited");
+                journal_.file(who, f.name, changed(*was, f));
         }
         for (const SourceFile& f : before.files)
             if (find(after, f.name) == nullptr)
@@ -172,7 +178,7 @@ namespace playground
         {
             journal_.note(who, "renamed " + gone[0]->name + " to " + added[0]->name);
             if (gone[0]->text != added[0]->text)
-                journal_.file(who, added[0]->name, "edited");
+                journal_.file(who, added[0]->name, changed(*gone[0], *added[0]));
             return;
         }
         for (const SourceFile* f : added)

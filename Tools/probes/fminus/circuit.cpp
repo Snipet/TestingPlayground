@@ -12,7 +12,8 @@
 //   FREEZE       Patch::freeze (the plugin's frozen copy) is made, the layout kept; in exact math it plays the
 //                program's bits; in Math::Fast it is finite and its difference 80 dB under the signal
 //   TRACE        trace's pass 2 (calls of one sample) gives pass 1's bits, and the field map lists the module's
-//                fields as paths (pedal.x_C1, pedal.v_D1)
+//                fields as paths (pedal.x_C1, pedal.v_D1); no probe field (circuits::kProbeFields) in the map nor in
+//                what it leaves out (unmapped); the probe table holds the field, its netlist and its nodes
 //   ERRORS       a netlist's error is cited at its line ("broken.cir:L:1: error: ...") in compile's errors and in
 //                check's, and stops the compile; an #include of a netlist no tab has is FMinus's 'file not found'; a
 //                netlist as the program (the first file) is the plugin's error
@@ -30,6 +31,36 @@
 //                compile wants no job and says nothing, the module generated is generate()'s with that answer, and
 //                its key is the program's; the frozen copy of the provisional program keeps its own layout; the
 //                store's find, of, claim and release, and its 64 entries
+// and the circuit dials (Patch.h's "Circuits", Engine.h's "Circuit dials"):
+//   DIALS        a program holding screamer.cir's module (an Effect's Screamer amp[2], a Voice's one), never calling its
+//                set(): dials drive, tone and level after its own param, real 0 to 1 shown 0-100 %, linear, at the .pot
+//                defaults, one set for both elements, slots 1 to 3, one nonblocking shim; a param named drive gives
+//                amp_drive; two scalar fields two sets; with 31 params drive takes the 32nd slot and a note each says
+//                tone and level have none; a glide from sample 21312 (a block boundary of 64 and of 333) and another
+//                from 42624, 2 s: the same bits and the same calls in blocks of 64 and 333; still pots no call (an
+//                instrument's note on a free instance whose values are current none either); an effect's host->beat
+//                at each 16-sample call's first sample while a pot glides (no step; in 64 and 333 the circuit the same
+//                bits, the position within a tenth of a sample's step); the
+//                shim's whole text
+//                (every element's set()); an instrument's note in a block of 0 samples after a glide landed: the bits
+//                of the same note at the next block's first sample (its call the landed value); the frozen copy made
+//                at a drive and a level moved plays within 80 dB of the program, and a pot moved drops it
+//   OWN          the circuit examples (the effect's tube screamer, the synth's OTA filter) keep exactly their own dials
+//                and no message: the screamer's fields say why they have none ("program.fm:L: Screamer's pots have no
+//                dials: the program calls its set()"), the OTA filter's has no pot; a set() on a receiver Lang cannot
+//                type counts too; only the files FMinus compiles make bindings (a copy of the netlist no #include
+//                reaches, a stray tab of the main module: none); a pot's default reads the same in a decimal-comma locale
+//   TEMPLATE     Play this circuit's program (fminus/CirTemplates.h) for each library netlist compiles with no message,
+//                plays finitely, calls no set() (its pots dials of their own) and is in the house style; a two-channel
+//                netlist's too; a law input named as one of the template's words (rate, i) gets a param <law>_in
+//   SWITCH       a netlist with a switch (FMinus's switch.cir, open by default): its dial an int 0 to 1; still, no call;
+//                flipped to 1, exactly ceil(0.02 rate / 16) + 1 calls at 48 kHz, and its ramp at 1; an instrument's note
+//                from silence on that instance (its start's clear()) leaves it at 1 with no call; a fresh instance with
+//                the dial at 1 is at 1 after its first 64 samples (its first calls, as many as the ramp takes); a ramp's
+//                worth of first calls only where the switch is not at the dial's position: eight notes with it at its
+//                default take one call each (an effect's first block one), eight on instances that missed a pot's move
+//                one each, eight after it moved while they were free a ramp's worth each, all at 1; a NaN planted in a
+//                carried field is cleared by the circuit's guard and the switch stays at 1
 // and the plugin's self-test (dsp/SelfTester.h, Compiler.h's "The self-test"), a Compiler offering to an Engine played
 // in blocks of 256, on AutoClipper.h's netlists (no assertion is on time; every wait has a deadline):
 //   SELFTEST     with the tests off (setSelfTesting(false)) a RUN plays the provisional configuration and no test runs;
@@ -60,6 +91,7 @@
 #include "AutoClipper.h"
 #include "Rig.h"
 
+#include "Examples.h"
 #include "Library.h"
 #include "Product.h"
 
@@ -67,6 +99,7 @@
 #include "dsp/Debug.h"
 #include "dsp/Engine.h"
 #include "dsp/Sources.h"
+#include "fminus/CirTemplates.h"
 #include "fminus/Circuits.h"
 #include "fminus/Lang.h"
 #include "fminus/LibraryIncludes.h"
@@ -78,8 +111,10 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <clocale>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <optional>
 #include <span>
@@ -345,6 +380,559 @@ namespace
         work();
         for (std::thread& t : pool)
             t.join();
+    }
+
+    // ---- DIALS, OWN and SWITCH: a circuit's pots and switches as dials (Patch.h, "Circuits"; Engine.h) -----------------
+    // A netlist with a switch: FMinus's examples/circuits/switch.cir, its switch open by default.
+    constexpr const char* kClipSwitch = "* clipswitch.cir: a diode clipper with a clipping switch, open by default\n"
+                                        ".title ClipSwitch\n"
+                                        ".input  u    in   scale=1\n"
+                                        ".output vout a\n"
+                                        ".switch clip 2 0\n"
+                                        ".pot    tone 0.5\n"
+                                        ".oversample 4 iir blocks=auto\n"
+                                        ".adaa on\n"
+                                        ".solver omega(1)\n"
+                                        ".target solver=-60dB alias=-60dB level=4.5V freq=3k\n"
+                                        "R1     in a  2.2k\n"
+                                        "C1     a  0  10n\n"
+                                        "S1     a  d  clip 1\n"
+                                        "D1     d  0  1N914\n"
+                                        "D2     0  d  1N914\n"
+                                        "R2     a  c  470\n"
+                                        "Ptone  c  b  25k {1 - tone}\n"
+                                        "C2     b  0  22n\n"
+                                        ".end\n";
+
+    // A program of this kind whose main module declares `params` (lines of its own) and holds `fields` of netlist
+    // modules (`declaration` each: "Screamer amp[2]"), never calling set(): an Effect running its left input through
+    // each field (an array's first element) and its right through each array's second (else the left's copy), a Voice
+    // a saw through each into both channels, its circuits cleared at a note's start.
+    std::string undriven(const std::string& include, const std::string& params, const std::vector<std::string>& fields)
+    {
+        std::string decl, init, clear, left = "x", right = "y";
+        bool stereo = true;
+        for (const std::string& f : fields)
+        {
+            decl += "    " + f + ";\n";
+            const std::string name = f.substr(f.find(' ') + 1);
+            const std::string base = name.substr(0, name.find('['));
+            const bool array = name.find('[') != std::string::npos;
+            const std::string first = array ? base + "[0]" : base;
+            init += "        " + first + ".init(rate);\n";
+            clear += "        " + first + ".clear();\n";
+            left = first + ".tick(" + left + ")";
+            if (array)
+            {
+                init += "        " + base + "[1].init(rate);\n";
+                clear += "        " + base + "[1].clear();\n";
+                right = base + "[1].tick(" + right + ")";
+            }
+            else
+                stereo = false;
+        }
+        std::string s = "#include \"" + include + "\"\n";
+        if constexpr (kInstrument)
+            s += "module Voice\n{\n" + params + decl + "    float phase;\n    float step;\n    float env;\n    bool held;\n\n"
+                 "    void init(float rate)\n    {\n" + init + "    }\n\n"
+                 "    void start(float note, float velocity)\n    {\n        step = 440 * expf(0.0577622650f * (note - 69)) / 48000;\n"
+                 "        phase = 0;\n        env = velocity;\n        held = true;\n" + clear + "    }\n\n"
+                 "    void stop()\n    {\n        held = false;\n    }\n\n"
+                 "    bool process(float* restrict left, float* restrict right, int n)\n    {\n        for (int i = 0; i < n; ++i)\n"
+                 "        {\n            const float x = 0.5f * (2 * phase - 1);\n            phase += step;\n"
+                 "            if (phase >= 1)\n                phase -= 1;\n            if (!held)\n                env *= 0.9995f;\n"
+                 "            const float out = env * " + left + ";\n            left[i] += out;\n            right[i] += out;\n"
+                 "        }\n        return held || env > 0.0001f;\n    }\n};\n";
+        else
+            s += "module Effect\n{\n" + params + decl + "\n    void init(float rate)\n    {\n" + init + "    }\n\n"
+                 "    void process(float* restrict left, float* restrict right, int n)\n    {\n        for (int i = 0; i < n; ++i)\n"
+                 "        {\n            const float x = left[i];\n" + (stereo ? "            const float y = right[i];\n" : "")
+                 + "            left[i] = " + left + ";\n            right[i] = " + (stereo ? right : "left[i]") + ";\n        }\n    }\n};\n";
+        return s;
+    }
+
+    // The controls' names in slot order, the used ones.
+    std::vector<std::string> dialNames(const pg::Controls& cs)
+    {
+        std::vector<std::string> out;
+        for (const pg::Control& c : cs)
+            if (c.used)
+                out.push_back(c.name);
+        return out;
+    }
+
+    std::string joined(const std::vector<std::string>& v)
+    {
+        std::string s;
+        for (const std::string& x : v)
+            s += (s.empty() ? "" : " ") + x;
+        return s;
+    }
+
+    // A field of the program that plays (the field map's path), in instance i: its value, NaN when there is none.
+    double fieldOf(const pg::Engine& e, const std::string& path, int i)
+    {
+        const pg::Patch* p = e.playingPatch();
+        if (p == nullptr)
+            return std::nan("");
+        for (const pg::Patch::Field& f : p->fieldMap())
+            if (f.path == path)
+                return p->read(f, i);
+        return std::nan("");
+    }
+
+    // Writes a NaN into a float field of instance i of the program that plays (offline, between blocks): a planted NaN.
+    bool plantNaN(pg::Engine& e, const std::string& path, int i)
+    {
+        const pg::Patch* p = e.playingPatch();
+        if (p == nullptr || p->instance(i) == nullptr)
+            return false;
+        for (const pg::Patch::Field& f : p->fieldMap())
+            if (f.path == path && f.type == pg::Patch::Field::Type::real && f.home == pg::Patch::Field::Home::instance)
+            {
+                const float nan = std::nanf("");
+                std::memcpy(static_cast<char*>(const_cast<void*>(p->instance(i))) + f.offset, &nan, sizeof nan);
+                return true;
+            }
+        return false;
+    }
+
+    void dialRows(funkgui::test::Probe& P)
+    {
+        const std::string screamer = libraryText("screamer.cir");
+        const std::string volume = "    param float volume [[fminus::range(0, 1)]] [[fminus::default(0.8)]];\n";
+        const std::string field = kInstrument ? "Screamer amp" : "Screamer amp[2]";
+        const pg::Sources files = { { pg::kProgramName, undriven("screamer.cir", volume, { field }) }, { "screamer.cir", screamer } };
+        const pg::Patch::Result c = pg::Patch::compile(files, 48000.0f);
+        std::printf("dials: %s%s", c.errors.c_str(), c.notes.c_str());
+        P.eq("dials.compiles", c.patch != nullptr && c.errors.empty() && c.notes.empty() ? 1 : 0, 1);
+        if (!c.patch)
+        {
+            std::printf("%s", files[0].text.c_str());
+            return;
+        }
+        const pg::Controls& cs = c.patch->controls();
+        std::printf("dials: %s\n", joined(dialNames(cs)).c_str());
+        P.eq("dials.after_params", joined(dialNames(cs)) == "volume drive tone level" ? 1 : 0, 1);
+        bool percent = true;
+        for (int k = 1; k <= 3; ++k)
+        {
+            const pg::Control& d = cs[static_cast<std::size_t>(k)];
+            char text[48];
+            pg::formatValue(d, d.def, text, sizeof text);
+            percent = percent && d.type == pg::ControlType::real && d.min == 0.0f && d.max == 1.0f && d.scale == 100.0f
+                   && std::string(d.unit) == "%" && d.taper == pg::ControlTaper::linear;
+            std::printf("  %s: default %s\n", d.name, text);
+        }
+        P.eq("dials.percent_linear", percent ? 1 : 0, 1);
+        P.eq("dials.pot_defaults", cs[1].def == 0.5f && cs[2].def == 0.5f && cs[3].def == 0.7f ? 1 : 0, 1);
+        const std::vector<pg::lang::CircuitBinding>& bs = c.patch->circuitBindings();
+        P.eq("dials.one_set", bs.size() == 1 && bs[0].field == "amp" && bs[0].module == "Screamer" && bs[0].file == "screamer.cir"
+                                  && bs[0].count() == (kInstrument ? 1 : 2) && bs[0].slots == std::vector<int>{ 1, 2, 3 } && !bs[0].own ? 1 : 0, 1);
+        const std::string& src = c.patch->recipe().source;
+        // the whole shim: every element's set() (both of the effect's amp[2])
+        const std::string shim = std::string("void playground_circuit_0(") + (kInstrument ? "Voice" : "Effect")
+                               + "* self, float* restrict v) [[clang::nonblocking]] { "
+                               + (kInstrument ? "" : "for (int i0 = 0; i0 < 2; ++i0) ") + "self->amp" + (kInstrument ? "" : "[i0]")
+                               + ".set(v[0], v[1], v[2]); }";
+        P.eq("dials.shim_nonblocking", has(src, shim) && !has(src, "playground_circuit_1(") && c.patch->circuits()
+                                           && c.patch->circuitSlots() == 0xEu ? 1 : 0, 1);
+
+        // A name another dial has: <field>_<pot>; two scalar fields: two sets.
+        {
+            const std::string drive = "    param float drive [[fminus::range(0, 1)]] [[fminus::default(0.25)]];\n";
+            const pg::Patch::Result clash = pg::Patch::compile({ { pg::kProgramName, undriven("screamer.cir", drive, { "Screamer amp" }) },
+                                                                 { "screamer.cir", screamer } }, 48000.0f);
+            const pg::Patch::Result two = pg::Patch::compile({ { pg::kProgramName, undriven("screamer.cir", "", { "Screamer a", "Screamer b" }) },
+                                                               { "screamer.cir", screamer } }, 48000.0f);
+            const std::string a = clash.patch ? joined(dialNames(clash.patch->controls())) : clash.errors;
+            const std::string b = two.patch ? joined(dialNames(two.patch->controls())) : two.errors;
+            std::printf("a clash: %s\ntwo fields: %s\n", a.c_str(), b.c_str());
+            P.eq("dials.clash_field_pot", a == "drive amp_drive tone level" ? 1 : 0, 1);
+            P.eq("dials.two_fields_two_sets", b == "a_drive a_tone a_level b_drive b_tone b_level" ? 1 : 0, 1);
+        }
+        // 31 params: drive takes the 32nd slot, the note covers tone and level.
+        {
+            std::string params;
+            for (int k = 0; k < 31; ++k)
+                params += "    param float p" + std::to_string(k) + " [[fminus::range(0, 1)]] [[fminus::default(0)]];\n";
+            const pg::Patch::Result full = pg::Patch::compile({ { pg::kProgramName, undriven("screamer.cir", params, { "Screamer amp" }) },
+                                                                { "screamer.cir", screamer } }, 48000.0f);
+            std::printf("31 params: %s%s", full.errors.c_str(), full.notes.c_str());
+            P.eq("dials.past_32_note", full.patch != nullptr && std::string(full.patch->controls()[31].name) == "drive"
+                                           && full.notes == "program.fm: note: amp's pot tone has no dial (the plugin has 32): it stays at "
+                                                            "its default\nprogram.fm: note: amp's pot level has no dial (the plugin has 32): "
+                                                            "it stays at its default\n" ? 1 : 0, 1);
+        }
+
+        // 2 s, a pot gliding from sample 21312 (a block boundary of both: 64 x 333; the Engine starts a program on the
+        // dials' values, so no glide starts at its first sample) and another at 42624: the same bits in blocks of 64 and
+        // of 333.
+        const std::size_t second = static_cast<std::size_t>(kFs);
+        {
+            const auto glide = [](std::size_t at, std::array<float, pg::kMaxControls>& n) {
+                if (at == 21312)
+                    n[1] = 1.0f;                         // drive up
+                if (at == 42624)
+                    n[2] = 0.1f;                         // tone down
+            };
+            probe::Rig a(kFs, 512), b(kFs, 512);
+            a.load(files);
+            b.load(files);
+            const probe::Stereo in = input(2 * second);
+            const probe::Stereo o64 = a.run(in, 64, chord(), {}, glide), o333 = b.run(in, 333, chord(), {}, glide);
+            std::printf("glides: %llu and %llu calls in blocks of 64 and 333\n", static_cast<unsigned long long>(a.engine().circuitCalls()),
+                        static_cast<unsigned long long>(b.engine().circuitCalls()));
+            P.eq("dials.glide_64_333_same_bits", same(o64, o333) && finite(o64) && probe::rmsDb(o64.l, 0, second) > -80.0 ? 1 : 0, 1);
+            P.eq("dials.glide_same_calls", a.engine().circuitCalls() == b.engine().circuitCalls() && a.engine().circuitCalls() > 60 ? 1 : 0, 1);
+            // Still: no call.
+            const uint64_t before = a.engine().circuitCalls();
+            a.run(input(second / 2), 64, kInstrument ? std::vector<probe::Note>{ { 0, pg::EventKind::noteOn, 60, 0.8f } } : std::vector<probe::Note>{});
+            const uint64_t fresh = a.engine().circuitCalls() - before;   // the synth's new note: on an instance freed after
+                                                                          // the windows closed, whose values are current
+            const uint64_t after = a.engine().circuitCalls();
+            a.run(input(second / 2), 64);
+            std::printf("still: %llu calls, then %llu\n", static_cast<unsigned long long>(fresh),
+                        static_cast<unsigned long long>(a.engine().circuitCalls() - after));
+            P.eq("dials.still_no_call", a.engine().circuitCalls() == after && fresh == 0 ? 1 : 0, 1);
+        }
+        // The effect's Host block at each call's first sample: while a pot glides, process() is called in pieces on the
+        // 16-sample grid, and host->beat is the song's position at each call's first sample (host.fm), so the position a
+        // program works out for its sample i runs on without a step; the same bits in blocks of 64 and 333.
+        if constexpr (!kInstrument)
+        {
+            const std::string beat = "#include \"screamer.cir\"\n#include \"host.fm\"\nmodule Effect\n{\n    Host* host;\n    Screamer amp;\n"
+                                     "    float rate;\n\n    void init(float r)\n    {\n        amp.init(r);\n        rate = r;\n    }\n\n"
+                                     "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                                     "        for (int i = 0; i < n; ++i)\n        {\n            left[i] = amp.tick(left[i]);\n"
+                                     "            right[i] = host->beat + i * host->bpm / (60 * rate);\n        }\n    }\n};\n";
+            const pg::Sources beatFiles = { { pg::kProgramName, beat }, { "screamer.cir", screamer } };
+            const auto glide = [](std::size_t at, std::array<float, pg::kMaxControls>& n) {
+                if (at == 21312)
+                    n[0] = 1.0f;                         // drive up: 20 ms of 16-sample calls
+            };
+            probe::Rig a(kFs, 512), b(kFs, 512);
+            std::string why;
+            const bool loaded = a.load(beatFiles, &why) && b.load(beatFiles);
+            const probe::Stereo in = input(second);
+            const probe::Stereo o64 = a.run(in, 64, {}, {}, glide), o333 = b.run(in, 333, {}, {}, glide);
+            const double step = 120.0 / (60.0 * kFs);   // no host clock: 120 BPM
+            double worst = 0.0, apart = 0.0;
+            for (std::size_t i = 1; i < o64.r.size(); ++i)
+            {
+                worst = std::max(worst, std::fabs(static_cast<double>(o64.r[i]) - static_cast<double>(o64.r[i - 1]) - step));
+                worst = std::max(worst, std::fabs(static_cast<double>(o333.r[i]) - static_cast<double>(o333.r[i - 1]) - step));
+            }
+            for (std::size_t i = 0; i < o64.r.size(); ++i)
+                apart = std::max(apart, std::fabs(static_cast<double>(o64.r[i]) - static_cast<double>(o333.r[i])));
+            std::printf("host->beat per call while a pot glides: %s%llu calls, the worst step %.3g off %.3g a sample, 64 and 333 "
+                        "%.3g apart\n", why.c_str(), static_cast<unsigned long long>(a.engine().circuitCalls()), worst, step, apart);
+            P.eq("dials.host_beat_per_call", loaded && a.engine().circuitCalls() > 60 && worst < 0.1 * step ? 1 : 0, 1);
+            // the circuit's output the same bits; the position as each call works it out (in float: its own rounding a
+            // call, the documented exception of a program that keeps state per call) within 0.1 of a sample's step
+            P.eq("dials.host_beat_64_333", loaded && o64.l == o333.l && apart < 0.1 * step ? 1 : 0, 1);
+        }
+        if constexpr (kInstrument)
+        {
+            // A note in a block of 0 samples right after a block in which a glide landed (drive from sample 512, 20 ms:
+            // it lands at 1472, its window closing at 1488): its first call has the landed value, as the same note at
+            // the next block's first sample has. The same bits.
+            const auto glide = [](std::size_t at, std::array<float, pg::kMaxControls>& n) {
+                if (at == 512)
+                    n[1] = 1.0f;
+            };
+            probe::Rig a(kFs, 512), b(kFs, 512);
+            a.load(files);
+            b.load(files);
+            a.run(input(1536), 512, {}, {}, glide);
+            b.run(input(1536), 512, {}, {}, glide);
+            pg::Event on;
+            on.offset = 0;
+            on.kind = pg::EventKind::noteOn;
+            on.note = 60;
+            on.velocity = 0.8f;
+            float none[2] = { 0.0f, 0.0f };
+            float* channels[2] = { none, none + 1 };
+            a.engine().process(channels, 2, 0, std::span<const pg::Event>(&on, 1));
+            const probe::Stereo oa = a.run(input(second / 2), 512);
+            const probe::Stereo ob = b.run(input(second / 2), 512, { { 0, pg::EventKind::noteOn, 60, 0.8f } });
+            std::printf("a note in a block of 0 samples after a glide landed: %s the note at the next block's start (%.1f dB apart)\n",
+                        same(oa, ob) ? "the bits of" : "NOT", differenceDb(oa, ob));
+            P.eq("dials.zero_block_note_landed_value", same(oa, ob) && finite(oa) && probe::rmsDb(oa.l, 0, oa.size()) > -80.0 ? 1 : 0, 1);
+        }
+
+        // The frozen copy plays with the pots where they are, and a pot that moves drops it.
+        {
+            const auto set = [](std::size_t at, std::array<float, pg::kMaxControls>& n) {
+                if (at == 0)
+                {
+                    n[1] = 0.9f;
+                    n[3] = 0.3f;
+                }
+            };
+            probe::Rig live(kFs, 256), fast(kFs, 256);
+            live.load(files);
+            fast.load(files);
+            const std::vector<probe::Note> held = kInstrument ? std::vector<probe::Note>{ { 0, pg::EventKind::noteOn, 48, 0.8f } }
+                                                              : std::vector<probe::Note>{};
+            const probe::Stereo warm = input(second / 4);
+            live.run(warm, 256, held, {}, set);
+            fast.run(warm, 256, held, {}, set);
+            live.run(warm, 256);                         // still: the glides landed
+            fast.run(warm, 256);
+            std::string why;
+            const bool made = fast.freeze(&why);
+            const probe::Stereo rest = input(second / 2);
+            const probe::Stereo ol = live.run(rest, 256), of = fast.run(rest, 256);
+            const bool playing = fast.engine().frozen();
+            const double d = differenceDb(ol, of);
+            std::printf("frozen at drive 90 %%, level 30 %%: %s, the difference %.1f dB\n", made ? "made" : why.c_str(), d);
+            P.eq("dials.frozen_plays", made && playing ? 1 : 0, 1);
+            P.le("dials.frozen_pots_at_values_db", d, -80.0);
+            fast.run(input(256), 256, {}, {}, [](std::size_t, std::array<float, pg::kMaxControls>& n) { n[2] = 0.8f; });
+            P.eq("dials.pot_move_drops_frozen", !fast.engine().frozen() ? 1 : 0, 1);
+        }
+
+        // ---- OWN: a program that calls the module's set() keeps driving it --------------------------------------------
+        for (const pg::Example& e : pg::kExamples)
+        {
+            const std::string text = e.source;
+            const bool screamerEx = has(text, "#include \"screamer.cir\""), ota = has(text, "#include \"otalp.cir\"");
+            if (!screamerEx && !ota)
+                continue;
+            const pg::Sources ex = pg::withLibraryIncludes(pg::singleFile(text));
+            const pg::Patch::Result r = pg::Patch::compile(ex, 48000.0f);
+            pg::lang::Service ls;
+            ls.setFiles(ex);
+            const pg::lang::CircuitDials d = pg::lang::circuitDials(ls, kInstrument);
+            const std::string own = r.patch ? joined(dialNames(r.patch->controls())) : r.errors;
+            std::printf("%s: dials %s; notes: %s\n", e.title, own.c_str(), r.notes.empty() ? "none" : r.notes.c_str());
+            const std::string key = std::string("own.") + (screamerEx ? "tube_screamer" : "ota_filter");
+            P.eq(key + ".dials_kept", r.patch != nullptr && own == joined(d.params) && r.notes.empty() && r.errors.empty() ? 1 : 0, 1);
+            if (!r.patch)
+                continue;
+            const std::vector<pg::lang::CircuitBinding>& bs2 = r.patch->circuitBindings();
+            std::string whys;
+            for (const pg::lang::CircuitBinding& b : bs2)
+                whys += b.field + (b.own ? " own: " + b.why : std::string(" not own")) + "; ";
+            std::printf("  bindings: %s\n", whys.c_str());
+            if (screamerEx)
+            {
+                const std::string note = "program.fm:" + std::to_string(lineOf(text, "                pedalL.set(")) + ": Screamer's pots have "
+                                                                                                                     "no dials: the program calls its set()";
+                P.eq(key + ".note", bs2.size() == 2 && bs2[0].own && bs2[1].own && bs2[0].why == note && bs2[1].why == note
+                                        && bs2[0].slots == std::vector<int>{ -1, -1, -1 } ? 1 : 0, 1);
+            }
+            else
+                P.eq(key + ".no_pots_no_note", bs2.size() == 1 && bs2[0].field == "filter" && bs2[0].module == "OtaLp" && !bs2[0].own
+                                                   && bs2[0].args() == 0 && bs2[0].why.empty() && !r.patch->circuits() ? 1 : 0, 1);
+        }
+        {
+            // A set() whose receiver Lang cannot type counts too.
+            const std::string program = replaced(undriven("screamer.cir", "", { "Screamer amp" }), "    void init(float rate)\n    {\n",
+                                                 "    void init(float rate)\n    {\n        mystery.set(0.5f);\n");
+            pg::lang::Service ls;
+            ls.setFiles({ { pg::kProgramName, program }, { "screamer.cir", screamer } });
+            const pg::lang::CircuitDials d = pg::lang::circuitDials(ls, kInstrument);
+            std::printf("unknown receiver: %s\n", d.bindings.empty() ? "no binding" : d.bindings[0].why.c_str());
+            P.eq("own.unknown_receiver", d.bindings.size() == 1 && d.bindings[0].own && d.bindings[0].names.empty()
+                                             && has(d.bindings[0].why, "Screamer's pots have no dials: the program calls mystery.set()") ? 1 : 0, 1);
+        }
+        {
+            // Only the files FMinus compiles: a copy of the netlist no #include reaches (the same module, before the
+            // one included) and a tab of the main module of its own make no binding.
+            const std::string program = replaced(undriven("screamer.cir", "", { field }), "#include \"screamer.cir\"",
+                                                 "#include \"mine.cir\"");
+            const pg::Sources tabs = { { pg::kProgramName, program }, { "screamer.cir", screamer }, { "mine.cir", screamer },
+                                       { "stray.fm", undriven("screamer.cir", "", { field }) } };
+            pg::lang::Service ls;
+            ls.setFiles(tabs);
+            const pg::lang::CircuitDials d = pg::lang::circuitDials(ls, kInstrument);
+            const pg::Patch::Result r = pg::Patch::compile(tabs, 48000.0f);
+            const std::string names = r.patch ? joined(dialNames(r.patch->controls())) : r.errors;
+            std::printf("tabs no #include reaches: %zu binding%s (%s); dials %s; notes: %s\n", d.bindings.size(),
+                        d.bindings.size() == 1 ? "" : "s", d.bindings.empty() ? "" : d.bindings[0].file.c_str(), names.c_str(),
+                        r.notes.empty() ? "none" : r.notes.c_str());
+            P.eq("own.only_what_compiles", d.bindings.size() == 1 && d.bindings[0].file == "mine.cir" && r.patch != nullptr
+                                               && names == "drive tone level" && r.notes.empty() && r.errors.empty() ? 1 : 0, 1);
+        }
+        {
+            // A pot's default read whatever the process's locale (a host's LC_NUMERIC may want a decimal comma).
+            const std::string was = std::setlocale(LC_NUMERIC, nullptr) != nullptr ? std::setlocale(LC_NUMERIC, nullptr) : "C";
+            const char* comma = nullptr;
+            for (const char* name : { "de_DE.UTF-8", "de_DE", "fr_FR.UTF-8", "fr_FR" })
+                if (comma == nullptr && std::setlocale(LC_NUMERIC, name) != nullptr)
+                    comma = name;
+            const std::optional<double> v = pg::lang::spiceNumber("0.3");
+            pg::lang::Service ls;
+            ls.setFiles({ { pg::kProgramName, undriven("clipswitch.cir", "", { "ClipSwitch clip" }) },
+                          { "clipswitch.cir", replaced(kClipSwitch, ".pot    tone 0.5", ".pot    tone 0.3") } });
+            const pg::lang::CircuitDials d = pg::lang::circuitDials(ls, kInstrument);
+            std::setlocale(LC_NUMERIC, was.c_str());
+            std::printf("in the locale %s: 0.3 reads %g, tone's default %g\n", comma != nullptr ? comma : "C (no comma locale here)",
+                        v.value_or(-1.0), d.bindings.empty() || d.bindings[0].pots.empty() ? -1.0 : static_cast<double>(d.bindings[0].pots[0].def));
+            P.eq("own.number_any_locale", v && *v == 0.3 && d.bindings.size() == 1 && d.bindings[0].pots.size() == 1
+                                              && d.bindings[0].pots[0].def == 0.3f ? 1 : 0, 1);
+        }
+
+        // ---- TEMPLATE: Play this circuit's program for each library netlist (fminus/CirTemplates.h) ---------------------
+        for (const pg::LibraryFile& f : pg::kLibrary)
+        {
+            if (!pg::isCircuitFile(f.name))
+                continue;
+            const pg::cir::HostProgram hp = pg::cir::hostProgram(f.name, f.source, kInstrument);
+            const pg::Sources play = pg::withLibraryIncludes({ { pg::kProgramName, hp.text }, { f.name, f.source } });
+            probe::Rig rig(kFs, 512);
+            std::string messages;
+            const bool loaded = rig.load(play, &messages);
+            const probe::Stereo out = loaded ? rig.run(input(second), 256, chord()) : probe::Stereo(1);
+            std::printf("Play %s: %s; %s, %.1f dBFS%s\n", f.name, hp.module.c_str(), joined(dialNames(rig.controls())).c_str(),
+                        probe::rmsDb(out.l, 0, out.size()), messages.empty() ? "" : ("; " + messages).c_str());
+            const std::string key = std::string("template.") + std::string(f.name).substr(0, std::strlen(f.name) - 4);
+            P.eq(key + ".no_message", loaded && hp.why.empty() && messages.empty() ? 1 : 0, 1);
+            P.eq(key + ".plays", loaded && finite(out) && probe::rmsDb(out.l, 0, out.size()) > -80.0 ? 1 : 0, 1);
+            const bool own = std::any_of(rig.recipe().bindings.begin(), rig.recipe().bindings.end(),
+                                         [](const pg::lang::CircuitBinding& b) { return b.own; });
+            P.eq(key + ".pots_dials", loaded && !own && rig.recipe().circuitShims == (has(f.source, ".pot") ? 1 : 0) ? 1 : 0, 1);
+            P.eq(key + ".house_style", !pg::lang::format(hp.text).changed && pg::lang::format(hp.text).ok ? 1 : 0, 1);
+        }
+        {
+            // a two-channel netlist: one module over both channels
+            const std::string two = replaced(libraryText("diodetone.cir"), ".title DiodeTone\n", ".title DiodeTone\n.channels 2\n");
+            const pg::cir::HostProgram hp = pg::cir::hostProgram("stereo.cir", two, kInstrument);
+            std::string messages;
+            probe::Rig rig(kFs, 512);
+            const bool loaded = rig.load(pg::withLibraryIncludes({ { pg::kProgramName, hp.text }, { "stereo.cir", two } }), &messages);
+            const probe::Stereo out = loaded ? rig.run(input(second / 2), 256, chord()) : probe::Stereo(1);
+            std::printf("Play a two-channel netlist: %s\n", messages.c_str());
+            P.eq("template.two_channels", loaded && messages.empty() && has(hp.text, "(float2)(") && finite(out) ? 1 : 0, 1);
+        }
+        for (const char* law : { "rate", "i" })
+        {
+            // a law input named as one of the template's own words: its param gets a name of its own (<law>_in)
+            std::string netlist = libraryText("otalp.cir");
+            for (std::size_t at = netlist.find("iabc"); at != std::string::npos; at = netlist.find("iabc", at))
+                netlist.replace(at, 4, law);
+            const pg::cir::HostProgram hp = pg::cir::hostProgram("ota.cir", netlist, kInstrument);
+            std::string messages;
+            probe::Rig rig(kFs, 512);
+            const bool loaded = rig.load(pg::withLibraryIncludes({ { pg::kProgramName, hp.text }, { "ota.cir", netlist } }), &messages);
+            const probe::Stereo out = loaded ? rig.run(input(second / 2), 256, chord()) : probe::Stereo(1);
+            const std::string dials = loaded ? joined(dialNames(rig.controls())) : "";
+            std::printf("Play a netlist whose law is named %s: %s%s\n", law, dials.c_str(), messages.empty() ? "" : ("; " + messages).c_str());
+            P.eq(std::string("template.law_named_") + law, loaded && messages.empty() && dials == std::string(law) + "_in" && finite(out)
+                                                               && probe::rmsDb(out.l, 0, out.size()) > -80.0 ? 1 : 0, 1);
+        }
+
+        // ---- SWITCH: a switch dial keeps its position through clear() --------------------------------------------------
+        {
+            const pg::Sources sw = { { pg::kProgramName, undriven("clipswitch.cir", "", { "ClipSwitch clip" }) }, { "clipswitch.cir", kClipSwitch } };
+            probe::Rig rig(kFs, 256);
+            std::string why;
+            const bool loaded = rig.load(sw, &why);
+            std::printf("a switch: %s%s\n", loaded ? joined(dialNames(rig.controls())).c_str() : "", why.c_str());
+            P.eq("switch.compiles", loaded && why.empty() && joined(dialNames(rig.controls())) == "tone clip"
+                                        && rig.controls()[1].type == pg::ControlType::integer && rig.controls()[1].max == 1.0f ? 1 : 0, 1);
+            if (!loaded)
+                return;
+            const std::vector<probe::Note> note = kInstrument ? std::vector<probe::Note>{ { 0, pg::EventKind::noteOn, 48, 0.8f } }
+                                                              : std::vector<probe::Note>{};
+            rig.run(input(second / 4), 256, note);       // the program's first calls, the ramp to the default
+            const uint64_t still = rig.engine().circuitCalls();
+            rig.run(input(second / 4), 256);
+            const uint64_t flipped = rig.engine().circuitCalls();
+            rig.run(input(second / 2), 256, {}, {}, [](std::size_t at, std::array<float, pg::kMaxControls>& n) {
+                if (at == 0)
+                    n[1] = 1.0f;
+            });
+            const uint64_t calls = rig.engine().circuitCalls() - flipped;
+            const int want = static_cast<int>(std::ceil(0.02 * kFs / 16.0)) + 1;
+            std::printf("a switch flipped: %llu calls (%d wanted), %llu while still before\n", static_cast<unsigned long long>(calls), want,
+                        static_cast<unsigned long long>(flipped - still));
+            P.eq("switch.still_no_call", static_cast<int64_t>(flipped - still), 0);
+            P.eq("switch.change_calls", static_cast<int64_t>(calls), want);
+            P.eq("switch.at_1", fieldOf(rig.engine(), "clip.sw_S1", 0) == 1.0 ? 1 : 0, 1);
+            if constexpr (kInstrument)
+            {
+                // the note let go and ended (its voice freed, the window long closed), then another from silence on the
+                // same instance: its start's clear() keeps the switch at 1, and no call comes
+                rig.run(input(3 * second), 256, { { 0, pg::EventKind::noteOff, 48, 0.0f } });
+                const uint64_t quiet = rig.engine().circuitCalls();
+                rig.run(input(second / 4), 256, { { 0, pg::EventKind::noteOn, 50, 0.8f } });
+                std::printf("a note from silence: switch %g, %llu calls\n", fieldOf(rig.engine(), "clip.sw_S1", 0),
+                            static_cast<unsigned long long>(rig.engine().circuitCalls() - quiet));
+                P.eq("switch.note_from_silence", rig.engine().activeVoices() == 1 && fieldOf(rig.engine(), "clip.sw_S1", 0) == 1.0
+                                                     && rig.engine().circuitCalls() == quiet ? 1 : 0, 1);
+            }
+            {
+                // a fresh instance (a program's first block, a note's first part) starts at the dial's position at once
+                probe::Rig fresh(kFs, 256);
+                fresh.load(sw);
+                fresh.norm()[1] = 1.0f;
+                fresh.run(input(64), 64, note);
+                std::printf("a fresh instance, the switch's dial at 1: %g after 64 samples, %llu calls\n", fieldOf(fresh.engine(), "clip.sw_S1", 0),
+                            static_cast<unsigned long long>(fresh.engine().circuitCalls()));
+                P.eq("switch.fresh_at_position", fieldOf(fresh.engine(), "clip.sw_S1", 0) == 1.0
+                                                     && static_cast<int>(fresh.engine().circuitCalls()) == want ? 1 : 0, 1);
+            }
+            {
+                // A ramp's worth of first calls only for an instance whose switch is not where the dial is: a program's
+                // first notes with the switch at its default take one call each; so do notes on instances that missed
+                // a pot's move; after the switch moved while they were free, a ramp's worth each, at its position.
+                probe::Rig r(kFs, 256);
+                r.load(sw);
+                if constexpr (kInstrument)
+                {
+                    std::vector<probe::Note> eight, off;
+                    for (int k = 0; k < 8; ++k)
+                    {
+                        eight.push_back({ 0, pg::EventKind::noteOn, 48 + 2 * k, 0.8f });
+                        off.push_back({ 0, pg::EventKind::noteOff, 48 + 2 * k, 0.0f });
+                    }
+                    const auto chordCalls = [&]() {
+                        const uint64_t was = r.engine().circuitCalls();
+                        r.run(input(64), 64, eight);
+                        return static_cast<int64_t>(r.engine().circuitCalls() - was);
+                    };
+                    const int64_t first = chordCalls();
+                    r.run(input(second), 256, off);      // let go: they end, every window long closed
+                    r.run(input(second / 2), 256, {}, {}, [](std::size_t at, std::array<float, pg::kMaxControls>& n) {
+                        if (at == 0)
+                            n[0] = 0.9f;             // tone, no voice sounding: every instance misses it
+                    });
+                    const int64_t afterPot = chordCalls();
+                    r.run(input(second), 256, off);
+                    r.run(input(second / 2), 256, {}, {}, [](std::size_t at, std::array<float, pg::kMaxControls>& n) {
+                        if (at == 0)
+                            n[1] = 1.0f;             // the switch to 1, no voice sounding
+                    });
+                    const int64_t afterSwitch = chordCalls();
+                    std::vector<pg::Engine::VoiceInfo> vs;
+                    r.engine().voices(vs);
+                    bool at1 = vs.size() == 8;
+                    for (const pg::Engine::VoiceInfo& v : vs)
+                        at1 = at1 && fieldOf(r.engine(), "clip.sw_S1", v.instance) == 1.0;
+                    std::printf("eight notes: %lld calls at the default, %lld after a pot moved, %lld after the switch moved (%s at 1)\n",
+                                static_cast<long long>(first), static_cast<long long>(afterPot), static_cast<long long>(afterSwitch),
+                                at1 ? "all" : "NOT all");
+                    P.eq("switch.first_calls_at_default", first, 8);
+                    P.eq("switch.first_calls_after_pot", afterPot, 8);
+                    P.eq("switch.first_calls_after_switch", afterSwitch == 8 * want && at1 ? 1 : 0, 1);
+                }
+                else
+                {
+                    r.run(input(64), 64);
+                    P.eq("switch.first_calls_at_default", static_cast<int64_t>(r.engine().circuitCalls()), 1);
+                }
+            }
+            // a NaN planted in a carried field: the circuit's guard clears it, and the switch stays
+            const bool planted = plantNaN(rig.engine(), "clip.x_C1", 0);
+            const uint64_t before = rig.engine().circuitCalls();
+            rig.run(input(256), 64);
+            const double x = fieldOf(rig.engine(), "clip.x_C1", 0), s = fieldOf(rig.engine(), "clip.sw_S1", 0);
+            std::printf("a planted NaN: x_C1 %g after, switch %g\n", x, s);
+            P.eq("switch.nan_guard_keeps", planted && std::isfinite(x) && s == 1.0 && rig.engine().circuitCalls() == before ? 1 : 0, 1);
+        }
     }
 
     // SELFTEST, REFRESH and DEDUP (above): the plugin's self-test, a Compiler's.
@@ -774,6 +1362,22 @@ PROBE(fminus, circuit)
             for (const pg::Patch::Field& f : c.patch->fieldMap())
                 paths += f.path == "pedal.x_C1" || f.path == "pedal.v_D1" ? 1 : 0;
         P.eq("trace.field_paths", paths, 2);
+        // The probe fields (Patch.h, "Probes": every netlist generated with them) are the probes', never the trace's:
+        // no kProbeFields name in the map nor in what it leaves out, while the module has them all.
+        int probeNamed = 0, probeLeft = 0;
+        if (c.patch)
+        {
+            for (const pg::Patch::Field& f : c.patch->fieldMap())
+                probeNamed += pg::circuits::isProbeField(f.name) ? 1 : 0;
+            for (const std::string& l : c.patch->unmapped())
+                for (const char* name : pg::circuits::kProbeFields)
+                    probeLeft += l.find(std::string(".") + name) != std::string::npos || l.rfind(name, 0) == 0 ? 1 : 0;
+        }
+        P.eq("trace.no_probe_fields", c.patch != nullptr && probeNamed == 0 && probeLeft == 0 ? 1 : 0, 1);
+        P.eq("trace.probe_table", c.patch != nullptr && c.patch->probeCircuits() == 1 && c.patch->probed().size() == 1
+                                      && c.patch->probed()[0].field == "pedal" && c.patch->probed()[0].file == "screamer.cir"
+                                      && c.patch->probed()[0].paths == std::vector<std::string>{ "pedal" }
+                                      && c.patch->probed()[0].nodes.size() == gen.nodes.size() ? 1 : 0, 1);
     }
 
     // ---- ERRORS -------------------------------------------------------------------------------------------------------
@@ -841,7 +1445,9 @@ PROBE(fminus, circuit)
     // ---- RECIPE -------------------------------------------------------------------------------------------------------
     {
         const std::string screamer = libraryText("screamer.cir");
-        const fminus::circuit::Result gen = fminus::circuit::generate(screamer, "screamer.cir");
+        fminus::circuit::Options probed;
+        probed.probes = true;                                   // the playground's (Circuits.h, "Probes")
+        const fminus::circuit::Result gen = fminus::circuit::generate(screamer, "screamer.cir", probed);
         const pg::Patch::Result c = pg::Patch::compile(pg::withLibraryIncludes(pg::singleFile(programFor("screamer.cir", gen))), 48000.0f);
         P.eq("recipe.compiles", c.patch != nullptr ? 1 : 0, 1);
         if (c.patch)
@@ -863,6 +1469,9 @@ PROBE(fminus, circuit)
             P.eq("recipe.generates_nothing", static_cast<int64_t>(pg::circuits::generations() - before), 0);
         }
     }
+
+    // ---- DIALS, OWN, SWITCH -------------------------------------------------------------------------------------------
+    dialRows(P);
 
     // ---- SELFTEST, REFRESH, DEDUP ---------------------------------------------------------------------------------------
     selfTester(P);
@@ -903,6 +1512,7 @@ PROBE(fminus, circuit)
         const pg::Patch::Result again = pg::Patch::compile(files, 48000.0f);
         fminus::circuit::Options chosen;
         chosen.chosen = answer.choice;
+        chosen.probes = true;                                   // the playground's (Circuits.h, "Probes")
         const fminus::circuit::Result want = fminus::circuit::generate(job.netlist, job.file, chosen);
         std::printf("answered: %s; %s%s\n", want.configuration.c_str(), again.errors.c_str(), again.notes.c_str());
         P.eq("store.compiles_quietly", again.patch != nullptr && again.errors.empty() && again.notes.empty() ? 1 : 0, 1);

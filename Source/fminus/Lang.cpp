@@ -6,10 +6,14 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <locale>
 #include <memory>
 #include <set>
+#include <sstream>
 #include <utility>
 
 namespace playground::lang
@@ -262,7 +266,64 @@ namespace playground::lang
             std::vector<Body> bodies;
             std::vector<ModuleSpan> modules;
             std::string header;                  // the comment lines the file starts with
+            // A netlist's (indexCircuit): its pots and switches, in order, as circuitDials() gives them.
+            std::vector<CircuitPot> pots;
+            std::vector<CircuitSwitch> switches;
         };
+
+        // SPICE's number, as FMinus's circuit compiler reads one ([+-]digits[.digits][e[+-]digits], then t g meg k m u
+        // n p f in any case, meg before m, then letters it ignores): nothing when `s` is none.
+        std::optional<double> readSpiceNumber(std::string_view s)
+        {
+            std::size_t i = 0;
+            if (i < s.size() && (s[i] == '+' || s[i] == '-'))
+                ++i;
+            bool any = false;
+            while (i < s.size() && s[i] >= '0' && s[i] <= '9')
+                ++i, any = true;
+            if (i < s.size() && s[i] == '.')
+                for (++i; i < s.size() && s[i] >= '0' && s[i] <= '9'; ++i)
+                    any = true;
+            if (!any)
+                return std::nullopt;
+            if (i < s.size() && (s[i] == 'e' || s[i] == 'E'))
+            {
+                std::size_t j = i + 1;
+                if (j < s.size() && (s[j] == '+' || s[j] == '-'))
+                    ++j;
+                if (j < s.size() && s[j] >= '0' && s[j] <= '9')
+                {
+                    while (j < s.size() && s[j] >= '0' && s[j] <= '9')
+                        ++j;
+                    i = j;
+                }
+            }
+            // C's reading of the decimal number whatever the process's locale (a host's LC_NUMERIC may want a comma),
+            // as FMinus's netlist reader has it
+            double v = 0.0;
+            std::istringstream in(std::string(s.substr(s[0] == '+' ? 1 : 0, i - (s[0] == '+' ? 1 : 0))));
+            in.imbue(std::locale::classic());
+            in >> v;
+            if (in.fail())
+                return std::nullopt;
+            const std::string rest = lowered(s.substr(i));
+            double scale = 1.0;
+            std::size_t used = 0;
+            if (rest.rfind("meg", 0) == 0)
+                scale = 1e6, used = 3;
+            else if (!rest.empty())
+            {
+                constexpr std::pair<char, double> kSuffixes[] = { { 't', 1e12 }, { 'g', 1e9 }, { 'k', 1e3 }, { 'm', 1e-3 },
+                                                                  { 'u', 1e-6 }, { 'n', 1e-9 }, { 'p', 1e-12 }, { 'f', 1e-15 } };
+                for (const auto& [c, k] : kSuffixes)
+                    if (rest[0] == c)
+                        scale = k, used = 1;
+            }
+            for (std::size_t k = used; k < rest.size(); ++k)
+                if (!(rest[k] >= 'a' && rest[k] <= 'z'))
+                    return std::nullopt;
+            return v * scale;
+        }
 
         // The comment lines over line `ln` (contiguous `//` lines, no blank between), as plain lines.
         std::string commentsAbove(const FileData& f, int ln)
@@ -752,11 +813,16 @@ namespace playground::lang
             f.decls.clear();
             f.bodies.clear();
             f.modules.clear();
-            // The header: the * lines it starts with, each without its * and the space after it.
+            f.pots.clear();
+            f.switches.clear();
+            // The header: the * lines it starts with, each without its * and the space after it; the schematic's *@
+            // lines (its drawing, fminus/CirDoc.h) are no part of it, wherever they are.
             f.header.clear();
             for (const std::string_view l : f.lines)
             {
                 const std::string t = trimmed(l);
+                if (t.size() >= 2 && t[0] == '*' && t[1] == '@')
+                    continue;
                 if (t.empty() || t[0] != '*')
                     break;
                 std::string body = t.substr(1);
@@ -809,9 +875,46 @@ namespace playground::lang
                     titleAt = arg.at;
                 }
                 else if (d == ".pot")
+                {
+                    // .pot NAME [default] [lin|audio|rlog], as FMinus reads it (a default past 0..1 is its error)
                     pots.push_back(arg);
+                    CircuitPot pot{ arg.name, 0.5f, {} };
+                    for (std::size_t i = 2; i < l.size(); ++i)
+                    {
+                        const std::string w = lowered(l[i].text);
+                        if (w == "lin" || w == "audio" || w == "rlog")
+                            pot.taper = std::string(l[i].text);
+                        else if (i == 2)
+                            if (const std::optional<double> v = readSpiceNumber(l[i].text); v && *v >= 0.0 && *v <= 1.0)
+                                pot.def = static_cast<float>(*v);
+                    }
+                    f.pots.push_back(std::move(pot));
+                }
                 else if (d == ".switch")
+                {
+                    // .switch NAME positions [default]: whole numbers, positions 2 to 8, the default below them
                     switches.push_back(arg);
+                    CircuitSwitch sw{ arg.name, 2, 0 };
+                    const auto whole = [](std::string_view t) {
+                        int v = 0;
+                        if (t.empty() || t.size() > 2)
+                            return -1;
+                        for (const char c : t)
+                        {
+                            if (c < '0' || c > '9')
+                                return -1;
+                            v = 10 * v + (c - '0');
+                        }
+                        return v;
+                    };
+                    if (l.size() >= 3)
+                        if (const int n = whole(l[2].text); n >= 2 && n <= 8)
+                            sw.positions = n;
+                    if (l.size() >= 4)
+                        if (const int k = whole(l[3].text); k >= 0 && k < sw.positions)
+                            sw.def = k;
+                    f.switches.push_back(std::move(sw));
+                }
                 else if (d == ".input")
                 {
                     if (l.size() >= 3 && l[2].text == "-")
@@ -1364,6 +1467,11 @@ namespace playground::lang
             first = false;
             i = j;
         }
+    }
+
+    std::optional<double> spiceNumber(std::string_view text)
+    {
+        return readSpiceNumber(text);
     }
 
     std::vector<Token> lexCir(std::string_view text)
@@ -2296,6 +2404,263 @@ namespace playground::lang
             if (const Symbol* d = m.globalNamed(file, s->name))
                 s = d;
         return Location{ s->file, m.files[static_cast<std::size_t>(s->file)]->name, s->at };
+    }
+
+    // ---- the circuits' dials ---------------------------------------------------------------------------------------
+    int CircuitBinding::count() const noexcept
+    {
+        int n = 1;
+        for (const int d : dims)
+            n *= std::max(d, 0);
+        return n;
+    }
+
+    bool CircuitBinding::dialled() const noexcept
+    {
+        return !own && std::any_of(slots.begin(), slots.end(), [](int s) { return s >= 0; });
+    }
+
+    std::string CircuitBinding::path(int k) const
+    {
+        std::string index;
+        for (std::size_t d = dims.size(); d-- > 0;)
+        {
+            const int extent = std::max(dims[d], 1);
+            index = "[" + std::to_string(k % extent) + "]" + index;
+            k /= extent;
+        }
+        return field + index;
+    }
+
+    CircuitDials Service::circuitDials(bool instrument) const
+    {
+        const Impl& m = *impl_;
+        CircuitDials out;
+        const std::string main = instrument ? "Voice" : "Effect";
+        // Only the files FMinus compiles: the program's first and what it #includes, in turn theirs (a tab no #include
+        // reaches, a netlist or a module of the program's main name, makes no binding).
+        const std::vector<int> reached = m.visible(0);
+        const auto compiled = [&](int fi) { return std::find(reached.begin(), reached.end(), fi) != reached.end(); };
+        // The modules the program's netlists generate (the first of a name: FMinus refuses a second), by name.
+        std::vector<std::pair<std::string, const FileData*>> circuits;
+        for (std::size_t fi = 0; fi < m.files.size(); ++fi)
+            if (const auto& f = m.files[fi]; f->program && isCircuitFile(f->name) && compiled(static_cast<int>(fi)))
+                for (const Symbol& x : f->decls)
+                    if (x.kind == Kind::module
+                        && std::none_of(circuits.begin(), circuits.end(), [&](const auto& c) { return c.first == x.name; }))
+                        circuits.emplace_back(x.name, f.get());
+        const auto circuitOf = [&](std::string_view name) -> const FileData* {
+            for (const auto& [n, f] : circuits)
+                if (n == name)
+                    return f;
+            return nullptr;
+        };
+        // The main module, in an FMinus file of the program: its params and its fields, in declaration order.
+        std::vector<const Symbol*> params, fields;
+        for (const Symbol& x : m.symbols)
+        {
+            const FileData* f = m.fileAt(x.file);
+            if (f == nullptr || !f->program || isCircuitFile(f->name) || !compiled(x.file))
+                continue;
+            if (x.kind == Kind::module && x.name == main && out.module.empty())
+            {
+                out.module = main;
+                out.file = f->name;
+            }
+            if (x.container != main)
+                continue;
+            if (x.kind == Kind::param)
+                params.push_back(&x);
+            else if (x.kind == Kind::field)
+                fields.push_back(&x);
+        }
+        if (out.module.empty())
+            return out;
+        const auto order = [](const Symbol* a, const Symbol* b) { return a->file != b->file ? a->file < b->file : a->at < b->at; };
+        std::stable_sort(params.begin(), params.end(), order);
+        std::stable_sort(fields.begin(), fields.end(), order);
+        for (const Symbol* p : params)
+            out.params.push_back(p->name);
+        for (const Symbol* x : fields)
+        {
+            if (x->type.find('*') != std::string::npos)
+                continue;                                // a pointer holds no module
+            std::string base = x->type.substr(0, x->type.find('['));
+            base = trimmed(base);
+            const FileData* netlist = circuitOf(base);
+            if (netlist == nullptr)
+                continue;
+            CircuitBinding b;
+            b.field = x->name;
+            b.module = base;
+            b.file = netlist->name;
+            for (std::size_t at = x->type.find('['); at != std::string::npos; at = x->type.find('[', at + 1))
+            {
+                const std::size_t close = x->type.find(']', at);
+                std::string extent;
+                for (std::size_t k = at + 1; k < close && close != std::string::npos; ++k)
+                    if (x->type[k] != ' ')
+                        extent += x->type[k];
+                bool digits = !extent.empty() && extent.size() <= 6;   // a literal extent; a constant's: 0 (unknown)
+                for (const char c : extent)
+                    digits = digits && c >= '0' && c <= '9';
+                b.dims.push_back(digits ? std::atoi(extent.c_str()) : 0);
+            }
+            b.pots = netlist->pots;
+            b.switches = netlist->switches;
+            out.bindings.push_back(std::move(b));
+        }
+        // The set() calls of the program's FMinus files: a member call named set whose receiver is of a netlist's
+        // module (that module's fields keep their own driving), or whose receiver Lang cannot type (every one).
+        const auto isFmText = [](const std::string& n) {
+            const auto ends = [&n](std::string_view e) { return n.size() > e.size() && n.compare(n.size() - e.size(), e.size(), e) == 0; };
+            return !isCircuitFile(n) && !ends(".gui") && !ends(".sc");
+        };
+        std::vector<std::pair<std::string, std::string>> owners;   // module -> its note's place and words
+        for (std::size_t fi = 0; fi < m.files.size(); ++fi)
+        {
+            const FileData& f = *m.files[fi];
+            if (!f.program || !isFmText(f.name) || !compiled(static_cast<int>(fi)))
+                continue;
+            const int n = static_cast<int>(f.code.size());
+            for (int k = 2; k + 1 < n; ++k)
+            {
+                const Token& t = f.code[static_cast<std::size_t>(k)];
+                if (t.kind != Tok::identifier || t.text != "set" || !Impl::isText(f, k + 1, "(")
+                    || !(Impl::isText(f, k - 1, ".") || Impl::isText(f, k - 1, "->")))
+                    continue;
+                const std::string receiver = baseType(m.typeOf(static_cast<int>(fi), k - 2));
+                const std::string at = f.name + ":" + std::to_string(t.line + 1) + ": ";
+                for (const CircuitBinding& b : out.bindings)
+                {
+                    if (!receiver.empty() && receiver != b.module)
+                        continue;
+                    if (std::any_of(owners.begin(), owners.end(), [&](const auto& o) { return o.first == b.module; }))
+                        continue;
+                    std::string why = at + b.module + "'s pots have no dials: the program calls its set()";
+                    if (receiver.empty())
+                    {
+                        std::string what;
+                        for (int j = k - 2; j >= 0 && f.code[static_cast<std::size_t>(j)].line == t.line; --j)
+                        {
+                            const Token& w = f.code[static_cast<std::size_t>(j)];
+                            if (w.kind != Tok::identifier && w.text != "." && w.text != "->" && w.text != "[" && w.text != "]"
+                                && w.kind != Tok::number)
+                                break;
+                            what = std::string(w.text) + what;
+                        }
+                        why = at + b.module + "'s pots have no dials: the program calls " + (what.empty() ? "a" : what + ".")
+                            + "set(), whose receiver the editor cannot tell is not one";
+                    }
+                    owners.emplace_back(b.module, why);
+                }
+            }
+        }
+        for (CircuitBinding& b : out.bindings)
+            for (const auto& [module, why] : owners)
+                if (module == b.module && b.args() > 0)
+                {
+                    b.own = true;
+                    b.why = why;
+                }
+        // The dials' names: the pot's (or switch's) own unless another dial has it (case aside), else <field>_<pot>,
+        // numbered on when that is taken too; within a control's name (31 characters).
+        std::vector<std::string> taken;
+        for (const std::string& p : out.params)
+            taken.push_back(lowered(p));
+        std::vector<std::string> wanted;
+        for (const CircuitBinding& b : out.bindings)
+            if (!b.own)
+            {
+                for (const CircuitPot& p : b.pots)
+                    wanted.push_back(lowered(p.name));
+                for (const CircuitSwitch& w : b.switches)
+                    wanted.push_back(lowered(w.name));
+            }
+        const auto uses = [](const std::vector<std::string>& v, const std::string& x) {
+            return static_cast<int>(std::count(v.begin(), v.end(), x));
+        };
+        std::vector<std::string> given;
+        constexpr std::size_t kLongest = sizeof(Control{}.name) - 1;
+        const auto fresh = [&](std::string name) {
+            if (name.size() > kLongest)
+                name.resize(kLongest);
+            std::string tried = name;
+            for (int k = 2; uses(taken, lowered(tried)) > 0 || uses(given, lowered(tried)) > 0; ++k)
+            {
+                const std::string tail = "_" + std::to_string(k);
+                tried = name.substr(0, std::min(name.size(), kLongest - tail.size())) + tail;
+            }
+            given.push_back(lowered(tried));
+            return tried;
+        };
+        for (CircuitBinding& b : out.bindings)
+        {
+            if (b.own)
+                continue;
+            const auto name = [&](const std::string& own) {
+                const std::string l = lowered(own);
+                if (uses(taken, l) == 0 && uses(wanted, l) == 1 && uses(given, l) == 0)
+                {
+                    given.push_back(l);
+                    return own;
+                }
+                return fresh(b.field + "_" + own);
+            };
+            for (const CircuitPot& p : b.pots)
+                b.names.push_back(name(p.name));
+            for (const CircuitSwitch& w : b.switches)
+                b.names.push_back(name(w.name));
+        }
+        return out;
+    }
+
+    CircuitDials circuitDials(const Service& s, bool instrument)
+    {
+        return s.circuitDials(instrument);
+    }
+
+    void assignSlots(CircuitDials& d, int taken)
+    {
+        int next = std::clamp(taken, 0, kMaxControls);
+        for (CircuitBinding& b : d.bindings)
+        {
+            b.slots.assign(static_cast<std::size_t>(b.args()), -1);
+            if (b.own || b.names.empty())
+                continue;
+            for (int& slot : b.slots)
+            {
+                slot = next < kMaxControls ? next : -1;
+                ++next;
+            }
+        }
+    }
+
+    Control potControl(const std::string& name, float def)
+    {
+        Control c;
+        std::snprintf(c.name, sizeof c.name, "%s", name.c_str());
+        c.type = ControlType::real;
+        c.min = 0.0f;
+        c.max = 1.0f;
+        c.def = std::clamp(def, 0.0f, 1.0f);
+        c.used = true;
+        std::snprintf(c.unit, sizeof c.unit, "%%");
+        c.decimals = 0;
+        c.scale = 100.0f;
+        return c;
+    }
+
+    Control switchControl(const std::string& name, int positions, int def)
+    {
+        Control c;
+        std::snprintf(c.name, sizeof c.name, "%s", name.c_str());
+        c.type = ControlType::integer;
+        c.min = 0.0f;
+        c.max = static_cast<float>(std::max(positions, 2) - 1);
+        c.def = static_cast<float>(std::clamp(def, 0, std::max(positions, 2) - 1));
+        c.used = true;
+        return c;
     }
 
     // ---- occurrences ------------------------------------------------------------------------------------------------

@@ -77,8 +77,34 @@ if(_inside)
   message(FATAL_ERROR "lint.layers: FMinus's internals, its circuit compiler's and LLVM stay inside FMinus (include "
                       "fminus/FMinus.h and fminus/Circuit.h, its public API):\n  ${_msg}")
 endif()
+
+# The schematic's model, Source/fminus/CirDoc.* and CirLayout.*, is FMinus-free as well, so that every layer may use it
+# (the editor's view, the chat's tools, a probe without a compiler): of the project it includes only fminus/CirDoc.h,
+# fminus/CirLayout.h, fminus/Lang.h and dsp/Sources.h (none of which reaches FMinus), else the standard library's
+# headers.
+file(GLOB _cir ${FP_SOURCE_DIR}/Source/fminus/CirDoc.* ${FP_SOURCE_DIR}/Source/fminus/CirLayout.*)
+set(_cirBad "")
+foreach(_f IN LISTS _cir)
+  file(STRINGS ${_f} _lines REGEX "^[ \t]*#[ \t]*include")
+  foreach(_l IN LISTS _lines)
+    if(_l MATCHES "^[ \t]*#[ \t]*include[ \t]*\"(fminus/(CirDoc|CirLayout|Lang)\\.h|dsp/Sources\\.h)\""
+       OR _l MATCHES "^[ \t]*#[ \t]*include[ \t]*<[a-z_]+>")
+      continue()
+    endif()
+    file(RELATIVE_PATH _rel ${FP_SOURCE_DIR} ${_f})
+    string(STRIP "${_l}" _l)
+    list(APPEND _cirBad "${_rel}: ${_l}")
+  endforeach()
+endforeach()
+if(_cirBad)
+  list(JOIN _cirBad "\n  " _msg)
+  message(FATAL_ERROR "lint.layers: the schematic's model (Source/fminus/CirDoc, CirLayout) is FMinus-free: it includes "
+                      "only fminus/CirDoc.h, fminus/CirLayout.h, fminus/Lang.h, dsp/Sources.h and the standard "
+                      "library:\n  ${_msg}")
+endif()
 list(LENGTH _files _n)
 list(LENGTH _sandbox _ns)
+list(LENGTH _cir _nc)
 message(STATUS "lint.layers: ${_n} files under Source/dsp, Source/fsdsp and Source/fminus, no JUCE/FunkGui/plugin/"
                "editor include; ${_ns} under Source/sandbox, no plugin, audio or compiler include; FMinus through "
-               "fminus/FMinus.h and fminus/Circuit.h only")
+               "fminus/FMinus.h and fminus/Circuit.h only; ${_nc} of the schematic's model, FMinus-free")

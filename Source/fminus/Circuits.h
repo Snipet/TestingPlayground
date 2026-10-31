@@ -33,6 +33,14 @@
 //               is erased by the first compile that meets it, which generates without it, so the self-test answers
 //               the key again.
 //
+//   Probes      every netlist is generated with FMinus's probes on (Options::probes; FMinus's docs/circuits.md,
+//               "Probes"): its module then carries the fields kProbeFields names after its own, through which the
+//               Engine watches up to kProbeSlots of its node voltages as it plays (the schematic's live probes), with
+//               the same output bits, messages and self-test key as without them. So the program, its frozen copy and
+//               every recompile share one layout, and choosing a probe never compiles anything. Each netlist's nodes
+//               (Node: every one but ground, in first-mention order, whether a probe can read it and why not) come
+//               with its shape; Patch's probe table finds the fields in the main module's instances.
+//
 // Thread-safe: answers() under its own mutex; a Generator is one compile's, on the thread that compiles (never the
 // audio thread: generating allocates).
 #pragma once
@@ -53,6 +61,48 @@
 
 namespace playground::circuits
 {
+    // ---- the probes (above): the same numbers and names as fminus/Circuit.h's, which Circuits.cpp checks ------------
+    //   prb_  int: 0 off (tick writes nothing), else armed            the host's (init sets 0)
+    //   prs_  int[kProbeSlots]: each slot's node, Node's index, or -1  the host's (init sets -1); a node out of range or
+    //                                                                 not readable writes nothing
+    //   prn_  int: the samples written while armed, modulo 2^30       tick's: the newest at (prn_ - 1) % kProbeRing
+    //   pr_   float[kProbeSlots * kProbeRing]: slot k's ring at [kProbeRing k, kProbeRing (k + 1)), absolute volts
+    //   prp_, pra_, prq_  float[kProbeSlots]: each slot's peak |v|, sum of v and sum of v^2 since the host zeroed them
+    //   prv_  float[the nodes]: tick's scratch
+    // clear() leaves them all, and the guard sums none of them.
+    inline constexpr int kProbeSlots = 4;
+    inline constexpr int kProbeRing = 1024;
+    inline constexpr const char* kProbeFields[] = { "prb_", "prs_", "prn_", "pr_", "prp_", "pra_", "prq_", "prv_" };
+    // Whether `name` is one of them (a generated module's fields that are the probes', never the circuit's).
+    bool isProbeField(std::string_view name) noexcept;
+
+    // A node of a netlist, as a probe sees it (fminus::circuit::Node): every node but ground, in the order the netlist
+    // first mentions them; a probe's slot takes its index.
+    struct Node
+    {
+        std::string name;                        // as first written
+        int line = 0, column = 0;                // its first mention, from 1
+        int rate = 1;                            // the steps a host sample of the block that computes it
+        double dc = 0;                           // its volts at the DC point (the pots and switches at their defaults)
+        bool readable = true;                    // the module holds its voltage each host sample: a probe reads it
+        std::string why;                         // when not, why ("inside a filter computed as a whole at 1x (block 3)")
+
+        friend bool operator==(const Node&, const Node&) = default;
+    };
+
+    // A field of the main module whose type is a netlist's module, as the probes see it (Patch's probe table, in field
+    // order: a ProbeSet's circuit is its index; CompileStatus::probes).
+    struct Probed
+    {
+        std::string field;                       // the main module's field ("amp")
+        std::string module;                      // the netlist's module ("DiodeTone")
+        std::string file;                        // the netlist ("diodetone.cir")
+        std::vector<std::string> paths;          // its elements, row-major ("amp[0]", "amp[1]"; a scalar's "amp")
+        std::vector<Node> nodes;                 // the netlist's
+
+        friend bool operator==(const Probed&, const Probed&) = default;
+    };
+
     // A self-test a compile wants: a netlist whose configuration is open (it leaves .oversample, .adaa or .solver to
     // the self-test) with no answer stored, so that the provisional configuration plays until one lands.
     struct Job
@@ -186,12 +236,27 @@ namespace playground::circuits
         // "In file included from ...cir.fm:L:") cited at the netlist's line generated line L comes from.
         std::string recite(const std::string& messages) const;
 
+        // What a netlist generated (`name`, its file) looks like to the program, as FMinus's circuit compiler says
+        // (Result's module, pots and switches: set()'s arguments, in order; its nodes): what a compile checks the
+        // circuit dials Lang read against (Patch.h, "Circuits") and finds the probes' nodes in. Null when it was not
+        // generated, or has errors, or this Generator serves a recipe's texts.
+        struct Shape
+        {
+            std::string module;
+            std::vector<std::string> pots, switches;
+            std::vector<Node> nodes;             // Result::nodes (above, "Probes")
+        };
+        const Shape* shape(std::string_view name) const;
+        // The shape of the netlist that generated module `module`, and that netlist's name in `file`; null as shape().
+        const Shape* shapeOfModule(std::string_view module, std::string* file = nullptr) const;
+
     private:
         struct Module
         {
             std::string name;                    // the netlist's file
             std::string text;                    // the module generated from it
             std::vector<int> lines;              // fminus::circuit::Result::lines: each generated line's netlist line
+            Shape shape;                         // its module, pots and switches (generate()'s)
         };
         Module* find(std::string_view name);
         Module& generate(const SourceFile& netlist, bool job);

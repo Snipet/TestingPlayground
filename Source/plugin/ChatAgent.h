@@ -140,6 +140,13 @@ namespace playground
 
         virtual Draft chatDraft() const = 0;                        // the editor's files and tab
         virtual void chatSetDraft(const Draft& draft) = 0;          // the files Claude wrote; the editor follows
+        // chatSetDraft's conditional write (edit_circuit): file `file`'s text taken from `draft` (and its tab shown),
+        // under the same lock as the test, only while that file's text is still `expected` (the text the tool read);
+        // false, and nothing set, when a gesture of the user's changed it meanwhile (or the file is gone). The other
+        // files stay as they are now.
+        virtual bool chatSetDraftIf(const Draft& draft, const std::string& file, const std::string& expected) = 0;
+        // A netlist's session pins (EditorPort::schematicPins: *@ part, input and output lines, "" for none).
+        virtual std::string chatSchematicPins(const std::string& file) const = 0;
         virtual CompileStatus chatRun(const Sources& files) = 0;    // RUN, then the compile's outcome
         virtual CompileStatus chatLastStatus() const = 0;
         virtual Sources chatRunning() const = 0;
@@ -148,8 +155,9 @@ namespace playground
         virtual void chatSetDial(int slot, float plain) = 0;        // a host gesture, applied soon on the message thread
         virtual float chatLoad() const = 0;
         virtual uint32_t chatAlerts() const = 0;
-        // A picture of the panel (view_panel), made on the message thread; this thread waits for it (10 s at most).
-        virtual PanelPicture chatPicture(bool window, const std::string& page) = 0;
+        // A picture (view_panel), made on the message thread; this thread waits for it (10 s at most): the panel (`name`
+        // a tabs page's title, "" for the user's), the whole editor, or a netlist's schematic (`name` its .cir file).
+        virtual PanelPicture chatPicture(PictureView view, const std::string& name) = 0;
         // For the live tools (listen, get_status: any thread, beside a running call; Live.h): what plays now; a tool
         // that listens (the meters and the scopes are measured only while one does, on: true while it listens); what
         // changed since a token (Journal.h; `issue`: the token returned is handed out); the dials' options' names.
@@ -206,6 +214,9 @@ namespace playground
         void setTransport(std::unique_ptr<claude::Transport> transport);
         void waitIdle();
         std::vector<std::string> requestsSent() const;
+        // For probes: called where edit_circuit has read the netlist and applied its commands, before each conditional
+        // write (attempt 0, then 1 after a conflict), on the thread the tool runs on: a probe plants a gesture there.
+        void setCircuitWriteHookForTests(std::function<void(int attempt)> hook) { circuitWriteHook_ = std::move(hook); }
 
         // The system prompt and the tools as sent (for probes and the docs).
         static const std::string& systemPrompt();
@@ -307,6 +318,7 @@ namespace playground
 
         ChatHost& host_;
         std::unique_ptr<claude::Transport> transport_;
+        std::function<void(int)> circuitWriteHook_;                 // setCircuitWriteHookForTests
 
         mutable std::mutex mutex_;
         uint64_t revision_ = 1;

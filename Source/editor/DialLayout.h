@@ -64,9 +64,12 @@ namespace playground::ui
     };
 
     // The dials of `controls` (its used slots) and the displays of `spec` in a column `width` wide from `x`, ending at
-    // `bottom`; `maxHeight` is what the sections may take before their knobs go small.
+    // `bottom`; `maxHeight` is what the sections may take before their knobs go small. `minGap`: the least gap between
+    // plain rows' dials (0: their own, 16 px, which keeps long labels apart; a netlist's Schematic view packs them
+    // closer, kTightGap, so that nine small dials keep one row in the least window).
+    inline constexpr float kTightGap = 8.0f;
     DialsLayout layoutDials(const PanelSpec& spec, const Controls& controls, const DialMeasure& measure, float x,
-                            float width, float bottom, float maxHeight);
+                            float width, float bottom, float maxHeight, float minGap = 0.0f);
 
     // The geometry's numbers, for the Panel's drawing and the probes.
     inline constexpr float kDialW = 60.0f, kDialH = 80.0f;                // funkgui::DialGeom, primary

@@ -14,7 +14,7 @@
 //            thinking, each with its levels
 //   REQUEST  each request has the model, max_tokens (the model's own limit, from /v1/models), stream, adaptive
 //            thinking (summarized), the effort, the system prompt cached for an hour, the automatic cache breakpoint,
-//            the seventeen tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
+//            the twenty-one tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
 //            and instructions) with their beta headers for a model that takes them, the API version and the key, and
 //            no temperature, top_p or top_k; it goes to api.anthropic.com with no other credential; the first message
 //            carries the plugin's state; the history is append-only
@@ -47,11 +47,27 @@
 //            never saw them); a file the chat's Claude wrote is new to Claude Desktop: get_status since shows the plugin's
 //            own chat editing it, and the lines it added since the token (what Claude Desktop read before it is no
 //            change); with the next token, nothing
+//   LAYOUT   a netlist's drawing (its *@ lines) is invisible to the chat: a .cir goes without them, with a line saying
+//            how many it left out; a change to them alone sends no state; with a dial moved too, the state says these
+//            files play and sends no file again; get_status says these files; compare's source line says the same program
 //   MEASURE  measure_output through the agent: its result is the render's report, with the dials asked for
 //   VIEW     view_panel through the agent: its result a PNG of the panel (and one of the whole editor) and a line of
 //            what it shows, drawn on the message thread by the GPU on this Mac (the text says so); the user's view
 //            stays; with the GPU forced off (editor/Picture.h's test hook), a picture still, the text saying each
 //            shader shows as a striped placeholder and why; the saved session keeps no picture
+//   CIRCUIT  edit_circuit through the agent, on the Tube Screamer's netlist (screamer.cir, as pedal.cir) shown in an
+//            editor's Schematic view: each command (add with and without at, place, connect, disconnect, set, rename, delete,
+//            layout) gives apply's exact text, merged into the tab as one undo step, and the parts it changed flash; a
+//            list with one bad command changes nothing and names it; an add without at gets a part line (placed beside
+//            what it connects to); the view publishes its session pins, and a part with no part line keeps the place
+//            they give it in Claude's block; a netlist with no *@ lines: the view publishes its terminals' places too,
+//            and Claude's write keeps them; a gesture planted between the tool's read and its write is never
+//            overwritten (the commands run again on the new text), a second fails ("pedal.cir changed while drawing: try
+//            again"); nor is one made in the view no frame has synced yet (the view gives it to the processor at once);
+//            the result holds generate()'s error and warning; a short netlist's result is its whole text, and
+//            seen; write_file of a netlist without *@ lines keeps the drawing and says so; view_panel's view
+//            "schematic": a PNG at 100 % with every part labelled, its text giving each part line's place and the pins'
+//            points; the user's view, file views and tab as they were
 //   SOUND    view_sound through the agent (a program that sounds): its result a PNG of 1120 x 800 and what it shows,
 //            the tool's entry with the picture's thumbnail (480 px), the session without the PNG but with the thumbnail;
 //            a program that does not compile draws nothing and says why
@@ -129,7 +145,9 @@
 
 #include "FakeClaude.h"
 
+#include "editor/Panel.h"
 #include "editor/Picture.h"
+#include "editor/SchematicView.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/ChatImages.h"
 #include "plugin/ChatStore.h"
@@ -137,11 +155,14 @@
 #include "plugin/Processor.h"
 
 #include "dsp/Measure.h"
+#include "fminus/CirDoc.h"
 
 #include "Library.h"
 #include "Product.h"
 
 #include <funkgui/panel/HeadlessGuiScope.h>
+#include <funkgui/panel/HeadlessHost.h>
+#include <funkgui/widgets/TextEditor.h>
 
 #include <juce_graphics/juce_graphics.h>
 
@@ -152,6 +173,7 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -163,6 +185,7 @@
 
 namespace pg = playground;
 namespace claude = playground::claude;
+namespace cir = playground::cir;
 
 namespace
 {
@@ -540,8 +563,8 @@ PROBE(plugin, chat)
         int eager = 0;
         for (const auto& t : tools)
             eager += static_cast<bool>(t.getProperty("eager_input_streaming", false)) ? 1 : 0;
-        P.eq("request.tools", tools.size(), 20);               // 16, and listen, compare, trace and capture
-        P.eq("request.tools_eager", eager, 20);
+        P.eq("request.tools", tools.size(), 21);               // 17, and listen, compare, trace and capture
+        P.eq("request.tools_eager", eager, 21);
         bool libraryEnum = false;
         for (const auto& t : tools)
             if (str(t, "name") == "add_library_file")
@@ -936,6 +959,60 @@ PROBE(plugin, chat)
                                                    && has(since, "+// the chat's own") && !has(since, "+// the user's second") ? 1 : 0, 1);
         const std::string after = firstText(agent.mcpCall("get_status", input({ { "since", juce::String(tokenOf(since)) } })));
         P.eq("seen.then_as_desktop_saw_it", has(after, "Nothing changed since your last look") && has(after, "The files are as they were at that token") ? 1 : 0, 1);
+
+        // ---- LAYOUT --------------------------------------------------------------------------------------------------
+        // A netlist's drawing (its *@ lines, fminus/CirDoc.h) is no change to the program: a netlist goes without its
+        // *@ lines, saying how many it left out; a change to them alone sends no state; with a dial moved too, the
+        // state says these files play and sends no file again; get_status says these files.
+        {
+            const std::string drawn = cir::written(pg::findLibraryFile("diodetone.cir")->source);
+            int layoutLines = 0;
+            for (std::size_t at = 0; at < drawn.size();)
+            {
+                const std::size_t end = std::min(drawn.find('\n', at), drawn.size());
+                layoutLines += cir::isLayoutLine(std::string_view(drawn).substr(at, end - at)) ? 1 : 0;
+                at = end + 1;
+            }
+            pg::Draft dl = processor.editorPort().draft();
+            dl.files.push_back({ "pedal.cir", drawn });
+            processor.editorPort().setDraft(dl);
+            processor.editorPort().run(dl.files);
+            processor.settle();
+            script->add(fake::Response::ok(fake::Sse().start().text("A circuit.").end()));
+            agent.send("there is a circuit");
+            agent.waitIdle();
+            const std::string first = lastState();
+            P.eq("layout.netlist_without_its_drawing", layoutLines > 10 && has(first, "<file name=\"pedal.cir\">") && has(first, "R1     in a  2.2k")
+                                                           && !has(first, "*@ ") && has(first, "(" + std::to_string(layoutLines) + " layout lines left out: read_file shows them)") ? 1 : 0, 1);
+            P.eq("layout.plays", has(first, "What plays: these files") ? 1 : 0, 1);
+            const auto moved = [&](const std::string& from, const std::string& to) {
+                pg::Draft d2 = processor.editorPort().draft();
+                const std::size_t at = d2.files.back().text.find(from);
+                if (at != std::string::npos)
+                    d2.files.back().text.replace(at, from.size(), to);
+                processor.editorPort().setDraft(d2);
+                return at != std::string::npos;
+            };
+            const bool redrawn = moved("*@ part R1 6,0", "*@ part R1 6,-4");
+            script->add(fake::Response::ok(fake::Sse().start().text("Same.").end()));
+            agent.send("I moved a part");
+            agent.waitIdle();
+            P.eq("layout.redraw_sends_no_state", redrawn && lastState().empty() ? 1 : 0, 1);
+            processor.getParameters()[0]->setValueNotifyingHost(0.6f);
+            moved("*@ part R1 6,-4", "*@ part R1 6,-8");
+            script->add(fake::Response::ok(fake::Sse().start().text("Noted.").end()));
+            agent.send("and a dial");
+            agent.waitIdle();
+            const std::string second = lastState();
+            std::printf("plugin_state after a redraw and a dial:\n%s\n", second.c_str());
+            P.eq("layout.state_these_files", has(second, "What plays: these files") && has(second, "<file name=\"pedal.cir\" lines=")
+                                                 && has(second, "unchanged=\"true\"") && !has(second, "R1     in a  2.2k") ? 1 : 0, 1);
+            P.eq("layout.get_status_these_files", has(firstText(agent.mcpCall("get_status", input({}))), "What plays: these files") ? 1 : 0, 1);
+            // compare: what plays and the editor's files are the same program (cir::sameProgram)
+            const std::string compared = firstText(agent.mcpCall("compare", input({ { "a", "playing" }, { "b", "editor" } })));
+            std::printf("compare after a redraw:\n%s\n", compared.c_str());
+            P.eq("layout.compare_same_program", has(compared, "Source, B against A: the same program (only a netlist's drawing") ? 1 : 0, 1);
+        }
     }
 
     // ---- MEASURE -------------------------------------------------------------------------------------------------------
@@ -1031,6 +1108,415 @@ PROBE(plugin, chat)
         const std::string saved = agent.saveState();
         P.eq("view.session_no_picture", has(saved, "iVBORw0KGgo") ? 0 : 1, 1);
         P.eq("view.session_line", has(saved, "A picture of the panel or the sound: not kept in the session") && has(saved, "pictures_cut") ? 1 : 0, 1);
+    }
+
+    // ---- CIRCUIT ---------------------------------------------------------------------------------------------------------
+    {
+        const std::string screamer = cir::written(pg::findLibraryFile("screamer.cir")->source);
+        const std::string tone = cir::written(pg::findLibraryFile("diodetone.cir")->source);
+        const pg::Draft saved = processor.editorPort().draft();   // given back after (COMPACT reads its program.fm)
+        pg::Draft dc;
+        dc.files = { saved.files.front(), { "pedal.cir", screamer }, { "tone.cir", tone } };
+        dc.active = 1;
+        processor.editorPort().setDraft(dc);
+        pg::ui::Panel panel(processor.ports(), processor.editorPort());
+        funkgui::HeadlessHost host(panel, 0, 1.0f);
+        host.settle();
+        panel.setSchematic(true);
+        host.settle();
+        pg::ui::SchematicView& v = panel.schematic();
+        const auto fileText = [&](const std::string& file) {
+            for (const pg::SourceFile& f : processor.editorPort().draft().files)
+                if (f.name == file)
+                    return f.text;
+            return std::string();
+        };
+        // what apply makes of the file's text now (with the session pins the view published)
+        const auto expected = [&](const std::string& file, const std::vector<std::string>& lines) {
+            const std::string text = fileText(file);
+            const cir::SessionPins pins = cir::readLayout(processor.editorPort().schematicPins(file));
+            std::vector<cir::Op> ops;
+            for (const std::string& l : lines)
+            {
+                std::string unread;
+                if (const std::optional<cir::Op> op = cir::parseOp(l, unread))
+                    ops.push_back(*op);
+            }
+            return cir::apply(text, cir::reconcile(text, pins), ops, pins).text;
+        };
+        // A turn that calls edit_circuit once; the editor ticks until the draft's change is merged into its tab, and the
+        // flash of `part` is read then.
+        struct Turn
+        {
+            std::string result;
+            bool error = false;
+            bool merged = false;
+            float flash = 0.0f;
+            std::string before, after;                   // the tab's text
+        };
+        const auto drawTurn = [&](const std::string& id, const std::string& file, const std::vector<std::string>& lines, const std::string& part) {
+            juce::Array<juce::var> ops;
+            for (const std::string& l : lines)
+                ops.add(juce::String(l));
+            script->add(fake::Response::ok(fake::Sse().start().tool(id, "edit_circuit", input({ { "name", juce::String(file) }, { "ops", juce::var(ops) } })).end("tool_use")));
+            script->add(fake::Response::ok(fake::Sse().start().text("Drawn.").end()));
+            Turn t;
+            host.tick(45);                               // the last turn's flashes over (0.6 s)
+            t.before = panel.editor().text();
+            const int from = script->postCount();
+            agent.send("change the circuit");
+            for (int k = 0; k < 4000 && (agent.chatState().busy || script->postCount() < from + 2); ++k)
+            {
+                processor.poll();
+                if (!t.merged)
+                {
+                    host.tick(1);
+                    if (panel.editor().text() != t.before)
+                    {
+                        t.merged = true;
+                        (void)v.drawing();               // the view reconciles the merged text (its next frame would)
+                        t.flash = part.empty() ? 0.0f : v.flashOf(part);
+                    }
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            agent.waitIdle();
+            processor.poll();
+            host.tick(1);
+            t.after = panel.editor().text();
+            const juce::Array<juce::var> m = messagesOf(script->body(from + 1));
+            const juce::Array<juce::var> results = arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {}));
+            if (!results.isEmpty())
+            {
+                t.result = str(results[0], "content");
+                t.error = static_cast<bool>(results[0].getProperty("is_error", false));
+            }
+            return t;
+        };
+        P.eq("circuit.shown", panel.schematicShown() && v.file() == "pedal.cir" ? 1 : 0, 1);
+        // each command, one undo step in the editor, the parts it changed flashing
+        struct Step
+        {
+            const char* part;
+            std::vector<std::string> ops;
+        };
+        const std::vector<Step> steps = {
+            { "R12", { "add R12 o2 0 100k at 64,8 r90" } },
+            { "C8", { "add C8 out 0 10n" } },
+            { "R12", { "place R12 68,10 r90" } },
+            { "R11", { "connect C8.1 o1" } },   // o1 joins out (the .output's name kept): R11's and C7's tokens change
+            { "C8", { "disconnect C8.1" } },
+            { "R4", { "set R4 10k" } },
+            { "R40", { "rename R4 R40", "rename z1 zz" } },
+            { "", { "delete R12 C8" } },
+            { "R11", { "layout R11" } },
+        };
+        int exact = 0, undone = 0, flashed = 0;
+        std::string firstResult;
+        for (std::size_t k = 0; k < steps.size(); ++k)
+        {
+            const std::string want = expected("pedal.cir", steps[k].ops);
+            const Turn t = drawTurn("toolu_c" + std::to_string(k), "pedal.cir", steps[k].ops, steps[k].part);
+            if (k == 0)
+                firstResult = t.result;
+            const bool same = !t.error && t.merged && t.after == want && fileText("pedal.cir") == want;
+            exact += same ? 1 : 0;
+            funkgui::TextEditor& ed = panel.editor();
+            const bool back = ed.undo() && ed.text() == t.before;
+            const bool again = ed.redo() && ed.text() == want;
+            undone += back && again ? 1 : 0;
+            host.tick(1);
+            flashed += steps[k].part[0] == '\0' || t.flash > 0.0f ? 1 : 0;
+            if (steps[k].part[0] != '\0' && !(t.flash > 0.0f))
+                std::printf("edit_circuit %s: %s did not flash\n", steps[k].ops[0].c_str(), steps[k].part);
+            if (!same || !(back && again))
+                std::printf("edit_circuit %s: merged %d, error %d, same %d, undo %d\n%s\n", steps[k].ops[0].c_str(), t.merged ? 1 : 0,
+                            t.error ? 1 : 0, t.after == want ? 1 : 0, back && again ? 1 : 0, t.result.c_str());
+        }
+        std::printf("edit_circuit's result, an add:\n%s\n", firstResult.c_str());
+        P.eq("circuit.ops_exact", exact, static_cast<int64_t>(steps.size()));
+        P.eq("circuit.one_undo_step", undone, static_cast<int64_t>(steps.size()));
+        P.eq("circuit.parts_flash", flashed, static_cast<int64_t>(steps.size()));
+        P.eq("circuit.result_says", has(firstResult, "Edited pedal.cir: 1 command, one step the user can undo.")
+                                        && has(firstResult, "- added R12 at 64,8 r90 on o2, 0") && has(firstResult, "+ R12 o2 0 100k")
+                                        && has(firstResult, "The circuit compiler on the new text") ? 1 : 0, 1);
+        P.eq("circuit.entry", lastText(agent.chatState(), pg::ChatEntry::Kind::tool) == "drew pedal.cir (1 change)" ? 1 : 0, 1);
+        {
+            // the add without at: placed beside what it connects to, with its part line
+            const std::string text = fileText("pedal.cir");
+            const std::string want = expected("pedal.cir", { "add C9 v3 0 1n" });
+            const Turn t = drawTurn("toolu_c_add", "pedal.cir", { "add C9 v3 0 1n" }, "C9");
+            P.eq("circuit.add_placed", t.after == want && has(t.after, "\n*@ part C9 ") && has(t.result, "- added C9 at ") ? 1 : 0, 1);
+            panel.editor().undo();
+            host.tick(2);
+        }
+        {
+            // one bad command among good ones: nothing changes, and it is named
+            const std::string text = fileText("pedal.cir");
+            const Turn t = drawTurn("toolu_c_bad", "pedal.cir", { "set R7 2k", "connect R99.1 n1", "set R9 2k" }, "");
+            std::printf("a bad command: %s\n", t.result.c_str());
+            P.eq("circuit.bad_op_names_it", t.error && has(t.result, "op 2 (connect R99.1 n1): there is no part R99") && has(t.result, "Nothing was changed")
+                                                && fileText("pedal.cir") == text && !t.merged ? 1 : 0, 1);
+            const Turn u = drawTurn("toolu_c_parse", "pedal.cir", { "set R7 2k", "frobnicate R7" }, "");
+            P.eq("circuit.bad_parse_names_it", u.error && has(u.result, "op 2 (frobnicate R7): unknown command") && fileText("pedal.cir") == text ? 1 : 0, 1);
+        }
+        {
+            // the session pins: the view publishes the place it drew for a part without a part line; Claude's block keeps it
+            std::string text = panel.editor().text();
+            const std::size_t at = text.find("*@ part R11 ");
+            if (at != std::string::npos)
+                text.erase(at, text.find('\n', at) + 1 - at);
+            panel.editor().setText(text);
+            host.tick(2);
+            const cir::Part* r11 = nullptr;
+            const int i = v.drawing().part("R11");
+            if (i >= 0)
+                r11 = &v.drawing().parts[static_cast<std::size_t>(i)];
+            const std::string published = processor.editorPort().schematicPins("pedal.cir");
+            std::printf("the view's session pins: %s", published.c_str());
+            P.eq("circuit.pins_published", r11 != nullptr && published == "*@ part R11 " + std::to_string(r11->origin.x) + ","
+                                                                   + std::to_string(r11->origin.y)
+                                                                   + (r11->orient == cir::Orient::r0 ? std::string() : std::string(" ") + cir::orientName(r11->orient))
+                                                                   + "\n" ? 1 : 0, 1);
+            // the place the user's view drew (planted here away from where placement would put it), kept by Claude's write
+            processor.editorPort().setSchematicPins("pedal.cir", "*@ part R11 70,-14\n");
+            const Turn t = drawTurn("toolu_c_pins", "pedal.cir", { "set R7 1.2k" }, "R7");
+            P.eq("circuit.pins_kept", !t.error && has(t.after, "\n*@ part R11 70,-14\n") && has(t.after, "R7     v2  t1  1.2k") ? 1 : 0, 1);
+        }
+        {
+            // a netlist with no *@ lines at all: the view lays it out and publishes its terminals' places with its
+            // parts', so Claude's block and picture put the input and the output where the user sees them
+            const std::string drawn = panel.editor().text();
+            const std::string bare = cir::stripLayout(drawn);
+            panel.editor().setText(bare);
+            host.tick(2);
+            const cir::Drawing seen = v.drawing();
+            const std::string published = processor.editorPort().schematicPins("pedal.cir");
+            const cir::Drawing theirs = cir::reconcile(bare, cir::readLayout(published));
+            int same = 0;
+            for (const cir::Part& q : seen.parts)
+            {
+                const int i = theirs.part(q.name);
+                same += i >= 0 && theirs.parts[static_cast<std::size_t>(i)].origin == q.origin && theirs.parts[static_cast<std::size_t>(i)].orient == q.orient ? 1 : 0;
+            }
+            const cir::Part* in = nullptr;
+            const cir::Part* out = nullptr;
+            for (const cir::Part& q : seen.parts)
+            {
+                if (q.kind == cir::Kind::Input)
+                    in = &q;
+                if (q.kind == cir::Kind::Output)
+                    out = &q;
+            }
+            const auto at = [](const cir::Part* q) { return q == nullptr ? std::string("?") : std::to_string(q->origin.x) + "," + std::to_string(q->origin.y); };
+            P.eq("circuit.pins_terminals", in != nullptr && out != nullptr && has(published, "*@ input " + in->name + " " + at(in) + "\n")
+                                               && has(published, "*@ output " + out->name + " " + at(out) + "\n") ? 1 : 0, 1);
+            P.eq("circuit.pins_whole_drawing", same, static_cast<int64_t>(seen.parts.size()));
+            const Turn t = drawTurn("toolu_c_bare", "pedal.cir", { "set R7 1.5k" }, "R7");
+            P.eq("circuit.terminals_kept", !t.error && in != nullptr && out != nullptr && has(t.after, "\n*@ input " + in->name + " " + at(in) + "\n")
+                                               && has(t.after, "\n*@ output " + out->name + " " + at(out) + "\n") ? 1 : 0, 1);
+            panel.editor().setText(drawn);               // the drawing as it was, for the rows after
+            host.tick(2);
+        }
+        {
+            // a gesture planted between the read and the write: never overwritten, the commands run again on it
+            const std::string planted = [&] {
+                std::string x = fileText("pedal.cir");
+                const std::size_t at = x.find("R8     t1  0   10k");
+                if (at != std::string::npos)
+                    x.replace(at, 18, "R8     t1  0   12k");
+                return x;
+            }();
+            int planting = 1;
+            agent.setCircuitWriteHookForTests([&](int attempt) {
+                if (planting <= 0)
+                    return;
+                --planting;
+                pg::Draft d = processor.editorPort().draft();
+                for (pg::SourceFile& f : d.files)
+                    if (f.name == "pedal.cir")
+                        f.text = attempt == 0 ? planted : planted + "* the user again\n";
+                processor.editorPort().setDraft(d);
+            });
+            cir::SessionPins pins = cir::readLayout(processor.editorPort().schematicPins("pedal.cir"));
+            std::string unread;
+            const std::vector<cir::Op> ops{ *cir::parseOp("set R9 2.2k", unread) };
+            const std::string want = cir::apply(planted, cir::reconcile(planted, pins), ops, pins).text;
+            const Turn t = drawTurn("toolu_c_clash", "pedal.cir", { "set R9 2.2k" }, "R9");
+            P.eq("circuit.clash_reapplied", !t.error && fileText("pedal.cir") == want && has(want, "R8     t1  0   12k")
+                                                && has(want, "R9     v3  tn  2.2k") && t.after == want ? 1 : 0, 1);
+            planting = 2;
+            const Turn u = drawTurn("toolu_c_clash2", "pedal.cir", { "set R9 3.3k" }, "");
+            std::printf("two clashes: %s\n", u.result.c_str());
+            P.eq("circuit.clash_twice_fails", u.error && u.result == "pedal.cir changed while drawing: try again"
+                                                  && has(fileText("pedal.cir"), "* the user again\n") && !has(fileText("pedal.cir"), "3.3k") ? 1 : 0, 1);
+            agent.setCircuitWriteHookForTests({});
+        }
+        {
+            // a gesture in the view that no frame has synced yet, made while the tool writes: the view gives the files
+            // to the processor at once, so Claude's conditional write sees it and runs its commands again on it
+            std::atomic<int> stage{ 0 };
+            agent.setCircuitWriteHookForTests([&](int attempt) {
+                if (attempt != 0)
+                    return;
+                stage.store(1);
+                for (int k = 0; k < 5000 && stage.load() != 2; ++k)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            });
+            script->add(fake::Response::ok(fake::Sse().start().tool("toolu_c_race", "edit_circuit", input({ { "name", "pedal.cir" }, { "ops", juce::var(juce::Array<juce::var>{ juce::String("set R9 4.7k") }) } })).end("tool_use")));
+            script->add(fake::Response::ok(fake::Sse().start().text("Drawn.").end()));
+            host.tick(45);
+            const std::string before = panel.editor().text();
+            agent.send("change the circuit");
+            for (int k = 0; k < 4000 && stage.load() != 1; ++k)
+            {
+                processor.poll();
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            // the user nudges R8, no frame after it (Panel::refresh has not run)
+            v.selectPart("R8", false);
+            bool nudged = false;
+            for (const cir::Pt d : { cir::Pt{ 0, -1 }, cir::Pt{ 0, 1 }, cir::Pt{ -1, 0 }, cir::Pt{ 1, 0 } })
+                if (!nudged && v.nudge(d.x, d.y))
+                    nudged = panel.editor().text() != before;
+            const std::string gestured = panel.editor().text();
+            const cir::SessionPins pins = cir::readLayout(processor.editorPort().schematicPins("pedal.cir"));
+            std::string unread;
+            const std::vector<cir::Op> ops{ *cir::parseOp("set R9 4.7k", unread) };
+            const std::string want = cir::apply(gestured, cir::reconcile(gestured, pins), ops, pins).text;
+            stage.store(2);
+            agent.waitIdle();
+            processor.poll();
+            host.tick(2);
+            std::printf("a gesture no frame synced, nudged %d: %s\n", nudged ? 1 : 0, panel.editor().text() == want ? "kept" : "lost");
+            P.eq("circuit.unsynced_gesture_kept", nudged && stage.load() == 2 && panel.editor().text() == want && fileText("pedal.cir") == want
+                                                      && has(want, "R9     v3  tn  4.7k") ? 1 : 0, 1);
+            agent.setCircuitWriteHookForTests({});
+            panel.editor().setText(before);              // the netlist as it was, for the rows after
+            host.tick(2);
+        }
+        {
+            // generate()'s messages for the new text: an error and a warning
+            const Turn t = drawTurn("toolu_c_err", "pedal.cir", { "set R7 0", "set R10 1M" }, "R7");
+            std::printf("generate's messages:\n%s\n", t.result.c_str());
+            P.eq("circuit.result_errors", !t.error && has(t.result, "error: R7's value is 0") && has(t.result, "'1M' is 1 milliohm in SPICE") ? 1 : 0, 1);
+            const bool longText = t.after.size() > 4000;
+            P.eq("circuit.long_not_whole", longText == !has(t.result, "Its whole text now:") ? 1 : 0, 1);
+            panel.editor().undo();
+            host.tick(2);
+        }
+        {
+            // a short netlist: its whole text, and seen (the next plugin_state names it unchanged)
+            {
+                const funkgui::Point tab = panel.centreOfTab(2);
+                host.click(tab.x, tab.y);
+                host.tick(2);
+            }
+            const Turn t = drawTurn("toolu_c_tone", "tone.cir", { "set R1 3.3k" }, "R1");
+            const std::string text = fileText("tone.cir");
+            script->add(fake::Response::ok(fake::Sse().start().text("Seen.").end()));
+            agent.send("and the tone circuit?");
+            agent.waitIdle();
+            const juce::Array<juce::var> m = messagesOf(script->body(script->postCount() - 1));
+            std::string state;
+            for (const auto& b : arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {})))
+                if (str(b, "text").rfind("<plugin_state>", 0) == 0)
+                    state = str(b, "text");
+            P.eq("circuit.short_whole", !t.error && text.size() <= 4000 && has(t.result, "Its whole text now:\n" + text) ? 1 : 0, 1);
+            P.eq("circuit.short_seen", has(state, "<file name=\"tone.cir\" lines=") && !has(state, "<file name=\"tone.cir\">") ? 1 : 0, 1);
+        }
+        {
+            // write_file of a netlist without its *@ lines: the old drawing kept, and said
+            const std::string old = fileText("tone.cir");
+            std::string block;
+            int count = 0;
+            for (std::size_t at = 0; at < old.size();)
+            {
+                const std::size_t end = std::min(old.find('\n', at), old.size());
+                const std::string line = old.substr(at, end - at);
+                if (cir::isLayoutLine(line))
+                {
+                    block += line + "\n";
+                    ++count;
+                }
+                at = end + 1;
+            }
+            const std::string bare = cir::stripLayout(old);
+            const pg::ChatAgent::McpResult w = agent.mcpCall("write_file", input({ { "name", "tone.cir" }, { "content", juce::String(bare) } }));
+            std::string said;
+            for (const auto& b : arr(w.content))
+                said += str(b, "text");
+            std::printf("write_file, a netlist without its drawing: %s\n", said.c_str());
+            P.eq("circuit.write_keeps_drawing", !w.isError && fileText("tone.cir") == cir::withBlock(bare, block) && count > 3
+                                                    && has(said, "Kept the drawing's " + std::to_string(count) + " *@ lines; send edit_circuit 'layout' to redraw it.") ? 1 : 0, 1);
+            host.tick(2);                                // the write merged (its tab shown), then pedal.cir's again
+            {
+                const funkgui::Point tab = panel.centreOfTab(1);
+                host.click(tab.x, tab.y);
+                host.tick(2);
+            }
+        }
+        {
+            // view_panel's schematic: a PNG at 100 %, every part labelled, the text's places and pins the drawing's
+            const bool view = processor.editorPort().panelView();
+            const std::vector<pg::FileView> views = processor.editorPort().fileViews();
+            const int active = processor.editorPort().draft().active;
+            const float zoom = v.zoom();
+            script->add(fake::Response::ok(fake::Sse().start().tool("toolu_c_view", "view_panel", input({ { "view", "schematic" }, { "name", "pedal.cir" } })).end("tool_use")));
+            script->add(fake::Response::ok(fake::Sse().start().text("I see it.").end()));
+            const int from = script->postCount();
+            agent.send("look at the circuit");
+            for (int k = 0; k < 4000 && (agent.chatState().busy || script->postCount() < from + 2); ++k)
+            {
+                processor.poll();
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            agent.waitIdle();
+            const juce::Array<juce::var> m = messagesOf(script->body(from + 1));
+            const juce::Array<juce::var> results = arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {}));
+            const juce::Array<juce::var> content = arr(results.isEmpty() ? juce::var() : results[0].getProperty("content", {}));
+            std::string data, about;
+            for (const juce::var& b : content)
+            {
+                if (str(b, "type") == "image")
+                    data = str(b.getProperty("source", {}), "data");
+                if (str(b, "type") == "text")
+                    about = str(b, "text");
+            }
+            std::printf("view_panel schematic:\n%s\n", about.c_str());
+            const std::string text = fileText("pedal.cir");
+            const cir::Drawing d = cir::reconcile(text, cir::readLayout(processor.editorPort().schematicPins("pedal.cir")));
+            const cir::Layout lay = cir::readLayout(text);
+            int placesMatch = 0, pinsMatch = 0, pinsAll = 0, elements = 0;
+            for (const cir::PartLine& l : lay.parts)
+                placesMatch += has(about, "- " + l.name + " at " + std::to_string(l.at.x) + "," + std::to_string(l.at.y) + " "
+                                              + cir::orientName(l.orient) + ": ") ? 1 : 0;
+            for (const cir::Part& q : d.parts)
+            {
+                elements += q.element >= 0 ? 1 : 0;
+                for (const cir::PinAt& pin : q.pins)
+                {
+                    ++pinsAll;
+                    const std::string net = pin.net >= 0 ? d.nets[static_cast<std::size_t>(pin.net)].name : std::string("nothing");
+                    pinsMatch += has(about, (pin.name.empty() ? std::string("pin") : pin.name) + " " + std::to_string(pin.at.x) + ","
+                                                + std::to_string(pin.at.y) + " (" + net + ")") ? 1 : 0;
+                }
+            }
+            const cir::Box b = d.bounds();
+            const int wantW = (b.x1 - b.x0 + 10) * 10;
+            P.eq("circuit.view_png", data.rfind("iVBORw0KGgo", 0) == 0 && data.size() > 2000 ? 1 : 0, 1);
+            P.eq("circuit.view_100", has(about, "at 100 % (10 px a grid unit), " + std::to_string(wantW) + " x ") ? 1 : 0, 1);
+            P.eq("circuit.view_labels", has(about, "(" + std::to_string(elements) + " parts labelled)") ? 1 : 0, 1);
+            P.eq("circuit.view_places", placesMatch, static_cast<int64_t>(lay.parts.size()));
+            P.eq("circuit.view_pins", pinsMatch, pinsAll);
+            P.eq("circuit.view_kept", processor.editorPort().panelView() == view && processor.editorPort().fileViews() == views
+                                          && processor.editorPort().draft().active == active && panel.schematicShown() && v.zoom() == zoom ? 1 : 0, 1);
+            P.eq("circuit.view_entry", lastText(agent.chatState(), pg::ChatEntry::Kind::tool) == "Looked at the schematic of pedal.cir" ? 1 : 0, 1);
+            juce::MemoryOutputStream png;
+            if (juce::Base64::convertFromBase64(png, juce::String(data)))
+                juce::File(juce::String(probe::outPath("plugin.chat.view_schematic.png"))).replaceWithData(png.getData(), png.getDataSize());
+        }
+        processor.editorPort().setDraft(saved);
     }
 
     // ---- SOUND, CHECKS, TUNE: a processor of their own, playing a program that sounds --------------------------------------------------------------------
@@ -1826,7 +2312,7 @@ PROBE(plugin, chat)
         int at = script->postCount();
         agent.send("hello");
         agent.waitIdle();
-        P.eq("web.off_no_tools", toolsOf(at).size() == 20 && webTool(at, "web_search").isVoid() ? 1 : 0, 1);
+        P.eq("web.off_no_tools", toolsOf(at).size() == 21 && webTool(at, "web_search").isVoid() ? 1 : 0, 1);
         agent.setWeb(true);
         P.eq("web.on", agent.chatState().web ? 1 : 0, 1);
         const juce::var result = input({ { "type", "web_search_tool_result" },
@@ -1865,7 +2351,7 @@ PROBE(plugin, chat)
         agent.waitIdle();
         {
             const juce::var search = webTool(at, "web_search"), fetch = webTool(at, "web_fetch");
-            P.eq("web.tools", toolsOf(at).size() == 22 && str(search, "type") == "web_search_20260209"
+            P.eq("web.tools", toolsOf(at).size() == 23 && str(search, "type") == "web_search_20260209"
                                   && static_cast<int>(search.getProperty("max_uses", 0)) == 5
                                   && str(fetch, "type") == "web_fetch_20260209"
                                   && static_cast<int>(fetch.getProperty("max_content_tokens", 0)) > 0

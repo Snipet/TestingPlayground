@@ -182,7 +182,7 @@ endforeach()
 # The extension's own version (every product's .mcpb): Claude Desktop updates an installed extension only to a newer
 # one, so this goes up with every change to the server, its manifest or what the plugin tells it (the tools, the
 # guide's preamble).
-set(FP_MCP_VERSION "0.5.0")
+set(FP_MCP_VERSION "0.7.0")
 
 # The probes (cmake/Probes.cmake): `probes` builds every product's.
 enable_testing()

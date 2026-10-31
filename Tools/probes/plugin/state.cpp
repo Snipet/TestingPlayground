@@ -22,6 +22,9 @@
 //           before it compiles, so that compile wants no self-test and says nothing, and it plays the saved
 //           processor's bits (half a second, below the freezer's 3 s); an answer that does not read back as this
 //           FMinus's (another key, a damaged line) is not restored, and the program plays its provisional configuration
+//   FILEVIEWS the netlists' views (EditorPort::fileViews: the view, the zoom, the centre, the pinned probes' nodes) kept in
+//           the editor's tree (<FILE> children) and read back the same; a file that is no netlist is not kept, nor more
+//           than four probes; a state from before them (no <FILE>) loads as it did, with none
 #include "Probe.h"
 
 #include "Audio.h"
@@ -347,6 +350,54 @@ PROBE(plugin, state)
                                                   && c.editorPort().status().notes == provisional.notes && c.compiler().selfTesting()
                                                   ? 1 : 0, 1);
         store.clearForTests();
+    }
+
+    // FILEVIEWS
+    {
+        pg::Processor a;
+        P.eq("fileviews.none_at_first", static_cast<int64_t>(a.editorPort().fileViews().size()), 0);
+        pg::FileView pedal;
+        pedal.file = "pedal.cir";
+        pedal.schematic = true;
+        pedal.zoom = 1.5f;
+        pedal.x = 12.25f;
+        pedal.y = -3.5f;
+        pedal.probes = { "n1", "vout" };
+        pg::FileView tone;
+        tone.file = "tone.cir";
+        tone.zoom = 0.75f;
+        pg::FileView notNetlist;
+        notNetlist.file = "program.fm";                  // a view only a netlist has: not kept
+        pg::FileView manyProbes = pedal;
+        manyProbes.file = "many.cir";
+        manyProbes.probes = { "a", "b", "c", "d", "e", "f" };
+        a.editorPort().setFileViews({ pedal, tone, notNetlist, manyProbes });
+        juce::MemoryBlock saved;
+        a.getStateInformation(saved);
+        pg::Processor b;
+        b.setStateInformation(saved.getData(), static_cast<int>(saved.getSize()));
+        const std::vector<pg::FileView> views = b.editorPort().fileViews();
+        P.eq("fileviews.count", static_cast<int64_t>(views.size()), 3);
+        P.eq("fileviews.round_trip", views.size() == 3 && views[0] == pedal && views[1] == tone ? 1 : 0, 1);
+        P.eq("fileviews.probes_capped", views.size() == 3 && views[2].probes.size() == pg::kMaxFileProbes ? 1 : 0, 1);
+        // a state from before them: the same state loads, with none
+        std::unique_ptr<juce::XmlElement> xml = juce::AudioProcessor::getXmlFromBinary(saved.getData(), static_cast<int>(saved.getSize()));
+        bool had = false;
+        if (juce::XmlElement* editor = xml != nullptr ? xml->getChildByName("EDITOR") : nullptr)
+            for (juce::XmlElement* f = editor->getChildByName("FILE"); f != nullptr; f = editor->getChildByName("FILE"))
+            {
+                editor->removeChildElement(f, true);
+                had = true;
+            }
+        P.eq("fileviews.in_the_editor_tree", had ? 1 : 0, 1);
+        juce::MemoryBlock older;
+        if (xml != nullptr)
+            juce::AudioProcessor::copyXmlToBinary(*xml, older);
+        pg::Processor c;
+        c.setStateInformation(older.getData(), static_cast<int>(older.getSize()));
+        c.poll();
+        P.eq("fileviews.older_state_none", c.editorPort().fileViews().empty() ? 1 : 0, 1);
+        P.eq("fileviews.older_state_loads", c.editorPort().draft() == b.editorPort().draft() ? 1 : 0, 1);
     }
     return P.finish();
 }

@@ -27,7 +27,8 @@
 //             it, Escape cancels), the + adds a file (its name being edited), a tab's x closes its file (asking first
 //             when it has text). A tab whose file the last run's errors name has a mark before its name. At the bar's
 //             right end, apart, the IR tab while it is open (IrView.h: the program's LLVM IR, read only, none of its
-//             files), opened from the explorer's LLVM IR rows
+//             files), opened from the explorer's LLVM IR rows; left of it, while a netlist's tab shows, the Netlist /
+//             Schematic pills (SchematicView.h: its drawing, a view of the file that edits its text; Cmd-Shift-D)
 //   editor    a funkgui::TextEditor for each file, the shown file's drawn (the processor keeps the files and the tab:
 //             EditorPort::draft), made a code editor by CodeAssist.h: FMinus highlighted, the problems' squiggles and
 //             marks (RUN's, and a check while typing), completion, signature help, hover cards, Format Document, the
@@ -86,6 +87,7 @@
 #include "dsp/Engine.h"
 #include "editor/DialLayout.h"
 #include "editor/GuiLayout.h"
+#include "fminus/Lang.h"
 #include "fminus/PanelSpec.h"
 
 #include "plugin/ChatPort.h"
@@ -121,6 +123,7 @@ namespace playground::ui
     class ChatView;                                      // the chat's conversation (ChatView.h)
     class InputItem;                                     // the chat's message box (ChatItems.h)
     class CodeAssist;                                    // the editor's language features (CodeAssist.h)
+    class SchematicView;                                 // a netlist's Schematic view (SchematicView.h)
     class DisplayItem;                                   // a program's display (DisplayItem.h)
     class GuiControlItem;                                // a .gui file's control (GuiItems.h)
     class GuiView;                                       // a .gui file's interface: its items (GuiView.h)
@@ -169,7 +172,9 @@ namespace playground::ui
     class Panel final : public funkgui::Panel
     {
     public:
-        Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& port);
+        // `picture`: view_panel's headless Panel (Picture.cpp): it owns no probe and publishes no session pins, so what
+        // it lays out never becomes the user's.
+        Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& port, bool picture = false);
         ~Panel() override;
 
         Panel(const Panel&) = delete;
@@ -240,6 +245,12 @@ namespace playground::ui
         bool frozenShown() const noexcept { return frozenShown_; }
         funkgui::Point centreOfFrozen() const;
         void runNow();                                   // RUN
+        // The draft and the tabs. mergeDraft: a draft the editor has not merged (a host's load, Claude's write) into
+        // the tabs, each keeping what was typed in it since the editor last gave its files where that draft left the
+        // file as given (true when one came). pushFiles: the tabs to the processor, never over such a draft (which
+        // merges first: EditorPort::setDraftIf); false when another came meanwhile, for the next refresh to merge.
+        bool mergeDraft();
+        bool pushFiles();
         // The chat.
         funkgui::TextEditor& chatInput() noexcept;       // the message box
         const std::string& chatPlaceholder() const;      // what it says while empty
@@ -284,8 +295,28 @@ namespace playground::ui
         funkgui::Point centreOfIrClose() const;
         funkgui::Rect irTabRect() const;                 // the IR tab (empty while it is closed)
         funkgui::Rect fileTabRect(int i) const;          // file i's tab
+        // A netlist's two views (SchematicView.h): the pills at the tab bar's right end while a .cir tab shows (Netlist,
+        // Schematic; icon-only when their labels would narrow the files' tabs below their least), Cmd-Shift-D, the view
+        // and its drawing. In the Schematic view the problems list is hidden, the editor keeps at least
+        // max(312, 55 % of the column), and dials that do not fit under it fold into a bar ("32 DIALS   SHOW").
+        bool schematicShown() const;
+        void setSchematic(bool on);                      // the netlist shown's view, as its pills set it
+        SchematicView& schematic();
+        funkgui::Point centreOfViewPill(bool schematic) const;
+        funkgui::Rect viewPillRect(bool schematic) const;
+        bool viewPillsShown() const;
+        bool viewPillsLabelled() const;
+        funkgui::Rect editorArea() const;                // the files' editor's rect (a view's, the status line's too)
+        bool dialsFolded() const noexcept { return dialsFolded_; }   // the dials in the fold's bar, hidden
+        bool dialsBarShown() const noexcept { return dialsBar_; }    // the bar (SHOW or HIDE) under the editor
+        funkgui::Point centreOfDialsBar() const;
         // Whether the program's card's header shows the whole status at the panel's size (no ellipsis).
         bool statusWhole() const;
+        // The schematic's live probes (SchematicView.h): a Panel owns its set from its first armed one, unless told
+        // never to (view_panel's window picture, Picture.cpp: a headless Panel that owns no probe and changes none).
+        void setOwnsProbes(bool owns) noexcept { ownsProbes_ = owns; }
+        bool ownsProbes() const noexcept { return ownsProbes_; }
+        int probeOwner() const noexcept { return probeOwner_; }
         // The chat's column: open, or folded into a rail at the right (the editor and the panel take the room). The
         // header's chevron folds it, the rail's button opens it; the session keeps it (EditorPort::chatOpen).
         bool chatOpen() const noexcept { return chatOpen_; }
@@ -372,6 +403,12 @@ namespace playground::ui
         FilesItem& files();
         const FilesItem& files() const;
         void layout();                                   // every item's place, for width_ x height_
+        bool layoutSchematic_ = false;                   // layout() gave the Schematic view its room
+        bool dialsOpen_ = false;                         // the fold's bar shows the dials (per Panel; folded at first)
+        bool dialsFolded_ = false;                       // the dials folded into the bar
+        bool dialsBar_ = false;                          // the bar shown
+        int dialsBarItem_ = -1;
+        void persistFileViews();                         // the session keeps the netlists' views (a user's gesture)
         int  textItem() const;                           // the focused item when it takes every key, else -1
 
         // The chat.
@@ -497,6 +534,11 @@ namespace playground::ui
         // The places layout() found, which draw() uses.
         float leftW_ = 0.0f;                             // the left column's width (the editor's)
         Controls controls_{};                            // the dials of the program that plays, as refresh() saw them
+        std::vector<lang::CircuitBinding> circuitDials_; // ... and its circuit fields (CompileStatus::circuitDials)
+        std::vector<circuits::Probed> circuitProbes_;    // ... its probe table (CompileStatus::probes)
+        uint64_t probeProgram_ = 0;                      // ... its id (CompileStatus::program)
+        int probeOwner_ = 0;                             // this Panel's probes' owner (EditorPort::addProbeOwner; 0: none yet)
+        bool ownsProbes_ = true;                         // false: a picture's Panel, which never arms one
         PanelSpec panelSpec_;                            // its #pragma panel lines
         uint64_t panelProgram_ = 0;                      // the compile they came from (EditorPort::program)
         DialsLayout dials_;                              // their places
@@ -541,6 +583,8 @@ namespace playground::ui
         // What refresh() last saw.
         uint64_t seenStatus_ = 0, seenDraft_ = 0;
         uint64_t syncedFiles_ = 0;                       // the files' revision last given to the port
+        Draft given_;                                    // the port's draft as the editor last gave or merged it
+        bool pushedFiles_ = false;                       // ... by a schematic gesture since the last refresh
         bool edited_ = false;                            // the files differ from the program's that plays
         Sources running_;                                // the files of the program that plays, as statuses say them
         double meterAt_ = -1.0;                          // when meter_ was last made (the host's clock)

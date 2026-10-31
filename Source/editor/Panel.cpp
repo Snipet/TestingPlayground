@@ -13,6 +13,7 @@
 #include "editor/Looks.h"
 #include "editor/Items.h"
 #include "editor/LogoMark.h"
+#include "editor/SchematicView.h"
 
 #include "editor/Theme.h"
 
@@ -21,6 +22,9 @@
 #include "dsp/Compiler.h"
 #include "dsp/Controls.h"
 #include "dsp/Engine.h"
+#include "fminus/CirDoc.h"
+#include "fminus/CirTemplates.h"
+#include "fminus/Lang.h"
 #include "fminus/LibraryIncludes.h"
 #include "fminus/Random.h"
 
@@ -680,6 +684,11 @@ namespace playground::ui
         constexpr float kNewTabW = 24.0f;
         constexpr uint64_t kStructureStep = uint64_t{ 1 } << 40;   // FilesItem::revision: a change of the tabs
         constexpr float kIrIconW = 16.0f;                // the IR tab's icon, before its name
+        // A .cir tab's Netlist / Schematic pills, at the bar's right end (left of the IR tab): icon-only when their
+        // labels would narrow the files' tabs below kTabNarrowW.
+        constexpr float kPillIconW = 28.0f;
+        constexpr float kPillTrack = 3.0f;               // the track around the pair
+        constexpr uint32_t kPillsA11y = 40;              // FilesItem's ids: the group, then Netlist and Schematic
     }
 
     // Not in the unnamed namespace: Panel.h names it.
@@ -701,15 +710,94 @@ namespace playground::ui
                   [this](const std::string& text) {
                       if (notice_)
                           notice_(text);
+                  } }),
+              schematic_(SchematicView::Hooks{
+                  [this](int line, int col) { showNetlistAt(line, col); },
+                  [this] { return assist_.diagnosticsOf(active_); },
+                  [this] { return played(); },
+                  [this] {
+                      if (persist_)
+                          persist_();
                   } })
         {
             assist_.setArea(editor);
+            assist_.setStatusWords([this] { return schematicShown() ? schematic_.statusWords() : std::string(); });
+            assist_.setStatusProblems([this](bool back) { schematic_.stepProblem(back ? -1 : 1); });
+            schematic_.setArea(assist_.editorRect());
             load(Draft{ singleFile(""), 0 });
         }
 
         CodeAssist& assist() noexcept { return assist_; }
         const CodeAssist& assist() const noexcept { return assist_; }
         void setNotice(std::function<void(const std::string&)> notice) { notice_ = std::move(notice); }
+        // The Schematic view's circuit dials and Play this circuit (SchematicView.h): the program that plays's circuit
+        // fields, a dial's port and control, and RUN (the Panel's).
+        void setCircuitHooks(std::function<const std::vector<lang::CircuitBinding>&()> bindings,
+                             std::function<funkgui::ParamPort*(int)> port, std::function<Control(int)> control,
+                             std::function<void()> run)
+        {
+            run_ = std::move(run);
+            SchematicView::DialHooks h;
+            h.bindings = std::move(bindings);
+            h.port = std::move(port);
+            h.control = std::move(control);
+            h.play = [this] { return playCircuit(); };
+            h.playedNote = [this] { return playedNote(); };
+            h.undoPlay = [this] { undoPlay(); };
+            schematic_.setDialHooks(std::move(h));
+        }
+
+        // Play this circuit: program.fm's text (the first file's) replaced by a host program of the product's kind for
+        // the netlist shown (fminus/CirTemplates.h), as one undoable edit, the library files it #includes added as tabs
+        // first (as EXAMPLES adds them), then RUN; the view stays on the netlist. Why not ("" when it played).
+        std::string playCircuit()
+        {
+            if (irShown() || active_ <= 0 || fileKindOf(name(active_)) != FileKind::Circuit)
+                return "Play this circuit plays a netlist that is not the program's first file";
+            const std::string file = name(active_);
+            const cir::HostProgram hp = cir::hostProgram(file, editorOf(active_).text(), product::kIsInstrument);
+            if (!hp.why.empty())
+                return hp.why;
+            const Sources need = withLibraryIncludes(singleFile(hp.text));
+            std::string names;
+            int missing = 0;
+            for (std::size_t k = 1; k < need.size(); ++k)
+                if (find(need[k].name) < 0)
+                {
+                    ++missing;
+                    names += (names.empty() ? "" : " and ") + need[k].name;
+                }
+            if (count() + missing > static_cast<int>(kMaxFiles))
+                return "Play this circuit needs room for " + names + ": close a tab";
+            endRename();
+            for (std::size_t k = 1; k < need.size(); ++k)
+                if (find(need[k].name) < 0)
+                    addFileQuiet(need[k].name, need[k].text);
+            replaceText(editorOf(0), hp.text);
+            playFile_ = file;
+            playProgram_ = name(0);
+            if (run_)
+                run_();
+            playRev_ = editorOf(0).revision();           // after RUN (Format on Run leaves a template as it is)
+            playOn_ = true;
+            return {};
+        }
+        // "program.fm now plays pedal.cir" while program.fm's text is what Play wrote and that netlist shows; "" else.
+        std::string playedNote() const
+        {
+            if (!playOn_ || tabs_.empty() || irShown() || tabs_.front().editor->revision() != playRev_ || name(0) != playProgram_
+                || name(active_) != playFile_)
+                return {};
+            return name(0) + " now plays " + playFile_;
+        }
+        // Its Undo: program.fm's own undo step (Cmd-Z in its tab does the same).
+        void undoPlay()
+        {
+            if (playedNote().empty())
+                return;
+            editorOf(0).undo();
+            playOn_ = false;
+        }
         // The completion list, the signature and the hover card, over everything (the Panel draws them last).
         void drawOverlays(funkgui::Canvas& c, const funkgui::Theme& th, float w, float h) const
         {
@@ -772,6 +860,7 @@ namespace playground::ui
             active_ = std::clamp(d.active, 0, count() - 1);
             show();
             structure_ += kStructureStep;
+            syncSchematic();
         }
 
         // The processor's draft into the tabs (a host loaded a session, or Claude changed the files): a file whose tab
@@ -817,6 +906,8 @@ namespace playground::ui
                 Tab t = std::move(old[static_cast<std::size_t>(match[i])]);
                 if (fileKindOf(t.name) != fileKindOf(f.name))   // renamed to another kind (a .gui file, a netlist)
                     assist_.configure(*t.editor, f.name);
+                if (t.name != f.name)
+                    renameView(t.name, f.name);
                 t.name = f.name;
                 if (fresh)
                 {
@@ -824,22 +915,33 @@ namespace playground::ui
                     t.editor->setScroll(0.0f, 0.0f);
                 }
                 else
+                {
+                    // A netlist the draft changed: the schematic flashes what moved (Claude's write, merged)
+                    if (const auto v = views_.find(f.name);
+                        v != views_.end() && t.editor->text() != funkgui::TextEditor::sanitise(f.text))
+                        v->second.merged = true;
                     replaceText(*t.editor, f.text);
+                }
                 tabs_.push_back(std::move(t));
             }
             if (tabs_.empty())
                 tabs_.push_back(makeTab(kProgramName, ""));
+            for (auto v = views_.begin(); v != views_.end();)   // a file gone takes its view (and its pins) with it
+                v = find(v->first) < 0 ? forgetView(v) : std::next(v);
             active_ = std::clamp(d.active, 0, count() - 1);
             show();
             structure_ += kStructureStep;
+            syncSchematic();
         }
 
+        funkgui::Rect editorArea() const noexcept { return editorBounds_; }
         // Where the tabs and the editors are (the Panel's layout).
         void setGeometry(funkgui::Rect bar, funkgui::Rect editorBounds)
         {
             bar_ = bar;
             editorBounds_ = editorBounds;
             assist_.setArea(editorBounds_);
+            schematic_.setArea(assist_.editorRect());
             for (Tab& t : tabs_)
                 t.editor->setBounds(assist_.editorRect());
             for (const std::unique_ptr<funkgui::TextEditor>& e : ir_.editors)
@@ -851,6 +953,7 @@ namespace playground::ui
         {
             host_ = host;
             assist_.attach(host);
+            schematic_.attach(host);
             for (Tab& t : tabs_)
                 t.editor->attach(host);
             for (const std::unique_ptr<funkgui::TextEditor>& e : ir_.editors)
@@ -878,12 +981,14 @@ namespace playground::ui
         {
             if (i < 0 || i >= count() || (i == active_ && !irShown()))
                 return;
+            schematic_.endField();                       // a field open in the drawing written first, as a press out
             editor().setFocused(false);
             ir_.shown = false;
             active_ = i;
             show();
             assist_.tabShown();
             structure_ += kStructureStep;
+            syncSchematic();
         }
 
         // ---- the IR tab (IrView.h): what FMinus made of the program, read only, never one of its files -----------
@@ -898,6 +1003,7 @@ namespace playground::ui
             if (irShown() && ir_.view == view)
                 return;
             endRename();
+            schematic_.endField();
             editor().setFocused(false);
             ir_.open = true;
             ir_.shown = true;
@@ -913,6 +1019,7 @@ namespace playground::ui
             show();
             assist_.tabShown();
             structure_ += kStructureStep;
+            syncSchematic();
         }
         // The IR tab closed: its views and their texts go, and the file under it shows again.
         void closeIr()
@@ -924,6 +1031,7 @@ namespace playground::ui
             show();
             assist_.tabShown();
             structure_ += kStructureStep;
+            syncSchematic();
         }
         // What a view's text was made from ("" for nothing yet).
         const std::string& irMade(int view) const
@@ -1019,12 +1127,15 @@ namespace playground::ui
                 --renaming_;
             const bool focused = editor().focused();
             editor().setFocused(false);
+            if (const auto v = views_.find(name(i)); v != views_.end())
+                forgetView(v);
             tabs_.erase(tabs_.begin() + i);
             if (active_ >= i)
                 active_ = std::max(0, active_ - 1);
             show();
-            editor().setFocused(focused);
+            editor().setFocused(focused && !schematicShown());
             structure_ += kStructureStep;
+            syncSchematic();
         }
 
         void beginRename(int i)
@@ -1057,8 +1168,13 @@ namespace playground::ui
                 Tab& tab = tabs_[static_cast<std::size_t>(renaming_)];
                 if (fileKindOf(tab.name) != fileKindOf(typed))
                     assist_.configure(*tab.editor, typed);
+                renameView(tab.name, typed);
                 tab.name = typed;
                 structure_ += kStructureStep;
+                renaming_ = -1;
+                why_.clear();
+                syncSchematic();
+                return true;
             }
             renaming_ = -1;
             why_.clear();
@@ -1114,9 +1230,11 @@ namespace playground::ui
                                              std::max(kTabMinW, bar_.w * 0.4f));
             const int n = count();
             const float files = kTabNarrowW * static_cast<float>(n) + kTabGap * static_cast<float>(n - 1)
-                              + (canAdd() ? kNewTabW + kTabGap : 0.0f) + 3.0f * kTabGap;
-            return std::max(kTabMinW, std::min(natural, bar_.w - files));
+                              + (canAdd() ? kNewTabW + kTabGap : 0.0f) + 3.0f * kTabGap + pillsReserve();
+            // Beside a netlist's pills it narrows further, to kTabNarrowW (its icon; its box under the pointer).
+            return std::max(pillsShown() ? kTabNarrowW : kTabMinW, std::min(natural, bar_.w - files));
         }
+        bool irNarrow() const { return irTabWidth() < kTabMinW - 0.5f; }
         funkgui::Rect irTabRect() const
         {
             const float w = irTabWidth();
@@ -1132,17 +1250,29 @@ namespace playground::ui
         void tick(float dt, bool, bool, funkgui::Point pointer) override
         {
             pointer_ = pointer;
+            if (schematicShown())
+            {
+                // the drawing, not the text: no hover card for a word under the canvas; hidden (the PANEL view), the
+                // drawing waits (no edge auto-pan under the dials, nothing written to the session)
+                if (!hidden_)
+                    schematic_.tick(dt, pointer, focused_);
+                assist_.tick(dt, { -1.0e4f, -1.0e4f }, focused_);
+                return;
+            }
             editor().tick(dt);
             assist_.tick(dt, pointer, focused_);
         }
-        bool settled() const override { return assist_.settled(); }
+        bool settled() const override { return assist_.settled() && (hidden_ || schematic_.settled()); }
 
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override
         {
             namespace type = funkgui::type;
             const funkgui::TextEditor& ed = editor();
             assist_.drawGround(c, th);
-            ed.draw(c, th, ring);
+            if (schematicShown())
+                schematic_.draw(c, th, focused_);
+            else
+                ed.draw(c, th, ring);
             assist_.drawInEditor(c, th);
 
             // The tabs: pills, the shown one raised, a file the last run's errors name marked before its name.
@@ -1209,12 +1339,48 @@ namespace playground::ui
                     c.rrect(r.x, r.y, r.w, r.h, 8.0f, p.composer, 1.0f, p.composerEdge);
                 else
                     c.rrect(r.x, r.y, r.w, r.h, 8.0f, hover ? p.hover : p.composer.withAlpha(0.0f), 1.0f, p.cardEdge);
-                chat::drawIcon(c, chat::Icon::chip, r.x + kTabPad + 4.0f, r.centreY(), 11.0f, shown ? p.accent : p.dim);
-                const float nameX = r.x + kTabPad + kIrIconW;
-                const float nameW = irCloseRect().x - 4.0f - nameX;
-                c.text(fitText(c, irName(), st, nameW).c_str(), nameX, c.capCentreTop(r.centreY(), st), st,
-                       shown || hover ? p.text : p.soft);
-                drawCross(c, irCloseRect(), 3.0f, irCloseRect().contains(pointer_) ? p.text : p.faint);
+                if (irNarrow())
+                {
+                    // beside a netlist's pills (only while the IR is not shown): its chip alone, a click anywhere on
+                    // it opening it; it closes once shown, its tab wide again
+                    chat::drawIcon(c, chat::Icon::chip, r.centreX(), r.centreY(), 11.0f, hover ? p.text : p.dim);
+                }
+                else
+                {
+                    chat::drawIcon(c, chat::Icon::chip, r.x + kTabPad + 4.0f, r.centreY(), 11.0f, shown ? p.accent : p.dim);
+                    const float nameX = r.x + kTabPad + kIrIconW;
+                    const float nameW = irCloseRect().x - 4.0f - nameX;
+                    c.text(fitText(c, irName(), st, nameW).c_str(), nameX, c.capCentreTop(r.centreY(), st), st,
+                           shown || hover ? p.text : p.soft);
+                    drawCross(c, irCloseRect(), 3.0f, irCloseRect().contains(pointer_) ? p.text : p.faint);
+                }
+            }
+            // A netlist's views: Netlist and Schematic, styled as the top bar's Code / Panel switch.
+            if (pillsShown())
+            {
+                const bool labelled = pillsLabelled();
+                const funkgui::Rect a = pillRect(0), b = pillRect(1);
+                c.rrect(a.x - kPillTrack, a.y - kPillTrack, b.right() - a.x + 2.0f * kPillTrack, a.h + 2.0f * kPillTrack,
+                        0.5f * (a.h + 2.0f * kPillTrack), p.raised, 1.0f, p.cardEdge);
+                for (int k = 0; k < 2; ++k)
+                {
+                    const funkgui::Rect r = pillRect(k);
+                    const bool on = (k == 1) == schematicShown();
+                    const bool hover = r.contains(pointer_);
+                    if (on)
+                        c.rrect(r.x, r.y, r.w, r.h, 0.5f * r.h, p.composer, 1.0f, p.composerEdge);
+                    else if (hover)
+                        c.rrect(r.x, r.y, r.w, r.h, 0.5f * r.h, p.hover);
+                    const funkgui::Col ink = on || hover ? p.text : p.soft;
+                    const chat::Icon icon = k == 0 ? chat::Icon::code : chat::Icon::circuit;
+                    if (!labelled)
+                    {
+                        chat::drawIcon(c, icon, r.centreX(), r.centreY(), 12.0f, ink);
+                        continue;
+                    }
+                    chat::drawIcon(c, icon, r.x + 12.0f + 6.0f, r.centreY(), 12.0f, ink);
+                    c.text(k == 0 ? "Netlist" : "Schematic", r.x + 30.0f, c.capCentreTop(r.centreY(), st), st, ink);
+                }
             }
         }
 
@@ -1224,20 +1390,32 @@ namespace playground::ui
         }
         funkgui::Cursor cursorAt(funkgui::Point p) const override
         {
+            if (schematicShown() && !bar_.contains(p) && !assist_.statusRect().contains(p))
+                return schematic_.cursorAt(p);
             if (const std::optional<funkgui::Cursor> own = assist_.cursorAt(p))
                 return *own;
             if (bar_.contains(p))
                 return tabAt(p) >= 0 || (canAdd() && newTabRect().contains(p)) || (ir_.open && irTabRect().contains(p))
+                               || (pillsShown() && (pillRect(0).contains(p) || pillRect(1).contains(p)))
                            ? funkgui::Cursor::pointingHand
                            : funkgui::Cursor::normal;
             return editor().cursorAt(p);
         }
-        void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController&, funkgui::HostServices&) override
+        void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController& g, funkgui::HostServices&) override
         {
             const funkgui::Point p{ e.x, e.y };
+            pressedSchematic_ = false;
+            schematic_.setGestures(&g);                  // a circuit dial's knob writes through it
             if (!bar_.contains(p))
             {
                 endRename();
+                if (schematicShown() && !assist_.statusRect().contains(p))
+                {
+                    pressedEditor_ = false;
+                    pressedSchematic_ = true;
+                    schematic_.pointerDown(e);
+                    return;
+                }
                 if (assist_.pointerDown(e))
                 {
                     pressedEditor_ = false;
@@ -1248,10 +1426,19 @@ namespace playground::ui
                 return;
             }
             pressedEditor_ = false;
+            if (pillsShown())
+                for (int k = 0; k < 2; ++k)
+                    if (pillRect(k).contains(p))
+                    {
+                        endRename();
+                        if (!e.popup)
+                            setSchematic(k == 1);
+                        return;
+                    }
             if (ir_.open && irTabRect().contains(p))
             {
                 endRename();
-                if (irCloseRect().contains(p))
+                if (irCloseRect().contains(p) && !irNarrow())   // narrow, it has no close box: it opens
                     closeIr();
                 else
                     openIr(ir_.view);
@@ -1275,22 +1462,46 @@ namespace playground::ui
             }
             select(i);
         }
-        void pointerDrag(const funkgui::PointerEvent& e, funkgui::GestureController&) override
+        void pointerMove(const funkgui::PointerEvent& e) override
         {
-            if (pressedEditor_)
+            pointer_ = { e.x, e.y };
+            schematic_.pointerMove(pointer_);
+        }
+        void pointerExit() override
+        {
+            pointer_ = { -1.0e4f, -1.0e4f };
+            schematic_.pointerExit();
+        }
+        void pointerDrag(const funkgui::PointerEvent& e, funkgui::GestureController& g) override
+        {
+            schematic_.setGestures(&g);
+            if (pressedSchematic_)
+                schematic_.pointerDrag(e);
+            else if (pressedEditor_)
                 editor().pointerDrag(e);
         }
-        void pointerUp(const funkgui::PointerEvent& e, funkgui::GestureController&) override
+        void pointerUp(const funkgui::PointerEvent& e, funkgui::GestureController& g) override
         {
-            if (pressedEditor_)
+            schematic_.setGestures(&g);
+            if (pressedSchematic_)
+                schematic_.pointerUp(e);
+            else if (pressedEditor_)
                 editor().pointerUp(e);
             pressedEditor_ = false;
+            pressedSchematic_ = false;
         }
-        void doubleClick(const funkgui::PointerEvent& e, funkgui::GestureController&) override
+        void doubleClick(const funkgui::PointerEvent& e, funkgui::GestureController& g) override
         {
             const funkgui::Point p{ e.x, e.y };
+            schematic_.setGestures(&g);
             if (!bar_.contains(p))
             {
+                if (schematicShown())
+                {
+                    if (!assist_.statusRect().contains(p))
+                        schematic_.doubleClick(e);
+                    return;
+                }
                 editor().doubleClick(e);
                 return;
             }
@@ -1298,12 +1509,18 @@ namespace playground::ui
             if (i >= 0 && !(i > 0 && closeRect(i).contains(p)))
                 beginRename(i);
         }
-        bool wheel(const funkgui::WheelEvent& e, funkgui::GestureController&, double) override
+        bool wheel(const funkgui::WheelEvent& e, funkgui::GestureController&, double nowSec) override
         {
-            return !bar_.contains({ e.x, e.y }) && (assist_.wheel(e) || editor().wheel(e));
+            if (bar_.contains({ e.x, e.y }))
+                return false;
+            if (schematicShown())
+                return schematic_.wheel(e, nowSec);
+            return assist_.wheel(e) || editor().wheel(e);
         }
         bool key(const funkgui::KeyEvent& e, funkgui::GestureController&) override
         {
+            if (renaming_ < 0 && schematicShown())
+                return schematic_.key(e);
             if (renaming_ < 0)
                 return assist_.key(e);
             // The name being edited takes every key: Return keeps it, Escape cancels, Cmd-V pastes.
@@ -1382,14 +1599,50 @@ namespace playground::ui
                 close.title = "Close " + irName();
                 out.push_back(std::move(close));
             }
+            if (pillsShown())
+            {
+                funkgui::A11yItem views;
+                views.id = id_ + kPillsA11y;
+                views.role = funkgui::A11yRole::radioGroup;
+                views.bounds = { pillRect(0).x, bar_.y, pillRect(1).right() - pillRect(0).x, kTabH };
+                views.title = "View of " + name(active_);
+                out.push_back(views);
+                for (int k = 0; k < 2; ++k)
+                {
+                    funkgui::A11yItem pill;
+                    pill.id = id_ + kPillsA11y + 1 + static_cast<uint32_t>(k);
+                    pill.parent = views.id;
+                    pill.role = funkgui::A11yRole::radioButton;
+                    pill.bounds = pillRect(k);
+                    pill.title = k == 0 ? "Netlist" : "Schematic";
+                    pill.checkable = true;
+                    pill.checked = (k == 1) == schematicShown();
+                    pill.help = k == 0 ? "the netlist's text (Command Shift D)" : "its drawing (Command Shift D)";
+                    out.push_back(std::move(pill));
+                }
+            }
+            if (schematicShown())
+            {
+                schematic_.accessibility(out);
+                return;
+            }
             funkgui::A11yItem text;
             editor().accessibility(text);
             out.push_back(std::move(text));
         }
-        bool a11yAction(uint32_t id, funkgui::A11yAction, double, funkgui::GestureController&) override
+        bool a11yAction(uint32_t id, funkgui::A11yAction a, double, funkgui::GestureController&) override
         {
             const uint32_t files = static_cast<uint32_t>(kMaxFiles);
             if (id == editor().a11yId() || id == id_ + 1)
+                return true;
+            if (pillsShown() && (id == id_ + kPillsA11y + 1 || id == id_ + kPillsA11y + 2))
+            {
+                setSchematic(id == id_ + kPillsA11y + 2);
+                return true;
+            }
+            if (id == id_ + kPillsA11y)
+                return true;
+            if (schematicShown() && schematic_.a11yAction(id, a))
                 return true;
             if (id >= id_ + 2 && id < id_ + 2 + files)
             {
@@ -1427,6 +1680,12 @@ namespace playground::ui
                                                                   : why_.c_str());
                 return;
             }
+            if (pillsShown() && (pillRect(0).contains(pointer_) || pillRect(1).contains(pointer_)))
+            {
+                std::snprintf(out, n, "%s   %s   CMD-SHIFT-D SWITCHES THE VIEW", upper(name(active_)).c_str(),
+                              pillRect(0).contains(pointer_) ? "NETLIST: THE TEXT" : "SCHEMATIC: ITS DRAWING, WHICH EDITS THE TEXT");
+                return;
+            }
             if (bar_.contains(pointer_))
             {
                 if (ir_.open && irTabRect().contains(pointer_))
@@ -1445,6 +1704,13 @@ namespace playground::ui
             }
             if (assist_.specLine(out, n, pointer_))
                 return;
+            if (schematicShown())
+            {
+                if (!schematic_.specLine(out, n, pointer_))
+                    std::snprintf(out, n, "%s   SCHEMATIC   CMD-SHIFT-D SHOWS THE NETLIST   CMD-RETURN RUNS THE PROGRAM",
+                                  upper(name(active_)).c_str());
+                return;
+            }
             const funkgui::TextPos p = editor().caret();
             const std::string sel = editor().selectedText();
             const std::string file = upper(irShown() ? irName() : name(active_));
@@ -1463,11 +1729,192 @@ namespace playground::ui
         {
             focused_ = focused;
             assist_.focusChanged(focused);
-            editor().setFocused(focused && !assist_.takesKeys());
+            editor().setFocused(focused && !assist_.takesKeys() && !schematicShown());
+            schematic_.focusChanged(focused);
             if (!focused)
                 endRename();
         }
-        bool takesAllKeys() const override { return editor().focused() || renaming_ >= 0 || assist_.takesKeys(); }
+        // The text field's keys; in the Schematic view the canvas takes every key while the item is focused (Escape,
+        // when it has nothing left to end, leaves it).
+        bool takesAllKeys() const override
+        {
+            if (schematicShown() && renaming_ < 0)
+                return focused_;
+            return editor().focused() || renaming_ >= 0 || assist_.takesKeys();
+        }
+
+        // ---- a netlist's two views: Netlist (the text) and Schematic (SchematicView.h) -----------------------------
+        // A .cir tab is shown in the CODE view (the IR tab not shown): its pills sit at the bar's right end.
+        bool circuitShown() const { return !irShown() && fileKindOf(name(active_)) == FileKind::Circuit; }
+        bool schematicShown() const
+        {
+            if (!circuitShown())
+                return false;
+            const auto it = views_.find(name(active_));
+            return it != views_.end() && it->second.schematic;
+        }
+        SchematicView& schematic() noexcept { return schematic_; }
+        const SchematicView& schematic() const noexcept { return schematic_; }
+        // The shown netlist's view (a user's gesture: the session keeps it). Into the Netlist view the caret goes to the
+        // first selected part's line and their lines are marked; into the Schematic view the part on the caret's line
+        // is selected.
+        void setSchematic(bool on)
+        {
+            if (!circuitShown())
+                return;
+            SchematicFile& f = views_[name(active_)];
+            funkgui::TextEditor& ed = editorOf(active_);
+            if (f.schematic == on)
+                return;
+            schematic_.endField();                       // the Netlist view: a field open is written first
+            if (on)
+            {
+                f.schematic = true;
+                f.stored = true;
+                ed.setDecorations({}, funkgui::decorationBit(funkgui::DecorationKind::highlight));
+                const int caretLine = ed.caret().line;
+                syncSchematic();
+                schematic_.selectAtLine(caretLine, false);
+            }
+            else
+            {
+                std::vector<funkgui::Decoration> marks;
+                int first = -1;
+                if (schematic_.showing())
+                {
+                    const cir::Netlist& nl = schematic_.netlist();
+                    const cir::Drawing& d = schematic_.drawing();
+                    for (const std::string& s : schematic_.selection())
+                        if (const int i = d.part(s); i >= 0)
+                        {
+                            const cir::Part& p = d.parts[static_cast<std::size_t>(i)];
+                            int a = -1, z = -1;
+                            if (p.element >= 0)
+                            {
+                                a = nl.elements[static_cast<std::size_t>(p.element)].firstLine;
+                                z = nl.elements[static_cast<std::size_t>(p.element)].lastLine;
+                            }
+                            else if (const std::optional<cir::Terminal>& t = p.kind == cir::Kind::Input ? nl.input : nl.output; t)
+                                a = z = t->line;
+                            if (a < 0)
+                                continue;
+                            first = first < 0 ? a : std::min(first, a);
+                            marks.push_back({ { a, 0 }, { z, static_cast<int>(ed.line(z).size()) }, funkgui::DecorationKind::highlight });
+                        }
+                }
+                f.schematic = false;
+                f.stored = true;
+                syncSchematic();
+                if (first >= 0)
+                {
+                    ed.setDecorations(std::move(marks), funkgui::decorationBit(funkgui::DecorationKind::highlight));
+                    ed.setCaret({ first, 0 });
+                    ed.scrollToCaret();
+                }
+            }
+            assist_.tabShown();
+            if (persist_)
+                persist_();
+        }
+        void toggleSchematic() { setSchematic(!schematicShown()); }
+        // Which of the pills shows: the labelled pair, unless it would narrow the files' tabs below kTabNarrowW.
+        bool pillsShown() const { return circuitShown(); }
+        bool pillsLabelled() const
+        {
+            const int n = count();
+            const float files = kTabNarrowW * static_cast<float>(n) + kTabGap * static_cast<float>(n - 1)
+                              + (canAdd() ? kNewTabW + kTabGap : 0.0f) + (ir_.open ? kTabMinW + 3.0f * kTabGap : 0.0f);
+            return files + pillsWidth(true) + 2.0f * kTabGap <= bar_.w;
+        }
+        float pillWidth(int k, bool labelled) const
+        {
+            if (!labelled)
+                return kPillIconW;
+            const float w = funkgui::text::width(funkgui::FontService::get().atlas(), k == 0 ? "Netlist" : "Schematic", chat::kSmall);
+            return std::ceil(30.0f + w + 10.0f);
+        }
+        float pillsWidth(bool labelled) const { return pillWidth(0, labelled) + pillWidth(1, labelled) + 2.0f * kPillTrack; }
+        float pillsReserve() const { return pillsShown() ? pillsWidth(pillsLabelled()) + 2.0f * kTabGap : 0.0f; }
+        funkgui::Rect pillRect(int k) const
+        {
+            const bool labelled = pillsLabelled();
+            const float right = (ir_.open ? irTabRect().x - kTabGap : bar_.right()) - kPillTrack;
+            const float w0 = pillWidth(0, labelled), w1 = pillWidth(1, labelled);
+            const float h = kTabH - 2.0f * kPillTrack;
+            return k == 0 ? funkgui::Rect{ right - w1 - w0, bar_.y + kPillTrack, w0, h } : funkgui::Rect{ right - w1, bar_.y + kPillTrack, w1, h };
+        }
+        // The session's file views (EditorPort::fileViews): each netlist's whose view, zoom or pan the user chose.
+        std::vector<FileView> fileViews() const
+        {
+            std::vector<FileView> out;
+            for (const auto& [n, f] : views_)
+                if (f.stored && fileKindOf(n) == FileKind::Circuit && find(n) >= 0 && out.size() < kMaxFileViews)
+                {
+                    FileView v;
+                    v.file = n;
+                    v.schematic = f.schematic;
+                    if (f.framed)                        // else zoom 0: none chosen yet, it fits when it opens
+                    {
+                        v.zoom = f.zoom;
+                        v.x = f.cx;
+                        v.y = f.cy;
+                    }
+                    else
+                        v.zoom = 0.0f;
+                    v.probes = f.probes;                 // the nets pinned to its probes
+                    if (v.probes.size() > kMaxFileProbes)
+                        v.probes.resize(kMaxFileProbes);
+                    out.push_back(std::move(v));
+                }
+            return out;
+        }
+        void setFileViews(const std::vector<FileView>& views)
+        {
+            for (const FileView& v : views)
+            {
+                if (fileKindOf(v.file) != FileKind::Circuit || !std::isfinite(v.zoom) || !std::isfinite(v.x) || !std::isfinite(v.y))
+                    continue;
+                SchematicFile& f = views_[v.file];
+                f.schematic = v.schematic;
+                f.stored = true;
+                f.framed = v.zoom > 0.0f;                // zoom 0: the drawing fits when the view opens
+                if (f.framed)
+                {
+                    f.zoom = std::clamp(v.zoom, SchematicView::kMinZoom, SchematicView::kMaxZoom);
+                    f.cx = std::clamp(v.x, -1.0e4f, 1.0e4f);
+                    f.cy = std::clamp(v.y, -1.0e4f, 1.0e4f);
+                }
+                f.probes.clear();                        // slots 1 to 3
+                for (const std::string& n : v.probes)
+                    if (!n.empty() && f.probes.size() < 3)
+                        f.probes.push_back(n);
+            }
+            syncSchematic();
+        }
+        // The Panel's: a user's gesture moved a file's view (the session keeps them); the view shown may have changed.
+        void setViewHooks(std::function<void()> persist, std::function<void()> changed)
+        {
+            persist_ = std::move(persist);
+            changed_ = std::move(changed);
+        }
+        // The Panel's: a netlist's session pins, as its view reconciles (EditorPort::setSchematicPins).
+        void setPinsHook(std::function<void(const std::string&, const std::string&)> pins)
+        {
+            pins_ = pins;
+            schematic_.setPinsHook(std::move(pins));
+        }
+        void setPinsSource(std::function<std::string(const std::string&)> source) { schematic_.setPinsSource(std::move(source)); }
+        // The drawing's open field written (RUN plays what was typed in it).
+        void endField() { schematic_.endField(); }
+        // The Panel's: a schematic gesture's files to the processor at once (SchematicView::setSyncHook).
+        void setSyncHook(std::function<bool()> sync) { schematic_.setSyncHook(std::move(sync)); }
+        // The Panel's: the probes' table, program, meters, rings and set (SchematicView::setProbeHooks).
+        void setProbeHooks(SchematicView::ProbeHooks hooks) { schematic_.setProbeHooks(std::move(hooks)); }
+        const SchematicFile* viewOf(const std::string& file) const
+        {
+            const auto it = views_.find(file);
+            return it == views_.end() ? nullptr : &it->second;
+        }
 
     private:
         struct Tab
@@ -1497,8 +1944,90 @@ namespace playground::ui
             return t;
         }
 
-        // The shown editor takes the item's focus.
-        void show() { editor().setFocused(focused_); }
+        // The shown editor takes the item's focus (none in the Schematic view: the canvas has the keys).
+        void show() { editor().setFocused(focused_ && !schematicShown()); }
+
+        // The schematic follows the tab shown and its view.
+        void syncSchematic()
+        {
+            if (schematicShown())
+                schematic_.show(&editorOf(active_), name(active_), &views_[name(active_)]);
+            else
+                schematic_.show(nullptr, {}, nullptr);
+            // The find bar is the text's: over the drawing it would cover the toolbar and take no click nor key.
+            if (schematicShown() && assist_.findOpen())
+                assist_.closeFind();
+            editor().setFocused(focused_ && !schematicShown() && !assist_.takesKeys());
+            if (viewRenamed_)
+            {
+                // A file renamed keeps its entry in the session (away from .cir it lost it): written once the tabs
+                // hold the new name.
+                viewRenamed_ = false;
+                if (persist_)
+                    persist_();
+            }
+            if (changed_)
+                changed_();
+        }
+
+        // A file gone: its view, and the session pins it published (a new file of its name starts afresh).
+        std::map<std::string, SchematicFile>::iterator forgetView(std::map<std::string, SchematicFile>::iterator v)
+        {
+            if (!v->second.published.empty() && pins_)
+                pins_(v->first, {});
+            return views_.erase(v);
+        }
+
+        // A file renamed keeps its view; renamed away from .cir, it loses it.
+        void renameView(const std::string& from, const std::string& to)
+        {
+            const auto it = views_.find(from);
+            if (it == views_.end())
+                return;
+            SchematicFile f = std::move(it->second);
+            views_.erase(it);
+            viewRenamed_ = viewRenamed_ || f.stored;     // the session's entry follows (syncSchematic keeps it)
+            if (!f.published.empty() && pins_)
+                pins_(from, {});                         // its pins go under the new name at the next reconcile
+            f.published.clear();
+            if (fileKindOf(to) == FileKind::Circuit)
+                views_[to] = std::move(f);
+        }
+
+        // The Netlist view of the netlist shown, its caret at (line, col) (0-based; -1: where it is).
+        void showNetlistAt(int line, int col)
+        {
+            setSchematic(false);
+            if (line < 0)
+                return;
+            funkgui::TextEditor& ed = editorOf(active_);
+            ed.setCaret({ line, std::max(0, col) });
+            ed.scrollToCaret();
+        }
+
+        // Whether a file of the program #includes the netlist shown (lang::includeOn), by the files' revision.
+        bool played() const
+        {
+            const uint64_t r = revision();
+            if (r == playedRev_ && playedName_ == name(active_))
+                return played_;
+            playedRev_ = r;
+            playedName_ = name(active_);
+            played_ = false;
+            for (int i = 0; i < count() && !played_; ++i)
+            {
+                if (i == active_ || fileKindOf(name(i)) != FileKind::FMinus)
+                    continue;
+                const funkgui::TextEditor& e = *tabs_[static_cast<std::size_t>(i)].editor;
+                for (int l = 0; l < e.lineCount() && !played_; ++l)
+                {
+                    std::string inc;
+                    int a = 0, b = 0;
+                    played_ = lang::includeOn(e.line(l), inc, a, b) && inc == playedName_;
+                }
+            }
+            return played_;
+        }
 
         // `text` in place of the editor's, as one undoable edit; the caret and the scroll stay where they can.
         static void replaceText(funkgui::TextEditor& ed, const std::string& text)
@@ -1529,7 +2058,7 @@ namespace playground::ui
         {
             const int n = count();
             const float room = bar_.w - (canAdd() ? kNewTabW + kTabGap : 0.0f) - kTabGap * static_cast<float>(n - 1)
-                             - (ir_.open ? irTabWidth() + 3.0f * kTabGap : 0.0f);
+                             - (ir_.open ? irTabWidth() + 3.0f * kTabGap : 0.0f) - pillsReserve();
             std::vector<float> w;
             float sum = 0.0f;
             for (int k = 0; k < n; ++k)
@@ -1608,11 +2137,35 @@ namespace playground::ui
         IrTab ir_;
         funkgui::Theme irTheme_ = funkgui::Theme::graphite();
         bool irThemed_ = false, irDark_ = true;
+        bool pressedSchematic_ = false;
+        // The netlists' views, by file name (SchematicView.h): std::map, so that a view's address holds.
+        std::map<std::string, SchematicFile> views_;
+        std::function<void()> persist_, changed_;
+        std::function<void(const std::string&, const std::string&)> pins_;
+        bool viewRenamed_ = false;                   // a stored view's file was renamed: the session follows
+        mutable uint64_t playedRev_ = ~uint64_t{ 0 };
+        mutable std::string playedName_;
+        mutable bool played_ = false;
+        // Play this circuit's (playCircuit): what it wrote, into which program, for which netlist; RUN.
+        bool playOn_ = false;
+        uint64_t playRev_ = 0;
+        std::string playFile_, playProgram_;
+        std::function<void()> run_;
         // Last: its tabs' callbacks reach the members above.
         CodeAssist assist_;
+        SchematicView schematic_;                    // after assist_: its hooks read it
 
     public:
-        void setHidden(bool hidden) { hidden_ = hidden; }
+        // The PANEL view hides the item: the Schematic view's gesture and tool end there, as on leaving the view.
+        void setHidden(bool hidden)
+        {
+            if (hidden && !hidden_)
+            {
+                schematic_.endField();                   // a field open is written, as a press outside it would
+                schematic_.leave();
+            }
+            hidden_ = hidden;
+        }
         bool shown() const override { return !hidden_; }
     };
 
@@ -1732,6 +2285,96 @@ namespace playground::ui
             bool shown() const override { return !hidden_; }
         };
 
+        // ---- the dials folded under a netlist's Schematic view: "32 DIALS   SHOW" -------------------------------------
+        // A 24 px bar at the program's column's bottom when the dials do not fit beside the drawing's room; its button
+        // shows them (small, the editor keeping 192 px) and hides them again. The PANEL view always shows them all.
+        class DialsBarItem final : public Item
+        {
+        public:
+            DialsBarItem(uint32_t id, std::function<void()> toggle) : id_(id), toggle_(std::move(toggle)) {}
+
+            void place(funkgui::Rect r, int dials, int hidden, bool open, bool shown)
+            {
+                bounds_ = r;
+                dials_ = dials;
+                hidden_ = hidden;
+                open_ = open;
+                shown_ = shown;
+            }
+            funkgui::Rect button() const { return { bounds_.right() - 64.0f, bounds_.y + 2.0f, 60.0f, bounds_.h - 4.0f }; }
+
+            void tick(float, bool hovered, bool, funkgui::Point pointer) override
+            {
+                hovered_ = hovered;
+                pointer_ = pointer;
+            }
+            void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override
+            {
+                const funkgui::Canvas::Scope s(c, kSectionTag, false);
+                const chat::Palette p = chat::palette(th);
+                c.rrect(bounds_.x, bounds_.y, bounds_.w, bounds_.h, 6.0f, p.raised, 1.0f, p.cardEdge);
+                char text[64];
+                if (open_ && hidden_ > 0)                // more than the window has room for: the PANEL view has all
+                    std::snprintf(text, sizeof text, "%d OF %d DIALS SHOWN: THE PANEL VIEW HAS ALL", dials_ - hidden_, dials_);
+                else
+                    std::snprintf(text, sizeof text, "%d DIAL%s", dials_, dials_ == 1 ? "" : "S");
+                c.text(text, bounds_.x + 10.0f, c.capCentreTop(bounds_.centreY(), funkgui::type::kMicro), funkgui::type::kMicro, th.ink52);
+                const funkgui::Rect b = button();
+                const bool hot = hovered_ && bounds_.contains(pointer_);
+                c.rrect(b.x, b.y, b.w, b.h, 0.5f * b.h, hot ? p.hover : p.composer, 1.0f, ring ? p.accent : p.composerEdge);
+                c.text(open_ ? "HIDE" : "SHOW", b.centreX(), c.capCentreTop(b.centreY(), funkgui::type::kMicro), funkgui::type::kMicro,
+                       hot ? th.accent : th.ink70, funkgui::Align::centre);
+            }
+            bool contains(funkgui::Point p) const override { return bounds_.contains(p); }
+            funkgui::Cursor cursorAt(funkgui::Point) const override { return funkgui::Cursor::pointingHand; }
+            void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController&, funkgui::HostServices&) override
+            {
+                if (!e.popup && toggle_)
+                    toggle_();
+            }
+            bool key(const funkgui::KeyEvent& e, funkgui::GestureController&) override
+            {
+                if (e.key != funkgui::Key::enter && e.key != funkgui::Key::space)
+                    return false;
+                if (toggle_)
+                    toggle_();
+                return true;
+            }
+            void accessibility(std::vector<funkgui::A11yItem>& out) const override
+            {
+                funkgui::A11yItem it;
+                it.id = id_;
+                it.role = funkgui::A11yRole::button;
+                it.bounds = bounds_;
+                it.title = open_ ? "Hide the dials" : "Show the dials";
+                it.value = std::to_string(dials_) + " dials" + (open_ && hidden_ > 0 ? ", " + std::to_string(dials_ - hidden_) + " shown" : "");
+                out.push_back(std::move(it));
+            }
+            bool a11yAction(uint32_t id, funkgui::A11yAction, double, funkgui::GestureController&) override
+            {
+                if (id != id_)
+                    return false;
+                if (toggle_)
+                    toggle_();
+                return true;
+            }
+            void specLine(char* out, std::size_t n) const override
+            {
+                std::snprintf(out, n, "%d DIALS   %s   THE PANEL VIEW SHOWS THEM ALL", dials_,
+                              open_ ? "HIDE GIVES THE DRAWING THEIR ROOM" : "SHOW PUTS THEM UNDER THE DRAWING, SMALL");
+            }
+            funkgui::Point centre() const override { return { button().centreX(), button().centreY() }; }
+            bool shown() const override { return shown_; }
+
+        private:
+            uint32_t id_;
+            std::function<void()> toggle_;
+            funkgui::Rect bounds_;
+            int dials_ = 0, hidden_ = 0;                 // the program's, and those over the editor's floor
+            bool open_ = false, shown_ = false, hovered_ = false;
+            funkgui::Point pointer_{ -1.0e4f, -1.0e4f };
+        };
+
         // ---- the top bar's load: the snowflake while the frozen copy plays ---------------------------------------------
         // The load's text ends left of the theme's button; the snowflake sits just left of it while the dials are
         // frozen into the code (EditorPort::frozen), and the alerts' words further left.
@@ -1804,7 +2447,7 @@ namespace playground::ui
     // ---- construction ---------------------------------------------------------------------------------------------------
     // The items are made with no place: layout() gives them their places for the panel's size. Their order is the Tab
     // order.
-    Panel::Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& port) : port_(port)
+    Panel::Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& port, bool picture) : port_(port), ownsProbes_(!picture)
     {
         port_.addMeterReader();                      // the displays read the meters and the scopes while it lives
         seenSettingsAsk_ = port_.settingsAsked();        // the app's requests from now on open SETTINGS
@@ -1873,9 +2516,22 @@ namespace playground::ui
                 library.push_back({ l.name, l.source });
             f.assist().setLibrary(library);
             f.assist().setInstrument(product::kIsInstrument);
+            f.setCircuitHooks([this]() -> const std::vector<lang::CircuitBinding>& { return circuitDials_; },
+                              [this](int slot) -> funkgui::ParamPort* {
+                                  const int i = slot >= 0 && slot < kMaxControls ? itemOfSlot_[static_cast<std::size_t>(slot)] : -1;
+                                  return i >= 0 ? static_cast<DialItem&>(*items_[static_cast<std::size_t>(i)]).model().port() : nullptr;
+                              },
+                              [this](int slot) {
+                                  return slot >= 0 && slot < kMaxControls ? controls_[static_cast<std::size_t>(slot)] : Control{};
+                              },
+                              [this] { runNow(); });
         }
         problemsItem_ = add(std::make_unique<ProblemsItem>(funkgui::Rect{}, idFor(), problems_,
                                                            [this](const Problem& p) { jumpTo(p); }));
+        dialsBarItem_ = add(std::make_unique<DialsBarItem>(idFor(), [this] {
+            dialsOpen_ = !dialsOpen_;
+            layout();
+        }));
         itemOfSlot_.assign(static_cast<std::size_t>(kMaxControls), -1);
         for (int c = 0; c < kMaxControls && c < static_cast<int>(ports.size()); ++c)
             itemOfSlot_[static_cast<std::size_t>(c)] = add(std::make_unique<DialItem>(
@@ -2081,9 +2737,68 @@ namespace playground::ui
 
         layout();
 
-        // The processor's files and status, and the chat.
-        files().load(port_.draft());
+        // The processor's files and status, and the chat; the netlists' views the session kept.
+        files().setViewHooks([this] { persistFileViews(); }, [this] {
+            if (!panelView_ && files().schematicShown() != layoutSchematic_)
+                layout();
+            dirty_ = true;
+        });
+        // The schematic's session pins, published as its view reconciles (Claude's edit_circuit and pictures draw them),
+        // never by a picture's Panel, and taken from the port when a file's view first shows (the user's places).
+        if (!picture)
+            files().setPinsHook([this](const std::string& file, const std::string& lines) { port_.setSchematicPins(file, lines); });
+        files().setPinsSource([this](const std::string& file) { return port_.schematicPins(file); });
+        // A schematic gesture's files, given to the processor at once unless a draft came that refresh has not merged
+        // (Claude's edit_circuit writes only over the text it read: it then sees the gesture and draws on it again).
+        files().setSyncHook([this] {
+            if (files().revision() == syncedFiles_)
+                return true;
+            Draft d = files().draft();
+            if (!port_.setDraftIf(d, seenDraft_))
+                return false;
+            syncedFiles_ = files().revision();
+            given_ = std::move(d);
+            pushedFiles_ = true;
+            return true;
+        });
+        // The schematic's live probes (SchematicView.h): the table and the id of the program that plays (refresh's),
+        // the meters this frame, the rings, and this Panel's own set: an owner from its first armed set (never a
+        // picture's Panel: setOwnsProbes), one EditorPort::setProbes call a change.
+        {
+            SchematicView::ProbeHooks h;
+            h.table = [this]() -> const std::vector<circuits::Probed>& { return circuitProbes_; };
+            h.program = [this] { return probeProgram_; };
+            h.meters = [this]() -> const Meters& { return meters_; };
+            h.samples = [this](int slot, float* out, int n) { return port_.probe(slot, out, n); };
+            h.runs = [this](const std::string& file) {
+                for (const SourceFile& f : running_)
+                    if (fileKindOf(f.name) == FileKind::FMinus)
+                        for (const std::string_view line : lang::splitLines(f.text))
+                        {
+                            std::string inc;
+                            int a = 0, b = 0;
+                            if (lang::includeOn(line, inc, a, b) && inc == file)
+                                return true;
+                        }
+                return false;
+            };
+            h.arm = [this](const ProbeSet& set) {
+                if (!ownsProbes_)
+                    return;
+                if (probeOwner_ == 0)
+                {
+                    if (!set.armed())
+                        return;                          // nothing to clear: never an owner
+                    probeOwner_ = port_.addProbeOwner();
+                }
+                port_.setProbes(probeOwner_, set);
+            };
+            files().setProbeHooks(std::move(h));
+        }
         seenDraft_ = port_.draftRevision();
+        given_ = port_.draft();
+        files().load(given_);
+        files().setFileViews(port_.fileViews());
         syncedFiles_ = files().revision();
         running_ = port_.running();
         refresh(0.0);
@@ -2155,10 +2870,19 @@ namespace playground::ui
         }
         actionsX_ = ax;
         // The dials: in plain rows, or in the sections the program's #pragma panel lines ask for (DialLayout.h), as
-        // tall as the panel can give them while the editor keeps 120 px.
+        // tall as the panel can give them while the editor keeps 120 px. A netlist's Schematic view keeps more: its
+        // editor at least E_min = max(312, 55 % of the column's height), the problems list hidden (the drawing's badges
+        // and the info strip's count carry them), and the dials, laid out in what is left, folded into a 24 px bar when
+        // they do not fit ("32 DIALS   SHOW": shown small then, the editor keeping 192 px, or less, down to its 80 px
+        // floor, for rows that need it: every dial shows unless even that is too little, which the bar then says).
         const float problemsH = kProblemRowH * static_cast<float>(kProblemRows);
         const float inBottom = bottom - kInset;          // the program's card's inside
-        const float roomForDials = inBottom - kEditorY - 120.0f - 8.0f - problemsH - 16.0f;
+        const bool schematic = !panelView_ && files().schematicShown();
+        layoutSchematic_ = schematic;
+        const float columnH = inBottom - kEditorY;
+        const float eMin = std::max(312.0f, std::round(0.55f * columnH));
+        const float roomForDials = schematic ? columnH - eMin - 8.0f : inBottom - kEditorY - 120.0f - 8.0f - problemsH - 16.0f;
+        constexpr float kDialsBarH = 24.0f, kSchematicKeeps = 192.0f, kEditorFloor = 80.0f;
         DialMeasure measure;
         measure.label = [this](int slot, bool small) {
             const std::string& label = panelSpec_.labels[static_cast<std::size_t>(slot)];
@@ -2180,6 +2904,12 @@ namespace playground::ui
         // room the editor leaves, scrolling past that), or across the whole column in the PANEL view.
         const bool gui = !panelSpec_.gui.empty();
         float panelTop = inBottom;
+        int used = 0;                                    // the dials the program has
+        for (int c = 0; c < kMaxControls; ++c)
+            used += controls_[static_cast<std::size_t>(c)].used ? 1 : 0;
+        dialsBar_ = false;
+        dialsFolded_ = false;
+        float hideAbove = -1.0e9f;                       // the dials shown from the fold: rows over the editor's room hidden
         if (gui)
         {
             const GuiMeasure gm = [](const std::string& text, const funkgui::TextStyle& st) {
@@ -2187,7 +2917,7 @@ namespace playground::ui
             };
             // Under the editor it takes half the column at most (the editor keeps the rest), and scrolls past that.
             const GuiExtent natural = naturalGuiSize(panelSpec_, controls_, gm, inW);   // a row that wraps: as wide
-            const float h = std::max(40.0f, std::min({ natural.h, roomForDials, 0.5f * (inBottom - kEditorY) }));
+            const float h = std::max(40.0f, std::min({ natural.h, roomForDials, schematic ? roomForDials : 0.5f * (inBottom - kEditorY) }));
             const funkgui::Rect area = panelView_ ? funkgui::Rect{ inX, kTabsY, inW, inBottom - kTabsY }
                                                   : funkgui::Rect{ inX, inBottom - h, inW, h };
             guiView_->layout(panelSpec_, controls_, area);   // the items placed too
@@ -2205,12 +2935,36 @@ namespace playground::ui
                 dials_ = layoutDials(panelSpec_, controls_, measure, inX, inW, kTabsY + (inBottom - first.top), inBottom - kTabsY);
             }
             else
-                dials_ = layoutDials(panelSpec_, controls_, measure, inX, inW, inBottom, roomForDials);
+                dials_ = layoutDials(panelSpec_, controls_, measure, inX, inW, inBottom, roomForDials, schematic ? kTightGap : 0.0f);
             panelTop = dials_.top;
+            if (schematic && used > 0 && inBottom - dials_.top > roomForDials + 0.5f)
+            {
+                dialsBar_ = true;
+                const float barTop = inBottom - kDialsBarH;
+                if (dialsOpen_)
+                {
+                    // shown small for the room the editor's 192 px leave; rows past it take the editor's room down to
+                    // its 80 px floor, and only rows past that are hidden (the bar says how many: the PANEL view has all)
+                    dials_ = layoutDials(panelSpec_, controls_, measure, inX, inW, barTop - 8.0f,
+                                         columnH - kSchematicKeeps - 8.0f - kDialsBarH - 8.0f, kTightGap);
+                    hideAbove = kEditorY + kEditorFloor + 8.0f;
+                    panelTop = std::max(dials_.top, hideAbove);
+                }
+                else
+                {
+                    dialsFolded_ = true;
+                    panelTop = barTop;
+                }
+                // what is folded, or over the editor's room, draws no section's frame
+                std::erase_if(dials_.sections, [&](const SectionFrame& f) { return dialsFolded_ || f.r.y < hideAbove; });
+            }
+            else if (schematic && used == 0 && panelSpec_.displays.empty())
+                panelTop = inBottom + 8.0f;              // nothing under the drawing: it takes the column
             for (int d = 0; d < kMaxDisplays; ++d)
             {
                 auto& item = static_cast<DisplayItem&>(*items_[static_cast<std::size_t>(itemOfDisplay_[static_cast<std::size_t>(d)])]);
-                const bool has = d < static_cast<int>(panelSpec_.displays.size());
+                const bool has = d < static_cast<int>(panelSpec_.displays.size()) && !dialsFolded_
+                              && dials_.displays[static_cast<std::size_t>(d)].top >= hideAbove;
                 item.setDisplay(has ? &panelSpec_.displays[static_cast<std::size_t>(d)] : nullptr);
                 item.setCell(dials_.displays[static_cast<std::size_t>(d)]);
                 item.setArea({});
@@ -2218,18 +2972,24 @@ namespace playground::ui
         }
         const float problemsY = panelTop - 16.0f - problemsH;
         files().setHidden(panelView_);
-        static_cast<ProblemsItem&>(*items_[static_cast<std::size_t>(problemsItem_)]).setHidden(panelView_);
-        files().setGeometry({ inX, kTabsY, inW, kTabH },
-                            { inX, kEditorY, inW, std::max(80.0f, problemsY - 8.0f - kEditorY) });
+        static_cast<ProblemsItem&>(*items_[static_cast<std::size_t>(problemsItem_)]).setHidden(panelView_ || schematic);
+        const float editorH = schematic ? std::max(kEditorFloor, panelTop - 8.0f - kEditorY) : std::max(kEditorFloor, problemsY - 8.0f - kEditorY);
+        files().setGeometry({ inX, kTabsY, inW, kTabH }, { inX, kEditorY, inW, editorH });
         static_cast<ProblemsItem&>(*items_[static_cast<std::size_t>(problemsItem_)])
             .setBounds({ inX, problemsY, inW, problemsH });
+        int hiddenDials = 0;                             // shown from the fold, but over the editor's floor
+        for (int c = 0; c < kMaxControls; ++c)
+            hiddenDials += dialsBar_ && !dialsFolded_ && controls_[static_cast<std::size_t>(c)].used
+                                   && dials_.dials[static_cast<std::size_t>(c)].top < hideAbove ? 1 : 0;
+        static_cast<DialsBarItem&>(*items_[static_cast<std::size_t>(dialsBarItem_)])
+            .place({ inX, inBottom - kDialsBarH, inW, kDialsBarH }, used, hiddenDials, dialsOpen_, dialsBar_);
         for (int c = 0; c < kMaxControls; ++c)
             if (const int i = itemOfSlot_[static_cast<std::size_t>(c)]; i >= 0)
             {
                 auto& dial = static_cast<DialItem&>(*items_[static_cast<std::size_t>(i)]);
                 dial.setLook(panelSpec_.styles[static_cast<std::size_t>(c)], panelSpec_.colors[static_cast<std::size_t>(c)],
                              dials_.dials[static_cast<std::size_t>(c)]);
-                dial.setHidden(gui);
+                dial.setHidden(gui || dialsFolded_ || dials_.dials[static_cast<std::size_t>(c)].top < hideAbove);
             }
 
         // The chat's card.
@@ -2360,6 +3120,8 @@ namespace playground::ui
     {
         guiView_->releaseKeys();                         // a note held as the editor closes is let go
         releasePictures();
+        if (probeOwner_ != 0)
+            port_.removeProbeOwner(probeOwner_);         // its probes go with it (another Panel's set takes over)
         port_.removeMeterReader();
         if (irViewing_)
             port_.removeIrViewer();                      // its IR tab goes with it: nothing kept for it
@@ -2651,7 +3413,7 @@ namespace playground::ui
                 const FileKind kind = fileKindOf(r.label);
                 r.icon = i == 0                     ? chat::Icon::code
                        : kind == FileKind::Gui     ? chat::Icon::dial
-                       : kind == FileKind::Circuit ? chat::Icon::chip
+                       : kind == FileKind::Circuit ? chat::Icon::circuit
                                                    : chat::Icon::file;
                 r.active = i == files().active() && !files().irShown();
                 r.error = erred(r.label);
@@ -2750,7 +3512,7 @@ namespace playground::ui
                 }
                 ExplorerItem::Row r;
                 r.label = f.name;
-                r.icon = isCircuitFile(f.name) ? chat::Icon::chip : chat::Icon::blocks;   // a netlist: a circuit's
+                r.icon = isCircuitFile(f.name) ? chat::Icon::circuit : chat::Icon::blocks;   // a netlist: a circuit's
                 r.marked = files().find(f.name) >= 0;
                 r.index = static_cast<int>(i);
                 g.rows.push_back(std::move(r));
@@ -2825,7 +3587,7 @@ namespace playground::ui
             dirty_ = true;
         };
         files().endRename();
-        port_.setDraft(files().draft());                 // what "edited" means is what the tabs show
+        (void)pushFiles();                               // what "edited" means is what the tabs show
         if (!port_.project().edited || host_ == nullptr)
         {
             load();
@@ -2858,7 +3620,7 @@ namespace playground::ui
     void Panel::saveVersion()
     {
         files().endRename();
-        port_.setDraft(files().draft());                 // what is saved is what the tabs show
+        (void)pushFiles();                               // what is saved is what the tabs show
         const ProjectState st = port_.project();
         if (st.name.empty())
         {
@@ -3018,6 +3780,31 @@ namespace playground::ui
     funkgui::Rect Panel::irTabRect() const { return files().irOpen() ? files().irTabRect() : funkgui::Rect{}; }
     funkgui::Rect Panel::fileTabRect(int i) const { return files().tabRect(i); }
 
+    // ---- a netlist's Schematic view (SchematicView.h) -----------------------------------------------------------------
+    bool Panel::schematicShown() const { return !panelView_ && files().schematicShown(); }
+    void Panel::setSchematic(bool on)
+    {
+        files().setSchematic(on);
+        dirty_ = true;
+    }
+    SchematicView& Panel::schematic() { return files().schematic(); }
+    bool Panel::viewPillsShown() const { return files().pillsShown(); }
+    bool Panel::viewPillsLabelled() const { return files().pillsLabelled(); }
+    funkgui::Rect Panel::viewPillRect(bool schematic) const { return files().pillRect(schematic ? 1 : 0); }
+    funkgui::Point Panel::centreOfViewPill(bool schematic) const
+    {
+        const funkgui::Rect r = viewPillRect(schematic);
+        return { r.centreX(), r.centreY() };
+    }
+    funkgui::Rect Panel::editorArea() const { return files().editorArea(); }
+    funkgui::Point Panel::centreOfDialsBar() const { return centreOf(dialsBarItem_); }
+
+    void Panel::persistFileViews()
+    {
+        port_.setFileViews(files().fileViews());
+        dirty_ = true;
+    }
+
     void Panel::openIrView(int view)
     {
         if (panelView_)
@@ -3088,14 +3875,66 @@ namespace playground::ui
         dirty_ = true;
     }
 
+    bool Panel::mergeDraft()
+    {
+        const uint64_t r = port_.draftRevision();        // read first: a write after it is merged next time
+        if (r == seenDraft_)
+            return false;
+        Draft d = port_.draft();
+        const Draft remote = d;
+        bool kept = false;
+        if (files().revision() != syncedFiles_)          // typed since the editor last gave its files
+        {
+            const Draft now = files().draft();
+            const auto named = [](const Draft& x, const std::string& name) -> const SourceFile* {
+                for (const SourceFile& f : x.files)
+                    if (f.name == name)
+                        return &f;
+                return nullptr;
+            };
+            for (SourceFile& f : d.files)
+                if (const SourceFile *g = named(given_, f.name), *t = named(now, f.name);
+                    g != nullptr && t != nullptr && f.text == g->text && t->text != g->text)
+                {
+                    f.text = t->text;                    // the draft left it: the typing stays, and goes to the port
+                    kept = true;
+                }
+        }
+        seenDraft_ = r;
+        files().merge(d);
+        given_ = remote;
+        dirty_ = true;
+        // what was kept is the port's still to have: no revision of the tabs' is ~0, so the next push gives it
+        syncedFiles_ = kept ? ~uint64_t{ 0 } : files().revision();
+        return true;
+    }
+
+    bool Panel::pushFiles()
+    {
+        for (int tries = 0; tries < 2; ++tries)
+        {
+            (void)mergeDraft();
+            if (files().revision() == syncedFiles_)
+                return true;
+            Draft d = files().draft();
+            if (port_.setDraftIf(d, seenDraft_))
+            {
+                syncedFiles_ = files().revision();
+                given_ = std::move(d);
+                return true;
+            }
+        }
+        return false;
+    }
+
     void Panel::runNow()
     {
         files().endRename();
+        files().endField();
         if (files().assist().formatOnRun())
             files().assist().formatAll();
+        (void)pushFiles();
         const Draft draft = files().draft();
-        port_.setDraft(draft);
-        syncedFiles_ = files().revision();
         port_.run(draft.files);
         files().assist().cancelCheck();                  // RUN's messages will say more of these files
         compiling_ = true;
@@ -3105,20 +3944,17 @@ namespace playground::ui
     void Panel::refresh(double nowSec)
     {
         // The draft, when a host loaded a session while the editor was open, or Claude changed the files.
-        bool textChanged = false;
-        if (const uint64_t d = port_.draftRevision(); d != seenDraft_)
+        bool textChanged = std::exchange(pushedFiles_, false);   // a gesture's files, given at once
+        if (mergeDraft())
         {
-            seenDraft_ = d;
-            files().merge(port_.draft());
-            syncedFiles_ = files().revision();
             textChanged = true;
             dirty_ = true;
         }
-        // The files as typed, and the tab shown, to the processor (it outlives this window).
+        // The files as typed, and the tab shown, to the processor (it outlives this window), never over a write that
+        // came since the merge above (Claude's, on its worker): that one merges first.
         if (files().revision() != syncedFiles_)
         {
-            port_.setDraft(files().draft());
-            syncedFiles_ = files().revision();
+            (void)pushFiles();
             textChanged = true;
         }
         // The editor's check while typing (CodeAssist.h): the files once they have rested, its messages when it is done.
@@ -3150,6 +3986,9 @@ namespace playground::ui
             const Controls cs = s.ok ? s.controls : port_.controls();
             if (s.ok)
                 running_ = s.sources;
+            circuitDials_ = s.circuitDials;              // the program that plays's (a failed compile's: the one before)
+            circuitProbes_ = s.probes;                   // ... its probe table, and its id (the probes' sets name it)
+            probeProgram_ = s.program;
             const PanelSpec spec = s.ok ? s.panel : port_.panel();
             ++controlsRevision_;
             for (int c = 0; c < kMaxControls; ++c)
@@ -3190,7 +4029,7 @@ namespace playground::ui
         }
         compiling_ = port_.compiling();
         if (textChanged || statusChanged)
-            edited_ = files().draft().files != running_;
+            edited_ = !cir::sameProgram(files().draft().files, running_);   // a netlist's *@ lines are no edit
         syncIr();
         const std::string statusBefore = status_;
 
@@ -3804,8 +4643,9 @@ namespace playground::ui
             // find bar closed, no problems until it has compiled, the interface from its top at its first pages.
             closeIrView();
             files().assist().closeFind();
-            files().merge(port_.draft(), true);
             seenDraft_ = port_.draftRevision();
+            given_ = port_.draft();
+            files().merge(given_, true);
             syncedFiles_ = files().revision();
             problems_.clear();
             files().assist().setRunDiagnostics({}, {});
@@ -3819,7 +4659,7 @@ namespace playground::ui
             dirty_ = true;
         };
         files().endRename();
-        port_.setDraft(files().draft());                 // what "changed" means is what the tabs show
+        (void)pushFiles();                               // what "changed" means is what the tabs show
         if (!port_.project().changed || host_ == nullptr)
         {
             load();
@@ -3907,7 +4747,7 @@ namespace playground::ui
             }
         }
         files().endRename();
-        port_.setDraft(files().draft());                 // what Save saves is what the tabs show
+        (void)pushFiles();                               // what Save saves is what the tabs show
         projects_.open(name, preset);
         focusBeforeProjects_ = focus_;
         setFocus(-1);
@@ -4172,6 +5012,9 @@ namespace playground::ui
         funkgui::TextEditor& ed = files().editor();
         ed.setCaret({ p.line - 1, std::max(0, p.column - 1) });
         ed.scrollToCaret();
+        // A netlist shown in its Schematic view: the part on that line selected and centred (the caret moved too).
+        if (files().schematicShown())
+            files().schematic().selectAtLine(p.line - 1, true);
         setFocus(editorItem_);
         dirty_ = true;
     }
@@ -4333,6 +5176,8 @@ namespace playground::ui
     void Panel::tick(float dt)
     {
         refresh(host_ != nullptr ? host_->nowSeconds() : 0.0);
+        if (!panelView_ && files().schematicShown() != layoutSchematic_)
+            layout();                                    // a netlist's view came or went: its room
         syncWindowButtons();
         syncExplorer();
         // The message box follows its text, one row to eight: the conversation gives it the room.
@@ -4873,6 +5718,19 @@ namespace playground::ui
             saveVersion();
             return true;
         }
+        // Cmd-Shift-D: a netlist's Netlist / Schematic view, in either view; nothing while the IR tab shows.
+        if (e.key == funkgui::Key::character && e.mods.cmd && e.mods.shift && (e.ch == 'd' || e.ch == 'D'))
+        {
+            if (panelView_)
+                return false;
+            if (files().irShown())
+                return true;
+            if (!files().circuitShown())
+                return false;
+            files().toggleSchematic();
+            setFocus(editorItem_);
+            return true;
+        }
         // A text field, while it has the caret: every key is its own (Tab indents in the editor), but Escape, which
         // leaves it, and a Tab it does not use, which moves on.
         if (const int t = textItem(); t >= 0)
@@ -5019,6 +5877,9 @@ namespace playground::ui
                 gui |= 1u << c;
         r ^= gui * 0x2C1B3C6Du;
         // The counters times odd constants: a change in any one of them changes the revision.
+        // A netlist's Schematic view: its parts and nets as they come and go (never a pan or a zoom).
+        r ^= files().schematicShown() ? 0x7FEB352Du ^ (files().schematic().a11yRevision() * 0x846CA68Bu) : 0u;
+        r ^= (dialsBar_ ? 0x5BD1E995u : 0u) ^ (dialsFolded_ ? 0x1B56C4E9u : 0u);
         return r ^ (files().layoutRevision() * 0x85EBCA77u) ^ (layoutRevision_ * 0xC2B2AE3Du) ^ (chatA11y_ * 2654435761u)
              ^ (explorer().revision() * 0x27220A95u) ^ (explorerShown_ ? 0x1B873593u : 0u)
              ^ (frozenShown_ ? 0x68E31DA4u ^ std::bit_cast<uint32_t>(centreOfFrozen().x) : 0u);   // it moves with the load's text

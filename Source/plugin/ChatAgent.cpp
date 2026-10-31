@@ -11,6 +11,9 @@
 #include "dsp/Measure.h"
 #include "dsp/SoundView.h"
 #include "dsp/Tune.h"
+#include "dsp/TextDiff.h"
+#include "fminus/CirDoc.h"
+#include "fminus/Circuits.h"
 
 #include "plugin/SoundPicture.h"
 
@@ -41,8 +44,10 @@ namespace playground
         constexpr int kMaxCheckNudges = 2;         // times a turn goes on because its checks fail (ChatAgent.h)
         constexpr int kMaxPlannerAsks = 4;         // ask_planner's calls a turn
         // The tools that change the program, the dials or the checks: a turn that used none is never sent on by them.
-        constexpr const char* kChangingTools[] = { "write_file", "edit_file", "rename_file", "delete_file", "add_library_file",
-                                                   "run_program", "set_dial", "tune_dials", "set_checks" };
+        constexpr const char* kChangingTools[] = { "write_file", "edit_file", "edit_circuit", "rename_file", "delete_file",
+                                                   "add_library_file", "run_program", "set_dial", "tune_dials", "set_checks" };
+        constexpr int kMaxCircuitOps = 64;         // edit_circuit's commands a call
+        constexpr std::size_t kCircuitTextBytes = 4000;   // edit_circuit gives a netlist this size or less back whole
         constexpr bool kInstrument = product::kIsInstrument;
         constexpr const char* kDefaultModel = "claude-opus-5-5";
         constexpr const char* kDefaultEffort = "medium";
@@ -1539,10 +1544,30 @@ namespace playground
         return std::min(kMaxTokensCap, model != models_.end() ? model->maxTokens : kDefaultMaxTokens);
     }
 
+    // What Claude is told of a file and remembered to have seen: a netlist's text without its drawing's *@ lines
+    // (cir::stripLayout: they change nothing the program does), any other file's whole.
+    static std::string seenText(const std::string& name, const std::string& text)
+    {
+        return isCircuitFile(name) ? cir::stripLayout(text) : text;
+    }
+
+    static int layoutLines(const std::string& text)
+    {
+        int n = 0;
+        std::size_t start = 0;
+        while (start <= text.size())
+        {
+            const std::size_t end = std::min(text.find('\n', start), text.size());
+            n += cir::isLayoutLine(std::string_view(text).substr(start, end - start)) ? 1 : 0;
+            start = end + 1;
+        }
+        return n;
+    }
+
     void ChatAgent::markSeen(const std::string& name, const std::string& text)
     {
         if (!mcpWorking_.load())                   // Claude Desktop's views are its own (Live.cpp's marks)
-            seen_[name] = hashText(text);
+            seen_[name] = hashText(seenText(name, text));
     }
 
     void ChatAgent::addEntry(ChatEntry::Kind kind, std::string t)
@@ -1631,17 +1656,19 @@ namespace playground
             d.files.empty() ? std::string(kProgramName)
                             : d.files[static_cast<std::size_t>(std::clamp(d.active, 0, static_cast<int>(d.files.size()) - 1))].name;
         std::string tail = "What plays: "
-                         + std::string(running == d.files ? "these files" : "an earlier version of the files (they "
-                                                                            "were edited since the last run)")
+                         + std::string(cir::sameProgram(running, d.files) ? "these files"
+                                                                           : "an earlier version of the files (they "
+                                                                             "were edited since the last run)")
                          + "\nLast compile: " + compileLine(status) + "Dials of the program that plays:\n"
                          + dialLines(host_.chatDials(), host_) + (status.ok ? panelLine(status.panel, status.controls) : "");
         const uint32_t a = host_.chatAlerts();
         tail += "Output alerts: ";
         tail += a == 0 ? "none" : ((a & 1u) != 0 ? ((a & 2u) != 0 ? "NaN or inf replaced, clipped" : "NaN or inf replaced")
                                                  : "clipped (beyond +-4)");
+        // A netlist counts without its *@ lines: a change to its drawing alone sends no new block.
         uint64_t signature = hashText(tail + '\x1f' + shown);
         for (const SourceFile& f : d.files)
-            signature = (signature ^ hashText(f.name + '\x1f' + f.text)) * 1099511628211ull;
+            signature = (signature ^ hashText(f.name + '\x1f' + seenText(f.name, f.text))) * 1099511628211ull;
 
         const std::lock_guard<std::mutex> lock(mutex_);
         if (signature == lastSignature_)
@@ -1652,15 +1679,18 @@ namespace playground
         bool unchanged = false;
         for (const SourceFile& f : d.files)
         {
+            const std::string text = seenText(f.name, f.text);
             const auto it = seen_.find(f.name);
-            if (it != seen_.end() && it->second == hashText(f.text))
+            if (it != seen_.end() && it->second == hashText(text))
             {
                 c += "<file name=\"" + f.name + "\" lines=\"" + std::to_string(lineCount(f.text)) + "\" unchanged=\"true\"/>\n";
                 unchanged = true;
                 continue;
             }
-            c += "<file name=\"" + f.name + "\">\n" + f.text + (f.text.empty() || f.text.back() == '\n' ? "" : "\n")
-               + "</file>\n";
+            c += "<file name=\"" + f.name + "\">\n" + text + (text.empty() || text.back() == '\n' ? "" : "\n") + "</file>\n";
+            // a netlist's drawing (the schematic's *@ lines) left out, and said
+            if (const int layout = isCircuitFile(f.name) ? layoutLines(f.text) : 0; layout > 0)
+                c += "(" + std::to_string(layout) + " layout lines left out: read_file shows them)\n";
             markSeen(f.name, f.text);
         }
         if (unchanged)
@@ -1695,6 +1725,23 @@ namespace playground
                                         { "old_text", prop("string", "The passage as it is now, exactly") },
                                         { "new_text", prop("string", "What replaces it") } }),
                        { "name", "old_text", "new_text" }));
+        {
+            juce::var ops = claude::object({ { "type", "array" },
+                                             { "items", claude::object({ { "type", "string" } }) },
+                                             { "maxItems", kMaxCircuitOps },
+                                             { "description", "One command a line, at most 64 (the CIRCUITS guide has the grammar)" } });
+            tools.add(tool("edit_circuit",
+                           "Change a .cir netlist the way the schematic editor does: add, place, connect, disconnect, set, "
+                           "rename, delete and lay out parts, one command a line in ops, applied together as one step the "
+                           "user can undo. All or none: the first command that fails is named and nothing changes. A part "
+                           "added without at is placed beside what it connects to, and every wire is routed for you; the "
+                           "netlist lines change as little as they can, and the drawing (its *@ lines) is written again. "
+                           "Its result says what each command did, the netlist lines it changed, the circuit compiler's "
+                           "errors and warnings on the new text, and the whole netlist when it is short. Prefer it to "
+                           "edit_file for a netlist's parts and wiring; a write that clashes with the user drawing at that "
+                           "moment fails, saying so: try again. Run the program afterwards to hear it.",
+                           claude::object({ { "name", prop("string", "The file's name") }, { "ops", ops } }), { "name", "ops" }));
+        }
         tools.add(tool("rename_file",
                        "Rename a file. #include lines that name it are not changed: edit them too.",
                        claude::object({ { "name", prop("string", "The file's name now") },
@@ -1774,21 +1821,28 @@ namespace playground
         }
         tools.add(tool("view_panel",
                        "See the plugin's interface: a picture (PNG) of the program's panel as the user sees it in the "
-                       "PANEL view (its panel.gui, or its dials), drawn now from the program that plays. Use it after "
+                       "PANEL view (its panel.gui, or its dials), drawn now from the program that plays, or of a .cir "
+                       "file's schematic. Use it after "
                        "you write or change panel.gui and run it, to check the layout as a designer would: crowding, "
                        "overlaps, text cut off, ragged rows, sizes and colours that do not read, a page left empty; "
                        "then fix what you see. view \"window\" shows the whole editor instead (the code and the "
-                       "chat). page names a tabs element's page to show (the text says which pages there are). "
+                       "chat). view \"schematic\" shows a netlist's drawing (name, else the first .cir) as the user's "
+                       "Schematic view draws it, at 100 %, its text listing each part's place, orientation and pins' "
+                       "points, the nets and the problems: look at it before you move parts with edit_circuit. page "
+                       "names a tabs element's page to show (the text says which pages there are). "
                        "Shaders are drawn as the user's screen draws them (a striped placeholder only where the GPU "
                        "cannot draw the picture, which its text then says) and the displays show the sound playing "
                        "now. A picture costs about 2,000 input tokens: look once or twice for a new interface, not "
                        "after every small change.",
                        claude::object({ { "view", claude::object({ { "type", "string" },
-                                                                   { "enum", juce::Array<juce::var>{ "panel", "window" } },
+                                                                   { "enum", juce::Array<juce::var>{ "panel", "window", "schematic" } },
                                                                    { "description", "panel (the default): the program's "
-                                                                                    "panel; window: the whole editor" } }) },
+                                                                                    "panel; window: the whole editor; "
+                                                                                    "schematic: the drawing of the .cir "
+                                                                                    "file name (default the first .cir)" } }) },
                                         { "page", prop("string", "A page's title to show (a tabs element's), else the "
-                                                                 "pages the user has") } }),
+                                                                 "pages the user has") },
+                                        { "name", prop("string", "The file's name") } }),
                        {}));
         {
             juce::var props = claude::object({});
@@ -2213,6 +2267,7 @@ namespace playground
                 cb.toolStart = [this, tool](const std::string& name) {
                     *tool = name;
                     setActivity(name == "write_file" || name == "edit_file" ? std::string("Writing code")
+                                : name == "edit_circuit"                    ? std::string("Drawing the circuit")
                                 : name == "run_program"                     ? std::string("About to run the program")
                                 : name == "measure_output"                  ? std::string("About to measure the sound")
                                 : name == "view_panel"                      ? std::string("Looking at the panel")
@@ -2904,7 +2959,8 @@ namespace playground
         };
         constexpr Face kFaces[] = {
             { "read_file", "Read a file", true, false },          { "write_file", "Write a file", false, false },
-            { "edit_file", "Edit a file", false, false },         { "rename_file", "Rename a file", false, false },
+            { "edit_file", "Edit a file", false, false },         { "edit_circuit", "Edit a circuit", false, false, "circuits" },
+            { "rename_file", "Rename a file", false, false },
             { "delete_file", "Delete a file", false, true },      { "add_library_file", "Add a building block", false, false, "library" },
             { "run_program", "Run the program", false, false },   { "set_dial", "Turn a dial", false, false },
             { "measure_output", "Measure the sound", true, false }, { "view_panel", "Look at the panel", true, false, "interface" },
@@ -3256,10 +3312,38 @@ namespace playground
         if (name == "view_panel")
         {
             // A picture of the panel: an image block and a line of what it shows (the tool_result's content).
-            setActivity("Looking at the panel");
             const std::string view = str(input, "view");
-            const PanelPicture pic = host_.chatPicture(view == "window", str(input, "page"));
+            const PictureView pv = view == "window" ? PictureView::window : view == "schematic" ? PictureView::schematic : PictureView::panel;
             juce::var block = claude::object({ { "type", "tool_result" }, { "tool_use_id", use.getProperty("id", "") } });
+            std::string what = str(input, "page");
+            if (pv == PictureView::schematic)
+            {
+                // a netlist's drawing: the one named, else the first .cir
+                what = str(input, "name");
+                const Draft d = host_.chatDraft();
+                std::string cirs;
+                for (const SourceFile& f : d.files)
+                    if (isCircuitFile(f.name))
+                    {
+                        cirs += (cirs.empty() ? "" : ", ") + f.name;
+                        if (what.empty())
+                            what = f.name;
+                    }
+                const bool there = std::any_of(d.files.begin(), d.files.end(), [&](const SourceFile& f) { return f.name == what; });
+                if (what.empty() || !isCircuitFile(what) || !there)
+                {
+                    block.getDynamicObject()->setProperty(
+                        "content", juce::String::fromUTF8((cirs.empty() ? std::string("No picture: the plugin has no .cir file to draw")
+                                                                        : "No picture: " + (what.empty() ? std::string("name a netlist") : what + " is not one of its netlists")
+                                                                              + " (its .cir files: " + cirs + ")").c_str()));
+                    block.getDynamicObject()->setProperty("is_error", true);
+                    return block;
+                }
+                setActivity("Looking at " + what);
+            }
+            else
+                setActivity("Looking at the panel");
+            const PanelPicture pic = host_.chatPicture(pv, what);
             if (pic.png.empty())
             {
                 block.getDynamicObject()->setProperty("content", juce::String::fromUTF8(("No picture: " + pic.why).c_str()));
@@ -3275,7 +3359,9 @@ namespace playground
             block.getDynamicObject()->setProperty("content", content);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
-                addEntry(ChatEntry::Kind::tool, view == "window" ? "Looked at the editor" : "Looked at the panel");
+                addEntry(ChatEntry::Kind::tool, pv == PictureView::window      ? std::string("Looked at the editor")
+                                                : pv == PictureView::schematic ? "Looked at the schematic of " + what
+                                                                               : std::string("Looked at the panel"));
             }
             return block;
         }
@@ -3412,6 +3498,7 @@ namespace playground
                             "'.', at most " + std::to_string(kMaxNameLength) + " characters");
             Draft d = host_.chatDraft();
             int i = findFile(d, file);
+            int keptLines = 0;
             if (i < 0)
             {
                 if (d.files.size() >= kMaxFiles)
@@ -3421,6 +3508,25 @@ namespace playground
             }
             else
             {
+                // A netlist written without its drawing keeps the old one (its *@ lines, put back before .end): the
+                // places the user gave its parts stay; a line naming a part that is gone goes at the next drawing.
+                const std::string& old = d.files[static_cast<std::size_t>(i)].text;
+                if (isCircuitFile(file) && layoutLines(content) == 0 && (keptLines = layoutLines(old)) > 0)
+                {
+                    std::string block;
+                    std::size_t at = 0;
+                    while (at <= old.size())
+                    {
+                        const std::size_t end = std::min(old.find('\n', at), old.size());
+                        std::string_view line = std::string_view(old).substr(at, end - at);
+                        if (!line.empty() && line.back() == '\r')
+                            line.remove_suffix(1);
+                        if (cir::isLayoutLine(line))
+                            block += std::string(line) + "\n";
+                        at = end + 1;
+                    }
+                    content = cir::withBlock(content, block);
+                }
                 d.files[static_cast<std::size_t>(i)].text = content;
             }
             d.active = i;
@@ -3434,6 +3540,8 @@ namespace playground
             const std::string count = std::to_string(lines) + (lines == 1 ? " line" : " lines");
             note("wrote " + file + " (" + count + ")");
             std::string out = "Wrote " + file + " (" + count + ").";
+            if (keptLines > 0)
+                out += " Kept the drawing's " + std::to_string(keptLines) + " *@ lines; send edit_circuit 'layout' to redraw it.";
             bool included = i == 0;
             for (const SourceFile& f : d.files)
                 if (f.text.find("#include \"" + file + "\"") != std::string::npos)
@@ -3477,6 +3585,99 @@ namespace playground
             }
             note("edited " + file);
             return "Edited " + file + ".";
+        }
+        if (name == "edit_circuit")
+        {
+            std::string file;
+            if (!stringArg("name", file))
+                return fail("edit_circuit needs the netlist's name and its ops");
+            const juce::var opsVar = input.getProperty("ops", juce::var());
+            const juce::Array<juce::var>* list = opsVar.getArray();
+            if (list == nullptr || list->isEmpty())
+                return fail("edit_circuit needs ops: one command a line (THE SCHEMATIC, in CIRCUITS, has the grammar)");
+            if (list->size() > kMaxCircuitOps)
+                return fail("edit_circuit takes at most " + std::to_string(kMaxCircuitOps) + " commands a call: send the rest in another");
+            if (!isCircuitFile(file))
+                return fail(file + " is not a .cir netlist: edit_circuit changes a netlist (edit_file any file)");
+            std::vector<cir::Op> ops;
+            for (int k = 0; k < list->size(); ++k)
+            {
+                const juce::var& v = (*list)[k];
+                const std::string line = v.isString() ? v.toString().toStdString() : std::string();
+                std::string why;
+                const std::optional<cir::Op> op = v.isString() ? cir::parseOp(line, why) : std::nullopt;
+                if (!op)
+                    return fail("op " + std::to_string(k + 1) + " (" + (v.isString() ? line : std::string("not a string")) + "): "
+                                + (why.empty() ? std::string("one command a line") : why) + ". Nothing was changed.");
+                ops.push_back(*op);
+            }
+            setActivity("Drawing the circuit");
+            // Read, apply on a copy (all or none; the layout runs here too, pure), and write only while the netlist is
+            // still the text read: a gesture of the user's that synced meanwhile is never overwritten. The commands run
+            // once more on the new text; a second clash gives up.
+            for (int attempt = 0; attempt < 2; ++attempt)
+            {
+                Draft d = host_.chatDraft();
+                const int i = findFile(d, file);
+                if (i < 0)
+                    return fail("There is no file " + file + ". The files: " + names(d));
+                const std::string before = d.files[static_cast<std::size_t>(i)].text;
+                const cir::SessionPins pins = cir::readLayout(host_.chatSchematicPins(file));
+                const cir::Applied a = cir::apply(before, cir::reconcile(before, pins), ops, pins);
+                if (!a.error.empty())
+                    return fail(a.error + ". Nothing was changed.");
+                d.files[static_cast<std::size_t>(i)].text = a.text;
+                d.active = i;
+                if (circuitWriteHook_)
+                    circuitWriteHook_(attempt);
+                if (!host_.chatSetDraftIf(d, file, before))
+                    continue;
+                // What changed, in words: each command's line, the netlist's lines (its drawing aside), what the
+                // circuit compiler says of the new text, and the text itself when it is short.
+                std::string out = "Edited " + file + ": " + std::to_string(ops.size()) + (ops.size() == 1 ? " command" : " commands")
+                                + ", one step the user can undo.\n";
+                for (const std::string& said : a.said)
+                    out += "- " + said + "\n";
+                const std::string was = cir::stripLayout(before), now = cir::stripLayout(a.text);
+                const std::vector<std::string_view> la = textdiff::lines(was), lb = textdiff::lines(now);
+                std::string changed;
+                int shown = 0, more = 0;
+                for (const textdiff::Edit& e : textdiff::diff(la, lb))
+                {
+                    if (e.op == textdiff::Op::same)
+                        continue;
+                    if (shown >= 60)
+                    {
+                        ++more;
+                        continue;
+                    }
+                    changed += (e.op == textdiff::Op::removed ? "- " + std::string(la[e.a]) : "+ " + std::string(lb[e.b])) + "\n";
+                    ++shown;
+                }
+                out += changed.empty() ? std::string("The netlist's lines are as they were (only the drawing moved).\n")
+                                       : "The netlist's lines changed (the drawing's *@ lines aside):\n" + changed
+                                             + (more > 0 ? "(" + std::to_string(more) + " more)\n" : std::string());
+                {
+                    const Sources one{ { file, a.text } };
+                    circuits::Generator gen(one);
+                    gen.module(file);
+                    const std::string said = gen.errors() + gen.warnings();
+                    out += said.empty() ? std::string("The circuit compiler on the new text: no error, no warning.\n")
+                                        : "The circuit compiler on the new text:\n" + capped(said)
+                                              + (said.back() == '\n' ? "" : "\n");
+                }
+                if (a.text.size() <= kCircuitTextBytes)
+                {
+                    out += "Its whole text now:\n" + a.text + (a.text.empty() || a.text.back() == '\n' ? "" : "\n");
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    markSeen(file, a.text);
+                }
+                else
+                    out += "(" + std::to_string(a.text.size()) + " bytes: read_file shows it whole.)\n";
+                note("drew " + file + " (" + std::to_string(ops.size()) + (ops.size() == 1 ? " change)" : " changes)"));
+                return out;
+            }
+            return fail(file + " changed while drawing: try again");
         }
         if (name == "rename_file")
         {
@@ -3792,7 +3993,8 @@ namespace playground
                 out += (i == 0 ? "" : ", ") + d.files[i].name + " (" + std::to_string(lineCount(d.files[i].text))
                      + " lines" + (static_cast<int>(i) == d.active ? ", shown" : "") + ")";
             out += "\nWhat plays: ";
-            out += running == d.files ? "these files\n" : "an earlier version (the files were edited since the run)\n";
+            out += cir::sameProgram(running, d.files) ? "these files\n"
+                                                      : "an earlier version (the files were edited since the run)\n";
             out += "Last compile: " + compileLine(host_.chatLastStatus());
             out += "Dials:\n" + dialLines(host_.chatDials(), host_);
             out += "CPU: " + number(std::round(host_.chatLoad() * 1000.0f) / 10.0) + "% of the audio thread's time "

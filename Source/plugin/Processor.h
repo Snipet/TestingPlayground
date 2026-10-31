@@ -65,6 +65,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <condition_variable>
 #include <mutex>
@@ -170,6 +171,7 @@ namespace playground
         Draft draft() const override;
         uint64_t draftRevision() const override;
         void setDraft(const Draft& draft) override;
+        bool setDraftIf(const Draft& draft, uint64_t revision) override;
         void run(const Sources& files) override;
         bool compiling() const override;
         CompileStatus status() const override;
@@ -186,6 +188,10 @@ namespace playground
         uint64_t program() const override;
         bool meters(Meters& out) const override;
         void scope(bool input, float* out, int n) const override;
+        int addProbeOwner() override;
+        void setProbes(int owner, const ProbeSet& set) override;
+        void removeProbeOwner(int owner) override;
+        int probe(int slot, float* out, int n) const override { return engine_.probe(slot, out, n); }
         float load() const override;
         bool frozen() const override;
         uint32_t alerts() const override;
@@ -222,6 +228,10 @@ namespace playground
         void playWheel(bool pitch, float value) override;
         std::vector<std::string> guiPages() const override;
         void setGuiPages(const std::vector<std::string>& titles) override;
+        std::vector<FileView> fileViews() const override;
+        void setFileViews(const std::vector<FileView>& views) override;
+        void setSchematicPins(const std::string& file, const std::string& lines) override;
+        std::string schematicPins(const std::string& file) const override;
         WindowButtons windowButtons() const override { return windowHooks_.buttons; }
         void placeWindowButtons(float x, float middle) override;
         void dragWindow(int clicks) override;
@@ -231,6 +241,8 @@ namespace playground
         // ChatHost: Claude's tools (ChatAgent.h), from the agent's worker thread.
         Draft chatDraft() const override;
         void chatSetDraft(const Draft& draft) override;
+        bool chatSetDraftIf(const Draft& draft, const std::string& file, const std::string& expected) override;
+        std::string chatSchematicPins(const std::string& file) const override;
         CompileStatus chatRun(const Sources& files) override;
         CompileStatus chatLastStatus() const override;
         Sources chatRunning() const override;
@@ -239,7 +251,7 @@ namespace playground
         void chatSetDial(int slot, float plain) override;
         float chatLoad() const override;
         uint32_t chatAlerts() const override;
-        PanelPicture chatPicture(bool window, const std::string& page) override;
+        PanelPicture chatPicture(PictureView view, const std::string& name) override;
         // For the live tools (ProcessorLive.cpp; any thread): what plays now, the meters measured while a tool listens,
         // the journal of changes, the dials' options' names.
         void chatLive(LiveRead& io) const override;
@@ -295,8 +307,9 @@ namespace playground
         // Claude's view_panel: a picture asked for (the agent's thread waits), made by poll() on the message thread.
         std::mutex pictureMutex_;
         std::condition_variable pictureDone_;
-        bool pictureAsked_ = false, pictureReady_ = false, pictureWindow_ = false;
-        std::string picturePage_;
+        bool pictureAsked_ = false, pictureReady_ = false;
+        PictureView pictureView_ = PictureView::panel;
+        std::string picturePage_;                                // its page, or its netlist (a schematic's)
         PanelPicture picture_;
         std::vector<std::pair<int, float>> pendingDials_;
 
@@ -310,9 +323,27 @@ namespace playground
         std::atomic<bool> explorerOpen_{ true };                     // its explorer open, in the session
         mutable std::mutex pagesMutex_;
         std::vector<std::string> guiPages_;                      // its interface's pages (guiPages), in the session
+        std::vector<FileView> fileViews_;                        // its netlists' views (fileViews), in the session
+                                                                 // (under pagesMutex_)
+        // The netlists' session pins (schematicPins: *@ part, input and output lines by file), in memory only, under a
+        // mutex of their own (the agent's worker reads them while a Panel sets them).
+        mutable std::mutex pinsMutex_;
+        std::map<std::string, std::string> schematicPins_;
         WindowHooks windowHooks_;                                // the Standalone's window (message thread)
         uint64_t settingsAsked_ = 0;                             // showSettings()'s count (message thread)
         int irViewers_ = 0;                                      // the editors' IR views open (message thread)
+        // The probes' owners (EditorPort::addProbeOwner; message thread): each one's set, the oldest first. The newest
+        // whose set is armed reaches the Engine (sendProbes), none: an empty set.
+        struct ProbeOwner
+        {
+            int id = 0;
+            ProbeSet set;
+        };
+        std::vector<ProbeOwner> probeOwners_;
+        int probeOwnersMade_ = 0;
+        ProbeSet probesSent_{};
+        bool probesSentOnce_ = false;
+        void sendProbes();
         double alertsAt_ = 0.0;                                  // when alerts_ last gained a bit (ms)
 
         std::array<float, kMaxControls> values_{};               // audio thread: the last good normalised values

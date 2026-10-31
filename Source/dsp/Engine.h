@@ -25,6 +25,23 @@
 // stream, and the value, while it holds still: FMinus's flat copy of the method); an integer or a toggle is set once a
 // block. A new program starts on the dials' values, without a glide.
 //
+// Circuit dials (Patch.h, "Circuits"). A dial that drives a circuit's pot glides as a real dial does (20 ms), and a
+// circuit's switch is an int dial; neither is an FMinus parameter: the Engine hands their values to the program through
+// the shims compile() appended (Patch::setCircuits), each call every bound field's set() in one instance. It calls them
+// on the absolute grid of kGrid samples (counted from prepare(), as the voices' parts are), with the dials' glided
+// values at that sample: at every grid tick while a bound dial glides, through the first tick at or after it lands,
+// and, after a bound switch changes, for ceil(0.02 rate / kGrid) + 1 ticks (its ramp: FMinus moves a switch a step a
+// set() call over 20 ms). An instance that has not had the dials' values yet (a new program's, a voice's instance that
+// missed calls while free) gets a call before its first process (an effect: at its block's first sample; a voice:
+// before its start, or before its first part when its note came with the program); when a bound switch's dial is not
+// where the instance's switch is (a fresh instance's at the netlist's default; one that missed a switch's change, or
+// was let go during its ramp), as many calls in a row as the ramp takes, so it starts at the dial's position (it has
+// played nothing yet: no step is heard). While the dials stand still, no call. The effect's process is cut at those
+// grid ticks, and then only (a named exception to block-size invariance: while a circuit dial moves, the effect's calls
+// end on the grid, so a program that keeps state per call may differ there, as it may where any dial moves); an
+// instrument's voices already run in parts cut on the grid, and each voice of the program that plays gets its own
+// calls. The old program of a swap gets none (its dials hold still). circuitCalls() counts the calls (the probes').
+//
 // The output guard. Whatever a program computes, what leaves the Engine is finite and within +-4 (+12 dBFS): a NaN or
 // an infinity becomes 0, and a sample beyond is clipped. Either raises an alert (takeAlerts) the editor shows. A NaN in
 // a program's state stays there: running the program again starts it from scratch.
@@ -38,6 +55,26 @@
 // before it. For a tool that listens (the MCP's listen) the meters also say, every block, what the host and the
 // player do (the transport, the note-ons, the keys held, the voices and their steals, a voice dropped for going
 // non-finite), and a ring of atomics keeps each block's cost and context (blocks()); a few scalar stores a block.
+//
+// Probes (the schematic's live probes; Patch.h's "Probes", Circuits.h). setProbes() (off the audio thread: the
+// processor's, from the newest owner's set) leaves a ProbeSet in a seqlock and bumps a generation; at a block's start,
+// when the generation or current_ moved (and each block for an instrument, whose target is its newest sounding voice,
+// re-chosen as the taps' is), the audio thread applies it only when its program is current_'s: it writes the slots'
+// nodes and prb_ into that one element of that one instance of current_ (Patch::armProbes), and prb_ = 0 into the one
+// it armed before when the target moved within current_. It never writes into another Patch: a swap forgets the target
+// (the old program keeps what it had while it fades), and so do prepare() and restart(). After each whole call (an
+// effect's block of process calls, of current_ only during a crossfade) or each part of the followed voice (an
+// instrument's), it reads how far prn_ moved (d, modulo 2^30), copies the newest min(d, kProbeRing) samples of each
+// armed slot into its own rings of atomics (kScopeLength each; probe()), what is not finite as 0, and reads and zeroes
+// the slots' peaks, sums and sums of squares, which publish() turns into Meters::probes (the peak falling 20 dB a
+// second, the RMS over 50 ms, the mean over 200 ms; a block whose stat is not finite is not valid), with the set
+// applied (probeSet, probeGen, probeProgram) and the instance followed. A call longer than kProbeRing (an effect's
+// host block over 1,024 samples) leaves only its newest kProbeRing in the rings, so probe() counts the set's samples
+// from there: a run of samples it gives is never two calls joined (the stats still take every sample). No call is
+// ever cut for a probe: the output's bits are the same probed or not. With nothing armed the audio thread pays one
+// generation load a block (and the set's few words in the meters), the module one branch a sample; armed, a delta
+// read, at most 4 x kProbeRing ring copies and 12 stat reads and zeroes a call (an instrument's voices a look for the
+// newest a block).
 //
 // Flush-to-zero. process() runs in it (fsdsp::ScopedFtz), the mode the programs are compiled for, whoever calls it:
 // the audio thread has it already; an offline render (Measure, the chat's tools) would otherwise make FMinus set and
@@ -159,6 +196,15 @@ namespace playground
         uint64_t alertTally() const noexcept { return alertTally_.load(std::memory_order_relaxed); }
         // The last block's meters; false while the audio thread publishes (keep the frame before).
         bool meters(Meters& out) const noexcept { return meters_.read(out); }
+        // The probes (above, "Probes"): the set the audio thread applies from its next block (one writer: the
+        // processor's message thread), and the last n samples (at most kScopeLength) of slot `slot`'s ring, oldest
+        // first: how many of them are of the set that plays, in one run (the older are 0; since a call longer than
+        // kProbeRing, at most its newest kProbeRing); 0 for a slot not armed.
+        void setProbes(const ProbeSet& set) noexcept;
+        int probe(int slot, float* out, int n) const noexcept;
+        uint64_t probeGeneration() const noexcept { return probeGenIn_.load(std::memory_order_relaxed); }
+        // The samples copied into the probes' rings so far (they stand still while nothing is armed): the probes'.
+        uint32_t probeSamples() const noexcept { return static_cast<uint32_t>(probeAt_.load(std::memory_order_acquire)); }
         // The last n samples (at most kScopeLength) of the input or the output, mono, oldest first.
         void scope(bool input, float* out, int n) const noexcept;
         // Who reads the meters and the scopes (above): each reader adds itself while it reads, and removes itself after.
@@ -177,6 +223,9 @@ namespace playground
         // Offline only, after restart() and before the first process(): the clock's start, so that the voices' grid
         // (kGrid) has a recording's phase (a replay of the capture, Measure.h's Request::clock).
         void setClock(uint64_t samples) noexcept { clock_ = samples; }
+        // The circuit dials' calls made since the Engine was made (above, "Circuit dials"): each one an instance's set()
+        // of every bound field.
+        uint64_t circuitCalls() const noexcept { return circuitCalls_; }
         // The song's position at the next call's first sample (the audio thread's own: a recording keeps it where the
         // host gives no transport and the Engine's own runs at 120 BPM), and, offline only, where it starts (after
         // restart(), which sets it to 0: a replay of such a recording, Measure.h).
@@ -210,6 +259,7 @@ namespace playground
         };
 
         static constexpr int kGrid = 16;                  // the voices' calls end on multiples of it (absolute)
+        static constexpr uint64_t kNever = ~uint64_t{ 0 };
 
         struct Voice
         {
@@ -223,6 +273,7 @@ namespace playground
             bool pedal = false;         // its key let go while the sustain pedal was down: stopped when it comes up
             float gain = 1.0f, fall = 0.0f;   // per sample, while fading
             uint64_t fed = 0;           // the feedGen_ its instance's dials were last written at
+            uint64_t calledAt = kNever; // the absolute sample of its last circuit call
         };
 
         void takePending() noexcept;
@@ -233,6 +284,17 @@ namespace playground
         void retireFrozen() noexcept;                 // the held copies into the slots collect() empties
         void glideControls(int n) noexcept;           // the ramps over the block: streamBuf_, streaming_, feedGen_
         void feed(Patch& p, int offset, int instance) noexcept;   // the dials into p: streams from `offset`
+        // The circuit dials (above): current_'s shims in `instance` with the dials' values at the block's sample `at`
+        // (at < 0: their values after the last block, for a block of 0 samples).
+        void callCircuits(int at, int instance) noexcept;
+        // An instance's first calls (a new program's, one that missed calls): one, and as many as a switch's ramp takes
+        // when a bound switch is not where the instance's last calls left it; the instance's values current.
+        void firstCalls(int at, int instance) noexcept;
+        // The effect's program over the block: its first circuit call, then its process cut at the grid ticks that call.
+        void playEffect(float* left, float* right, int n) noexcept;
+        // A voice of current_ let go at the absolute sample `at`: its instance missed calls if a window was open.
+        void freeVoice(Voice& v, uint64_t at) noexcept;
+        static uint64_t gridCeil(uint64_t t) noexcept { return (t + kGrid - 1) / kGrid * kGrid; }
         void processEffect(float* const* channels, int numChannels, int n) noexcept;
         void syncHost(int offset) noexcept;           // the Host block at the call's sample `offset`, into the programs
         void controller(const Event& e) noexcept;     // a controller, pitch bend or pressure event
@@ -249,6 +311,13 @@ namespace playground
         void measureIn(float* const* channels, int numChannels, int n, bool fresh) noexcept;
         void publish(float* const* channels, int numChannels, int n, bool metering, bool fresh) noexcept;
         void heard(const Event& e) noexcept;          // a note-on of the player's, counted (Meters::noteOns)
+        // The probes (above): the set applied at a block's start (the target armed, the one before disarmed), the target
+        // forgotten (a swap; prepare(), which disarms it first while the audio thread is stopped), what the target's
+        // call wrote taken in, and the block's stats into the frame.
+        void applyProbes() noexcept;
+        void forgetProbes() noexcept;
+        void takeProbes() noexcept;
+        void publishProbes(int n) noexcept;
         void blockDone(float share, int n) noexcept;  // the block's BlockStat, into the ring
 
         std::atomic<Patch::Frozen*> frozenPending_{ nullptr };
@@ -291,6 +360,29 @@ namespace playground
         bool streamingNow_ = false;                   // a dial streams in this block
         bool streamedLast_ = false;                   // one streamed in the block before
 
+        // The circuit dials' calls (above): the ticks of a window after a switch changes, the window open now (calls at
+        // absolute grid ticks below circuitUntil_), the bound values' generation (bumps when one changes), the
+        // generation each instance had its values at (0: none yet, or calls missed), the effect's last call, the values a
+        // call passes, the block's sample a note-on's call is at, the count.
+        int circuitTicks_ = 61;
+        uint64_t circuitUntil_ = 0;
+        uint64_t circuitGen_ = 1;
+        std::array<uint64_t, Patch::kInstances> instanceGen_{};
+        // The bound switches' positions, so that only an instance whose switches are elsewhere gets a ramp's worth of
+        // first calls: their generation (0 while every bound switch is at its default, where init leaves an instance;
+        // else a new one at each change), the end of the window their ramp takes (absolute samples below switchUntil_),
+        // and each instance's: the generation its last calls gave it (0 for a fresh program's; kSwitchesUnknown for an
+        // instance kept across prepare(), or let go while a ramp's window was open).
+        static constexpr uint64_t kSwitchesUnknown = ~uint64_t{ 0 };
+        uint64_t switchGen_ = 0;
+        uint64_t switchCount_ = 0;
+        uint64_t switchUntil_ = 0;
+        std::array<uint64_t, Patch::kInstances> instanceSwitch_{};
+        uint64_t effectCalledAt_ = kNever;
+        std::array<float, kMaxControls> circuitPlain_{};
+        int callAt_ = 0;                              // -1: a block of 0 samples (the dials as the last block left them)
+        uint64_t circuitCalls_ = 0;
+
         std::array<Voice, 2 * Patch::kInstances> voices_{};
         std::array<bool, 128> held_{};
         std::array<float, 128> heldVelocity_{};
@@ -318,5 +410,30 @@ namespace playground
         // The blocks' costs, packed (the share's bits, the length, the voices, the flags), as the scopes' rings are.
         std::array<std::atomic<uint64_t>, kBlockRing> blockRing_{};
         std::atomic<uint64_t> blockAt_{ 0 };          // blocks written so far
+
+        // The probes (above): the set (setProbes' seqlock and its generation), the set as the audio thread last read it
+        // and the generation it read, the target armed (always current_: its field, element and instance, -1 for none;
+        // the slots' nodes it was armed with and the slots armed), prn_ as last read, the block's stats so far (the
+        // samples taken, each slot's peak, sum, sum of squares, all finite), the stats' first block, whether the meters'
+        // slots hold numbers, the rings (the samples copied so far, and where the run of the set that plays began:
+        // probe()'s), the slots armed for probe().
+        fsdsp::Seqlock<ProbeSet> probeSet_;
+        std::atomic<uint64_t> probeGenIn_{ 0 };
+        ProbeSet probeWant_{};
+        uint64_t probeSeen_ = 0;
+        const Patch* probePatch_ = nullptr;
+        int probeCircuit_ = -1, probeElement_ = 0, probeInstance_ = -1;
+        std::array<int16_t, 4> probeNodes_{ -1, -1, -1, -1 };
+        uint8_t probeSlots_ = 0;
+        uint32_t probeLast_ = 0;
+        uint32_t probeTaken_ = 0;
+        std::array<float, 4> probePeak_{};
+        std::array<double, 4> probeSum_{}, probeSquares_{};
+        std::array<bool, 4> probeFinite_{};
+        bool probeFresh_ = true;
+        bool probeMetered_ = false;
+        std::array<std::array<std::atomic<float>, kScopeLength>, 4> probeRings_{};
+        std::atomic<uint64_t> probeAt_{ 0 }, probeFrom_{ 0 };
+        std::atomic<uint8_t> probeMask_{ 0 };
     };
 }

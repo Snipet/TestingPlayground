@@ -7,6 +7,9 @@
 //   draftRevision()   bumps when the draft changes other than by setDraft (a host loading a session), so an open editor
 //                     shows the new files
 //   setDraft()        the editor's files, as they are typed, and its tab
+//   setDraftIf()      setDraft only while draftRevision() is still `revision` (the editor has every change merged): a
+//                     schematic gesture's files, at once, so that Claude's conditional write (edit_circuit) sees it
+//                     and a write of Claude's not yet merged is never overwritten (false: nothing set)
 //   run()             RUN: compiles `files` off the message thread (Compiler.h) and plays them once they compile; the
 //                     dials of parameters the program did not have before move to their defaults then
 //   compiling()       a run is waiting or compiling
@@ -22,6 +25,10 @@
 //   controls()        the dials of the program that plays
 //   panel()           its interface: a .gui file's (GuiSpec.h), or how its #pragma panel lines lay its dials out
 //                     (PanelSpec.h)
+//   fileViews()       each netlist's view (Netlist or Schematic), zoom and pan, as the editor's user left them; kept in
+//                     the session, set with setFileViews() on the user's gestures only
+//   schematicPins()   each netlist's session pins, the places its Schematic view drew for parts and terminals with no
+//                     line of their own, set with setSchematicPins() whenever the view reconciles; in memory only
 //   panelView()       the editor shows the PANEL view (the interface across the left column) rather than the CODE view;
 //                     kept in the session, set with setPanelView()
 //   program()         the compile it came from (CompileStatus::request): the meters' taps are its fields once
@@ -31,6 +38,10 @@
 //   scope()           the last n samples of the input or the output (Engine::scope)
 //   addMeterReader()  meters() and scope() are measured only while someone reads them (Engine::readers): a Panel adds
 //   removeMeterReader() itself in its constructor and removes itself in its destructor; meterReaders() how many now
+//   addProbeOwner()   the schematic's live probes (Engine.h, "Probes"): a Panel that arms one becomes an owner (a
+//   setProbes()       headless picture's Panel never does), sets its ProbeSet (program 0: nothing) and removes itself
+//   removeProbeOwner() when it goes; the newest owner whose set is armed reaches the Engine, so a second Panel that
+//   probe()           arms nothing leaves the first's armed; probe() the last n samples of a slot's ring (Engine::probe)
 //   load()            the audio thread's busiest recent block, as a share of its time (Engine::load)
 //   alerts()          the output guard's alerts of the last two seconds (Engine::Alert bits)
 //   projects()        the projects saved on this Mac (ProjectStore.h), by name: each a program and its dials, kept as
@@ -78,6 +89,7 @@
 #include "dsp/Engine.h"
 #include "dsp/Sources.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -97,7 +109,8 @@ namespace playground
     // (editor/Picture.h; where the GPU cannot, with SoftRaster, a shader as a striped placeholder, and `about` says so
     // and why), as PNG bytes. `window`: the whole editor as the user has it; else the program's panel in the PANEL
     // view, cropped to it. `page`: a tabs element's page to show, by its title ("" for the user's). The view, the chat's
-    // fold and the pages the user has stay as they were. Message thread only. Defined in Source/editor/Picture.cpp.
+    // fold, the pages and the probes the user has stay as they were (its Panel owns no probe: Panel::setOwnsProbes).
+    // Message thread only. Defined in Source/editor/Picture.cpp.
     struct PanelPicture
     {
         std::string png;                         // the PNG's bytes ("" when it could not be made: `why`)
@@ -108,6 +121,16 @@ namespace playground
     };
     PanelPicture picturePanel(std::span<funkgui::ParamPort* const> ports, EditorPort& port, int width, int height,
                               bool window, const std::string& page);
+    // What a picture shows (ChatHost::chatPicture): the program's panel, the whole editor, or a netlist's schematic.
+    enum class PictureView : uint8_t { panel, window, schematic };
+    // A netlist's schematic (view_panel's view "schematic"): the .cir file `file` of the port's draft, reconciled with
+    // the port's session pins (schematicPins: the places the user's view drew for parts and terminals without a line,
+    // so the picture is the user's drawing), drawn at 100 % (10 px a grid unit; smaller only to fit 1,400 x 900
+    // logical px), every name and value shown, the last compile's marks on it when that compile's netlist is this one
+    // (its *@ lines aside), by a small Panel of its own that holds no editor Panel: it owns no probe, reads and writes
+    // no file view, and changes nothing of the user's. `about` lists each part (its kind, value, place, orientation and
+    // pins' points), each net's pins, the problems and the parts not drawn. Message thread only (Picture.cpp).
+    PanelPicture pictureSchematic(EditorPort& port, const std::string& file);
 
     // The pictures' GPU context. With no editor open in the process, a picture starts bgfx headless and FunkGui holds
     // it for the next (funkgui/gpu/GpuPicture.h, "The context"). A plugin lives in its host's process, so the hold is
@@ -116,6 +139,23 @@ namespace playground
     // (message thread only); nothing to do while nothing is held. Defined in Source/editor/Picture.cpp.
     inline constexpr double kPictureHoldSeconds = 10.0;
     void picturesIdle(double seconds = kPictureHoldSeconds);
+    // A netlist's view as the session keeps it (editor/SchematicView.h): its Netlist or Schematic view, the drawing's
+    // zoom (1: 100 %) and the world point at its canvas's centre (grid units), and the nets its probes are pinned to.
+    // Kept only for files whose view the user chose (a switch, a zoom, a pan), at most kMaxFileViews, each with at most
+    // kMaxFileProbes; never in the Draft, a project or an export, never sent to Claude.
+    inline constexpr std::size_t kMaxFileViews = 12;
+    inline constexpr std::size_t kMaxFileProbes = 4;
+    struct FileView
+    {
+        std::string file;                        // a .cir file's name
+        bool schematic = false;                  // its Schematic view (else its Netlist view)
+        float zoom = 1.0f;                       // 0: none chosen yet (the drawing fits when the view opens)
+        float x = 0.0f, y = 0.0f;                // the world point at the canvas's centre
+        std::vector<std::string> probes;         // pinned probes' node names
+
+        friend bool operator==(const FileView&, const FileView&) = default;
+    };
+
     // The editor's files, a tab each (the first the program), and the tab it shows.
     struct Draft
     {
@@ -212,6 +252,7 @@ namespace playground
         virtual Draft draft() const = 0;
         virtual uint64_t draftRevision() const = 0;
         virtual void setDraft(const Draft& draft) = 0;
+        virtual bool setDraftIf(const Draft& draft, uint64_t revision) = 0;
 
         virtual void run(const Sources& files) = 0;
         virtual bool compiling() const = 0;
@@ -232,6 +273,22 @@ namespace playground
         virtual void addMeterReader() = 0;
         virtual void removeMeterReader() = 0;
         virtual int meterReaders() const = 0;
+        // The probes (above): an owner's id (from 1), its set, its leaving; a slot's last n samples, oldest first: how
+        // many are of the set that plays (Engine::probe).
+        virtual int addProbeOwner() { return 0; }
+        virtual void setProbes(int owner, const ProbeSet& set)
+        {
+            (void)owner;
+            (void)set;
+        }
+        virtual void removeProbeOwner(int owner) { (void)owner; }
+        virtual int probe(int slot, float* out, int n) const
+        {
+            (void)slot;
+            for (int i = 0; i < n; ++i)
+                out[i] = 0.0f;
+            return 0;
+        }
 
         virtual float load() const = 0;
         virtual uint32_t alerts() const = 0;
@@ -278,6 +335,23 @@ namespace playground
         // them), by its title. Kept in the session, so a reopened editor and a reloaded session show them again.
         virtual std::vector<std::string> guiPages() const = 0;
         virtual void setGuiPages(const std::vector<std::string>& titles) = 0;
+
+        // The netlists' views (FileView, above), kept in the session: an editor writes them only on its user's
+        // gestures (switching a view, zooming, panning), never when it opens or fits, and reads them when it opens.
+        virtual std::vector<FileView> fileViews() const = 0;
+        virtual void setFileViews(const std::vector<FileView>& views) = 0;
+
+        // The schematic's session pins (editor/SchematicView.h): for each netlist, the places its view drew for parts
+        // and terminals that have no *@ line, as *@ part, input and output lines ("" for none). A Panel sets them
+        // whenever its view reconciles the file; they live in the processor's memory only (never in the session, a
+        // project or an export), and Claude's edit_circuit (ChatHost::chatSchematicPins) and view_panel's schematic
+        // picture reconcile with them, so that every writer and every viewer draws what the user sees.
+        virtual void setSchematicPins(const std::string& file, const std::string& lines) { (void)file; (void)lines; }
+        virtual std::string schematicPins(const std::string& file) const
+        {
+            (void)file;
+            return {};
+        }
 
         // A note from the panel's keyboard (a .gui file's keyboard element): `velocity` 0..1 plays it, 0 releases it.
         // An instrument plays it at the start of its next block; an effect ignores it. 64 can wait at once; past that

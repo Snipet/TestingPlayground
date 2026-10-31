@@ -48,7 +48,8 @@ namespace playground
 
         // A dial moved from one value to another (as text, in its units).
         void dial(Who who, int slot, const std::string& name, const std::string& from, const std::string& to);
-        // A file `what`: "edited", "added", "closed", "renamed to x.fm", "wrote" (merged while typing).
+        // A file `what`: "edited", "added", "closed", "renamed to x.fm", "wrote", "redrew" (a netlist's *@ lines alone,
+        // its schematic; merged while typing, as "edited" is).
         void file(Who who, const std::string& name, const std::string& what);
         // Anything else, in words ("ran it: it compiled, 9 dials"). With a `key`, it goes into the last change of that
         // key when it may (above), its words replacing that one's.

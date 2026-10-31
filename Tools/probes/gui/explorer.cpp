@@ -35,6 +35,7 @@
 //             the program's card keeps kProgramMinW; its button folds the chat and shows it; the chat opened again,
 //             away again; at the default size it shows
 //   SCROLL    at the least size (the chat folded) the list is taller than its card: the wheel scrolls it
+//   CIRCUIT   a netlist's rows (a .cir tab's, the library's) carry the circuit's icon, the program's its own
 #include "Probe.h"
 
 #include "editor/Explorer.h"
@@ -423,6 +424,17 @@ PROBE(gui, explorer)
         ex.scrollTo(ex.contentHeight());
         host.settle();
         writePng(P, host, "gui.explorer.small.png");
+    }
+
+    // ---- CIRCUIT: a netlist's rows carry the circuit's icon (a .cir file and the library's), a program file's not ------
+    {
+        const int lib = find(ex, S::library, "diodetone.cir");
+        P.eq("circuit.library_icon", lib >= 0 && ex.row(S::library, lib)->icon == pg::ui::chat::Icon::circuit ? 1 : 0, 1);
+        P.eq("circuit.added", panel.addLibraryFile("diodetone.cir") ? 1 : 0, 1);
+        host.settle();
+        const int file = find(ex, S::files, "diodetone.cir");
+        P.eq("circuit.file_icon", file >= 0 && ex.row(S::files, file)->icon == pg::ui::chat::Icon::circuit ? 1 : 0, 1);
+        P.eq("circuit.program_icon", ex.row(S::files, 0) != nullptr && ex.row(S::files, 0)->icon == pg::ui::chat::Icon::code ? 1 : 0, 1);
     }
 
     pg::projectstore::setDirectoryForTests({});

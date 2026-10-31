@@ -20,6 +20,7 @@
 #include "fsdsp/core/ScopedFtz.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -122,9 +123,10 @@ namespace playground
         }
 
         // `errors` with each message about one of the appended lines (lines from `firstShim`, shims[k] on line
-        // firstShim + k) said in the author's terms: the method, how the plugin calls it, and FMinus's reason.
+        // firstShim + k, then the circuit dials' shims, circuits[j] on the line after those) said in the author's terms:
+        // the method (or the field), how the plugin calls it, and FMinus's reason.
         std::string translate(const std::string& errors, std::string_view fileName, int firstShim,
-                              const std::vector<const Call*>& shims)
+                              const std::vector<const Call*>& shims, const std::vector<std::string>& circuits = {})
         {
             std::istringstream in(errors);
             std::string out, line;
@@ -132,9 +134,22 @@ namespace playground
             while (std::getline(in, line))
             {
                 int ln = 0, col = 0, used = 0;
+                const int shimCount = static_cast<int>(shims.size());
                 if (line.rfind(prefix, 0) == 0
                     && std::sscanf(line.c_str() + prefix.size(), "%d:%d: %n", &ln, &col, &used) >= 2 && used > 0
-                    && ln >= firstShim && ln - firstShim < static_cast<int>(shims.size()))
+                    && ln >= firstShim + shimCount && ln - firstShim - shimCount < static_cast<int>(circuits.size()))
+                {
+                    std::string rest = line.substr(prefix.size() + static_cast<std::size_t>(used));
+                    const std::size_t colon = rest.find(": ");
+                    const std::string kind = colon == std::string::npos ? "error" : rest.substr(0, colon);
+                    const std::string why = colon == std::string::npos ? rest : rest.substr(colon + 2);
+                    out += prefix + " " + kind + ": " + kModule + "::" + circuits[static_cast<std::size_t>(ln - firstShim - shimCount)]
+                         + " (its dials, on the audio thread): " + why + "\n";
+                    continue;
+                }
+                if (line.rfind(prefix, 0) == 0
+                    && std::sscanf(line.c_str() + prefix.size(), "%d:%d: %n", &ln, &col, &used) >= 2 && used > 0
+                    && ln >= firstShim && ln - firstShim < shimCount)
                 {
                     const Call& c = *shims[static_cast<std::size_t>(ln - firstShim)];
                     std::string rest = line.substr(prefix.size() + static_cast<std::size_t>(used));   // "error: ..."
@@ -169,6 +184,108 @@ namespace playground
             for (std::size_t at = open; at != std::string::npos; at = type.find('[', at + 1))
                 count *= static_cast<std::size_t>(std::max(1L, std::strtol(type.c_str() + at + 1, nullptr, 10)));
             return !base.empty();
+        }
+
+        bool sameFolded(std::string_view a, std::string_view b) noexcept
+        {
+            return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+                       return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y));
+                   });
+        }
+
+        // The circuit dials of `files` (Patch.h, "Circuits": lang::circuitDials), each binding checked against what
+        // pass 1 compiled: the main module's field of that name holds that netlist's module, with the extent Lang read
+        // (FMinus's type), the generated set() takes the pots and switches Lang read, in order (the Generator's shape),
+        // and no dial's name is a parameter's. One that differs gets no dials and a note; then the slots after the
+        // first `taken` (lang::assignSlots), and a note for each dial past kMaxControls.
+        std::vector<lang::CircuitBinding> checkedBindings(const Sources& files, const fminus::Program::Module& main,
+                                                          const circuits::Generator& gen, const std::string& file, int taken,
+                                                          std::string& notes)
+        {
+            Sources read;
+            for (const SourceFile& f : files)
+                if (!isGuiFile(f.name))
+                    read.push_back(f);
+            lang::Service service;
+            lang::Options o;
+            o.instrument = kInstrument;
+            service.setOptions(o);
+            service.setFiles(read);
+            lang::CircuitDials d = lang::circuitDials(service, kInstrument);
+            for (lang::CircuitBinding& b : d.bindings)
+            {
+                if (b.own || b.names.empty())
+                    continue;
+                std::string why;
+                const auto f = std::find_if(main.fields.begin(), main.fields.end(),
+                                            [&](const fminus::Program::Module::Field& x) { return x.name == b.field; });
+                std::string base;
+                std::size_t count = 0;
+                const circuits::Generator::Shape* shape = gen.shape(b.file);
+                if (f == main.fields.end())
+                    why = std::string(kModule) + " has no field " + b.field + " as FMinus compiled it";
+                else if (!heldModule(f->type, base, count) || base != b.module)
+                    why = "FMinus compiled it as " + f->type;
+                else if (b.count() <= 0 || count != static_cast<std::size_t>(b.count()))
+                    why = "its extent is not one the playground reads (" + f->type + ")";
+                else if (shape == nullptr || shape->module != b.module)
+                    why = b.file + " generated no module " + b.module;
+                else
+                {
+                    std::vector<std::string> pots, switches;
+                    for (const lang::CircuitPot& p : b.pots)
+                        pots.push_back(p.name);
+                    for (const lang::CircuitSwitch& w : b.switches)
+                        switches.push_back(w.name);
+                    if (pots != shape->pots || switches != shape->switches)
+                        why = "its set() is not what the playground read of " + b.file;
+                }
+                for (const std::string& n : b.names)
+                    for (const fminus::Program::Parameter& p : main.parameters)
+                        if (why.empty() && sameFolded(n, p.name))
+                            why = "its dial " + n + " would be the parameter " + p.name + "'s name";
+                if (why.empty())
+                    continue;
+                notes += file + ": note: " + b.field + ": " + why + ", so " + b.module + "'s pots have no dials\n";
+                b.names.clear();
+            }
+            lang::assignSlots(d, taken);
+            for (const lang::CircuitBinding& b : d.bindings)
+                if (!b.names.empty())
+                    for (int a = 0; a < b.args(); ++a)
+                        if (b.slots[static_cast<std::size_t>(a)] < 0)
+                            notes += file + ": note: " + b.field + "'s " + (a < static_cast<int>(b.pots.size()) ? "pot " : "switch ")
+                                   + b.names[static_cast<std::size_t>(a)] + " has no dial (the plugin has "
+                                   + std::to_string(kMaxControls) + "): it stays at its default\n";
+            return d.bindings;
+        }
+
+        // A bound field's shim (Patch.h, "Circuits"): one line, every element's set() with the dials' values, a switch's
+        // position cast to int.
+        std::string circuitShim(std::size_t k, const lang::CircuitBinding& b)
+        {
+            std::string args;
+            for (int a = 0; a < b.args(); ++a)
+                args += std::string(a == 0 ? "" : ", ") + (a < static_cast<int>(b.pots.size()) ? "" : "(int)") + "v["
+                      + std::to_string(a) + "]";
+            std::string loops, index;
+            for (std::size_t d = 0; d < b.dims.size(); ++d)
+            {
+                const std::string i = "i" + std::to_string(d);
+                loops += "for (int " + i + " = 0; " + i + " < " + std::to_string(b.dims[d]) + "; ++" + i + ") ";
+                index += "[" + i + "]";
+            }
+            return std::string("void playground_circuit_") + std::to_string(k) + "(" + kModule + "* self, float* restrict v) "
+                   "[[clang::nonblocking]] { " + loops + "self->" + b.field + index + ".set(" + args + "); }";
+        }
+
+        // How a message on a bound field's shim names it: "amp: the plugin calls amp[k].set(drive, tone, level)".
+        std::string circuitWords(const lang::CircuitBinding& b)
+        {
+            std::string args;
+            for (const std::string& n : b.names)
+                args += (args.empty() ? "" : ", ") + n;
+            return b.field + ": the plugin calls " + b.field + (b.dims.empty() ? "" : "[k]") + ".set(" + args + ")";
         }
 
         Control controlOf(const fminus::Program::Parameter& p)
@@ -271,6 +388,7 @@ namespace playground
         using Start = void(void*, float, float);
         using Init = void(void*, float);
         using Plain = void(void*);
+        using Circuit = void(void*, float*);           // a circuit dial's shim (Patch.h, "Circuits")
 
         std::unique_ptr<fminus::Program> program;
         const fminus::Program::Module* module = nullptr;
@@ -282,6 +400,7 @@ namespace playground
         Plain* end = nullptr;
         Init* sharedInit = nullptr;                // the module Shared's
         Plain* sharedEnd = nullptr;
+        std::vector<Circuit*> circuits;            // the circuit dials' shims, in order
     };
 
     Patch::Patch() : s_(std::make_unique<Compiled>()) {}
@@ -434,6 +553,48 @@ namespace playground
             streams[k] = p.type == "float";
             dials = k + 1;
         }
+        // The circuits' dials (above, "Circuits"), after the params: no FMinus parameter (no name, no slot in an
+        // instance), a shim's arguments each.
+        const std::vector<lang::CircuitBinding> bindings = checkedBindings(files, *main, circuits, file, static_cast<int>(dials),
+                                                                           r.notes);
+        std::vector<const lang::CircuitBinding*> bound;
+        std::size_t mostArgs = 0;
+        for (const lang::CircuitBinding& b : bindings)
+        {
+            if (!b.dialled())
+                continue;
+            bound.push_back(&b);
+            CircuitCall call;
+            const int pots = static_cast<int>(b.pots.size());
+            for (int a = 0; a < b.args(); ++a)
+            {
+                const int slot = b.slots[static_cast<std::size_t>(a)];
+                const std::string& name = b.names[static_cast<std::size_t>(a)];
+                call.slots.push_back(slot);
+                if (a < pots)
+                {
+                    const lang::CircuitPot& pot = b.pots[static_cast<std::size_t>(a)];
+                    call.fixed.push_back(pot.def);
+                    if (slot >= 0)
+                        patch->controls_[static_cast<std::size_t>(slot)] = lang::potControl(name, pot.def);
+                }
+                else
+                {
+                    const lang::CircuitSwitch& w = b.switches[static_cast<std::size_t>(a - pots)];
+                    call.fixed.push_back(static_cast<float>(w.def));
+                    if (slot >= 0)
+                    {
+                        patch->controls_[static_cast<std::size_t>(slot)] = lang::switchControl(name, w.positions, w.def);
+                        patch->circuitRamps_ = true;
+                    }
+                }
+                if (slot >= 0)
+                    patch->circuitMask_ |= 1u << slot;
+            }
+            mostArgs = std::max(mostArgs, call.slots.size());
+            patch->circuitCalls_.push_back(std::move(call));
+        }
+        patch->circuitArgs_.assign(mostArgs, 0.0f);
         fminus::Program::Options build = playOptions(file, names, streams);
         build.include = include;
         build.keepIr = keepIr ? fminus::Program::KeepIr::Both : fminus::Program::KeepIr::None;
@@ -445,11 +606,17 @@ namespace playground
         const int firstShim = lineCount(full);
         for (const Call* c : shims)
             full += std::string(c->shim) + "\n";
+        std::vector<std::string> circuitLines;
+        for (std::size_t k = 0; k < bound.size(); ++k)
+        {
+            full += circuitShim(k, *bound[k]) + "\n";
+            circuitLines.push_back(circuitWords(*bound[k]));
+        }
         std::string errors;
         patch->s_->program = fminus::Program::compile(full, errors, build);
         if (!patch->s_->program)
         {
-            r.errors = translate(circuits.recite(errors), file, firstShim, shims);
+            r.errors = translate(circuits.recite(errors), file, firstShim, shims, circuitLines);
             r.compileMs = msSince(t0);
             return r;
         }
@@ -485,6 +652,12 @@ namespace playground
             lookShared("playground_shared_init", s.sharedInit);
         if (sharedEnd)
             lookShared("playground_shared_end", s.sharedEnd);
+        for (std::size_t k = 0; k < bound.size(); ++k)
+        {
+            std::string missing;
+            s.circuits.push_back(program.function<Compiled::Circuit>("playground_circuit_" + std::to_string(k), missing));
+            r.errors += missing;
+        }
         if (!r.errors.empty() || s.module == nullptr)
         {
             r.compileMs = msSince(t0);
@@ -493,6 +666,8 @@ namespace playground
         patch->params_.assign(static_cast<std::size_t>(kMaxControls), nullptr);
         for (std::size_t k = 0; k < dials; ++k)
         {
+            if (names[k].empty())
+                continue;                              // a circuit's dial: no parameter
             const fminus::Program::Parameter* param = program.parameter(names[k]);
             patch->params_[k] = param;
             if (param == nullptr)
@@ -518,6 +693,8 @@ namespace playground
             rc.stop = s.stop != nullptr;
             rc.render = s.render != nullptr;
             rc.process = s.process != nullptr;
+            rc.bindings = bindings;
+            rc.circuitShims = static_cast<int>(bound.size());
         }
 
         // The instances: aligned, zeroed, their parameters at their defaults, init run.
@@ -651,6 +828,71 @@ namespace playground
                     break;
                 }
         }
+        // The probe table (Patch.h, "Probes"): each main-module field of a netlist's module (a scalar or an array), its
+        // elements and the probe fields' offsets in one, each checked against its type and the sizes; the netlists'
+        // modules, whose probe fields the field map leaves out.
+        for (const SourceFile& g : circuits.generated())
+            if (const circuits::Generator::Shape* shape = circuits.shape(g.name); shape != nullptr && !shape->module.empty())
+                patch->circuitModules_.push_back(shape->module);
+        for (const fminus::Program::Module::Field& f : s.module->fields)
+        {
+            std::string base;
+            std::size_t extent = 0;
+            if (f.type.rfind("param ", 0) == 0 || !heldModule(f.type, base, extent) || extent == 0 || f.size % extent != 0)
+                continue;
+            std::string netlist;
+            const circuits::Generator::Shape* shape = circuits.shapeOfModule(base, &netlist);
+            const fminus::Program::Module* m = shape != nullptr ? program.module(base) : nullptr;
+            if (m == nullptr || f.offset + f.size > s.module->size || f.size / extent < m->size)
+                continue;
+            ProbeEntry e;
+            e.base = f.offset;
+            e.stride = f.size / extent;
+            e.elements = static_cast<int>(extent);
+            bool ok = true;
+            const auto at = [&](const char* name, const char* type, std::size_t size, std::size_t& out) {
+                const auto x = std::find_if(m->fields.begin(), m->fields.end(),
+                                            [&](const fminus::Program::Module::Field& y) { return y.name == name; });
+                if (x == m->fields.end() || squeezed(x->type) != type || x->size != size || x->offset + x->size > m->size)
+                    ok = false;
+                else
+                    out = x->offset;
+            };
+            const std::string slots = "[" + std::to_string(circuits::kProbeSlots) + "]";
+            at("prb_", "int", sizeof(int32_t), e.prb);
+            at("prs_", ("int" + slots).c_str(), sizeof(int32_t) * circuits::kProbeSlots, e.prs);
+            at("prn_", "int", sizeof(int32_t), e.prn);
+            at("pr_", ("float[" + std::to_string(circuits::kProbeSlots * circuits::kProbeRing) + "]").c_str(),
+               sizeof(float) * circuits::kProbeSlots * circuits::kProbeRing, e.pr);
+            at("prp_", ("float" + slots).c_str(), sizeof(float) * circuits::kProbeSlots, e.prp);
+            at("pra_", ("float" + slots).c_str(), sizeof(float) * circuits::kProbeSlots, e.pra);
+            at("prq_", ("float" + slots).c_str(), sizeof(float) * circuits::kProbeSlots, e.prq);
+            if (!ok)
+                continue;
+            for (const circuits::Node& n : shape->nodes)
+                e.readable.push_back(n.readable ? 1 : 0);
+            circuits::Probed d;
+            d.field = f.name;
+            d.module = base;
+            d.file = netlist;
+            d.nodes = shape->nodes;
+            std::vector<std::size_t> dims;
+            for (std::size_t open = f.type.find('['); open != std::string::npos; open = f.type.find('[', open + 1))
+                dims.push_back(static_cast<std::size_t>(std::max(1L, std::strtol(f.type.c_str() + open + 1, nullptr, 10))));
+            for (std::size_t k = 0; k < extent; ++k)
+            {
+                std::string index;
+                std::size_t rest = k;
+                for (std::size_t dd = dims.size(); dd-- > 0;)
+                {
+                    index = "[" + std::to_string(rest % dims[dd]) + "]" + index;
+                    rest /= dims[dd];
+                }
+                d.paths.push_back(f.name + index);
+            }
+            patch->probes_.push_back(std::move(e));
+            patch->recipe_.probes.push_back(std::move(d));
+        }
         patch->mapFields();
         patch->reset(sampleRate);
         if (keepIr)
@@ -775,6 +1017,22 @@ namespace playground
             c.stop(instances_[static_cast<std::size_t>(i)]);
     }
 
+    void Patch::setCircuits(const float* plain, int i) noexcept
+    {
+        const Compiled& c = code();
+        if (i < 0 || i >= static_cast<int>(instances_.size()) || c.circuits.size() != circuitCalls_.size())
+            return;
+        void* self = instances_[static_cast<std::size_t>(i)];
+        for (std::size_t k = 0; k < circuitCalls_.size(); ++k)
+        {
+            const CircuitCall& call = circuitCalls_[k];
+            for (std::size_t a = 0; a < call.slots.size(); ++a)
+                circuitArgs_[a] = call.slots[a] >= 0 ? plain[call.slots[a]] : call.fixed[a];
+            if (c.circuits[k] != nullptr)
+                c.circuits[k](self, circuitArgs_.data());
+        }
+    }
+
     bool Patch::render(int i, float* left, float* right, int n) noexcept
     {
         const Compiled& c = code();
@@ -841,6 +1099,8 @@ namespace playground
         {
             look(r.process, "process", s.process);
         }
+        for (int k = 0; k < r.circuitShims; ++k)                  // the circuit dials' shims, which the source carries
+            s.circuits.push_back(program.function<Compiled::Circuit>("playground_circuit_" + std::to_string(k), missing));
         if (!missing.empty())
         {
             why = missing;
@@ -938,6 +1198,7 @@ namespace playground
             const fminus::Program& program;
             std::vector<Patch::Field>& out;
             std::vector<std::string>& left;
+            const std::vector<std::string>& circuitModules;   // their probe fields are the probes', never mapped
             bool full = false;
 
             void leave(const std::string& line)
@@ -1000,11 +1261,14 @@ namespace playground
             void fields(const fminus::Program::Module& m, const std::string& prefix, std::size_t base, Patch::Field::Home home,
                         int depth)
             {
+                const bool circuit = std::find(circuitModules.begin(), circuitModules.end(), m.name) != circuitModules.end();
                 for (const fminus::Program::Module::Field& f : m.fields)
                 {
                     const std::string path = prefix + f.name;
                     if (f.type.rfind("param ", 0) == 0)
                         continue;                      // a dial (or a held module's parameter at its default)
+                    if (circuit && circuits::isProbeField(f.name))
+                        continue;                      // the probes' (Patch.h, "Probes"), not the circuit's
                     if (f.type.find('*') != std::string::npos)
                     {
                         const std::string t = squeezed(f.type);
@@ -1043,7 +1307,7 @@ namespace playground
         fields_.clear();
         unmapped_.clear();
         const fminus::Program& program = *s_->program;
-        Mapper map{ program, fields_, unmapped_, false };
+        Mapper map{ program, fields_, unmapped_, circuitModules_, false };
         const fminus::Program::Module* main = program.module(kModule);
         if (main == nullptr)
             return;
@@ -1072,6 +1336,100 @@ namespace playground
         }
         if (const fminus::Program::Module* host = program.module(kHostModule); host != nullptr && host_ != nullptr && !viaHost.empty())
             map.fields(*host, viaHost + "->", 0, Field::Home::host, 0);
+    }
+
+    // ---- the probes (Patch.h, "Probes") ----------------------------------------------------------------------------------
+    int Patch::probeElements(int circuit) const noexcept
+    {
+        return circuit >= 0 && circuit < static_cast<int>(probes_.size()) ? probes_[static_cast<std::size_t>(circuit)].elements : 0;
+    }
+
+    char* Patch::probeElement(int c, int e, int i) const noexcept
+    {
+        if (c < 0 || c >= static_cast<int>(probes_.size()) || i < 0 || i >= static_cast<int>(instances_.size()))
+            return nullptr;
+        const ProbeEntry& p = probes_[static_cast<std::size_t>(c)];
+        if (e < 0 || e >= p.elements)
+            return nullptr;
+        return static_cast<char*>(instances_[static_cast<std::size_t>(i)]) + p.base + static_cast<std::size_t>(e) * p.stride;
+    }
+
+    uint8_t Patch::armProbes(int c, int e, int i, const int16_t (&nodes)[circuits::kProbeSlots]) noexcept
+    {
+        char* at = probeElement(c, e, i);
+        if (at == nullptr)
+            return 0;
+        const ProbeEntry& p = probes_[static_cast<std::size_t>(c)];
+        uint8_t armed = 0;
+        for (int k = 0; k < circuits::kProbeSlots; ++k)
+        {
+            const int n = nodes[k];
+            const bool readable = n >= 0 && n < static_cast<int>(p.readable.size()) && p.readable[static_cast<std::size_t>(n)] != 0;
+            const int32_t v = readable ? n : -1;
+            std::memcpy(at + p.prs + sizeof(int32_t) * static_cast<std::size_t>(k), &v, sizeof v);
+            armed = static_cast<uint8_t>(armed | (readable ? 1u << k : 0u));
+        }
+        const int32_t on = armed != 0 ? 1 : 0;
+        std::memcpy(at + p.prb, &on, sizeof on);
+        probeWrites_.fetch_add(1, std::memory_order_relaxed);
+        return armed;
+    }
+
+    void Patch::disarmProbes(int c, int e, int i) noexcept
+    {
+        char* at = probeElement(c, e, i);
+        if (at == nullptr)
+            return;
+        const int32_t off = 0;
+        std::memcpy(at + probes_[static_cast<std::size_t>(c)].prb, &off, sizeof off);
+        probeWrites_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    bool Patch::probeArmed(int c, int e, int i) const noexcept
+    {
+        const char* at = probeElement(c, e, i);
+        if (at == nullptr)
+            return false;
+        int32_t on = 0;
+        std::memcpy(&on, at + probes_[static_cast<std::size_t>(c)].prb, sizeof on);
+        return on != 0;
+    }
+
+    bool Patch::probeCount(int c, int e, int i, uint32_t& prn) const noexcept
+    {
+        const char* at = probeElement(c, e, i);
+        if (at == nullptr)
+            return false;
+        int32_t n = 0;
+        std::memcpy(&n, at + probes_[static_cast<std::size_t>(c)].prn, sizeof n);
+        prn = static_cast<uint32_t>(n);
+        return true;
+    }
+
+    const float* Patch::probeRing(int c, int e, int i, int slot) const noexcept
+    {
+        const char* at = probeElement(c, e, i);
+        if (at == nullptr || slot < 0 || slot >= circuits::kProbeSlots)
+            return nullptr;
+        return reinterpret_cast<const float*>(at + probes_[static_cast<std::size_t>(c)].pr
+                                              + sizeof(float) * static_cast<std::size_t>(circuits::kProbeRing * slot));
+    }
+
+    bool Patch::takeProbeStats(int c, int e, int i, float (&peak)[circuits::kProbeSlots], float (&sum)[circuits::kProbeSlots],
+                               float (&squares)[circuits::kProbeSlots]) noexcept
+    {
+        char* at = probeElement(c, e, i);
+        if (at == nullptr)
+            return false;
+        const ProbeEntry& p = probes_[static_cast<std::size_t>(c)];
+        std::memcpy(peak, at + p.prp, sizeof peak);
+        std::memcpy(sum, at + p.pra, sizeof sum);
+        std::memcpy(squares, at + p.prq, sizeof squares);
+        std::memset(at + p.prp, 0, sizeof peak);
+        std::memset(at + p.pra, 0, sizeof sum);
+        std::memset(at + p.prq, 0, sizeof squares);
+        probeWrites_.fetch_add(1, std::memory_order_relaxed);
+        return true;
     }
 
     const void* Patch::instance(int i) const noexcept

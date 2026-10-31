@@ -4,14 +4,17 @@
 //   LINK     a processor listens on a private socket in the folder (0600, the folder 0700) and leaves tools.json and
 //            guide.md there; info names its kind, plugin and files; tools are the chat's, but ask_user and
 //            ask_planner, each MCP description its first sentence or paragraph (tools.json's size printed, with the
-//            full descriptions for comparison, and compact), a setting's description given once (view_sound's render
-//            settings, set_checks' goals: not again in a check's or tune_dials'); the guide's start says it is driven
+//            full descriptions for comparison, and compact; at most 26,000 bytes, the slack printed), a setting's
+//            description given once (view_sound's render settings, set_checks' goals: not again in a check's or
+//            tune_dials'); edit_circuit's description its first sentence, its face "Edit a circuit", its `name`
+//            undescribed (edit_file's words), view_panel's naming the schematic, its `name` too; the guide's start says it is driven
 //            from outside; a guide request naming no part (a 0.2.0 server's) gets the whole guide
 //   GUIDE    the guide in parts (mcp/McpGuide.h): start (working from outside, FMINUS, DSP PRACTICE, CHECKING, the
 //            notes of the tools it uses and the other parts named; its size printed, in bytes and about tokens),
 //            large-program (with THREADS), interface, library (a line a file), debugging (the notes of listen, capture,
 //            trace and compare, not in start), examples, projects, circuits (CIRCUITS: .cir NETLISTS, which ends
-//            projects; start names it), all (the system prompt whole); a guide from before the circuits (an older
+//            projects, with THE SCHEMATIC and edit_circuit's notes; start names it), all (the system prompt whole); a
+//            guide from before the circuits (an older
 //            plugin's guide.md) still cuts, its projects as they were, and has no circuits part;
 //            library:<file> its header, library:<file>:code its whole text with no tab added to the editor; an unknown
 //            part refused, naming the parts
@@ -515,9 +518,40 @@ PROBE(plugin, mcp)
                      && !tuneDials["inputSchema"]["properties"]["goals"]["items"]["properties"]["min"].hasProperty("description")
                      && setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["min"].hasProperty("description")
                  ? 1 : 0, 1);
-        // The first MCP wave's budget (tools.json as the link writes it, pretty-printed; Desktop gets it compact).
+        // The budget (tools.json as the link writes it, pretty-printed; Desktop gets it compact): 25,000 bytes until
+        // the schematic's tools, 26,000 since (the synth had 218 bytes to spare before them, they take about 1,060).
         std::printf("tools.json compact: %d bytes\n", juce::JSON::toString(tools, true).length());
-        P.le("link.tools_bytes", static_cast<double>(size), 25000.0);
+        std::printf("tools.json slack: %lld bytes under 26,000\n", static_cast<long long>(26000 - size));
+        P.le("link.tools_bytes", static_cast<double>(size), 26000.0);
+        // edit_circuit and view_panel's schematic, as MCP has them: each description its first sentence, standing alone;
+        // `name` described once (edit_file's words: "The file's name"), dropped from theirs
+        juce::var editCircuit, viewPanel, editFile;
+        if (const juce::Array<juce::var>* t = tools.getArray())
+            for (const juce::var& tool : *t)
+            {
+                const juce::String name = tool["name"].toString();
+                if (name == "edit_circuit")
+                    editCircuit = tool;
+                else if (name == "view_panel")
+                    viewPanel = tool;
+                else if (name == "edit_file")
+                    editFile = tool;
+            }
+        const juce::String circuitLead = editCircuit["description"].toString();
+        std::printf("edit_circuit: %s\nview_panel: %s\n", circuitLead.toRawUTF8(), viewPanel["description"].toString().toRawUTF8());
+        P.eq("link.edit_circuit_lead", circuitLead == "Change a .cir netlist the way the schematic editor does: add, place, connect, "
+                                                      "disconnect, set, rename, delete and lay out parts, one command a line in ops, "
+                                                      "applied together as one step the user can undo." ? 1 : 0, 1);
+        P.eq("link.edit_circuit_schema", static_cast<int>(editCircuit["inputSchema"]["properties"]["ops"]["maxItems"]) == 64
+                                             && editCircuit["inputSchema"]["properties"]["ops"].hasProperty("description")
+                                             && !editCircuit["inputSchema"]["properties"]["name"].hasProperty("description")
+                                             && editFile["inputSchema"]["properties"]["name"]["description"].toString() == "The file's name"
+                                             && editCircuit["title"].toString() == "Edit a circuit"
+                                             && !static_cast<bool>(editCircuit["annotations"]["readOnlyHint"]) ? 1 : 0, 1);
+        P.eq("link.view_panel_schematic", viewPanel["description"].toString().contains("schematic")
+                                              && viewPanel["description"].toString().endsWithChar('.')
+                                              && !viewPanel["inputSchema"]["properties"]["name"].hasProperty("description")
+                                              && viewPanel["inputSchema"]["properties"]["view"]["enum"].size() == 3 ? 1 : 0, 1);
     }
     const std::string guide = ask(*a, r, 3, "guide", object({ { "part", "start" } }))["result"].toString().toStdString();
     P.eq("link.guide", guide.rfind("WORKING FROM OUTSIDE THE PLUGIN", 0) == 0 ? 1 : 0, 1);
@@ -574,8 +608,11 @@ PROBE(plugin, mcp)
         P.eq("guide.projects", projects.rfind("RANDOM AND PROJECTS\n", 0) == 0 && !has(projects, "<tool name=")
                                    && !has(projects, pg::mcp::guide::kCircuits) ? 1 : 0, 1);
         P.eq("guide.circuits", circuits.rfind(std::string(pg::mcp::guide::kCircuits) + "\n", 0) == 0 && has(circuits, "pedal.tick(x)")
-                                   && has(circuits, "screamer.cir") && !has(circuits, "<tool name=") && !has(circuits, "<library_file")
-                                   ? 1 : 0, 1);
+                                   && has(circuits, "screamer.cir") && !has(circuits, "<library_file") ? 1 : 0, 1);
+        // the schematic: THE SCHEMATIC in the part, and edit_circuit's notes (kFaces puts them there), nowhere else
+        P.eq("guide.circuits_schematic", has(circuits, "\nTHE SCHEMATIC\n") && has(circuits, "connect <end> <end>")
+                                             && has(circuits, "<tool name=\"edit_circuit\" part=\"circuits\">")
+                                             && !has(guide, "<tool name=\"edit_circuit\"") && !has(guide, "\nTHE SCHEMATIC\n") ? 1 : 0, 1);
         P.eq("guide.start_names_circuits", has(guide, "- \"circuits\": ") && !has(guide, pg::mcp::guide::kCircuits) ? 1 : 0, 1);
         {
             // An older plugin's guide.md, from before the circuits: it cuts as it did, and has no circuits part.

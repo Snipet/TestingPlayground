@@ -117,6 +117,8 @@ namespace playground::ui
 
     // The highlighter's palette for a theme (GRAPHITE or PAPER): the theme's inks, and a few colours of its own.
     std::vector<funkgui::text::HighlightStyle> codePalette(const funkgui::Theme& th);
+    // The code editor's ground (a shade off the theme's): what a netlist's Schematic view draws on too.
+    funkgui::Col codeGround(const funkgui::Theme& th);
 
     // A compiler message, as the problems list parses it (Panel.h's Problem, without the editor's types).
     struct Diagnostic
@@ -180,13 +182,18 @@ namespace playground::ui
         bool specLine(char* out, std::size_t n, funkgui::Point pointer) const;   // the footer's, over the status line
 
         // ---- problems ---------------------------------------------------------------------------------------------
-        // Messages for `compiled`: squiggles and marks in each tab whose text was compiled. RUN's are kept: a check of
-        // the same files shows them again instead of its own, which are fewer (no notes, nothing only RUN's second
-        // pass finds), but for a netlist RUN said nothing of (one no #include reaches, which RUN does not generate):
-        // the last check's on it stay, after RUN too, while its text is the one that check saw.
+        // Messages for `compiled`: squiggles and marks in each tab whose text was compiled, or, a netlist, whose text is
+        // the compiled one but for its drawing's *@ lines (each message on the line it was on: cir::lineMap). RUN's are
+        // kept: a check of the same files (cir::sameProgram: a netlist's *@ lines aside) shows them again instead of
+        // its own, which are fewer (no notes, nothing only RUN's second pass finds), but for a netlist RUN said
+        // nothing of (one no #include reaches, which RUN does not generate): the last check's on it stay, after RUN
+        // too, while its netlist is the one that check saw.
         void setRunDiagnostics(const std::vector<Diagnostic>& messages, const Sources& compiled);
         void setCheckDiagnostics(const std::vector<Diagnostic>& messages, const Sources& compiled);
-        // A check is due: the files changed and have rested (true once for each such rest).
+        // A check is due: the files changed and have rested (true once for each such rest), unless they differ from
+        // those the last check asked for or RUN compiled only in a netlist's *@ lines (cir::sameProgram: a change to
+        // its drawing alone asks for none). The same bytes again ask for one, so that a squiggle lost to an edit and
+        // its undo comes back; so do any files once messages could not land on a tab (its text had moved on).
         bool takeCheckRequest();
         void cancelCheck();                              // RUN: the files as they are need no check
         // A check sent; `revisionBefore` is the check status's revision as it was before (CheckStatus::revision):
@@ -209,6 +216,16 @@ namespace playground::ui
         }
         int errorCount() const;                          // the squiggles in every tab, by severity
         int warningCount() const;
+        // A tab's messages where its squiggles are now (they follow edits as the decorations do): its file, the line
+        // and column (1-based) of each squiggle's start, its severity and its text. A netlist's Schematic view marks
+        // its parts with them (SchematicView.h).
+        std::vector<Diagnostic> diagnosticsOf(int tab) const;
+        // The status line's words in place of the caret's place and the indent while they are not empty (a netlist's
+        // Schematic view: "Schematic   12 parts   9 nets   2 problems   80%").
+        void setStatusWords(std::function<std::string()> words) { statusWords_ = std::move(words); }
+        // While those words show, a click on the status line's problems calls this (true: Shift, the one before)
+        // instead of moving the text's caret.
+        void setStatusProblems(std::function<void(bool back)> step) { statusProblems_ = std::move(step); }
 
         // ---- commands ---------------------------------------------------------------------------------------------
         bool formatFile();                               // the tab shown (an FMinus file); false with a notice when not
@@ -305,6 +322,8 @@ namespace playground::ui
         StatusParts statusParts() const;
 
         Tabs tabs_;
+        std::function<std::string()> statusWords_;
+        std::function<void(bool back)> statusProblems_;
         lang::Service service_;
         uint64_t synced_ = ~uint64_t{ 0 };
         std::shared_ptr<TypeNames> types_ = std::make_shared<TypeNames>();
@@ -324,6 +343,8 @@ namespace playground::ui
         Sources runSources_;
         std::vector<Diagnostic> checkMessages_;          // the last check's, and the files it checked
         Sources checkSources_;
+        Sources asked_;                                  // the files the last check asked for, RUN compiled, or a
+                                                         // drawing-only change left (empty: messages missed a tab)
         bool checking_ = false;
         uint64_t checkSeen_ = 0;
         uint64_t editedRevision_ = 0;                    // the files' revision at the last edit seen

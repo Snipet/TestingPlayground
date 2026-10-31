@@ -31,6 +31,11 @@
 //            MCP was told alone (the user's change still starts the next result)
 //   APPLY    an edit applied: panel.gui written into the processor's draft, run, its interface the sandbox's; the
 //            user's change since the last MCP call said first
+//   CIRCUIT  a program holding screamer.cir's module (an Effect's Screamer amp[2], a Voice's one), never calling its
+//            set(), with a panel.gui of its dials, playing in a processor: the sandbox opened from that instance lists
+//            the same dials, the circuit's (drive, tone, level) by the compiled program's names and defaults, and
+//            renders what view_panel's picture shows, pixel for pixel within MATCH's bound (gui.sandbox.circuit.png,
+//            .circuit.view.png)
 //   MCPB     the extension (<Name>.mcpb) carries the server, the helper and the licences of what the helper holds
 //   HANG     a helper that never answers a render (<ENV_PREFIX>SANDBOX_TEST_HANG): the call answered at the deadline
 //            (<ENV_PREFIX>SANDBOX_DEADLINE_MS), saying so, the helper gone, and the next call working
@@ -46,6 +51,7 @@
 
 #include "editor/Panel.h"
 
+#include "Library.h"
 #include "Product.h"
 
 #include <funkgui/panel/HeadlessGuiScope.h>
@@ -665,6 +671,63 @@ PROBE(plugin, sandbox)
         P.eq("apply.runs", port.status().ok && labelled ? 1 : 0, 1);
         P.eq("apply.hint", a.text.rfind("(The user changed 1 thing since the last MCP call here", 0) == 0 ? 1 : 0, 1);
         s.sandbox(object({ { "action", "close" }, { "sandbox", exampleNumber } }), &processor);
+    }
+
+    // ---- CIRCUIT: a circuit program's automatic dials, as the sandbox reads them ---------------------------------------
+    {
+        const pg::LibraryFile* lib = pg::findLibraryFile("screamer.cir");
+        const std::string program = kInstrument
+            ? "#include \"screamer.cir\"\nmodule Voice\n{\n    param float volume [[fminus::range(0, 1)]] [[fminus::default(0.8)]];\n"
+              "    Screamer amp;\n    float phase;\n    bool held;\n\n    void init(float rate)\n    {\n        amp.init(rate);\n    }\n\n"
+              "    void start(float note, float velocity)\n    {\n        held = true;\n        amp.clear();\n    }\n\n"
+              "    void stop()\n    {\n        held = false;\n    }\n\n"
+              "    bool process(float* restrict left, float* restrict right, int n)\n    {\n        for (int i = 0; i < n; ++i)\n"
+              "        {\n            phase += 0.01f;\n            if (phase >= 1)\n                phase -= 1;\n"
+              "            const float y = volume[i] * amp.tick(phase - 0.5f);\n            left[i] += y;\n            right[i] += y;\n"
+              "        }\n        return held;\n    }\n};\n"
+            : "#include \"screamer.cir\"\nmodule Effect\n{\n    param float volume [[fminus::range(0, 1)]] [[fminus::default(0.8)]];\n"
+              "    Screamer amp[2];\n\n    void init(float rate)\n    {\n        amp[0].init(rate);\n        amp[1].init(rate);\n    }\n\n"
+              "    void process(float* restrict left, float* restrict right, int n)\n    {\n        for (int i = 0; i < n; ++i)\n"
+              "        {\n            left[i] = volume[i] * amp[0].tick(left[i]);\n            right[i] = volume[i] * amp[1].tick(right[i]);\n"
+              "        }\n    }\n};\n";
+        const std::string circuitGui = "panel {\n    row wrap {\n        section \"PEDAL\" {\n            knob drive\n            knob tone\n"
+                                "            knob level\n        }\n        section \"OUT\" {\n            knob volume\n        }\n    }\n}\n";
+        const pg::Sources files = { { pg::kProgramName, program }, { "screamer.cir", lib != nullptr ? lib->source : "" }, { "panel.gui", circuitGui } };
+        pg::Processor processor;
+        pg::EditorPort& port = processor.editorPort();
+        port.setDraft({ files, 0 });
+        port.run(files);
+        processor.settle();
+        std::string names, defaults;
+        for (const pg::Control& c : port.controls())
+            if (c.used)
+            {
+                names += (names.empty() ? "" : " ") + std::string(c.name);
+                if (std::string(c.name) != "volume")
+                    defaults += (defaults.empty() ? "" : ", ") + std::string(c.name) + " " + pg::dialText(c, c.def);
+            }
+        std::printf("circuit: %s%s; dials %s (%s)\n", port.status().errors.c_str(), port.status().notes.c_str(), names.c_str(), defaults.c_str());
+        P.eq("circuit.compiled", port.status().ok && names == "volume drive tone level" && !port.panel().gui.empty() ? 1 : 0, 1);
+        const pg::PanelPicture view = pg::picturePanel(processor.ports(), port, 0, 0, false, "");
+        const Result circuitOpen = s.sandbox(object({ { "action", "open" }, { "from", "instance" } }), &processor);
+        std::printf("from the instance:\n%s", circuitOpen.text.c_str());
+        P.eq("circuit.same_dials", !circuitOpen.error && has(circuitOpen.text, "Dials: 4, 4 from the program's declarations")
+                                       && has(circuitOpen.text, "Circuit dials (the program's circuits' pots and switches, after its params, as the "
+                                                           "plugin makes them): " + defaults + ".")
+                                       && !has(circuitOpen.text, "no parameter") ? 1 : 0, 1);
+        const int number = numberIn(circuitOpen.text);
+        const Result mine = s.sandbox(object({ { "action", "render" }, { "sandbox", number }, { "detail", "high" } }), &processor);
+        writeBytes(probe::outPath("gui.sandbox.circuit.png"), mine.png);
+        writeBytes(probe::outPath("gui.sandbox.circuit.view.png"), view.png);
+        const Diff d = compare(decode(view.png), decode(mine.png), {}, 4);
+        std::printf("against view_panel: %d of %d pixels differ by more than 4 (largest %d)\n", d.outside, d.total, d.largestOutside);
+        for (const auto& [tile, n] : d.tiles)
+            if (n >= 16)
+                std::printf("  pixels off in the tile at %d,%d (pixels): %d\n", tile.first * 32, tile.second * 32, n);
+        P.eq("circuit.match_same_size", d.sameSize ? 1 : 0, 1);
+        P.le("circuit.match_pixels_off", static_cast<double>(d.outside), 0.002 * d.total);
+        P.le("circuit.match_largest", d.largestOutside, 40);
+        s.sandbox(object({ { "action", "close" }, { "sandbox", number } }), &processor);
     }
     s.stop();
 

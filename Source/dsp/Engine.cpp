@@ -74,8 +74,13 @@ namespace playground
         swapFade_ = samplesOf(fsdsp::kFadeMs, fs_);
         xfade_.prepare(fs_);
 
+        // The probes' target is disarmed and forgotten (the audio thread is stopped; the next block arms it again).
+        if (current_ != nullptr && probePatch_ == current_ && probeInstance_ >= 0)
+            current_->disarmProbes(probeCircuit_, probeElement_, probeInstance_);
+        forgetProbes();
         // The audio thread is stopped: a waiting program plays from the first block, without a fade, and the ones it
         // replaces (and what it handed back) go now.
+        bool fresh = false;                          // current_'s instances as init left them
         if (Patch* next = pending_.exchange(nullptr, std::memory_order_acq_rel); next != nullptr)
         {
             if (old_ != current_)
@@ -83,6 +88,7 @@ namespace playground
             delete current_;
             current_ = next;
             old_ = nullptr;
+            fresh = true;
         }
         else if (old_ != nullptr)
         {
@@ -114,7 +120,18 @@ namespace playground
         voices_ = {};
         clock_ = 0;
         if (current_ != nullptr && current_->rate() != fs_)
+        {
             current_->reset(fs_);
+            fresh = true;
+        }
+        // The circuit dials: a window's ticks at this rate (a switch's ramp, ceil(0.02 rate / kGrid), and one more); no
+        // window open, every instance to be called before its first process (its switches where init left them, or
+        // unknown when the instances played before).
+        circuitTicks_ = static_cast<int>(std::ceil(0.02 * static_cast<double>(fs_) / kGrid)) + 1;
+        circuitUntil_ = switchUntil_ = 0;
+        effectCalledAt_ = kNever;
+        instanceGen_.fill(0);
+        instanceSwitch_.fill(fresh ? 0 : kSwitchesUnknown);
         fedPatch_ = nullptr;                         // the next block snaps the dials
         load_.store(0.0f, std::memory_order_relaxed);
     }
@@ -129,6 +146,7 @@ namespace playground
         const std::lock_guard<std::mutex> lock(mutex_);
         if (current_ != nullptr)
             current_->reset(fs_);
+        instanceSwitch_.fill(0);                     // init's switches
     }
 
     void Engine::offer(std::unique_ptr<Patch> patch)
@@ -196,6 +214,11 @@ namespace playground
             return;
         old_ = current_;
         current_ = next;
+        forgetProbes();                              // never a write into the old one (Engine.h, "Probes")
+        instanceGen_.fill(0);                        // its instances have no circuit dial's value yet
+        instanceSwitch_.fill(0);                     // and their switches where init left them
+        circuitUntil_ = switchUntil_ = 0;
+        effectCalledAt_ = kNever;
         if (old_ != nullptr)
             for (int c = 0; c < kMaxControls; ++c)   // the old program holds its dials still while it goes
                 old_->setStream(c, nullptr);
@@ -328,6 +351,11 @@ namespace playground
         fedPatch_ = current_;
         moved_ = false;
         bool streaming = false;
+        // The circuit dials (Engine.h): the block's last sample at which a bound value changes (-1: none), and whether
+        // a switch did (its ramp's window).
+        const uint32_t bound = current_->circuitSlots();
+        int lastChange = -1;
+        bool switched = false;
         for (int c = 0; c < kMaxControls; ++c)
         {
             const Control& info = cs[static_cast<std::size_t>(c)];
@@ -335,10 +363,17 @@ namespace playground
             streaming_[static_cast<std::size_t>(c)] = false;
             if (!info.used)
                 continue;
+            const bool circuit = ((bound >> c) & 1u) != 0;
             const float target = normSet_ ? plainOf(info, norm_[static_cast<std::size_t>(c)]) : info.def;
             if (snap || info.type != ControlType::real)
             {
-                moved_ = moved_ || g.cur != target || g.moving();
+                const bool changed = g.cur != target || g.moving();
+                moved_ = moved_ || changed;
+                if (changed && circuit && !snap)
+                {
+                    lastChange = std::max(lastChange, 0);
+                    switched = switched || info.type != ControlType::real;
+                }
                 g.cur = g.tgt = target;
                 g.left = 0;
                 continue;
@@ -347,11 +382,41 @@ namespace playground
             if (!g.moving())
                 continue;
             moved_ = true;
+            if (circuit)                             // it changes at each sample until it lands
+                lastChange = std::max(lastChange, std::min(g.left, n) - 1);
             float* buf = streamBuf_.data() + static_cast<std::size_t>(c) * static_cast<std::size_t>(maxBlock_);
             for (int i = 0; i < n; ++i)
                 buf[i] = g.tick();
             streaming_[static_cast<std::size_t>(c)] = true;
             streaming = true;
+        }
+        if (lastChange >= 0)
+        {
+            // The calls run at every tick through the first at or after the last change; a switch's, the ramp's too.
+            // The instances that had the values before have these by the window's calls; the others wait for a first
+            // call of their own.
+            const uint64_t from = gridCeil(clock_ + static_cast<uint64_t>(lastChange));
+            circuitUntil_ = std::max(circuitUntil_, from + static_cast<uint64_t>(kGrid) * static_cast<uint64_t>(switched ? circuitTicks_ : 1));
+            if (switched)
+                switchUntil_ = std::max(switchUntil_, from + static_cast<uint64_t>(kGrid) * static_cast<uint64_t>(circuitTicks_));
+            const uint64_t was = circuitGen_++;
+            if constexpr (kInstrument)
+            {
+                for (const Voice& v : voices_)       // the sounding ones: the free ones miss the calls
+                    if (v.patch == current_ && instanceGen_[static_cast<std::size_t>(v.instance)] == was)
+                        instanceGen_[static_cast<std::size_t>(v.instance)] = circuitGen_;
+            }
+            else if (instanceGen_[0] == was)
+                instanceGen_[0] = circuitGen_;
+        }
+        // The bound switches' generation: 0 at their defaults (a fresh instance's), else a new one for new positions.
+        if (snap || switched)
+        {
+            bool home = true;
+            for (int c = 0; c < kMaxControls; ++c)
+                if (((bound >> c) & 1u) != 0 && cs[static_cast<std::size_t>(c)].used && cs[static_cast<std::size_t>(c)].type != ControlType::real)
+                    home = home && glide_[static_cast<std::size_t>(c)].cur == cs[static_cast<std::size_t>(c)].def;
+            switchGen_ = home ? 0 : ++switchCount_;
         }
         // What feed() writes changes with a new program, a dial that moved, and a stream that starts, runs or ends
         // (its pointer goes back to null).
@@ -384,6 +449,90 @@ namespace playground
         }
     }
 
+    void Engine::callCircuits(int at, int instance) noexcept
+    {
+        if (current_ == nullptr)
+            return;
+        const uint32_t bound = current_->circuitSlots();
+        const int s = std::clamp(at, 0, std::max(maxBlock_ - 1, 0));
+        for (int c = 0; c < kMaxControls; ++c)
+            if (((bound >> c) & 1u) != 0)
+                circuitPlain_[static_cast<std::size_t>(c)] =
+                    streaming_[static_cast<std::size_t>(c)] && at >= 0
+                        ? streamBuf_[static_cast<std::size_t>(c) * static_cast<std::size_t>(maxBlock_) + static_cast<std::size_t>(s)]
+                        : glide_[static_cast<std::size_t>(c)].cur;
+        current_->setCircuits(circuitPlain_.data(), instance);
+        if (instance >= 0 && instance < Patch::kInstances)
+            instanceSwitch_[static_cast<std::size_t>(instance)] = switchGen_;   // its switches there, or ramping there
+        ++circuitCalls_;
+    }
+
+    void Engine::firstCalls(int at, int instance) noexcept
+    {
+        // one call; when a bound switch is not where the instance's last calls left it, as many as its ramp takes, so
+        // the instance starts at the dial's position (it has played nothing yet: no step is heard)
+        const bool ramp = current_ != nullptr && current_->circuitRamps() && instanceSwitch_[static_cast<std::size_t>(instance)] != switchGen_;
+        const int calls = ramp ? circuitTicks_ : 1;
+        for (int k = 0; k < calls; ++k)
+            callCircuits(at, instance);
+        instanceGen_[static_cast<std::size_t>(instance)] = circuitGen_;
+    }
+
+    void Engine::freeVoice(Voice& v, uint64_t at) noexcept
+    {
+        if (v.patch == current_ && v.instance >= 0 && v.instance < Patch::kInstances)
+        {
+            if (at == kNever || at < circuitUntil_)
+                instanceGen_[static_cast<std::size_t>(v.instance)] = 0;   // it missed the window's calls: a first call next
+            if (at == kNever || at < switchUntil_)
+                instanceSwitch_[static_cast<std::size_t>(v.instance)] = kSwitchesUnknown;   // its ramp cut short
+        }
+        v = Voice{};
+    }
+
+    void Engine::playEffect(float* left, float* right, int n) noexcept
+    {
+        Patch& p = *current_;
+        if (!p.circuits())
+        {
+            if (streamingNow_ || effectFed_ != feedGen_)   // the dials as they are now, unless the instance has them
+            {
+                feed(p, 0, -1);
+                effectFed_ = feedGen_;
+            }
+            p.process(left, right, n);
+            return;
+        }
+        // Its instance's first calls (a new program's), at the block's first sample.
+        if (instanceGen_[0] != circuitGen_)
+        {
+            firstCalls(0, 0);
+            effectCalledAt_ = clock_;
+        }
+        const uint64_t until = circuitUntil_;
+        for (int a = 0; a < n;)
+        {
+            const uint64_t t = clock_ + static_cast<uint64_t>(a);
+            if (t % kGrid == 0 && t < until && t != effectCalledAt_)
+            {
+                callCircuits(a, 0);
+                effectCalledAt_ = t;
+            }
+            // to the next tick that calls, else to the block's end
+            const uint64_t next = gridCeil(t + 1);
+            const int b = next < until ? static_cast<int>(std::min<uint64_t>(static_cast<uint64_t>(n), next - clock_)) : n;
+            if (streamingNow_ || effectFed_ != feedGen_)
+            {
+                feed(p, a, -1);
+                effectFed_ = feedGen_;
+            }
+            if (a > 0)
+                syncHost(a);                         // host->beat at this call's first sample (host.fm), as a voice's part
+            p.process(left + a, right + a, b - a);
+            a = b;
+        }
+    }
+
     // ---- the audio thread: a block ---------------------------------------------------------------------------------------
     void Engine::process(float* const* channels, int numChannels, int numSamples, std::span<const Event> events) noexcept
     {
@@ -404,6 +553,7 @@ namespace playground
             if constexpr (kInstrument)
                 for (const Event& e : events)        // a block of 0 samples still plays its events
                 {
+                    callAt_ = -1;                    // a circuit call: the dials as the last block left them
                     heard(e);
                     if (e.kind == EventKind::noteOn)
                         noteOn(e.note, e.velocity);
@@ -421,6 +571,7 @@ namespace playground
         takePending();
         glideControls(n);
         updateFrozen();
+        applyProbes();
         const bool metering = readers_.load(std::memory_order_relaxed) > 0;
         if (metering && !metering_)                  // a reader came: the levels start again, the scopes from silence
         {
@@ -439,7 +590,10 @@ namespace playground
         if constexpr (kInstrument)
             processInstrument(channels, numChannels, n, events);
         else
+        {
             processEffect(channels, numChannels, n);
+            clock_ += static_cast<uint64_t>(n);      // the grid's (Engine.h, "Circuit dials")
+        }
         publish(channels, numChannels, n, metering, fresh);
         samples_ += static_cast<uint64_t>(n);
         if (running_)                                // the song's position at the next call's first sample
@@ -627,8 +781,228 @@ namespace playground
             frame_.fading = fading;
             frame_.held = held;
         }
+        publishProbes(n);
         ++frame_.frame;
         meters_.publish(frame_);
+    }
+
+    // ---- the probes (Engine.h, "Probes") ---------------------------------------------------------------------------------
+    void Engine::setProbes(const ProbeSet& set) noexcept
+    {
+        probeSet_.publish(set);
+        probeGenIn_.fetch_add(1, std::memory_order_release);
+    }
+
+    int Engine::probe(int slot, float* out, int n) const noexcept
+    {
+        const int count = std::clamp(n, 0, kScopeLength);
+        if (slot < 0 || slot >= 4)
+        {
+            std::fill(out, out + count, 0.0f);
+            return 0;
+        }
+        const bool armed = ((probeMask_.load(std::memory_order_acquire) >> slot) & 1u) != 0;
+        // The end, then where the set's samples begin, loaded after it: never older than the end's, and newer when a
+        // re-arm or a call longer than the module's ring came since (then none of these samples are the set's).
+        const uint64_t end = probeAt_.load(std::memory_order_acquire);
+        const uint64_t from = probeFrom_.load(std::memory_order_relaxed);
+        const int valid = armed && end > from ? static_cast<int>(std::min<uint64_t>(end - from, static_cast<uint64_t>(count))) : 0;
+        const std::array<std::atomic<float>, kScopeLength>& ring = probeRings_[static_cast<std::size_t>(slot)];
+        for (int i = 0; i < count; ++i)
+            out[i] = i >= count - valid
+                         ? ring[(end - static_cast<uint64_t>(count) + static_cast<uint64_t>(i)) & (kScopeLength - 1)].load(std::memory_order_relaxed)
+                         : 0.0f;
+        return valid;
+    }
+
+    void Engine::forgetProbes() noexcept
+    {
+        probePatch_ = nullptr;
+        probeCircuit_ = -1;
+        probeElement_ = 0;
+        probeInstance_ = -1;
+        probeNodes_ = { -1, -1, -1, -1 };
+        probeSlots_ = 0;
+        probeMask_.store(0, std::memory_order_release);
+        probeTaken_ = 0;
+    }
+
+    void Engine::applyProbes() noexcept
+    {
+        if (probePatch_ != nullptr && probePatch_ != current_)
+            forgetProbes();
+        const uint64_t g = probeGenIn_.load(std::memory_order_acquire);
+        if (g != probeSeen_)
+        {
+            ProbeSet set;
+            if (probeSet_.read(set))                 // else a set is being written: the next block reads it
+            {
+                probeWant_ = set;
+                probeSeen_ = g;
+            }
+        }
+        // The target the set names now: only in current_, and only for its program.
+        const ProbeSet& w = probeWant_;
+        int circuit = -1, element = 0, instance = -1;
+        if (current_ != nullptr && w.armed() && w.program == current_->program() && w.circuit < current_->probeCircuits()
+            && w.instance >= 0 && w.instance < current_->probeElements(w.circuit))
+        {
+            circuit = w.circuit;
+            element = w.instance;
+            if constexpr (kInstrument)
+            {
+                uint64_t newest = 0;                 // the newest sounding voice, as the taps follow it
+                for (const Voice& v : voices_)
+                    if (v.patch == current_ && !v.fading && !v.ending && (instance < 0 || v.age >= newest))
+                    {
+                        newest = v.age;
+                        instance = v.instance;
+                    }
+            }
+            else
+                instance = 0;
+        }
+        if (instance == probeInstance_
+            && (instance < 0 || (circuit == probeCircuit_ && element == probeElement_ && w.nodes == probeNodes_)))
+            return;                                  // as it is
+        if (current_ != nullptr && probePatch_ == current_ && probeInstance_ >= 0
+            && (instance != probeInstance_ || circuit != probeCircuit_ || element != probeElement_))
+            current_->disarmProbes(probeCircuit_, probeElement_, probeInstance_);   // the one before, in current_
+        forgetProbes();
+        if (instance < 0)
+            return;
+        Patch& p = *current_;
+        int16_t nodes[4] = { w.nodes[0], w.nodes[1], w.nodes[2], w.nodes[3] };
+        probeSlots_ = p.armProbes(circuit, element, instance, nodes);
+        p.probeCount(circuit, element, instance, probeLast_);
+        float peak[4], sum[4], squares[4];
+        p.takeProbeStats(circuit, element, instance, peak, sum, squares);   // what it kept before: not this set's
+        probePatch_ = current_;
+        probeCircuit_ = circuit;
+        probeElement_ = element;
+        probeInstance_ = instance;
+        probeNodes_ = w.nodes;
+        probeFresh_ = true;
+        probePeak_.fill(0.0f);
+        probeSum_.fill(0.0);
+        probeSquares_.fill(0.0);
+        probeFinite_.fill(true);
+        probeFrom_.store(probeAt_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        probeMask_.store(probeSlots_, std::memory_order_release);
+    }
+
+    void Engine::takeProbes() noexcept
+    {
+        if (probeInstance_ < 0 || probeSlots_ == 0 || current_ == nullptr || probePatch_ != current_)
+            return;
+        Patch& p = *current_;
+        uint32_t prn = 0;
+        if (!p.probeCount(probeCircuit_, probeElement_, probeInstance_, prn))
+            return;
+        constexpr uint32_t kWrap = (1u << 30) - 1u;
+        const uint32_t d = (prn - probeLast_) & kWrap;
+        probeLast_ = prn;
+        if (d == 0)
+            return;
+        const uint32_t take = std::min<uint32_t>(d, static_cast<uint32_t>(circuits::kProbeRing));
+        const uint64_t at = probeAt_.load(std::memory_order_relaxed);
+        if (d > take)                                // a call longer than the module's ring: its newest kProbeRing samples,
+            probeFrom_.store(at, std::memory_order_relaxed);   // never joined to the call before (probe() says so)
+        for (int k = 0; k < 4; ++k)
+        {
+            if (((probeSlots_ >> k) & 1u) == 0)
+                continue;
+            const float* ring = p.probeRing(probeCircuit_, probeElement_, probeInstance_, k);
+            if (ring == nullptr)
+                continue;
+            std::array<std::atomic<float>, kScopeLength>& out = probeRings_[static_cast<std::size_t>(k)];
+            for (uint32_t j = 0; j < take; ++j)
+            {
+                const float v = ring[(prn - take + j) & static_cast<uint32_t>(circuits::kProbeRing - 1)];
+                out[(at + j) & (kScopeLength - 1)].store(std::isfinite(v) ? v : 0.0f, std::memory_order_relaxed);
+            }
+        }
+        probeAt_.store(at + take, std::memory_order_release);
+        float peak[4], sum[4], squares[4];
+        if (p.takeProbeStats(probeCircuit_, probeElement_, probeInstance_, peak, sum, squares))
+            for (std::size_t k = 0; k < 4; ++k)
+            {
+                if (((probeSlots_ >> k) & 1u) == 0)
+                    continue;
+                if (!std::isfinite(peak[k]) || !std::isfinite(sum[k]) || !std::isfinite(squares[k]))
+                    probeFinite_[k] = false;
+                else
+                {
+                    probePeak_[k] = std::max(probePeak_[k], peak[k]);
+                    probeSum_[k] += static_cast<double>(sum[k]);
+                    probeSquares_[k] += static_cast<double>(squares[k]);
+                }
+            }
+        probeTaken_ += d;
+    }
+
+    void Engine::publishProbes(int n) noexcept
+    {
+        frame_.probeGen = probeSeen_;
+        frame_.probeSet = probeWant_;
+        frame_.probeInstance = static_cast<int16_t>(probeInstance_);
+        if (probeInstance_ < 0)
+        {
+            // nothing armed: the meters say so (their slots cleared once), and nothing is computed
+            frame_.probeProgram = 0;
+            if (probeMetered_)
+            {
+                std::fill(std::begin(frame_.probes), std::end(frame_.probes), ProbeMeter{});
+                probeMetered_ = false;
+            }
+            return;
+        }
+        probeMetered_ = true;
+        const bool on = probeSlots_ != 0 && probeTaken_ > 0;
+        const float seconds = static_cast<float>(n) / std::max(fs_, 1.0f);
+        const float fall = std::exp(-2.30258509f * seconds);      // 20 dB a second, as the levels' peaks
+        const float keep = std::exp(-seconds / 0.05f);             // the RMS's power over 50 ms
+        const float keepMean = std::exp(-seconds / 0.2f);          // the mean over 200 ms
+        const double taken = static_cast<double>(std::max<uint32_t>(probeTaken_, 1u));
+        for (std::size_t k = 0; k < 4; ++k)
+        {
+            ProbeMeter& m = frame_.probes[k];
+            const bool armed = ((probeSlots_ >> k) & 1u) != 0;
+            if (!armed)
+            {
+                m = ProbeMeter{};
+                continue;
+            }
+            if (!on || !probeFinite_[k])
+            {
+                m.valid = false;                     // the numbers the last valid block left
+                continue;
+            }
+            const float peak = probePeak_[k];
+            const float power = static_cast<float>(std::max(0.0, probeSquares_[k] / taken));
+            const float mean = static_cast<float>(probeSum_[k] / taken);
+            if (probeFresh_)
+            {
+                m.peak = peak;
+                m.rms = std::sqrt(power);
+                m.mean = mean;
+            }
+            else
+            {
+                m.peak = std::max(peak, m.peak * fall);
+                m.rms = std::sqrt(keep * m.rms * m.rms + (1.0f - keep) * power);
+                m.mean = keepMean * m.mean + (1.0f - keepMean) * mean;
+            }
+            m.valid = std::isfinite(m.peak) && std::isfinite(m.rms) && std::isfinite(m.mean);
+        }
+        if (on)
+            probeFresh_ = false;
+        frame_.probeProgram = current_ != nullptr ? current_->program() : 0;
+        probeTaken_ = 0;
+        probePeak_.fill(0.0f);
+        probeSum_.fill(0.0);
+        probeSquares_.fill(0.0);
+        probeFinite_.fill(true);
     }
 
     void Engine::scope(bool input, float* out, int n) const noexcept
@@ -654,13 +1028,11 @@ namespace playground
         if (current_ == nullptr)
             return;                                  // no program yet: the input, as it came
         syncHost(0);
-        if (streamingNow_ || effectFed_ != feedGen_)  // the dials as they are now, unless the instance has them
-        {
-            feed(*current_, 0, -1);
-            effectFed_ = feedGen_;
-        }
         if (!xfading_)
-            current_->process(left, right, n);
+        {
+            playEffect(left, right, n);
+            takeProbes();
+        }
         else
         {
             // The old program (or the dry input, before the first) on copies of the input, the new one in place.
@@ -668,7 +1040,8 @@ namespace playground
             std::copy(right, right + n, dryR_.data());
             if (old_ != nullptr)
                 old_->process(dryL_.data(), dryR_.data(), n);
-            current_->process(left, right, n);
+            playEffect(left, right, n);
+            takeProbes();                            // current_'s calls only
             guard(dryL_.data(), n);
             guard(dryR_.data(), n);
             guard(left, n);
@@ -709,6 +1082,7 @@ namespace playground
                 done = at;
             }
             syncHost(at);                            // start and stop read the Host block at the event's sample
+            callAt_ = at;                            // a note-on's first circuit call: the dials at that sample
             heard(e);
             if (e.kind == EventKind::noteOn)
                 noteOn(e.note, e.velocity);
@@ -812,7 +1186,7 @@ namespace playground
             if (quietest == nullptr)
                 return;
             instance = quietest->instance;
-            *quietest = Voice{};
+            freeVoice(*quietest, kNever);            // cut short: its instance is called afresh
             ++frame_.steals;
         }
         for (Voice& v : voices_)
@@ -825,6 +1199,14 @@ namespace playground
                 v.age = ++noteCount_;
                 feed(*current_, 0, instance);
                 v.fed = feedGen_;
+                // The circuit dials, before its start, when its instance has not had them (Engine.h): unless the
+                // program came this block (a held key started again) and the dials are not its yet, which its first
+                // part then calls.
+                if (current_->circuits() && fedPatch_ == current_ && instanceGen_[static_cast<std::size_t>(instance)] != circuitGen_)
+                {
+                    firstCalls(callAt_, instance);
+                    v.calledAt = callAt_ < 0 ? kNever : clock_ + static_cast<uint64_t>(callAt_);
+                }
                 current_->start(instance, static_cast<float>(key), std::clamp(velocity, 0.0f, 1.0f));
                 return;
             }
@@ -943,7 +1325,24 @@ namespace playground
                 feed(*current_, from, v.instance);
                 v.fed = feedGen_;
             }
+            if (v.patch == current_ && current_->circuits())   // the circuit dials (Engine.h): a first call, else the grid's
+            {
+                const uint64_t t = clock_ + static_cast<uint64_t>(from);
+                const std::size_t inst = static_cast<std::size_t>(v.instance);
+                if (instanceGen_[inst] != circuitGen_)
+                {
+                    firstCalls(from, v.instance);
+                    v.calledAt = t;
+                }
+                else if (t % kGrid == 0 && t < circuitUntil_ && t != v.calledAt)
+                {
+                    callCircuits(from, v.instance);
+                    v.calledAt = t;
+                }
+            }
             const bool sounding = v.patch->render(v.instance, voiceL_.data(), voiceR_.data(), len);
+            if (v.patch == current_ && v.instance == probeInstance_)
+                takeProbes();                        // the followed voice's part (Engine.h, "Probes")
             bool finite = true;
             for (int i = 0; i < len && finite; ++i)
                 finite = std::isfinite(voiceL_[static_cast<std::size_t>(i)]) &&
@@ -955,7 +1354,7 @@ namespace playground
                 frame_.droppedKey = v.key;
                 frame_.droppedAt = frame_.samples + static_cast<uint64_t>(from);
                 blockFlags_ |= BlockStat::alert;
-                v = Voice{};
+                freeVoice(v, kNever);                // its instance is called afresh
                 continue;
             }
             float* outL = accL_.data() + from;
@@ -979,7 +1378,7 @@ namespace playground
             }
             v.ending = v.ending || !sounding || (v.fading && v.gain <= 0.0f);
             if (v.ending && onGrid)
-                v = Voice{};
+                freeVoice(v, clock_ + static_cast<uint64_t>(to));
         }
     }
 

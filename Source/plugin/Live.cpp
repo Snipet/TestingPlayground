@@ -17,6 +17,7 @@
 
 #include "dsp/Measure.h"
 #include "dsp/TextDiff.h"
+#include "fminus/CirDoc.h"
 
 #include "Product.h"
 
@@ -485,16 +486,24 @@ namespace playground
                               + " lines (read_file shows it).\n";
                         continue;
                     }
-                    const std::string& before = it->second->text;
+                    // a netlist's drawing (its *@ lines, which Claude leaves alone) is no diff: its netlist's lines are
+                    const bool netlist = isCircuitFile(f.name);
+                    const std::string before = netlist ? cir::stripLayout(it->second->text) : it->second->text;
+                    const std::string now = netlist ? cir::stripLayout(f.text) : f.text;
+                    const bool redrawn = it->second->text != f.text;
                     was.erase(it);
-                    if (before == f.text)
+                    if (before == now)
+                    {
+                        if (redrawn)
+                            part += f.name + ": only its drawing (its *@ lines) changed.\n";
                         continue;
+                    }
                     if (budget <= 0)
                     {
                         part += f.name + " changed too: read_file shows it.\n";
                         continue;
                     }
-                    const textdiff::Unified u = textdiff::unified(before, f.text, 2, budget);
+                    const textdiff::Unified u = textdiff::unified(before, now, 2, budget);
                     part += f.name + " (+" + std::to_string(u.added) + " -" + std::to_string(u.removed) + "):\n" + u.text;
                     budget -= u.lines;
                     if (u.cut)
@@ -662,7 +671,7 @@ namespace playground
         const Meters& m1 = last.meters;
         const double rate = static_cast<double>(last.rate > 0.0f ? last.rate : r.rate);
         const uint32_t noteOns = m1.noteOns - m0.noteOns, steals = m1.steals - m0.steals, dropped = m1.dropped - m0.dropped;
-        const bool playsDraft = host_.chatRunning() == host_.chatDraft().files;
+        const bool playsDraft = cir::sameProgram(host_.chatRunning(), host_.chatDraft().files);   // *@ lines aside
 
         Bands outB = bandsOf(outS, rate, false), inB = bandsOf(inS, rate, false);
         double outCentroid = 0.0, inCentroid = 0.0;
