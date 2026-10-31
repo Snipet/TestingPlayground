@@ -172,7 +172,9 @@ namespace playground::ui
     class Panel final : public funkgui::Panel
     {
     public:
-        Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& port);
+        // `picture`: view_panel's headless Panel (Picture.cpp): it owns no probe and publishes no session pins, so what
+        // it lays out never becomes the user's.
+        Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& port, bool picture = false);
         ~Panel() override;
 
         Panel(const Panel&) = delete;
@@ -243,6 +245,12 @@ namespace playground::ui
         bool frozenShown() const noexcept { return frozenShown_; }
         funkgui::Point centreOfFrozen() const;
         void runNow();                                   // RUN
+        // The draft and the tabs. mergeDraft: a draft the editor has not merged (a host's load, Claude's write) into
+        // the tabs, each keeping what was typed in it since the editor last gave its files where that draft left the
+        // file as given (true when one came). pushFiles: the tabs to the processor, never over such a draft (which
+        // merges first: EditorPort::setDraftIf); false when another came meanwhile, for the next refresh to merge.
+        bool mergeDraft();
+        bool pushFiles();
         // The chat.
         funkgui::TextEditor& chatInput() noexcept;       // the message box
         const std::string& chatPlaceholder() const;      // what it says while empty
@@ -575,6 +583,7 @@ namespace playground::ui
         // What refresh() last saw.
         uint64_t seenStatus_ = 0, seenDraft_ = 0;
         uint64_t syncedFiles_ = 0;                       // the files' revision last given to the port
+        Draft given_;                                    // the port's draft as the editor last gave or merged it
         bool pushedFiles_ = false;                       // ... by a schematic gesture since the last refresh
         bool edited_ = false;                            // the files differ from the program's that plays
         Sources running_;                                // the files of the program that plays, as statuses say them

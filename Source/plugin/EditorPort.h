@@ -140,9 +140,9 @@ namespace playground
     inline constexpr double kPictureHoldSeconds = 10.0;
     void picturesIdle(double seconds = kPictureHoldSeconds);
     // A netlist's view as the session keeps it (editor/SchematicView.h): its Netlist or Schematic view, the drawing's
-    // zoom (1: 100 %) and the world point at its canvas's centre (grid units), and the nets its probes are pinned to
-    // (s6). Kept only for files whose view the user chose (a switch, a zoom, a pan), at most kMaxFileViews, each with at
-    // most kMaxFileProbes; never in the Draft, a project or an export, never sent to Claude.
+    // zoom (1: 100 %) and the world point at its canvas's centre (grid units), and the nets its probes are pinned to.
+    // Kept only for files whose view the user chose (a switch, a zoom, a pan), at most kMaxFileViews, each with at most
+    // kMaxFileProbes; never in the Draft, a project or an export, never sent to Claude.
     inline constexpr std::size_t kMaxFileViews = 12;
     inline constexpr std::size_t kMaxFileProbes = 4;
     struct FileView
@@ -151,7 +151,7 @@ namespace playground
         bool schematic = false;                  // its Schematic view (else its Netlist view)
         float zoom = 1.0f;                       // 0: none chosen yet (the drawing fits when the view opens)
         float x = 0.0f, y = 0.0f;                // the world point at the canvas's centre
-        std::vector<std::string> probes;         // pinned probes' node names (s6)
+        std::vector<std::string> probes;         // pinned probes' node names
 
         friend bool operator==(const FileView&, const FileView&) = default;
     };

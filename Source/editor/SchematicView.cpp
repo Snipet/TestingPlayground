@@ -31,6 +31,57 @@ namespace playground::ui
     {
         constexpr float kDragPx = 3.0f;                  // a press that moves this far is a drag
         constexpr float kPinHitPx = 6.0f, kWireHitPx = 4.0f;
+
+        // A resistance's, capacitance's or inductance's value spelled out, as FMinus reads it (" = 4,700 ohms",
+        // " = 1 milliohm" for 1M, " = 10 nanofarads"), "" for an {expr} or another kind: SPICE's suffixes, in words.
+        std::string spelledValue(const cir::Netlist& nl, const cir::Part& p)
+        {
+            if (p.element < 0 || p.element >= static_cast<int>(nl.elements.size()))
+                return {};
+            const cir::Element& e = nl.elements[static_cast<std::size_t>(p.element)];
+            const char* unit = nullptr;
+            const char* units = nullptr;
+            if (e.kind == cir::Kind::R || e.kind == cir::Kind::Pot || e.kind == cir::Kind::Rheostat)
+            {
+                unit = "ohm";
+                units = "ohms";
+            }
+            else if (e.kind == cir::Kind::C)
+            {
+                unit = "farad";
+                units = "farads";
+            }
+            else if (e.kind == cir::Kind::L)
+            {
+                unit = "henry";
+                units = "henries";
+            }
+            else
+                return {};
+            if (e.valueToken < 0 || e.valueToken >= static_cast<int>(e.tokens.size()))
+                return {};
+            const std::optional<double> v = lang::spiceNumber(e.tokens[static_cast<std::size_t>(e.valueToken)].text);
+            if (!v || !std::isfinite(*v) || *v <= 0.0 || *v >= 1.0e15)
+                return {};
+            static constexpr std::pair<double, const char*> kPrefixes[] = {
+                { 1.0, "" }, { 1.0e-3, "milli" }, { 1.0e-6, "micro" }, { 1.0e-9, "nano" }, { 1.0e-12, "pico" }, { 1.0e-15, "femto" }
+            };
+            std::size_t k = 0;
+            while (k + 1 < std::size(kPrefixes) && *v < kPrefixes[k].first * (1.0 - 1.0e-9))
+                ++k;
+            const double x = *v / kPrefixes[k].first;
+            char digits[48];
+            std::snprintf(digits, sizeof digits, "%.3f", x);
+            std::string t = digits;
+            while (t.back() == '0')
+                t.pop_back();
+            if (t.back() == '.')
+                t.pop_back();
+            const std::size_t point = std::min(t.find('.'), t.size());
+            for (std::size_t at = point; at > 3; at -= 3)
+                t.insert(at - 3, ",");                   // 4,700
+            return " = " + t + " " + std::string(kPrefixes[k].second) + (t == "1" ? unit : units);
+        }
         constexpr float kButtonW = 24.0f, kButtonGap = 2.0f;
         constexpr float kEaseTau = 0.08f;                // a fit's motion
         constexpr float kStepZoom = 1.25f;               // -, +, Cmd-=, Cmd--
@@ -82,7 +133,7 @@ namespace playground::ui
             return error;
         }
 
-        // Of apply()'s words for a gesture that changed the text, those the info strip says (§3.3: a refusal or a change
+        // Of apply()'s words for a gesture that changed the text, those the info strip says (a refusal or a change
         // of nets, never what the user just did): two nets merged (by a wire, or by a name another net has), a net
         // split by a cut, a pin moved to a net of its own.
         bool changesNets(const std::string& said)
@@ -165,6 +216,16 @@ namespace playground::ui
         ed_ = ed;
         file_ = file;
         st_ = state;
+        if (st_ != nullptr && !st_->seeded)
+        {
+            st_->seeded = true;                          // the user's places, as their view published them last
+            if (pinsSource_)
+                if (std::string lines = pinsSource_(file); !lines.empty())
+                {
+                    st_->pins = cir::readLayout(lines);
+                    st_->published = std::move(lines);
+                }
+        }
         valid_ = false;
         runs_.clear();
         flash_.clear();
@@ -467,8 +528,15 @@ namespace playground::ui
                 return h;
             }
         }
-        // a pin (the nearest within its radius)
-        float best = kPinHitPx;
+        // a pin (the nearest within its radius). Inside a body's box the radius is at most 0.75 of a grid unit (the same
+        // 6 px from 80 % up), so that at a low zoom, where a two-pin part's pins 2 units from its origin would cover it,
+        // a press on the body's middle moves it.
+        const funkgui::Point inWorld = v.world(p);
+        bool onBody = false;
+        for (const cir::Part& part : d_.parts)
+            onBody = onBody || (inWorld.x >= static_cast<float>(part.body.x0) && inWorld.x <= static_cast<float>(part.body.x1)
+                                && inWorld.y >= static_cast<float>(part.body.y0) && inWorld.y <= static_cast<float>(part.body.y1));
+        float best = onBody ? std::min(kPinHitPx, 0.75f * v.scale) : kPinHitPx;
         for (std::size_t i = 0; i < d_.parts.size(); ++i)
             for (std::size_t k = 0; k < d_.parts[i].pins.size(); ++k)
             {
@@ -1444,6 +1512,12 @@ namespace playground::ui
         return true;
     }
 
+    void SchematicView::endField()
+    {
+        if (field_.on && showing() && !commitField())
+            closeField();
+    }
+
     void SchematicView::closeField()
     {
         field_ = Field{};
@@ -1868,6 +1942,13 @@ namespace playground::ui
                 drag_ = Drag::none;
                 return;
             }
+            // the value label of the part it edits (a double-click's second press, the first having opened it): it stays
+            if (const int i = field_.part.empty() ? -1 : d_.part(field_.part);
+                i >= 0 && i < static_cast<int>(valueRects_.size()) && valueRects_[static_cast<std::size_t>(i)].contains(p))
+            {
+                drag_ = Drag::none;
+                return;
+            }
             if (!commitField())
                 closeField();
             ensure();
@@ -2001,7 +2082,7 @@ namespace playground::ui
             drag_ = Drag::carry;
             return;
         }
-        if (tool_ == Tool::ground)
+        if (tool_ == Tool::ground || tool_ == Tool::label)   // their drag does nothing (the pointer's table: "-")
         {
             drag_ = Drag::none;
             return;
@@ -2391,6 +2472,14 @@ namespace playground::ui
                 return;
             }
         const Hit h = hitAt({ e.x, e.y });
+        // a part's value label, as a click on it: its field (unless that is open already)
+        if (tool_ == Tool::select && !field_.on && (h.kind == Hit::Kind::none || h.kind == Hit::Kind::wire))
+            for (std::size_t i = 0; i < valueRects_.size() && i < d_.parts.size(); ++i)
+                if (valueRects_[i].contains({ e.x, e.y }))
+                {
+                    editPart(d_.parts[i].name, "value");
+                    return;
+                }
         switch (h.kind)
         {
             case Hit::Kind::badge:
@@ -2677,7 +2766,14 @@ namespace playground::ui
                 else if (chosen == 19)
                     togglePin(net);
                 else if (chosen == 11)
+                {
+                    // the wires alone: the runs selected with this one (else it), never parts selected beside them
+                    std::vector<Run> runs = runs_;
+                    if (std::none_of(runs.begin(), runs.end(), [&](const Run& x) { return x.net == r.net && x.edges == r.edges; }))
+                        runs = { r };
+                    setSelection({}, std::move(runs));
                     deleteSelection();
+                }
                 else if (chosen == 14)
                     editNetAt(at);
                 else if (chosen == 15 && n >= 0)
@@ -3006,7 +3102,7 @@ namespace playground::ui
                 const cir::Part& p = d_.parts[static_cast<std::size_t>(i)];
                 std::string s = p.name;
                 if (const std::string v = sch::valueText(nl_, p); !v.empty())
-                    s += "   " + v;
+                    s += "   " + v + spelledValue(nl_, p);
                 std::string nets;
                 for (const cir::PinAt& pin : p.pins)
                     nets += (nets.empty() ? "" : " - ") + (pin.net >= 0 ? d_.nets[static_cast<std::size_t>(pin.net)].name : std::string("?"));
@@ -3066,7 +3162,6 @@ namespace playground::ui
         if (hooks_.played && !hooks_.played())
             return "Not played: no program #includes " + file_;
         // the selected net's probe, when it reads nothing and no card says why (one shows for a net that resolves): why
-        // (the spec's §9.3)
         if (!slots_[0].reason.empty() && slots_[0].node < 0)
             return "Probe: " + slots_[0].reason;
         if (dials_.playedNote)
@@ -3078,7 +3173,13 @@ namespace playground::ui
         if (dials_.bindings)
             for (const lang::CircuitBinding& b : dials_.bindings())
                 if (b.file == file_ && b.own && !b.why.empty())
-                    return b.why;                        // "program.fm:38: Screamer's pots have no dials: the program calls its set()"
+                    return b.why;                        // "program.fm:38: Screamer's pots have no dials: the program calls its
+                                                         // set()"
+        // The drawing's own notes (a *@ line it could not read, parts placed again, nets drawn as name tags for want of
+        // a route): what the next write will make of the block.
+        if (!d_.notes.empty())
+            return "Note: " + d_.notes.front()
+                 + (d_.notes.size() > 1 ? " (+" + std::to_string(d_.notes.size() - 1) + " more)" : std::string());
         return {};
     }
 
@@ -3254,11 +3355,19 @@ namespace playground::ui
         int nets = 0;
         for (const cir::Net& n : d_.nets)
             nets += n.pins.empty() ? 0 : 1;
+        // the law inputs (.input NAME - kind=...: no node, no symbol) by name
+        std::string laws;
+        for (const cir::Terminal& t : nl_.laws)
+            laws += (laws.empty() ? "" : ", ") + t.name;
+        if (!laws.empty())
+            laws = (nl_.laws.size() == 1 ? "   law input " : "   law inputs ") + laws;
         char buf[128];
-        std::snprintf(buf, sizeof buf, "Schematic   %zu part%s   %d net%s   %zu problem%s   %d%%", d_.parts.size(),
-                      d_.parts.size() == 1 ? "" : "s", nets, nets == 1 ? "" : "s", marks_.size(), marks_.size() == 1 ? "" : "s",
+        std::snprintf(buf, sizeof buf, "Schematic   %zu part%s   %d net%s", d_.parts.size(), d_.parts.size() == 1 ? "" : "s", nets,
+                      nets == 1 ? "" : "s");
+        char tail[64];
+        std::snprintf(tail, sizeof tail, "   %zu problem%s   %d%%", marks_.size(), marks_.size() == 1 ? "" : "s",
                       static_cast<int>(std::lround(zoom() * 100.0f)));
-        return buf;
+        return buf + laws + tail;
     }
 
     bool SchematicView::specLine(char* out, std::size_t n, funkgui::Point pointer) const
@@ -4294,7 +4403,7 @@ namespace playground::ui
                 }
             return { p.trace.begin() + start, p.trace.begin() + start + kTraceSamples };
         }
-        // No more than a window is of the set (a large block's newest 1,024, §9.3, or a set just armed): triggered on
+        // No more than a window is of the set (a large block's newest 1,024, or a set just armed): triggered on
         // the first rising crossing inside them that leaves half a window, else all of them.
         const int at = sch::risingCrossing(p.trace.data(), n - valid + 1, n - kTraceSamples / 2 + 1, mean);
         return { p.trace.begin() + (at >= 0 ? at : n - valid), p.trace.end() };

@@ -83,8 +83,8 @@ namespace playground
         const std::vector<std::string> pages = port.guiPages();
         const std::vector<FileView> fileViews = port.fileViews();
         {
-            ui::Panel panel(ports, port);
-            panel.setOwnsProbes(false);              // a picture owns no probe: the user's stay as they are
+            ui::Panel panel(ports, port, true);      // a picture's: no probe and no session pin of its own, the user's
+                                                     // stay as they are
             waitForMeters(port);
             funkgui::HeadlessHost host(panel, funkgui::UiPreferences::get().theme(), kDpi);
             host.resize(std::max(width > 0 ? width : ui::kDefaultWidth, ui::kMinWidth),

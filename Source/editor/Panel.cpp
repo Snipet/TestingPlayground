@@ -926,8 +926,8 @@ namespace playground::ui
             }
             if (tabs_.empty())
                 tabs_.push_back(makeTab(kProgramName, ""));
-            for (auto v = views_.begin(); v != views_.end();)   // a file gone takes its view with it
-                v = find(v->first) < 0 ? views_.erase(v) : std::next(v);
+            for (auto v = views_.begin(); v != views_.end();)   // a file gone takes its view (and its pins) with it
+                v = find(v->first) < 0 ? forgetView(v) : std::next(v);
             active_ = std::clamp(d.active, 0, count() - 1);
             show();
             structure_ += kStructureStep;
@@ -981,6 +981,7 @@ namespace playground::ui
         {
             if (i < 0 || i >= count() || (i == active_ && !irShown()))
                 return;
+            schematic_.endField();                       // a field open in the drawing written first, as a press out
             editor().setFocused(false);
             ir_.shown = false;
             active_ = i;
@@ -1002,6 +1003,7 @@ namespace playground::ui
             if (irShown() && ir_.view == view)
                 return;
             endRename();
+            schematic_.endField();
             editor().setFocused(false);
             ir_.open = true;
             ir_.shown = true;
@@ -1125,7 +1127,8 @@ namespace playground::ui
                 --renaming_;
             const bool focused = editor().focused();
             editor().setFocused(false);
-            views_.erase(name(i));
+            if (const auto v = views_.find(name(i)); v != views_.end())
+                forgetView(v);
             tabs_.erase(tabs_.begin() + i);
             if (active_ >= i)
                 active_ = std::max(0, active_ - 1);
@@ -1338,11 +1341,9 @@ namespace playground::ui
                     c.rrect(r.x, r.y, r.w, r.h, 8.0f, hover ? p.hover : p.composer.withAlpha(0.0f), 1.0f, p.cardEdge);
                 if (irNarrow())
                 {
-                    // beside a netlist's pills: its chip alone, its close box under the pointer
-                    if (hover)
-                        drawCross(c, irCloseRect(), 3.0f, irCloseRect().contains(pointer_) ? p.text : p.faint);
-                    else
-                        chat::drawIcon(c, chat::Icon::chip, r.centreX(), r.centreY(), 11.0f, p.dim);
+                    // beside a netlist's pills (only while the IR is not shown): its chip alone, a click anywhere on
+                    // it opening it; it closes once shown, its tab wide again
+                    chat::drawIcon(c, chat::Icon::chip, r.centreX(), r.centreY(), 11.0f, hover ? p.text : p.dim);
                 }
                 else
                 {
@@ -1437,7 +1438,7 @@ namespace playground::ui
             if (ir_.open && irTabRect().contains(p))
             {
                 endRename();
-                if (irCloseRect().contains(p))
+                if (irCloseRect().contains(p) && !irNarrow())   // narrow, it has no close box: it opens
                     closeIr();
                 else
                     openIr(ir_.view);
@@ -1765,6 +1766,7 @@ namespace playground::ui
             funkgui::TextEditor& ed = editorOf(active_);
             if (f.schematic == on)
                 return;
+            schematic_.endField();                       // the Netlist view: a field open is written first
             if (on)
             {
                 f.schematic = true;
@@ -1901,6 +1903,9 @@ namespace playground::ui
             pins_ = pins;
             schematic_.setPinsHook(std::move(pins));
         }
+        void setPinsSource(std::function<std::string(const std::string&)> source) { schematic_.setPinsSource(std::move(source)); }
+        // The drawing's open field written (RUN plays what was typed in it).
+        void endField() { schematic_.endField(); }
         // The Panel's: a schematic gesture's files to the processor at once (SchematicView::setSyncHook).
         void setSyncHook(std::function<bool()> sync) { schematic_.setSyncHook(std::move(sync)); }
         // The Panel's: the probes' table, program, meters, rings and set (SchematicView::setProbeHooks).
@@ -1963,6 +1968,14 @@ namespace playground::ui
             }
             if (changed_)
                 changed_();
+        }
+
+        // A file gone: its view, and the session pins it published (a new file of its name starts afresh).
+        std::map<std::string, SchematicFile>::iterator forgetView(std::map<std::string, SchematicFile>::iterator v)
+        {
+            if (!v->second.published.empty() && pins_)
+                pins_(v->first, {});
+            return views_.erase(v);
         }
 
         // A file renamed keeps its view; renamed away from .cir, it loses it.
@@ -2147,7 +2160,10 @@ namespace playground::ui
         void setHidden(bool hidden)
         {
             if (hidden && !hidden_)
+            {
+                schematic_.endField();                   // a field open is written, as a press outside it would
                 schematic_.leave();
+            }
             hidden_ = hidden;
         }
         bool shown() const override { return !hidden_; }
@@ -2277,10 +2293,11 @@ namespace playground::ui
         public:
             DialsBarItem(uint32_t id, std::function<void()> toggle) : id_(id), toggle_(std::move(toggle)) {}
 
-            void place(funkgui::Rect r, int dials, bool open, bool shown)
+            void place(funkgui::Rect r, int dials, int hidden, bool open, bool shown)
             {
                 bounds_ = r;
                 dials_ = dials;
+                hidden_ = hidden;
                 open_ = open;
                 shown_ = shown;
             }
@@ -2296,8 +2313,11 @@ namespace playground::ui
                 const funkgui::Canvas::Scope s(c, kSectionTag, false);
                 const chat::Palette p = chat::palette(th);
                 c.rrect(bounds_.x, bounds_.y, bounds_.w, bounds_.h, 6.0f, p.raised, 1.0f, p.cardEdge);
-                char text[32];
-                std::snprintf(text, sizeof text, "%d DIAL%s", dials_, dials_ == 1 ? "" : "S");
+                char text[64];
+                if (open_ && hidden_ > 0)                // more than the window has room for: the PANEL view has all
+                    std::snprintf(text, sizeof text, "%d OF %d DIALS SHOWN: THE PANEL VIEW HAS ALL", dials_ - hidden_, dials_);
+                else
+                    std::snprintf(text, sizeof text, "%d DIAL%s", dials_, dials_ == 1 ? "" : "S");
                 c.text(text, bounds_.x + 10.0f, c.capCentreTop(bounds_.centreY(), funkgui::type::kMicro), funkgui::type::kMicro, th.ink52);
                 const funkgui::Rect b = button();
                 const bool hot = hovered_ && bounds_.contains(pointer_);
@@ -2327,7 +2347,7 @@ namespace playground::ui
                 it.role = funkgui::A11yRole::button;
                 it.bounds = bounds_;
                 it.title = open_ ? "Hide the dials" : "Show the dials";
-                it.value = std::to_string(dials_) + " dials";
+                it.value = std::to_string(dials_) + " dials" + (open_ && hidden_ > 0 ? ", " + std::to_string(dials_ - hidden_) + " shown" : "");
                 out.push_back(std::move(it));
             }
             bool a11yAction(uint32_t id, funkgui::A11yAction, double, funkgui::GestureController&) override
@@ -2350,7 +2370,7 @@ namespace playground::ui
             uint32_t id_;
             std::function<void()> toggle_;
             funkgui::Rect bounds_;
-            int dials_ = 0;
+            int dials_ = 0, hidden_ = 0;                 // the program's, and those over the editor's floor
             bool open_ = false, shown_ = false, hovered_ = false;
             funkgui::Point pointer_{ -1.0e4f, -1.0e4f };
         };
@@ -2427,7 +2447,7 @@ namespace playground::ui
     // ---- construction ---------------------------------------------------------------------------------------------------
     // The items are made with no place: layout() gives them their places for the panel's size. Their order is the Tab
     // order.
-    Panel::Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& port) : port_(port)
+    Panel::Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& port, bool picture) : port_(port), ownsProbes_(!picture)
     {
         port_.addMeterReader();                      // the displays read the meters and the scopes while it lives
         seenSettingsAsk_ = port_.settingsAsked();        // the app's requests from now on open SETTINGS
@@ -2723,16 +2743,21 @@ namespace playground::ui
                 layout();
             dirty_ = true;
         });
-        // The schematic's session pins, published as its view reconciles (Claude's edit_circuit and pictures draw them).
-        files().setPinsHook([this](const std::string& file, const std::string& lines) { port_.setSchematicPins(file, lines); });
+        // The schematic's session pins, published as its view reconciles (Claude's edit_circuit and pictures draw them),
+        // never by a picture's Panel, and taken from the port when a file's view first shows (the user's places).
+        if (!picture)
+            files().setPinsHook([this](const std::string& file, const std::string& lines) { port_.setSchematicPins(file, lines); });
+        files().setPinsSource([this](const std::string& file) { return port_.schematicPins(file); });
         // A schematic gesture's files, given to the processor at once unless a draft came that refresh has not merged
         // (Claude's edit_circuit writes only over the text it read: it then sees the gesture and draws on it again).
         files().setSyncHook([this] {
             if (files().revision() == syncedFiles_)
                 return true;
-            if (!port_.setDraftIf(files().draft(), seenDraft_))
+            Draft d = files().draft();
+            if (!port_.setDraftIf(d, seenDraft_))
                 return false;
             syncedFiles_ = files().revision();
+            given_ = std::move(d);
             pushedFiles_ = true;
             return true;
         });
@@ -2770,9 +2795,10 @@ namespace playground::ui
             };
             files().setProbeHooks(std::move(h));
         }
-        files().load(port_.draft());
-        files().setFileViews(port_.fileViews());
         seenDraft_ = port_.draftRevision();
+        given_ = port_.draft();
+        files().load(given_);
+        files().setFileViews(port_.fileViews());
         syncedFiles_ = files().revision();
         running_ = port_.running();
         refresh(0.0);
@@ -2847,7 +2873,8 @@ namespace playground::ui
         // tall as the panel can give them while the editor keeps 120 px. A netlist's Schematic view keeps more: its
         // editor at least E_min = max(312, 55 % of the column's height), the problems list hidden (the drawing's badges
         // and the info strip's count carry them), and the dials, laid out in what is left, folded into a 24 px bar when
-        // they do not fit ("32 DIALS   SHOW": shown small then, the editor keeping 192 px).
+        // they do not fit ("32 DIALS   SHOW": shown small then, the editor keeping 192 px, or less, down to its 80 px
+        // floor, for rows that need it: every dial shows unless even that is too little, which the bar then says).
         const float problemsH = kProblemRowH * static_cast<float>(kProblemRows);
         const float inBottom = bottom - kInset;          // the program's card's inside
         const bool schematic = !panelView_ && files().schematicShown();
@@ -2855,7 +2882,7 @@ namespace playground::ui
         const float columnH = inBottom - kEditorY;
         const float eMin = std::max(312.0f, std::round(0.55f * columnH));
         const float roomForDials = schematic ? columnH - eMin - 8.0f : inBottom - kEditorY - 120.0f - 8.0f - problemsH - 16.0f;
-        constexpr float kDialsBarH = 24.0f, kSchematicKeeps = 192.0f;
+        constexpr float kDialsBarH = 24.0f, kSchematicKeeps = 192.0f, kEditorFloor = 80.0f;
         DialMeasure measure;
         measure.label = [this](int slot, bool small) {
             const std::string& label = panelSpec_.labels[static_cast<std::size_t>(slot)];
@@ -2916,9 +2943,11 @@ namespace playground::ui
                 const float barTop = inBottom - kDialsBarH;
                 if (dialsOpen_)
                 {
+                    // shown small for the room the editor's 192 px leave; rows past it take the editor's room down to
+                    // its 80 px floor, and only rows past that are hidden (the bar says how many: the PANEL view has all)
                     dials_ = layoutDials(panelSpec_, controls_, measure, inX, inW, barTop - 8.0f,
                                          columnH - kSchematicKeeps - 8.0f - kDialsBarH - 8.0f, kTightGap);
-                    hideAbove = kEditorY + kSchematicKeeps + 8.0f;
+                    hideAbove = kEditorY + kEditorFloor + 8.0f;
                     panelTop = std::max(dials_.top, hideAbove);
                 }
                 else
@@ -2944,12 +2973,16 @@ namespace playground::ui
         const float problemsY = panelTop - 16.0f - problemsH;
         files().setHidden(panelView_);
         static_cast<ProblemsItem&>(*items_[static_cast<std::size_t>(problemsItem_)]).setHidden(panelView_ || schematic);
-        const float editorH = schematic ? std::max(80.0f, panelTop - 8.0f - kEditorY) : std::max(80.0f, problemsY - 8.0f - kEditorY);
+        const float editorH = schematic ? std::max(kEditorFloor, panelTop - 8.0f - kEditorY) : std::max(kEditorFloor, problemsY - 8.0f - kEditorY);
         files().setGeometry({ inX, kTabsY, inW, kTabH }, { inX, kEditorY, inW, editorH });
         static_cast<ProblemsItem&>(*items_[static_cast<std::size_t>(problemsItem_)])
             .setBounds({ inX, problemsY, inW, problemsH });
+        int hiddenDials = 0;                             // shown from the fold, but over the editor's floor
+        for (int c = 0; c < kMaxControls; ++c)
+            hiddenDials += dialsBar_ && !dialsFolded_ && controls_[static_cast<std::size_t>(c)].used
+                                   && dials_.dials[static_cast<std::size_t>(c)].top < hideAbove ? 1 : 0;
         static_cast<DialsBarItem&>(*items_[static_cast<std::size_t>(dialsBarItem_)])
-            .place({ inX, inBottom - kDialsBarH, inW, kDialsBarH }, used, dialsOpen_, dialsBar_);
+            .place({ inX, inBottom - kDialsBarH, inW, kDialsBarH }, used, hiddenDials, dialsOpen_, dialsBar_);
         for (int c = 0; c < kMaxControls; ++c)
             if (const int i = itemOfSlot_[static_cast<std::size_t>(c)]; i >= 0)
             {
@@ -3554,7 +3587,7 @@ namespace playground::ui
             dirty_ = true;
         };
         files().endRename();
-        port_.setDraft(files().draft());                 // what "edited" means is what the tabs show
+        (void)pushFiles();                               // what "edited" means is what the tabs show
         if (!port_.project().edited || host_ == nullptr)
         {
             load();
@@ -3587,7 +3620,7 @@ namespace playground::ui
     void Panel::saveVersion()
     {
         files().endRename();
-        port_.setDraft(files().draft());                 // what is saved is what the tabs show
+        (void)pushFiles();                               // what is saved is what the tabs show
         const ProjectState st = port_.project();
         if (st.name.empty())
         {
@@ -3842,14 +3875,66 @@ namespace playground::ui
         dirty_ = true;
     }
 
+    bool Panel::mergeDraft()
+    {
+        const uint64_t r = port_.draftRevision();        // read first: a write after it is merged next time
+        if (r == seenDraft_)
+            return false;
+        Draft d = port_.draft();
+        const Draft remote = d;
+        bool kept = false;
+        if (files().revision() != syncedFiles_)          // typed since the editor last gave its files
+        {
+            const Draft now = files().draft();
+            const auto named = [](const Draft& x, const std::string& name) -> const SourceFile* {
+                for (const SourceFile& f : x.files)
+                    if (f.name == name)
+                        return &f;
+                return nullptr;
+            };
+            for (SourceFile& f : d.files)
+                if (const SourceFile *g = named(given_, f.name), *t = named(now, f.name);
+                    g != nullptr && t != nullptr && f.text == g->text && t->text != g->text)
+                {
+                    f.text = t->text;                    // the draft left it: the typing stays, and goes to the port
+                    kept = true;
+                }
+        }
+        seenDraft_ = r;
+        files().merge(d);
+        given_ = remote;
+        dirty_ = true;
+        // what was kept is the port's still to have: no revision of the tabs' is ~0, so the next push gives it
+        syncedFiles_ = kept ? ~uint64_t{ 0 } : files().revision();
+        return true;
+    }
+
+    bool Panel::pushFiles()
+    {
+        for (int tries = 0; tries < 2; ++tries)
+        {
+            (void)mergeDraft();
+            if (files().revision() == syncedFiles_)
+                return true;
+            Draft d = files().draft();
+            if (port_.setDraftIf(d, seenDraft_))
+            {
+                syncedFiles_ = files().revision();
+                given_ = std::move(d);
+                return true;
+            }
+        }
+        return false;
+    }
+
     void Panel::runNow()
     {
         files().endRename();
+        files().endField();
         if (files().assist().formatOnRun())
             files().assist().formatAll();
+        (void)pushFiles();
         const Draft draft = files().draft();
-        port_.setDraft(draft);
-        syncedFiles_ = files().revision();
         port_.run(draft.files);
         files().assist().cancelCheck();                  // RUN's messages will say more of these files
         compiling_ = true;
@@ -3860,19 +3945,16 @@ namespace playground::ui
     {
         // The draft, when a host loaded a session while the editor was open, or Claude changed the files.
         bool textChanged = std::exchange(pushedFiles_, false);   // a gesture's files, given at once
-        if (const uint64_t d = port_.draftRevision(); d != seenDraft_)
+        if (mergeDraft())
         {
-            seenDraft_ = d;
-            files().merge(port_.draft());
-            syncedFiles_ = files().revision();
             textChanged = true;
             dirty_ = true;
         }
-        // The files as typed, and the tab shown, to the processor (it outlives this window).
+        // The files as typed, and the tab shown, to the processor (it outlives this window), never over a write that
+        // came since the merge above (Claude's, on its worker): that one merges first.
         if (files().revision() != syncedFiles_)
         {
-            port_.setDraft(files().draft());
-            syncedFiles_ = files().revision();
+            (void)pushFiles();
             textChanged = true;
         }
         // The editor's check while typing (CodeAssist.h): the files once they have rested, its messages when it is done.
@@ -4561,8 +4643,9 @@ namespace playground::ui
             // find bar closed, no problems until it has compiled, the interface from its top at its first pages.
             closeIrView();
             files().assist().closeFind();
-            files().merge(port_.draft(), true);
             seenDraft_ = port_.draftRevision();
+            given_ = port_.draft();
+            files().merge(given_, true);
             syncedFiles_ = files().revision();
             problems_.clear();
             files().assist().setRunDiagnostics({}, {});
@@ -4576,7 +4659,7 @@ namespace playground::ui
             dirty_ = true;
         };
         files().endRename();
-        port_.setDraft(files().draft());                 // what "changed" means is what the tabs show
+        (void)pushFiles();                               // what "changed" means is what the tabs show
         if (!port_.project().changed || host_ == nullptr)
         {
             load();
@@ -4664,7 +4747,7 @@ namespace playground::ui
             }
         }
         files().endRename();
-        port_.setDraft(files().draft());                 // what Save saves is what the tabs show
+        (void)pushFiles();                               // what Save saves is what the tabs show
         projects_.open(name, preset);
         focusBeforeProjects_ = focus_;
         setFocus(-1);

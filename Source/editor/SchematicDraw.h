@@ -4,7 +4,7 @@
 // ground's three bars and a rail's bar at a pin (never a wire), name tags, names and values (always upright), the
 // problems' marks in the tab editor's own inks with shapes of their own (an error: the part's outline and a filled
 // badge; a warning: a filled badge; a note: a hollow ring), and the structural marks (an unconnected pin, posts that
-// touch without connecting, a hand edit's overlap). SchematicView.h lays out and drives it; Picture.cpp (s4) draws it
+// touch without connecting, a hand edit's overlap). SchematicView.h lays out and drives it; Picture.cpp draws it
 // with no Panel.
 //
 // The transform. FunkGui has no transform stack: a View {scale, origin} maps a world point (grid units, x right, y
@@ -44,7 +44,7 @@ namespace playground::ui::sch
 {
     // The schematic's primitive tags (after CodeAssist's +20 and +21): the canvas (its ground, grid, toolbar, info
     // strip, hint and ghost), the parts (symbols, names, values, flags), the wires (and junctions), the problems'
-    // badges and marks, and the probes (s6).
+    // badges and marks, and the probes.
     inline constexpr funkgui::Tag kSchematicTag = funkgui::tags::firstProduct + 22;
     inline constexpr funkgui::Tag kPartTag = funkgui::tags::firstProduct + 23;
     inline constexpr funkgui::Tag kWireTag = funkgui::tags::firstProduct + 24;
@@ -203,7 +203,7 @@ namespace playground::ui::sch
     funkgui::Rect valueRect(const LabelSpot& s, const std::string& name, const std::string& value, float px);
 
     // ---- the problems on the drawing (the view's marks, a picture's) -------------------------------------------------
-    // A message on the file, mapped to what it marks (the spec's table): an element's logical line marks its part (and
+    // A message on the file, mapped to what it marks: an element's logical line marks its part (and
     // the pin whose node token the column falls on), a .pot line every part whose {expr} names it, a .model line every
     // diode of it, an .input or .output line its terminal; any other line marks nothing (the count only).
     struct Mark

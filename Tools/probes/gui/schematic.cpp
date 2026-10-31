@@ -32,17 +32,20 @@
 //   UNDO      Cmd-Z and Cmd-Shift-Z in either view undo and redo the other's steps; so do the toolbar's Undo and Redo
 //   OVERTAKEN a drag whose base a merge (Claude's write) moves is cancelled and changes nothing; that write moving a
 //             part's line flashes the part; a gesture made after Claude's write and before a frame merged it is undone
-//             (the write wins, the strip says to do it again)
-//   POINTER   a row per cell of the pointer's table: idle on a body, a pin, a wire, nothing; Alt (a click on a wire pins
+//             (the write wins, the strip says to do it again); text typed in one file and Claude's write of another in
+//             one frame, before the editor gave its files: both kept, the typing given to the processor
+//   POINTER   a row per cell of the pointer's table: idle on a body (at 30 % too, where its pins would cover it), a
+//             pin, a wire, nothing; Alt (a click on a wire pins
 //             its net to a probe, again unpins it; a drag pans); carrying a part (a
 //             popup click turns the ghost, a popup drag pans and carries on, placing ends only on Escape, Select or
-//             another tool); the Ground tool; a badge
+//             another tool); the Ground tool; the Label tool's drag nothing; a badge
 //   KEYS      edge auto-pan's units in a fixed number of ticks; the PANEL view ending a part carried, the hidden
 //             drawing waiting; Escape's order and leaving the canvas; Tab in line order; Cmd-Shift-D in either view,
 //             and nothing while the IR tab shows; the parts' keys away from the canvas place at once
 //   ROOM      the canvas at least 240 px tall at 1000 x 600 with 32 dials (folded) and 9 (shown), at 1360 x 760 with
-//             the explorer open and 32 shown; the fold's bar shows and hides them; a wire selected and not: the canvas
-//             the same
+//             the explorer open and 32 shown; the fold's bar shows and hides them (every one shown, the editor taking
+//             what is left down to its 80 px floor); a wire selected and not: the canvas the same; the IR tab narrowed
+//             beside the pills opens on a click anywhere (no close box)
 //   MARKS     the badges', the outline's and the ring's colours are the tab editor's error, warning and note inks (both
 //             themes); a layout-only gesture leaves the status RUNNING, asks for no check and keeps a planted error's
 //             badge and squiggle; a problems row's click (a netlist shown in its Schematic view) selects and centres
@@ -61,8 +64,12 @@
 //             program, the library tabs it needs), runs it, the view staying on the netlist, and offers Undo, which
 //             gives program.fm's text back in one step; a probe's reason the strip draws (a node typed since RUN)
 //             hides the Undo with the note it takes back, and a wire that resolves leaves both
+//   NOTES     the drawing's notes in the info strip (a *@ part line it cannot read); a part's value spelled out there
+//             (2.2k = 2,200 ohms, 10n = 10 nanofarads); a netlist's law inputs in the status words (otalp.cir's iabc)
 //   PERSIST   nothing kept by opening; a Panel opened again keeps each file's view, zoom and pan (the session's views);
-//             a view switched but never zoomed nor panned keeps no zoom, and fits again when opened again
+//             a view switched but never zoomed nor panned keeps no zoom, and fits again when opened again; a text-only
+//             netlist's session pins, after Claude added a part by text: a view_panel picture leaves them as they were,
+//             and an editor opened again draws every part where the user's did
 //   PROBES    the live probes (SchematicView.h's "Live probes", Engine.h's "Probes") on Play this circuit's program
 //             for diodetone.cir: a wire selected while what plays lacks the netlist says "not playing" (drawn in the
 //             strip, spoken) and moves neither the canvas nor the frame rate; after RUN a node typed since says it is
@@ -575,6 +582,67 @@ PROBE(gui, schematic)
         P.eq("persist.reopened_fits", r.panel->schematicShown() && r.view().zoom() == zoom && r.view().centre().x == centre.x
                                           && r.view().centre().y == centre.y ? 1 : 0, 1);
     }
+    // ---- PERSIST, session pins: a text-only netlist's places (its parts with no line) after Claude added a part by text
+    // survive a view_panel picture (whose Panel publishes none) and an editor opened again (which takes the port's)
+    {
+        const std::string text = cir::stripLayout(libraryText("diodetone.cir"));
+        Rig r(draftWith(std::string(pg::kExamples[0].source), { { "t.cir", text } }, 1));
+        const funkgui::Point pill = r.panel->centreOfViewPill(true);
+        r.host->click(pill.x, pill.y);
+        r.host->settle();
+        std::string more = text;
+        more.insert(more.find(".end"), "C9 a 0 10n\n");
+        const pg::ChatAgent::McpResult wrote = r.processor.chatAgent().mcpCall(
+            "write_file", pg::claude::object({ { "name", "t.cir" }, { "content", juce::String(more) } }));
+        r.host->tick(2);
+        const auto placesOf = [](const cir::Drawing& d) {
+            std::string s;
+            for (const cir::Part& p : d.parts)
+                s += p.name + "@" + std::to_string(p.origin.x) + "," + std::to_string(p.origin.y) + cir::orientName(p.orient) + " ";
+            return s;
+        };
+        const std::string seen = placesOf(r.view().drawing()), pins = r.processor.editorPort().schematicPins("t.cir");
+        const std::string afresh = placesOf(cir::reconcile(more));
+        std::printf("session pins: the user's view %s\n  laid out afresh %s\n", seen.c_str(), afresh.c_str());
+        const pg::PanelPicture pic = pg::picturePanel(r.processor.ports(), r.processor.editorPort(), 0, 0, true, "");
+        P.eq("persist.picture_keeps_pins", !wrote.isError && has(r.ed().text(), "C9 a 0 10n") && !pins.empty() && !pic.png.empty()
+                                               && r.processor.editorPort().schematicPins("t.cir") == pins ? 1 : 0, 1);
+        r.close();
+        r.open();
+        P.eq("persist.reopened_pins", r.panel->schematicShown() && placesOf(r.view().drawing()) == seen
+                                          && r.processor.editorPort().schematicPins("t.cir") == pins ? 1 : 0, 1);
+    }
+
+    // ---- NOTES: the drawing's notes in the info strip (a *@ line it cannot read), the law inputs in the status words, a
+    // part's value spelled out in the strip
+    {
+        std::string bad = cir::written(libraryText("diodetone.cir"));   // its drawing written, then a line spoilt
+        const std::string from = "*@ part R1 6,0";
+        const bool found = bad.find(from) != std::string::npos;
+        if (found)
+            bad.replace(bad.find(from), from.size(), "*@ part R1 6,x");
+        Rig r(draftWith(dialsProgram("d.cir", 1), { { "d.cir", bad }, { "otalp.cir", libraryText("otalp.cir") } }, 1));
+        r.panel->setSchematic(true);
+        r.host->settle();
+        SV& v = r.view();
+        std::printf("notes: the strip \"%s\"\n", v.stripRight().c_str());
+        P.eq("notes.strip", found && v.stripRight().rfind("Note: ", 0) == 0 && has(v.stripRight(), "'6,x' is not a position") ? 1 : 0, 1);
+        v.selectPart("R1", false);
+        r.host->tick(1);
+        v.selectPart("C1", false);
+        r.host->tick(1);
+        const std::string c1 = v.stripLeft();
+        v.selectPart("R1", false);
+        r.host->tick(1);
+        std::printf("values spelled: \"%s\", \"%s\"\n", v.stripLeft().c_str(), c1.c_str());
+        P.eq("notes.value_spelled", has(v.stripLeft(), "2.2k = 2,200 ohms") && has(c1, "10n = 10 nanofarads") ? 1 : 0, 1);
+        const funkgui::Point tab = r.panel->centreOfTab(2);
+        r.host->click(tab.x, tab.y);
+        r.panel->setSchematic(true);
+        r.host->settle();
+        std::printf("otalp.cir: %s\n", v.statusWords().c_str());
+        P.eq("notes.law_inputs", has(v.statusWords(), "   law input iabc   ") ? 1 : 0, 1);
+    }
 
     // ---- GESTURES -------------------------------------------------------------------------------------------------------
     {
@@ -628,7 +696,7 @@ PROBE(gui, schematic)
                 for (char& ch : word)
                     ch = std::isalnum(static_cast<unsigned char>(ch)) != 0 ? static_cast<char>(std::tolower(static_cast<unsigned char>(ch))) : '_';
                 const std::string key = "gestures.place_" + word;
-                if (k == cir::Kind::R)                // what the user just did is not said (§3.3)
+                if (k == cir::Kind::R)                // what the user just did is not said
                     P.eq("gestures.place_says_nothing", v.notice().empty() ? 1 : 0, 1);
                 oneStep(key, planted, applied(planted, { op }).text);
                 P.eq(key + ".carries_on", v.tool() == SV::Tool::place && v.carried() == k ? 1 : 0, 1);
@@ -964,6 +1032,20 @@ PROBE(gui, schematic)
                                                       && r.processor.editorPort().draft().files[1].text == moved2
                                                       && has(v.notice(), "Claude's edit came first") ? 1 : 0, 1);
         }
+        // TYPING over a write: text typed in g.cir and Claude's write of program.fm in one frame, before the editor gave
+        // its files: both stay (the merge keeps the typing where the write left the file, then gives it to the port)
+        {
+            ed.setCaret({ 0, 0 });
+            ed.insert("* typed before the frame\n");
+            const std::string typed = ed.text();
+            const std::string program = r.processor.editorPort().draft().files[0].text + "// Claude's write\n";
+            const pg::ChatAgent::McpResult w3 = r.processor.chatAgent().mcpCall(
+                "write_file", pg::claude::object({ { "name", "program.fm" }, { "content", juce::String(program) } }));
+            host.tick(1);
+            const pg::Draft after = r.processor.editorPort().draft();
+            P.eq("overtaken.typing_kept_over_write", !w3.isError && ed.text() == typed && after.files.size() == 2 && after.files[1].text == typed
+                                                         && has(after.files[0].text, "// Claude's write\n") ? 1 : 0, 1);
+        }
     }
 
     // ---- POINTER, KEYS --------------------------------------------------------------------------------------------------
@@ -1015,6 +1097,23 @@ PROBE(gui, schematic)
         P.eq("pointer.body_popup_menu", hasLabel(menuLabels(host), "Rotate") && hasLabel(menuLabels(host), "Show in netlist") ? 1 : 0, 1);
         host.cancelMenu();
         P.eq("pointer.body_popup_drag_pans", popupDrag(r2) ? 1 : 0, 1);
+        // at 30 %, where R2's pins (2 units from its centre, 6 px) would cover its body: a drag on its middle moves it
+        {
+            const funkgui::Rect c = v.canvasRect();
+            v.zoomTo(0.3f, { c.centreX(), c.centreY() });
+            host.tick(1);
+            const funkgui::Point small = partAt(v, "R2");
+            const std::string was = ed.text();
+            host.press(small.x, small.y);
+            host.moveTo(small.x, small.y - 4.0f * sch::kUnitPx * v.zoom(), 6);
+            host.release();
+            host.tick(1);
+            const std::string after = ed.text();
+            P.eq("pointer.body_drag_low_zoom_moves", after != was && cir::sameNetlist(after, was) ? 1 : 0, 1);
+            if (after != was)
+                ed.undo();
+            host.tick(1);
+        }
         frame(v, host);
         // idle, a pin
         const funkgui::Point pin = pinAt(v, "R2", "2");
@@ -1147,6 +1246,27 @@ PROBE(gui, schematic)
             P.eq("pointer.ground_popup_drag_pans", popupDrag(empty) && v.tool() == SV::Tool::ground ? 1 : 0, 1);
             host.click(empty.x, empty.y, popupMods());
             P.eq("pointer.ground_popup_click_ends", v.tool() == SV::Tool::select && host.pendingMenu() == nullptr ? 1 : 0, 1);
+            frame(v, host);
+        }
+        // the Label tool: a drag from a pin, or on a body, does nothing (no wire, no move, no marquee)
+        {
+            const funkgui::Point from = pinAt(v, "R2", "2"), body = partAt(v, "R2");
+            const std::string text = ed.text();
+            host.move(empty.x, empty.y);
+            host.keys("n");
+            host.press(from.x, from.y);
+            host.moveTo(from.x + 3.0f * s, from.y + 2.0f * s, 6);
+            const bool wiring = v.gestureOn();
+            host.release();
+            host.press(body.x, body.y);
+            host.moveTo(body.x, body.y - 4.0f * s, 6);
+            const bool moving = v.gestureOn();
+            host.release();
+            host.tick(1);
+            P.eq("pointer.label_drag_nothing", v.tool() == SV::Tool::label && !wiring && !moving && ed.text() == text && !v.editing() ? 1 : 0, 1);
+            host.keys("escape");
+            host.keys("escape");
+            host.tick(1);
             frame(v, host);
         }
 
@@ -1287,6 +1407,22 @@ PROBE(gui, schematic)
             P.eq("menus.wire_delete", choose(host, "Delete wire") && ed.text() != text && !cir::sameNetlist(ed.text(), text) ? 1 : 0, 1);
             ed.undo();
             host.tick(1);
+            // a part selected beside the net's runs: Delete wire takes the wires alone
+            {
+                host.click(w.x, w.y, popupMods());
+                const bool net = choose(host, "Select net");
+                funkgui::Mods add;
+                add.shift = true;
+                const funkgui::Point rp = partAt(v, "R2");
+                host.click(rp.x, rp.y, add);
+                const bool both = v.selection() == std::vector<std::string>{ "R2" } && v.selectedRuns() >= 1;
+                host.click(w.x, w.y, popupMods());
+                const bool chose = choose(host, "Delete wire");
+                P.eq("menus.wire_delete_only_wires", net && both && chose && partOf(v.drawing(), "R2") != nullptr && ed.text() != text
+                                                         && has(ed.text(), "\nR2 ") ? 1 : 0, 1);
+                ed.undo();
+                host.tick(1);
+            }
             host.click(w.x, w.y, popupMods());
             P.eq("menus.wire_show", choose(host, "Show in netlist") && !panel.schematicShown() && ed.line(ed.caret().line).substr(static_cast<std::size_t>(ed.caret().col)).rfind("a", 0) == 0 ? 1 : 0, 1);
             panel.setSchematic(true);
@@ -1346,8 +1482,10 @@ PROBE(gui, schematic)
         const funkgui::Point bar = panel.centreOfDialsBar();
         host.click(bar.x, bar.y);
         host.tick(1);
+        std::printf("32 dials shown at 1000 x 600: the editor %.0f px tall\n", static_cast<double>(panel.editorArea().h));
         P.eq("room.bar_shows", !panel.dialsFolded() && panel.dialsBarShown() && panel.centreOfDial(31) ? 1 : 0, 1);
-        P.ge("room.shown_editor_keeps", panel.editorArea().h, 192.0);
+        P.eq("room.bar_shows_every_dial", panel.centreOfDial(0) && panel.centreOfDial(8) && panel.centreOfDial(31) ? 1 : 0, 1);
+        P.ge("room.shown_editor_floor", panel.editorArea().h, 80.0);
         host.click(bar.x, bar.y);
         host.tick(1);
         P.eq("room.bar_hides", panel.dialsFolded() ? 1 : 0, 1);
@@ -1443,6 +1581,14 @@ PROBE(gui, schematic)
         for (const funkgui::A11yItem& it : host.accessibility())
             radios += it.role == funkgui::A11yRole::radioButton && (it.title == "Netlist" || it.title == "Schematic") ? 1 : 0;
         P.eq("switch.a11y_radios", radios, 2);
+        // the narrow IR tab has no close box: a click where its cross would be, under the pointer, opens it
+        {
+            const funkgui::Rect ir = panel.irTabRect();
+            host.moveTo(ir.x + ir.w - 14.0f, ir.centreY(), 2);
+            host.click(ir.x + ir.w - 14.0f, ir.centreY());
+            host.tick(1);
+            P.eq("switch.narrow_ir_click_opens", panel.irOpen() && panel.irShown() ? 1 : 0, 1);
+        }
     }
 
     // ---- MARKS, A11Y, PERSIST (and the PNGs of a wire and a move mid-drag) ---------------------------------------------
@@ -2351,7 +2497,7 @@ PROBE(gui, schematic)
         P.eq("probes.reason_no_field", v.probeReason(0) == want && v.stripRight() == "Probe: " + want ? 1 : 0, 1);
     }
 
-    // ---- EDIT: the fields, the Label tool, labels and wires, the clipboard, the menus' new items (s4) -----------------
+    // ---- EDIT: the fields, the Label tool, labels and wires, the clipboard, the menus' new items ----------------------
     {
         const std::string kinds = cir::written(kKinds);
         Rig r(draftWith(std::string(pg::kExamples[0].source), { { "g.cir", kinds } }, 1));
@@ -2516,6 +2662,33 @@ PROBE(gui, schematic)
             host.tick(1);
             P.eq("edit.value_click_opens", value && v.editing() && v.fieldRow() == "value" && v.fieldText("value") == "10n" ? 1 : 0, 1);
             host.keys("escape");
+            host.tick(1);
+            // a double-click on it opens it too (its second press leaves the field the first opened)
+            host.draw();
+            if (const std::optional<funkgui::Point> again = v.centreOfValue("C1"))
+                host.doubleClick(again->x, again->y);
+            host.tick(1);
+            P.eq("edit.value_double_click_opens", v.editing() && v.fieldRow() == "value" && v.fieldText("value") == "10n" ? 1 : 0, 1);
+            host.keys("escape");
+            host.tick(1);
+        }
+        // a field open when the view goes (the Netlist view) is written, as a press outside it writes it
+        {
+            host.draw();
+            const std::optional<funkgui::Point> value = v.centreOfValue("C1");
+            if (value)
+                host.click(value->x, value->y);
+            host.tick(1);
+            host.keys("cmd+a");
+            for (const char ch : std::string("22n"))
+                host.keys(std::string(1, ch).c_str());
+            host.keys("cmd+shift+d");
+            host.tick(1);
+            const bool written = has(ed.text(), "\nC1 ") && has(ed.text(), " 22n\n") && !v.editing();
+            host.keys("cmd+z");
+            host.tick(1);
+            P.eq("edit.view_change_writes_field", value && written && ed.text() == kinds ? 1 : 0, 1);
+            host.keys("cmd+shift+d");
             host.tick(1);
         }
         // Up and Down: E12, keeping the suffix's style; Shift a decade

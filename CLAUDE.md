@@ -341,13 +341,16 @@ place (its `products/<key>.cmake`, and its names in the docs).
   refused in the field when apply refuses it, and closed when a merge moves the text under it; its clipboard is
   netlist text (`cir::copied`, then apply's paste op), never anything of its own. It publishes the places it drew for
   parts and terminals that have no line of their own (its session pins: `EditorPort::setSchematicPins`, in the
-  processor's memory only), which Claude's edit_circuit and view_panel's schematic picture reconcile with, so every
-  writer and viewer draws what the user sees. Each gesture gives the files to the processor at once
+  processor's memory only), which Claude's edit_circuit and view_panel's schematic picture reconcile with, and a
+  file's view takes its first ones from there (an editor opened again, a picture's Panel, which publishes none), so
+  every writer and viewer draws what the user sees. Each gesture gives the files to the processor at once
   (`EditorPort::setDraftIf`, through the Panel's sync hook), so Claude's conditional write sees it; when a write of
   Claude's came first that the Panel has not merged, the gesture is undone and the strip says to do it again (neither
-  is overwritten). The view, zoom and pan of each file are the session's alone (`EditorPort::fileViews`; never in the
+  is overwritten). Typing reaches the processor the same way (`Panel::pushFiles`, never over a draft not merged: that
+  one merges first, each tab keeping what was typed where the draft left its file); a field open when the view goes is
+  written, as a press outside it. The view, zoom and pan of each file are the session's alone (`EditorPort::fileViews`; never in the
   Draft, a project, an export or Claude's view), kept on the user's gestures only. Keep its colours the code editor's
-  (the marks are the tab's own `DecorationInks`) and its drawing in `SchematicDraw`, which a picture (s4) draws with no
+  (the marks are the tab's own `DecorationInks`) and its drawing in `SchematicDraw`, which a picture draws with no
   Panel.
 - **`fminus/Lang.h` is the language, as an editor sees it**: plain C++ over the files' text, no FMinus call. Its
   tables (keywords, type words, the builtins with their signatures, the attributes, `#pragma panel`'s words) follow

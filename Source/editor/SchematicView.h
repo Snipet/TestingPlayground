@@ -1,4 +1,4 @@
-// Source/editor/SchematicView.h: the Schematic view of a .cir tab (the spec's §3): a drawing of the netlist that edits
+// Source/editor/SchematicView.h: the Schematic view of a .cir tab (README, "The editor"): a drawing of the netlist that edits
 // it. The .cir file is the only source of truth: the tab's TextEditor is the model, and the drawing is
 // fminus/CirDoc.h's reconcile() of its text (a pure function, run lazily while the view shows, once per revision). A
 // gesture becomes cir::Ops, cir::apply() makes them text patches on the text the user saw (the netlist's tokens, the
@@ -22,7 +22,7 @@
 //                else why its pots have no knobs: "program.fm:38: Screamer's pots have no dials: the program calls its
 //                set()")
 //
-// The circuit dials (the spec's §10.5): when the program that plays drives this file's pots and switches with dials
+// The circuit dials: when the program that plays drives this file's pots and switches with dials
 // (CompileStatus::circuitDials, Patch.h's "Circuits"), a 16 px knob beside each pot symbol and a position chip beside
 // each switch, where it covers the fewest bodies, flags, pins and wires (below or above a horizontal body, left or right
 // of a vertical one, then the corners: SchematicDraw.h's placeKnobs); the labels then keep clear of it. A drag
@@ -31,7 +31,7 @@
 // one shows the dial's value in the info strip. Dragging the symbol's body still moves the part. Hidden with the
 // labels (under 60 %).
 //
-// The pointer (§3.5): a press decides nothing until it moves 3 px (a drag) or comes up (a click). Idle, on a body: a
+// The pointer: a press decides nothing until it moves 3 px (a drag) or comes up (a click). Idle, on a body: a
 // click selects (Shift toggles), a drag moves the selection; on a pin: a click selects its part, a drag draws a wire;
 // on a wire: a click selects its run, a drag draws a wire from that grid point (a T); on nothing: a click clears, a
 // drag is a marquee (Shift adds). Carrying a part: a click places it and carries on, a drag places it where released, a
@@ -54,7 +54,7 @@
 // paste onto parts is refused, as a drop is), Tab and Shift-Tab (the parts in line order), the
 // arrows (a unit; Shift 4), F and Home (fit), Cmd-0, Cmd-=, Cmd--. While a field is open it takes every key.
 //
-// Live probes (the spec's §9.3; Engine.h's "Probes"). While the program that plays holds this netlist's module (the
+// Live probes (Engine.h's "Probes"). While the program that plays holds this netlist's module (the
 // status's probe table, CompileStatus::probes), the selected wire run's net is probe slot 0 and up to three pinned
 // nets slots 1 to 3 (Alt-click on a wire, the wire's menu, the card's Pin; a fourth pin replaces the oldest; each
 // pinned net a numbered flag on its wire; the pins are the session's, EditorPort::fileViews). Each net is resolved by
@@ -73,7 +73,8 @@
 // Session pins: the places the view drew for parts and terminals that have no line of their own (SchematicFile::pins,
 // reconciled with each revision so they stay put) go to the Panel as *@ part, *@ input and *@ output lines whenever
 // they change (setPinsHook: EditorPort::setSchematicPins), so Claude's edit_circuit and view_panel's picture draw them
-// where the user sees them.
+// where the user sees them; a file's view takes its first ones from there (setPinsSource), so an editor opened again
+// and a picture's Panel (which publishes none) draw them there too.
 //
 // Accessibility: one group "Schematic, <file>" (the item's Tab stop), a list of parts ("R4, resistor 4.7k, from n1 to
 // z1") and a list of nets ("net n1: R4.1, C4.1, XU1.inn"), ids kA11yBase plus a 24-bit hash of "p:"+name or
@@ -128,6 +129,8 @@ namespace playground::ui
         std::vector<std::string> selected;           // parts, by name: the selection survives undo
         cir::SessionPins pins;                       // the places drawn for parts and terminals without a line
         std::string published;                       // ... as *@ lines, as the Panel last published them
+        bool seeded = false;                         // its pins taken once from the port's (setPinsSource), when first
+                                                     // shown: a reopened editor and a picture's Panel draw the user's places
         bool merged = false;                         // a draft merged into the tab: what it moved flashes
         std::vector<std::string> probes;             // the nets pinned to probe slots 1 to 3, in order (the session
                                                      // keeps them: EditorPort::FileView::probes)
@@ -200,6 +203,9 @@ namespace playground::ui
         // lines whenever a reconcile changes the places drawn for parts and terminals that have no line of their own
         // ("" when there are none).
         void setPinsHook(std::function<void(const std::string& file, const std::string& lines)> pins) { pins_ = std::move(pins); }
+        // ... and where a file's view takes its first ones from (EditorPort::schematicPins: the lines the user's view
+        // published last), so that an editor opened again, or a picture's Panel, draws the parts where the user saw them.
+        void setPinsSource(std::function<std::string(const std::string& file)> source) { pinsSource_ = std::move(source); }
         // The files to the processor at once, right after a gesture writes the tab (the Panel's: EditorPort::setDraftIf),
         // so that Claude's conditional write sees the gesture. False when a write of Claude's came in that the Panel has
         // not merged yet: the gesture is undone (one step) and the strip says to do it again, so neither is overwritten.
@@ -266,7 +272,7 @@ namespace playground::ui
         bool gestureOn() const noexcept;                 // a drag in progress (moving, wiring, a marquee)
         float flashOf(const std::string& part) const;    // Claude's flash: 1 just merged, 0 none
 
-        // ---- the field (editing in place, the spec's §3.11; the Label tool's name) ------------------------------------
+        // ---- the field (editing in place; the Label tool's name) --------------------------------------------------------
         // A part's names and values, a row each (R C L: name, value; D: name, model; a pot: name, value, pot, taper; X:
         // name; E, G: name, gain; an OTA: name, its gain expression; V, I: name, value; S: name, switch, positions; the
         // input and the output: name, scale), or a net's name (the Label tool), on the drawing beside it, drawn and keyed
@@ -286,15 +292,18 @@ namespace playground::ui
         bool editNetAt(funkgui::Point p);                // the Label tool's field for the net under a point
         bool commitField(bool megohms = false);          // Return (Alt-Return): false when refused (it stays open)
         void closeField();                               // Escape
+        // The view is about to go (another tab, the Netlist view, the IR, the PANEL view): an open field written, as a
+        // press outside it writes it, else (refused) closed. Never from leave(): a closed file's state is gone by then.
+        void endField();
         std::optional<funkgui::Point> centreOfValue(const std::string& part) const;   // its value label (a click edits it)
 
-        // ---- the clipboard (§3.14): parts as .cir text (fminus/CirDoc.h's copied; a paste op takes it back) ----------
+        // ---- the clipboard: parts as .cir text (fminus/CirDoc.h's copied; a paste op takes it back) -----------------
         bool copySelection();                            // Cmd-C
         bool cutSelection();                             // Cmd-X
         bool paste();                                    // Cmd-V: at the pointer over the canvas, else the view's centre
         bool duplicate();                                // Cmd-D: a copy just below the selection (else beside it)
                                                          // where it meets nothing
-        // Show as labels / Show as wires (§3.8): a signal net drawn as name tags at its pins, or wired again.
+        // Show as labels / Show as wires: a signal net drawn as name tags at its pins, or wired again.
         bool showAsLabels(const std::string& net, bool labels);
 
         // ---- the probes (above) ------------------------------------------------------------------------------------
@@ -464,6 +473,7 @@ namespace playground::ui
         Hooks hooks_;
         DialHooks dials_;
         std::function<void(const std::string&, const std::string&)> pins_;
+        std::function<std::string(const std::string&)> pinsSource_;
         std::function<bool()> sync_;                     // setSyncHook
         // The field (above): its rows, the one with the caret, what it edits, the text's revision it opened on.
         struct Row
