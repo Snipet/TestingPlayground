@@ -15,8 +15,9 @@
 //   canvas       the drawing (SchematicDraw.h) on a grid of one pin pitch, 10 px at 100 % (25 % to 400 %): parts, wires,
 //                flags, names and values, the problems' badges, the structural marks, the ghost of a part carried,
 //                the wire being drawn, the parts being moved with their wires rubber-banded, the marquee
-//   info strip   a gesture's notice (4 s), else the selection, else a hint; at its right the problems' count (a click
-//                steps to the next, Shift-click back) or a banner (Not drawn: ..., Not played: ...)
+//   info strip   a gesture's notice (4 s: a refusal, a change of nets), else the selection, else a hint; at its right
+//                the problems' count (a click steps to the next, Shift-click back), a banner before it (Not drawn: ...,
+//                else Not played: ...)
 //
 // The pointer (§3.5): a press decides nothing until it moves 3 px (a drag) or comes up (a click). Idle, on a body: a
 // click selects (Shift toggles), a drag moves the selection; on a pin: a click selects its part, a drag draws a wire;
@@ -155,17 +156,17 @@ namespace playground::ui
         std::optional<funkgui::Point> centreOfBadge(const std::string& part) const;
         funkgui::Point centreOfButton(Button b) const;
         funkgui::Rect buttonRect(Button b) const;
-        funkgui::Point centreOfProblems() const;         // the info strip's count (or banner)
-        std::optional<funkgui::Point> centreOfStart() const;   // an empty file's [Start a circuit]
+        funkgui::Point centreOfProblems() const;         // the info strip's count (its click)
+        std::optional<funkgui::Point> centreOfStart() const;   // an empty netlist's [Start a circuit]
         std::vector<std::string> selection() const;      // the parts selected, by name
         int selectedRuns() const noexcept { return static_cast<int>(runs_.size()); }
         std::vector<cir::UnitEdge> selectedEdges() const;
         Tool tool() const noexcept { return tool_; }
         cir::Kind carried() const noexcept { return kind_; }
         cir::Orient carriedOrient() const noexcept { return orient_; }
-        const std::string& notice() const noexcept { return notice_; }
+        std::string notice() const;                      // the info strip's notice (none once the text moved since)
         std::string stripLeft() const;                   // what the info strip says at its left
-        std::string stripRight() const;                  // ... and at its right
+        std::string stripRight() const;                  // ... and at its right: the banner, then the problems' count
         int problemCount() const;                        // the messages on this file
         bool gestureOn() const noexcept;                 // a drag in progress (moving, wiring, a marquee)
         float flashOf(const std::string& part) const;    // Claude's flash: 1 just merged, 0 none
@@ -218,6 +219,10 @@ namespace playground::ui
         enum class Drag : uint8_t { none, press, move, wire, marquee, pan, carry };
 
         void ensure() const;                             // the drawing of the editor's text now (and its marks)
+        bool emptyNetlist() const;                       // no element (drawn or not) and no terminal: Start is offered
+        std::string stripCount() const;                  // "2 PROBLEMS" (none: empty)
+        funkgui::Rect countRect() const;                 // the count's, at the strip's right end (its click)
+        std::string stripBanner() const;                 // "Not drawn: Q1 (a BJT: Phase 2)", else "Not played: ..."
         void layoutBars();
         void computeMarks() const;                       // the tab's messages on the drawing (each tick: a check lands)
         Hit hitAt(funkgui::Point p) const;
@@ -225,7 +230,8 @@ namespace playground::ui
         std::vector<Run> runsOf(int net) const;
         bool commit(const std::vector<cir::Op>& ops);    // one gesture; false (and a notice) when refused
         bool commitText(const std::string& text);        // a text made by several applies, as one gesture
-        void say(const std::string& text);               // the info strip's notice, for 4 s
+        void say(const std::string& text);               // the info strip's notice, for 4 s (or until the text moves)
+        void quiet();                                    // ... gone
         void cancelGesture(const char* why);
         void beginDrag(funkgui::Point p);                // the press became a drag
         void finishDrag(funkgui::Point p);
@@ -312,6 +318,7 @@ namespace playground::ui
 
         std::string notice_;
         float noticeLeft_ = 0.0f;
+        uint32_t noticeRev_ = 0;                         // the editor's revision it was said at
         mutable std::map<std::string, float> flash_;     // part name -> seconds left
     };
 }

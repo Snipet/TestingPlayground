@@ -73,6 +73,16 @@ namespace playground::ui
             return error;
         }
 
+        // Of apply()'s words for a gesture that changed the text, those the info strip says (§3.3: a refusal or a change
+        // of nets, never what the user just did): two nets merged (by a wire, or by a name another net has), a net
+        // split by a cut, a pin moved to a net of its own.
+        bool changesNets(const std::string& said)
+        {
+            return said.rfind("connected ", 0) == 0 || said.rfind("disconnected ", 0) == 0
+                || said.find(" split off") != std::string::npos || said.find(": the nets merged") != std::string::npos
+                || said.find(": it is ground now") != std::string::npos;
+        }
+
         std::string lower(std::string s)
         {
             for (char& ch : s)
@@ -371,7 +381,8 @@ namespace playground::ui
                 if (const auto it = ends.find(pin.at); it != ends.end())
                     for (const int n : it->second)
                         touches = touches || n != pin.net;
-                if (touches)
+                // one dot a point, however many pins touch there
+                if (touches && std::none_of(loose_.begin(), loose_.end(), [&](const Loose& l) { return !l.alone && l.at == pin.at; }))
                     loose_.push_back({ static_cast<int>(i), pin.at, false });
             }
     }
@@ -509,7 +520,7 @@ namespace playground::ui
         Hit h;
         if (!showing() || !canvas_.contains(p))
             return h;
-        if (const std::optional<funkgui::Point> s = centreOfStart(); s && d_.parts.empty())
+        if (const std::optional<funkgui::Point> s = centreOfStart())
         {
             const funkgui::TextStyle& st = chat::kSmall;
             const float w = funkgui::text::width(funkgui::FontService::get().atlas(), "Start a circuit", st) + 16.0f;
@@ -642,6 +653,19 @@ namespace playground::ui
     {
         notice_ = asciiText(text);
         noticeLeft_ = kNoticeSeconds;
+        noticeRev_ = ed_ != nullptr ? ed_->revision() : 0;
+    }
+
+    void SchematicView::quiet()
+    {
+        notice_.clear();
+        noticeLeft_ = 0.0f;
+    }
+
+    std::string SchematicView::notice() const
+    {
+        // a notice is its revision's: an undo, a redo, typing or a merge since makes it stale
+        return ed_ != nullptr && ed_->revision() == noticeRev_ ? notice_ : std::string();
     }
 
     bool SchematicView::commit(const std::vector<cir::Op>& ops)
@@ -660,16 +684,17 @@ namespace playground::ui
             say(friendly(a.error));
             return false;
         }
-        if (!a.said.empty())
-        {
-            // what each op did, in order (the info strip cuts what does not fit)
-            std::string words;
-            for (const std::string& line : a.said)
+        // What the strip says: every op's words when nothing changed (why not), else the changes of nets alone, in
+        // order (the strip cuts what does not fit).
+        std::string words;
+        for (const std::string& line : a.said)
+            if (a.edits.empty() || changesNets(line))
                 words += (words.empty() ? "" : "; ") + line;
-            say(words);
-        }
         if (a.edits.empty())
+        {
+            words.empty() ? quiet() : say(words);
             return true;
+        }
         std::vector<funkgui::TextEdit> edits;
         edits.reserve(a.edits.size());
         for (const cir::Edit& e : a.edits)
@@ -680,6 +705,7 @@ namespace playground::ui
             return false;
         }
         ensure();
+        words.empty() ? quiet() : say(words);            // the notice of this revision
         return true;
     }
 
@@ -699,6 +725,7 @@ namespace playground::ui
             return false;
         }
         ensure();
+        quiet();                                         // a new gesture: an earlier notice goes
         return true;
     }
 
@@ -952,8 +979,13 @@ namespace playground::ui
     bool SchematicView::startCircuit()
     {
         ensure();
-        if (!showing() || !nl_.elements.empty() || nl_.input || nl_.output)
+        if (!showing())
             return false;
+        if (!emptyNetlist())
+        {
+            say("Start a circuit is for an empty netlist");
+            return false;
+        }
         std::string base = text_;
         const bool blank = base.find_first_not_of(" \t\n") == std::string::npos;
         if (blank)
@@ -1108,7 +1140,7 @@ namespace playground::ui
             say("Drawn by a newer playground: read only here");
             return false;
         }
-        std::string text = text_;
+        std::string text = text_, words;
         // The wires first, one cut at a time (a cut may rename the side it splits off): each by an edge of its run.
         for (const Run& r : runs_)
         {
@@ -1129,6 +1161,9 @@ namespace playground::ui
                 say(friendly(a.error));
                 return false;
             }
+            for (const std::string& line : a.said)
+                if (changesNets(line))
+                    words += (words.empty() ? "" : "; ") + line;
             text = a.text;
         }
         if (!st_->selected.empty())
@@ -1144,14 +1179,11 @@ namespace playground::ui
             }
             text = a.text;
         }
-        const std::size_t parts = st_->selected.size(), wires = runs_.size();
         if (!commitText(text))
             return false;
         setSelection({}, {});
-        char what[96];
-        std::snprintf(what, sizeof what, "Deleted %zu part%s and %zu wire%s", parts, parts == 1 ? "" : "s", wires,
-                      wires == 1 ? "" : "s");
-        say(what);
+        if (!words.empty())
+            say(words);                                  // a net the cut split: the names its parts are on now
         return true;
     }
 
@@ -1312,7 +1344,7 @@ namespace playground::ui
         if (strip_.contains(p))
         {
             drag_ = Drag::none;
-            if (!e.popup && p.x >= strip_.centreX() && !marks_.empty())
+            if (!e.popup && countRect().contains(p))
                 stepProblem(e.mods.shift ? -1 : 1);
             return;
         }
@@ -1960,6 +1992,8 @@ namespace playground::ui
             st_->cy = funkgui::ease::toward(st_->cy, cyTo_, dt, kEaseTau, 1e-3f);
             easing_ = !(st_->zoom == zoomTo_ && st_->cx == cxTo_ && st_->cy == cyTo_);
         }
+        if (!notice_.empty() && ed_->revision() != noticeRev_)
+            quiet();                                     // an undo, a redo, typing or a merge since it was said
         if (noticeLeft_ > 0.0f)
         {
             noticeLeft_ = std::max(0.0f, noticeLeft_ - dt);
@@ -2030,8 +2064,7 @@ namespace playground::ui
             for (const funkgui::Rect& b : buttons_)
                 if (b.contains(p))
                     return funkgui::Cursor::pointingHand;
-            return strip_.contains(p) && p.x >= strip_.centreX() && !marks_.empty() ? funkgui::Cursor::pointingHand
-                                                                                      : funkgui::Cursor::normal;
+            return countRect().contains(p) ? funkgui::Cursor::pointingHand : funkgui::Cursor::normal;
         }
         if (!canvas_.contains(p))
             return funkgui::Cursor::normal;
@@ -2098,11 +2131,30 @@ namespace playground::ui
         return sch::badgeAt(view(), d_.parts[static_cast<std::size_t>(i)]);
     }
 
-    funkgui::Point SchematicView::centreOfProblems() const { return { strip_.right() - 60.0f, strip_.centreY() }; }
+    funkgui::Rect SchematicView::countRect() const
+    {
+        const std::string count = stripCount();
+        if (count.empty())
+            return {};
+        const float w = funkgui::text::width(funkgui::FontService::get().atlas(), count.c_str(), chat::kSmall) + 12.0f;
+        return { strip_.right() - w, strip_.y, w, strip_.h };
+    }
+
+    funkgui::Point SchematicView::centreOfProblems() const
+    {
+        const funkgui::Rect r = countRect();
+        return r.w > 0.0f ? funkgui::Point{ r.centreX(), r.centreY() } : funkgui::Point{ strip_.right() - 60.0f, strip_.centreY() };
+    }
+
+    bool SchematicView::emptyNetlist() const
+    {
+        ensure();
+        return showing() && nl_.elements.empty() && !nl_.input && !nl_.output;
+    }
 
     std::optional<funkgui::Point> SchematicView::centreOfStart() const
     {
-        if (!showing() || !d_.parts.empty())
+        if (!emptyNetlist())
             return std::nullopt;
         return funkgui::Point{ canvas_.centreX(), canvas_.centreY() + 14.0f };
     }
@@ -2148,8 +2200,8 @@ namespace playground::ui
 
     std::string SchematicView::stripLeft() const
     {
-        if (!notice_.empty())
-            return notice_;
+        if (std::string n = notice(); !n.empty())
+            return n;
         if (st_ == nullptr)
             return {};
         if (st_->selected.size() == 1 && runs_.empty())
@@ -2192,18 +2244,22 @@ namespace playground::ui
                 break;
         }
         if (d_.parts.empty())
-            return "An empty netlist";
+            return emptyNetlist() ? "An empty netlist" : "No part here can be drawn yet";
         return "Drag from a pin to wire it   R C L D P X S place parts   G grounds";
     }
 
-    std::string SchematicView::stripRight() const
+    std::string SchematicView::stripCount() const
     {
-        if (!marks_.empty())
-        {
-            char buf[48];
-            std::snprintf(buf, sizeof buf, "%zu PROBLEM%s", marks_.size(), marks_.size() == 1 ? "" : "S");
-            return buf;
-        }
+        if (marks_.empty())
+            return {};
+        char buf[48];
+        std::snprintf(buf, sizeof buf, "%zu PROBLEM%s", marks_.size(), marks_.size() == 1 ? "" : "S");
+        return buf;
+    }
+
+    std::string SchematicView::stripBanner() const
+    {
+        // The parts not drawn first: FMinus refuses each of them, so the count is never without them.
         if (!d_.notDrawn.empty())
         {
             std::string s = "Not drawn: ";
@@ -2214,6 +2270,12 @@ namespace playground::ui
         if (hooks_.played && !hooks_.played())
             return "Not played: no program #includes " + file_;
         return {};
+    }
+
+    std::string SchematicView::stripRight() const
+    {
+        const std::string banner = stripBanner(), count = stripCount();
+        return banner.empty() || count.empty() ? banner + count : banner + "   " + count;
     }
 
     std::string SchematicView::statusWords() const
@@ -2260,7 +2322,7 @@ namespace playground::ui
             }
         if (strip_.contains(pointer))
         {
-            if (!marks_.empty())
+            if (countRect().contains(pointer))
                 std::snprintf(out, n, "PROBLEMS   A CLICK SELECTS THE NEXT ONE'S PART   SHIFT-CLICK THE ONE BEFORE");
             else
                 std::snprintf(out, n, "SCHEMATIC   CMD-SHIFT-D SHOWS THE NETLIST   EVERY GESTURE IS ONE UNDO STEP");
@@ -2323,9 +2385,12 @@ namespace playground::ui
         if (!showing())
             return;
         ensure();
+        // on the canvas, at least 1 px (bounds kept in order however small the canvas: no std::clamp with lo > hi)
         const auto clamp = [&](funkgui::Rect r) {
-            const float x0 = std::clamp(r.x, canvas_.x, canvas_.right() - 1.0f), y0 = std::clamp(r.y, canvas_.y, canvas_.bottom() - 1.0f);
-            const float x1 = std::clamp(r.right(), x0 + 1.0f, canvas_.right()), y1 = std::clamp(r.bottom(), y0 + 1.0f, canvas_.bottom());
+            const float x0 = std::max(canvas_.x, std::min(r.x, canvas_.right() - 1.0f));
+            const float y0 = std::max(canvas_.y, std::min(r.y, canvas_.bottom() - 1.0f));
+            const float x1 = std::max(x0 + 1.0f, std::min(r.right(), canvas_.right()));
+            const float y1 = std::max(y0 + 1.0f, std::min(r.bottom(), canvas_.bottom()));
             return funkgui::Rect{ x0, y0, x1 - x0, y1 - y0 };
         };
         funkgui::A11yItem group;
@@ -2531,25 +2596,27 @@ namespace playground::ui
             c.hairlineH(strip_.x, strip_.y, strip_.w, th.ink16);
             const funkgui::TextStyle& st = chat::kSmall;
             const float top = c.capCentreTop(strip_.centreY(), st);
-            const std::string right = stripRight();
+            // at the right, the problems' count (a click steps through them) and before it a banner, in half the strip
+            const std::string count = stripCount(), banner = stripBanner();
             float rightW = 0.0f;
-            if (!right.empty())
+            if (!count.empty())
             {
-                const bool problems = !marks_.empty();
-                const bool hot = problems && strip_.contains(pointer_) && pointer_.x >= strip_.centreX();
-                const std::string shown = fitText(c, right, st, strip_.w * 0.5f - 8.0f);
-                rightW = c.textWidth(shown.c_str(), st) + 12.0f;
-                funkgui::Col ink = pal.soft;
-                if (problems)
-                {
-                    const bool error = std::any_of(marks_.begin(), marks_.end(), [](const Mark& m) { return m.severity == 0; });
-                    ink = hot ? pal.accent : error ? k.error : k.warning;
-                }
-                c.text(shown.c_str(), strip_.right() - 6.0f, top, st, ink, funkgui::Align::right);
+                const bool hot = countRect().contains(pointer_);
+                const bool error = std::any_of(marks_.begin(), marks_.end(), [](const Mark& m) { return m.severity == 0; });
+                c.text(count.c_str(), strip_.right() - 6.0f, top, st, hot ? pal.accent : error ? k.error : k.warning, funkgui::Align::right);
+                rightW = c.textWidth(count.c_str(), st) + 12.0f;
+            }
+            if (!banner.empty())
+            {
+                const float room = strip_.w * 0.5f - 8.0f - rightW - (rightW > 0.0f ? 12.0f : 0.0f);
+                const std::string shown = fitText(c, banner, st, std::max(0.0f, room));
+                c.text(shown.c_str(), strip_.right() - 6.0f - rightW - (rightW > 0.0f ? 12.0f : 0.0f), top, st, pal.soft,
+                       funkgui::Align::right);
+                rightW += c.textWidth(shown.c_str(), st) + (rightW > 0.0f ? 24.0f : 12.0f);
             }
             const std::string left = stripLeft();
             c.text(fitText(c, left, st, std::max(0.0f, strip_.w - rightW - 16.0f)).c_str(), strip_.x + 6.0f, top, st,
-                   notice_.empty() ? pal.soft : pal.text);
+                   notice().empty() ? pal.soft : pal.text);
         }
 
         // ---- the canvas -------------------------------------------------------------------------------------------------
@@ -2730,12 +2797,12 @@ namespace playground::ui
                 c.rrect(x, y, std::fabs(b.x - a.x), std::fabs(b.y - a.y), 0.0f, k.halo.withAlpha(0.3f),
                         1.0f, k.halo);
             }
-            // an empty file: what to do
+            // nothing drawn: what to do (Start a circuit only in an empty netlist)
             if (d_.parts.empty())
             {
                 const funkgui::TextStyle& st = chat::kSmall;
-                c.text("Place parts from the toolbar, or", canvas_.centreX(), c.capCentreTop(canvas_.centreY() - 10.0f, st), st,
-                       pal.soft, funkgui::Align::centre);
+                c.text(emptyNetlist() ? "Place parts from the toolbar, or" : "Place parts from the toolbar", canvas_.centreX(),
+                       c.capCentreTop(canvas_.centreY() - 10.0f, st), st, pal.soft, funkgui::Align::centre);
                 if (const std::optional<funkgui::Point> sp = centreOfStart())
                 {
                     const float bw = c.textWidth("Start a circuit", st) + 16.0f;

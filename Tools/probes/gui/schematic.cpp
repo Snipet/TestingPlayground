@@ -9,36 +9,42 @@
 //   gui.schematic.switch.png   the least window, twelve tabs and the IR tab: the pills icon-only, no tab under its least
 //   gui.schematic.wire.png     a wire being drawn, from a pin, mid-drag
 //   gui.schematic.move.png     two parts being moved, their wires rubber-banded, mid-drag
-//   gui.schematic.errors.png   an error, a warning and a note on parts (badges, an outline, a ring), unconnected pins
+//   gui.schematic.errors.png   an error, a warning and a note on parts (badges, an outline, a ring), an unconnected pin,
+//                              pins that touch (a dot) and a hand edit's overlap (both outlined)
 //   gui.schematic.empty.png    an empty netlist: the hint and Start a circuit
 //   gui.schematic.zoom25.png   25 %: symbols as their boxes, no labels, no grid
 //   gui.schematic.zoom400.png  400 %
 // and checks:
 //   VIEW      the pills (Netlist, Schematic) at the tab bar's right end while a .cir tab shows, labelled at the
 //             default size; a click shows the drawing: opening fits it, never under 60 %; the status line's words; the
-//             parts and wires drawn inside the canvas only; nothing missing from the font; Cmd-Shift-D
+//             parts and wires drawn inside the canvas only; nothing missing from the font; Cmd-Shift-D; the find bar
+//             closed by the drawing (switched to, or its tab shown)
 //   GESTURES  each gives the exact text as one undo step: placing every kind (by click), a wire from pin to pin, a
 //             wire into a mid-wire T, a wire dragged from a wire point, the Ground tool, a move, a refused overlap (no
-//             change), rotate, mirror, delete (its stubs pruned), a deleted wire splitting a net, Start a circuit
+//             change), rotate, mirror, delete (its stubs pruned), a deleted wire splitting a net, Start a circuit; the
+//             info strip's notices (a placement says nothing, a merge is said until the text moves); a netlist of parts
+//             the view cannot draw (no Start, the Not drawn banner before the count)
 //   UNDO      Cmd-Z and Cmd-Shift-Z in either view undo and redo the other's steps; so do the toolbar's Undo and Redo
 //   OVERTAKEN a drag whose base a merge (Claude's write) moves is cancelled and changes nothing; that write moving a
 //             part's line flashes the part
 //   POINTER   a row per cell of the pointer's table: idle on a body, a pin, a wire, nothing; Alt; carrying a part (a
 //             popup click turns the ghost, a popup drag pans and carries on, placing ends only on Escape, Select or
 //             another tool); the Ground tool; a badge
-//   KEYS      edge auto-pan's units in a fixed number of ticks; Escape's order and leaving the canvas; Tab in line
-//             order; Cmd-Shift-D in either view, and nothing while the IR tab shows; the parts' keys away from the
-//             canvas place at once
+//   KEYS      edge auto-pan's units in a fixed number of ticks; the PANEL view ending a part carried, the hidden
+//             drawing waiting; Escape's order and leaving the canvas; Tab in line order; Cmd-Shift-D in either view,
+//             and nothing while the IR tab shows; the parts' keys away from the canvas place at once
 //   ROOM      the canvas at least 240 px tall at 1000 x 600 with 32 dials (folded) and 9 (shown), at 1360 x 760 with
 //             the explorer open and 32 shown; the fold's bar shows and hides them; a wire selected and not: the canvas
 //             the same
 //   MARKS     the badges', the outline's and the ring's colours are the tab editor's error, warning and note inks (both
 //             themes); a layout-only gesture leaves the status RUNNING, asks for no check and keeps a planted error's
 //             badge and squiggle; a problems row's click (a netlist shown in its Schematic view) selects and centres
-//             the part; the info strip's count steps through them
+//             the part; the info strip's count steps through them; the structural marks (kMarks): an unconnected pin's
+//             open circle, none on a ground pin alone on 0, one dot where pins of two nets touch, both bodies of a hand
+//             edit's overlap outlined
 //   MENUS     the part's, the wire's, the canvas's and More's menus (pendingMenu), each item working (chooseMenuItem)
 //   A11Y      the group, an item a part and a net, their ids the same across a pan and a zoom, the revision too, every
-//             item visible; the focus action selects and centres
+//             item visible, at 400 % too with parts off the canvas (bounds on it); the focus action selects and centres
 //   PERSIST   nothing kept by opening; a Panel opened again keeps each file's view, zoom and pan (the session's views);
 //             a view switched but never zoomed nor panned keeps no zoom, and fits again when opened again
 #include "Probe.h"
@@ -177,6 +183,32 @@ namespace
                                 "*@ net m 8,0 19,0 | 10,0 10,3 | 14,0 14,3\n"
                                 "*@ net o 23,0 27,0\n"
                                 ".end\n";
+
+    // The structural marks, drawn by hand: R3.1 alone on b; C1.2 the only pin on ground; R4 and R5 placed so that R4.2
+    // (on d) and R5.2 (on c) touch at one point, their bodies overlapping (c and d then unroutable: name tags). R1, C1
+    // and R2 on lines 4 to 6, as in kPlanted (the planted messages' lines).
+    const std::string kMarks = "* g.cir: a planted netlist, marked\n"
+                               ".input  u in\n"
+                               ".output vout out\n"
+                               "R1 in a 1k\n"
+                               "C1 a 0 10n\n"
+                               "R2 a out 2.2k\n"
+                               "R3 b out 10k\n"
+                               "R4 c d 1k\n"
+                               "R5 d c 1k\n"
+                               "*@ schematic 1 (the playground's drawing; SPICE reads *@ lines as comments)\n"
+                               "*@ input u 0,0\n"
+                               "*@ output vout 31,0\n"
+                               "*@ part C1 10,5 r90\n"
+                               "*@ part R1 6,0\n"
+                               "*@ part R2 17,0\n"
+                               "*@ part R3 25,0 r180\n"
+                               "*@ part R4 20,8\n"
+                               "*@ part R5 22,10 r270\n"
+                               "*@ net a 8,0 15,0 | 10,0 10,3\n"
+                               "*@ net in 0,0 4,0\n"
+                               "*@ net out 19,0 23,0 | 22,0 22,-2 30,-2 30,0 31,0\n"
+                               ".end\n";
 
     // A processor, a Panel on it and a headless host; the processor's draft set first.
     struct Rig
@@ -505,6 +537,8 @@ PROBE(gui, schematic)
                 for (char& ch : word)
                     ch = std::isalnum(static_cast<unsigned char>(ch)) != 0 ? static_cast<char>(std::tolower(static_cast<unsigned char>(ch))) : '_';
                 const std::string key = "gestures.place_" + word;
+                if (k == cir::Kind::R)                // what the user just did is not said (§3.3)
+                    P.eq("gestures.place_says_nothing", v.notice().empty() ? 1 : 0, 1);
                 oneStep(key, planted, applied(planted, { op }).text);
                 P.eq(key + ".carries_on", v.tool() == SV::Tool::place && v.carried() == k ? 1 : 0, 1);
             }
@@ -552,7 +586,11 @@ PROBE(gui, schematic)
             op.a = { "R1", "2", "" };
             op.b = { "R2", "1", "" };
             op.path = lPath(from, to);
+            const std::string merged = v.notice();
+            std::printf("merged: %s\n", merged.c_str());
             oneStep("gestures.wire_pin_to_pin", loose, applied(loose, { op }).text);
+            // two nets merged: said, and gone once the text moved (the undo and redo of oneStep)
+            P.eq("gestures.merge_said", merged.rfind("connected R1.2 and R2.1: ", 0) == 0 && v.notice().empty() ? 1 : 0, 1);
             P.eq("gestures.wire_pin_to_pin_net", cir::read(ed.text()).elements[2].nodes[0].text == "a" ? 1 : 0, 1);
 
             reset(loose);
@@ -721,6 +759,21 @@ PROBE(gui, schematic)
                         "*@ input u 0,0\n"
                         "*@ output vout 24,0\n"
                         ".end\n");
+        }
+        // a netlist whose only element the view cannot draw: no Start offered (a click on it would do nothing); the
+        // Not drawn banner, and after it the count once FMinus's message lands (it refuses every such element)
+        {
+            funkgui::TextEditor& pe = panel.editor();
+            pe.setText("* pedal.cir: a transistor\nQ1 c b e 2N3904\n.end\n");
+            host.tick(1);
+            P.eq("empty.undrawn_no_start", !v.centreOfStart() && v.stripLeft() != "An empty netlist" ? 1 : 0, 1);
+            P.eq("empty.undrawn_banner", v.stripRight().rfind("Not drawn: Q1 (a BJT: Phase 2)", 0) == 0 ? 1 : 0, 1);
+            const std::vector<pg::ui::Diagnostic> q{ { "pedal.cir", 2, 1, pg::ui::Diagnostic::Severity::error, "planted: the transistor Q1" } };
+            panel.codeAssist().setCheckDiagnostics(q, { { "pedal.cir", pe.text() } });
+            host.tick(1);
+            std::printf("not drawn: %s\n", v.stripRight().c_str());
+            P.eq("empty.undrawn_banner_and_count", v.stripRight() == "Not drawn: Q1 (a BJT: Phase 2)   1 PROBLEM" ? 1 : 0, 1);
+            P.eq("empty.start_refused_says", !v.startCircuit() && v.notice() == "Start a circuit is for an empty netlist" ? 1 : 0, 1);
         }
     }
 
@@ -1036,9 +1089,9 @@ PROBE(gui, schematic)
         }
         // Tab: the parts in line order (the elements, then the input, the output)
         {
-            std::vector<std::string> order, want;
-            for (const cir::Part& p : v.drawing().parts)
-                want.push_back(p.name);
+            // kPlanted: R1, C1, R2, R3 on lines 4 to 7, then the input (line 2) and the output (line 3)
+            const std::vector<std::string> want{ "R1", "C1", "R2", "R3", "u", "vout" };
+            std::vector<std::string> order;
             for (std::size_t k = 0; k < want.size(); ++k)
             {
                 host.keys("tab");
@@ -1347,7 +1400,6 @@ PROBE(gui, schematic)
             writePng(P, host, "gui.schematic.paper.png", "paper");
             continue;
         }
-        writePng(P, host, "gui.schematic.errors.png", "errors");
         // a message whose column falls on a node token marks that pin too: R2's "out" (line 6, column 6), a ring
         {
             const std::vector<pg::ui::Diagnostic> onPin{ { "g.cir", 6, 6, pg::ui::Diagnostic::Severity::error, "planted: on R2.2" } };
@@ -1484,6 +1536,25 @@ PROBE(gui, schematic)
             std::vector<uint32_t> all = parts;
             all.insert(all.end(), nets.begin(), nets.end());
             P.eq("a11y.ids_kept", again == all && panel.a11yRevision() == rev ? 1 : 0, 1);
+            // at 400 %, parts off the canvas: every item still visible, its bounds on the canvas
+            {
+                const funkgui::Rect cr = v.canvasRect();
+                v.zoomTo(4.0f, { cr.centreX(), cr.centreY() });
+                host.tick(1);
+                bool off = false;
+                for (const cir::Part& p : v.drawing().parts)
+                    off = off || !cr.contains(partAt(v, p.name.c_str()));
+                bool on = true;
+                int n = 0;
+                for (const funkgui::A11yItem& it : host.accessibility())
+                    if (it.parent == SV::kA11yBase + 1 || it.parent == SV::kA11yBase + 2)
+                    {
+                        ++n;
+                        on = on && it.visible && it.bounds.w > 0.0f && it.bounds.h > 0.0f && it.bounds.x >= cr.x - 0.01f
+                          && it.bounds.y >= cr.y - 0.01f && it.bounds.right() <= cr.right() + 0.01f && it.bounds.bottom() <= cr.bottom() + 0.01f;
+                    }
+                P.eq("a11y.on_canvas_at_400", off && on && n == static_cast<int>(all.size()) ? 1 : 0, 1);
+            }
             panel.a11yAction(r2Id, funkgui::A11yAction::focus);
             host.tick(1);
             const cir::Part* p = partOf(v.drawing(), "R2");
@@ -1539,6 +1610,60 @@ PROBE(gui, schematic)
         }
     }
     funkgui::UiPreferences::get().setTheme(0);
+
+    // ---- MARKS, the structural ones (and errors.png): kMarks, with an error, a warning and a note planted as above ------
+    {
+        Rig r(draftWith(dialsProgram("g.cir", 2), { { "g.cir", kMarks } }, 1));
+        pg::ui::Panel& panel = *r.panel;
+        funkgui::HeadlessHost& host = *r.host;
+        pg::ui::CodeAssist& code = panel.codeAssist();
+        r.run();
+        waitFor(host, [&] { return !code.checking() && code.settled(); });
+        host.tick(60);
+        waitFor(host, [&] { return !code.checking() && code.settled(); });
+        panel.setSchematic(true);
+        host.settle();
+        SV& v = r.view();
+        funkgui::TextEditor& ed = r.ed();
+        frame(v, host);
+        std::vector<pg::ui::Diagnostic> msgs(3);
+        msgs[0] = { "g.cir", 4, 1, pg::ui::Diagnostic::Severity::error, "planted: an error on R1" };
+        msgs[1] = { "g.cir", 6, 1, pg::ui::Diagnostic::Severity::warning, "planted: a warning on R2" };
+        msgs[2] = { "g.cir", 5, 1, pg::ui::Diagnostic::Severity::info, "planted: a note on C1" };
+        code.setCheckDiagnostics(msgs, { { "g.cir", ed.text() } });
+        host.tick(1);
+        P.eq("marks.overlap_noted", v.drawing().overlaps.empty() ? 0 : 1, 1);
+        host.draw();
+        const funkgui::Theme th = pg::ui::productTheme(funkgui::Theme::byIndex(0));
+        const uint32_t err = packed(ed.options().inks.error.resolve(th));
+        const funkgui::PrimList& f = host.draw();
+        const funkgui::Point lone = pinAt(v, "R3", "1"), ground = pinAt(v, "C1", "2"), touch = pinAt(v, "R4", "2");
+        const funkgui::Point r4 = partAt(v, "R4"), r5 = partAt(v, "R5");
+        const auto centredOn = [](const funkgui::Prim& p, funkgui::Point q) {
+            return std::fabs(0.5f * (p.x0 + p.x1) - q.x) < 1.0f && std::fabs(0.5f * (p.y0 + p.y1) - q.y) < 1.0f;
+        };
+        const auto around = [](const funkgui::Prim& p, funkgui::Point q) { return p.x0 < q.x && q.x < p.x1 && p.y0 < q.y && q.y < p.y1; };
+        int circles = 0, onGround = 0, dots = 0, outlinedR4 = 0, outlinedR5 = 0;
+        for (const funkgui::Prim& p : f.prims)
+        {
+            if (p.tag != sch::kBadgeTag)
+                continue;
+            const bool hollow = (p.c0 >> 24) == 0;
+            circles += centredOn(p, lone) && hollow && p.c1 == err ? 1 : 0;
+            onGround += centredOn(p, ground) ? 1 : 0;
+            dots += centredOn(p, touch) && !hollow && p.c0 == err ? 1 : 0;
+            const bool outline = hollow && p.c1 == err && std::max(p.x1 - p.x0, p.y1 - p.y0) > 30.0f;   // a body's, not a pin's
+            outlinedR4 += outline && around(p, r4) ? 1 : 0;
+            outlinedR5 += outline && around(p, r5) ? 1 : 0;
+        }
+        std::printf("structural marks: circles %d, on the ground pin %d, dots %d, outlines %d %d\n", circles, onGround, dots,
+                    outlinedR4, outlinedR5);
+        P.eq("marks.unconnected_circle", circles, 1);
+        P.eq("marks.lone_ground_unmarked", onGround, 0);
+        P.eq("marks.touch_dot", dots, 1);
+        P.eq("marks.overlap_outlined", outlinedR4 == 1 && outlinedR5 == 1 ? 1 : 0, 1);
+        writePng(P, host, "gui.schematic.errors.png", "errors");
+    }
 
     return P.finish();
 }
