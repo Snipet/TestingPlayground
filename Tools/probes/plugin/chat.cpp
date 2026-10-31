@@ -1158,6 +1158,7 @@ PROBE(plugin, chat)
             script->add(fake::Response::ok(fake::Sse().start().tool(id, "edit_circuit", input({ { "name", juce::String(file) }, { "ops", juce::var(ops) } })).end("tool_use")));
             script->add(fake::Response::ok(fake::Sse().start().text("Drawn.").end()));
             Turn t;
+            host.tick(45);                               // the last turn's flashes over (0.6 s)
             t.before = panel.editor().text();
             const int from = script->postCount();
             agent.send("change the circuit");
@@ -1170,6 +1171,7 @@ PROBE(plugin, chat)
                     if (panel.editor().text() != t.before)
                     {
                         t.merged = true;
+                        (void)v.drawing();               // the view reconciles the merged text (its next frame would)
                         t.flash = part.empty() ? 0.0f : v.flashOf(part);
                     }
                 }
@@ -1199,7 +1201,7 @@ PROBE(plugin, chat)
             { "R12", { "add R12 o2 0 100k at 64,8 r90" } },
             { "C8", { "add C8 out 0 10n" } },
             { "R12", { "place R12 68,10 r90" } },
-            { "C8", { "connect C8.1 o1" } },
+            { "R11", { "connect C8.1 o1" } },   // o1 joins out (the .output's name kept): R11's and C7's tokens change
             { "C8", { "disconnect C8.1" } },
             { "R4", { "set R4 10k" } },
             { "R40", { "rename R4 R40", "rename z1 zz" } },
@@ -1222,6 +1224,8 @@ PROBE(plugin, chat)
             undone += back && again ? 1 : 0;
             host.tick(1);
             flashed += steps[k].part[0] == '\0' || t.flash > 0.0f ? 1 : 0;
+            if (steps[k].part[0] != '\0' && !(t.flash > 0.0f))
+                std::printf("edit_circuit %s: %s did not flash\n", steps[k].ops[0].c_str(), steps[k].part);
             if (!same || !(back && again))
                 std::printf("edit_circuit %s: merged %d, error %d, same %d, undo %d\n%s\n", steps[k].ops[0].c_str(), t.merged ? 1 : 0,
                             t.error ? 1 : 0, t.after == want ? 1 : 0, back && again ? 1 : 0, t.result.c_str());

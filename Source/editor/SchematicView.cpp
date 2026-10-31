@@ -285,11 +285,21 @@ namespace playground::ui
                 pins.parts.push_back({ p.name, p.origin, p.orient, p.extra, -1 });
         st_->pins = std::move(pins);
         publishPins();
-        // What a part looks like (its place, its turn, its value): a merge flashes those it changed.
+        // What a part is (its place, its turn, its line's tokens: its nodes and its value): a merge flashes those it
+        // changed (Claude's edit_circuit moving, connecting or setting a part).
         shapes_.clear();
         for (const cir::Part& p : d_.parts)
+        {
+            std::string tokens;
+            if (p.element >= 0)
+                for (const cir::Token& t : nl_.elements[static_cast<std::size_t>(p.element)].tokens)
+                    tokens += t.text + ' ';
+            else if (const std::optional<cir::Terminal>& t = p.kind == cir::Kind::Input ? nl_.input : nl_.output; t)
+                for (const cir::Token& x : t->tokens)
+                    tokens += x.text + ' ';
             shapes_[cir::folded(p.name)] = std::to_string(p.origin.x) + "," + std::to_string(p.origin.y) + " "
-                                         + cir::orientName(p.orient) + " " + sch::valueText(nl_, p);
+                                         + cir::orientName(p.orient) + " " + tokens;
+        }
         if (flash)
             for (const auto& [name, shape] : shapes_)
                 if (const auto it = before.find(name); it == before.end() || it->second != shape)
