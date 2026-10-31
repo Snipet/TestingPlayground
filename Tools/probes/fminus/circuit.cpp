@@ -38,7 +38,10 @@
 //                amp_drive; two scalar fields two sets; with 31 params drive takes the 32nd slot and a note each says
 //                tone and level have none; a glide from sample 21312 (a block boundary of 64 and of 333) and another
 //                from 42624, 2 s: the same bits and the same calls in blocks of 64 and 333; still pots no call (an
-//                instrument's note on a free instance whose values are current none either); the shim's whole text
+//                instrument's note on a free instance whose values are current none either); an effect's host->beat
+//                at each 16-sample call's first sample while a pot glides (no step; in 64 and 333 the circuit the same
+//                bits, the position within a tenth of a sample's step); the
+//                shim's whole text
 //                (every element's set()); an instrument's note in a block of 0 samples after a glide landed: the bits
 //                of the same note at the next block's first sample (its call the landed value); the frozen copy made
 //                at a drive and a level moved plays within 80 dB of the program, and a pot moved drops it
@@ -592,6 +595,42 @@ namespace
             std::printf("still: %llu calls, then %llu\n", static_cast<unsigned long long>(fresh),
                         static_cast<unsigned long long>(a.engine().circuitCalls() - after));
             P.eq("dials.still_no_call", a.engine().circuitCalls() == after && fresh == 0 ? 1 : 0, 1);
+        }
+        // The effect's Host block at each call's first sample: while a pot glides, process() is called in pieces on the
+        // 16-sample grid, and host->beat is the song's position at each call's first sample (host.fm), so the position a
+        // program works out for its sample i runs on without a step; the same bits in blocks of 64 and 333.
+        if constexpr (!kInstrument)
+        {
+            const std::string beat = "#include \"screamer.cir\"\n#include \"host.fm\"\nmodule Effect\n{\n    Host* host;\n    Screamer amp;\n"
+                                     "    float rate;\n\n    void init(float r)\n    {\n        amp.init(r);\n        rate = r;\n    }\n\n"
+                                     "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                                     "        for (int i = 0; i < n; ++i)\n        {\n            left[i] = amp.tick(left[i]);\n"
+                                     "            right[i] = host->beat + i * host->bpm / (60 * rate);\n        }\n    }\n};\n";
+            const pg::Sources beatFiles = { { pg::kProgramName, beat }, { "screamer.cir", screamer } };
+            const auto glide = [](std::size_t at, std::array<float, pg::kMaxControls>& n) {
+                if (at == 21312)
+                    n[0] = 1.0f;                         // drive up: 20 ms of 16-sample calls
+            };
+            probe::Rig a(kFs, 512), b(kFs, 512);
+            std::string why;
+            const bool loaded = a.load(beatFiles, &why) && b.load(beatFiles);
+            const probe::Stereo in = input(second);
+            const probe::Stereo o64 = a.run(in, 64, {}, {}, glide), o333 = b.run(in, 333, {}, {}, glide);
+            const double step = 120.0 / (60.0 * kFs);   // no host clock: 120 BPM
+            double worst = 0.0, apart = 0.0;
+            for (std::size_t i = 1; i < o64.r.size(); ++i)
+            {
+                worst = std::max(worst, std::fabs(static_cast<double>(o64.r[i]) - static_cast<double>(o64.r[i - 1]) - step));
+                worst = std::max(worst, std::fabs(static_cast<double>(o333.r[i]) - static_cast<double>(o333.r[i - 1]) - step));
+            }
+            for (std::size_t i = 0; i < o64.r.size(); ++i)
+                apart = std::max(apart, std::fabs(static_cast<double>(o64.r[i]) - static_cast<double>(o333.r[i])));
+            std::printf("host->beat per call while a pot glides: %s%llu calls, the worst step %.3g off %.3g a sample, 64 and 333 "
+                        "%.3g apart\n", why.c_str(), static_cast<unsigned long long>(a.engine().circuitCalls()), worst, step, apart);
+            P.eq("dials.host_beat_per_call", loaded && a.engine().circuitCalls() > 60 && worst < 0.1 * step ? 1 : 0, 1);
+            // the circuit's output the same bits; the position as each call works it out (in float: its own rounding a
+            // call, the documented exception of a program that keeps state per call) within 0.1 of a sample's step
+            P.eq("dials.host_beat_64_333", loaded && o64.l == o333.l && apart < 0.1 * step ? 1 : 0, 1);
         }
         if constexpr (kInstrument)
         {

@@ -526,6 +526,8 @@ namespace playground
                 feed(p, a, -1);
                 effectFed_ = feedGen_;
             }
+            if (a > 0)
+                syncHost(a);                         // host->beat at this call's first sample (host.fm), as a voice's part
             p.process(left + a, right + a, b - a);
             a = b;
         }
