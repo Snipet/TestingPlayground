@@ -10,13 +10,14 @@
 //
 //   explorer  at the left, a card like the chat's (Explorer.h): the program's files (a click shows one, a double click
 //             renames it, its cross closes it, the header's + makes one), its LLVM IR (a click opens the IR tab on a
-//             view, IrView.h), the library (a click adds a file as a tab,
-//             #included, or shows it), the examples (a click loads one, undoably) and the presets on this Mac (a click
-//             loads one, asking first when the editor has changes no preset holds; the header's + opens PRESETS); its
+//             view, IrView.h), the library (a click adds a file as a tab, #included, or shows it), the examples (a
+//             click starts afresh from one, as EXAMPLES) and the presets on this Mac (a click loads one, asking first
+//             when the editor has changes no preset holds; the header's + opens PRESETS); its
 //             sections fold, and the whole card folds away (its chevron; the button at the left of the program's card's
 //             header opens it; EditorPort::explorerOpen); in the PANEL view, or a window too narrow for it, it is away
 //   header    the product name, its kind and version, and the THEME cells (GRAPHITE, PAPER)
-//   toolbar   RUN (Cmd-Return in the editor too), EXAMPLES (a menu: the example replaces the text, undoably, and
+//   toolbar   RUN (Cmd-Return in the editor too), EXAMPLES (a menu: the example starts afresh, as a new instance,
+//             its files the only tabs and the dials at their defaults, asking first when changes would be lost; it
 //             runs), LIBRARY (a menu of ready-made building blocks, Library.h: one becomes a tab and the program
 //             #includes it), the status (running, edited, compiling, the errors' count, the compile time) and, at
 //             the right, the audio thread's load, a snowflake left of it while the frozen copy plays (the dials compiled
@@ -224,9 +225,9 @@ namespace playground::ui
         const std::string& projectText() const noexcept { return projectText_; }
         // Cmd-S: a new version of the project open (its name in the status), or, with none open, PROJECTS.
         void saveVersion();
-        // RANDOM (fminus/Random.h): the program for `seed` (its library files as tabs, those the editor lacks; its text
-        // in place of the program's, an edit Cmd-Z takes back), run. When the tabs left cannot hold its files, the next
-        // seeds are tried (up to 64); false, with a notice in the status, when none fits.
+        // RANDOM (fminus/Random.h): the program for `seed` and its library files, a fresh start as EXAMPLES makes one
+        // (the only tabs, the dials at their defaults, no project open), run. False when it asked first (a menu: the
+        // editor's changes would be lost), the menu's choice then making it.
         bool makeRandom(uint32_t seed);
         // LIBRARY's choice (Library.h): the file as a tab, #included by the program; shown when it is there. False for
         // a name the library has not, or no room for a tab.
@@ -269,8 +270,11 @@ namespace playground::ui
         ExplorerItem& explorer();
         const ExplorerItem& explorer() const;
         funkgui::Rect explorerCard() const noexcept { return explorerCard_; }
-        // EXAMPLES' choice (Examples.h): its text in place of the program's (one edit Cmd-Z takes back), run.
+        // EXAMPLES' choice (Examples.h): the example and its library files, a fresh start (startAfresh), run.
         void loadExample(int i);
+        // A fresh start (EditorPort::startAfresh) from `next`, asking first (a menu, its item `ask`) when the editor's
+        // files have changes nothing holds; `what` names it in the journal. True when it started at once.
+        bool startAfresh(const Sources& next, const std::string& what, const std::string& ask);
         // The IR tab (IrView.h): open, shown, its view (an irview::View) and name; openIrView() as the explorer's LLVM IR
         // row does (the tab opened on that view, shown, the editor focused), closeIrView() as its close box.
         bool irOpen() const;

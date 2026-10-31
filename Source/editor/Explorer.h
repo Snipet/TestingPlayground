@@ -13,7 +13,8 @@
 //             click opens its newest version; the header's button opens PROJECTS (to save, or to open an older version)
 //   LIBRARY   the library's building blocks by category, a tick on those the program has: a click adds one as a tab
 //             (and #includes it), or shows it
-//   EXAMPLES  a click puts the example in the program (one edit, Cmd-Z takes it back) and runs it
+//   EXAMPLES  a click starts afresh from the example (Panel::loadExample: its files the only tabs, the dials at their
+//             defaults, no project open; asking first when changes would be lost) and runs it
 //
 // The Panel builds the sections (setContent) whenever what they show changes, and does what a row asks (Hooks), as
 // the tabs, the LIBRARY and EXAMPLES menus and the presets' card do. The card itself, its title and its fold button

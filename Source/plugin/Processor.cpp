@@ -811,6 +811,14 @@ namespace playground
                 projectDials_.clear();
                 dialsRequest_ = 0;
             }
+            // A fresh start's program (an example's, RANDOM's): every dial at its default once it compiled, as in a
+            // new instance.
+            if (defaultsRequest_ != 0 && s.request >= defaultsRequest_)
+            {
+                if (s.ok && s.request == defaultsRequest_)
+                    setDialsToDefaults(s.controls);
+                defaultsRequest_ = 0;
+            }
         }
         // Dials Claude set, after the compile that may have brought them: host gestures, on this thread.
         std::vector<std::pair<int, float>> dials;
@@ -1225,6 +1233,7 @@ namespace playground
             st.latest = std::max(projectLatest_, projectVersion_);
             st.preset = projectPreset_;
             st.edited = !projectName_.empty() && draft_.files != projectFiles_;
+            st.changed = draft_.files != projectFiles_;
             base = baseDials_;
             cs = controls_;
         }
@@ -1298,6 +1307,24 @@ namespace playground
             }
     }
 
+    // Every dial at its default: a used slot's the program's fminus::default, an unused one the parameter's own (as a
+    // new instance has them). Only those that are elsewhere move, each a host gesture.
+    void Processor::setDialsToDefaults(const Controls& cs)
+    {
+        for (int c = 0; c < kMaxControls; ++c)
+        {
+            const Control& k = cs[static_cast<std::size_t>(c)];
+            juce::RangedAudioParameter& p = *params_[static_cast<std::size_t>(c)];
+            const float to = k.used ? normOf(k, k.def) : p.getDefaultValue();
+            if (p.getValue() == to)
+                continue;
+            ownDials_.fetch_or(1u << c);                         // the example's: its line says so
+            p.beginChangeGesture();
+            p.setValueNotifyingHost(to);
+            p.endChangeGesture();
+        }
+    }
+
     bool Processor::openVersion(const projectstore::Project& p, const projectstore::Version& v, std::string& why)
     {
         Draft d;
@@ -1343,6 +1370,37 @@ namespace playground
             return false;
         journal_.note(Journal::Who::you, "opened project \"" + p->name + "\", version " + std::to_string(v->number));
         return true;
+    }
+
+    // EXAMPLES and RANDOM (EditorPort::startAfresh): `files` as a new instance plays Init. They are the whole draft, no
+    // project is open, and the dials go to their defaults when they have compiled. A version's dials still on their
+    // way are dropped.
+    void Processor::startAfresh(const Sources& files, const std::string& what)
+    {
+        Draft d;
+        d.files = tidyFiles(files);
+        if (d.files.empty())
+            return;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            draft_ = d;
+            ++draftRevision_;                                    // the editor shows the new files
+            projectName_.clear();
+            projectVersion_ = projectLatest_ = 0;
+            projectPreset_.clear();
+            projectFiles_ = d.files;                             // nothing to lose yet, as in a new instance
+            baseDials_.clear();
+        }
+        projectDials_.clear();
+        dialsRequest_ = 0;
+        setGuiPages({});
+        chat_.clearChecks();
+        const uint64_t id = compiler_.request(d.files);
+        defaultsRequest_ = id;
+        editorRun_.store(id);
+        userRun_.store(id);
+        journal_.note(Journal::Who::you,
+                      "started afresh from " + what + " (its files only, every dial at its default)");
     }
 
     bool Processor::saveVersion(const std::string& name, SavedVersion& saved, std::string& why)

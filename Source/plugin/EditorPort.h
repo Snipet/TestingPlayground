@@ -56,6 +56,12 @@
 //                     when nothing changed since the latest (Saved::unchanged). False, with why, when it cannot
 //   openProject()     a version's files (0: the latest) become the draft (the editor shows them: draftRevision bumps)
 //                     and run; its dials are set by name once they compile
+//   startAfresh()     `files` as a new instance plays Init (EXAMPLES' example, RANDOM's program, each with the library
+//                     files it #includes): they become the whole draft (every other file goes: a .gui, a netlist), they
+//                     run, and every dial goes to its default once they compile. No project is open after it, no preset
+//                     applied, Claude's checks are cleared and the interface's pages are its first; `what` names them
+//                     in the journal ("the example \"Init\""). The chat's conversation and the editor's own look (its
+//                     size, theme, zoom, view, folds) stay
 //   deleteProject()   its file deleted; deleteVersion() one version (never the only one)
 //   savePreset()      the dials as they are now, by name, as a preset of the project open (over one of that name)
 //   applyPreset()     a preset's dials, by name: at once when its project is open, else after its latest version is
@@ -189,6 +195,9 @@ namespace playground
         int latest = 0;                          // the project's newest
         std::string preset;                      // the preset applied last ("" for none)
         bool edited = false;                     // the editor's files differ from that version's
+        bool changed = false;                    // the editor's files differ from those last opened, saved or loaded
+                                                 // (a version, an example, the session, a new instance's Init), with a
+                                                 // project open or not: what loading another would lose
         bool dialsEdited = false;                // a dial moved from the preset's (or the version's) value
     };
 
@@ -293,6 +302,7 @@ namespace playground
         virtual std::vector<PresetEntry> presets(const std::string& project) const = 0;
         virtual bool saveVersion(const std::string& name, SavedVersion& saved, std::string& why) = 0;
         virtual bool openProject(const std::string& name, int version, std::string& why) = 0;
+        virtual void startAfresh(const Sources& files, const std::string& what) = 0;
         virtual bool deleteProject(const std::string& name, std::string& why) = 0;
         virtual bool deleteVersion(const std::string& name, int version, std::string& why) = 0;
         virtual bool savePreset(const std::string& preset, std::string& why) = 0;

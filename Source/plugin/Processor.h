@@ -203,6 +203,7 @@ namespace playground
         std::vector<PresetEntry> presets(const std::string& project) const override;
         bool saveVersion(const std::string& name, SavedVersion& saved, std::string& why) override;
         bool openProject(const std::string& name, int version, std::string& why) override;
+        void startAfresh(const Sources& files, const std::string& what) override;
         bool deleteProject(const std::string& name, std::string& why) override;
         bool deleteVersion(const std::string& name, int version, std::string& why) override;
         bool savePreset(const std::string& preset, std::string& why) override;
@@ -283,6 +284,9 @@ namespace playground
         // A version's or a preset's dials, by name, for when its program's compile lands (poll; message thread).
         std::vector<projectstore::Dial> projectDials_;
         uint64_t dialsRequest_ = 0;
+        // A fresh start's compile (startAfresh): every dial to its default when it lands (poll; message thread).
+        uint64_t defaultsRequest_ = 0;
+        void setDialsToDefaults(const Controls& cs);
         std::vector<projectstore::Dial> dialsNow() const;        // the program's dials, by name, in its own units
         void setDialsByName(const Controls& cs, const std::vector<projectstore::Dial>& dials);
         bool openVersion(const projectstore::Project& p, const projectstore::Version& v, std::string& why);
