@@ -38,8 +38,9 @@
 //                tone and level have none; a glide from sample 21312 (a block boundary of 64 and of 333) and another
 //                from 42624, 2 s: the same bits and the same calls in blocks of 64 and 333; still pots no call (an
 //                instrument's note on a free instance whose values are current none either); the shim's whole text
-//                (every element's set()); the frozen copy made at a drive and a level moved plays within 80 dB of the
-//                program, and a pot moved drops it
+//                (every element's set()); an instrument's note in a block of 0 samples after a glide landed: the bits
+//                of the same note at the next block's first sample (its call the landed value); the frozen copy made
+//                at a drive and a level moved plays within 80 dB of the program, and a pot moved drops it
 //   OWN          the circuit examples (the effect's tube screamer, the synth's OTA filter) keep exactly their own dials
 //                and no message: the screamer's fields say why they have none ("program.fm:L: Screamer's pots have no
 //                dials: the program calls its set()"), the OTA filter's has no pot; a set() on a receiver Lang cannot
@@ -50,8 +51,11 @@
 //   SWITCH       a netlist with a switch (FMinus's switch.cir, open by default): its dial an int 0 to 1; still, no call;
 //                flipped to 1, exactly ceil(0.02 rate / 16) + 1 calls at 48 kHz, and its ramp at 1; an instrument's note
 //                from silence on that instance (its start's clear()) leaves it at 1 with no call; a fresh instance with
-//                the dial at 1 is at 1 after its first 64 samples (its first calls, as many as the ramp takes); a NaN
-//                planted in a carried field is cleared by the circuit's guard and the switch stays at 1
+//                the dial at 1 is at 1 after its first 64 samples (its first calls, as many as the ramp takes); a ramp's
+//                worth of first calls only where the switch is not at the dial's position: eight notes with it at its
+//                default take one call each (an effect's first block one), eight on instances that missed a pot's move
+//                one each, eight after it moved while they were free a ramp's worth each, all at 1; a NaN planted in a
+//                carried field is cleared by the circuit's guard and the switch stays at 1
 // and the plugin's self-test (dsp/SelfTester.h, Compiler.h's "The self-test"), a Compiler offering to an Engine played
 // in blocks of 256, on AutoClipper.h's netlists (no assertion is on time; every wait has a deadline):
 //   SELFTEST     with the tests off (setSelfTesting(false)) a RUN plays the provisional configuration and no test runs;
@@ -586,6 +590,34 @@ namespace
                         static_cast<unsigned long long>(a.engine().circuitCalls() - after));
             P.eq("dials.still_no_call", a.engine().circuitCalls() == after && fresh == 0 ? 1 : 0, 1);
         }
+        if constexpr (kInstrument)
+        {
+            // A note in a block of 0 samples right after a block in which a glide landed (drive from sample 512, 20 ms:
+            // it lands at 1472, its window closing at 1488): its first call has the landed value, as the same note at
+            // the next block's first sample has. The same bits.
+            const auto glide = [](std::size_t at, std::array<float, pg::kMaxControls>& n) {
+                if (at == 512)
+                    n[1] = 1.0f;
+            };
+            probe::Rig a(kFs, 512), b(kFs, 512);
+            a.load(files);
+            b.load(files);
+            a.run(input(1536), 512, {}, {}, glide);
+            b.run(input(1536), 512, {}, {}, glide);
+            pg::Event on;
+            on.offset = 0;
+            on.kind = pg::EventKind::noteOn;
+            on.note = 60;
+            on.velocity = 0.8f;
+            float none[2] = { 0.0f, 0.0f };
+            float* channels[2] = { none, none + 1 };
+            a.engine().process(channels, 2, 0, std::span<const pg::Event>(&on, 1));
+            const probe::Stereo oa = a.run(input(second / 2), 512);
+            const probe::Stereo ob = b.run(input(second / 2), 512, { { 0, pg::EventKind::noteOn, 60, 0.8f } });
+            std::printf("a note in a block of 0 samples after a glide landed: %s the note at the next block's start (%.1f dB apart)\n",
+                        same(oa, ob) ? "the bits of" : "NOT", differenceDb(oa, ob));
+            P.eq("dials.zero_block_note_landed_value", same(oa, ob) && finite(oa) && probe::rmsDb(oa.l, 0, oa.size()) > -80.0 ? 1 : 0, 1);
+        }
 
         // The frozen copy plays with the pots where they are, and a pot that moves drops it.
         {
@@ -748,6 +780,56 @@ namespace
                             static_cast<unsigned long long>(fresh.engine().circuitCalls()));
                 P.eq("switch.fresh_at_position", fieldOf(fresh.engine(), "clip.sw_S1", 0) == 1.0
                                                      && static_cast<int>(fresh.engine().circuitCalls()) == want ? 1 : 0, 1);
+            }
+            {
+                // A ramp's worth of first calls only for an instance whose switch is not where the dial is: a program's
+                // first notes with the switch at its default take one call each; so do notes on instances that missed
+                // a pot's move; after the switch moved while they were free, a ramp's worth each, at its position.
+                probe::Rig r(kFs, 256);
+                r.load(sw);
+                if constexpr (kInstrument)
+                {
+                    std::vector<probe::Note> eight, off;
+                    for (int k = 0; k < 8; ++k)
+                    {
+                        eight.push_back({ 0, pg::EventKind::noteOn, 48 + 2 * k, 0.8f });
+                        off.push_back({ 0, pg::EventKind::noteOff, 48 + 2 * k, 0.0f });
+                    }
+                    const auto chordCalls = [&]() {
+                        const uint64_t was = r.engine().circuitCalls();
+                        r.run(input(64), 64, eight);
+                        return static_cast<int64_t>(r.engine().circuitCalls() - was);
+                    };
+                    const int64_t first = chordCalls();
+                    r.run(input(second), 256, off);      // let go: they end, every window long closed
+                    r.run(input(second / 2), 256, {}, {}, [](std::size_t at, std::array<float, pg::kMaxControls>& n) {
+                        if (at == 0)
+                            n[0] = 0.9f;             // tone, no voice sounding: every instance misses it
+                    });
+                    const int64_t afterPot = chordCalls();
+                    r.run(input(second), 256, off);
+                    r.run(input(second / 2), 256, {}, {}, [](std::size_t at, std::array<float, pg::kMaxControls>& n) {
+                        if (at == 0)
+                            n[1] = 1.0f;             // the switch to 1, no voice sounding
+                    });
+                    const int64_t afterSwitch = chordCalls();
+                    std::vector<pg::Engine::VoiceInfo> vs;
+                    r.engine().voices(vs);
+                    bool at1 = vs.size() == 8;
+                    for (const pg::Engine::VoiceInfo& v : vs)
+                        at1 = at1 && fieldOf(r.engine(), "clip.sw_S1", v.instance) == 1.0;
+                    std::printf("eight notes: %lld calls at the default, %lld after a pot moved, %lld after the switch moved (%s at 1)\n",
+                                static_cast<long long>(first), static_cast<long long>(afterPot), static_cast<long long>(afterSwitch),
+                                at1 ? "all" : "NOT all");
+                    P.eq("switch.first_calls_at_default", first, 8);
+                    P.eq("switch.first_calls_after_pot", afterPot, 8);
+                    P.eq("switch.first_calls_after_switch", afterSwitch == 8 * want && at1 ? 1 : 0, 1);
+                }
+                else
+                {
+                    r.run(input(64), 64);
+                    P.eq("switch.first_calls_at_default", static_cast<int64_t>(r.engine().circuitCalls()), 1);
+                }
             }
             // a NaN planted in a carried field: the circuit's guard clears it, and the switch stays
             const bool planted = plantNaN(rig.engine(), "clip.x_C1", 0);

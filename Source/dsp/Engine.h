@@ -27,19 +27,20 @@
 //
 // Circuit dials (Patch.h, "Circuits"). A dial that drives a circuit's pot glides as a real dial does (20 ms), and a
 // circuit's switch is an int dial; neither is an FMinus parameter: the Engine hands their values to the program through
-// the shims compile() appended (Patch::setCircuits), each call every bound field's set() in one instance. It calls
-// them on the absolute grid of kGrid samples (counted from prepare(), as the voices' parts are), with the dials' glided
+// the shims compile() appended (Patch::setCircuits), each call every bound field's set() in one instance. It calls them
+// on the absolute grid of kGrid samples (counted from prepare(), as the voices' parts are), with the dials' glided
 // values at that sample: at every grid tick while a bound dial glides, through the first tick at or after it lands,
 // and, after a bound switch changes, for ceil(0.02 rate / kGrid) + 1 ticks (its ramp: FMinus moves a switch a step a
 // set() call over 20 ms). An instance that has not had the dials' values yet (a new program's, a voice's instance that
 // missed calls while free) gets a call before its first process (an effect: at its block's first sample; a voice:
-// before its start, or before its first part when its note came with the program); with a switch bound, as many calls
-// in a row as its ramp takes, so it starts at the dial's position (it has played nothing yet: no step is heard). While
-// the dials stand still, no call. The effect's process is cut at those grid ticks, and
-// then only (a named exception to block-size invariance: while a circuit dial moves, the effect's calls end on the
-// grid, so a program that keeps state per call may differ there, as it may where any dial moves); an instrument's
-// voices already run in parts cut on the grid, and each voice of the program that plays gets its own calls. The old
-// program of a swap gets none (its dials hold still). circuitCalls() counts the calls (the probes').
+// before its start, or before its first part when its note came with the program); when a bound switch's dial is not
+// where the instance's switch is (a fresh instance's at the netlist's default; one that missed a switch's change, or
+// was let go during its ramp), as many calls in a row as the ramp takes, so it starts at the dial's position (it has
+// played nothing yet: no step is heard). While the dials stand still, no call. The effect's process is cut at those
+// grid ticks, and then only (a named exception to block-size invariance: while a circuit dial moves, the effect's calls
+// end on the grid, so a program that keeps state per call may differ there, as it may where any dial moves); an
+// instrument's voices already run in parts cut on the grid, and each voice of the program that plays gets its own
+// calls. The old program of a swap gets none (its dials hold still). circuitCalls() counts the calls (the probes').
 //
 // The output guard. Whatever a program computes, what leaves the Engine is finite and within +-4 (+12 dBFS): a NaN or
 // an infinity becomes 0, and a sample beyond is clipped. Either raises an alert (takeAlerts) the editor shows. A NaN in
@@ -254,10 +255,11 @@ namespace playground
         void retireFrozen() noexcept;                 // the held copies into the slots collect() empties
         void glideControls(int n) noexcept;           // the ramps over the block: streamBuf_, streaming_, feedGen_
         void feed(Patch& p, int offset, int instance) noexcept;   // the dials into p: streams from `offset`
-        // The circuit dials (above): current_'s shims in `instance` with the dials' values at the block's sample `at`.
+        // The circuit dials (above): current_'s shims in `instance` with the dials' values at the block's sample `at`
+        // (at < 0: their values after the last block, for a block of 0 samples).
         void callCircuits(int at, int instance) noexcept;
-        // An instance's first calls (a new program's, one that missed calls): one, and with a switch bound as many as its
-        // ramp takes; the instance's values current.
+        // An instance's first calls (a new program's, one that missed calls): one, and as many as a switch's ramp takes
+        // when a bound switch is not where the instance's last calls left it; the instance's values current.
         void firstCalls(int at, int instance) noexcept;
         // The effect's program over the block: its first circuit call, then its process cut at the grid ticks that call.
         void playEffect(float* left, float* right, int n) noexcept;
@@ -330,9 +332,19 @@ namespace playground
         uint64_t circuitUntil_ = 0;
         uint64_t circuitGen_ = 1;
         std::array<uint64_t, Patch::kInstances> instanceGen_{};
+        // The bound switches' positions, so that only an instance whose switches are elsewhere gets a ramp's worth of
+        // first calls: their generation (0 while every bound switch is at its default, where init leaves an instance;
+        // else a new one at each change), the end of the window their ramp takes (absolute samples below switchUntil_),
+        // and each instance's: the generation its last calls gave it (0 for a fresh program's; kSwitchesUnknown for an
+        // instance kept across prepare(), or let go while a ramp's window was open).
+        static constexpr uint64_t kSwitchesUnknown = ~uint64_t{ 0 };
+        uint64_t switchGen_ = 0;
+        uint64_t switchCount_ = 0;
+        uint64_t switchUntil_ = 0;
+        std::array<uint64_t, Patch::kInstances> instanceSwitch_{};
         uint64_t effectCalledAt_ = kNever;
         std::array<float, kMaxControls> circuitPlain_{};
-        int callAt_ = 0;
+        int callAt_ = 0;                              // -1: a block of 0 samples (the dials as the last block left them)
         uint64_t circuitCalls_ = 0;
 
         std::array<Voice, 2 * Patch::kInstances> voices_{};
