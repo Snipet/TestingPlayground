@@ -114,6 +114,10 @@ namespace playground
         // module, netlist, extent (its instances' paths), pots and switches, whether the program drives them itself
         // (`own`, and why), and its dials' names and slots in `controls`.
         std::vector<lang::CircuitBinding> circuitDials;
+        // The probe table of `program` (Patch.h, "Probes"; Patch::Recipe::probes): each field of its main module of a
+        // netlist's module, its elements' paths and the netlist's nodes (name, line, readable, why, dc), what the
+        // schematic's probes resolve a net against by name (a ProbeSet's circuit is the index).
+        std::vector<circuits::Probed> probes;
     };
 
     // The last check's outcome (Compiler::check).

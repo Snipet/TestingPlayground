@@ -12,7 +12,8 @@
 //   FREEZE       Patch::freeze (the plugin's frozen copy) is made, the layout kept; in exact math it plays the
 //                program's bits; in Math::Fast it is finite and its difference 80 dB under the signal
 //   TRACE        trace's pass 2 (calls of one sample) gives pass 1's bits, and the field map lists the module's
-//                fields as paths (pedal.x_C1, pedal.v_D1)
+//                fields as paths (pedal.x_C1, pedal.v_D1); no probe field (circuits::kProbeFields) in the map nor in
+//                what it leaves out (unmapped); the probe table holds the field, its netlist and its nodes
 //   ERRORS       a netlist's error is cited at its line ("broken.cir:L:1: error: ...") in compile's errors and in
 //                check's, and stops the compile; an #include of a netlist no tab has is FMinus's 'file not found'; a
 //                netlist as the program (the first file) is the plugin's error
@@ -1322,6 +1323,22 @@ PROBE(fminus, circuit)
             for (const pg::Patch::Field& f : c.patch->fieldMap())
                 paths += f.path == "pedal.x_C1" || f.path == "pedal.v_D1" ? 1 : 0;
         P.eq("trace.field_paths", paths, 2);
+        // The probe fields (Patch.h, "Probes": every netlist generated with them) are the probes', never the trace's:
+        // no kProbeFields name in the map nor in what it leaves out, while the module has them all.
+        int probeNamed = 0, probeLeft = 0;
+        if (c.patch)
+        {
+            for (const pg::Patch::Field& f : c.patch->fieldMap())
+                probeNamed += pg::circuits::isProbeField(f.name) ? 1 : 0;
+            for (const std::string& l : c.patch->unmapped())
+                for (const char* name : pg::circuits::kProbeFields)
+                    probeLeft += l.find(std::string(".") + name) != std::string::npos || l.rfind(name, 0) == 0 ? 1 : 0;
+        }
+        P.eq("trace.no_probe_fields", c.patch != nullptr && probeNamed == 0 && probeLeft == 0 ? 1 : 0, 1);
+        P.eq("trace.probe_table", c.patch != nullptr && c.patch->probeCircuits() == 1 && c.patch->probed().size() == 1
+                                      && c.patch->probed()[0].field == "pedal" && c.patch->probed()[0].file == "screamer.cir"
+                                      && c.patch->probed()[0].paths == std::vector<std::string>{ "pedal" }
+                                      && c.patch->probed()[0].nodes.size() == gen.nodes.size() ? 1 : 0, 1);
     }
 
     // ---- ERRORS -------------------------------------------------------------------------------------------------------
@@ -1389,7 +1406,9 @@ PROBE(fminus, circuit)
     // ---- RECIPE -------------------------------------------------------------------------------------------------------
     {
         const std::string screamer = libraryText("screamer.cir");
-        const fminus::circuit::Result gen = fminus::circuit::generate(screamer, "screamer.cir");
+        fminus::circuit::Options probed;
+        probed.probes = true;                                   // the playground's (Circuits.h, "Probes")
+        const fminus::circuit::Result gen = fminus::circuit::generate(screamer, "screamer.cir", probed);
         const pg::Patch::Result c = pg::Patch::compile(pg::withLibraryIncludes(pg::singleFile(programFor("screamer.cir", gen))), 48000.0f);
         P.eq("recipe.compiles", c.patch != nullptr ? 1 : 0, 1);
         if (c.patch)
@@ -1454,6 +1473,7 @@ PROBE(fminus, circuit)
         const pg::Patch::Result again = pg::Patch::compile(files, 48000.0f);
         fminus::circuit::Options chosen;
         chosen.chosen = answer.choice;
+        chosen.probes = true;                                   // the playground's (Circuits.h, "Probes")
         const fminus::circuit::Result want = fminus::circuit::generate(job.netlist, job.file, chosen);
         std::printf("answered: %s; %s%s\n", want.configuration.c_str(), again.errors.c_str(), again.notes.c_str());
         P.eq("store.compiles_quietly", again.patch != nullptr && again.errors.empty() && again.notes.empty() ? 1 : 0, 1);

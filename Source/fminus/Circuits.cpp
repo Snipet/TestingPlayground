@@ -10,7 +10,38 @@ namespace playground::circuits
 {
     namespace
     {
+        // Circuits.h's probe numbers and names are FMinus's (fminus/Circuit.h, which only this file includes).
+        constexpr bool sameName(const char* a, const char* b)
+        {
+            for (; *a != '\0' || *b != '\0'; ++a, ++b)
+                if (*a != *b)
+                    return false;
+            return true;
+        }
+        constexpr bool sameProbeFields()
+        {
+            constexpr std::size_t n = sizeof kProbeFields / sizeof kProbeFields[0];
+            if (n != sizeof fminus::circuit::kProbeFields / sizeof fminus::circuit::kProbeFields[0])
+                return false;
+            for (std::size_t k = 0; k < n; ++k)
+                if (!sameName(kProbeFields[k], fminus::circuit::kProbeFields[k]))
+                    return false;
+            return true;
+        }
+        static_assert(kProbeSlots == fminus::circuit::kProbeSlots && kProbeRing == fminus::circuit::kProbeRing,
+                      "Circuits.h's probe numbers are FMinus's");
+        static_assert(sameProbeFields(), "Circuits.h's kProbeFields are FMinus's");
+
         std::atomic<uint64_t> gGenerations{ 0 };
+
+        std::vector<Node> nodesOf(const fminus::circuit::Result& r)
+        {
+            std::vector<Node> out;
+            out.reserve(r.nodes.size());
+            for (const fminus::circuit::Node& n : r.nodes)
+                out.push_back({ n.name, n.line, n.column, n.rate, n.dc, n.readable, n.why });
+            return out;
+        }
 
         // The line of `notes` that says the configuration is provisional (generate()'s one such note), with its line
         // break; "" when there is none.
@@ -35,6 +66,14 @@ namespace playground::circuits
                 ++end;
             return end > at ? std::atoi(s.substr(at, end - at).c_str()) : 0;
         }
+    }
+
+    bool isProbeField(std::string_view name) noexcept
+    {
+        for (const char* f : kProbeFields)
+            if (name == f)
+                return true;
+        return false;
     }
 
     // ---- the answers ------------------------------------------------------------------------------------------------
@@ -316,6 +355,7 @@ namespace playground::circuits
     Generator::Module& Generator::generate(const SourceFile& netlist, bool job)
     {
         fminus::circuit::Options options;
+        options.probes = true;                   // above, "Probes": the same bits, messages and key, and the fields
         // The store's answer, when it holds one for this netlist (its key, from a parse and a plan: cheap), or the pin's
         // when the pins name its key (an empty one: none); one that does not read back is left out, and the
         // provisional configuration plays.
@@ -343,6 +383,7 @@ namespace playground::circuits
             // it (its note says why) and plays the provisional configuration. Generated without it; the store's is
             // erased (a pin's is a recording's: kept), so the self-test answers the key again.
             fminus::circuit::Options without;
+            without.probes = true;
             const fminus::circuit::Result again = fminus::circuit::generate(netlist.text, netlist.name, without);
             gGenerations.fetch_add(1, std::memory_order_relaxed);
             if (again.errors.empty())
@@ -377,7 +418,8 @@ namespace playground::circuits
                 used_.push_back({ r.selfTestKey, options.chosen ? *answer : std::string() });
             }
         }
-        modules_.push_back(std::make_unique<Module>(Module{ netlist.name, r.source, r.lines, Shape{ r.module, r.pots, r.switches } }));
+        modules_.push_back(std::make_unique<Module>(Module{ netlist.name, r.source, r.lines,
+                                                            Shape{ r.module, r.pots, r.switches, nodesOf(r) } }));
         return *modules_.back();
     }
 
@@ -386,6 +428,18 @@ namespace playground::circuits
         for (const std::unique_ptr<Module>& m : modules_)
             if (m->name == name && !m->text.empty())
                 return &m->shape;
+        return nullptr;
+    }
+
+    const Generator::Shape* Generator::shapeOfModule(std::string_view module, std::string* file) const
+    {
+        for (const std::unique_ptr<Module>& m : modules_)
+            if (!m->text.empty() && !m->shape.module.empty() && m->shape.module == module)
+            {
+                if (file != nullptr)
+                    *file = m->name;
+                return &m->shape;
+            }
         return nullptr;
     }
 

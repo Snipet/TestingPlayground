@@ -188,6 +188,10 @@ namespace playground
         uint64_t program() const override;
         bool meters(Meters& out) const override;
         void scope(bool input, float* out, int n) const override;
+        int addProbeOwner() override;
+        void setProbes(int owner, const ProbeSet& set) override;
+        void removeProbeOwner(int owner) override;
+        int probe(int slot, float* out, int n) const override { return engine_.probe(slot, out, n); }
         float load() const override;
         bool frozen() const override;
         uint32_t alerts() const override;
@@ -324,6 +328,18 @@ namespace playground
         WindowHooks windowHooks_;                                // the Standalone's window (message thread)
         uint64_t settingsAsked_ = 0;                             // showSettings()'s count (message thread)
         int irViewers_ = 0;                                      // the editors' IR views open (message thread)
+        // The probes' owners (EditorPort::addProbeOwner; message thread): each one's set, the oldest first. The newest
+        // whose set is armed reaches the Engine (sendProbes), none: an empty set.
+        struct ProbeOwner
+        {
+            int id = 0;
+            ProbeSet set;
+        };
+        std::vector<ProbeOwner> probeOwners_;
+        int probeOwnersMade_ = 0;
+        ProbeSet probesSent_{};
+        bool probesSentOnce_ = false;
+        void sendProbes();
         double alertsAt_ = 0.0;                                  // when alerts_ last gained a bit (ms)
 
         std::array<float, kMaxControls> values_{};               // audio thread: the last good normalised values

@@ -828,6 +828,71 @@ namespace playground
                     break;
                 }
         }
+        // The probe table (Patch.h, "Probes"): each main-module field of a netlist's module (a scalar or an array), its
+        // elements and the probe fields' offsets in one, each checked against its type and the sizes; the netlists'
+        // modules, whose probe fields the field map leaves out.
+        for (const SourceFile& g : circuits.generated())
+            if (const circuits::Generator::Shape* shape = circuits.shape(g.name); shape != nullptr && !shape->module.empty())
+                patch->circuitModules_.push_back(shape->module);
+        for (const fminus::Program::Module::Field& f : s.module->fields)
+        {
+            std::string base;
+            std::size_t extent = 0;
+            if (f.type.rfind("param ", 0) == 0 || !heldModule(f.type, base, extent) || extent == 0 || f.size % extent != 0)
+                continue;
+            std::string netlist;
+            const circuits::Generator::Shape* shape = circuits.shapeOfModule(base, &netlist);
+            const fminus::Program::Module* m = shape != nullptr ? program.module(base) : nullptr;
+            if (m == nullptr || f.offset + f.size > s.module->size || f.size / extent < m->size)
+                continue;
+            ProbeEntry e;
+            e.base = f.offset;
+            e.stride = f.size / extent;
+            e.elements = static_cast<int>(extent);
+            bool ok = true;
+            const auto at = [&](const char* name, const char* type, std::size_t size, std::size_t& out) {
+                const auto x = std::find_if(m->fields.begin(), m->fields.end(),
+                                            [&](const fminus::Program::Module::Field& y) { return y.name == name; });
+                if (x == m->fields.end() || squeezed(x->type) != type || x->size != size || x->offset + x->size > m->size)
+                    ok = false;
+                else
+                    out = x->offset;
+            };
+            const std::string slots = "[" + std::to_string(circuits::kProbeSlots) + "]";
+            at("prb_", "int", sizeof(int32_t), e.prb);
+            at("prs_", ("int" + slots).c_str(), sizeof(int32_t) * circuits::kProbeSlots, e.prs);
+            at("prn_", "int", sizeof(int32_t), e.prn);
+            at("pr_", ("float[" + std::to_string(circuits::kProbeSlots * circuits::kProbeRing) + "]").c_str(),
+               sizeof(float) * circuits::kProbeSlots * circuits::kProbeRing, e.pr);
+            at("prp_", ("float" + slots).c_str(), sizeof(float) * circuits::kProbeSlots, e.prp);
+            at("pra_", ("float" + slots).c_str(), sizeof(float) * circuits::kProbeSlots, e.pra);
+            at("prq_", ("float" + slots).c_str(), sizeof(float) * circuits::kProbeSlots, e.prq);
+            if (!ok)
+                continue;
+            for (const circuits::Node& n : shape->nodes)
+                e.readable.push_back(n.readable ? 1 : 0);
+            circuits::Probed d;
+            d.field = f.name;
+            d.module = base;
+            d.file = netlist;
+            d.nodes = shape->nodes;
+            std::vector<std::size_t> dims;
+            for (std::size_t open = f.type.find('['); open != std::string::npos; open = f.type.find('[', open + 1))
+                dims.push_back(static_cast<std::size_t>(std::max(1L, std::strtol(f.type.c_str() + open + 1, nullptr, 10))));
+            for (std::size_t k = 0; k < extent; ++k)
+            {
+                std::string index;
+                std::size_t rest = k;
+                for (std::size_t dd = dims.size(); dd-- > 0;)
+                {
+                    index = "[" + std::to_string(rest % dims[dd]) + "]" + index;
+                    rest /= dims[dd];
+                }
+                d.paths.push_back(f.name + index);
+            }
+            patch->probes_.push_back(std::move(e));
+            patch->recipe_.probes.push_back(std::move(d));
+        }
         patch->mapFields();
         patch->reset(sampleRate);
         if (keepIr)
@@ -1133,6 +1198,7 @@ namespace playground
             const fminus::Program& program;
             std::vector<Patch::Field>& out;
             std::vector<std::string>& left;
+            const std::vector<std::string>& circuitModules;   // their probe fields are the probes', never mapped
             bool full = false;
 
             void leave(const std::string& line)
@@ -1195,11 +1261,14 @@ namespace playground
             void fields(const fminus::Program::Module& m, const std::string& prefix, std::size_t base, Patch::Field::Home home,
                         int depth)
             {
+                const bool circuit = std::find(circuitModules.begin(), circuitModules.end(), m.name) != circuitModules.end();
                 for (const fminus::Program::Module::Field& f : m.fields)
                 {
                     const std::string path = prefix + f.name;
                     if (f.type.rfind("param ", 0) == 0)
                         continue;                      // a dial (or a held module's parameter at its default)
+                    if (circuit && circuits::isProbeField(f.name))
+                        continue;                      // the probes' (Patch.h, "Probes"), not the circuit's
                     if (f.type.find('*') != std::string::npos)
                     {
                         const std::string t = squeezed(f.type);
@@ -1238,7 +1307,7 @@ namespace playground
         fields_.clear();
         unmapped_.clear();
         const fminus::Program& program = *s_->program;
-        Mapper map{ program, fields_, unmapped_, false };
+        Mapper map{ program, fields_, unmapped_, circuitModules_, false };
         const fminus::Program::Module* main = program.module(kModule);
         if (main == nullptr)
             return;
@@ -1267,6 +1336,100 @@ namespace playground
         }
         if (const fminus::Program::Module* host = program.module(kHostModule); host != nullptr && host_ != nullptr && !viaHost.empty())
             map.fields(*host, viaHost + "->", 0, Field::Home::host, 0);
+    }
+
+    // ---- the probes (Patch.h, "Probes") ----------------------------------------------------------------------------------
+    int Patch::probeElements(int circuit) const noexcept
+    {
+        return circuit >= 0 && circuit < static_cast<int>(probes_.size()) ? probes_[static_cast<std::size_t>(circuit)].elements : 0;
+    }
+
+    char* Patch::probeElement(int c, int e, int i) const noexcept
+    {
+        if (c < 0 || c >= static_cast<int>(probes_.size()) || i < 0 || i >= static_cast<int>(instances_.size()))
+            return nullptr;
+        const ProbeEntry& p = probes_[static_cast<std::size_t>(c)];
+        if (e < 0 || e >= p.elements)
+            return nullptr;
+        return static_cast<char*>(instances_[static_cast<std::size_t>(i)]) + p.base + static_cast<std::size_t>(e) * p.stride;
+    }
+
+    uint8_t Patch::armProbes(int c, int e, int i, const int16_t (&nodes)[circuits::kProbeSlots]) noexcept
+    {
+        char* at = probeElement(c, e, i);
+        if (at == nullptr)
+            return 0;
+        const ProbeEntry& p = probes_[static_cast<std::size_t>(c)];
+        uint8_t armed = 0;
+        for (int k = 0; k < circuits::kProbeSlots; ++k)
+        {
+            const int n = nodes[k];
+            const bool readable = n >= 0 && n < static_cast<int>(p.readable.size()) && p.readable[static_cast<std::size_t>(n)] != 0;
+            const int32_t v = readable ? n : -1;
+            std::memcpy(at + p.prs + sizeof(int32_t) * static_cast<std::size_t>(k), &v, sizeof v);
+            armed = static_cast<uint8_t>(armed | (readable ? 1u << k : 0u));
+        }
+        const int32_t on = armed != 0 ? 1 : 0;
+        std::memcpy(at + p.prb, &on, sizeof on);
+        probeWrites_.fetch_add(1, std::memory_order_relaxed);
+        return armed;
+    }
+
+    void Patch::disarmProbes(int c, int e, int i) noexcept
+    {
+        char* at = probeElement(c, e, i);
+        if (at == nullptr)
+            return;
+        const int32_t off = 0;
+        std::memcpy(at + probes_[static_cast<std::size_t>(c)].prb, &off, sizeof off);
+        probeWrites_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    bool Patch::probeArmed(int c, int e, int i) const noexcept
+    {
+        const char* at = probeElement(c, e, i);
+        if (at == nullptr)
+            return false;
+        int32_t on = 0;
+        std::memcpy(&on, at + probes_[static_cast<std::size_t>(c)].prb, sizeof on);
+        return on != 0;
+    }
+
+    bool Patch::probeCount(int c, int e, int i, uint32_t& prn) const noexcept
+    {
+        const char* at = probeElement(c, e, i);
+        if (at == nullptr)
+            return false;
+        int32_t n = 0;
+        std::memcpy(&n, at + probes_[static_cast<std::size_t>(c)].prn, sizeof n);
+        prn = static_cast<uint32_t>(n);
+        return true;
+    }
+
+    const float* Patch::probeRing(int c, int e, int i, int slot) const noexcept
+    {
+        const char* at = probeElement(c, e, i);
+        if (at == nullptr || slot < 0 || slot >= circuits::kProbeSlots)
+            return nullptr;
+        return reinterpret_cast<const float*>(at + probes_[static_cast<std::size_t>(c)].pr
+                                              + sizeof(float) * static_cast<std::size_t>(circuits::kProbeRing * slot));
+    }
+
+    bool Patch::takeProbeStats(int c, int e, int i, float (&peak)[circuits::kProbeSlots], float (&sum)[circuits::kProbeSlots],
+                               float (&squares)[circuits::kProbeSlots]) noexcept
+    {
+        char* at = probeElement(c, e, i);
+        if (at == nullptr)
+            return false;
+        const ProbeEntry& p = probes_[static_cast<std::size_t>(c)];
+        std::memcpy(peak, at + p.prp, sizeof peak);
+        std::memcpy(sum, at + p.pra, sizeof sum);
+        std::memcpy(squares, at + p.prq, sizeof squares);
+        std::memset(at + p.prp, 0, sizeof peak);
+        std::memset(at + p.pra, 0, sizeof sum);
+        std::memset(at + p.prq, 0, sizeof squares);
+        probeWrites_.fetch_add(1, std::memory_order_relaxed);
+        return true;
     }
 
     const void* Patch::instance(int i) const noexcept

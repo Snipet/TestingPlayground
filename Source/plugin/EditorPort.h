@@ -38,6 +38,10 @@
 //   scope()           the last n samples of the input or the output (Engine::scope)
 //   addMeterReader()  meters() and scope() are measured only while someone reads them (Engine::readers): a Panel adds
 //   removeMeterReader() itself in its constructor and removes itself in its destructor; meterReaders() how many now
+//   addProbeOwner()   the schematic's live probes (Engine.h, "Probes"): a Panel that arms one becomes an owner (a
+//   setProbes()       headless picture's Panel never does), sets its ProbeSet (program 0: nothing) and removes itself
+//   removeProbeOwner() when it goes; the newest owner whose set is armed reaches the Engine, so a second Panel that
+//   probe()           arms nothing leaves the first's armed; probe() the last n samples of a slot's ring (Engine::probe)
 //   load()            the audio thread's busiest recent block, as a share of its time (Engine::load)
 //   alerts()          the output guard's alerts of the last two seconds (Engine::Alert bits)
 //   projects()        the projects saved on this Mac (ProjectStore.h), by name: each a program and its dials, kept as
@@ -259,6 +263,22 @@ namespace playground
         virtual void addMeterReader() = 0;
         virtual void removeMeterReader() = 0;
         virtual int meterReaders() const = 0;
+        // The probes (above): an owner's id (from 1), its set, its leaving; a slot's last n samples, oldest first: how
+        // many are of the set that plays (Engine::probe).
+        virtual int addProbeOwner() { return 0; }
+        virtual void setProbes(int owner, const ProbeSet& set)
+        {
+            (void)owner;
+            (void)set;
+        }
+        virtual void removeProbeOwner(int owner) { (void)owner; }
+        virtual int probe(int slot, float* out, int n) const
+        {
+            (void)slot;
+            for (int i = 0; i < n; ++i)
+                out[i] = 0.0f;
+            return 0;
+        }
 
         virtual float load() const = 0;
         virtual uint32_t alerts() const = 0;

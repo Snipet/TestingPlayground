@@ -72,6 +72,17 @@
 // that moves drops it, as any dial does. The recipe keeps the bindings and the shims' count (Recipe::bindings), so
 // freeze(), ir() and frozenIr() find the shims the source carries.
 //
+// Probes. Every netlist is generated with FMinus's probes on (Circuits.h, "Probes"), so a netlist's module carries the
+// probe fields (circuits::kProbeFields) after its own, in the program, its frozen copy and every recompile alike. For
+// each field of the main module (a scalar or an array) whose type is a netlist's module, compile() keeps a probe table
+// entry (probed(): the field, its netlist, its elements' paths and the netlist's nodes, which CompileStatus::probes
+// shows): each element's offset in an instance and the probe fields' offsets in it, from FMinus's
+// Program::Module::Field, each checked against its type, the module's size and the instance's (a field that differs
+// gets no entry). The accessors below are the Engine's, on the audio thread between calls (noexcept, nothing
+// allocated, every index checked): arm a slot set into one element of one instance, disarm it, read how many samples
+// it wrote, its rings, and its stats (read and zeroed). Nothing else writes the probe fields; the field map
+// (fieldMap(), unmapped()) leaves them out.
+//
 // The methods the audio thread calls (process, start, stop) must not allocate: FMinus refuses a program whose methods
 // could reach calloc, malloc or free from them (init and end may: a delay line's memory). They need no
 // [[clang::nonblocking]] of their own: the plugin calls each through a function of its own with the type it calls it
@@ -208,6 +219,8 @@ namespace playground
             std::vector<lang::CircuitBinding> bindings;   // the main module's circuit fields and their dials' slots
                                                           // (above, "Circuits"), checked
             int circuitShims = 0;                      // the shims appended: playground_circuit_0 to _<n - 1>
+            std::vector<circuits::Probed> probes;      // the probe table's fields and their netlists' nodes (above,
+                                                       // "Probes"): what the status of the program that plays shows
             std::string source;                        // the program with the plugin's calls appended
             std::array<std::string, kMaxControls> names{};   // each control's parameter, qualified ("" for none)
             std::array<bool, kMaxControls> streams{};        // bound as a stream (a float), else a knob
@@ -270,6 +283,29 @@ namespace playground
         // The bindings, checked, with their slots (Recipe::bindings): the status's (CompileStatus::circuitDials).
         const std::vector<lang::CircuitBinding>& circuitBindings() const noexcept { return recipe_.bindings; }
 
+        // ---- the probes (above, "Probes") ---------------------------------------------------------------------------
+        // The table's fields, in the main module's field order (a ProbeSet's circuit is the index), and each one's
+        // elements. Any thread.
+        const std::vector<circuits::Probed>& probed() const noexcept { return recipe_.probes; }
+        int probeCircuits() const noexcept { return static_cast<int>(probes_.size()); }
+        int probeElements(int circuit) const noexcept;
+        // The audio thread's, between calls, on instance i's element e of field c (an index out of range: nothing done,
+        // false or null). arm: each slot's node into prs_ (a readable node in range, else -1), then prb_ (1 when a slot
+        // has one, else 0). disarm: prb_ = 0. count: prn_. ring: slot k's kProbeRing samples (index
+        // i % kProbeRing is the sample written at prn_ = i). stats: each slot's peak, sum and sum of squares, then zeroed.
+        // arm gives the slots armed (bit k: slot k's node is readable), 0 when none (prb_ 0 then).
+        uint8_t armProbes(int c, int e, int i, const int16_t (&nodes)[circuits::kProbeSlots]) noexcept;
+        void disarmProbes(int c, int e, int i) noexcept;
+        bool probeCount(int c, int e, int i, uint32_t& prn) const noexcept;
+        const float* probeRing(int c, int e, int i, int slot) const noexcept;
+        bool takeProbeStats(int c, int e, int i, float (&peak)[circuits::kProbeSlots], float (&sum)[circuits::kProbeSlots],
+                            float (&squares)[circuits::kProbeSlots]) noexcept;
+        // The writes into this Patch's probe fields so far (arm, disarm, the stats zeroed): the probes' (a retired
+        // program's count stops). Any thread.
+        uint64_t probeWrites() const noexcept { return probeWrites_.load(std::memory_order_relaxed); }
+        // Whether instance i's element e of field c is armed (its prb_ is not 0): the probes'.
+        bool probeArmed(int c, int e, int i) const noexcept;
+
         // The field display t (PanelDisplay::tap) shows: its value in instance i, as a float (an int's number, a bool's
         // 0 or 1). After a block, on the audio thread.
         int taps() const noexcept { return static_cast<int>(taps_.size()); }
@@ -324,6 +360,20 @@ namespace playground
             Type type = Type::real;
         };
         std::vector<Tap> taps_;
+        // The probe table (above, "Probes"): per field, its offset in an instance and an element's size, its elements,
+        // the probe fields' offsets in an element, and which of its nodes a probe reads.
+        struct ProbeEntry
+        {
+            std::size_t base = 0, stride = 0;
+            int elements = 1;
+            std::size_t prb = 0, prs = 0, prn = 0, pr = 0, prp = 0, pra = 0, prq = 0;
+            std::vector<uint8_t> readable;
+        };
+        std::vector<ProbeEntry> probes_;
+        std::vector<std::string> circuitModules_;      // the modules generated from netlists (mapFields leaves out
+                                                       // their probe fields)
+        std::atomic<uint64_t> probeWrites_{ 0 };
+        char* probeElement(int c, int e, int i) const noexcept;   // its address, or null
         std::vector<Field> fields_;
         std::vector<std::string> unmapped_;
         std::vector<const void*> params_;             // per control: its fminus::Program::Parameter (null: unused)

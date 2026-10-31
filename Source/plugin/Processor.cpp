@@ -1093,6 +1093,44 @@ namespace playground
     void Processor::check(const Sources& files) { compiler_.check(files); }
     CheckStatus Processor::checkStatus() const { return compiler_.checkStatus(); }
 
+    // The probes' owners (EditorPort.h): the newest with a set armed reaches the Engine, only when that changes.
+    int Processor::addProbeOwner()
+    {
+        probeOwners_.push_back({ ++probeOwnersMade_, ProbeSet{} });
+        return probeOwnersMade_;
+    }
+
+    void Processor::setProbes(int owner, const ProbeSet& set)
+    {
+        for (ProbeOwner& o : probeOwners_)
+            if (o.id == owner)
+                o.set = set;
+        sendProbes();
+    }
+
+    void Processor::removeProbeOwner(int owner)
+    {
+        probeOwners_.erase(std::remove_if(probeOwners_.begin(), probeOwners_.end(), [owner](const ProbeOwner& o) { return o.id == owner; }),
+                           probeOwners_.end());
+        sendProbes();
+    }
+
+    void Processor::sendProbes()
+    {
+        ProbeSet set;
+        for (auto o = probeOwners_.rbegin(); o != probeOwners_.rend(); ++o)
+            if (o->set.armed())
+            {
+                set = o->set;
+                break;
+            }
+        if (probesSentOnce_ && set == probesSent_)
+            return;
+        probesSent_ = set;
+        probesSentOnce_ = true;
+        engine_.setProbes(set);
+    }
+
     // The IR is kept only while someone looks (Compiler::setIrWanted): the first view opened asks for it, the last
     // closed lets it go.
     void Processor::addIrViewer()
