@@ -6,10 +6,10 @@
 //                 tick: the .input and .output scales do the scaling
 //   an instrument the library's oscillator (osc.fm, a saw at the note's pitch) shaped by its ADSR (adsr.fm) into the
 //                 module's input, the circuit cleared only when a note starts from silence
-// Each law input (.input NAME - kind=...) gets a param of its name, 0 to 1, mapped across its range each sample
-// (geometrically when the range starts above 0). No dial is written for a pot or a switch: the program never calls
-// set(), so the plugin makes them dials of their own. Each one compiles with no message for every library netlist, in
-// both products (fminus.circuit TEMPLATE).
+// Each law input (.input NAME - kind=...) gets a param of its name (NAME_in when the program uses that word itself:
+// rate, i, osc, ...), 0 to 1, mapped across its range each sample (geometrically when the range starts above 0). No
+// dial is written for a pot or a switch: the program never calls set(), so the plugin makes them dials of their own.
+// Each one compiles with no message for every library netlist, in both products (fminus.circuit TEMPLATE).
 #pragma once
 
 #include <string>

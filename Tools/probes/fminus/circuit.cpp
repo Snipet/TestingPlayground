@@ -48,7 +48,7 @@
 //                reaches, a stray tab of the main module: none); a pot's default reads the same in a decimal-comma locale
 //   TEMPLATE     Play this circuit's program (fminus/CirTemplates.h) for each library netlist compiles with no message,
 //                plays finitely, calls no set() (its pots dials of their own) and is in the house style; a two-channel
-//                netlist's too
+//                netlist's too; a law input named as one of the template's words (rate, i) gets a param <law>_in
 //   SWITCH       a netlist with a switch (FMinus's switch.cir, open by default): its dial an int 0 to 1; still, no call;
 //                flipped to 1, exactly ceil(0.02 rate / 16) + 1 calls at 48 kHz, and its ramp at 1; an instrument's note
 //                from silence on that instance (its start's clear()) leaves it at 1 with no call; a fresh instance with
@@ -766,6 +766,22 @@ namespace
             const probe::Stereo out = loaded ? rig.run(input(second / 2), 256, chord()) : probe::Stereo(1);
             std::printf("Play a two-channel netlist: %s\n", messages.c_str());
             P.eq("template.two_channels", loaded && messages.empty() && has(hp.text, "(float2)(") && finite(out) ? 1 : 0, 1);
+        }
+        for (const char* law : { "rate", "i" })
+        {
+            // a law input named as one of the template's own words: its param gets a name of its own (<law>_in)
+            std::string netlist = libraryText("otalp.cir");
+            for (std::size_t at = netlist.find("iabc"); at != std::string::npos; at = netlist.find("iabc", at))
+                netlist.replace(at, 4, law);
+            const pg::cir::HostProgram hp = pg::cir::hostProgram("ota.cir", netlist, kInstrument);
+            std::string messages;
+            probe::Rig rig(kFs, 512);
+            const bool loaded = rig.load(pg::withLibraryIncludes({ { pg::kProgramName, hp.text }, { "ota.cir", netlist } }), &messages);
+            const probe::Stereo out = loaded ? rig.run(input(second / 2), 256, chord()) : probe::Stereo(1);
+            const std::string dials = loaded ? joined(dialNames(rig.controls())) : "";
+            std::printf("Play a netlist whose law is named %s: %s%s\n", law, dials.c_str(), messages.empty() ? "" : ("; " + messages).c_str());
+            P.eq(std::string("template.law_named_") + law, loaded && messages.empty() && dials == std::string(law) + "_in" && finite(out)
+                                                               && probe::rmsDb(out.l, 0, out.size()) > -80.0 ? 1 : 0, 1);
         }
 
         // ---- SWITCH: a switch dial keeps its position through clear() --------------------------------------------------

@@ -4,8 +4,11 @@
 #include "fminus/CirDoc.h"
 #include "fminus/Lang.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <initializer_list>
 #include <optional>
 #include <string>
 #include <vector>
@@ -72,22 +75,45 @@ namespace playground::cir
             return out;
         }
 
-        // The law inputs' params, and their values a sample (the lines that compute them, the arguments after the
-        // signal).
-        void lawLines(const std::vector<Law>& laws, std::string& params, std::string& values, std::string& args,
-                      const std::string& indent)
+        std::string lowered(std::string s)
         {
+            for (char& c : s)
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            return s;
+        }
+
+        // The law inputs' params, and their values a sample (the lines that compute them, the arguments after the
+        // signal). A param is named as its input unless the template uses that word (`taken`: its fields, locals,
+        // methods, modules, builtins and keywords) or an earlier param or value has it, case aside: then <name>_in,
+        // numbered on (a law named rate gives rate_in, its value rate_inNow).
+        void lawLines(const std::vector<Law>& laws, std::vector<std::string> taken, std::string& params, std::string& values,
+                      std::string& args, const std::string& indent)
+        {
+            for (std::string& t : taken)
+                t = lowered(t);
+            const auto free = [&](const std::string& name) {
+                return std::find(taken.begin(), taken.end(), lowered(name)) == taken.end();
+            };
             for (const Law& l : laws)
             {
+                std::string name = l.name;
+                if (!free(name) || !free(name + "Now"))
+                {
+                    name = l.name + "_in";
+                    for (int k = 2; !free(name) || !free(name + "Now"); ++k)
+                        name = l.name + "_in" + std::to_string(k);
+                }
+                const std::string v = name + "Now";
+                taken.push_back(lowered(name));
+                taken.push_back(lowered(v));
                 const bool geometric = l.lo > 0.0;
                 const std::string lo = literal(l.lo), hi = literal(l.hi);
-                params += "    param float " + l.name + " [[fminus::range(0, 1)]] [[fminus::default(0.5)]];   // " + l.name
+                params += "    param float " + name + " [[fminus::range(0, 1)]] [[fminus::default(0.5)]];   // " + l.name
                         + ": " + lo.substr(0, lo.size() - 1) + " to " + hi.substr(0, hi.size() - 1)
                         + (geometric ? ", geometrically" : "") + "\n";
-                const std::string v = l.name + "Now";
                 values += indent + "const float " + v + " = "
-                        + (geometric ? literal(l.lo) + " * expf(" + literal(std::log(l.hi / l.lo)) + " * " + l.name + "[i]);\n"
-                                     : literal(l.lo) + " + " + literal(l.hi - l.lo) + " * " + l.name + "[i];\n");
+                        + (geometric ? literal(l.lo) + " * expf(" + literal(std::log(l.hi / l.lo)) + " * " + name + "[i]);\n"
+                                     : literal(l.lo) + " + " + literal(l.hi - l.lo) + " * " + name + "[i];\n");
                 args += ", " + v;
             }
         }
@@ -116,7 +142,17 @@ namespace playground::cir
         const std::vector<Law> laws = lawsOf(read(netlist));
         const std::string& m = out.module;
         std::string params, values, args;
-        lawLines(laws, params, values, args, "            ");
+        // the words the template uses (below), which no law's param may take
+        std::vector<std::string> taken = { m, "i", "n", "x", "y", "left", "right", "rate", "init", "process", "expf", "float2",
+                                           "float", "int", "bool", "void", "const", "if", "else", "for", "while", "return",
+                                           "true", "false", "param", "module", "restrict", "fminus", "range", "default" };
+        for (const char* w : instrument ? std::initializer_list<const char*>{ "Voice", "Osc", "Adsr", "osc", "env", "circuit", "step",
+                                                                              "velocity", "vel", "note", "sampleRate", "start",
+                                                                              "stop", "reset", "clear", "gate", "active", "tick",
+                                                                              "set", "saw" }
+                                        : std::initializer_list<const char*>{ "Effect", "amp", "tick" })
+            taken.push_back(w);
+        lawLines(laws, taken, params, values, args, "            ");
         std::string& s = out.text;
         if (instrument)
         {
