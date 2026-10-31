@@ -44,7 +44,8 @@
 //   OWN          the circuit examples (the effect's tube screamer, the synth's OTA filter) keep exactly their own dials
 //                and no message: the screamer's fields say why they have none ("program.fm:L: Screamer's pots have no
 //                dials: the program calls its set()"), the OTA filter's has no pot; a set() on a receiver Lang cannot
-//                type counts too
+//                type counts too; only the files FMinus compiles make bindings (a copy of the netlist no #include
+//                reaches, a stray tab of the main module: none); a pot's default reads the same in a decimal-comma locale
 //   TEMPLATE     Play this circuit's program (fminus/CirTemplates.h) for each library netlist compiles with no message,
 //                plays finitely, calls no set() (its pots dials of their own) and is in the house style; a two-channel
 //                netlist's too
@@ -106,6 +107,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <clocale>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -695,6 +697,42 @@ namespace
             std::printf("unknown receiver: %s\n", d.bindings.empty() ? "no binding" : d.bindings[0].why.c_str());
             P.eq("own.unknown_receiver", d.bindings.size() == 1 && d.bindings[0].own && d.bindings[0].names.empty()
                                              && has(d.bindings[0].why, "Screamer's pots have no dials: the program calls mystery.set()") ? 1 : 0, 1);
+        }
+        {
+            // Only the files FMinus compiles: a copy of the netlist no #include reaches (the same module, before the
+            // one included) and a tab of the main module of its own make no binding.
+            const std::string program = replaced(undriven("screamer.cir", "", { field }), "#include \"screamer.cir\"",
+                                                 "#include \"mine.cir\"");
+            const pg::Sources tabs = { { pg::kProgramName, program }, { "screamer.cir", screamer }, { "mine.cir", screamer },
+                                       { "stray.fm", undriven("screamer.cir", "", { field }) } };
+            pg::lang::Service ls;
+            ls.setFiles(tabs);
+            const pg::lang::CircuitDials d = pg::lang::circuitDials(ls, kInstrument);
+            const pg::Patch::Result r = pg::Patch::compile(tabs, 48000.0f);
+            const std::string names = r.patch ? joined(dialNames(r.patch->controls())) : r.errors;
+            std::printf("tabs no #include reaches: %zu binding%s (%s); dials %s; notes: %s\n", d.bindings.size(),
+                        d.bindings.size() == 1 ? "" : "s", d.bindings.empty() ? "" : d.bindings[0].file.c_str(), names.c_str(),
+                        r.notes.empty() ? "none" : r.notes.c_str());
+            P.eq("own.only_what_compiles", d.bindings.size() == 1 && d.bindings[0].file == "mine.cir" && r.patch != nullptr
+                                               && names == "drive tone level" && r.notes.empty() && r.errors.empty() ? 1 : 0, 1);
+        }
+        {
+            // A pot's default read whatever the process's locale (a host's LC_NUMERIC may want a decimal comma).
+            const std::string was = std::setlocale(LC_NUMERIC, nullptr) != nullptr ? std::setlocale(LC_NUMERIC, nullptr) : "C";
+            const char* comma = nullptr;
+            for (const char* name : { "de_DE.UTF-8", "de_DE", "fr_FR.UTF-8", "fr_FR" })
+                if (comma == nullptr && std::setlocale(LC_NUMERIC, name) != nullptr)
+                    comma = name;
+            const std::optional<double> v = pg::lang::spiceNumber("0.3");
+            pg::lang::Service ls;
+            ls.setFiles({ { pg::kProgramName, undriven("clipswitch.cir", "", { "ClipSwitch clip" }) },
+                          { "clipswitch.cir", replaced(kClipSwitch, ".pot    tone 0.5", ".pot    tone 0.3") } });
+            const pg::lang::CircuitDials d = pg::lang::circuitDials(ls, kInstrument);
+            std::setlocale(LC_NUMERIC, was.c_str());
+            std::printf("in the locale %s: 0.3 reads %g, tone's default %g\n", comma != nullptr ? comma : "C (no comma locale here)",
+                        v.value_or(-1.0), d.bindings.empty() || d.bindings[0].pots.empty() ? -1.0 : static_cast<double>(d.bindings[0].pots[0].def));
+            P.eq("own.number_any_locale", v && *v == 0.3 && d.bindings.size() == 1 && d.bindings[0].pots.size() == 1
+                                              && d.bindings[0].pots[0].def == 0.3f ? 1 : 0, 1);
         }
 
         // ---- TEMPLATE: Play this circuit's program for each library netlist (fminus/CirTemplates.h) ---------------------

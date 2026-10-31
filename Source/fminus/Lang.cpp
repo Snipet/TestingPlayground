@@ -10,8 +10,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <locale>
 #include <memory>
 #include <set>
+#include <sstream>
 #include <utility>
 
 namespace playground::lang
@@ -296,10 +298,13 @@ namespace playground::lang
                     i = j;
                 }
             }
-            const std::string mantissa(s.substr(s[0] == '+' ? 1 : 0, i - (s[0] == '+' ? 1 : 0)));
-            char* end = nullptr;
-            const double v = std::strtod(mantissa.c_str(), &end);   // digits and a point: no locale reaches them
-            if (end == mantissa.c_str())
+            // C's reading of the decimal number whatever the process's locale (a host's LC_NUMERIC may want a comma),
+            // as FMinus's netlist reader has it
+            double v = 0.0;
+            std::istringstream in(std::string(s.substr(s[0] == '+' ? 1 : 0, i - (s[0] == '+' ? 1 : 0))));
+            in.imbue(std::locale::classic());
+            in >> v;
+            if (in.fail())
                 return std::nullopt;
             const std::string rest = lowered(s.substr(i));
             double scale = 1.0;
@@ -2432,10 +2437,14 @@ namespace playground::lang
         const Impl& m = *impl_;
         CircuitDials out;
         const std::string main = instrument ? "Voice" : "Effect";
+        // Only the files FMinus compiles: the program's first and what it #includes, in turn theirs (a tab no #include
+        // reaches, a netlist or a module of the program's main name, makes no binding).
+        const std::vector<int> reached = m.visible(0);
+        const auto compiled = [&](int fi) { return std::find(reached.begin(), reached.end(), fi) != reached.end(); };
         // The modules the program's netlists generate (the first of a name: FMinus refuses a second), by name.
         std::vector<std::pair<std::string, const FileData*>> circuits;
-        for (const auto& f : m.files)
-            if (f->program && isCircuitFile(f->name))
+        for (std::size_t fi = 0; fi < m.files.size(); ++fi)
+            if (const auto& f = m.files[fi]; f->program && isCircuitFile(f->name) && compiled(static_cast<int>(fi)))
                 for (const Symbol& x : f->decls)
                     if (x.kind == Kind::module
                         && std::none_of(circuits.begin(), circuits.end(), [&](const auto& c) { return c.first == x.name; }))
@@ -2451,7 +2460,7 @@ namespace playground::lang
         for (const Symbol& x : m.symbols)
         {
             const FileData* f = m.fileAt(x.file);
-            if (f == nullptr || !f->program || isCircuitFile(f->name))
+            if (f == nullptr || !f->program || isCircuitFile(f->name) || !compiled(x.file))
                 continue;
             if (x.kind == Kind::module && x.name == main && out.module.empty())
             {
@@ -2511,7 +2520,7 @@ namespace playground::lang
         for (std::size_t fi = 0; fi < m.files.size(); ++fi)
         {
             const FileData& f = *m.files[fi];
-            if (!f.program || !isFmText(f.name))
+            if (!f.program || !isFmText(f.name) || !compiled(static_cast<int>(fi)))
                 continue;
             const int n = static_cast<int>(f.code.size());
             for (int k = 2; k + 1 < n; ++k)

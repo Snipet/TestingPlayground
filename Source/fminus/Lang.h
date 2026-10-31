@@ -42,10 +42,11 @@
 //     hover()          what a word is: its declaration as code and its documentation; a keyword's meaning
 //     definition()     where the word under a place is declared (another file's too); an #include line: that file
 //     occurrences()    the places of the word under a place that name the same declaration, in its file
-//   circuitDials()     the dials a program's circuits get (Patch.h's "Circuits"): each field of the main module whose
-//                      type is a netlist's module (a scalar or an array), that netlist's pots and switches read line by
-//                      line (their defaults, a switch's positions), whether the program calls that module's set() itself
-//                      (a member call named set, in its FMinus files, whose receiver is of that module, or one whose
+//   circuitDials()     the dials a program's circuits get (Patch.h's "Circuits"), over the files FMinus compiles (the
+//                      first and what it #includes, in turn): each field of the main module whose type is a netlist's
+//                      module (a scalar or an array), that netlist's pots and switches read line by line (their
+//                      defaults, a switch's positions), whether the program calls that module's set() itself (a member
+//                      call named set, in its FMinus files, whose receiver is of that module, or one whose
 //                      receiver is not known: the test is conservative, so a pot is never driven twice) and the dials'
 //                      names (the pot's when no other dial has it, else <field>_<pot>). The plugin's compile (Patch)
 //                      and the GUI sandbox both take them from here, so a panel drawn for a circuit program has its dials
