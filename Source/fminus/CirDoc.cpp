@@ -2,6 +2,7 @@
 #include "fminus/CirDoc.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdlib>
 #include <map>
@@ -2943,6 +2944,11 @@ namespace playground::cir
             for (const auto& [word, line] : src.directives)
                 if (word != ".pot" && word != ".switch" && word != ".model")
                     return "paste takes element, .pot, .switch and .model lines (and *@ lines), not " + word;
+            // text that is no netlist of drawn parts ("hello world" reads as an element H...): refused whole
+            for (const Element& e : src.elements)
+                if (!e.drawn())
+                    return "paste takes the lines of parts the schematic draws, and '" + e.name + "' starts no such line ("
+                         + e.why + ")";
             std::set<std::string> taken;
             const auto fresh = [&](const std::string& name) {
                 std::string base = name;
@@ -3187,6 +3193,307 @@ namespace playground::cir
     }
 
     std::vector<Edit> editsBetween(std::string_view from, std::string_view to) { return diffEdits(from, to); }
+
+    // ---- the clipboard and the fields -------------------------------------------------------------------------------
+    std::string copied(std::string_view text, const Drawing& d, const std::vector<std::string>& names, Pt* origin)
+    {
+        const Netlist nl = read(text);
+        std::set<int> parts, elements;
+        Box box;
+        for (const std::string& n : names)
+        {
+            const int i = d.part(n);
+            if (i < 0 || d.parts[static_cast<std::size_t>(i)].element < 0)
+                continue;
+            const int e = d.parts[static_cast<std::size_t>(i)].element;
+            if (e >= static_cast<int>(nl.elements.size()) || !nl.elements[static_cast<std::size_t>(e)].drawn())
+                continue;
+            parts.insert(i);
+            elements.insert(e);
+            box = box.joined(d.parts[static_cast<std::size_t>(i)].body);
+        }
+        if (elements.empty())
+            return {};
+        const Pt o{ box.x0, box.y0 };
+        if (origin != nullptr)
+            *origin = o;
+        // the directives they need: their pots, switches and models, as the netlist writes them
+        std::set<std::string> pots, switches, models;
+        for (const int e : elements)
+        {
+            const Element& el = nl.elements[static_cast<std::size_t>(e)];
+            for (const std::string& p : potsOf(nl, el))
+                pots.insert(folded(p));
+            if (el.kind == Kind::S && el.tokens.size() >= 4)
+                switches.insert(folded(el.tokens[3].text));
+            if (el.kind == Kind::D && el.valueToken >= 0 && el.valueToken < static_cast<int>(el.tokens.size()))
+                models.insert(folded(el.tokens[static_cast<std::size_t>(el.valueToken)].text));
+        }
+        std::set<int> directiveLines;
+        for (const PotLine& p : nl.pots)
+            if (pots.count(folded(p.name)) != 0)
+                directiveLines.insert(p.line);
+        for (const SwitchLine& s : nl.switches)
+            if (switches.count(folded(s.name)) != 0)
+                directiveLines.insert(s.line);
+        for (const auto& [m, line] : nl.models)
+            if (models.count(folded(m)) != 0)
+                directiveLines.insert(line);
+        std::string out;
+        const auto put = [&](int line) { out += std::string(lfLine(nl.lines[static_cast<std::size_t>(line)])) + "\n"; };
+        for (const int line : directiveLines)
+        {
+            put(line);
+            // its + lines (a .model's parameters may go on), past comment lines, as FMinus joins them
+            for (int ln = line + 1; ln < static_cast<int>(nl.lines.size()); ++ln)
+            {
+                bool cont = false, comment = false;
+                (void)scanLine(nl.lines[static_cast<std::size_t>(ln)], ln, cont, comment);
+                if (cont)
+                    put(ln);
+                else if (!comment || isLayoutLine(nl.lines[static_cast<std::size_t>(ln)]))
+                    break;
+            }
+        }
+        for (const int e : elements)
+        {
+            const Element& el = nl.elements[static_cast<std::size_t>(e)];
+            for (const int l : ownLines(nl.lines, el.firstLine, el.lastLine))
+                put(l);
+        }
+        // the drawing, from the selection's top-left
+        std::vector<const Part*> ps;
+        for (const int i : parts)
+            ps.push_back(&d.parts[static_cast<std::size_t>(i)]);
+        std::sort(ps.begin(), ps.end(), [](const Part* a, const Part* b) { return naturalLess(a->name, b->name); });
+        for (const Part* p : ps)
+        {
+            out += "*@ part " + p->name + " " + ptText(p->origin - o);
+            if (p->orient != Orient::r0)
+                out += std::string(" ") + orientName(p->orient);
+            for (const std::string& x : p->extra)
+                out += " " + x;
+            out += "\n";
+        }
+        std::vector<const Net*> nets;
+        for (const Net& n : d.nets)
+        {
+            if (!signalNet(n) || n.pins.empty() || static_cast<int>(n.pins.size()) != n.totalPins)
+                continue;
+            if (std::all_of(n.pins.begin(), n.pins.end(), [&](const PinRef& r) { return parts.count(r.part) != 0; }))
+                nets.push_back(&n);
+        }
+        std::sort(nets.begin(), nets.end(), [](const Net* a, const Net* b) { return naturalLess(a->name, b->name); });
+        for (const Net* n : nets)
+        {
+            const bool flag = n->style == Style::flag || n->unroutable;
+            if (!flag && (n->pins.size() < 2 || n->edges.empty()))
+                continue;
+            out += "*@ net " + n->name;
+            if (flag)
+                out += " flag";
+            std::vector<Pt> labels;
+            for (const Pt l : n->labels)
+                labels.push_back(l - o);
+            std::sort(labels.begin(), labels.end());
+            for (const Pt l : labels)
+                out += " label=" + ptText(l);
+            if (!flag)
+            {
+                std::vector<UnitEdge> edges;
+                for (const UnitEdge& e : n->edges)
+                    edges.push_back({ e.a - o, e.h });
+                sortEdges(edges);
+                out += routeText(edges);
+            }
+            out += "\n";
+        }
+        return out;
+    }
+
+    namespace
+    {
+        // A SPICE number's parts: its value, the mantissa as written, its suffix as written ("" for none), what follows.
+        struct Spice
+        {
+            double value = 0.0;
+            std::string mantissa, suffix, tail;
+        };
+
+        std::optional<Spice> spiceParts(std::string_view s)
+        {
+            if (!spiceNumber(s))
+                return std::nullopt;
+            std::size_t i = 0;
+            if (i < s.size() && (s[i] == '+' || s[i] == '-'))
+                ++i;
+            while (i < s.size() && (digit(s[i]) || s[i] == '.'))
+                ++i;
+            if (i + 1 < s.size() && lower(s[i]) == 'e' && (digit(s[i + 1]) || s[i + 1] == '+' || s[i + 1] == '-'))
+            {
+                i += 2;
+                while (i < s.size() && digit(s[i]))
+                    ++i;
+            }
+            Spice out;
+            out.mantissa = std::string(s.substr(0, i));
+            // the mantissa in the C locale's way, whatever the process's (a SPICE number is never localised)
+            double v = 0.0, frac = 0.0, scale = 1.0;
+            bool neg = false, point = false;
+            int exp = 0;
+            std::size_t k = 0;
+            if (k < out.mantissa.size() && (out.mantissa[k] == '+' || out.mantissa[k] == '-'))
+                neg = out.mantissa[k++] == '-';
+            for (; k < out.mantissa.size(); ++k)
+            {
+                const char c = out.mantissa[k];
+                if (c == '.')
+                    point = true;
+                else if (digit(c))
+                {
+                    if (point)
+                        frac += (scale *= 0.1) * (c - '0');
+                    else
+                        v = v * 10.0 + (c - '0');
+                }
+                else
+                {
+                    const bool eneg = k + 1 < out.mantissa.size() && out.mantissa[k + 1] == '-';
+                    for (std::size_t j = k + 1; j < out.mantissa.size(); ++j)
+                        if (digit(out.mantissa[j]))
+                            exp = exp * 10 + (out.mantissa[j] - '0');
+                    exp = eneg ? -exp : exp;
+                    break;
+                }
+            }
+            v += frac;
+            for (; exp > 0; --exp)
+                v *= 10.0;
+            for (; exp < 0; ++exp)
+                v *= 0.1;
+            const std::string rest = folded(s.substr(i));
+            double mul = 1.0;
+            std::size_t used = 0;
+            if (rest.rfind("meg", 0) == 0)
+            {
+                mul = 1e6;
+                used = 3;
+            }
+            else if (!rest.empty())
+            {
+                used = 1;
+                switch (rest[0])
+                {
+                    case 't': mul = 1e12; break;
+                    case 'g': mul = 1e9; break;
+                    case 'k': mul = 1e3; break;
+                    case 'm': mul = 1e-3; break;
+                    case 'u': mul = 1e-6; break;
+                    case 'n': mul = 1e-9; break;
+                    case 'p': mul = 1e-12; break;
+                    case 'f': mul = 1e-15; break;
+                    default: used = 0; break;
+                }
+            }
+            out.suffix = std::string(s.substr(i, used));
+            out.tail = std::string(s.substr(i + used));
+            out.value = (neg ? -v : v) * mul;
+            return out;
+        }
+    }
+
+    std::optional<std::string> e12Stepped(std::string_view value, int dir, bool decade)
+    {
+        const std::optional<Spice> sp = spiceParts(value);
+        if (!sp || dir == 0 || !(sp->value > 0.0))
+            return std::nullopt;
+        // the value as a mantissa index on the series and a decade (exponent of ten), exactly: E12's values in tenths of
+        // their decade's first, so 4.7k is index 8 of decade 3
+        constexpr int kE12[] = { 10, 12, 15, 18, 22, 27, 33, 39, 47, 56, 68, 82 };
+        int dec = 0;
+        double m = sp->value;
+        while (m >= 10.0 * (1.0 - 1e-9))
+        {
+            m /= 10.0;
+            ++dec;
+        }
+        while (m < 1.0 * (1.0 - 1e-9))
+        {
+            m *= 10.0;
+            --dec;
+        }
+        // its place on the series: on a step (within a part in a thousand), else between two
+        int at = -1;
+        int below = -1, nearest = 0;
+        for (int k = 0; k < 12; ++k)
+        {
+            const double s = kE12[k] / 10.0;
+            if (std::fabs(m - s) <= s * 1e-3)
+                at = k;
+            if (s < m * (1.0 - 1e-3))
+                below = k;
+            if (std::fabs(m - s) < std::fabs(m - kE12[nearest] / 10.0))
+                nearest = k;
+        }
+        int idx = 0;
+        if (decade)
+        {
+            idx = at >= 0 ? at : nearest;                // a decade keeps its step (an off-series value its nearest)
+            dec += dir > 0 ? 1 : -1;
+        }
+        else if (at >= 0)
+            idx = at + (dir > 0 ? 1 : -1);
+        else
+            idx = dir > 0 ? below + 1 : below;           // off the series: the next value of it either way
+        while (idx >= 12)
+        {
+            idx -= 12;
+            ++dec;
+        }
+        while (idx < 0)
+        {
+            idx += 12;
+            --dec;
+        }
+        if (dec > 12 || dec < -15)
+            return std::nullopt;
+        // written with the suffix of its size: f p n u m (none) k meg g t, by thousands
+        struct Suffix
+        {
+            int dec;
+            const char* lowerText;
+            const char* upperText;
+        };
+        constexpr Suffix kSuffixes[] = { { -15, "f", "F" }, { -12, "p", "P" }, { -9, "n", "N" }, { -6, "u", "U" }, { -3, "m", "M" },
+                                         { 0, "", "" },     { 3, "k", "K" },   { 6, "meg", "MEG" }, { 9, "g", "G" }, { 12, "t", "T" } };
+        const int thousands = dec >= 0 ? dec / 3 * 3 : -((-dec + 2) / 3 * 3);
+        const int shift = dec - thousands;               // 0, 1 or 2 digits before the point
+        // the digits: E12's two significant ones, shifted
+        const int sig = kE12[idx];                       // 10..82: d.d
+        std::string digits;
+        if (shift == 0)
+            digits = sig % 10 == 0 ? std::to_string(sig / 10) : std::to_string(sig / 10) + "." + std::to_string(sig % 10);
+        else if (shift == 1)
+            digits = std::to_string(sig);
+        else
+            digits = std::to_string(sig * 10);
+        const bool upper = std::any_of(sp->suffix.begin(), sp->suffix.end(), [](char c) { return c >= 'A' && c <= 'Z'; });
+        std::string suffix;
+        for (const Suffix& s : kSuffixes)
+            if (s.dec == thousands)
+                suffix = upper ? s.upperText : s.lowerText;
+        return digits + suffix + sp->tail;
+    }
+
+    std::string milliWarning(std::string_view value, std::string* meg)
+    {
+        const std::optional<Spice> sp = spiceParts(value);
+        if (!sp || sp->suffix.size() != 1 || lower(sp->suffix[0]) != 'm' || !(sp->value < 1.0))
+            return {};
+        if (meg != nullptr)
+            *meg = sp->mantissa + "meg" + sp->tail;
+        return "'" + std::string(value) + "' is " + sp->mantissa + " milliohm in SPICE; write " + sp->mantissa + "meg for a megohm";
+    }
 
     // ---- edit_circuit's grammar ---------------------------------------------------------------------------------------
     namespace

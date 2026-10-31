@@ -39,6 +39,9 @@
 //              so is refused, as is a point past reach (place, add, paste); a stray route far out is dropped and the
 //              net routed again; a drawing at the edge of reach places a new part within it and writes only what
 //              reads back
+//   CLIP       copied(): parts as text (their lines, no terminal, part lines from the selection's top-left), pasted at a
+//              point (new names, fresh nodes, the top-left there), text no netlist's refused; e12Stepped's steps and
+//              decades in the suffix's style; milliWarning, FMinus's words
 #include "Probe.h"
 
 #include "Library.h"
@@ -1273,6 +1276,61 @@ PROBE(fminus, schematic)
         std::printf("budget: at the edge of reach: %s\n", partLine(ew, "C9").c_str());
         P.eq("budget.edge_drawn", cir::reconcile(edge).notes.empty() && cir::stripLayout(edge) == cir::stripLayout(tone) ? 1 : 0, 1);
         P.eq("budget.edge_placed", c9 != nullptr && cir::withinReach(c9->origin) && readable && cir::written(ew) == ew ? 1 : 0, 1);
+    }
+
+    // ---- CLIP: the view's clipboard and its value fields' helpers -----------------------------------------------------
+    {
+        const std::string tone = cir::written(libraryText("diodetone.cir"));
+        const cir::Drawing d = cir::reconcile(tone);
+        cir::Pt origin;
+        const std::string clip = cir::copied(tone, d, { "R1", "D1", "u" }, &origin);
+        std::printf("clip: copied R1, D1 and the input:\n%s", clip.c_str());
+        cir::Box box;
+        for (const char* n : { "R1", "D1" })
+            if (const cir::Part* q = partOf(d, n))
+                box = box.joined(q->body);
+        const cir::Layout lay = cir::readLayout(clip);
+        const cir::Netlist nl = cir::read(clip);
+        bool relative = lay.parts.size() == 2;
+        for (const cir::PartLine& l : lay.parts)
+            if (const cir::Part* q = partOf(d, l.name.c_str()))
+                relative = relative && l.at == q->origin - cir::Pt{ box.x0, box.y0 } && l.orient == q->orient;
+        P.eq("clip.lines", nl.elements.size() == 2 && !nl.input && origin == cir::Pt{ box.x0, box.y0 } ? 1 : 0, 1);
+        P.eq("clip.relative", relative ? 1 : 0, 1);
+        // a paste of it at a point: new names, every node fresh but ground, the selection's top-left there
+        cir::Op paste;
+        paste.type = cir::Op::Type::paste;
+        paste.at = cir::Pt{ 40, 20 };
+        for (const std::string& l : linesOf(clip))
+            paste.lines.push_back(l);
+        const cir::Applied a = cir::apply(tone, d, std::span<const cir::Op>(&paste, 1));
+        const cir::Drawing after = cir::reconcile(a.text);
+        cir::Box pasted;
+        bool fresh = a.error.empty() && a.touched.size() == 2;
+        for (const std::string& n : a.touched)
+            if (const cir::Part* q = partOf(after, n.c_str()))
+            {
+                pasted = pasted.joined(q->body);
+                fresh = fresh && n != "R1" && n != "D1";
+            }
+        std::printf("clip: pasted %s at 40,20: %s\n", a.error.empty() ? "" : a.error.c_str(), a.said.empty() ? "" : a.said.front().c_str());
+        P.eq("clip.paste_fresh", fresh && pasted.x0 == 40 && pasted.y0 == 20 ? 1 : 0, 1);
+        cir::Op junk = paste;
+        junk.lines = { "hello world", "" };
+        P.eq("clip.paste_refused", !cir::apply(tone, d, std::span<const cir::Op>(&junk, 1)).error.empty() ? 1 : 0, 1);
+        // E12 steps, keeping the suffix's style; FMinus's milliohm warning
+        const auto step = [](const char* v, int dir, bool decade) { return cir::e12Stepped(v, dir, decade).value_or("-"); };
+        std::printf("clip: e12: 820+ %s, 4.7k+ %s, 1meg- %s, 100n+ %s, 5k+ %s, 5k- %s, 820 decade+ %s, 1K+ %s, {x} %s\n",
+                    step("820", 1, false).c_str(), step("4.7k", 1, false).c_str(), step("1meg", -1, false).c_str(),
+                    step("100n", 1, false).c_str(), step("5k", 1, false).c_str(), step("5k", -1, false).c_str(),
+                    step("820", 1, true).c_str(), step("1K", 1, false).c_str(), step("{x}", 1, false).c_str());
+        P.eq("clip.e12", step("820", 1, false) == "1k" && step("4.7k", 1, false) == "5.6k" && step("1meg", -1, false) == "820k"
+                             && step("100n", 1, false) == "120n" && step("5k", 1, false) == "5.6k" && step("5k", -1, false) == "4.7k"
+                             && step("820", 1, true) == "8.2k" && step("1K", 1, false) == "1.2K" && step("{x}", 1, false) == "-" ? 1 : 0, 1);
+        std::string meg;
+        P.eq("clip.milli", cir::milliWarning("1M", &meg) == "'1M' is 1 milliohm in SPICE; write 1meg for a megohm" && meg == "1meg"
+                               && cir::milliWarning("4.7m").size() > 0 && cir::milliWarning("1meg").empty() && cir::milliWarning("10k").empty()
+                               && cir::milliWarning("1000m").empty() ? 1 : 0, 1);
     }
     return P.finish();
 }

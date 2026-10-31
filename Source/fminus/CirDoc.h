@@ -23,6 +23,8 @@
 //   apply()         edits (§6.3 of the spec: add, place, connect, disconnect, cut, set, rename, delete, label, style,
 //                   paste, layout) as the smallest patches of the text plus the regenerated block, all or none.
 //   parseOp()       edit_circuit's grammar, a command a line.
+//   copied()        the parts selected as .cir text (the view's clipboard; apply's paste op takes it back); e12Stepped()
+//                   and milliWarning(), the view's value fields.
 //   stripLayout(), sameNetlist(), lineMap(), sameProgram()   the text helpers of "layout lines are invisible".
 //
 // The block (keywords and names compare case-folded; tokens split at blanks; a point is "x,y", -9999..9999):
@@ -391,6 +393,24 @@ namespace playground::cir
     // "P2 n4 n5 n6 100k {pot2}"); its name in `name`.
     std::vector<std::string> placementLines(const Netlist& nl, Kind kind, std::string* name = nullptr);
     std::string freshNode(const Netlist& nl);     // "n<k>": the smallest k no node has (any case)
+
+    // ---- the clipboard and the fields (the view's Copy, Cut, Duplicate and its fields; Paste is apply's paste op) ----
+    // The parts `names` of `text` (drawn as `d`) as .cir text, a line each: their element lines (with their + lines,
+    // in line order) after the .pot, .switch and .model lines they need, then a *@ part line each, its place from the
+    // selection's top-left (`origin`, the bodies' box's), and the *@ net line of each net wholly inside the selection
+    // (every pin of it on a part copied), its route moved as they are. Terminals are left out (FMinus takes one input).
+    // "" when no element is among them. A paste op of these lines at a point puts the selection's top-left there.
+    std::string copied(std::string_view text, const Drawing& d, const std::vector<std::string>& names, Pt* origin = nullptr);
+    // A value stepped through E12 (1, 1.2, 1.5, 1.8, 2.2, 2.7, 3.3, 3.9, 4.7, 5.6, 6.8, 8.2 a decade): one step up
+    // (`dir` > 0) or down, or a decade with `decade` (820 to 8.2k), written with the SPICE suffix of its size (820 up is
+    // 1k, 4.7k up 5.6k, 1meg down 820k) in the case its own suffix had; a value off the series steps to the next one of
+    // it (a decade: its nearest). Nothing for a value that is no positive SPICE number ({expr}), and past the t and f
+    // suffixes' decades.
+    std::optional<std::string> e12Stepped(std::string_view value, int dir, bool decade);
+    // FMinus's warning for a resistance (an R's or a P's value) written in milliohms under an ohm, as its circuit
+    // compiler words it ("'1M' is 1 milliohm in SPICE; write 1meg for a megohm"), and in `meg` what to write for the
+    // megohms ("1meg"); "" (and `meg` untouched) for any other value.
+    std::string milliWarning(std::string_view value, std::string* meg = nullptr);
 
     // ---- the text helpers -------------------------------------------------------------------------------------------
     bool isLayoutLine(std::string_view line) noexcept;   // its first non-blank characters are "*@"
