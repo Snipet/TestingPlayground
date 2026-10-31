@@ -422,7 +422,8 @@ namespace playground::ui::sch
     }
 
     std::vector<LabelSpot> placeLabels(const funkgui::Canvas& c, const View& v, const cir::Drawing& d,
-                                       const std::vector<std::string>& values, float px)
+                                       const std::vector<std::string>& values, float px,
+                                       const std::vector<funkgui::Rect>& keepOut)
     {
         std::vector<LabelSpot> out(d.parts.size());
         if (px <= 0.0f)
@@ -562,6 +563,9 @@ namespace playground::ui::sch
                         score += 10.0f;
                 for (const funkgui::Rect& l : placed)
                     if (meets(r, l))
+                        score += 10.0f;
+                for (const funkgui::Rect& o : keepOut)
+                    if (meets(r, o))
                         score += 10.0f;
                 for (const funkgui::Rect& q : posts)
                     if (meets(r, q))
@@ -735,5 +739,97 @@ namespace playground::ui::sch
                 break;
         }
         return token(e.valueToken);
+    }
+
+    void knob(funkgui::Canvas& c, funkgui::Point at, float r, float t, funkgui::Col ink, const Inks& k)
+    {
+        constexpr float kPi = 3.14159265f;
+        const float a0 = 0.75f * kPi, a1 = 2.25f * kPi;  // 270 degrees, from the lower left round to the lower right
+        const float a = a0 + std::clamp(std::isfinite(t) ? t : 0.0f, 0.0f, 1.0f) * (a1 - a0);
+        c.disc(at.x, at.y, r, k.ground);
+        c.arc(at, r - 1.0f, a0, a1, 1.5f, funkgui::premix(k.ground, k.value, 0.45f));
+        if (a > a0)
+            c.arc(at, r - 1.0f, a0, a, 2.0f, ink);
+        c.segment(at.x, at.y, at.x + std::cos(a) * (r - 3.0f), at.y + std::sin(a) * (r - 3.0f), 1.6f, ink);
+    }
+
+    void placeKnobs(const View& v, const cir::Drawing& d, std::vector<KnobSpot>& knobs)
+    {
+        std::vector<funkgui::Rect> bodies, flags, posts, wiresPx;
+        const float postR = std::max(2.0f, 0.3f * v.scale);
+        const auto post = [&](cir::Pt at) {
+            const funkgui::Point q = v.at(at);
+            posts.push_back({ q.x - postR, q.y - postR, 2.0f * postR, 2.0f * postR });
+        };
+        for (const cir::Part& p : d.parts)
+        {
+            bodies.push_back(v.rect(p.body).expanded(1.0f));
+            for (const cir::PinAt& pin : p.pins)
+                post(pin.at);
+        }
+        for (const cir::Flag& f : d.flags)
+            flags.push_back(v.rect(f.box));
+        for (const cir::Net& n : d.nets)
+            if (n.style == cir::Style::wired && !n.unroutable)
+            {
+                for (const auto& [a, b] : runs(n.edges))
+                {
+                    const funkgui::Point p = v.at(a), q = v.at(b);
+                    wiresPx.push_back({ std::min(p.x, q.x) - 1.0f, std::min(p.y, q.y) - 1.0f, std::fabs(q.x - p.x) + 2.0f, std::fabs(q.y - p.y) + 2.0f });
+                }
+                for (const cir::Pt& j : n.junctions)
+                    post(j);
+            }
+        const auto meets = [](const funkgui::Rect& a, const funkgui::Rect& b) {
+            return a.x < b.right() && b.x < a.right() && a.y < b.bottom() && b.y < a.bottom();
+        };
+        std::vector<funkgui::Rect> placed;
+        constexpr float kGap = 4.0f;
+        for (KnobSpot& k : knobs)
+        {
+            if (k.part < 0 || k.part >= static_cast<int>(d.parts.size()))
+                continue;
+            const funkgui::Rect b = v.rect(d.parts[static_cast<std::size_t>(k.part)].body);
+            const float dx = k.hw + kGap, dy = k.hh + kGap;
+            const funkgui::Point below{ b.centreX(), b.bottom() + dy }, above{ b.centreX(), b.y - dy };
+            const funkgui::Point right{ b.right() + dx, b.centreY() }, left{ b.x - dx, b.centreY() };
+            const funkgui::Point br{ b.right() + dx, b.bottom() + dy }, bl{ b.x - dx, b.bottom() + dy };
+            const funkgui::Point tr{ b.right() + dx, b.y - dy }, tl{ b.x - dx, b.y - dy };
+            const std::vector<funkgui::Point> cands = b.w >= b.h ? std::vector<funkgui::Point>{ below, above, br, bl, tr, tl, right, left }
+                                                                 : std::vector<funkgui::Point>{ left, right, tl, bl, tr, br, below, above };
+            float bestScore = -1.0f;
+            funkgui::Rect bestBox{};
+            for (const funkgui::Point& at : cands)
+            {
+                const funkgui::Rect r{ at.x - k.hw - 1.0f, at.y - k.hh - 1.0f, 2.0f * k.hw + 2.0f, 2.0f * k.hh + 2.0f };
+                float score = 0.0f;
+                for (std::size_t j = 0; j < bodies.size(); ++j)
+                    score += static_cast<int>(j) != k.part && meets(r, bodies[j]) ? 100.0f : 0.0f;
+                for (const funkgui::Rect& f : flags)
+                    score += meets(r, f) ? 100.0f : 0.0f;
+                for (const funkgui::Rect& o : placed)
+                    score += meets(r, o) ? 100.0f : 0.0f;
+                for (const funkgui::Rect& q : posts)
+                    score += meets(r, q) ? 20.0f : 0.0f;
+                for (const funkgui::Rect& w : wiresPx)
+                    score += meets(r, w) ? 5.0f : 0.0f;
+                if (bestScore < 0.0f || score < bestScore)
+                {
+                    bestScore = score;
+                    k.at = at;
+                    bestBox = r;
+                }
+                if (score == 0.0f)
+                    break;
+            }
+            placed.push_back(bestBox);
+        }
+    }
+
+    void chip(funkgui::Canvas& c, funkgui::Point at, float w, float h, const std::string& text, funkgui::Col ink, const Inks& k)
+    {
+        c.rrect(at.x - 0.5f * w, at.y - 0.5f * h, w, h, 0.5f * h, k.ground, 1.0f, ink);
+        const funkgui::TextStyle st = labelStyle(9.0f);
+        c.text(text.c_str(), at.x, c.capCentreTop(at.y, st), st, ink, funkgui::Align::centre);
     }
 }

@@ -86,6 +86,7 @@
 #include "dsp/Engine.h"
 #include "editor/DialLayout.h"
 #include "editor/GuiLayout.h"
+#include "fminus/Lang.h"
 #include "fminus/PanelSpec.h"
 
 #include "plugin/ChatPort.h"
@@ -516,6 +517,7 @@ namespace playground::ui
         // The places layout() found, which draw() uses.
         float leftW_ = 0.0f;                             // the left column's width (the editor's)
         Controls controls_{};                            // the dials of the program that plays, as refresh() saw them
+        std::vector<lang::CircuitBinding> circuitDials_; // ... and its circuit fields (CompileStatus::circuitDials)
         PanelSpec panelSpec_;                            // its #pragma panel lines
         uint64_t panelProgram_ = 0;                      // the compile they came from (EditorPort::program)
         DialsLayout dials_;                              // their places

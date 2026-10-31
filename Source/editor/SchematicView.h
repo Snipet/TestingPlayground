@@ -15,9 +15,18 @@
 //   canvas       the drawing (SchematicDraw.h) on a grid of one pin pitch, 10 px at 100 % (25 % to 400 %): parts, wires,
 //                flags, names and values, the problems' badges, the structural marks, the ghost of a part carried,
 //                the wire being drawn, the parts being moved with their wires rubber-banded, the marquee
-//   info strip   a gesture's notice (4 s: a refusal, a change of nets), else the selection, else a hint; at its right
-//                the problems' count (a click steps to the next, Shift-click back), a banner before it (Not drawn: ...,
-//                else Not played: ...)
+//   info strip   a gesture's notice (4 s: a refusal, a change of nets), else the dial under the pointer, else the
+//                selection, else a hint; at its right the problems' count (a click steps to the next, Shift-click back),
+//                a banner before it (Not drawn: ..., else Not played: ... with its button, Play this circuit, else
+//                "program.fm now plays pedal.cir" with its button, Undo, while program.fm's text is what Play wrote)
+//
+// The circuit dials (the spec's §10.5): when the program that plays drives this file's pots and switches with dials
+// (CompileStatus::circuitDials, Patch.h's "Circuits"), a 16 px knob beside each pot symbol (below a horizontal one,
+// left of a vertical one; on the other side when its labels are there) and a position chip beside each switch. A drag
+// on a knob turns its dial (up raises it) and a double-click sets its default, a click on a chip steps its switch, each
+// through the Panel's GestureController on the dial's own port, as the program card's dial writes; the pointer over
+// one shows the dial's value in the info strip. Dragging the symbol's body still moves the part. Hidden with the
+// labels (under 60 %).
 //
 // The pointer (§3.5): a press decides nothing until it moves 3 px (a drag) or comes up (a click). Idle, on a body: a
 // click selects (Shift toggles), a drag moves the selection; on a pin: a click selects its part, a drag draws a wire;
@@ -41,9 +50,11 @@
 // nets come or go. Message thread only.
 #pragma once
 
+#include "dsp/Controls.h"
 #include "editor/CodeAssist.h"
 #include "editor/SchematicDraw.h"
 #include "fminus/CirDoc.h"
+#include "fminus/Lang.h"
 
 #include <funkgui/a11y/A11yItem.h>
 #include <funkgui/canvas/Canvas.h>
@@ -62,7 +73,9 @@
 
 namespace funkgui
 {
+    class GestureController;
     class HostServices;
+    class ParamPort;
 }
 
 namespace playground::ui
@@ -95,6 +108,8 @@ namespace playground::ui
         static constexpr float kEdgeSpeed = 600.0f;  // ... and its speed at the edge, px/s
         static constexpr float kNoticeSeconds = 4.0f;
         static constexpr float kFlashSeconds = 0.6f;
+        static constexpr float kKnobR = 8.0f;          // a circuit dial's knob on the drawing: 16 px across
+        static constexpr float kChipW = 20.0f, kChipH = 14.0f;   // ... a switch's position chip
 
         enum class Tool : uint8_t { select, ground, place };
         // The toolbar's buttons, in order (the parts' are R C L D P X S).
@@ -112,6 +127,22 @@ namespace playground::ui
         };
 
         explicit SchematicView(Hooks hooks);
+
+        // The circuit dials and Play this circuit (above): the program that plays's circuit fields, a dial's port and its
+        // control (the program that plays's), Play (its why when it does not play: "" when it did), what the strip says
+        // while program.fm's text is Play's ("" otherwise), and its Undo.
+        struct DialHooks
+        {
+            std::function<const std::vector<lang::CircuitBinding>&()> bindings;
+            std::function<funkgui::ParamPort*(int slot)> port;
+            std::function<Control(int slot)> control;
+            std::function<std::string()> play;
+            std::function<std::string()> playedNote;
+            std::function<void()> undoPlay;
+        };
+        void setDialHooks(DialHooks hooks) { dials_ = std::move(hooks); }
+        // The Panel's GestureController, through which a knob writes (FilesItem hands it in with each pointer event).
+        void setGestures(funkgui::GestureController* g) noexcept { gestures_ = g; }
 
         void attach(funkgui::HostServices* host) { host_ = host; }
         // The file shown in Schematic view: its tab's editor, its name and its state (FilesItem's; null: none shown).
@@ -158,6 +189,11 @@ namespace playground::ui
         funkgui::Rect buttonRect(Button b) const;
         funkgui::Point centreOfProblems() const;         // the info strip's count (its click)
         std::optional<funkgui::Point> centreOfStart() const;   // an empty netlist's [Start a circuit]
+        std::optional<funkgui::Point> centreOfKnob(const std::string& part) const;   // a pot's knob, a switch's chip
+        int knobSlot(const std::string& part) const;     // the dial a part's knob or chip turns (-1: none)
+        int knobCount() const;                           // the knobs and chips drawn now
+        std::string stripButton() const;                 // the strip's button: "Play this circuit", "Undo", or ""
+        std::optional<funkgui::Point> centreOfStripButton() const;
         std::vector<std::string> selection() const;      // the parts selected, by name
         int selectedRuns() const noexcept { return static_cast<int>(runs_.size()); }
         std::vector<cir::UnitEdge> selectedEdges() const;
@@ -216,13 +252,26 @@ namespace playground::ui
             std::vector<int> parts;                      // the parts it marks (none: the count only)
             std::vector<std::pair<int, int>> pins;       // the pins its column falls on: (part, pin)
         };
-        enum class Drag : uint8_t { none, press, move, wire, marquee, pan, carry };
+        enum class Drag : uint8_t { none, press, move, wire, marquee, pan, carry, knob, control };
+        // A circuit dial on the drawing (above): its part, its slot, a switch's chip (and its positions), its centre.
+        struct Knob
+        {
+            int part = -1;
+            int slot = -1;
+            bool chip = false;
+            int positions = 2;
+            funkgui::Point at{};
+        };
 
         void ensure() const;                             // the drawing of the editor's text now (and its marks)
         bool emptyNetlist() const;                       // no element (drawn or not) and no terminal: Start is offered
         std::string stripCount() const;                  // "2 PROBLEMS" (none: empty)
         funkgui::Rect countRect() const;                 // the count's, at the strip's right end (its click)
         std::string stripBanner() const;                 // "Not drawn: Q1 (a BJT: Phase 2)", else "Not played: ..."
+        funkgui::Rect stripButtonRect() const;           // the banner's button, at the left of the count
+        std::vector<Knob> knobs() const;                 // the circuit dials drawn now (screen points)
+        int knobAt(funkgui::Point p) const;              // knobs()'s index under a point, -1 for none
+        std::string knobWords(const Knob& k) const;      // "drive 62 %   drag to turn it, double-click: its default"
         void layoutBars();
         void computeMarks() const;                       // the tab's messages on the drawing (each tick: a check lands)
         Hit hitAt(funkgui::Point p) const;
@@ -250,6 +299,10 @@ namespace playground::ui
         std::vector<cir::Pt> wirePath() const;
 
         Hooks hooks_;
+        DialHooks dials_;
+        funkgui::GestureController* gestures_ = nullptr;
+        float knobFrom_ = 0.0f, knobY_ = 0.0f;           // a knob's drag: the value it started at, the pointer's y
+        int knobPart_ = -1;                              // ... and its part
         funkgui::HostServices* host_ = nullptr;
         funkgui::TextEditor* ed_ = nullptr;
         std::string file_;

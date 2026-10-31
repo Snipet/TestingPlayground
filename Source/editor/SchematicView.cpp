@@ -9,6 +9,8 @@
 #include <funkgui/core/Ease.h>
 #include <funkgui/core/TypeScale.h>
 #include <funkgui/panel/HostServices.h>
+#include <funkgui/params/GestureController.h>
+#include <funkgui/params/ParamPort.h>
 #include <funkgui/text/FontService.h>
 #include <funkgui/text/TextFit.h>
 
@@ -257,6 +259,8 @@ namespace playground::ui
     {
         // (a fit pending stays: show() sets it again for a file shown anew, and a view hidden under the PANEL view
         // fits when it shows again)
+        if (drag_ == Drag::knob && gestures_ != nullptr)
+            gestures_->endDrag();                        // a knob turned: its gesture ends with the view
         drag_ = Drag::none;
         moveBy_ = {};
         moveRefused_ = false;
@@ -1346,10 +1350,47 @@ namespace playground::ui
             drag_ = Drag::none;
             if (!e.popup && countRect().contains(p))
                 stepProblem(e.mods.shift ? -1 : 1);
+            else if (!e.popup && stripButtonRect().contains(p))
+            {
+                // Play this circuit (its why, when it cannot), or Undo what it wrote
+                if (stripButton() == "Undo")
+                {
+                    if (dials_.undoPlay)
+                        dials_.undoPlay();
+                }
+                else if (dials_.play)
+                    if (const std::string why = dials_.play(); !why.empty())
+                        say(why);
+            }
             return;
         }
         if (!canvas_.contains(p))
             return;
+        // A circuit dial's knob turns its dial; a switch's chip steps it (the Panel's gestures, the dial's own port).
+        if (!e.popup && tool_ == Tool::select && gestures_ != nullptr && dials_.port && dials_.control)
+            if (const int k = knobAt(p); k >= 0)
+            {
+                const Knob kn = knobs()[static_cast<std::size_t>(k)];
+                if (funkgui::ParamPort* port = dials_.port(kn.slot))
+                {
+                    if (kn.chip)
+                    {
+                        const Control c = dials_.control(kn.slot);
+                        const long at = std::lround(plainOf(c, port->value01()) - c.min);
+                        gestures_->tap(*port, normOf(c, c.min + static_cast<float>((at + 1) % std::max(kn.positions, 1))));
+                        drag_ = Drag::control;
+                    }
+                    else
+                    {
+                        gestures_->beginDrag(*port);
+                        knobFrom_ = port->value01();
+                        knobY_ = p.y;
+                        drag_ = Drag::knob;
+                    }
+                    knobPart_ = kn.part;
+                    return;
+                }
+            }
         press_ = Press{ p, e.mods, e.popup, hitAt(p), ed_->revision(), view().world(p) };
         drag_ = Drag::press;
         panned_ = false;
@@ -1462,6 +1503,8 @@ namespace playground::ui
             case Drag::none:
             case Drag::press:
             case Drag::carry:
+            case Drag::knob:
+            case Drag::control:
                 break;
         }
     }
@@ -1472,13 +1515,20 @@ namespace playground::ui
             return;
         const funkgui::Point p{ e.x, e.y };
         pointer_ = p;
+        if (drag_ == Drag::knob)
+        {
+            // up raises it: 150 px a whole turn (Shift: 750 px, fine)
+            if (gestures_ != nullptr && gestures_->dragging())
+                gestures_->dragTo(knobFrom_ + (knobY_ - p.y) / (e.mods.shift ? 750.0f : 150.0f));
+            return;
+        }
         if (drag_ == Drag::press)
         {
             if (dist(p, press_.at) >= kDragPx)
                 beginDrag(p);
             return;
         }
-        if (drag_ != Drag::none)
+        if (drag_ != Drag::none && drag_ != Drag::control)
             followPointer(p);
     }
 
@@ -1488,6 +1538,13 @@ namespace playground::ui
             return;
         const funkgui::Point p{ e.x, e.y };
         pointer_ = p;
+        if (drag_ == Drag::knob || drag_ == Drag::control)
+        {
+            if (drag_ == Drag::knob && gestures_ != nullptr)
+                gestures_->endDrag();
+            drag_ = Drag::none;
+            return;
+        }
         if (drag_ == Drag::press)
         {
             drag_ = Drag::none;
@@ -1596,6 +1653,8 @@ namespace playground::ui
                 break;
             case Drag::none:
             case Drag::press:
+            case Drag::knob:
+            case Drag::control:
                 break;
         }
     }
@@ -1700,6 +1759,19 @@ namespace playground::ui
             return;
         ensure();
         drag_ = Drag::none;
+        // A knob's double-click: its dial's default (a chip's second click stepped it already).
+        if (tool_ == Tool::select)
+            if (const int k = knobAt({ e.x, e.y }); k >= 0)
+            {
+                const Knob kn = knobs()[static_cast<std::size_t>(k)];
+                funkgui::ParamPort* port = dials_.port ? dials_.port(kn.slot) : nullptr;
+                if (!kn.chip && port != nullptr && gestures_ != nullptr && dials_.control)
+                {
+                    const Control c = dials_.control(kn.slot);
+                    gestures_->tap(*port, normOf(c, c.def));
+                }
+                return;
+            }
         const Hit h = hitAt({ e.x, e.y });
         switch (h.kind)
         {
@@ -2046,7 +2118,7 @@ namespace playground::ui
         // (a notice's 4 s count down at the idle rate: it asks for no frames of its own)
         if (easing_ || fitPending_ || !flash_.empty())
             return false;
-        if (drag_ == Drag::move || drag_ == Drag::wire || drag_ == Drag::marquee || drag_ == Drag::carry)
+        if (drag_ == Drag::move || drag_ == Drag::wire || drag_ == Drag::marquee || drag_ == Drag::carry || drag_ == Drag::knob)
             return false;
         // a part carried near the edge pans
         if (tool_ == Tool::place && canvas_.contains(pointer_))
@@ -2064,7 +2136,7 @@ namespace playground::ui
             for (const funkgui::Rect& b : buttons_)
                 if (b.contains(p))
                     return funkgui::Cursor::pointingHand;
-            return countRect().contains(p) ? funkgui::Cursor::pointingHand : funkgui::Cursor::normal;
+            return countRect().contains(p) || stripButtonRect().contains(p) ? funkgui::Cursor::pointingHand : funkgui::Cursor::normal;
         }
         if (!canvas_.contains(p))
             return funkgui::Cursor::normal;
@@ -2074,6 +2146,8 @@ namespace playground::ui
             case Drag::wire: return funkgui::Cursor::crosshair;
             case Drag::pan: return funkgui::Cursor::grabbing;
             case Drag::carry: return funkgui::Cursor::copy;
+            case Drag::knob: return funkgui::Cursor::upDown;
+            case Drag::control: return funkgui::Cursor::pointingHand;
             case Drag::marquee:
             case Drag::press:
             case Drag::none:
@@ -2081,6 +2155,8 @@ namespace playground::ui
         }
         if (tool_ == Tool::place)
             return funkgui::Cursor::copy;
+        if (const int k = tool_ == Tool::select ? knobAt(p) : -1; k >= 0)
+            return knobs()[static_cast<std::size_t>(k)].chip ? funkgui::Cursor::pointingHand : funkgui::Cursor::upDown;
         const Hit h = hitAt(p);
         if (tool_ == Tool::ground)
             return h.kind == Hit::Kind::pin || h.kind == Hit::Kind::wire ? funkgui::Cursor::crosshair : funkgui::Cursor::normal;
@@ -2204,6 +2280,16 @@ namespace playground::ui
             return n;
         if (st_ == nullptr)
             return {};
+        // a circuit dial: the one turned, else the one under the pointer
+        if (drag_ == Drag::knob)
+        {
+            for (const Knob& k : knobs())
+                if (k.part == knobPart_)
+                    return knobWords(k);
+        }
+        else if (tool_ == Tool::select && (drag_ == Drag::none || drag_ == Drag::control))
+            if (const int k = knobAt(pointer_); k >= 0)
+                return knobWords(knobs()[static_cast<std::size_t>(k)]);
         if (st_->selected.size() == 1 && runs_.empty())
         {
             const int i = d_.part(st_->selected.front());
@@ -2269,7 +2355,165 @@ namespace playground::ui
         }
         if (hooks_.played && !hooks_.played())
             return "Not played: no program #includes " + file_;
+        if (dials_.playedNote)
+            return dials_.playedNote();                  // "program.fm now plays pedal.cir", while Undo can take it back
         return {};
+    }
+
+    std::string SchematicView::stripButton() const
+    {
+        if (!showing() || !d_.notDrawn.empty())
+            return {};
+        if (hooks_.played && !hooks_.played())
+            return dials_.play ? "Play this circuit" : std::string();
+        return dials_.playedNote && !dials_.playedNote().empty() ? "Undo" : std::string();
+    }
+
+    funkgui::Rect SchematicView::stripButtonRect() const
+    {
+        const std::string label = stripButton();
+        if (label.empty())
+            return {};
+        const funkgui::Rect count = countRect();
+        const float w = funkgui::text::width(funkgui::FontService::get().atlas(), label.c_str(), chat::kSmall) + 16.0f;
+        const float right = strip_.right() - (count.w > 0.0f ? count.w + 6.0f : 6.0f);
+        return { right - w, strip_.y + 3.0f, w, strip_.h - 6.0f };
+    }
+
+    std::optional<funkgui::Point> SchematicView::centreOfStripButton() const
+    {
+        const funkgui::Rect r = stripButtonRect();
+        if (r.w <= 0.0f)
+            return std::nullopt;
+        return funkgui::Point{ r.centreX(), r.centreY() };
+    }
+
+    // ---- the circuit dials on the drawing -------------------------------------------------------------------------------
+    std::vector<SchematicView::Knob> SchematicView::knobs() const
+    {
+        std::vector<Knob> out;
+        if (!showing() || !dials_.bindings)
+            return out;
+        ensure();
+        const lang::CircuitBinding* b = nullptr;
+        for (const lang::CircuitBinding& x : dials_.bindings())
+            if (x.file == file_ && x.dialled())
+            {
+                b = &x;
+                break;
+            }
+        const sch::View v = view();
+        if (b == nullptr || sch::labelPx(v, false) <= 0.0f)
+            return out;
+        const auto folded = [](std::string x) {
+            for (char& ch : x)
+                ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            return x;
+        };
+        const std::size_t pots = b->pots.size();
+        for (std::size_t i = 0; i < d_.parts.size(); ++i)
+        {
+            const cir::Part& p = d_.parts[i];
+            if (p.element < 0 || p.element >= static_cast<int>(nl_.elements.size()))
+                continue;
+            const cir::Element& el = nl_.elements[static_cast<std::size_t>(p.element)];
+            Knob k;
+            k.part = static_cast<int>(i);
+            if (el.kind == cir::Kind::Pot || el.kind == cir::Kind::Rheostat)
+            {
+                // the first pot its {expression} reads
+                for (const cir::Token& t : el.tokens)
+                {
+                    if (t.text.empty() || t.text.front() != '{')
+                        continue;
+                    std::string word;
+                    for (std::size_t c = 0; c <= t.text.size() && k.slot < 0; ++c)
+                    {
+                        const char ch = c < t.text.size() ? t.text[c] : ' ';
+                        if (std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '_')
+                        {
+                            word += ch;
+                            continue;
+                        }
+                        if (!word.empty() && std::isalpha(static_cast<unsigned char>(word.front())) != 0)
+                            for (std::size_t a = 0; a < pots && k.slot < 0; ++a)
+                                if (folded(b->pots[a].name) == folded(word))
+                                    k.slot = b->slots[a];
+                        word.clear();
+                    }
+                    break;
+                }
+            }
+            else if (el.kind == cir::Kind::S && el.tokens.size() > 3)
+            {
+                for (std::size_t w = 0; w < b->switches.size() && k.slot < 0; ++w)
+                    if (folded(b->switches[w].name) == folded(el.tokens[3].text))
+                    {
+                        k.slot = b->slots[pots + w];
+                        k.chip = true;
+                        k.positions = b->switches[w].positions;
+                    }
+            }
+            if (k.slot < 0)
+                continue;
+            out.push_back(k);
+        }
+        // beside the body, where the fewest bodies, flags, pins and wires are (its labels then keep clear of it)
+        std::vector<sch::KnobSpot> spots;
+        for (const Knob& k : out)
+            spots.push_back({ k.part, k.chip ? 0.5f * kChipW : kKnobR, k.chip ? 0.5f * kChipH : kKnobR, {} });
+        sch::placeKnobs(v, d_, spots);
+        for (std::size_t n = 0; n < out.size(); ++n)
+            out[n].at = spots[n].at;
+        return out;
+    }
+
+    int SchematicView::knobAt(funkgui::Point p) const
+    {
+        if (!canvas_.contains(p))
+            return -1;
+        const std::vector<Knob> ks = knobs();
+        for (std::size_t k = 0; k < ks.size(); ++k)
+        {
+            const bool in = ks[k].chip ? std::fabs(p.x - ks[k].at.x) <= 0.5f * kChipW + 2.0f && std::fabs(p.y - ks[k].at.y) <= 0.5f * kChipH + 2.0f
+                                       : dist(p, ks[k].at) <= kKnobR + 2.0f;
+            if (in)
+                return static_cast<int>(k);
+        }
+        return -1;
+    }
+
+    std::string SchematicView::knobWords(const Knob& k) const
+    {
+        funkgui::ParamPort* port = dials_.port ? dials_.port(k.slot) : nullptr;
+        if (port == nullptr || !dials_.control)
+            return {};
+        const Control c = dials_.control(k.slot);
+        const std::string value = dialText(c, plainOf(c, port->value01()));
+        return std::string(c.name) + " " + value
+             + (k.chip ? "   a click steps it (0 to " + std::to_string(k.positions - 1) + ")"
+                       : "   drag to turn it, double-click: its default");
+    }
+
+    std::optional<funkgui::Point> SchematicView::centreOfKnob(const std::string& part) const
+    {
+        for (const Knob& k : knobs())
+            if (d_.parts[static_cast<std::size_t>(k.part)].name == part)
+                return k.at;
+        return std::nullopt;
+    }
+
+    int SchematicView::knobSlot(const std::string& part) const
+    {
+        for (const Knob& k : knobs())
+            if (d_.parts[static_cast<std::size_t>(k.part)].name == part)
+                return k.slot;
+        return -1;
+    }
+
+    int SchematicView::knobCount() const
+    {
+        return static_cast<int>(knobs().size());
     }
 
     std::string SchematicView::stripRight() const
@@ -2606,6 +2850,15 @@ namespace playground::ui
                 c.text(count.c_str(), strip_.right() - 6.0f, top, st, hot ? pal.accent : error ? k.error : k.warning, funkgui::Align::right);
                 rightW = c.textWidth(count.c_str(), st) + 12.0f;
             }
+            // the banner's button (Play this circuit, Undo) left of the count, a pill as Start's
+            if (const std::string label = stripButton(); !label.empty())
+            {
+                const funkgui::Rect b = stripButtonRect();
+                const bool hot = b.contains(pointer_);
+                c.rrect(b.x, b.y, b.w, b.h, 0.5f * b.h, hot ? pal.hover : pal.composer, 1.0f, pal.composerEdge);
+                c.text(label.c_str(), b.centreX(), c.capCentreTop(b.centreY(), st), st, hot ? pal.text : pal.soft, funkgui::Align::centre);
+                rightW = strip_.right() - b.x - 12.0f + (rightW > 0.0f ? 0.0f : 6.0f);
+            }
             if (!banner.empty())
             {
                 const float room = strip_.w * 0.5f - 8.0f - rightW - (rightW > 0.0f ? 12.0f : 0.0f);
@@ -2700,7 +2953,11 @@ namespace playground::ui
             values.reserve(d_.parts.size());
             for (const cir::Part& p : d_.parts)
                 values.push_back(sch::valueText(nl_, p));
-            const std::vector<sch::LabelSpot> spots = sch::placeLabels(c, v, d_, values, px);
+            std::vector<funkgui::Rect> knobRects;        // the circuit dials' knobs: the labels keep clear of them
+            for (const Knob& kn : knobs())
+                knobRects.push_back(kn.chip ? funkgui::Rect{ kn.at.x - 0.5f * kChipW, kn.at.y - 0.5f * kChipH, kChipW, kChipH }
+                                            : funkgui::Rect{ kn.at.x - kKnobR, kn.at.y - kKnobR, 2.0f * kKnobR, 2.0f * kKnobR });
+            const std::vector<sch::LabelSpot> spots = sch::placeLabels(c, v, d_, values, px, knobRects);
             for (std::size_t i = 0; i < d_.parts.size(); ++i)
             {
                 const cir::Part& p = d_.parts[i];
@@ -2744,6 +3001,33 @@ namespace playground::ui
                 if (p.element >= 0 && px > 0.0f)
                     sch::labels(c, spots[i], p.name, values[i], k.name, k.value, k.ground, px, static_cast<float>(off.x) * v.scale,
                                 static_cast<float>(off.y) * v.scale);
+            }
+        }
+
+        // the circuit dials (the program that plays drives this file's pots): a knob beside each pot, a chip beside each
+        // switch, the one under the pointer (or turned) in the accent
+        if (dials_.port)
+        {
+            const funkgui::Canvas::Scope s(c, sch::kPartTag, false);
+            const std::vector<Knob> ks = knobs();
+            const int hot = drag_ == Drag::knob ? -1 : (tool_ == Tool::select ? knobAt(pointer_) : -1);
+            for (std::size_t n = 0; n < ks.size(); ++n)
+            {
+                const Knob& kn = ks[n];
+                if (moving(kn.part) || !canvas_.contains(kn.at))
+                    continue;
+                funkgui::ParamPort* port = dials_.port(kn.slot);
+                if (port == nullptr)
+                    continue;
+                const bool lit = static_cast<int>(n) == hot || (drag_ == Drag::knob && kn.part == knobPart_);
+                const funkgui::Col ink = lit ? k.accent : k.symbol;
+                if (kn.chip)
+                {
+                    const Control ctl = dials_.control ? dials_.control(kn.slot) : Control{};
+                    sch::chip(c, kn.at, kChipW, kChipH, std::to_string(std::lround(plainOf(ctl, port->value01()))), ink, k);
+                }
+                else
+                    sch::knob(c, kn.at, kKnobR, port->value01(), ink, k);
             }
         }
 

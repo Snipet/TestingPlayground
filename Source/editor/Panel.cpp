@@ -23,6 +23,7 @@
 #include "dsp/Controls.h"
 #include "dsp/Engine.h"
 #include "fminus/CirDoc.h"
+#include "fminus/CirTemplates.h"
 #include "fminus/Lang.h"
 #include "fminus/LibraryIncludes.h"
 #include "fminus/Random.h"
@@ -729,6 +730,74 @@ namespace playground::ui
         CodeAssist& assist() noexcept { return assist_; }
         const CodeAssist& assist() const noexcept { return assist_; }
         void setNotice(std::function<void(const std::string&)> notice) { notice_ = std::move(notice); }
+        // The Schematic view's circuit dials and Play this circuit (SchematicView.h): the program that plays's circuit
+        // fields, a dial's port and control, and RUN (the Panel's).
+        void setCircuitHooks(std::function<const std::vector<lang::CircuitBinding>&()> bindings,
+                             std::function<funkgui::ParamPort*(int)> port, std::function<Control(int)> control,
+                             std::function<void()> run)
+        {
+            run_ = std::move(run);
+            SchematicView::DialHooks h;
+            h.bindings = std::move(bindings);
+            h.port = std::move(port);
+            h.control = std::move(control);
+            h.play = [this] { return playCircuit(); };
+            h.playedNote = [this] { return playedNote(); };
+            h.undoPlay = [this] { undoPlay(); };
+            schematic_.setDialHooks(std::move(h));
+        }
+
+        // Play this circuit: program.fm's text (the first file's) replaced by a host program of the product's kind for
+        // the netlist shown (fminus/CirTemplates.h), as one undoable edit, the library files it #includes added as tabs
+        // first (as EXAMPLES adds them), then RUN; the view stays on the netlist. Why not ("" when it played).
+        std::string playCircuit()
+        {
+            if (irShown() || active_ <= 0 || fileKindOf(name(active_)) != FileKind::Circuit)
+                return "Play this circuit plays a netlist that is not the program's first file";
+            const std::string file = name(active_);
+            const cir::HostProgram hp = cir::hostProgram(file, editorOf(active_).text(), product::kIsInstrument);
+            if (!hp.why.empty())
+                return hp.why;
+            const Sources need = withLibraryIncludes(singleFile(hp.text));
+            std::string names;
+            int missing = 0;
+            for (std::size_t k = 1; k < need.size(); ++k)
+                if (find(need[k].name) < 0)
+                {
+                    ++missing;
+                    names += (names.empty() ? "" : " and ") + need[k].name;
+                }
+            if (count() + missing > static_cast<int>(kMaxFiles))
+                return "Play this circuit needs room for " + names + ": close a tab";
+            endRename();
+            for (std::size_t k = 1; k < need.size(); ++k)
+                if (find(need[k].name) < 0)
+                    addFileQuiet(need[k].name, need[k].text);
+            replaceText(editorOf(0), hp.text);
+            playFile_ = file;
+            playProgram_ = name(0);
+            if (run_)
+                run_();
+            playRev_ = editorOf(0).revision();           // after RUN (Format on Run leaves a template as it is)
+            playOn_ = true;
+            return {};
+        }
+        // "program.fm now plays pedal.cir" while program.fm's text is what Play wrote and that netlist shows; "" else.
+        std::string playedNote() const
+        {
+            if (!playOn_ || tabs_.empty() || irShown() || tabs_.front().editor->revision() != playRev_ || name(0) != playProgram_
+                || name(active_) != playFile_)
+                return {};
+            return name(0) + " now plays " + playFile_;
+        }
+        // Its Undo: program.fm's own undo step (Cmd-Z in its tab does the same).
+        void undoPlay()
+        {
+            if (playedNote().empty())
+                return;
+            editorOf(0).undo();
+            playOn_ = false;
+        }
         // The completion list, the signature and the hover card, over everything (the Panel draws them last).
         void drawOverlays(funkgui::Canvas& c, const funkgui::Theme& th, float w, float h) const
         {
@@ -1320,10 +1389,11 @@ namespace playground::ui
                            : funkgui::Cursor::normal;
             return editor().cursorAt(p);
         }
-        void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController&, funkgui::HostServices&) override
+        void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController& g, funkgui::HostServices&) override
         {
             const funkgui::Point p{ e.x, e.y };
             pressedSchematic_ = false;
+            schematic_.setGestures(&g);                  // a circuit dial's knob writes through it
             if (!bar_.contains(p))
             {
                 endRename();
@@ -1390,15 +1460,17 @@ namespace playground::ui
             pointer_ = { -1.0e4f, -1.0e4f };
             schematic_.pointerExit();
         }
-        void pointerDrag(const funkgui::PointerEvent& e, funkgui::GestureController&) override
+        void pointerDrag(const funkgui::PointerEvent& e, funkgui::GestureController& g) override
         {
+            schematic_.setGestures(&g);
             if (pressedSchematic_)
                 schematic_.pointerDrag(e);
             else if (pressedEditor_)
                 editor().pointerDrag(e);
         }
-        void pointerUp(const funkgui::PointerEvent& e, funkgui::GestureController&) override
+        void pointerUp(const funkgui::PointerEvent& e, funkgui::GestureController& g) override
         {
+            schematic_.setGestures(&g);
             if (pressedSchematic_)
                 schematic_.pointerUp(e);
             else if (pressedEditor_)
@@ -1406,9 +1478,10 @@ namespace playground::ui
             pressedEditor_ = false;
             pressedSchematic_ = false;
         }
-        void doubleClick(const funkgui::PointerEvent& e, funkgui::GestureController&) override
+        void doubleClick(const funkgui::PointerEvent& e, funkgui::GestureController& g) override
         {
             const funkgui::Point p{ e.x, e.y };
+            schematic_.setGestures(&g);
             if (!bar_.contains(p))
             {
                 if (schematicShown())
@@ -2028,6 +2101,11 @@ namespace playground::ui
         mutable uint64_t playedRev_ = ~uint64_t{ 0 };
         mutable std::string playedName_;
         mutable bool played_ = false;
+        // Play this circuit's (playCircuit): what it wrote, into which program, for which netlist; RUN.
+        bool playOn_ = false;
+        uint64_t playRev_ = 0;
+        std::string playFile_, playProgram_;
+        std::function<void()> run_;
         // Last: its tabs' callbacks reach the members above.
         CodeAssist assist_;
         SchematicView schematic_;                    // after assist_: its hooks read it
@@ -2386,6 +2464,15 @@ namespace playground::ui
                 library.push_back({ l.name, l.source });
             f.assist().setLibrary(library);
             f.assist().setInstrument(product::kIsInstrument);
+            f.setCircuitHooks([this]() -> const std::vector<lang::CircuitBinding>& { return circuitDials_; },
+                              [this](int slot) -> funkgui::ParamPort* {
+                                  const int i = slot >= 0 && slot < kMaxControls ? itemOfSlot_[static_cast<std::size_t>(slot)] : -1;
+                                  return i >= 0 ? static_cast<DialItem&>(*items_[static_cast<std::size_t>(i)]).model().port() : nullptr;
+                              },
+                              [this](int slot) {
+                                  return slot >= 0 && slot < kMaxControls ? controls_[static_cast<std::size_t>(slot)] : Control{};
+                              },
+                              [this] { runNow(); });
         }
         problemsItem_ = add(std::make_unique<ProblemsItem>(funkgui::Rect{}, idFor(), problems_,
                                                            [this](const Problem& p) { jumpTo(p); }));
@@ -3736,6 +3823,7 @@ namespace playground::ui
             const Controls cs = s.ok ? s.controls : port_.controls();
             if (s.ok)
                 running_ = s.sources;
+            circuitDials_ = s.circuitDials;              // the program that plays's (a failed compile's: the one before)
             const PanelSpec spec = s.ok ? s.panel : port_.panel();
             ++controlsRevision_;
             for (int c = 0; c < kMaxControls; ++c)

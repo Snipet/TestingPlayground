@@ -14,6 +14,8 @@
 //   gui.schematic.empty.png    an empty netlist: the hint and Start a circuit
 //   gui.schematic.zoom25.png   25 %: symbols as their boxes, no labels, no grid
 //   gui.schematic.zoom400.png  400 %
+//   gui.schematic.dials.png    a program driving screamer.cir's pots with dials: a knob beside each pot (100 %)
+//   gui.schematic.play.png     a netlist no program #included, played: program.fm now plays it, Undo in the info strip
 // and checks:
 //   VIEW      the pills (Netlist, Schematic) at the tab bar's right end while a .cir tab shows, labelled at the
 //             default size; a click shows the drawing: opening fits it, never under 60 %; the status line's words; the
@@ -45,6 +47,13 @@
 //   MENUS     the part's, the wire's, the canvas's and More's menus (pendingMenu), each item working (chooseMenuItem)
 //   A11Y      the group, an item a part and a net, their ids the same across a pan and a zoom, the revision too, every
 //             item visible, at 400 % too with parts off the canvas (bounds on it); the focus action selects and centres
+//   DIALS     a program holding screamer.cir's module, never calling its set(): a knob beside Pdrive, Ptone and Plevel
+//             on the slots of their dials; a drag up on one turns its dial (the program card's) and leaves the text
+//             alone, the info strip saying its value; a double-click its default; the body still moves the part; a
+//             switch's chip steps its position
+//   PLAY      a netlist no program #includes: the banner's Play this circuit writes program.fm (CirTemplates.h's host
+//             program, the library tabs it needs), runs it, the view staying on the netlist, and offers Undo, which
+//             gives program.fm's text back in one step
 //   PERSIST   nothing kept by opening; a Panel opened again keeps each file's view, zoom and pan (the session's views);
 //             a view switched but never zoomed nor panned keeps no zoom, and fits again when opened again
 #include "Probe.h"
@@ -55,6 +64,7 @@
 #include "editor/SchematicView.h"
 #include "editor/Theme.h"
 #include "fminus/CirDoc.h"
+#include "fminus/CirTemplates.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/ClaudeApi.h"
 #include "plugin/EditorPort.h"
@@ -1610,6 +1620,157 @@ PROBE(gui, schematic)
         }
     }
     funkgui::UiPreferences::get().setTheme(0);
+
+    // ---- DIALS: the circuit dials on the drawing (dials.png) --------------------------------------------------------
+    {
+        // A program that holds screamer.cir's module and never calls its set(): its pots are dials of their own.
+        const std::string program = pg::product::kIsInstrument
+            ? "#include \"screamer.cir\"\nmodule Voice\n{\n    Screamer amp;\n    bool held;\n\n    void init(float rate)\n    {\n"
+              "        amp.init(rate);\n    }\n\n    void start(float note, float velocity)\n    {\n        held = true;\n    }\n\n"
+              "    void stop()\n    {\n        held = false;\n    }\n\n"
+              "    bool process(float* restrict left, float* restrict right, int n)\n    {\n        for (int i = 0; i < n; ++i)\n"
+              "        {\n            const float y = amp.tick(0);\n            left[i] += y;\n            right[i] += y;\n        }\n"
+              "        return held;\n    }\n};\n"
+            : "#include \"screamer.cir\"\nmodule Effect\n{\n    Screamer amp[2];\n\n    void init(float rate)\n    {\n"
+              "        amp[0].init(rate);\n        amp[1].init(rate);\n    }\n\n"
+              "    void process(float* restrict left, float* restrict right, int n)\n    {\n        for (int i = 0; i < n; ++i)\n"
+              "        {\n            left[i] = amp[0].tick(left[i]);\n            right[i] = amp[1].tick(right[i]);\n        }\n    }\n};\n";
+        Rig r(draftWith(program, { { "screamer.cir", libraryText("screamer.cir") } }, 1));
+        r.run();
+        pg::ui::Panel& panel = *r.panel;
+        funkgui::HeadlessHost& host = *r.host;
+        pg::EditorPort& port = r.processor.editorPort();
+        std::string names;
+        for (const pg::Control& c : port.controls())
+            if (c.used)
+                names += (names.empty() ? "" : " ") + std::string(c.name);
+        std::printf("dials: %s%s; %s\n", port.status().errors.c_str(), port.status().notes.c_str(), names.c_str());
+        P.eq("dials.run", port.status().ok && names == "drive tone level" ? 1 : 0, 1);
+        const funkgui::Point pill = panel.centreOfViewPill(true);
+        host.click(pill.x, pill.y);
+        host.settle();
+        SV& v = r.view();
+        frame(v, host);
+        host.settle();
+        std::printf("dials: %d knobs at %.0f%%; Pdrive's slot %d, Ptone's %d, Plevel's %d\n", v.knobCount(),
+                    static_cast<double>(v.zoom() * 100.0f), v.knobSlot("Pdrive"), v.knobSlot("Ptone"), v.knobSlot("Plevel"));
+        P.eq("dials.knobs", v.knobCount() == 3 && v.knobSlot("Pdrive") == 0 && v.knobSlot("Ptone") == 1 && v.knobSlot("Plevel") == 2 ? 1 : 0, 1);
+        {
+            bool inside = true;
+            for (const char* part : { "Pdrive", "Ptone", "Plevel" })
+                inside = inside && v.canvasRect().contains(v.centreOfKnob(part).value_or(funkgui::Point{ -1.0e4f, -1.0e4f }));
+            P.eq("dials.knobs_on_canvas", inside ? 1 : 0, 1);
+        }
+        writePng(P, host, "gui.schematic.dials.png", "dials");
+        // dragging Pdrive's knob 60 px up turns the dial of its slot (the program card's): +0.4 of its range
+        funkgui::ParamPort& drive = *r.processor.ports()[0];
+        const float before = drive.value01();
+        const funkgui::Point k = v.centreOfKnob("Pdrive").value_or(funkgui::Point{});
+        host.move(k.x, k.y);
+        host.tick(1);
+        const std::string hover = v.stripLeft();
+        host.press(k.x, k.y);
+        host.moveTo(k.x, k.y - 60.0f, 6);
+        const std::string turning = v.stripLeft();
+        host.release();
+        host.tick(2);
+        std::printf("knob: %.3f -> %.3f (hover \"%s\", turning \"%s\")\n", static_cast<double>(before), static_cast<double>(drive.value01()),
+                    hover.c_str(), turning.c_str());
+        P.near("dials.knob_turns_dial", drive.value01(), before + 0.4f, 0.01);
+        P.eq("dials.hover_shows_value", hover.rfind("drive 50 %", 0) == 0 && turning.rfind("drive ", 0) == 0 ? 1 : 0, 1);
+        P.eq("dials.text_untouched", port.draft().files[1].text == libraryText("screamer.cir") ? 1 : 0, 1);
+        host.doubleClick(k.x, k.y);
+        host.tick(2);
+        P.near("dials.double_click_default", drive.value01(), pg::normOf(port.controls()[0], port.controls()[0].def), 1e-6);
+        // the body still moves the part (into the canvas's empty lower left)
+        const funkgui::Point body = partAt(v, "Pdrive");
+        const cir::Pt was = partOf(v.drawing(), "Pdrive") != nullptr ? partOf(v.drawing(), "Pdrive")->origin : cir::Pt{};
+        lDrag(host, body, { v.canvasRect().x + 50.0f, v.canvasRect().bottom() - 40.0f });
+        host.settle();
+        const cir::Part* moved = partOf(v.drawing(), "Pdrive");
+        std::printf("Pdrive dragged by its body: %d,%d -> %d,%d\n", was.x, was.y, moved != nullptr ? moved->origin.x : 0,
+                    moved != nullptr ? moved->origin.y : 0);
+        P.eq("dials.body_still_moves", moved != nullptr && !(moved->origin == was)
+                                           && drive.value01() == pg::normOf(port.controls()[0], port.controls()[0].def) ? 1 : 0, 1);
+    }
+    {
+        // A switch's chip: a click steps its position (ClipSwitch, FMinus's switch.cir, open by default).
+        const std::string netlist = ".title ClipSwitch\n.input  u    in   scale=1\n.output vout a\n.switch clip 2 0\n"
+                                    ".oversample 4 iir blocks=auto\n.adaa on\n.solver omega(1)\n"
+                                    ".target solver=-60dB alias=-60dB level=4.5V freq=3k\n"
+                                    "R1     in a  2.2k\nC1     a  0  10n\nS1     a  d  clip 1\nD1     d  0  1N914\nD2     0  d  1N914\n.end\n";
+        const std::string program = pg::product::kIsInstrument
+            ? "#include \"sw.cir\"\nmodule Voice\n{\n    ClipSwitch clip;\n\n    void init(float rate)\n    {\n        clip.init(rate);\n    }\n\n"
+              "    void start(float note, float velocity)\n    {\n    }\n\n"
+              "    bool process(float* restrict left, float* restrict right, int n)\n    {\n        return false;\n    }\n};\n"
+            : "#include \"sw.cir\"\nmodule Effect\n{\n    ClipSwitch clip;\n\n    void init(float rate)\n    {\n        clip.init(rate);\n    }\n\n"
+              "    void process(float* restrict left, float* restrict right, int n)\n    {\n        for (int i = 0; i < n; ++i)\n"
+              "            left[i] = clip.tick(left[i]);\n    }\n};\n";
+        Rig r(draftWith(program, { { "sw.cir", netlist } }, 1));
+        r.run();
+        pg::ui::Panel& panel = *r.panel;
+        funkgui::HeadlessHost& host = *r.host;
+        const funkgui::Point pill = panel.centreOfViewPill(true);
+        host.click(pill.x, pill.y);
+        host.settle();
+        SV& v = r.view();
+        frame(v, host);
+        funkgui::ParamPort& sw = *r.processor.ports()[0];
+        const pg::Control c = r.processor.editorPort().controls()[0];
+        const std::optional<funkgui::Point> chip = v.centreOfKnob("S1");
+        const float at0 = pg::plainOf(c, sw.value01());
+        if (chip)
+            host.click(chip->x, chip->y);
+        host.tick(2);
+        const float at1 = pg::plainOf(c, sw.value01());
+        if (chip)
+            host.click(chip->x, chip->y);
+        host.tick(2);
+        const float at2 = pg::plainOf(c, sw.value01());
+        std::printf("a switch's chip: %s, %g -> %g -> %g\n", chip ? "drawn" : "MISSING", static_cast<double>(at0), static_cast<double>(at1),
+                    static_cast<double>(at2));
+        P.eq("dials.chip_steps", chip && v.knobSlot("S1") == 0 && std::string(c.name) == "clip" && at0 == 0.0f && at1 == 1.0f && at2 == 0.0f
+                                     ? 1 : 0, 1);
+    }
+
+    // ---- PLAY: Play this circuit (play.png) -------------------------------------------------------------------------
+    {
+        const std::string init = pg::kExamples[0].source;
+        Rig r(draftWith(init, { { "diodetone.cir", libraryText("diodetone.cir") } }, 1));
+        r.run();
+        pg::ui::Panel& panel = *r.panel;
+        funkgui::HeadlessHost& host = *r.host;
+        pg::EditorPort& port = r.processor.editorPort();
+        const funkgui::Point pill = panel.centreOfViewPill(true);
+        host.click(pill.x, pill.y);
+        host.settle();
+        SV& v = r.view();
+        P.eq("play.offered", v.stripButton() == "Play this circuit" && v.stripRight() == "Not played: no program #includes diodetone.cir"
+                                 && v.centreOfStripButton().has_value() ? 1 : 0, 1);
+        const funkgui::Point b = v.centreOfStripButton().value_or(funkgui::Point{});
+        host.click(b.x, b.y);
+        r.processor.settle();
+        waitFor(host, [&] { return port.status().ok && port.running().size() == port.draft().files.size(); });
+        host.settle();
+        const pg::cir::HostProgram want = pg::cir::hostProgram("diodetone.cir", libraryText("diodetone.cir"), pg::product::kIsInstrument);
+        const pg::Draft d = port.draft();
+        std::string names;
+        for (const pg::Control& c : port.controls())
+            if (c.used)
+                names += (names.empty() ? "" : " ") + std::string(c.name);
+        std::printf("played: %zu files, %s%s; dials %s; strip: %s [%s]\n", d.files.size(), port.status().errors.c_str(), port.status().notes.c_str(),
+                    names.c_str(), v.stripRight().c_str(), v.stripButton().c_str());
+        P.eq("play.program_written", !d.files.empty() && d.files[0].text == want.text ? 1 : 0, 1);
+        P.eq("play.library_tabs", static_cast<int64_t>(d.files.size()), pg::product::kIsInstrument ? 4 : 2);
+        P.eq("play.runs", port.status().ok && port.status().notes.empty() && names == "tone" ? 1 : 0, 1);
+        P.eq("play.view_stays", panel.schematicShown() && v.file() == "diodetone.cir" ? 1 : 0, 1);
+        P.eq("play.undo_offered", v.stripButton() == "Undo" && v.stripRight() == "program.fm now plays diodetone.cir" ? 1 : 0, 1);
+        writePng(P, host, "gui.schematic.play.png", "play");
+        const funkgui::Point u = v.centreOfStripButton().value_or(funkgui::Point{});
+        host.click(u.x, u.y);
+        host.tick(2);
+        P.eq("play.undo_one_step", port.draft().files[0].text == init && v.stripButton() == "Play this circuit" ? 1 : 0, 1);
+    }
 
     // ---- MARKS, the structural ones (and errors.png): kMarks, with an error, a warning and a note planted as above ------
     {

@@ -138,9 +138,11 @@ namespace playground::ui::sch
         bool backdrop = true;                            // false: no spot clear of wires, pins and junctions (they show
                                                          // through: a label never breaks a connection)
     };
-    // Each part's (Drawing::parts' order; a terminal's is not shown: its name is in its flag), `values` theirs.
+    // Each part's (Drawing::parts' order; a terminal's is not shown: its name is in its flag), `values` theirs;
+    // `keepOut`: more to keep clear of, as a body is (the circuit dials' knobs).
     std::vector<LabelSpot> placeLabels(const funkgui::Canvas& c, const View& v, const cir::Drawing& d,
-                                       const std::vector<std::string>& values, float px);
+                                       const std::vector<std::string>& values, float px,
+                                       const std::vector<funkgui::Rect>& keepOut = {});
     // A part's name and value at its spot, upright, on a backdrop of the canvas's ground (none where the spot crosses a
     // wire, a pin or a junction); (dx, dy): a move's offset, px.
     void labels(funkgui::Canvas& c, const LabelSpot& s, const std::string& name, const std::string& value,
@@ -154,6 +156,23 @@ namespace playground::ui::sch
 
     // The grid's dots over `clip`.
     void grid(funkgui::Canvas& c, const View& v, const funkgui::Rect& clip, funkgui::Col ink);
+
+    // A circuit dial on the drawing (SchematicView.h; the size on screen whatever the zoom): a pot's knob of radius `r`
+    // at its value t (0 to 1, the dial's normalised value), over a disc of the canvas's ground, its track faint and its
+    // turned part and pointer in `ink`; a switch's position chip, `text` its position, outlined in `ink`.
+    void knob(funkgui::Canvas& c, funkgui::Point at, float r, float t, funkgui::Col ink, const Inks& k);
+    // Where each of them sits (`at`, on screen): beside its part's body, the first of a few spots (below and above a
+    // horizontal body, left and right of a vertical one, then its corners, then its other sides) that meets the least
+    // of the other bodies, the flags, the knobs placed before, the pins, the junctions and the wires, in that order of
+    // weight. `hw`, `hh`: its half width and height. Canvas-free, so a hit test finds it where the frame drew it.
+    struct KnobSpot
+    {
+        int part = -1;                                   // Drawing::parts
+        float hw = 8.0f, hh = 8.0f;
+        funkgui::Point at{};
+    };
+    void placeKnobs(const View& v, const cir::Drawing& d, std::vector<KnobSpot>& knobs);
+    void chip(funkgui::Canvas& c, funkgui::Point at, float w, float h, const std::string& text, funkgui::Col ink, const Inks& k);
 
     // The text a part shows as its value: the netlist's own spelling (R4's "4.7k", a pot's "100k {tone}", a switch's
     // "sw1: 1", an OTA's gain expression); "" for an op amp or a terminal.
