@@ -839,6 +839,56 @@ namespace playground::ui::sch
         c.text(text.c_str(), at.x, c.capCentreTop(at.y, st), st, ink, funkgui::Align::centre);
     }
 
+    // ---- the probes ---------------------------------------------------------------------------------------------------
+    void trace(funkgui::Canvas& c, const funkgui::Rect& r, const float* volts, int n, float centre, float range, const Inks& k)
+    {
+        c.rrect(r.x, r.y, r.w, r.h, 3.0f, k.ground, 1.0f, k.grid);
+        c.hairlineH(r.x + 2.0f, r.centreY(), r.w - 4.0f, k.faint);
+        c.hairlineH(r.x + 2.0f, r.y + 0.25f * r.h, r.w - 4.0f, k.grid);
+        c.hairlineH(r.x + 2.0f, r.y + 0.75f * r.h, r.w - 4.0f, k.grid);
+        for (int i = 1; i < 4; ++i)
+            c.hairlineV(r.x + r.w * static_cast<float>(i) / 4.0f, r.y + 2.0f, r.h - 4.0f, k.grid);
+        if (n < 2 || volts == nullptr || !(range > 0.0f))
+            return;
+        constexpr int kMaxPoints = 256;
+        float xs[kMaxPoints], ys[kMaxPoints];
+        const int m = std::min(n, kMaxPoints);
+        const float half = 0.5f * r.h - 2.0f;
+        for (int i = 0; i < m; ++i)
+        {
+            const float v = volts[static_cast<std::size_t>(i) * static_cast<std::size_t>(n - 1) / static_cast<std::size_t>(std::max(m - 1, 1))];
+            const float y = std::clamp((v - centre) / range, -1.0f, 1.0f);
+            xs[i] = r.x + 2.0f + (r.w - 4.0f) * static_cast<float>(i) / static_cast<float>(m - 1);
+            ys[i] = r.centreY() - y * half;
+        }
+        const funkgui::Canvas::ClipScope clip(c, r);
+        c.polyline(xs, ys, m, 1.3f, k.symbol);
+    }
+
+    float traceRange(float span) noexcept
+    {
+        float r = 0.125f;
+        while (r < 16.0f && !(std::fabs(span) <= r))
+            r *= 2.0f;
+        return r;
+    }
+
+    void probeFlag(funkgui::Canvas& c, funkgui::Point at, int number, const Inks& k)
+    {
+        const funkgui::TextStyle st = labelStyle(9.0f);
+        const std::string t = std::to_string(number);
+        c.rrect(at.x - 6.0f, at.y - 6.0f, 12.0f, 12.0f, 3.0f, k.ground, 1.2f, k.symbol);
+        c.text(t.c_str(), at.x, c.capCentreTop(at.y, st), st, k.symbol, funkgui::Align::centre);
+    }
+
+    int risingCrossing(const float* v, int from, int to, float level) noexcept
+    {
+        for (int i = std::max(from, 1); i < to; ++i)
+            if (v[i - 1] < level && level <= v[i])
+                return i;
+        return -1;
+    }
+
     funkgui::Rect valueRect(const LabelSpot& s, const std::string& name, const std::string& value, float px)
     {
         if (px <= 0.0f || !s.shown || value.empty())

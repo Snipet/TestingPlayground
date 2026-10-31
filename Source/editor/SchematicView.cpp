@@ -32,6 +32,8 @@ namespace playground::ui
         constexpr float kButtonW = 24.0f, kButtonGap = 2.0f;
         constexpr float kEaseTau = 0.08f;                // a fit's motion
         constexpr float kStepZoom = 1.25f;               // -, +, Cmd-=, Cmd--
+        constexpr float kPinW = 38.0f, kChipH2 = 16.0f;  // the probes' card: Pin, the chip's height
+        constexpr float kUnpinW = 16.0f;                 // ... a lane's unpin
         // A gesture a write of Claude's overtook before the Panel merged it (SchematicView::setSyncHook): undone.
         constexpr const char* kOvertaken = "The circuit changed (Claude's edit came first): do it again";
 
@@ -266,6 +268,7 @@ namespace playground::ui
         kind_ = cir::Kind::Unknown;
         orient_ = cir::Orient::r0;
         closeField();
+        clearProbes();                                   // the probes go with the view (its pins stay the file's)
     }
 
     // ---- the model ----------------------------------------------------------------------------------------------------
@@ -1920,6 +1923,32 @@ namespace playground::ui
         }
         if (!canvas_.contains(p))
             return;
+        // The probes' card and lanes (drawn over the canvas): Pin, the chip's menu, a lane's unpin; a press anywhere
+        // else on them selects nothing under them.
+        if (const funkgui::Rect card = probeCard(); card.contains(p))
+        {
+            drag_ = Drag::none;
+            if (e.popup)
+                return;
+            if (const std::optional<funkgui::Point> pin = centreOfPin();
+                pin && funkgui::Rect{ pin->x - 0.5f * kPinW, pin->y - 0.5f * kChipH2, kPinW, kChipH2 }.contains(p))
+                pinProbe(slots_[0].net);
+            else if (const std::optional<funkgui::Point> chip = centreOfChip();
+                     chip && funkgui::Rect{ chip->x - 32.0f, chip->y - 0.5f * kChipH2, 64.0f, kChipH2 }.contains(p))
+                openChipMenu();
+            return;
+        }
+        if (const int lane = laneAt(p); lane >= 0)
+        {
+            drag_ = Drag::none;
+            const funkgui::Rect r = probeLane(lane);
+            if (!e.popup && p.x >= r.right() - 6.0f - kUnpinW)
+                unpinProbe(pinnedProbes()[static_cast<std::size_t>(lane)]);
+            else if (!e.popup)
+                if (const int n = d_.net(pinnedProbes()[static_cast<std::size_t>(lane)]); n >= 0)
+                    setSelection({}, runsOf(n));        // a lane's click selects its net (the card shows it)
+            return;
+        }
         // A circuit dial's knob turns its dial; a switch's chip steps it (the Panel's gestures, the dial's own port).
         if (!e.popup && tool_ == Tool::select && gestures_ != nullptr && dials_.port && dials_.control)
             if (const int k = knobAt(p); k >= 0)
@@ -2227,7 +2256,21 @@ namespace playground::ui
             return;
         }
         if (press_.mods.alt)
-            return;                                      // a probe's pin (s6)
+        {
+            // on a wire (or a pin): its net pinned to a probe's slot, or unpinned; ground is 0 V
+            if ((h.kind == Hit::Kind::wire || h.kind == Hit::Kind::pin) && h.net >= 0)
+            {
+                if (d_.nets[static_cast<std::size_t>(h.net)].key == "0")
+                {
+                    say("Probe: ground is 0 V");
+                    if (host_ != nullptr)
+                        host_->announce("Probe: ground is 0 V");
+                }
+                else
+                    togglePin(d_.nets[static_cast<std::size_t>(h.net)].name);
+            }
+            return;
+        }
         if (tool_ == Tool::place)
         {
             placeAt(kind_, gridAt({ e.x, e.y }), orient_);
@@ -2375,6 +2418,18 @@ namespace playground::ui
     {
         if (!showing() || !canvas_.contains({ e.x, e.y }))
             return false;
+        // over the probes' lanes: they scroll (when they do not all fit)
+        if (laneAt({ e.x, e.y }) >= 0)
+        {
+            const funkgui::Rect card = probeCard();
+            const float bottom = card.h > 0.0f ? card.y - 4.0f : canvas_.bottom() - 6.0f;
+            const float most = std::max(0.0f, static_cast<float>(std::min<std::size_t>(pinnedProbes().size(), 3)) * kLaneH
+                                                  - (bottom - lanesTop()));
+            laneScroll_ = std::clamp(laneScroll_ - (e.reversed ? -e.dy : e.dy) * (e.smooth ? 512.0f : kLaneH), 0.0f, most);
+            return true;
+        }
+        if (probeCard().contains({ e.x, e.y }))
+            return true;
         const float dy = e.reversed ? -e.dy : e.dy, dx = e.reversed ? -e.dx : e.dx;
         const bool zooms = !e.smooth || e.mods.cmd || e.mods.ctrl || nowSec - zoomedAt_ < 1.0;
         if (zooms)
@@ -2603,15 +2658,23 @@ namespace playground::ui
                 setSelection({}, { r });
             const std::string net = d_.nets[static_cast<std::size_t>(h.net)].name;
             const bool parts = !st_->selected.empty();
+            const bool ground = d_.nets[static_cast<std::size_t>(h.net)].key == "0";
+            const bool pinned = std::any_of(st_->probes.begin(), st_->probes.end(), [&](const std::string& x) { return cir::folded(x) == cir::folded(net); });
             request.items = { { 14, "Rename net   N" },       { 15, "Show as labels" },          { 0, {}, true, false, true },
                               { 11, "Delete wire   Delete" }, { 12, "Select net" },              { 16, "Copy   Cmd-C", parts },
-                              { 17, "Cut   Cmd-X", parts },   { 0, {}, true, false, true },      { 13, "Show in netlist" } };
-            host_->showMenu(request, [this, net, at](int chosen) {
+                              { 17, "Cut   Cmd-X", parts },   { 0, {}, true, false, true },      { 18, "Probe this net" },
+                              { 19, pinned ? "Unpin probe   Alt-click" : "Pin probe   Alt-click", !ground },
+                              { 0, {}, true, false, true },   { 13, "Show in netlist" } };
+            host_->showMenu(request, [this, net, at, r](int chosen) {
                 if (!showing())
                     return;
                 ensure();
                 const int n = d_.net(net);
-                if (chosen == 11)
+                if (chosen == 18 && n >= 0)
+                    setSelection({}, { r });                     // probe slot 0 follows the run selected
+                else if (chosen == 19)
+                    togglePin(net);
+                else if (chosen == 11)
                     deleteSelection();
                 else if (chosen == 14)
                     editNetAt(at);
@@ -2679,6 +2742,7 @@ namespace playground::ui
         if (fitPending_ && canvas_.w > 0.0f && canvas_.h > 0.0f)
             fit(true);
         computeMarks();
+        updateProbes();
         if (easing_)
         {
             st_->zoom = funkgui::ease::toward(st_->zoom, zoomTo_, dt, kEaseTau, 1e-4f);
@@ -2750,8 +2814,8 @@ namespace playground::ui
         if (!showing())
             return true;
         // (a notice's 4 s count down at the idle rate: it asks for no frames of its own)
-        if (easing_ || fitPending_ || !flash_.empty())
-            return false;
+        if (easing_ || fitPending_ || !flash_.empty() || probesLive())
+            return false;                                // a live readout: 60 Hz while it shows
         if (drag_ == Drag::move || drag_ == Drag::wire || drag_ == Drag::marquee || drag_ == Drag::carry || drag_ == Drag::knob)
             return false;
         // a part carried near the edge pans
@@ -2993,6 +3057,9 @@ namespace playground::ui
         }
         if (hooks_.played && !hooks_.played())
             return "Not played: no program #includes " + file_;
+        // the selected net's probe, when it reads nothing: why (the spec's §9.3)
+        if (!slots_[0].reason.empty())
+            return "Probe: " + slots_[0].reason;
         if (dials_.playedNote)
             if (std::string note = dials_.playedNote(); !note.empty())
                 return note;                             // "program.fm now plays pedal.cir", while Undo can take it back
@@ -3209,6 +3276,18 @@ namespace playground::ui
                 std::snprintf(out, n, "%s", kButtonWords[b]);
                 return true;
             }
+        // the probes' card and lanes: what they read (absolute volts; the DC point is the pots' defaults')
+        const int lane = laneAt(pointer);
+        if (probeCard().contains(pointer) || lane >= 0)
+        {
+            const int slot = lane >= 0 ? lane + 1 : 0;
+            double dc = 0.0;
+            if (const int f = probeTable(); f >= 0 && slots_[static_cast<std::size_t>(slot)].node >= 0)
+                dc = probe_.table()[static_cast<std::size_t>(f)].nodes[static_cast<std::size_t>(slots_[static_cast<std::size_t>(slot)].node)].dc;
+            std::snprintf(out, n, "PROBE   THE NODE'S VOLTS (ITS DC POINT, THE POTS AT THEIR DEFAULTS: %+.2f V)   %s", dc,
+                          lane >= 0 ? "X UNPINS   A CLICK SELECTS ITS NET" : "PIN KEEPS IT IN A LANE   ALT-CLICK A WIRE PINS IT");
+            return true;
+        }
         if (strip_.contains(pointer))
         {
             if (countRect().contains(pointer))
@@ -3266,7 +3345,7 @@ namespace playground::ui
     uint32_t SchematicView::a11yRevision() const
     {
         ensure();
-        return structure_;
+        return structure_ + probeA11y_;                  // parts or nets, or the probes' readouts, came or went
     }
 
     uint32_t SchematicView::idOf(const std::string& key) const
@@ -3343,6 +3422,24 @@ namespace playground::ui
             it.role = funkgui::A11yRole::listItem;
             it.bounds = clamp(v.rect(b).expanded(3.0f));
             it.title = asciiText(netWords(static_cast<int>(n)));
+            out.push_back(std::move(it));
+        }
+        // the probes' readouts (the card's and the lanes'), text items the bridge reads as they change
+        for (std::size_t k = 0; k < slots_.size(); ++k)
+        {
+            const ProbeSlot& p = slots_[k];
+            if (p.net.empty())
+                continue;
+            funkgui::A11yItem it;
+            it.id = kA11yBase + 8 + static_cast<uint32_t>(k);
+            it.parent = kA11yBase;
+            it.role = funkgui::A11yRole::staticText;
+            const funkgui::Rect r = k == 0 ? probeCard() : probeLane(static_cast<int>(k) - 1);
+            it.bounds = clamp(r.h > 0.0f ? r : strip_);
+            it.title = k == 0 ? "Probe " + p.net : "Probe " + std::to_string(k) + ", " + p.net;
+            const std::string words = probeWords(static_cast<int>(k));
+            it.value = asciiText(!p.reason.empty() ? p.reason : words.empty() ? std::string("waiting for the program") : words.substr(words.find(p.net) + p.net.size() + 3));
+            it.readOnly = true;
             out.push_back(std::move(it));
         }
     }
@@ -3572,6 +3669,10 @@ namespace playground::ui
                 sel.edges = chosen;
                 sch::wires(c, v, sel, sw, k.symbol);
             }
+            // a probe's lane under the pointer: its net's wire in the accent
+            if (const int lane = laneAt(pointer_); lane >= 0 && lane < static_cast<int>(pinnedProbes().size()))
+                if (const int n = d_.net(pinnedProbes()[static_cast<std::size_t>(lane)]); n >= 0)
+                    sch::wires(c, v, d_.nets[static_cast<std::size_t>(n)], sw, k.accent);
             // the wires of moved pins, rubber-banded: an L from where they end now to the pin's new place
             if (drag_ == Drag::move && !(moveBy_ == cir::Pt{}))
                 for (std::size_t i = 0; i < d_.parts.size(); ++i)
@@ -3721,6 +3822,9 @@ namespace playground::ui
             }
         }
 
+        // the probes: the pinned nets' numbers, the lanes and the card, over the canvas's bottom
+        drawProbes(c, th, v, k);
+
         // what a gesture shows: the ghost carried, the wire being drawn, the marquee
         {
             const funkgui::Canvas::Scope s(c, sch::kSchematicTag, false);
@@ -3768,5 +3872,553 @@ namespace playground::ui
                 }
             }
         }
+    }
+
+    // ---- the probes (SchematicView.h, "Live probes") ------------------------------------------------------------------
+    namespace
+    {
+        // Volts as the readouts write them: three significant digits ("0.402 V", "2.31 V", "12.4 V"), the mean signed.
+        std::string volts(float v, bool sign)
+        {
+            char b[32];
+            double x = std::isfinite(v) ? static_cast<double>(v) : 0.0;
+            const double a = std::fabs(x);
+            if (a < 0.0005)
+                x = 0.0;                                 // a zero is +0.000, never -0.000
+            if (a < 1.0)
+                std::snprintf(b, sizeof b, sign ? "%+.3f V" : "%.3f V", x);
+            else if (a < 10.0)
+                std::snprintf(b, sizeof b, sign ? "%+.2f V" : "%.2f V", x);
+            else
+                std::snprintf(b, sizeof b, sign ? "%+.1f V" : "%.1f V", x);
+            return b;
+        }
+
+        constexpr const char* kNoVoice = "no voice sounding";
+    }
+
+    const std::vector<std::string>& SchematicView::pinnedProbes() const
+    {
+        static const std::vector<std::string> kNone;
+        return st_ != nullptr ? st_->probes : kNone;
+    }
+
+    bool SchematicView::pinProbe(const std::string& net)
+    {
+        if (!showing())
+            return false;
+        ensure();
+        const int n = d_.net(net);
+        if (n < 0 || d_.nets[static_cast<std::size_t>(n)].key == "0")
+            return false;
+        const std::string name = d_.nets[static_cast<std::size_t>(n)].name;
+        std::vector<std::string>& pins = st_->probes;
+        if (std::any_of(pins.begin(), pins.end(), [&](const std::string& p) { return cir::folded(p) == cir::folded(name); }))
+            return true;
+        if (pins.size() >= 3)
+            pins.erase(pins.begin());                    // a fourth replaces the oldest
+        pins.push_back(name);
+        persist();
+        return true;
+    }
+
+    bool SchematicView::unpinProbe(const std::string& net)
+    {
+        if (st_ == nullptr)
+            return false;
+        std::vector<std::string>& pins = st_->probes;
+        const auto it = std::find_if(pins.begin(), pins.end(), [&](const std::string& p) { return cir::folded(p) == cir::folded(net); });
+        if (it == pins.end())
+            return false;
+        pins.erase(it);
+        laneScroll_ = 0.0f;
+        persist();
+        return true;
+    }
+
+    bool SchematicView::togglePin(const std::string& net)
+    {
+        return unpinProbe(net) || pinProbe(net);
+    }
+
+    std::string SchematicView::probeNet(int slot) const
+    {
+        return slot >= 0 && slot < 4 ? slots_[static_cast<std::size_t>(slot)].net : std::string();
+    }
+
+    std::string SchematicView::probeReason(int slot) const
+    {
+        return slot >= 0 && slot < 4 ? slots_[static_cast<std::size_t>(slot)].reason : std::string();
+    }
+
+    bool SchematicView::probesLive() const
+    {
+        if (!showing() || !probe_.meters || !sent_.armed())
+            return false;
+        const Meters& m = probe_.meters();
+        return m.probeSet == sent_ && m.probeInstance >= 0;
+    }
+
+    std::string SchematicView::probeWords(int slot) const
+    {
+        if (slot < 0 || slot >= 4 || !probesLive())
+            return {};
+        const ProbeSlot& p = slots_[static_cast<std::size_t>(slot)];
+        if (p.node < 0)
+            return {};
+        const ProbeMeter& m = probe_.meters().probes[slot];
+        if (!m.valid)
+            return "PROBE " + p.net + "   reading";
+        return "PROBE " + p.net + "   PEAK " + volts(m.peak, false) + "   RMS " + volts(m.rms, false) + "   MEAN " + volts(m.mean, true);
+    }
+
+    int SchematicView::probeTable() const
+    {
+        if (!probe_.table || st_ == nullptr)
+            return -1;
+        const std::vector<circuits::Probed>& t = probe_.table();
+        int first = -1;
+        for (std::size_t f = 0; f < t.size(); ++f)
+        {
+            if (t[f].file != file_)
+                continue;
+            if (first < 0)
+                first = static_cast<int>(f);
+            if (!st_->probeAt.empty() && std::find(t[f].paths.begin(), t[f].paths.end(), st_->probeAt) != t[f].paths.end())
+                return static_cast<int>(f);
+        }
+        return first;
+    }
+
+    int SchematicView::probeElementIndex(int field) const
+    {
+        if (field < 0 || !probe_.table || st_ == nullptr)
+            return 0;
+        const std::vector<std::string>& paths = probe_.table()[static_cast<std::size_t>(field)].paths;
+        const auto it = std::find(paths.begin(), paths.end(), st_->probeAt);
+        return it == paths.end() ? 0 : static_cast<int>(it - paths.begin());
+    }
+
+    std::vector<std::string> SchematicView::probeElements() const
+    {
+        std::vector<std::string> out;
+        if (!probe_.table)
+            return out;
+        for (const circuits::Probed& c : probe_.table())
+            if (c.file == file_)
+                out.insert(out.end(), c.paths.begin(), c.paths.end());
+        return out;
+    }
+
+    std::string SchematicView::probeElement() const
+    {
+        const int f = probeTable();
+        if (f < 0)
+            return {};
+        const std::vector<std::string>& paths = probe_.table()[static_cast<std::size_t>(f)].paths;
+        const int e = probeElementIndex(f);
+        return e < static_cast<int>(paths.size()) ? paths[static_cast<std::size_t>(e)] : std::string();
+    }
+
+    void SchematicView::setProbeElement(const std::string& path)
+    {
+        if (st_ == nullptr)
+            return;
+        const std::vector<std::string> paths = probeElements();
+        if (std::find(paths.begin(), paths.end(), path) != paths.end())
+            st_->probeAt = paths.empty() || path == paths.front() ? std::string() : path;
+    }
+
+    void SchematicView::clearProbes()
+    {
+        for (ProbeSlot& p : slots_)
+        {
+            p.net.clear();
+            p.node = -1;
+            p.reason.clear();
+            p.valid = 0;
+        }
+        if (probe_.arm && (!sentAny_ || !(sent_ == ProbeSet{})))
+            probe_.arm(ProbeSet{});
+        sent_ = ProbeSet{};
+        sentAny_ = true;
+        spoken_.clear();
+        if (probeItems_ != 0)
+        {
+            probeItems_ = 0;
+            ++probeA11y_;
+        }
+    }
+
+    void SchematicView::updateProbes()
+    {
+        if (!showing() || !probe_.arm || !probe_.meters)
+            return;
+        // the nets: slot 0 the selected run's, slots 1 to 3 the pins
+        std::array<std::string, 4> nets{};
+        if (!runs_.empty())
+            if (const int n = d_.net(runs_.front().net); n >= 0)
+                nets[0] = d_.nets[static_cast<std::size_t>(n)].name;
+        for (std::size_t k = 0; k < 3 && k < st_->probes.size(); ++k)
+            nets[k + 1] = st_->probes[k];
+        const uint64_t program = probe_.program ? probe_.program() : 0;
+        const int field = probeTable();
+        const circuits::Probed* c = field >= 0 ? &probe_.table()[static_cast<std::size_t>(field)] : nullptr;
+        const bool played = !hooks_.played || hooks_.played();
+        ProbeSet set;
+        bool any = false;
+        for (std::size_t k = 0; k < 4; ++k)
+        {
+            ProbeSlot& p = slots_[k];
+            p.net = nets[k];
+            p.node = -1;
+            p.reason.clear();
+            if (p.net.empty())
+                continue;
+            const std::string key = cir::folded(p.net);
+            if (key == "0" || key == "gnd")
+                p.reason = "ground is 0 V";
+            else if (!played)
+                p.reason = "not played: no program #includes " + file_;
+            else if (program == 0 || c == nullptr)
+                p.reason = "not playing: Cmd-Return runs it";   // the files play it, what plays does not (yet)
+            else
+            {
+                int node = -1;
+                for (std::size_t i = 0; i < c->nodes.size() && node < 0; ++i)
+                    if (cir::folded(c->nodes[i].name) == key)
+                        node = static_cast<int>(i);
+                if (node < 0)
+                    p.reason = p.net + " is not in the program that plays (edited since RUN)";
+                else if (!c->nodes[static_cast<std::size_t>(node)].readable)
+                    p.reason = p.net + ": " + c->nodes[static_cast<std::size_t>(node)].why;
+                else
+                {
+                    p.node = node;
+                    set.nodes[k] = static_cast<int16_t>(node);
+                    any = true;
+                }
+            }
+        }
+        if (any)
+        {
+            set.program = program;
+            set.circuit = field;
+            set.instance = probeElementIndex(field);
+        }
+        else
+            set = ProbeSet{};
+        if (!sentAny_ || !(set == sent_))
+        {
+            sent_ = set;
+            sentAny_ = true;
+            probe_.arm(set);
+        }
+        // what the audio thread says of this set: no voice sounding (an instrument's), or the rings to read
+        const Meters& m = probe_.meters();
+        const bool ours = set.armed() && m.probeSet == set;
+        for (std::size_t k = 0; k < 4; ++k)
+        {
+            ProbeSlot& p = slots_[k];
+            p.valid = 0;
+            if (p.node < 0 || !ours)
+                continue;
+            if (m.probeInstance < 0)
+            {
+                p.reason = kNoVoice;
+                continue;
+            }
+            if (probe_.samples)
+            {
+                p.trace.resize(2 * static_cast<std::size_t>(kTraceSamples));
+                p.valid = probe_.samples(static_cast<int>(k), p.trace.data(), 2 * kTraceSamples);
+            }
+        }
+        // the selected net's reason, spoken when it changes (the strip draws it)
+        const std::string reason = slots_[0].reason;
+        if (reason != spoken_)
+        {
+            spoken_ = reason;
+            if (!reason.empty() && host_ != nullptr)
+                host_->announce("Probe: " + reason);
+        }
+        int items = 0;
+        for (const ProbeSlot& p : slots_)
+            items += p.net.empty() ? 0 : 1;
+        if (items != probeItems_)
+        {
+            probeItems_ = items;
+            ++probeA11y_;
+        }
+    }
+
+    funkgui::Rect SchematicView::probeCard() const
+    {
+        if (!showing() || slots_[0].node < 0)
+            return {};
+        return { canvas_.x + 6.0f, canvas_.bottom() - 6.0f - kCardH, std::max(0.0f, canvas_.w - 12.0f), kCardH };
+    }
+
+    float SchematicView::lanesTop() const
+    {
+        const funkgui::Rect card = probeCard();
+        const float bottom = card.h > 0.0f ? card.y - 4.0f : canvas_.bottom() - 6.0f;
+        const int n = static_cast<int>(std::min<std::size_t>(pinnedProbes().size(), 3));
+        if (n == 0)
+            return bottom;
+        const float room = std::max(kProbeShare * canvas_.h - (card.h > 0.0f ? kCardH + 4.0f : 0.0f) - 6.0f, kLaneH);
+        return bottom - std::min(static_cast<float>(n) * kLaneH, room);
+    }
+
+    funkgui::Rect SchematicView::probeLane(int lane) const
+    {
+        const int n = static_cast<int>(std::min<std::size_t>(pinnedProbes().size(), 3));
+        if (!showing() || lane < 0 || lane >= n)
+            return {};
+        return { canvas_.x + 6.0f, lanesTop() + static_cast<float>(lane) * kLaneH - laneScroll_, std::max(0.0f, canvas_.w - 12.0f),
+                 kLaneH - 2.0f };
+    }
+
+    int SchematicView::laneAt(funkgui::Point p) const
+    {
+        const funkgui::Rect card = probeCard();
+        const float bottom = card.h > 0.0f ? card.y - 4.0f : canvas_.bottom() - 6.0f;
+        if (p.y < lanesTop() || p.y >= bottom)
+            return -1;
+        for (int k = 0; k < 3; ++k)
+            if (const funkgui::Rect r = probeLane(k); r.h > 0.0f && r.contains(p))
+                return k;
+        return -1;
+    }
+
+    std::optional<funkgui::Point> SchematicView::centreOfPin() const
+    {
+        const funkgui::Rect card = probeCard();
+        if (card.h <= 0.0f)
+            return std::nullopt;
+        return funkgui::Point{ card.right() - 8.0f - 0.5f * kPinW, card.y + 4.0f + 0.5f * kChipH2 };
+    }
+
+    std::optional<funkgui::Point> SchematicView::centreOfChip() const
+    {
+        const funkgui::Rect card = probeCard();
+        if (card.h <= 0.0f || probeElements().size() < 2)
+            return std::nullopt;
+        const float w = 64.0f;
+        return funkgui::Point{ card.right() - 8.0f - kPinW - 6.0f - 0.5f * w, card.y + 4.0f + 0.5f * kChipH2 };
+    }
+
+    void SchematicView::openChipMenu()
+    {
+        if (host_ == nullptr)
+            return;
+        const std::vector<std::string> paths = probeElements();
+        const std::optional<funkgui::Point> at = centreOfChip();
+        if (paths.size() < 2 || !at)
+            return;
+        funkgui::MenuRequest request;
+        request.anchor = { at->x - 32.0f, at->y - 0.5f * kChipH2, 64.0f, kChipH2 };
+        request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
+        const std::string now = probeElement();
+        for (std::size_t i = 0; i < paths.size(); ++i)
+        {
+            funkgui::MenuItem item{ static_cast<int>(i) + 1, paths[i] };
+            item.checked = paths[i] == now;
+            request.items.push_back(std::move(item));
+        }
+        host_->showMenu(request, [this, paths](int chosen) {
+            if (chosen >= 1 && chosen <= static_cast<int>(paths.size()) && showing())
+                setProbeElement(paths[static_cast<std::size_t>(chosen - 1)]);
+        });
+    }
+
+    std::vector<float> SchematicView::probeTrace(int slot) const
+    {
+        if (slot < 0 || slot >= 4 || !probesLive())
+            return {};
+        const ProbeSlot& p = slots_[static_cast<std::size_t>(slot)];
+        if (p.node < 0 || p.valid <= 0 || p.trace.empty() || !p.reason.empty())
+            return {};
+        const int n = static_cast<int>(p.trace.size());
+        const float mean = probe_.meters().probes[slot].mean;
+        const int window = std::min(p.valid, kTraceSamples);
+        int start = n - window;
+        if (p.valid > kTraceSamples)                     // triggered: the last rising crossing that leaves a window
+            for (int i = n - kTraceSamples; i > std::max(n - p.valid, 1); --i)
+                if (p.trace[static_cast<std::size_t>(i - 1)] < mean && mean <= p.trace[static_cast<std::size_t>(i)])
+                {
+                    start = i;
+                    break;
+                }
+        return { p.trace.begin() + start, p.trace.begin() + start + window };
+    }
+
+    float SchematicView::probeRange(int slot) const
+    {
+        const std::vector<float> w = probeTrace(slot);
+        if (w.empty())
+            return 0.0f;
+        const float centre = probe_.meters().probes[slot].mean;
+        float span = 0.0f;
+        for (const float x : w)
+            span = std::max(span, std::fabs(x - centre));
+        return sch::traceRange(span);
+    }
+
+    std::optional<funkgui::Point> SchematicView::flagAt(const std::string& net) const
+    {
+        const int n = d_.net(net);
+        if (n < 0)
+            return std::nullopt;
+        const cir::Net& x = d_.nets[static_cast<std::size_t>(n)];
+        if (!x.edges.empty() && x.style == cir::Style::wired && !x.unroutable)
+        {
+            // the middle of its longest straight run
+            int best = -1;
+            std::pair<cir::Pt, cir::Pt> at{};
+            for (const std::pair<cir::Pt, cir::Pt>& r : sch::runs(x.edges))
+            {
+                const int len = std::abs(r.second.x - r.first.x) + std::abs(r.second.y - r.first.y);
+                if (len > best)
+                {
+                    best = len;
+                    at = r;
+                }
+            }
+            return funkgui::Point{ 0.5f * static_cast<float>(at.first.x + at.second.x), 0.5f * static_cast<float>(at.first.y + at.second.y) };
+        }
+        if (!x.pins.empty())
+        {
+            const cir::PinRef& pr = x.pins.front();
+            const cir::Pt p = d_.parts[static_cast<std::size_t>(pr.part)].pins[static_cast<std::size_t>(pr.pin)].at;
+            return funkgui::Point{ static_cast<float>(p.x), static_cast<float>(p.y) };
+        }
+        return std::nullopt;
+    }
+
+    void SchematicView::drawProbes(funkgui::Canvas& c, const funkgui::Theme& th, const sch::View& v, const sch::Inks& k) const
+    {
+        const chat::Palette pal = chat::palette(th);
+        const funkgui::TextStyle& st = chat::kSmall;
+        const funkgui::TextStyle& strong = chat::kSmallStrong;
+        const bool live = probesLive();
+        const Meters* m = live ? &probe_.meters() : nullptr;
+        // the pinned nets' numbers on their wires
+        {
+            const funkgui::Canvas::Scope s(c, sch::kProbeTag, false);
+            for (std::size_t i = 0; i < pinnedProbes().size() && i < 3; ++i)
+                if (const std::optional<funkgui::Point> w = flagAt(pinnedProbes()[i]))
+                {
+                    const funkgui::Point at = v.at(w->x, w->y);
+                    if (canvas_.contains(at))
+                        sch::probeFlag(c, { at.x, at.y - 9.0f }, static_cast<int>(i) + 1, k);
+                }
+        }
+        // a slot's trace: the newest window of kTraceSamples, from the last rising crossing of its mean that leaves
+        // one whole (else free-running: the newest), about its mean, auto-ranged
+        const auto drawTrace = [&](int slot, const funkgui::Rect& r) {
+            const std::vector<float> w = m != nullptr ? probeTrace(slot) : std::vector<float>{};
+            if (w.empty())
+            {
+                sch::trace(c, r, nullptr, 0, 0.0f, 1.0f, k);
+                return;
+            }
+            const float range = probeRange(slot);
+            sch::trace(c, r, w.data(), static_cast<int>(w.size()), m->probes[slot].mean, range, k);
+        };
+        // its range, right of the trace (the trace's edges are its mean +- this)
+        const auto drawRange = [&](int slot, float right, float cy) {
+            const float range = m != nullptr ? probeRange(slot) : 0.0f;
+            if (range <= 0.0f)
+                return;
+            char lab[24];
+            std::snprintf(lab, sizeof lab, range < 1.0f ? "+-%.3g V" : "+-%.0f V", static_cast<double>(range));
+            c.text(lab, right, c.capCentreTop(cy, st), st, k.name, funkgui::Align::right);
+        };
+        const funkgui::Canvas::Scope s(c, sch::kProbeTag, live);
+        // the lanes, scrolling within their area
+        const int lanes = static_cast<int>(std::min<std::size_t>(pinnedProbes().size(), 3));
+        if (lanes > 0)
+        {
+            const funkgui::Rect card = probeCard();
+            const float bottom = card.h > 0.0f ? card.y - 4.0f : canvas_.bottom() - 6.0f;
+            const funkgui::Rect area{ canvas_.x, lanesTop(), canvas_.w, std::max(0.0f, bottom - lanesTop()) };
+            const funkgui::Canvas::ClipScope clip(c, area);
+            const int hot = laneAt(pointer_);
+            for (int lane = 0; lane < lanes; ++lane)
+            {
+                const funkgui::Rect r = probeLane(lane);
+                if (r.bottom() <= area.y || r.y >= area.bottom())
+                    continue;
+                const int slot = lane + 1;
+                const ProbeSlot& p = slots_[static_cast<std::size_t>(slot)];
+                c.rrect(r.x, r.y, r.w, r.h, 6.0f, pal.raised, 1.0f, lane == hot ? k.accent : pal.composerEdge);
+                sch::probeFlag(c, { r.x + 12.0f, r.y + 11.0f }, slot, k);
+                const std::string name = p.net.empty() ? pinnedProbes()[static_cast<std::size_t>(lane)] : p.net;
+                c.text(name.c_str(), r.x + 24.0f, c.capCentreTop(r.y + 11.0f, strong), strong, pal.text);
+                const float left = std::min(250.0f, 0.44f * r.w);
+                std::string words;
+                if (p.node >= 0 && m != nullptr && p.reason.empty())
+                {
+                    const ProbeMeter& pm = m->probes[slot];
+                    words = pm.valid ? "pk " + volts(pm.peak, false) + "   rms " + volts(pm.rms, false) + "   mean " + volts(pm.mean, true)
+                                     : std::string("reading");
+                }
+                else
+                    words = p.reason.empty() ? std::string("waiting for the program") : p.reason;
+                c.text(fitText(c, words, st, left - 14.0f).c_str(), r.x + 8.0f, c.capCentreTop(r.y + 25.0f, st), st, pal.soft);
+                drawTrace(slot, { r.x + left, r.y + 4.0f, std::max(0.0f, r.w - left - kUnpinW - 62.0f), r.h - 8.0f });
+                drawRange(slot, r.right() - kUnpinW - 14.0f, r.centreY());
+                // its unpin (x)
+                const float ux = r.right() - 6.0f - 0.5f * kUnpinW, uy = r.centreY();
+                const bool uh = funkgui::Rect{ ux - 0.5f * kUnpinW, uy - 0.5f * kUnpinW, kUnpinW, kUnpinW }.contains(pointer_);
+                const funkgui::Col xi = uh ? pal.text : pal.soft;
+                c.segment(ux - 3.5f, uy - 3.5f, ux + 3.5f, uy + 3.5f, 1.3f, xi);
+                c.segment(ux - 3.5f, uy + 3.5f, ux + 3.5f, uy - 3.5f, 1.3f, xi);
+            }
+        }
+        // the card: the selected net's readout, its trace, the chip and Pin
+        const funkgui::Rect card = probeCard();
+        if (card.h <= 0.0f)
+            return;
+        c.rrect(card.x, card.y, card.w, card.h, 6.0f, pal.raised, 1.0f, pal.composerEdge);
+        const ProbeSlot& p = slots_[0];
+        const float line = card.y + 4.0f + 0.5f * kChipH2;
+        float x = card.x + 8.0f;
+        const std::string head = "PROBE " + p.net;
+        c.text(head.c_str(), x, c.capCentreTop(line, strong), strong, pal.text);
+        x += c.textWidth(head.c_str(), strong) + 14.0f;
+        std::string words;
+        if (m != nullptr && p.reason.empty())
+        {
+            const ProbeMeter& pm = m->probes[0];
+            words = pm.valid ? "PEAK " + volts(pm.peak, false) + "   RMS " + volts(pm.rms, false) + "   MEAN " + volts(pm.mean, true)
+                             : std::string("reading");
+        }
+        else
+            words = p.reason.empty() ? std::string("waiting for the program") : p.reason;
+        const std::optional<funkgui::Point> chip = centreOfChip(), pin = centreOfPin();
+        const float right = chip ? chip->x - 32.0f - 8.0f : pin->x - 0.5f * kPinW - 8.0f;
+        c.text(fitText(c, words, st, std::max(0.0f, right - x)).c_str(), x, c.capCentreTop(line, st), st, pal.soft);
+        if (chip)
+        {
+            const funkgui::Rect r{ chip->x - 32.0f, chip->y - 0.5f * kChipH2, 64.0f, kChipH2 };
+            const bool hot = r.contains(pointer_);
+            c.rrect(r.x, r.y, r.w, r.h, 0.5f * r.h, hot ? pal.hover : pal.composer, 1.0f, pal.composerEdge);
+            const std::string e = probeElement();
+            c.text(fitText(c, e, st, r.w - 22.0f).c_str(), r.x + 7.0f, c.capCentreTop(r.centreY(), st), st, hot ? pal.text : pal.soft);
+            chat::drawIcon(c, chat::Icon::chevronDown, r.right() - 9.0f, r.centreY() + 0.5f, 7.0f, hot ? pal.text : pal.soft);
+        }
+        {
+            const funkgui::Rect r{ pin->x - 0.5f * kPinW, pin->y - 0.5f * kChipH2, kPinW, kChipH2 };
+            const bool pinned = std::any_of(pinnedProbes().begin(), pinnedProbes().end(),
+                                            [&](const std::string& n) { return cir::folded(n) == cir::folded(p.net); });
+            const bool hot = r.contains(pointer_) && !pinned;
+            c.rrect(r.x, r.y, r.w, r.h, 0.5f * r.h, hot ? pal.hover : pal.composer, 1.0f, pal.composerEdge);
+            c.text(pinned ? "Pinned" : "Pin", r.centreX(), c.capCentreTop(r.centreY(), st), st, pinned ? pal.faint : hot ? pal.text : pal.soft,
+                   funkgui::Align::centre);
+        }
+        drawTrace(0, { card.x + 8.0f, card.y + 24.0f, card.w - 62.0f, card.h - 30.0f });
+        drawRange(0, card.right() - 8.0f, card.y + 24.0f + 0.5f * (card.h - 30.0f));
     }
 }

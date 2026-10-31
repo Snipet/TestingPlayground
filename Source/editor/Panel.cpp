@@ -1848,6 +1848,9 @@ namespace playground::ui
                     }
                     else
                         v.zoom = 0.0f;
+                    v.probes = f.probes;                 // the nets pinned to its probes
+                    if (v.probes.size() > kMaxFileProbes)
+                        v.probes.resize(kMaxFileProbes);
                     out.push_back(std::move(v));
                 }
             return out;
@@ -1868,6 +1871,10 @@ namespace playground::ui
                     f.cx = std::clamp(v.x, -1.0e4f, 1.0e4f);
                     f.cy = std::clamp(v.y, -1.0e4f, 1.0e4f);
                 }
+                f.probes.clear();                        // slots 1 to 3
+                for (const std::string& n : v.probes)
+                    if (!n.empty() && f.probes.size() < 3)
+                        f.probes.push_back(n);
             }
             syncSchematic();
         }
@@ -1885,6 +1892,8 @@ namespace playground::ui
         }
         // The Panel's: a schematic gesture's files to the processor at once (SchematicView::setSyncHook).
         void setSyncHook(std::function<bool()> sync) { schematic_.setSyncHook(std::move(sync)); }
+        // The Panel's: the probes' table, program, meters, rings and set (SchematicView::setProbeHooks).
+        void setProbeHooks(SchematicView::ProbeHooks hooks) { schematic_.setProbeHooks(std::move(hooks)); }
         const SchematicFile* viewOf(const std::string& file) const
         {
             const auto it = views_.find(file);
@@ -2716,6 +2725,28 @@ namespace playground::ui
             pushedFiles_ = true;
             return true;
         });
+        // The schematic's live probes (SchematicView.h): the table and the id of the program that plays (refresh's),
+        // the meters this frame, the rings, and this Panel's own set: an owner from its first armed set (never a
+        // picture's Panel: setOwnsProbes), one EditorPort::setProbes call a change.
+        {
+            SchematicView::ProbeHooks h;
+            h.table = [this]() -> const std::vector<circuits::Probed>& { return circuitProbes_; };
+            h.program = [this] { return probeProgram_; };
+            h.meters = [this]() -> const Meters& { return meters_; };
+            h.samples = [this](int slot, float* out, int n) { return port_.probe(slot, out, n); };
+            h.arm = [this](const ProbeSet& set) {
+                if (!ownsProbes_)
+                    return;
+                if (probeOwner_ == 0)
+                {
+                    if (!set.armed())
+                        return;                          // nothing to clear: never an owner
+                    probeOwner_ = port_.addProbeOwner();
+                }
+                port_.setProbes(probeOwner_, set);
+            };
+            files().setProbeHooks(std::move(h));
+        }
         files().load(port_.draft());
         files().setFileViews(port_.fileViews());
         seenDraft_ = port_.draftRevision();
@@ -3033,6 +3064,8 @@ namespace playground::ui
     {
         guiView_->releaseKeys();                         // a note held as the editor closes is let go
         releasePictures();
+        if (probeOwner_ != 0)
+            port_.removeProbeOwner(probeOwner_);         // its probes go with it (another Panel's set takes over)
         port_.removeMeterReader();
         if (irViewing_)
             port_.removeIrViewer();                      // its IR tab goes with it: nothing kept for it
@@ -3849,6 +3882,8 @@ namespace playground::ui
             if (s.ok)
                 running_ = s.sources;
             circuitDials_ = s.circuitDials;              // the program that plays's (a failed compile's: the one before)
+            circuitProbes_ = s.probes;                   // ... its probe table, and its id (the probes' sets name it)
+            probeProgram_ = s.program;
             const PanelSpec spec = s.ok ? s.panel : port_.panel();
             ++controlsRevision_;
             for (int c = 0; c < kMaxControls; ++c)

@@ -17,6 +17,8 @@
 //   gui.schematic.dials.png    a program driving screamer.cir's pots with dials: a knob beside each pot (fitted)
 //   gui.schematic.play.png     a netlist no program #included, played: program.fm now plays it, Undo in the info strip
 //   gui.schematic.own.png      a program that calls screamer.cir's set() itself: no knobs, the info strip saying why
+//   gui.schematic.probes.png   Play this circuit's program for diodetone.cir playing (an effect's 1 kHz sine, a synth's
+//                              A4): net a's readout card and two pinned lanes (c, b), each a steady triggered trace
 // and checks:
 //   VIEW      the pills (Netlist, Schematic) at the tab bar's right end while a .cir tab shows, labelled at the
 //             default size; a click shows the drawing: opening fits it, never under 60 %; the status line's words; the
@@ -31,7 +33,8 @@
 //   OVERTAKEN a drag whose base a merge (Claude's write) moves is cancelled and changes nothing; that write moving a
 //             part's line flashes the part; a gesture made after Claude's write and before a frame merged it is undone
 //             (the write wins, the strip says to do it again)
-//   POINTER   a row per cell of the pointer's table: idle on a body, a pin, a wire, nothing; Alt; carrying a part (a
+//   POINTER   a row per cell of the pointer's table: idle on a body, a pin, a wire, nothing; Alt (a click on a wire pins
+//             its net to a probe, again unpins it; a drag pans); carrying a part (a
 //             popup click turns the ghost, a popup drag pans and carries on, placing ends only on Escape, Select or
 //             another tool); the Ground tool; a badge
 //   KEYS      edge auto-pan's units in a fixed number of ticks; the PANEL view ending a part carried, the hidden
@@ -59,6 +62,19 @@
 //             gives program.fm's text back in one step
 //   PERSIST   nothing kept by opening; a Panel opened again keeps each file's view, zoom and pan (the session's views);
 //             a view switched but never zoomed nor panned keeps no zoom, and fits again when opened again
+//   PROBES    the live probes (SchematicView.h's "Live probes", Engine.h's "Probes") on Play this circuit's program
+//             for diodetone.cir: a wire selected while what plays lacks the netlist says "not playing" (drawn in the
+//             strip, spoken) and moves neither the canvas nor the frame rate; after RUN a node typed since says it is
+//             not in the program that plays, screamer.cir's t1 why a probe cannot read it, ground (Alt-click on a
+//             grounded pin) that it is 0 V, a netlist no program #includes that it is not played, and the synth with no
+//             note that no voice sounds; playing, slot 0 follows the selected wire and Alt-click pins two nets (their
+//             numbered flags), the card and the lanes taking at most 40 % of the canvas, their numbers the meters'
+//             within 1 %, each trace triggered on a rising crossing of its mean (the same window two frames apart) and
+//             ranged in a power of two volts, the readouts accessibility items; the wire's menu pins and unpins, and the
+//             effect's chip chooses amp[1] (and back); a view_panel window picture sends no set
+//             and a second Panel opened and closed leaves the set as it was; the Netlist view clears the set and the
+//             Schematic view arms the pins again (the session keeps them), a RUN arms them on the new program, and the
+//             Panel's going clears them
 //   EDIT      each kind's field (all 13 kinds and both terminals) writing the exact tokens as one undo step, its rows,
 //             the taper FMinus plays (a line's taper= before its .pot's word), a row past 64 characters left alone;
 //             E12 steps; refusals; 1M's warning; the Label tool; Show as labels (its tags overlapping nothing new);
@@ -73,6 +89,7 @@
 #include "editor/Theme.h"
 #include "fminus/CirDoc.h"
 #include "fminus/CirTemplates.h"
+#include "fminus/LibraryIncludes.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/ClaudeApi.h"
 #include "plugin/EditorPort.h"
@@ -1048,7 +1065,11 @@ PROBE(gui, schematic)
             alt.alt = true;
             const std::string text = ed.text();
             host.click(wire.x, wire.y, alt);
+            const std::vector<std::string> pinned = v.pinnedProbes();
+            host.tick(40);                                        // (no double-click)
+            host.click(wire.x, wire.y, alt);                      // again: unpinned
             P.eq("pointer.alt_click_wire_changes_nothing", ed.text() == text ? 1 : 0, 1);
+            P.eq("pointer.alt_click_wire_pins", pinned.size() == 1 && v.pinnedProbes().empty() ? 1 : 0, 1);
             const funkgui::Point before = v.centre();
             host.press(r2.x, r2.y, alt);
             host.moveTo(r2.x + 30.0f, r2.y, 6);
@@ -1883,6 +1904,321 @@ PROBE(gui, schematic)
         host.click(u.x, u.y);
         host.tick(2);
         P.eq("play.undo_one_step", port.draft().files[0].text == init && v.stripButton() == "Play this circuit" ? 1 : 0, 1);
+    }
+
+    // ---- PROBES: the live probes on Play this circuit's program for diodetone.cir (probes.png) ------------------------
+    {
+        constexpr bool kInstrument = pg::product::kIsInstrument;
+        constexpr double kRate = 48000.0;
+        constexpr int kBlock = 256;
+        const std::string dt = libraryText("diodetone.cir");
+        pg::Draft d = draftWith(pg::cir::hostProgram("diodetone.cir", dt, kInstrument).text, { { "diodetone.cir", dt } }, 1);
+        d.files = pg::withLibraryIncludes(d.files);
+        Rig r(d);
+        pg::ui::Panel& panel = *r.panel;
+        funkgui::HeadlessHost& host = *r.host;
+        pg::EditorPort& port = r.processor.editorPort();
+        const funkgui::Point pill = panel.centreOfViewPill(true);
+        host.click(pill.x, pill.y);
+        host.settle();
+        SV& v = r.view();
+        const auto wireOf = [&](const char* net) {
+            const std::optional<cir::Pt> at = midWire(v.drawing(), net);
+            return at ? v.screenOf(*at) : funkgui::Point{ -1.0e4f, -1.0e4f };
+        };
+        const auto spoken = [&](const std::string& text) {
+            return std::find(host.log.announcements.begin(), host.log.announcements.end(), text) != host.log.announcements.end();
+        };
+        funkgui::Mods alt;
+        alt.alt = true;
+        // what plays (the processor's first program) lacks the netlist the files play: "not playing", and a wire selected
+        // moves neither the canvas nor the frame rate
+        const funkgui::Rect canvas0 = v.canvasRect();
+        const bool rate0 = panel.wantsFullRate();
+        const funkgui::Point a = wireOf("a");
+        host.click(a.x, a.y);
+        host.tick(2);
+        std::printf("probes: before RUN, slot 0 %s: \"%s\"; strip \"%s\"\n", v.probeNet(0).c_str(), v.probeReason(0).c_str(), v.stripRight().c_str());
+        P.eq("probes.reason_not_playing", v.probeNet(0) == "a" && v.probeReason(0) == "not playing: Cmd-Return runs it"
+                                              && v.stripRight() == "Probe: not playing: Cmd-Return runs it" ? 1 : 0, 1);
+        P.eq("probes.reason_not_playing_spoken", spoken("Probe: not playing: Cmd-Return runs it") ? 1 : 0, 1);
+        const funkgui::Rect canvas1 = v.canvasRect();
+        P.eq("probes.select_keeps_canvas", canvas1.x == canvas0.x && canvas1.y == canvas0.y && canvas1.w == canvas0.w && canvas1.h == canvas0.h ? 1 : 0, 1);
+        P.eq("probes.select_keeps_rate", !rate0 && !panel.wantsFullRate() && v.settled() && !v.probesLive() && v.probeCard().h == 0.0f ? 1 : 0, 1);
+        P.eq("probes.nothing_sent", v.probeSet() == pg::ProbeSet{} && panel.probeOwner() == 0 ? 1 : 0, 1);
+        r.run();
+        P.eq("probes.run", port.status().ok && !port.status().probes.empty() && port.status().probes[0].file == "diodetone.cir" ? 1 : 0, 1);
+        // a node typed since RUN: not in the program that plays
+        {
+            funkgui::TextEditor& ed = r.ed();
+            const std::string was = ed.text();
+            const std::size_t end = was.find("\n.end");
+            ed.selectAll();
+            ed.insert(was.substr(0, end + 1) + "R9     b  n9  1k\nR10    n9 0   1k\n" + was.substr(end + 1));
+            host.tick(2);
+            const funkgui::Point n9 = wireOf("n9");
+            host.click(n9.x, n9.y);
+            host.tick(2);
+            std::printf("probes: edited, slot 0 %s: \"%s\"\n", v.probeNet(0).c_str(), v.probeReason(0).c_str());
+            P.eq("probes.reason_edited", v.probeNet(0) == "n9" && v.probeReason(0) == "n9 is not in the program that plays (edited since RUN)"
+                                             && v.stripRight() == "Probe: n9 is not in the program that plays (edited since RUN)"
+                                             && spoken("Probe: n9 is not in the program that plays (edited since RUN)") ? 1 : 0, 1);
+            ed.undo();
+            host.tick(2);
+            P.eq("probes.edit_undone", ed.text() == was ? 1 : 0, 1);
+        }
+        // the audio: an effect's 1 kHz sine at 0.5 V, a synth's A4 (after a while with no note)
+        r.processor.prepareToPlay(kRate, kBlock);
+        juce::AudioBuffer<float> buffer(2, kBlock);
+        double phase = 0.0;
+        const auto push = [&](int blocks, bool noteOn) {
+            for (int b = 0; b < blocks; ++b)
+            {
+                juce::MidiBuffer midi;
+                if (noteOn && b == 0)
+                    midi.addEvent(juce::MidiMessage::noteOn(1, 69, static_cast<juce::uint8>(110)), 0);
+                for (int i = 0; i < kBlock; ++i)
+                {
+                    const float x = kInstrument ? 0.0f : static_cast<float>(0.5 * std::sin(phase));
+                    phase += 2.0 * 3.14159265358979 * 1000.0 / kRate;
+                    buffer.setSample(0, i, x);
+                    buffer.setSample(1, i, x);
+                }
+                r.processor.processBlock(buffer, midi);
+            }
+        };
+        const auto play = [&](int frames) {
+            for (int k = 0; k < frames; ++k)
+            {
+                push(1, false);
+                host.tick(1);
+            }
+        };
+        const funkgui::Point a2 = wireOf("a");          // (the drawing as it is now)
+        host.click(a2.x, a2.y);                  // slot 0: net a again
+        play(4);
+        if constexpr (kInstrument)
+        {
+            std::printf("probes: no note, slot 0: \"%s\"\n", v.probeReason(0).c_str());
+            P.eq("probes.reason_no_voice", v.probeReason(0) == "no voice sounding" && v.stripRight() == "Probe: no voice sounding"
+                                               && spoken("Probe: no voice sounding") && !v.probesLive() ? 1 : 0, 1);
+            push(1, true);
+        }
+        // two nets pinned (Alt-click on their wires): lanes 1 and 2, numbered flags
+        const funkgui::Point c = wireOf("c"), b = wireOf("b");
+        host.click(c.x, c.y, alt);
+        host.click(b.x, b.y, alt);
+        play(150);
+        pg::Meters m;
+        port.meters(m);
+        const pg::ProbeSet armed = v.probeSet();
+        std::printf("probes: pinned %zu, set {%llu, %d, %d, %d %d %d %d}, meters' set %s, instance %d\n", v.pinnedProbes().size(),
+                    static_cast<unsigned long long>(armed.program), armed.circuit, armed.instance, armed.nodes[0], armed.nodes[1],
+                    armed.nodes[2], armed.nodes[3], m.probeSet == armed ? "the same" : "another", static_cast<int>(m.probeInstance));
+        P.eq("probes.pinned", v.pinnedProbes() == std::vector<std::string>{ "c", "b" } && v.probeNet(1) == "c" && v.probeNet(2) == "b" ? 1 : 0, 1);
+        P.eq("probes.armed", armed.armed() && armed.program == port.status().program && armed.nodes[0] >= 0 && armed.nodes[1] >= 0
+                                 && armed.nodes[2] >= 0 && m.probeSet == armed && panel.probeOwner() > 0 ? 1 : 0, 1);
+        P.eq("probes.live", v.probesLive() && !v.settled() && panel.wantsFullRate() ? 1 : 0, 1);
+        // the numbers the card and the lanes show are the meters' within 1 %
+        bool numbers = true;
+        for (int slot = 0; slot < 3; ++slot)
+        {
+            const std::string words = v.probeWords(slot);
+            float peak = 0.0f, rms = 0.0f, mean = 0.0f;
+            const std::size_t at = words.find("PEAK ");
+            const bool read = at != std::string::npos && std::sscanf(words.c_str() + at, "PEAK %f V   RMS %f V   MEAN %f V", &peak, &rms, &mean) == 3;
+            const pg::ProbeMeter& pm = m.probes[slot];
+            const bool near = read && pm.valid && std::fabs(peak - pm.peak) <= 0.01f * pm.peak && std::fabs(rms - pm.rms) <= 0.01f * pm.rms
+                           && std::fabs(mean - pm.mean) <= 0.01f * pm.rms;
+            std::printf("probes: slot %d \"%s\" (meters %.4f %.4f %+.5f)\n", slot, words.c_str(), static_cast<double>(pm.peak),
+                        static_cast<double>(pm.rms), static_cast<double>(pm.mean));
+            numbers = numbers && near && pm.rms > 0.01f;
+        }
+        P.eq("probes.numbers_are_the_meters", numbers ? 1 : 0, 1);
+        // each trace triggered on a rising crossing of its mean, the same window two frames apart, its range a power of two
+        bool triggered = true, steady = true, ranged = true;
+        std::vector<std::vector<float>> first;
+        for (int slot = 0; slot < 3; ++slot)
+            first.push_back(v.probeTrace(slot));
+        play(6);
+        port.meters(m);
+        for (int slot = 0; slot < 3; ++slot)
+        {
+            const std::vector<float> w = v.probeTrace(slot);
+            const float mean = m.probes[slot].mean, range = v.probeRange(slot);
+            triggered = triggered && w.size() == static_cast<std::size_t>(SV::kTraceSamples) && w.front() >= mean
+                     && w[1] >= w[0] - 0.01f * range;
+            double diff = 0.0;
+            for (std::size_t i = 0; i < w.size() && i < first[static_cast<std::size_t>(slot)].size(); ++i)
+                diff += std::fabs(static_cast<double>(w[i] - first[static_cast<std::size_t>(slot)][i]));
+            diff /= static_cast<double>(std::max<std::size_t>(w.size(), 1));
+            steady = steady && first[static_cast<std::size_t>(slot)].size() == w.size() && diff <= 0.05 * static_cast<double>(range);
+            const float l2 = std::log2(range);
+            ranged = ranged && range >= 0.125f && range <= 16.0f && l2 == std::round(l2);
+            std::printf("probes: slot %d trace from %.4f, range %.3f V, frames apart %.5f V\n", slot, w.empty() ? 0.0 : static_cast<double>(w.front()),
+                        static_cast<double>(range), diff);
+        }
+        P.eq("probes.triggered", triggered ? 1 : 0, 1);
+        P.eq("probes.steady", steady ? 1 : 0, 1);
+        P.eq("probes.ranged", ranged ? 1 : 0, 1);
+        // the card and the lanes over the canvas's bottom, at most 40 % of it; the flags and readouts drawn as live
+        {
+            const funkgui::Rect cv = v.canvasRect(), card = v.probeCard(), l1 = v.probeLane(0), l2 = v.probeLane(1);
+            std::printf("probes: canvas %.0f x %.0f, card %.0f px at %.0f, lanes at %.0f and %.0f\n", static_cast<double>(cv.w),
+                        static_cast<double>(cv.h), static_cast<double>(card.h), static_cast<double>(card.y), static_cast<double>(l1.y),
+                        static_cast<double>(l2.y));
+            P.eq("probes.card", card.h == SV::kCardH && card.bottom() <= cv.bottom() && card.x >= cv.x && card.right() <= cv.right() ? 1 : 0, 1);
+            P.eq("probes.lanes", l1.h > 0.0f && l2.h > 0.0f && l2.y > l1.y && l2.bottom() <= card.y ? 1 : 0, 1);
+            P.eq("probes.share", cv.bottom() - std::min(l1.y, card.y) <= SV::kProbeShare * cv.h + 12.0f ? 1 : 0, 1);
+            const funkgui::PrimList& frame = host.draw();
+            int live = 0, tagged = 0;
+            for (const funkgui::Prim& q : frame.prims)
+                if (q.tag == sch::kProbeTag)
+                {
+                    ++tagged;
+                    live += (static_cast<uint32_t>(q.d2[3] + 0.5f) & funkgui::pflag::live) != 0 ? 1 : 0;
+                }
+            P.eq("probes.drawn_live", tagged > 0 && live > 0 ? 1 : 0, 1);
+            int items = 0;
+            for (const funkgui::A11yItem& it : host.accessibility())
+                if (it.title == "Probe a" || it.title == "Probe 1, c" || it.title == "Probe 2, b")
+                    items += it.value.find("PEAK") != std::string::npos ? 1 : 0;
+            P.eq("probes.a11y_readouts", items, 3);
+            writePng(P, host, "gui.schematic.probes.png", "probes");
+        }
+        // ground: Alt-click on a grounded pin (C1's second) says it is 0 V, and pins nothing
+        {
+            const funkgui::Point g = pinAt(v, "C1", "2");
+            host.click(g.x, g.y, alt);
+            host.tick(1);
+            P.eq("probes.reason_ground", v.notice() == "Probe: ground is 0 V" && spoken("Probe: ground is 0 V")
+                                             && v.pinnedProbes() == std::vector<std::string>{ "c", "b" } ? 1 : 0, 1);
+        }
+        // the wire's menu: Probe this net, Pin probe, then Unpin probe
+        {
+            const funkgui::Point aw = wireOf("a");
+            host.click(aw.x, aw.y, popupMods());
+            const std::vector<std::string> labels = menuLabels(host);
+            const bool offered = hasLabel(labels, "Probe this net") && hasLabel(labels, "Pin probe");
+            choose(host, "Pin probe");
+            host.tick(1);
+            const bool pinnedA = v.pinnedProbes() == std::vector<std::string>{ "c", "b", "a" };
+            host.click(aw.x, aw.y, popupMods());
+            const bool unpin = hasLabel(menuLabels(host), "Unpin probe");
+            choose(host, "Unpin probe");
+            host.tick(1);
+            P.eq("probes.menu_pins", offered && pinnedA && unpin && v.pinnedProbes() == std::vector<std::string>{ "c", "b" } ? 1 : 0, 1);
+        }
+        // the chip (an effect's amp[2]): its menu chooses the element the probes watch
+        if constexpr (!kInstrument)
+        {
+            const std::optional<funkgui::Point> chip = v.centreOfChip();
+            if (chip)
+                host.click(chip->x, chip->y);
+            const bool listed = menuLabels(host) == std::vector<std::string>{ "amp[0]", "amp[1]" };
+            choose(host, "amp[1]");
+            play(4);
+            port.meters(m);
+            const bool second = v.probeElement() == "amp[1]" && v.probeSet().instance == 1 && m.probeSet == v.probeSet() && v.probesLive();
+            if (chip)
+                host.click(chip->x, chip->y);
+            choose(host, "amp[0]");
+            play(4);
+            port.meters(m);
+            P.eq("probes.chip", chip && listed && second && v.probeSet().instance == 0 && m.probeSet == v.probeSet() ? 1 : 0, 1);
+        }
+        // a view_panel window picture sends no set; a second Panel opened and closed leaves the set as it was
+        {
+            const uint64_t gen = r.processor.engine().probeGeneration();
+            const pg::PanelPicture pic = pg::picturePanel(r.processor.ports(), port, 0, 0, true, "");
+            play(3);
+            port.meters(m);
+            P.eq("probes.picture_keeps_set", !pic.png.empty() && r.processor.engine().probeGeneration() == gen && m.probeSet == armed ? 1 : 0, 1);
+            {
+                pg::ui::Panel second(r.processor.ports(), port);
+                funkgui::HeadlessHost h2(second, 0, 2.0f);
+                h2.tick(3);
+                push(2, false);
+                h2.tick(3);
+            }
+            play(3);
+            port.meters(m);
+            P.eq("probes.second_panel_leaves_set", m.probeSet == armed && v.probeSet() == armed && v.probesLive() ? 1 : 0, 1);
+        }
+        // the Netlist view clears the set; the Schematic view arms the pins again (the session keeps them)
+        {
+            const funkgui::Point net = panel.centreOfViewPill(false);
+            host.click(net.x, net.y);
+            play(3);
+            port.meters(m);
+            const bool cleared = m.probeSet == pg::ProbeSet{} && m.probeProgram == 0;
+            bool kept = false;
+            for (const pg::FileView& f : port.fileViews())
+                kept = kept || (f.file == "diodetone.cir" && f.probes == std::vector<std::string>{ "c", "b" });
+            host.click(pill.x, pill.y);
+            play(4);
+            port.meters(m);
+            P.eq("probes.cleared_on_hide", cleared ? 1 : 0, 1);
+            P.eq("probes.pins_kept", kept ? 1 : 0, 1);
+            P.eq("probes.rearmed_on_show", v.probeNet(0).empty() && v.probeNet(1) == "c" && m.probeSet == v.probeSet() && v.probeSet().armed()
+                                               && v.probesLive() ? 1 : 0, 1);
+        }
+        // a RUN: the same names armed in the new program
+        {
+            const uint64_t was = port.status().program;
+            panel.runNow();
+            r.processor.settle();
+            host.tick(2);
+            play(4);
+            port.meters(m);
+            std::printf("probes: RUN %llu -> %llu, the set's %llu\n", static_cast<unsigned long long>(was),
+                        static_cast<unsigned long long>(port.status().program), static_cast<unsigned long long>(m.probeSet.program));
+            P.eq("probes.rearmed_after_run", port.status().program != was && m.probeSet.program == port.status().program
+                                                 && m.probeProgram == port.status().program && v.probesLive() ? 1 : 0, 1);
+        }
+        // the Panel goes: its set with it
+        r.close();
+        push(2, false);
+        port.meters(m);
+        P.eq("probes.cleared_with_panel", m.probeSet == pg::ProbeSet{} && m.probeProgram == 0 ? 1 : 0, 1);
+    }
+    // screamer.cir's t1 (in its tone block, computed as a whole) cannot be read; a netlist no program #includes is not played
+    {
+        const std::string ts = libraryText("screamer.cir");
+        pg::Draft d = draftWith(pg::cir::hostProgram("screamer.cir", ts, pg::product::kIsInstrument).text, { { "screamer.cir", ts } }, 1);
+        d.files = pg::withLibraryIncludes(d.files);
+        Rig r(d);
+        r.run();
+        const funkgui::Point pill = r.panel->centreOfViewPill(true);
+        r.host->click(pill.x, pill.y);
+        r.host->settle();
+        SV& v = r.view();
+        const std::optional<cir::Pt> t1 = midWire(v.drawing(), "t1");
+        const funkgui::Point at = t1 ? v.screenOf(*t1) : funkgui::Point{ -1.0e4f, -1.0e4f };
+        r.host->click(at.x, at.y);
+        r.host->tick(2);
+        const std::string why = "t1: inside a filter computed as a whole at 1x (block 3)";
+        std::printf("probes: screamer's t1: \"%s\"\n", v.probeReason(0).c_str());
+        P.eq("probes.reason_unreadable", v.probeNet(0) == "t1" && v.probeReason(0) == why && v.stripRight() == "Probe: " + why
+                                             && std::find(r.host->log.announcements.begin(), r.host->log.announcements.end(), "Probe: " + why)
+                                                    != r.host->log.announcements.end() ? 1 : 0, 1);
+    }
+    {
+        Rig r(draftWith(pg::kExamples[0].source, { { "diodetone.cir", libraryText("diodetone.cir") } }, 1));
+        r.run();
+        const funkgui::Point pill = r.panel->centreOfViewPill(true);
+        r.host->click(pill.x, pill.y);
+        r.host->settle();
+        SV& v = r.view();
+        const std::optional<cir::Pt> a = midWire(v.drawing(), "a");
+        const funkgui::Point at = a ? v.screenOf(*a) : funkgui::Point{ -1.0e4f, -1.0e4f };
+        r.host->click(at.x, at.y);
+        r.host->tick(2);
+        P.eq("probes.reason_not_played", v.probeReason(0) == "not played: no program #includes diodetone.cir"
+                                             && v.stripRight() == "Not played: no program #includes diodetone.cir"
+                                             && std::find(r.host->log.announcements.begin(), r.host->log.announcements.end(),
+                                                          "Probe: not played: no program #includes diodetone.cir") != r.host->log.announcements.end()
+                                             ? 1 : 0, 1);
     }
 
     // ---- EDIT: the fields, the Label tool, labels and wires, the clipboard, the menus' new items (s4) -----------------

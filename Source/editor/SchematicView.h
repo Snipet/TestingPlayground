@@ -54,6 +54,21 @@
 // paste onto parts is refused, as a drop is), Tab and Shift-Tab (the parts in line order), the
 // arrows (a unit; Shift 4), F and Home (fit), Cmd-0, Cmd-=, Cmd--. While a field is open it takes every key.
 //
+// Live probes (the spec's §9.3; Engine.h's "Probes"). While the program that plays holds this netlist's module (the
+// status's probe table, CompileStatus::probes), the selected wire run's net is probe slot 0 and up to three pinned
+// nets slots 1 to 3 (Alt-click on a wire, the wire's menu, the card's Pin; a fourth pin replaces the oldest; each
+// pinned net a numbered flag on its wire; the pins are the session's, EditorPort::fileViews). Each net is resolved by
+// name in the playing compile's nodes for this file, in the element the instance chip chose (amp[0] by default), and
+// the Panel's own set goes to the processor (ProbeHooks::arm) each time it changes, so a RUN or a refine (a new
+// program id) arms the same names again. The readout card (56 px: the net, its peak, RMS and mean, a triggered scope
+// of 1,024 samples, a rising crossing of the mean, auto-ranged in powers of two volts from 0.125 to 16, the chip and
+// Pin) and the pinned nets' lanes (36 px each, scrolling) are drawn over the canvas's bottom, at most 40 % of it, so
+// they never move the canvas; hovering a lane lights its wire. A net that does not resolve says why in the info strip
+// and to the screen reader (the files play the netlist but what plays does not: not playing; a node the program that
+// plays lacks: edited since RUN; ground, 0 V; a node a probe cannot read, its why; no voice sounding; no file
+// #includes it: not played), and so does the readout's accessibility item. The set is cleared (an empty one) when the view goes (another tab, the
+// Netlist view, the PANEL view) and with the Panel; with nothing armed nothing is live and the view settles as before.
+//
 // Session pins: the places the view drew for parts and terminals that have no line of their own (SchematicFile::pins,
 // reconciled with each revision so they stay put) go to the Panel as *@ part, *@ input and *@ output lines whenever
 // they change (setPinsHook: EditorPort::setSchematicPins), so Claude's edit_circuit and view_panel's picture draw them
@@ -66,9 +81,11 @@
 #pragma once
 
 #include "dsp/Controls.h"
+#include "dsp/Meters.h"
 #include "editor/CodeAssist.h"
 #include "editor/SchematicDraw.h"
 #include "fminus/CirDoc.h"
+#include "fminus/Circuits.h"
 #include "fminus/Lang.h"
 
 #include <funkgui/a11y/A11yItem.h>
@@ -79,6 +96,7 @@
 #include <funkgui/text/LineEdit.h>
 #include <funkgui/widgets/TextEditor.h>
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -110,6 +128,9 @@ namespace playground::ui
         cir::SessionPins pins;                       // the places drawn for parts and terminals without a line
         std::string published;                       // ... as *@ lines, as the Panel last published them
         bool merged = false;                         // a draft merged into the tab: what it moved flashes
+        std::vector<std::string> probes;             // the nets pinned to probe slots 1 to 3, in order (the session
+                                                     // keeps them: EditorPort::FileView::probes)
+        std::string probeAt;                         // the element the probes watch ("amp[1]"; "": the first)
     };
 
     class SchematicView
@@ -158,6 +179,17 @@ namespace playground::ui
             std::function<void()> undoPlay;
         };
         void setDialHooks(DialHooks hooks) { dials_ = std::move(hooks); }
+        // The probes (above): the program that plays's probe table and its id (0: none plays), the meters as the Panel
+        // read them this frame, a slot's ring (EditorPort::probe), and this Panel's set (EditorPort::setProbes).
+        struct ProbeHooks
+        {
+            std::function<const std::vector<circuits::Probed>&()> table;
+            std::function<uint64_t()> program;
+            std::function<const Meters&()> meters;
+            std::function<int(int slot, float* out, int n)> samples;
+            std::function<void(const ProbeSet&)> arm;
+        };
+        void setProbeHooks(ProbeHooks hooks) { probe_ = std::move(hooks); }
         // The Panel's GestureController, through which a knob writes (FilesItem hands it in with each pointer event).
         void setGestures(funkgui::GestureController* g) noexcept { gestures_ = g; }
 
@@ -263,6 +295,40 @@ namespace playground::ui
         // Show as labels / Show as wires (§3.8): a signal net drawn as name tags at its pins, or wired again.
         bool showAsLabels(const std::string& net, bool labels);
 
+        // ---- the probes (above) ------------------------------------------------------------------------------------
+        static constexpr float kCardH = 56.0f;       // the readout card
+        static constexpr float kLaneH = 36.0f;       // a pinned net's lane
+        static constexpr float kProbeShare = 0.4f;   // card and lanes take at most this much of the canvas
+        static constexpr int kTraceSamples = 1024;   // a scope's window
+        // Pin a net to a slot (1 to 3; a fourth replaces the oldest), unpin it, or either (Alt-click): false when there
+        // is no such net (ground cannot be pinned: it is 0 V). A user's gesture: the session keeps the pins.
+        bool pinProbe(const std::string& net);
+        bool unpinProbe(const std::string& net);
+        bool togglePin(const std::string& net);
+        const std::vector<std::string>& pinnedProbes() const;
+        // The nets the slots watch now ("" for none), the set sent last (EditorPort::setProbes), why a slot's net does
+        // not resolve ("" when it does, or holds none), the readout's words ("PROBE a   PEAK 0.402 V   RMS 0.294 V
+        // MEAN +0.000 V"; "" while it reads nothing), and whether anything is live (the meters this set's).
+        std::string probeNet(int slot) const;
+        const ProbeSet& probeSet() const noexcept { return sent_; }
+        std::string probeReason(int slot) const;
+        std::string probeWords(int slot) const;
+        bool probesLive() const;
+        // The elements the chip offers ("amp[0]", "amp[1]") and the one chosen; choosing one (the chip's menu).
+        std::vector<std::string> probeElements() const;
+        std::string probeElement() const;
+        void setProbeElement(const std::string& path);
+        // Where they are drawn now (empty when not shown): the card, a lane (0: slot 1's), its pin button, the chip.
+        funkgui::Rect probeCard() const;
+        funkgui::Rect probeLane(int lane) const;
+        std::optional<funkgui::Point> centreOfPin() const;
+        std::optional<funkgui::Point> centreOfChip() const;
+        // A slot's scope as drawn: its window (the newest kTraceSamples from the last rising crossing of its mean that
+        // leaves one whole, else the newest; fewer while fewer are of the set that plays) and its range in volts (a power
+        // of two from 0.125 to 16 that holds the window about its mean; 0 while it reads nothing).
+        std::vector<float> probeTrace(int slot) const;
+        float probeRange(int slot) const;
+
         // ---- actions (the menus', the keys', the Panel's) ------------------------------------------------------------
         void setTool(Tool t, cir::Kind kind = cir::Kind::Unknown);
         void selectPart(const std::string& name, bool centre);
@@ -353,6 +419,34 @@ namespace playground::ui
         bool moving(int part) const;
         cir::End endOf(const Hit& h) const;
         std::vector<cir::Pt> wirePath() const;
+
+        // The probes (above): each slot's net and what it resolved to this frame, the samples read for its scope, the
+        // set sent, the lanes' scroll and the one under the pointer, the reason last spoken, the readouts' items' count.
+        struct ProbeSlot
+        {
+            std::string net;                             // the net's name ("" for none)
+            int node = -1;                               // its index in the table's nodes, -1 when it does not resolve
+            std::string reason;                          // why not ("" when it does, or holds none)
+            int valid = 0;                               // samples of this set in `trace`
+            std::vector<float> trace;                    // the last 2 x kTraceSamples of its ring
+        };
+        void updateProbes();                             // tick(): the slots resolved, the set sent, the rings read
+        void clearProbes();                              // leave(): an empty set
+        int probeTable() const;                          // the table's field for this file and the element chosen (-1)
+        int probeElementIndex(int field) const;
+        float lanesTop() const;                          // the lanes' area's top (the card's top when none)
+        int laneAt(funkgui::Point p) const;              // the lane under a point, -1 for none
+        std::optional<funkgui::Point> flagAt(const std::string& net) const;   // where a pinned net's number sits (world)
+        void drawProbes(funkgui::Canvas& c, const funkgui::Theme& th, const sch::View& v, const sch::Inks& k) const;
+        void openChipMenu();
+        ProbeHooks probe_;
+        std::array<ProbeSlot, 4> slots_{};
+        ProbeSet sent_{};
+        bool sentAny_ = false;
+        float laneScroll_ = 0.0f;
+        std::string spoken_;
+        uint32_t probeA11y_ = 0;
+        int probeItems_ = 0;
 
         Hooks hooks_;
         DialHooks dials_;

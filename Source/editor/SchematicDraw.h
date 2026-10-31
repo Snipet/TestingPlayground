@@ -179,6 +179,19 @@ namespace playground::ui::sch
     void placeKnobs(const View& v, const cir::Drawing& d, std::vector<KnobSpot>& knobs);
     void chip(funkgui::Canvas& c, funkgui::Point at, float w, float h, const std::string& text, funkgui::Col ink, const Inks& k);
 
+    // ---- the probes (SchematicView.h's "Live probes": its card and lanes, under the probes' tag, live) -------------
+    // A probe's trace over `r`: `n` volts (at most 256 points drawn), `centre` at the middle and +-`range` at the edges,
+    // on the canvas's ground with a hairline at the middle and the quarters (grid), the trace in the symbols' ink.
+    void trace(funkgui::Canvas& c, const funkgui::Rect& r, const float* volts, int n, float centre, float range, const Inks& k);
+    // The scope's range for samples of half-span `span` volts about their centre: the smallest power of two from 0.125
+    // to 16 that holds it.
+    float traceRange(float span) noexcept;
+    // A pinned probe's number at `at` (screen): a small tag of the symbols' ink holding it.
+    void probeFlag(funkgui::Canvas& c, funkgui::Point at, int number, const Inks& k);
+    // Where its trigger is: the first index i in [from, to) of `v` with v[i - 1] < level <= v[i] (a rising crossing),
+    // else -1.
+    int risingCrossing(const float* v, int from, int to, float level) noexcept;
+
     // The text a part shows as its value: the netlist's own spelling (R4's "4.7k", a pot's "100k {tone}", a switch's
     // "sw1: 1", an OTA's gain expression); "" for an op amp or a terminal.
     std::string valueText(const cir::Netlist& nl, const cir::Part& p);

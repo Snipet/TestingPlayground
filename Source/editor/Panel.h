@@ -300,6 +300,11 @@ namespace playground::ui
         funkgui::Point centreOfDialsBar() const;
         // Whether the program's card's header shows the whole status at the panel's size (no ellipsis).
         bool statusWhole() const;
+        // The schematic's live probes (SchematicView.h): a Panel owns its set from its first armed one, unless told
+        // never to (view_panel's window picture, Picture.cpp: a headless Panel that owns no probe and changes none).
+        void setOwnsProbes(bool owns) noexcept { ownsProbes_ = owns; }
+        bool ownsProbes() const noexcept { return ownsProbes_; }
+        int probeOwner() const noexcept { return probeOwner_; }
         // The chat's column: open, or folded into a rail at the right (the editor and the panel take the room). The
         // header's chevron folds it, the rail's button opens it; the session keeps it (EditorPort::chatOpen).
         bool chatOpen() const noexcept { return chatOpen_; }
@@ -518,6 +523,10 @@ namespace playground::ui
         float leftW_ = 0.0f;                             // the left column's width (the editor's)
         Controls controls_{};                            // the dials of the program that plays, as refresh() saw them
         std::vector<lang::CircuitBinding> circuitDials_; // ... and its circuit fields (CompileStatus::circuitDials)
+        std::vector<circuits::Probed> circuitProbes_;    // ... its probe table (CompileStatus::probes)
+        uint64_t probeProgram_ = 0;                      // ... its id (CompileStatus::program)
+        int probeOwner_ = 0;                             // this Panel's probes' owner (EditorPort::addProbeOwner; 0: none yet)
+        bool ownsProbes_ = true;                         // false: a picture's Panel, which never arms one
         PanelSpec panelSpec_;                            // its #pragma panel lines
         uint64_t panelProgram_ = 0;                      // the compile they came from (EditorPort::program)
         DialsLayout dials_;                              // their places
