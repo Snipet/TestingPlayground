@@ -10,13 +10,14 @@
 //
 //   explorer  at the left, a card like the chat's (Explorer.h): the program's files (a click shows one, a double click
 //             renames it, its cross closes it, the header's + makes one), its LLVM IR (a click opens the IR tab on a
-//             view, IrView.h), the library (a click adds a file as a tab,
-//             #included, or shows it), the examples (a click loads one, undoably) and the presets on this Mac (a click
-//             loads one, asking first when the editor has changes no preset holds; the header's + opens PRESETS); its
+//             view, IrView.h), the library (a click adds a file as a tab, #included, or shows it), the examples (a
+//             click starts afresh from one, as EXAMPLES) and the presets on this Mac (a click loads one, asking first
+//             when the editor has changes no preset holds; the header's + opens PRESETS); its
 //             sections fold, and the whole card folds away (its chevron; the button at the left of the program's card's
 //             header opens it; EditorPort::explorerOpen); in the PANEL view, or a window too narrow for it, it is away
 //   header    the product name, its kind and version, and the THEME cells (GRAPHITE, PAPER)
-//   toolbar   RUN (Cmd-Return in the editor too), EXAMPLES (a menu: the example replaces the text, undoably, and
+//   toolbar   RUN (Cmd-Return in the editor too), EXAMPLES (a menu: the example starts afresh, as a new instance,
+//             its files the only tabs and the dials at their defaults, asking first when changes would be lost; it
 //             runs), LIBRARY (a menu of ready-made building blocks, Library.h: one becomes a tab and the program
 //             #includes it), the status (running, edited, compiling, the errors' count, the compile time) and, at
 //             the right, the audio thread's load, a snowflake left of it while the frozen copy plays (the dials compiled

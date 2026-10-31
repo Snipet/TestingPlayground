@@ -12,6 +12,7 @@
 //   gui.dump.panel.png   the same dials in the sections its #pragma panel lines ask for; .panel.paper.png in PAPER,
 //                        .panel.small.png at the least size
 //   gui.dump.example.png the program Claude's instructions build from the library (ChatAgent::promptExample)
+//   gui.dump.reset.png   EXAMPLES' Init over that program and its interface: Init alone, its dials, no interface
 //   gui.dump.displays.png a program with every display and every dial style, audio flowing; .displays.paper.png
 //   gui.dump.random.png  a program RANDOM made, running
 //   gui.dump.projects.png PROJECTS: three projects, another than the open one chosen, its older version chosen
@@ -35,9 +36,12 @@
 //   ERROR     a program with a syntax error on its line 3: the status counts one error, the problems list shows it
 //             with its line, the editor marks that line (a line mark in its mark column, a squiggle), and the program
 //             that played plays on; a click on the problem puts the caret on that line
-//   EXAMPLES  the EXAMPLES button opens a menu of every example; choosing the second replaces the text with it and
-//             runs it, and Cmd-Z gives the text back (one undo step). The panel shows the new program running, with
-//             its dials, as soon as the compile finishes, before the processor's timer has taken it
+//   EXAMPLES  the EXAMPLES button opens a menu of every example; choosing the second over the editor's changes (an
+//             edited program, a second tab, every dial moved) asks first, and on the menu's choice starts afresh from
+//             it, as a new instance from Init: its file the only tab, its text with no undo step and the caret at the
+//             top, it runs, every dial at its default (an unused one at the parameter's own), nothing left to lose.
+//             The panel shows the new program running, with its dials, as soon as the compile finishes, before the
+//             processor's timer has taken it. Chosen again with nothing changed, it asks nothing
 //   DIAL      a drag up on the first dial raises its parameter by a quarter for 60 px; a double-click returns it to
 //             the program's default
 //   FILES     the + adds a second tab, file2.fm, shown, its name edited in place: typed keys and Return rename it
@@ -65,7 +69,8 @@
 //             again, it is ticked and shown, not added twice; with no room for another tab, the files the program
 //             lacks are greyed
 //   EXAMPLE   that program, its library files added through LIBRARY's path and its panel.gui in a tab of its own: it
-//             runs with no note, its interface's every dial in a titled section
+//             runs with no note, its interface's every dial in a titled section. EXAMPLES' Init over it (asking first)
+//             takes every tab but Init's away, the interface with them: Init's dials, no project open
 //   DISPLAYS  a program with every display (meter, vu, led, number, scope; of the audio and of its fields) and every
 //             dial style (vintage, fader, switch, buttons with options), coloured, and audio through the processor:
 //             each item inside its section's frame; the meters show what the Engine measured (the output's peak in
@@ -99,6 +104,7 @@
 #include "editor/Panel.h"
 #include "editor/Theme.h"
 #include "plugin/ProjectStore.h"
+#include "fminus/LibraryIncludes.h"
 #include "fminus/Random.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
@@ -512,8 +518,22 @@ PROBE(gui, dump)
     host.settle();
     P.eq("error.click_jumps", editor.caret().line, 2);
 
-    // EXAMPLES
-    const std::string before = editor.text();
+    // EXAMPLES: over the editor's changes, which it takes away: the program edited (the error above), a second tab,
+    // every dial moved.
+    {
+        const funkgui::Point plus = panel.centreOfNewTab();
+        host.click(plus.x, plus.y);
+        host.keys("escape");
+        host.settle();
+        for (funkgui::ParamPort* p : processor.ports())
+        {
+            p->beginGesture();
+            p->setValue01(0.123f);
+            p->endGesture();
+        }
+        host.settle();
+        P.eq("examples.two_tabs_before", panel.fileCount(), 2);
+    }
     const funkgui::Point examples = panel.centreOfExamples();
     host.click(examples.x, examples.y);
     const funkgui::MenuRequest* menu = host.pendingMenu();
@@ -522,6 +542,10 @@ PROBE(gui, dump)
     {
         P.eq("examples.items", static_cast<int64_t>(menu->items.size()), static_cast<int64_t>(std::size(pg::kExamples)));
         P.eq("examples.chosen", host.chooseMenuItem(2) ? 1 : 0, 1);
+        const funkgui::MenuRequest* ask = host.pendingMenu();
+        P.eq("examples.asks_first", ask != nullptr && ask->items.size() == 1 ? 1 : 0, 1);
+        P.eq("examples.nothing_yet", port.draft().files.size() == 2 ? 1 : 0, 1);   // until the menu's choice
+        P.eq("examples.confirmed", ask != nullptr && host.chooseMenuItem(1) ? 1 : 0, 1);
         while (port.compiling())                                // the compile, without the processor's poll
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         host.tick(2);
@@ -535,13 +559,30 @@ PROBE(gui, dump)
         }
         P.eq("examples.dials_before_poll", shown, wanted);
         settleRun(processor, host);
+        const pg::Sources files = pg::withLibraryIncludes(pg::singleFile(pg::kExamples[1].source));
         P.eq("examples.replaces_text", editor.text() == pg::kExamples[1].source ? 1 : 0, 1);
-        P.eq("examples.runs_it", port.running() == pg::singleFile(pg::kExamples[1].source) ? 1 : 0, 1);
+        P.eq("examples.only_its_files", panel.fileCount() == static_cast<int>(files.size()) && port.draft().files == files
+                                            ? 1 : 0, 1);
+        P.eq("examples.runs_it", port.running() == files ? 1 : 0, 1);
+        P.eq("examples.no_undo_back", editor.canUndo() ? 0 : 1, 1);
+        P.eq("examples.caret_at_top", editor.caret() == funkgui::TextPos{ 0, 0 } ? 1 : 0, 1);
+        int moved = 0;
+        const pg::CompileStatus now = port.status();
+        for (int c = 0; c < pg::kMaxControls; ++c)
+        {
+            const pg::Control& k = now.controls[static_cast<std::size_t>(c)];
+            const float want = k.used ? pg::normOf(k, k.def) : processor.getParameters()[c]->getDefaultValue();
+            moved += std::fabs(processor.ports()[static_cast<std::size_t>(c)]->value01() - want) > 1e-6f ? 1 : 0;
+        }
+        P.eq("examples.dials_at_defaults", moved, 0);
+        P.eq("examples.nothing_to_lose", port.project().changed ? 0 : 1, 1);
         P.eq("examples.status_running", panel.statusText().rfind("RUNNING", 0) == 0 ? 1 : 0, 1);
         writePng(P, host, "gui.dump.edited.png", "examples");
-        P.eq("examples.undo_one_step", editor.undo() && editor.text() == before ? 1 : 0, 1);
-        editor.redo();
-        host.settle();
+        // Again, with nothing changed since: no question.
+        host.click(examples.x, examples.y);
+        P.eq("examples.again_chosen", host.chooseMenuItem(2) ? 1 : 0, 1);
+        P.eq("examples.again_asks_nothing", host.pendingMenu() == nullptr ? 1 : 0, 1);
+        settleRun(processor, host);
     }
 
     // DIAL: the first.
@@ -1140,6 +1181,20 @@ PROBE(gui, dump)
         P.eq("example.sections_titled", titled ? 1 : 0, 1);
         P.eq("example.every_dial_placed", placed, used);
         writePng(P, host, "gui.dump.example.png", "example");
+        // EXAMPLES' Init over it: Init alone, the interface gone with its tab.
+        {
+            const funkgui::Point at = panel.centreOfExamples();
+            host.click(at.x, at.y);
+            P.eq("reset.chosen", host.chooseMenuItem(1) ? 1 : 0, 1);
+            P.eq("reset.asks_first", host.pendingMenu() != nullptr && host.chooseMenuItem(1) ? 1 : 0, 1);
+            settleRun(processor, host);
+            const pg::Sources init = pg::withLibraryIncludes(pg::singleFile(pg::kExamples[0].source));
+            P.eq("reset.only_init", port.draft().files == init && port.running() == init
+                                        && panel.fileCount() == static_cast<int>(init.size()) ? 1 : 0, 1);
+            P.eq("reset.no_interface", !panel.hasGui() && port.panel().gui.nodes.empty() ? 1 : 0, 1);
+            P.eq("reset.no_project", port.project().name.empty() && !port.project().changed ? 1 : 0, 1);
+            writePng(P, host, "gui.dump.reset.png", "reset");
+        }
         // Back: the library's tabs closed (each asks), the program as before.
         while (panel.fileCount() > 1)
         {

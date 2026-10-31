@@ -777,8 +777,10 @@ namespace playground::ui
         // The processor's draft into the tabs (a host loaded a session, or Claude changed the files): a file whose tab
         // is open keeps its editor (its caret, scroll and undo steps), its text replaced as one undoable edit when it
         // changed; a file at the place of a tab whose name is gone is that file renamed; a new file gets a tab, and a
-        // tab whose file is gone closes. The tabs follow the draft's order and the tab it shows.
-        void merge(const Draft& d)
+        // tab whose file is gone closes. The tabs follow the draft's order and the tab it shows. Fresh (an example:
+        // EditorPort::loadExample): a tab is kept only for a file of its name, its text set anew (no undo steps, the
+        // caret and the scroll at the top), as a new window has it; every other file gets a new tab.
+        void merge(const Draft& d, bool fresh = false)
         {
             renaming_ = -1;
             why_.clear();
@@ -796,7 +798,7 @@ namespace playground::ui
                         used[k] = true;
                         break;
                     }
-            for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t i = 0; i < n && !fresh; ++i)
                 if (match[i] < 0 && i < old.size() && !used[i]
                     && std::none_of(d.files.begin(), d.files.end(),
                                     [&](const SourceFile& f) { return f.name == old[i].name; }))
@@ -816,7 +818,13 @@ namespace playground::ui
                 if (fileKindOf(t.name) != fileKindOf(f.name))   // renamed to another kind (a .gui file, a netlist)
                     assist_.configure(*t.editor, f.name);
                 t.name = f.name;
-                replaceText(*t.editor, f.text);
+                if (fresh)
+                {
+                    t.editor->setText(f.text);
+                    t.editor->setScroll(0.0f, 0.0f);
+                }
+                else
+                    replaceText(*t.editor, f.text);
                 tabs_.push_back(std::move(t));
             }
             if (tabs_.empty())
@@ -1832,7 +1840,7 @@ namespace playground::ui
                           "RUN   COMPILE THE PROGRAM AND PLAY IT (CMD-RETURN)");
         examplesItem_ = button(TB::Shape::pill, chat::Icon::book, [] { return std::string("Examples"); }, true,
                                [] { return TB::Look::ghost; }, [this] { openExamples(); }, "Examples",
-                               "EXAMPLES   REPLACE THE TEXT WITH ONE, AND RUN IT");
+                               "EXAMPLES   START AFRESH FROM ONE: ITS FILES, THE DIALS AT THEIR DEFAULTS");
         libraryItem_ = button(TB::Shape::pill, chat::Icon::blocks, [] { return std::string("Library"); }, true,
                               [] { return TB::Look::ghost; }, [this] { openLibrary(); }, "Library",
                               "LIBRARY   A READY-MADE BUILDING BLOCK AS A TAB OF ITS OWN, #INCLUDED BY THE PROGRAM");
@@ -3775,34 +3783,49 @@ namespace playground::ui
         host_->showMenu(request, [this](int chosen) { loadExample(chosen - 1); });
     }
 
+    // EXAMPLES: the example as a new instance would play it (EditorPort::loadExample): its files the only tabs, the
+    // dials at their defaults once it compiled, no project open. Asking first (a menu at the pointer) when the editor's
+    // files have changes that nothing opened, saved or loaded holds.
     void Panel::loadExample(int i)
     {
         if (i < 0 || i >= static_cast<int>(std::size(kExamples)))
             return;
-        // The example replaces the program's text as one edit (Cmd-Z brings the text back), and runs; the other files
-        // stay. The library files it #includes come as tabs first, as LIBRARY adds them (never over a tab of that
-        // name), when there is room for them.
-        const Sources need = withLibraryIncludes(singleFile(kExamples[static_cast<std::size_t>(i)].source));
-        int missing = 0;
-        for (std::size_t k = 1; k < need.size(); ++k)
-            missing += files().find(need[k].name) < 0 ? 1 : 0;
-        if (files().count() + missing > static_cast<int>(kMaxFiles))
+        const auto load = [this, i] {
+            port_.loadExample(i);
+            // The editor as a new window shows it: its tabs anew (no undo steps, each at its top), the IR tab and the
+            // find bar closed, no problems until it has compiled, the interface from its top at its first pages.
+            closeIrView();
+            files().assist().closeFind();
+            files().merge(port_.draft(), true);
+            seenDraft_ = port_.draftRevision();
+            syncedFiles_ = files().revision();
+            problems_.clear();
+            files().assist().setRunDiagnostics({}, {});
+            files().assist().cancelCheck();
+            guiView_->resetScroll();
+            guiView_->setPages(guiPagesOf(panelSpec_.gui, {}));
+            compiling_ = true;
+            layout();
+            setFocus(editorItem_);
+            explorerKey_.clear();
+            dirty_ = true;
+        };
+        files().endRename();
+        port_.setDraft(files().draft());                 // what "changed" means is what the tabs show
+        if (!port_.project().changed || host_ == nullptr)
         {
-            notice("THE EXAMPLE NEEDS ROOM FOR ITS LIBRARY FILES: CLOSE A TAB");
+            load();
             return;
         }
-        files().endRename();
-        for (std::size_t k = 1; k < need.size(); ++k)
-            if (files().find(need[k].name) < 0)
-                files().addFile(need[k].name, need[k].text);
-        files().select(0);
-        funkgui::TextEditor& program = files().editor();
-        program.selectAll();
-        program.insert(kExamples[static_cast<std::size_t>(i)].source);
-        program.setCaret({ 0, 0 });
-        program.setScroll(0.0f, 0.0f);
-        setFocus(editorItem_);
-        runNow();
+        funkgui::MenuRequest request;
+        request.items.push_back({ 1, std::string("Load ") + kExamples[static_cast<std::size_t>(i)].title
+                                         + " (the editor's changes are lost)" });
+        request.anchor = { pointer_.x, pointer_.y, 1.0f, 1.0f };
+        request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
+        host_->showMenu(request, [load](int chosen) {
+            if (chosen == 1)
+                load();
+        });
     }
 
     // LIBRARY: the library's files by category, a tick on those the program has. One the program lacks becomes a tab

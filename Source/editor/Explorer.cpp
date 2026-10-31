@@ -492,7 +492,7 @@ namespace playground::ui
                                                                               : "PROJECTS   SAVE A VERSION, OPEN AN OLDER ONE, DELETE")
                          : s == Section::files     ? "FILE   SHOW IT   DOUBLE-CLICK RENAMES IT"
                          : s == Section::library   ? "LIBRARY   ADD IT AS A TAB (THE PROGRAM INCLUDES IT), OR SHOW IT"
-                         : s == Section::examples  ? "EXAMPLE   INTO THE PROGRAM, AND RUN (CMD-Z TAKES IT BACK)"
+                         : s == Section::examples  ? "EXAMPLE   START AFRESH FROM IT, THE DIALS AT THEIR DEFAULTS"
                          : s == Section::presets   ? "PRESET   ITS DIALS, AT ONCE (NO CODE CHANGES)"
                                                    : "PROJECT   OPEN ITS NEWEST VERSION: ITS FILES AND ITS DIALS";
         std::snprintf(out, n, "%s", line);
