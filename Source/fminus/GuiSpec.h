@@ -66,7 +66,8 @@
 // the source's name; Shared's field's own, LEVEL), color=, and min= max= for a field (0 and 1 when unsaid):
 //   meter out   vu out   led gate   number cutoffHz   scope out   spectrum out
 // scope and spectrum (an analyser of in or out) take width= and height=. A number shows an int's or a bool's field as
-// a whole number, and takes a knob's unit=, decimals= and scale= for a field (`number rpm unit="rpm" decimals=0`).
+// a whole number, and takes a knob's unit=, decimals= and scale= for a field (`number rpm unit="rpm" decimals=0`); its
+// cell is wide enough for a sign, four digits, its decimals and unit, and a longer readout is drawn smaller.
 //
 // A parameter that no control names comes last, in a section without a title. What the plugin cannot use is a note,
 // "panel.gui:12:5: note: ...", and the rest stands.

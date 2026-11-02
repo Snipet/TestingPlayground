@@ -16,7 +16,6 @@ namespace playground::ui::looks
         namespace type = funkgui::type;
 
         constexpr float kPi = std::numbers::pi_v<float>;
-        constexpr funkgui::TextStyle kReadout{ 15.0f, 0.6f, 0.14f, true };   // a number's digits
         constexpr funkgui::TextStyle kPrint{ 7.0f, 0.4f, 0.10f, true };      // a VU face's figures
 
         struct Named
@@ -273,7 +272,16 @@ namespace playground::ui::looks
         const Rect box{ r.x + 2.0f, r.y + 18.0f, r.w - 4.0f, 30.0f };
         c.rrect(box.x, box.y, box.w, box.h, 3.0f, dark(th) ? Col{ 0x0A, 0x0C, 0x0B } : Col{ 0x1B, 0x1E, 0x1C }, 1.0f, th.ink32);
         const Col digits = d.tinted ? d.color : Col{ 0xFF, 0xB3, 0x47 };
-        c.text(text, box.centreX(), c.capCentreTop(box.centreY(), kReadout), kReadout, digits, funkgui::Align::centre);
+        funkgui::TextStyle st = kReadout;
+        const float room = box.w - 6.0f, w = c.textWidth(text, st);
+        if (w > room && w > 0.0f)
+        {
+            const float k = std::max(0.5f, room / w);
+            st.px *= k;
+            st.tracking *= k;
+        }
+        const funkgui::Canvas::ClipScope clip(c, box);
+        c.text(text, box.centreX(), c.capCentreTop(box.centreY(), st), st, digits, funkgui::Align::centre);
     }
 
     void scope(funkgui::Canvas& c, const funkgui::Theme& th, const Display& d, const float* ys, int n)
