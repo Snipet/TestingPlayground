@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 
 namespace playground
@@ -227,6 +228,20 @@ namespace playground
             return out;
         }
 
+        // A text's version as the tools say it: the top half of its 64-bit FNV-1a hash, 8 hex digits.
+        std::string versionOf(const std::string& text)
+        {
+            uint64_t h = 1469598103934665603ull;
+            for (const char c : text)
+            {
+                h ^= static_cast<uint8_t>(c);
+                h *= 1099511628211ull;
+            }
+            char buf[16];
+            std::snprintf(buf, sizeof buf, "%08x", static_cast<unsigned>(h >> 32));
+            return buf;
+        }
+
         // Where `oldText` occurs in `text`: the first place (npos: none), and how often.
         std::size_t occurs(const std::string& text, const std::string& oldText, std::size_t& count, std::vector<std::string>& lines)
         {
@@ -246,15 +261,7 @@ namespace playground
 
     std::string ChatAgent::keepVersion(const std::string& name, const std::string& text)
     {
-        uint64_t h = 1469598103934665603ull;                     // FNV-1a, 64 bits; its top half names the version
-        for (const char c : text)
-        {
-            h ^= static_cast<uint8_t>(c);
-            h *= 1099511628211ull;
-        }
-        char buf[16];
-        std::snprintf(buf, sizeof buf, "%08x", static_cast<unsigned>(h >> 32));
-        const std::string version = buf;
+        const std::string version = versionOf(text);
         const auto same = [&](const FileVersion& v) { return v.name == name && v.version == version; };
         fileVersions_.erase(std::remove_if(fileVersions_.begin(), fileVersions_.end(), same), fileVersions_.end());
         fileVersions_.push_back({ name, version, std::make_shared<const std::string>(text) });
@@ -302,19 +309,23 @@ namespace playground
         if (count == 0)
             return head + ": it is empty.\n";
 
-        // The range (all of it unless from or lines say), then the lines in it that hold `find`.
+        // The range (all of it unless from or lines say), then the lines in it that hold `find`. The numbers are
+        // rounded and checked as doubles, so one past an int's range is refused or clamped, never cast.
         int from = 1, to = count;
         if (isNumber(fromVar))
-            from = static_cast<int>(std::lround(static_cast<double>(fromVar)));
-        if (from < 1 || from > count)
-            return fail(file + " has " + std::to_string(count) + (count == 1 ? " line" : " lines") + ": from is 1 to "
-                        + std::to_string(count));
+        {
+            const double first = std::round(static_cast<double>(fromVar));
+            if (!(first >= 1.0 && first <= static_cast<double>(count)))
+                return fail(file + " has " + std::to_string(count) + (count == 1 ? " line" : " lines") + ": from is 1 to "
+                            + std::to_string(count));
+            from = static_cast<int>(first);
+        }
         if (isNumber(linesVar))
         {
-            const int n = static_cast<int>(std::lround(static_cast<double>(linesVar)));
-            if (n < 1)
+            const double n = std::round(static_cast<double>(linesVar));
+            if (!(n >= 1.0))
                 return fail("lines is how many lines to read, 1 or more");
-            to = std::min(count, from + n - 1);
+            to = static_cast<int>(std::min(static_cast<double>(count), static_cast<double>(from) + n - 1.0));
         }
         if (!(findVar.isString() && findVar.toString().isNotEmpty()))
         {
@@ -465,16 +476,10 @@ namespace playground
                 return fail("There is no file " + file + ". The files: " + names);
             }
             const std::string before = f->text;
-            if (!expected.empty())
-            {
-                std::string now;
-                {
-                    const std::lock_guard<std::mutex> lock(mutex_);
-                    now = keepVersion(file, before);
-                }
-                if (now != expected)
-                    return changedSince(expected, before);
-            }
+            // Compared, not kept: keeping it first could push out the very version it was given (changedSince looks
+            // that up, then keeps the text now).
+            if (!expected.empty() && versionOf(before) != expected)
+                return changedSince(expected, before);
             // All or none, in order, each on the text the ones before it left.
             std::string t = before;
             for (std::size_t i = 0; i < edits.size(); ++i)
@@ -521,8 +526,9 @@ namespace playground
                 version = keepVersion(file, t);
                 addEntry(ChatEntry::Kind::tool, "edited " + file + (edits.size() > 1 ? " (" + std::to_string(edits.size()) + " changes)" : ""));
             }
+            const std::size_t lines = linesOf(t).size();
             return "Edited " + file + (edits.size() > 1 ? ": " + std::to_string(edits.size()) + " edits, one step the user can undo" : "")
-                 + "; version now " + version + ".";
+                 + "; now " + std::to_string(lines) + (lines == 1 ? " line" : " lines") + ", version " + version + ".";
         }
         return fail(file + " changed while editing (the user's typing, which is kept): try again.");
     }

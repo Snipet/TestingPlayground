@@ -70,14 +70,15 @@
 //            "schematic": a PNG at 100 % with every part labelled, its text giving each part line's place and the pins'
 //            points; the user's view, file views and tab as they were
 //   FILES    read_file by lines (exactly those, numbered, after the line count and version; to the end; past it
-//            refused), by a text (the lines that hold it with two around each, groups apart; none); a part read is not
-//            the file seen, nor is an edit after it (the next state sends it, with the user's line and the edit, and
-//            names unchanged a file read whole), and an edit of a file seen is seen; edit_file's miss gives the closest
-//            passage, numbered, and what differs (the characters; only the whitespace; a fragment of a long line, a
-//            letter off, gets that line), a passage that occurs four times names its lines; a list with one bad edit
-//            changes nothing and names it; a good one is one write the editor undoes in one step; `expected` refuses a
-//            write after the user's edit, keeps it and shows its line (the result's first line naming the edit), and
-//            with the version it gives the write goes
+//            refused; numbers past an int's range clamped or refused), by a text (the lines that hold it with two
+//            around each, groups apart; none); a part read is not the file seen, nor is an edit after it (the next
+//            state sends it, with the user's line and the edit, and names unchanged a file read whole), and an edit of
+//            a file seen is seen; edit_file's miss gives the closest passage, numbered, and what differs (the
+//            characters; only the whitespace; a fragment of a long line, a letter off, gets that line), a passage that
+//            occurs four times names its lines; a list with one bad edit changes nothing and names it; a good one is
+//            one write the editor undoes in one step, its result the line count and version; `expected` refuses a write
+//            after the user's edit, keeps it and shows its line (the result's first line naming the edit), and with the
+//            version it gives the write goes; given the oldest of the versions kept, it still shows the lines changed
 //   SOUND    view_sound through the agent (a program that sounds): its result a PNG of 1120 x 800 and what it shows,
 //            the tool's entry with the picture's thumbnail (480 px), the session without the PNG but with the thumbnail;
 //            a program that does not compile draws nothing and says why
@@ -1611,6 +1612,12 @@ PROBE(plugin, chat)
         P.eq("files.read_to_the_end", has(tail, "; lines 11 to 12:\n11\t") && has(tail, "\n12\t" + lineOf(12) + "\n") ? 1 : 0, 1);
         const pg::ChatAgent::McpResult past = call("read_file", input({ { "name", "notes.fm" }, { "from", 13 } }));
         P.eq("files.read_past_the_end", past.isError && has(toolText(past), "notes.fm has 12 lines: from is 1 to 12") ? 1 : 0, 1);
+        // Numbers past an int's range: the range clamped to the file, or refused.
+        const std::string huge = toolText(call("read_file", input({ { "name", "notes.fm" }, { "from", 11 }, { "lines", 2147483647 } })));
+        const std::string vast = toolText(call("read_file", input({ { "name", "notes.fm" }, { "from", 12 }, { "lines", 3.0e9 } })));
+        const pg::ChatAgent::McpResult far = call("read_file", input({ { "name", "notes.fm" }, { "from", 1.0e10 } }));
+        P.eq("files.read_huge_numbers", has(huge, "; lines 11 to 12:\n11\t") && has(vast, "; lines 12 to 12:\n12\t") && far.isError
+                                            && has(toolText(far), "notes.fm has 12 lines: from is 1 to 12") ? 1 : 0, 1);
         // find: the lines that hold it, numbered, two around each (groups apart by "--").
         const std::string one = toolText(call("read_file", input({ { "name", "notes.fm" }, { "find", "v7(" } })));
         const std::string four = toolText(call("read_file", input({ { "name", "notes.fm" }, { "find", "return x * 1" } })));
@@ -1733,7 +1740,7 @@ PROBE(plugin, chat)
         const bool merged = ed.text() == want && fileText("notes.fm") == want;
         const bool back = ed.undo() && ed.text() == notes;
         const bool again = ed.redo() && ed.text() == want;
-        P.eq("files.list_applied", !edited.isError && has(toolText(edited), "Edited notes.fm: 2 edits, one step the user can undo; version now ") && merged ? 1 : 0, 1);
+        P.eq("files.list_applied", !edited.isError && has(toolText(edited), "Edited notes.fm: 2 edits, one step the user can undo; now 12 lines, version ") && merged ? 1 : 0, 1);
         P.eq("files.list_one_undo_step", back && again ? 1 : 0, 1);
         host.tick(2);
         // expected: written only while the file is the version read; the user's edit in between is kept, and shown.
@@ -1760,6 +1767,24 @@ PROBE(plugin, chat)
         const std::string v2 = nowAt == std::string::npos ? std::string() : refusal.substr(nowAt + 17, 8);
         const pg::ChatAgent::McpResult retried = call("edit_file", input({ { "name", "notes.fm" }, { "edits", juce::var(mine) }, { "expected", juce::String(v2) } }));
         P.eq("files.expected_then_writes", !retried.isError && has(fileText("notes.fm"), "float w1(") && has(fileText("notes.fm"), "// the user's line\n") ? 1 : 0, 1);
+        // The version given the oldest of the 16 kept: comparing keeps nothing, so it is still there to show what changed.
+        const std::string v3 = versionIn(toolText(call("read_file", input({ { "name", "notes.fm" } }))));
+        for (int i = 0; i < 15; ++i)                          // fifteen newer versions, of another file
+        {
+            agent.mcpCall("write_file", input({ { "name", "other.fm" }, { "content", juce::String("// other, version " + std::to_string(i) + "\n") } }));
+            processor.poll();
+        }
+        pg::Draft later = processor.editorPort().draft();
+        for (pg::SourceFile& f : later.files)
+            if (f.name == "notes.fm")
+                f.text += "// the user's last line\n";
+        processor.editorPort().setDraft(later);
+        juce::Array<juce::var> renamed;
+        renamed.add(input({ { "old_text", "float w1(" }, { "new_text", "float u1(" } }));
+        const pg::ChatAgent::McpResult oldest = call("edit_file", input({ { "name", "notes.fm" }, { "edits", juce::var(renamed) }, { "expected", juce::String(v3) } }));
+        std::printf("edit_file with the oldest version kept:\n%s\n", toolText(oldest).c_str());
+        P.eq("files.expected_oldest_kept", oldest.isError && has(toolText(oldest), "Its lines changed since (+1 -0):\n")
+                                               && has(toolText(oldest), "\n+// the user's last line\n") && !has(fileText("notes.fm"), "float u1(") ? 1 : 0, 1);
         processor.editorPort().setDraft(saved);
         host.tick(2);
     }
