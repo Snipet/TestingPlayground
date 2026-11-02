@@ -66,8 +66,9 @@
 //             randf's); signature help in hash( and randf(; go to definition of a constant, a table and a tag in the
 //             other file; a constant's occurrences; a circuit field's extent of enumeration constants folded; a name
 //             folded as the constant its place sees (a block's in its block alone, a module's own, the top level's: in
-//             a constant's value and a circuit field's extent); a constant nested 2,000 parentheses deep compiled on a
-//             thread of the default stack (as the Compiler's), with no value, and one 63 deep folded; and
+//             a constant's value and a circuit field's extent); another module's constant, the file's from that module
+//             on, folded, a circuit field's extent, hovered and offered; a constant nested 2,000 parentheses deep
+//             compiled on a thread of the default stack (as the Compiler's), with no value, and one 63 deep folded; and
 //             Patch::check's messages as RUN's for a switch on a float and a write to a constant table, the program
 //             itself clean
 #include "Probe.h"
@@ -1398,6 +1399,35 @@ PROBE(fminus, lang)
                                           && signatureOf("ONE") == "ONE = 1" ? 1 : 0, 1);
             const lg::CircuitDials dials = lg::circuitDials(ss, pg::product::kIsInstrument);
             P.eq("newer.circuit_extent_scoped", dials.bindings.size() == 1 && dials.bindings[0].dims == std::vector<int>{ 2 } ? 1 : 0, 1);
+        }
+
+        // A module's enumeration constants are the file's from that module on, as a C struct's are (and FMinus's): a
+        // later top-level constant folds from one (TWICE), a circuit field of the main module takes one as its extent,
+        // and in the main module's method the name hovers with its value and is offered.
+        {
+            const std::string text = std::string("#include \"screamer.cir\"\nmodule Tables\n{\n    enum { CH = 2 };\n"
+                                                 "    float x;\n};\nenum { TWICE = CH * 2 };\nmodule ")
+                                   + kMain + "\n{\n    Screamer amp[CH];\n    int count() { return CH + TWICE; }\n};\n";
+            lg::Service os;
+            os.setFiles({ { "program.fm", text }, { "screamer.cir", libraryText("screamer.cir") } });
+            std::string twice = "-";
+            for (const lg::Symbol& x : os.symbols())
+                if (x.name == "TWICE" && x.kind == lg::Kind::constant)
+                    twice = x.signature;
+            const lg::CircuitDials dials = lg::circuitDials(os, pg::product::kIsInstrument);
+            const std::optional<lg::Hover> h = os.hover(0, posOf(text, "CH + TWICE", 1));
+            const lg::CompletionList c = os.complete(0, posOf(text, "CH + TWICE", 1));
+            bool offered = false;
+            for (const lg::Completion& item : c.items)
+                offered = offered || (item.label == "CH" && item.kind == lg::Kind::constant);
+            std::printf("newer: another module's: %s; dims %d; hover %s; offered %d\n", twice.c_str(),
+                        dials.bindings.empty() || dials.bindings[0].dims.empty() ? -1 : dials.bindings[0].dims[0],
+                        h ? h->code.c_str() : "-", offered ? 1 : 0);
+            P.eq("newer.fold_other_module", twice == "TWICE = 4" ? 1 : 0, 1);
+            P.eq("newer.circuit_extent_other_module", dials.bindings.size() == 1 && dials.bindings[0].dims == std::vector<int>{ 2 }
+                                                          && dials.bindings[0].names.size() == 3 ? 1 : 0, 1);
+            P.eq("newer.hover_other_module", h && h->code == "CH = 2" ? 1 : 0, 1);
+            P.eq("newer.complete_other_module", offered ? 1 : 0, 1);
         }
 
         // An enumeration constant nested 2,000 parentheses deep, which FMinus folds: on a thread of the default stack

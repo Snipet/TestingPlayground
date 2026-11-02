@@ -1539,9 +1539,10 @@ namespace playground::lang
         bool isScoped(const Symbol& s) { return !(s.scope.from == s.scope.to); }
 
         // The enumeration constant a name at `at` in files[file] means, as C's scopes choose it: the innermost block's
-        // seen there (declared before it), else `module`'s own, else the top level's; a module's and the top level's
-        // first in the files files[file] reads (`reads`), then in any. Never `self`, the constant whose expression the
-        // name is in; nothing when no constant has that name.
+        // seen there (declared before it), else `module`'s own, else the top level's, else another module's (C's file
+        // scope holds a struct's enumeration constants, as FMinus does a module's; FMinus refuses two of one name); a
+        // module's and the top level's first in the files files[file] reads (`reads`), then in any. Never `self`, the
+        // constant whose expression the name is in; nothing when no constant has that name.
         const Symbol* constantAt(const std::vector<FileData*>& files, std::size_t file, Pos at, const std::string& module,
                                  const std::vector<bool>& reads, const Symbol* self, std::string_view name)
         {
@@ -1552,16 +1553,21 @@ namespace playground::lang
                     best = &s;
             if (best != nullptr)
                 return best;
-            for (const bool own : { true, false })
+            enum class Where { own, top, other };
+            for (const Where where : { Where::own, Where::top, Where::other })
             {
-                if (own && module.empty())
+                if (where == Where::own && module.empty())
                     continue;
+                const auto in = [&](const std::string& container) {
+                    return where == Where::own ? container == module
+                         : where == Where::top ? container.empty()
+                                               : !container.empty() && container != module;
+                };
                 for (const bool read : { true, false })
                     for (std::size_t fi = 0; fi < files.size(); ++fi)
                         if (reads[fi] == read)
                             for (const Symbol& s : files[fi]->decls)
-                                if (&s != self && isEnumerator(s) && !isScoped(s) && s.name == name
-                                    && s.container == (own ? module : std::string()))
+                                if (&s != self && isEnumerator(s) && !isScoped(s) && s.name == name && in(s.container))
                                     return &s;
             }
             return nullptr;
@@ -2301,27 +2307,35 @@ namespace playground::lang
             return nullptr;
         }
 
-        // What the top level declares, in the files a file sees: a function or a module named `name` (a definition
-        // before a prototype), a constant (an enumeration's, a const of the top level), or with `tag` an enumeration.
+        // What the file's scope holds, in the files a file sees: a function or a module named `name` (a definition
+        // before a prototype), a constant (an enumeration's, a const of the top level), or with `tag` an enumeration;
+        // else a module's enumeration or its constant, which C's file scope holds too (a struct's are the file's).
         const Symbol* globalNamed(int file, std::string_view name, bool tag = false) const
         {
-            const auto wanted = [tag](const Symbol& s) {
+            const auto top = [tag](const Symbol& s) {
                 if (tag)
                     return s.kind == Kind::enumeration && s.container.empty() && !scoped(s);
                 return s.kind == Kind::function || s.kind == Kind::module
                     || (s.kind == Kind::constant && s.container.empty() && !scoped(s));
             };
-            const Symbol* best = nullptr;
-            for (const int fi : visible(file))
-                for (const Symbol& s : files[static_cast<std::size_t>(fi)]->decls)
-                    if (wanted(s) && s.name == name && (best == nullptr || (!best->body && s.body)))
-                        best = &s;
-            if (best == nullptr)
-                for (const auto& f : files)
-                    for (const Symbol& s : f->decls)
+            const auto ofModule = [tag](const Symbol& s) {
+                return s.kind == (tag ? Kind::enumeration : Kind::constant) && !s.container.empty() && !scoped(s);
+            };
+            const auto find = [&](const auto& wanted) {
+                const Symbol* best = nullptr;
+                for (const int fi : visible(file))
+                    for (const Symbol& s : files[static_cast<std::size_t>(fi)]->decls)
                         if (wanted(s) && s.name == name && (best == nullptr || (!best->body && s.body)))
                             best = &s;
-            return best;
+                if (best == nullptr)
+                    for (const auto& f : files)
+                        for (const Symbol& s : f->decls)
+                            if (wanted(s) && s.name == name && (best == nullptr || (!best->body && s.body)))
+                                best = &s;
+                return best;
+            };
+            const Symbol* best = find(top);
+            return best != nullptr ? best : find(ofModule);
         }
 
         // ---- tokens -------------------------------------------------------------------------------------------------
@@ -2748,7 +2762,7 @@ namespace playground::lang
         const Pos p = out.replace.from;
         const std::string module = m.moduleAt(*f, p);
         // After `enum`: the enumerations' tags (C's tags are a name space of their own): a block's in scope, the
-        // module's, the top level's of the files the program reads.
+        // module's, the top level's and another module's (the file's, in C) of the files the program reads.
         if (const int b = Impl::lastBefore(*f, p); b >= 0 && Impl::isText(*f, b, "enum"))
         {
             for (const Symbol& s : f->decls)
@@ -2756,8 +2770,8 @@ namespace playground::lang
                     offer(s.name, s.kind, s.signature, s.doc, {}, 0);
             for (const int fi : m.visible(file))
                 for (const Symbol& s : m.files[static_cast<std::size_t>(fi)]->decls)
-                    if (s.kind == Kind::enumeration && !Impl::scoped(s) && (s.container.empty() || s.container == module))
-                        offer(s.name, s.kind, s.signature, s.doc, {}, s.container.empty() ? 2 : 1);
+                    if (s.kind == Kind::enumeration && !Impl::scoped(s))
+                        offer(s.name, s.kind, s.signature, s.doc, {}, s.container == module && !module.empty() ? 1 : 2);
             return finish();
         }
 
@@ -2792,9 +2806,11 @@ namespace playground::lang
                     }
         }
         std::set<std::string> modulesSeen;
+        // The file's scope: functions, modules, the top level's constants and other modules' enumerations' constants.
         for (const int fi : m.visible(file))
             for (const Symbol& s : m.files[static_cast<std::size_t>(fi)]->decls)
-                if ((s.kind == Kind::function || s.kind == Kind::module || (s.kind == Kind::constant && s.container.empty() && !Impl::scoped(s)))
+                if ((s.kind == Kind::function || s.kind == Kind::module
+                     || (s.kind == Kind::constant && (s.container.empty() || s.container != module) && !Impl::scoped(s)))
                     && !(fi == file && s.at == p))
                 {
                     if (s.kind == Kind::module)
@@ -3240,14 +3256,17 @@ namespace playground::lang
                     if (x->type[k] != ' ')
                         extent += x->type[k];
                 // A number, or an expression of enumeration constants as FMinus folds it (`amp[CHANNELS]`): a name is the
-                // main module's own constant, else the top level's, of a file the program compiles. What does not fold
-                // to 1 to 2^30 is 0 (unknown), and Patch then gives the binding no dials.
+                // main module's own constant, else the top level's, else another module's (the file's in C, as FMinus
+                // has it), of a file the program compiles. What does not fold to 1 to 2^30 is 0 (unknown), and Patch
+                // then gives the binding no dials.
                 const std::vector<Token> toks = lex(extent);
                 const Folder::Lookup lookup = [&](std::string_view name) -> std::optional<int64_t> {
-                    for (const bool own : { true, false })
+                    for (int where = 0; where < 3; ++where)   // the main module's, the top level's, another module's
                         for (const Symbol& c : m.symbols)
                             if (isEnumerator(c) && c.name == name && !isScoped(c) && compiled(c.file)
-                                && c.container == (own ? main : std::string()))
+                                && (where == 0 ? c.container == main
+                                    : where == 1 ? c.container.empty()
+                                                 : !c.container.empty() && c.container != main))
                                 return c.value;
                     return std::nullopt;
                 };
