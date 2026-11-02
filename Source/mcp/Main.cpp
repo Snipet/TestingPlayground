@@ -529,8 +529,10 @@ namespace
                   "hear it.\n"
                   "Each open " + thing + " has a name the plugin shows (\"" + (kInstrument ? "Synth" : "Effect") + " 1\", \""
                 + (kInstrument ? "Synth" : "Effect") + " 2\"). When only one is open, use it. When several are, work out from "
-                  "what the user said which one they mean (its track, its project, its name) and pass that as `instance`; if "
-                  "you cannot tell, ask them in their words, describing each by its track and project.\n"
+                  "what the user said which one they mean (its track, its project, its name) and pass that as "
+                  "`instance` (its name, as \"" + std::string(kInstrument ? "Synth" : "Effect") + " 2\" or \"2\", or its "
+                  "track's or its project's, in the user's words); if you cannot tell, ask them in their words, "
+                  "describing each by its track and project.\n"
                   "To design or rework a panel (the plugin's interface, panel.gui), with or without the plugin open, use "
                   "gui_sandbox (read the guide's \"interface\" part first): it draws the panel as the plugin would and never "
                   "touches what the plugin plays or shows; apply its design to the plugin only when the user asks.";
@@ -941,12 +943,12 @@ namespace
                     {
                         if (!schema->hasProperty("properties"))
                             schema->setProperty("properties", juce::var(new juce::DynamicObject()));
+                        // Short: this goes on every tool, and the instructions say how to name one (its name, its
+                        // track or its project, in the user's words).
                         if (juce::DynamicObject* props = schema->getProperty("properties").getDynamicObject())
                             props->setProperty("instance",
                                                object({ { "type", "string" },
-                                                        { "description", str("Which " + thing + " when several are open: its name (\""
-                                                                             + (kInstrument ? "Synth" : "Effect") + " 2\"), track or "
-                                                                             "project, in the user's words") } }));
+                                                        { "description", str("Which " + thing + ", when several are open") } }));
                     }
                     out.add(tool);
                 }

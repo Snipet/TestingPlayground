@@ -86,13 +86,15 @@ namespace playground::ui
     enum CodeStyle : uint16_t
     {
         csPlain = 0, csKeyword, csType, csComment, csNumber, csOperator, csDirective, csString, csFunction, csMember,
-        csAttribute, csPunct, csCount
+        csAttribute, csPunct, csConstant, csCount
     };
 
-    // The module names the highlighter shows as types, shared with it (the language service's, kept up to date).
+    // The module names the highlighter shows as types, and the constants' (enumeration constants, the top level's
+    // consts) it shows as constants, shared with it (the language service's, kept up to date).
     struct TypeNames
     {
         std::vector<std::string> names;          // sorted
+        std::vector<std::string> constants;      // sorted
     };
 
     // FMinus by lang::lexLine, a line at a time (the state: inside a block comment).

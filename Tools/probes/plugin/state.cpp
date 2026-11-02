@@ -10,6 +10,9 @@
 //           and the draft is the one it saved
 //   TIDY    a session with eleven files, names that are not names, and one name twice loads at most kMaxFiles files,
 //           each named validly, no name twice, the program's first
+//   SIXTEEN a program of sixteen files (kMaxFiles: the program and fifteen it includes) runs, is saved and loaded into a
+//           fresh processor that plays it bit for bit with the same draft; a session of twenty files loads the first
+//           sixteen; a seventeenth file is refused by write_file and add_library_file, each naming the cap
 //   RENAME  RUN with a program whose first parameter has another name moves that dial to the new parameter's
 //           default; one whose first parameter keeps its name keeps the dial where it was
 //   BROKEN  a session whose program does not compile (here: a syntax error) leaves the program that played playing,
@@ -33,10 +36,12 @@
 
 #include "dsp/Compiler.h"
 #include "fminus/Circuits.h"
+#include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
 #include "plugin/Processor.h"
 
 #include "Examples.h"
+#include "Library.h"
 #include "Product.h"
 
 #include <funkgui/panel/HeadlessGuiScope.h>
@@ -115,6 +120,39 @@ namespace
         return out;
     }
 
+    juce::var object(std::initializer_list<std::pair<const char*, juce::var>> fields)
+    {
+        auto* o = new juce::DynamicObject();
+        for (const auto& [k, v] : fields)
+            o->setProperty(k, v);
+        return juce::var(o);
+    }
+
+    std::string textOf(const pg::ChatAgent::McpResult& r)
+    {
+        std::string out;
+        if (const juce::Array<juce::var>* c = r.content.getArray())
+            for (const juce::var& b : *c)
+                if (b["type"].toString() == "text")
+                    out += b["text"].toString().toStdString();
+        return out;
+    }
+
+    // The most files a program may have: the second example including fifteen of its own, each a function.
+    pg::Sources sixteenFiles()
+    {
+        pg::Sources files;
+        std::string includes;
+        for (int k = 1; k < static_cast<int>(pg::kMaxFiles); ++k)
+        {
+            const std::string n = "f" + std::to_string(k);
+            files.push_back({ n + ".fm", "float " + n + "(float x) { return x + " + std::to_string(k) + ".0f; }\n" });
+            includes += "#include \"" + n + ".fm\"\n";
+        }
+        files.insert(files.begin(), { "program.fm", includes + std::string(pg::kExamples[1].source) });
+        return files;
+    }
+
     std::string withFirstParam(const std::string& name, double def)
     {
         const std::string param = "    param float " + name + " [[fminus::range(0, 10)]] [[fminus::default(" +
@@ -159,6 +197,57 @@ PROBE(plugin, state)
         P.near("round.same_dial_value", static_cast<double>(b.getParameters()[0]->getValue()), 0.8, 1e-6);
         const probe::Stereo oa = play(a), ob = play(b);
         P.eq("round.same_output_bits", probe::sameBits(oa.l, ob.l) && probe::sameBits(oa.r, ob.r) ? 1 : 0, 1);
+    }
+
+    // SIXTEEN
+    {
+        const pg::Sources files = sixteenFiles();
+        P.eq("sixteen.files", static_cast<int64_t>(files.size()), static_cast<int64_t>(pg::kMaxFiles));
+        P.eq("sixteen.the_cap", static_cast<int64_t>(pg::kMaxFiles), 16);
+        pg::Processor a;
+        runAndSettle(a, files);
+        P.eq("sixteen.runs", a.editorPort().running() == files && a.editorPort().status().ok ? 1 : 0, 1);
+        a.editorPort().setDraft({ files, 15 });
+        juce::MemoryBlock saved;
+        a.getStateInformation(saved);
+        pg::Processor b;
+        b.setStateInformation(saved.getData(), static_cast<int>(saved.getSize()));
+        b.poll();
+        P.eq("sixteen.loads_the_program", b.editorPort().running() == files ? 1 : 0, 1);
+        P.eq("sixteen.loads_the_draft", b.editorPort().draft() == pg::Draft{ files, 15 } ? 1 : 0, 1);
+        const probe::Stereo oa = play(a), ob = play(b);
+        P.eq("sixteen.same_output_bits", probe::sameBits(oa.l, ob.l) && probe::sameBits(oa.r, ob.r) ? 1 : 0, 1);
+
+        // A session of twenty files (a later build's, or crafted): the first sixteen.
+        auto program = std::make_unique<juce::XmlElement>("PROGRAM");
+        auto* run = program->createNewChildElement("RUN");
+        auto* first = run->createNewChildElement("FILE");
+        first->setAttribute("name", "program.fm");
+        first->setAttribute("text", juce::String::fromUTF8(pg::kExamples[0].source));
+        auto* draft = program->createNewChildElement("DRAFT");
+        for (int k = 0; k < 20; ++k)
+        {
+            auto* f = draft->createNewChildElement("FILE");
+            f->setAttribute("name", k == 0 ? juce::String("program.fm") : "g" + juce::String(k) + ".fm");
+            f->setAttribute("text", "// file " + juce::String(k) + "\n");
+        }
+        const juce::MemoryBlock twenty = withProgram(saved, std::move(program));
+        pg::Processor c;
+        c.setStateInformation(twenty.getData(), static_cast<int>(twenty.getSize()));
+        c.poll();
+        const pg::Draft cut = c.editorPort().draft();
+        P.eq("sixteen.twenty_load_sixteen", static_cast<int64_t>(cut.files.size()), static_cast<int64_t>(pg::kMaxFiles));
+        P.eq("sixteen.twenty_the_first", cut.files.size() == pg::kMaxFiles && cut.files.back().name == "g15.fm" ? 1 : 0, 1);
+
+        // The seventeenth: refused, the cap named.
+        const pg::ChatAgent::McpResult w = a.chatAgent().mcpCall("write_file", object({ { "name", "f16.fm" },
+                                                                                       { "content", "// one more\n" } }));
+        std::printf("write_file of a seventeenth: %s\n", textOf(w).c_str());
+        P.eq("sixteen.write_refused", w.isError && textOf(w).find("at most 16 files") != std::string::npos ? 1 : 0, 1);
+        const pg::ChatAgent::McpResult l = a.chatAgent().mcpCall("add_library_file", object({ { "name", pg::kLibrary[0].name } }));
+        std::printf("add_library_file of a seventeenth: %s\n", textOf(l).c_str());
+        P.eq("sixteen.library_refused", l.isError && textOf(l).find("at most 16 files") != std::string::npos ? 1 : 0, 1);
+        P.eq("sixteen.still_sixteen", static_cast<int64_t>(a.editorPort().draft().files.size()), 16);
     }
 
     // RENAME

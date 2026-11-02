@@ -32,7 +32,13 @@
 //             saw's level; a glide's copies move continuously and only up; a saw-to-square morph keeps its
 //             fundamental (0.764 halfway); the copies' harmonics; every call safe before allocate and build
 //   NOISE     white is uniform in -1..1 (RMS 0.577, no DC); pink and brown as loud (within 10 %); the low end
-//             outweighs the top more from white to pink to brown; two seeds differ
+//             outweighs the top more from white to pink to brown; two seeds differ, uncorrelated; white is FMinus's
+//             randf now, and against the version before it (Park-Miller's generator by Schrage's method, kept here)
+//             the same statistics: the mean within 0.01 of the old one's, the RMS and the spectral flatness (Welch's
+//             spectrum, 20 Hz to 20 kHz) within 0.5 dB of the old ones; fill() gives what as many calls of white()
+//             give, bit for bit, in parts of any size; uniform() in (0, 1], as before randf: never 0, its least 2^-24
+//             and its greatest 1 (the seeds whose first draw is randf's -1 and 1 - 2^-23, worked out through
+//             lowbias32's inverse and checked through hash); each one's cost a sample printed
 //   ADSR      the attack reaches 1 in its time (within 0.1 ms), the decay settles on the sustain, the release ends
 //             within 1.4 times its time; a gate while it sounds rises from where it is, without a step
 //   LFO       every shape stays in -1..1; the sine (a polynomial) within 0.0011 of sin at its phase; the square flips
@@ -63,7 +69,9 @@
 #include "fminus/FMinus.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <memory>
 #include <numbers>
@@ -369,6 +377,76 @@ void noiseRun(float* y, int n, int kind, int seed)
         noise.seed(seed);
     for (int i = 0; i < n; ++i)
         y[i] = kind == 0 ? noise.white() : (kind == 1 ? noise.pink() : noise.brown());
+}
+
+// White noise from fill(), in parts of `part` samples.
+void fillRun(float* y, int n, int part, int seed)
+{
+    Noise noise;
+    if (seed > 0)
+        noise.seed(seed);
+    for (int at = 0; at < n; at += part)
+        noise.fill(y + at, n - at < part ? n - at : part);
+}
+
+// n draws of uniform(), unseeded.
+void uniformRun(float* y, int n)
+{
+    Noise noise;
+    for (int i = 0; i < n; ++i)
+        y[i] = noise.uniform();
+}
+
+// uniform()'s first draw after seed(n): its white() is randf(hash(n)), which hashes hash(n) again.
+float uniformAfter(int n)
+{
+    Noise noise;
+    noise.seed(n);
+    return noise.uniform();
+}
+
+int hashOf(int n)
+{
+    return hash(n);
+}
+)FM";
+
+    // noise.fm's white noise before randf: Park-Miller's generator by Schrage's method (no 64-bit products), the
+    // reference the new one's statistics are held to.
+    const char* const kOldNoise = R"FM(module OldNoise
+{
+    int state;
+
+    void seed(int n)
+    {
+        state = n > 0 ? n : 1;
+    }
+
+    float uniform()
+    {
+        if (state <= 0)
+            state = 22222;
+        const int hi = state / 127773;
+        const int lo = state % 127773;
+        state = 16807 * lo - 2836 * hi;
+        if (state <= 0)
+            state += 2147483647;
+        return (float)state / 2147483647.0f;
+    }
+
+    float white()
+    {
+        return 2 * uniform() - 1;
+    }
+};
+
+void oldRun(float* y, int n, int seed)
+{
+    OldNoise noise;
+    if (seed > 0)
+        noise.seed(seed);
+    for (int i = 0; i < n; ++i)
+        y[i] = noise.white();
 }
 )FM";
 
@@ -922,6 +1000,112 @@ PROBE(fminus, library)
             P.eq("noise.colours_in_order", tw < tpk && tpk < tb ? 1 : 0, 1);
             noise(other.data(), N, 0, 7);
             P.eq("noise.seeds_differ", other != white ? 1 : 0, 1);
+            {
+                std::vector<float> a(n), b(n);
+                noise(a.data(), N, 0, 1);
+                noise(b.data(), N, 0, 2);
+                double ab = 0.0, aa = 0.0, bb = 0.0;
+                for (std::size_t i = 0; i < n; ++i)
+                {
+                    ab += static_cast<double>(a[i]) * b[i];
+                    aa += static_cast<double>(a[i]) * a[i];
+                    bb += static_cast<double>(b[i]) * b[i];
+                }
+                std::printf("seeds 1 and 2: correlation %.4f\n", ab / std::sqrt(aa * bb));
+                P.le("noise.seeds_uncorrelated", std::fabs(ab / std::sqrt(aa * bb)), 0.02);
+            }
+
+            // Against the version before randf: the same statistics.
+            std::string oldErrors;
+            const auto pOld = compileHarness(kOldNoise, oldErrors);
+            auto* old = function<void(float*, int, int)>(pOld.get(), "oldRun");
+            auto* fill = function<void(float*, int, int, int)>(p.get(), "fillRun");
+            P.eq("noise.old_compiles", old != nullptr && fill != nullptr && oldErrors.empty() ? 1 : 0, 1);
+            if (old != nullptr && fill != nullptr)
+            {
+                std::vector<float> before(n);
+                old(before.data(), N, 0);
+                // Spectral flatness: the geometric mean of Welch's power over its arithmetic mean, 20 Hz to 20 kHz, in dB.
+                const auto flatness = [](const std::vector<float>& x) {
+                    const pg::measure::Spectrum sp = pg::measure::spectrum(x, kFs, { { 0, x.size() } });
+                    double logs = 0.0, sum = 0.0;
+                    int bins = 0;
+                    for (std::size_t k = 0; k < sp.power.size(); ++k)
+                    {
+                        const double hz = static_cast<double>(k) * sp.hzPerBin;
+                        if (hz < 20.0 || hz > 20000.0 || sp.power[k] <= 0.0)
+                            continue;
+                        logs += std::log(sp.power[k]);
+                        sum += sp.power[k];
+                        ++bins;
+                    }
+                    return bins > 0 ? 10.0 * std::log10(std::exp(logs / bins) / (sum / bins)) : -200.0;
+                };
+                const double meanNew = mean(white), meanOld = mean(before);
+                const double rmsDb = 20.0 * std::log10(rms(white) / rms(before));
+                const double flatNew = flatness(white), flatOld = flatness(before);
+                std::printf("white against the old: mean %.5f (old %.5f), RMS %.4f (old %.4f, %+.3f dB), flatness %.3f dB "
+                            "(old %.3f dB)\n", meanNew, meanOld, rms(white), rms(before), rmsDb, flatNew, flatOld);
+                P.near("noise.mean_as_old", meanNew - meanOld, 0.0, 0.01);
+                P.near("noise.rms_as_old_db", rmsDb, 0.0, 0.5);
+                P.near("noise.flatness_as_old_db", flatNew - flatOld, 0.0, 0.5);
+                // fill() in parts of any size: what as many calls of white() give
+                std::vector<float> calls(n), parts(n), ones(n);
+                noise(calls.data(), N, 0, 5);
+                fill(parts.data(), N, 333, 5);
+                fill(ones.data(), N, 1, 5);
+                P.eq("noise.fill_as_white", parts == calls && ones == calls ? 1 : 0, 1);
+                // uniform() in (0, 1], as before randf: never 0 (a log of it stays finite). Its extremes come one draw
+                // in 2^24, so the seeds that give them first are worked out: randf(m) is -1 when hash(m) is
+                // 0x80000000 (its top 24 bits, signed, -2^23) and 1 - 2^-23 when it is 0x7fffff00, and the first draw
+                // after seed(n) is randf(hash(n)), so n = unhash(unhash(that)), with lowbias32's inverse (Wellons's).
+                auto* uniform = function<void(float*, int)>(p.get(), "uniformRun");
+                auto* after = function<float(int)>(p.get(), "uniformAfter");
+                auto* hashOf = function<int(int)>(p.get(), "hashOf");
+                P.eq("noise.uniform_runs", uniform != nullptr && after != nullptr && hashOf != nullptr ? 1 : 0, 1);
+                if (uniform != nullptr && after != nullptr && hashOf != nullptr)
+                {
+                    std::vector<float> u(n);
+                    uniform(u.data(), N);
+                    const auto [lo, hi] = std::minmax_element(u.begin(), u.end());
+                    const auto unhash = [](uint32_t x) {
+                        x ^= x >> 16;
+                        x *= 0x43021123u;
+                        x ^= x >> 15 ^ x >> 30;
+                        x *= 0x1d69e2a5u;
+                        x ^= x >> 16;
+                        return x;
+                    };
+                    const auto seedFor = [&](uint32_t h) { return static_cast<int>(unhash(unhash(h))); };
+                    const int least = seedFor(0x80000000u), greatest = seedFor(0x7fffff00u);
+                    const bool found = static_cast<uint32_t>(hashOf(hashOf(least))) == 0x80000000u
+                                    && static_cast<uint32_t>(hashOf(hashOf(greatest))) == 0x7fffff00u;
+                    const float a = after(least), b = after(greatest);
+                    std::printf("uniform(): %d draws in [%.9g, %.9g]; seed %d's first draw %.9g, seed %d's %.9g\n", N,
+                                static_cast<double>(*lo), static_cast<double>(*hi), least, static_cast<double>(a), greatest,
+                                static_cast<double>(b));
+                    P.eq("noise.uniform_in_range", *lo > 0.0f && *hi <= 1.0f ? 1 : 0, 1);
+                    P.eq("noise.uniform_seeds_found", found ? 1 : 0, 1);
+                    P.eq("noise.uniform_least", a == 0x1p-24f ? 1 : 0, 1);
+                    P.eq("noise.uniform_greatest", b == 1.0f ? 1 : 0, 1);
+                }
+                // the cost of a sample of each (a bench: printed, never held to a number)
+                const auto ns = [&](const auto& run) {
+                    double best = 1e30;
+                    for (int k = 0; k < 5; ++k)
+                    {
+                        const auto t0 = std::chrono::steady_clock::now();
+                        run();
+                        best = std::min(best, std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t0).count());
+                    }
+                    return best / static_cast<double>(n);
+                };
+                std::vector<float> scratch(n);
+                const double tOld = ns([&] { old(scratch.data(), N, 3); });
+                const double tWhite = ns([&] { noise(scratch.data(), N, 0, 3); });
+                const double tFill = ns([&] { fill(scratch.data(), N, 64, 3); });
+                std::printf("white noise a sample: the old %.2f ns, white() %.2f ns, fill() %.2f ns\n", tOld, tWhite, tFill);
+            }
         }
     }
 

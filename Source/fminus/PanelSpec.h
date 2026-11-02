@@ -22,10 +22,13 @@
 //   #pragma panel number cutoffHz "HZ"                     a readout
 //   #pragma panel scope out                                an oscilloscope
 // Their source: `in` or `out`, the plugin's audio (an effect's input, the output; left and right, in dBFS), or a
-// float, int or bool field of the main module that the program writes (`gr`, `env`), shown between a range given
-// after it (default 0 1: #pragma panel meter gr 0 24 "GR"); an instrument's from its newest sounding voice. A
-// field's scope is its trace over the last seconds. A section names a display by its name, the source's unless
-// `as` gives another, which a second display of one source needs: #pragma panel scope out as wave "SCOPE".
+// float, int or bool field that the program writes, shown between a range given after it (default 0 1: #pragma panel
+// meter gr 0 24 "GR"): the main module's (`gr`, `env`; an instrument's from its newest sounding voice, 0 while none
+// sounds), or the module Shared's through the main module's Shared* field (`shared->level`: its one Shared, whether a
+// voice sounds or not). A field's scope is its trace over the last seconds; an int's or a bool's readout a whole
+// number. A section names a display by its name, the source's unless
+// `as` gives another, which a second display of one source needs: #pragma panel scope out as wave "SCOPE". Without a
+// "label" it shows that name (a display of Shared's without `as`: its field's own, LEVEL).
 //
 // The sections go left to right in the order of their lines, and to another row when one is full. Dials and
 // displays no section names come last, in a section of their own without a title. A line, or a part of one, the
@@ -59,12 +62,20 @@ namespace playground
     {
         DisplayKind kind = DisplayKind::meter;
         std::string name;                                   // what a section line calls it: the source's, or `as`'s
-        std::string source;                                 // "in", "out", or a field of the main module
-        std::string label;                                  // "": the source's name
+        std::string source;                                 // "in", "out", a field of the main module, or Shared's
+                                                            // through the main module's Shared* field ("shared->x")
+        std::string label;                                  // "": its name (a .gui file's, and a #pragma panel
+                                                            // display of Shared's without `as`: sourceLabel's)
         float lo = 0.0f, hi = 1.0f;                         // a field's range
         int tap = -1;                                       // a field's tap (Patch::taps), in display order; -1: audio
         std::string color;                                  // a colour's name (kPanelColors), "" for the default
         bool hidden = false;                                // a tap only, for a control's live= (never drawn)
+        bool integer = false;                               // its field is an int or a bool: a whole number shown
+        // How a number display (a .gui file's) shows its field, as a knob shows its value (Controls.h's formatValue):
+        std::string unit;                                   // after the value ("rpm"), "" for none
+        int8_t decimals = -1;                               // -1: an int's 0, a float's by its size
+        float scale = 1.0f;                                 // the value shown is the field's times it
+        bool formatted() const noexcept { return !unit.empty() || decimals >= 0 || scale != 1.0f; }
         bool audio() const noexcept { return source == "in" || source == "out"; }
         bool operator==(const PanelDisplay&) const = default;
     };
@@ -202,12 +213,21 @@ namespace playground
         std::string name, type;
     };
 
+    // The fields a display may name: the main module's `fields`, then the module Shared's `shared` (not its params)
+    // through the main module's first Shared* field, each as "<that field>-><its name>" ("shared->level"), as the
+    // field map names them (Patch.h); no Shared* field, none of them. A display takes a float, int or bool of these.
+    std::vector<PanelField> displayFields(const std::vector<PanelField>& fields, const std::vector<PanelField>& shared);
+
+    // The label a display of `source` takes when it is given none: the source ("out", "env"), or Shared's field's own
+    // name ("shared->level": "level"), kMaxDialLabel characters at most.
+    std::string sourceLabel(const std::string& source);
+
     // The colours a panel line may name.
     inline constexpr const char* kPanelColors[] = { "red",  "orange", "yellow", "green", "teal",
                                                     "blue", "violet", "pink",   "cream", "grey" };
 
     // The panel `files` ask for (the files compiled, the program first) for `controls`, the program's dials, and
-    // `fields`, its main module's (an instrument has no `in`). Notes, a line each, are appended to `notes`:
+    // `fields`, those a display may name (displayFields; an instrument has no `in`). Notes, a line each, are appended to `notes`:
     // "program.fm:12:1: note: #pragma panel: ...".
     PanelSpec readPanelSpec(const std::vector<const SourceFile*>& files, const Controls& controls,
                             const std::vector<PanelField>& fields, bool instrument, std::string& notes);

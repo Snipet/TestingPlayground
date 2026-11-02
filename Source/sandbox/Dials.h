@@ -2,7 +2,8 @@
 // FMinus's language service reads them (fminus/Lang.h: the main module's params, in order, with their
 // [[fminus::range]] and [[fminus::default]], then its circuits' pots and switches, lang::circuitDials, as the plugin
 // makes them dials: Patch.h's "Circuits"), or a list Claude gives, or both (Claude's replacing a declaration of the
-// same name); and the main module's fields, which the displays read. JUCE's var for the lists (juce_core).
+// same name); and the fields the displays read: the main module's, and Shared's through its pointer (displayFields).
+// JUCE's var for the lists (juce_core).
 #pragma once
 
 #include "dsp/Controls.h"
@@ -39,7 +40,7 @@ namespace playground::sandbox
         std::string module, file;
         std::vector<Dial> dials;
         int beyond = 0;                           // params and circuit dials past kMaxControls
-        std::vector<PanelField> fields;
+        std::vector<PanelField> fields;           // displayFields: the main module's, then "shared->level" for Shared's
         std::string notes;                        // a line each: lang::CircuitBinding::why
     };
     Declared readProgram(const Sources& files, bool instrument);

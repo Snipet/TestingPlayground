@@ -306,8 +306,9 @@ namespace playground
         // Whether instance i's element e of field c is armed (its prb_ is not 0): the probes'.
         bool probeArmed(int c, int e, int i) const noexcept;
 
-        // The field display t (PanelDisplay::tap) shows: its value in instance i, as a float (an int's number, a bool's
-        // 0 or 1). After a block, on the audio thread.
+        // The field display t (PanelDisplay::tap) shows: its value in instance i (a field of Shared's: in its one
+        // Shared, whatever i is, -1 too), as a float (an int's number, a bool's 0 or 1); 0 for an instance's field with
+        // no instance i. After a block, on the audio thread.
         int taps() const noexcept { return static_cast<int>(taps_.size()); }
         float tap(int t, int i) const noexcept;
 
@@ -356,8 +357,9 @@ namespace playground
         struct Tap
         {
             enum class Type : uint8_t { real, integer, boolean };
-            std::size_t offset = 0;                    // in an instance, in bytes
+            std::size_t offset = 0;                    // in an instance (or in Shared), in bytes
             Type type = Type::real;
+            bool shared = false;                       // a field of the module Shared ("shared->level")
         };
         std::vector<Tap> taps_;
         // The probe table (above, "Probes"): per field, its offset in an instance and an element's size, its elements,

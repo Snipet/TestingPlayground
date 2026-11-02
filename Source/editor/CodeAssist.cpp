@@ -268,6 +268,8 @@ namespace playground::ui
                 case lang::Kind::snippet:   return { '{', { 0xC8, 0xC8, 0xC8, 255 }, { 0x55, 0x55, 0x55, 255 } };
                 case lang::Kind::file:      return { '#', { 0xC5, 0x86, 0xC0, 255 }, { 0x9A, 0x3E, 0xA8, 255 } };
                 case lang::Kind::attribute: return { '@', { 0x9A, 0x9A, 0x9A, 255 }, { 0x66, 0x66, 0x66, 255 } };
+                case lang::Kind::constant:  return { 'C', { 0x4F, 0xC1, 0xFF, 255 }, { 0x00, 0x70, 0xC1, 255 } };
+                case lang::Kind::enumeration: return { 'E', { 0xE2, 0xA3, 0x36, 255 }, { 0xB0, 0x6E, 0x00, 255 } };
                 case lang::Kind::keyword:
                 case lang::Kind::type:
                 case lang::Kind::word:      return { 'k', { 0x9A, 0x9A, 0x9A, 255 }, { 0x66, 0x66, 0x66, 255 } };
@@ -358,8 +360,13 @@ namespace playground::ui
                         st = call ? csFunction : csMember;
                     else if (call)
                         st = csFunction;
+                    else if (prev != nullptr && prev->kind == lang::Tok::keyword && prev->text == "enum")
+                        st = csType;                         // an enumeration's tag
                     else if (types_ != nullptr && std::binary_search(types_->names.begin(), types_->names.end(), std::string(t.text)))
                         st = csType;
+                    else if (types_ != nullptr
+                             && std::binary_search(types_->constants.begin(), types_->constants.end(), std::string(t.text)))
+                        st = csConstant;
                     break;
                 }
                 case lang::Tok::directive:
@@ -473,6 +480,7 @@ namespace playground::ui
         p[csMember] = dark ? custom({ 0x9C, 0xDC, 0xFE, 255 }) : custom({ 0x0B, 0x53, 0x94, 255 });
         p[csAttribute] = ink(Ink::ink52);
         p[csPunct] = ink(Ink::ink70);
+        p[csConstant] = dark ? custom({ 0x4F, 0xC1, 0xFF, 255 }) : custom({ 0x00, 0x70, 0xC1, 255 });
         return p;
     }
 
@@ -591,6 +599,7 @@ namespace playground::ui
             files.push_back({ tabs_.name(i), tabs_.editor(i).text() });
         service_.setFiles(files);
         types_->names = service_.typeNames();
+        types_->constants = service_.constantNames();
     }
 
     lang::Service& CodeAssist::service()
@@ -1558,7 +1567,7 @@ namespace playground::ui
         sync();
         funkgui::TextEditor& E = ed();
         const std::string old = E.text();
-        const lang::Formatted r = lang::format(old, service_.typeNames());
+        const lang::Formatted r = lang::format(old, service_.typeNames(), service_.constantNames());
         if (!r.ok)
         {
             tabs_.notice("FORMAT: " + upper(r.why));
@@ -1587,7 +1596,7 @@ namespace playground::ui
                 continue;
             funkgui::TextEditor& E = tabs_.editor(i);
             const std::string old = E.text();
-            const lang::Formatted r = lang::format(old, service_.typeNames());
+            const lang::Formatted r = lang::format(old, service_.typeNames(), service_.constantNames());
             if (!r.ok || !r.changed)
                 continue;
             const lang::Pos c = lang::mapFormatted(old, r.text, pos(E.caret()));

@@ -289,6 +289,28 @@ namespace playground
             return out.empty() ? "none\n" : out;
         }
 
+        // The dials' declarations (each used one's name, type, range, taper, default, unit, scale and options' names),
+        // without their values: run_program lists the dials again only when these changed.
+        std::string dialDeclarations(const Controls& controls, const std::array<std::vector<std::string>, kMaxControls>& options)
+        {
+            std::string out;
+            for (int c = 0; c < kMaxControls; ++c)
+            {
+                const Control& k = controls[static_cast<std::size_t>(c)];
+                if (!k.used)
+                    continue;
+                char buf[160];
+                std::snprintf(buf, sizeof buf, "%d %s %d %.9g %.9g %.9g %d %s %d %.9g", c, k.name, static_cast<int>(k.type),
+                              static_cast<double>(k.min), static_cast<double>(k.max), static_cast<double>(k.def),
+                              static_cast<int>(k.taper), k.unit, static_cast<int>(k.decimals), static_cast<double>(k.scale));
+                out += buf;
+                for (const std::string& o : options[static_cast<std::size_t>(c)])
+                    out += '\x1f' + o;
+                out += '\n';
+            }
+            return out;
+        }
+
         // The panel a program's #pragma panel lines made, in a line: its sections in order ("/" where a row starts),
         // their items (a display as its source and kind), then the labels, small dials, styles, options and colours;
         // none without a panel line.
@@ -407,36 +429,6 @@ namespace playground
 
         bool isNumber(const juce::var& v) { return v.isDouble() || v.isInt() || v.isInt64(); }
 
-        // A render's settings from a tool's input (measure_output's, view_sound's, a check's, tune_dials's): the notes,
-        // the velocity, the times, the host, the dials asked for and the scenario (ChatScenario.h: why, when it cannot be).
-        measure::Request renderOf(const juce::var& input, std::string* why = nullptr)
-        {
-            measure::Request req;
-            const auto numberArg = [&](const char* k, float& out) {
-                const juce::var v = input.getProperty(k, juce::var());
-                if (isNumber(v))
-                    out = static_cast<float>(static_cast<double>(v));
-            };
-            const juce::var notes = input.getProperty("notes", juce::var());
-            if (const auto* arr = notes.getArray())
-                for (const auto& n : *arr)
-                    if (isNumber(n))
-                        req.notes.push_back(static_cast<int>(std::lround(static_cast<double>(n))));
-            numberArg("velocity", req.velocity);
-            numberArg("hold_seconds", req.holdSeconds);
-            numberArg("tail_seconds", req.tailSeconds);
-            numberArg("bpm", req.bpm);
-            numberArg("modwheel", req.modwheel);
-            numberArg("pitchbend", req.pitchbend);
-            const juce::var dials = input.getProperty("dials", juce::var());
-            if (const auto* o = dials.getDynamicObject())
-                for (const auto& kv : o->getProperties())
-                    if (isNumber(kv.value) || kv.value.isBool())
-                        req.dials[kv.name.toString().toStdString()] = static_cast<float>(static_cast<double>(kv.value));
-            scenario::read(input, req, why);
-            return req;
-        }
-
         // The render's settings as a tool's input schema has them (measure_output's own, which the others share).
         void addRenderProps(juce::var& props)
         {
@@ -500,6 +492,30 @@ namespace playground
             return why.empty();
         }
 
+        // set_checks' dials_from (Goals.h's DialsFrom): its words in the schema and the session, and back (absent:
+        // current); false for a word it is not.
+        constexpr const char* kDialsFrom[] = { "current", "snapshot", "defaults" };   // DialsFrom's order
+
+        bool dialsFromOf(const juce::var& v, measure::DialsFrom& out)
+        {
+            out = measure::DialsFrom::current;
+            if (v.isVoid() || v.isUndefined())
+                return true;
+            for (int k = 0; k < 3; ++k)
+                if (v.isString() && v.toString() == kDialsFrom[k])
+                {
+                    out = static_cast<measure::DialsFrom>(k);
+                    return true;
+                }
+            return false;
+        }
+
+        // How a check list shows a check's dials_from ("" for current, the default).
+        std::string dialsFromWords(measure::DialsFrom f)
+        {
+            return f == measure::DialsFrom::snapshot ? "dials as set" : f == measure::DialsFrom::defaults ? "dials at defaults" : "";
+        }
+
         // The history as another model may read it (the planner's view, ChatAgent.h): no thinking (bound to the model,
         // the prompt and the conversation that made it), a compaction block as its summary in words, no server tools'
         // blocks (their results go back only to their own requests), text without citations (which point at them). A
@@ -557,16 +573,19 @@ namespace playground
                    "needs a line or two, or none: say so. The user reads your plan.)";
         }
 
-        // A goal's properties in a schema.
-        juce::var goalProps(bool weight)
+        // A goal's properties in a schema: set_checks' (the metrics' names as an enum) or tune_dials' (`tune`: its
+        // metric a plain string, which goalOf checks, naming the metrics when it is none of them; the weight). The
+        // metric's words are the same in both, so MCP's copy gives them once (dropRepeated).
+        juce::var goalProps(bool tune)
         {
-            juce::var p = claude::object({ { "metric", metricEnum("What to measure (CHECKING YOUR WORK lists them)") },
+            constexpr const char* what = "What to measure (CHECKING YOUR WORK lists them)";
+            juce::var p = claude::object({ { "metric", tune ? prop("string", what) : metricEnum(what) },
                                            { "min", prop("number", "At least this, in the metric's unit") },
                                            { "max", prop("number", "At most this, in the metric's unit") },
                                            { "target", prop("number", "Near this (instead of min and max)") },
                                            { "tolerance", prop("number", "How near the target counts, in the metric's "
                                                                          "unit (default: the metric's own)") } });
-            if (weight)
+            if (tune)
                 p.getDynamicObject()->setProperty("weight", prop("number", "How much this goal counts against the "
                                                                            "others (default 1)"));
             return p;
@@ -1289,6 +1308,15 @@ namespace playground
                 juce::var v = claude::object({ { "label", juce::String::fromUTF8(c.label.c_str()) },
                                                { "metric", juce::String(c.goal.metric) } });
                 auto* o = v.getDynamicObject();
+                if (c.dialsFrom != measure::DialsFrom::current)
+                    o->setProperty("dials_from", kDialsFrom[static_cast<int>(c.dialsFrom)]);
+                if (c.dialsFrom == measure::DialsFrom::snapshot)
+                {
+                    juce::var shot = claude::object({});
+                    for (const auto& [k, x] : c.snapshot)
+                        shot.getDynamicObject()->setProperty(juce::Identifier(juce::String::fromUTF8(k.c_str())), x);
+                    o->setProperty("snapshot", shot);
+                }
                 if (c.goal.hasMin)
                     o->setProperty("min", c.goal.min);
                 if (c.goal.hasMax)
@@ -1359,7 +1387,13 @@ namespace playground
                 if (!goalOf(c, k.goal, why) || static_cast<int>(checks_.size()) >= kMaxChecks)
                     continue;
                 k.label = str(c, "label");
-                k.request = renderOf(c);
+                k.request = scenario::renderOf(c);
+                if (!dialsFromOf(c.getProperty("dials_from", juce::var()), k.dialsFrom))
+                    k.dialsFrom = measure::DialsFrom::current;
+                if (const auto* shot = c.getProperty("snapshot", juce::var()).getDynamicObject())
+                    for (const auto& kv : shot->getProperties())
+                        if (isNumber(kv.value) || kv.value.isBool())
+                            k.snapshot[kv.name.toString().toStdString()] = static_cast<float>(static_cast<double>(kv.value));
                 checks_.push_back(std::move(k));
             }
         const juce::var messages = v.getProperty("messages", juce::var()), entries = v.getProperty("entries", juce::var());
@@ -1570,6 +1604,12 @@ namespace playground
             seen_[name] = hashText(seenText(name, text));
     }
 
+    void ChatAgent::carrySeen(const std::string& name, const std::string& before, const std::string& after)
+    {
+        if (const auto it = seen_.find(name); it != seen_.end() && it->second == hashText(seenText(name, before)))
+            markSeen(name, after);
+    }
+
     void ChatAgent::addEntry(ChatEntry::Kind kind, std::string t)
     {
         ChatEntry e;
@@ -1705,8 +1745,13 @@ namespace playground
         juce::Array<juce::var> tools;
         tools.add(tool("read_file",
                        "Read one of the plugin's files as it is now in the editor. Call this before editing a file you "
-                       "have not seen in its current form (the user may have typed in it since the last plugin_state).",
-                       claude::object({ { "name", prop("string", "The file's name, such as program.fm") } }),
+                       "have not seen in its current form (the user may have typed in it since the last plugin_state). "
+                       "Its first line gives the file's line count and version (edit_file's expected); a part (from, "
+                       "lines, find) comes with its lines numbered.",
+                       claude::object({ { "name", prop("string", "The file's name, such as program.fm") },
+                                        { "from", prop("integer", "The first line to read, from 1") },
+                                        { "lines", prop("integer", "How many lines (default: to the end)") },
+                                        { "find", prop("string", "A text: the lines that hold it, 2 around each") } }),
                        { "name" }));
         tools.add(tool("write_file",
                        "Create a file or replace a file's whole text. Use it for a new program or a large rewrite; use "
@@ -1720,11 +1765,17 @@ namespace playground
         tools.add(tool("edit_file",
                        "Replace one exact passage of a file with new text. old_text must occur exactly once in the "
                        "file, with the same whitespace; include enough surrounding lines to make it unique. Prefer "
-                       "this to write_file for changes to part of a file.",
+                       "this to write_file for changes to part of a file. A passage that does not occur gets the "
+                       "closest one back, numbered, and what differs.",
                        claude::object({ { "name", prop("string", "The file's name") },
                                         { "old_text", prop("string", "The passage as it is now, exactly") },
-                                        { "new_text", prop("string", "What replaces it") } }),
-                       { "name", "old_text", "new_text" }));
+                                        { "new_text", prop("string", "What replaces it") },
+                                        { "edits", claude::object({ { "type", "array" },
+                                                                    { "description", "[{old_text, new_text}] in place of those "
+                                                                                     "two: in order, all or none" } }) },
+                                        { "expected", prop("string", "read_file's version: write only if the file is still "
+                                                                     "it") } }),
+                       { "name" }));
         {
             juce::var ops = claude::object({ { "type", "array" },
                                              { "items", claude::object({ { "type", "string" } }) },
@@ -1766,8 +1817,8 @@ namespace playground
         }
         tools.add(tool("run_program",
                        "Compile the files as they are now and, when they compile, play them (as the editor's RUN "
-                       "does). Returns the compiler's messages, or the dials of the new program. Call it after every "
-                       "set of changes, and fix any error it reports before you finish.",
+                       "does). Returns the compiler's messages, or the new program's dials when their declarations "
+                       "changed. Call it after every set of changes, and fix any error it reports before you finish.",
                        claude::object({}), {}));
         tools.add(tool("set_dial",
                        "Set one of the running program's dials (its parameters) to a value in its range, in the "
@@ -1777,47 +1828,28 @@ namespace playground
                                         { "value", prop("number", "The value, inside the parameter's range") } }),
                        { "name", "value" }));
         {
-            juce::var notes = claude::object({ { "type", "array" },
-                                               { "items", claude::object({ { "type", "integer" } }) },
-                                               { "description", "An instrument's MIDI notes, played together (69 is A, "
-                                                                "440 Hz). Default: one note, 48 (C3). An effect "
-                                                                "ignores it." } });
-            juce::var dials = claude::object({ { "type", "object" },
-                                               { "additionalProperties", claude::object({ { "type", "number" } }) },
-                                               { "description", "Dial values to render with, by parameter name, in "
-                                                                "the parameter's own units. Dials not named keep the "
-                                                                "values they have now." } });
+            // The render settings the others take (addRenderProps: an instrument's notes, velocity and wheels in an
+            // instrument only), in words of its own where it renders otherwise (an effect's sine, noise and impulse).
+            juce::var props = claude::object({});
+            addRenderProps(props);
+            auto* o = props.getDynamicObject();
+            if constexpr (!kInstrument)
+            {
+                o->setProperty("hold_seconds", prop("number", "How long the sine and the noise play; default 1, "
+                                                              "at most 10"));
+                o->setProperty("tail_seconds", prop("number", "How long to go on after the impulse; default 1.5, "
+                                                              "at most 10"));
+            }
+            o->setProperty("bpm", prop("number", "The host's tempo for a program that reads it (host.fm: the host plays "
+                                                 "from the song's start); default 120"));
+            o->setProperty("try_edits", scenario::trialSchema());
             tools.add(tool("measure_output",
-                           "Render the program in the editor offline and measure what comes out. An instrument: the "
-                           "notes held and released, reporting the held level (peak and RMS in dBFS, DC, the stereo "
-                           "correlation), the strongest partials and the spectral centroid, with one note the strongest "
-                           "component that is no harmonic of it (aliasing, or the sound's own), the largest step between "
-                           "two samples (clicks), when the release falls 60 dB and whether the voice ends, and a "
-                           "chord's summed level. An effect: a sine, noise, an impulse and silence through it, "
-                           "reporting the gain, the partials it adds, the brightness in and out, the impulse "
-                           "response's delay and decay, and any sound it makes from silence. Both: the output "
-                           "guard's alerts and the CPU cost. You cannot hear the plugin: measure every new sound once "
-                           "it compiles, and measure when debugging what the user hears. It compiles the files as "
-                           "they are now (they need not be running) and changes nothing that plays.",
-                           claude::object({ { "notes", notes },
-                                            { "velocity", prop("number", "An instrument's velocity, 0 to 1 (default 0.8)") },
-                                            { "hold_seconds", prop("number", "How long the notes are held (an effect: how "
-                                                                             "long the sine and the noise play); default "
-                                                                             "1, at most 10") },
-                                            { "tail_seconds", prop("number", "How long to go on after the release (an "
-                                                                             "effect: after the impulse); default 1.5, at "
-                                                                             "most 10") },
-                                            { "dials", dials },
-                                            { "bpm", prop("number", "The host's tempo for a program that reads it "
-                                                                    "(host.fm: the host plays from the song's start); "
-                                                                    "default 120") },
-                                            { "modwheel", prop("number", "An instrument's mod wheel, 0 to 1, from the "
-                                                                         "start (default 0)") },
-                                            { "pitchbend", prop("number", "An instrument's pitch wheel, -1 to 1, from "
-                                                                          "the start (default 0)") },
-                                            { "scenario", scenario::schema() },
-                                            { "try_edits", scenario::trialSchema() } }),
-                           {}));
+                           "Render the program in the editor offline and measure what comes out. Its report gives "
+                           "the metrics (CHECKING YOUR WORK) in words, with the strongest partials and the largest "
+                           "steps' nearest events: an instrument's notes held and released (one note: also a chord), "
+                           "an effect's sine, noise, impulse and silence. It compiles the files as they are now (they "
+                           "need not be running) and changes nothing that plays.",
+                           props, {}));
         }
         tools.add(tool("view_panel",
                        "See the plugin's interface: a picture (PNG) of the program's panel as the user sees it in the "
@@ -1871,13 +1903,9 @@ namespace playground
                                  "renders it (the notes held, then released), drawn: the waveform and the level over "
                                  "time, a spectrogram (frequency against time, 20 Hz to 20 kHz on a log scale), the "
                                  "average spectrum while held (a note's harmonics marked) and a close-up of a few "
-                                 "cycles (or of from_seconds to to_seconds). You cannot hear the plugin: look when the "
-                                 "sound's shape matters, as an envelope's attack and release, a filter's sweep, "
-                                 "aliasing (lines that fold back down in the spectrogram), a click (a spike in the "
-                                 "waveform, a thin vertical line in the spectrogram), a wave's shape, noise, a "
-                                 "modulation's motion. A picture costs about 1,200 input tokens: measure_output gives "
-                                 "numbers, this shows the shape. It compiles the files as they are now and changes "
-                                 "nothing that plays; the user sees the picture too."
+                                 "cycles (or of from_seconds to to_seconds). When to look: CHECKING YOUR WORK. It "
+                                 "compiles the files as they are now and changes nothing that plays; the user sees the "
+                                 "picture too."
                                : "See the sound: a picture (PNG) of the program rendered offline with an input (a sweep "
                                  "by default), drawn: the waveform and the level over time, a spectrogram (frequency "
                                  "against time, 20 Hz to 20 kHz on a log scale), the average spectrum while the input "
@@ -1885,9 +1913,8 @@ namespace playground
                                  "hear the plugin: look when the sound's shape matters, as a filter's response (a "
                                  "sweep: where it is cut), what a drive adds (a sweep's or a sine's harmonics, aliasing "
                                  "that folds back down), a reverb's or a delay's tail (an impulse), a modulation's "
-                                 "motion, a click. A picture costs about 1,200 input tokens: measure_output gives "
-                                 "numbers, this shows the shape. It compiles the files as they are now and changes "
-                                 "nothing that plays; the user sees the picture too.",
+                                 "motion, a click. It compiles the files as they are now and changes nothing that "
+                                 "plays; the user sees the picture too.",
                            props, {}));
         }
         {
@@ -1908,14 +1935,16 @@ namespace playground
                            "Set the checks this work must pass: what the user asked for, as numbers the plugin "
                            "measures (the metrics in CHECKING YOUR WORK), each with min, max or a target. The list "
                            "replaces the checks set before; an empty one clears them. The plugin measures them now, "
-                           "again after every run_program (the results follow its own), and when you end a turn in "
-                           "which you changed something: while any fails, that turn goes on with the results (twice "
-                           "at most), so fix the program, "
-                           "change a check that asks for the wrong thing, or say why it cannot pass. The user sees them "
-                           "as a checklist. Set them early in a large piece of work, from the request (\"a pluck that "
-                           "dies away in a second\": decay_s at most 1; \"no aliasing\": inharmonic_db at most -70 "
-                           "at note 96), not afterwards to describe what was built.",
-                           claude::object({ { "checks", checks } }), { "checks" }));
+                           "then as CHECKING YOUR WORK says; its results give the count and each check that fails, "
+                           "naming the dials it took that are off their defaults.",
+                           claude::object({ { "checks", checks },
+                                            { "dials_from", claude::object({ { "type", "string" },
+                                                                             { "enum", juce::Array<juce::var>{ kDialsFrom[0], kDialsFrom[1], kDialsFrom[2] } },
+                                                                             { "description", "The dials a check does not name: current "
+                                                                                              "(the default: as they are when "
+                                                                                              "measured), snapshot (as they are "
+                                                                                              "now) or defaults" } }) } }),
+                           { "checks" }));
         }
         {
             juce::var props = claude::object({});
@@ -1947,9 +1976,7 @@ namespace playground
                            "the program offline many times (as measure_output does, up to budget renders) and "
                            "searching, instead of guessing: from the dials as they are, through points spread over "
                            "their ranges, then a simplex search. Goals are metrics (CHECKING YOUR WORK) with min, max "
-                           "or a target. Use it to fit a level, a brightness, an envelope's times, a filter, an "
-                           "amount of drive, once the program does the right thing and only its settings are off; it "
-                           "cannot make a program do what it cannot. The best values go on the dials, as set_dial "
+                           "or a target. The best values go on the dials, as set_dial "
                            "sets them, unless apply is false; the result gives the dials and the measurements before "
                            "and after. Dials not tuned keep their values (or those in dials). It changes no file.",
                            props, { "tune", "goals" }));
@@ -2531,10 +2558,12 @@ namespace playground
             if (toolUses.empty() && !cutOff && stopReason == "end_turn" && worked && !cancel_.load()
                 && checkNudges < kMaxCheckNudges)
             {
-                bool checking = false;
+                bool checking = false, current = true;   // current: every check takes the dials as they are now
                 {
                     const std::lock_guard<std::mutex> lock(mutex_);
                     checking = !checks_.empty();
+                    for (const measure::Check& c : checks_)
+                        current = current && c.dialsFrom == measure::DialsFrom::current;
                 }
                 if (checking)
                 {
@@ -2548,7 +2577,9 @@ namespace playground
                     {
                         ++checkNudges;
                         const std::string line =
-                            "(From the plugin: your checks, measured on the files and dials as they are now.\n" + results
+                            std::string("(From the plugin: your checks, measured on the files")
+                            + (current ? " and dials as they are now" : " as they are now, each with the dials it takes")
+                            + ".\n" + results
                             + "Fix what fails, or change a check with set_checks if it asks for the wrong thing, or say why "
                               "it cannot pass. Your turn ends when you answer without a tool call"
                             + (checkNudges == kMaxCheckNudges ? std::string(", and the plugin will not ask again this turn.)")
@@ -2893,16 +2924,46 @@ namespace playground
         setActivity("Checking");
         std::string errors;
         const std::vector<measure::CheckResult> results = scenario::evaluate(host_.chatDraft().files, checks, currentDials(), host_, &errors);
+        // A failing check's dials off their reference, as the panel says them (the options of the program that plays).
+        const Controls playing = host_.chatDials();
+        const std::array<std::vector<std::string>, kMaxControls> options = host_.chatDialOptions();
+        const auto said = [&](const measure::DialAway& a, float v) {
+            for (int c = 0; c < kMaxControls; ++c)
+                if (playing[static_cast<std::size_t>(c)].used && a.name == playing[static_cast<std::size_t>(c)].name)
+                    return dialText(a.control, v, options[static_cast<std::size_t>(c)]);
+            return dialText(a.control, v);
+        };
+        const auto awayText = [&](const measure::Check& k, const measure::CheckResult& r) {
+            if (r.away.empty())
+                return std::string();
+            constexpr std::size_t most = 6;
+            const bool snapshot = k.dialsFrom == measure::DialsFrom::snapshot;
+            std::string list;
+            for (std::size_t i = 0; i < r.away.size() && i < most; ++i)
+                list += (i == 0 ? "" : ", ") + r.away[i].name + " " + said(r.away[i], r.away[i].now) + " ("
+                      + (snapshot ? "then " : "default ") + said(r.away[i], r.away[i].reference) + ")";
+            if (r.away.size() > most)
+                list += " and " + std::to_string(r.away.size() - most) + " more";
+            return std::string(k.dialsFrom == measure::DialsFrom::current ? "; it takes the dials as they are now, these off their defaults: "
+                               : snapshot ? "; it takes the dials as they were when set, and these moved since: "
+                                          : "; it takes the dials at their defaults, and these are moved now: ")
+                 + list;
+        };
         std::vector<ChatCheck> rows;
         int pass = 0;
-        std::string lines;
+        std::string lines, failing;                      // every check's line (the card's text), and those that fail
         for (std::size_t i = 0; i < results.size() && i < checks.size(); ++i)
         {
             const measure::CheckResult& r = results[i];
-            rows.push_back({ checks[i].label, r.text, r.measured, r.pass });
+            const std::string from = dialsFromWords(checks[i].dialsFrom);
+            rows.push_back({ checks[i].label, r.text + (from.empty() ? "" : "; " + from), r.measured, r.pass });
             pass += r.measured && r.pass ? 1 : 0;
-            lines += std::string(!r.measured ? "- NOT MEASURED " : r.pass ? "- pass " : "- FAIL ") + checks[i].label + " ("
-                   + checks[i].goal.metric + "): " + r.text + "\n";
+            const std::string line = std::string(!r.measured ? "- NOT MEASURED " : r.pass ? "- pass " : "- FAIL ") + checks[i].label
+                                   + " (" + checks[i].goal.metric + (from.empty() ? "" : "; " + from) + "): " + r.text
+                                   + (r.measured && !r.pass ? awayText(checks[i], r) : std::string()) + "\n";
+            lines += line;
+            if (!(r.measured && r.pass))
+                failing += line;
         }
         const std::string head = "Checks: " + std::to_string(pass) + " of " + std::to_string(results.size()) + " pass.";
         {
@@ -2930,7 +2991,8 @@ namespace playground
             entries_[at].checks = std::move(rows);
             touch();
         }
-        return head + "\n" + lines + (errors.empty() ? "" : "The program does not compile:\n" + capped(errors));
+        // Claude gets the count and what fails: the user's card shows every check.
+        return head + "\n" + failing + (errors.empty() ? "" : "The program does not compile:\n" + capped(errors));
     }
 
     void ChatAgent::clearChecks()
@@ -3139,13 +3201,15 @@ namespace playground
                "their DAW (or its Standalone app) and sees what you do in its editor; its chat's card notes each tool you "
                "use. The plugin does not send you its state with each message as it does its chat (the <plugin_state> "
                "below): call get_status for the files, the dials and the last run, and read_file before editing a file. "
-               "With more than one instance of the plugin open, every tool takes `instance` (list_instances names them). "
+               "With more than one instance of the plugin open, every tool takes `instance`: the one meant, by its "
+               "name (\"" + std::string(kInstrument ? "Synth" : "Effect") + " 2\"), its track or its project, in the "
+               "user's words (list_instances names them). "
                "This guide comes in parts (playground_guide's part): \"start\" is what every piece of work needs, and its end "
                "names the others and when to read them; a section it calls \"below\" that is not in the part you read is in "
                "another part. The tools' descriptions here are short: what they leave out is in " + mcp::guide::kNotes
              + ", at the end of the part that needs it; and a setting described in one tool's schema without a number is "
-               "not described again in a later one's (a check's and tune_dials' render settings are as view_sound's, their "
-               "goals as set_checks'). "
+               "not described again in a later one's (a check's and tune_dials' render settings are as measure_output's, "
+               "their goals as set_checks', whose metric lists the names tune_dials' takes). "
                "What follows is the guide the plugin's chat works from.\n\n"
              + systemPrompt() + "\n" + mcp::guide::kNotes + "\n\n" + notes;
     }
@@ -3371,7 +3435,7 @@ namespace playground
             setActivity("Drawing the sound");
             measure::ViewRequest vr = soundpicture::request();
             std::string why;
-            vr.render = renderOf(input, &why);
+            vr.render = scenario::renderOf(input, &why);
             vr.render.current = currentDials();
             if constexpr (!kInstrument)
             {
@@ -3472,22 +3536,7 @@ namespace playground
         };
 
         if (name == "read_file")
-        {
-            std::string file;
-            if (!stringArg("name", file))
-                return fail("read_file needs a name");
-            const Draft d = host_.chatDraft();
-            const int i = findFile(d, file);
-            if (i < 0)
-                return fail("There is no file " + file + ". The files: " + names(d));
-            setActivity("Reading " + file);
-            const std::string& t = d.files[static_cast<std::size_t>(i)].text;
-            {
-                const std::lock_guard<std::mutex> lock(mutex_);
-                markSeen(file, t);
-            }
-            return t;
-        }
+            return readFileText(input, isError);           // ChatFiles.cpp
         if (name == "write_file")
         {
             std::string file, content;
@@ -3532,14 +3581,16 @@ namespace playground
             d.active = i;
             setActivity("Writing " + file);
             host_.chatSetDraft(d);
+            std::string version;
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
                 markSeen(file, content);
+                version = keepVersion(file, content);
             }
             const int lines = lineCount(content);
             const std::string count = std::to_string(lines) + (lines == 1 ? " line" : " lines");
             note("wrote " + file + " (" + count + ")");
-            std::string out = "Wrote " + file + " (" + count + ").";
+            std::string out = "Wrote " + file + " (" + count + "; version " + version + ").";
             if (keptLines > 0)
                 out += " Kept the drawing's " + std::to_string(keptLines) + " *@ lines; send edit_circuit 'layout' to redraw it.";
             bool included = i == 0;
@@ -3551,41 +3602,7 @@ namespace playground
             return out;
         }
         if (name == "edit_file")
-        {
-            std::string file, oldText, newText;
-            if (!stringArg("name", file) || !stringArg("old_text", oldText) || !stringArg("new_text", newText))
-                return fail("edit_file needs name, old_text and new_text");
-            Draft d = host_.chatDraft();
-            const int i = findFile(d, file);
-            if (i < 0)
-                return fail("There is no file " + file + ". The files: " + names(d));
-            if (oldText.empty())
-                return fail("old_text is empty: give the exact passage to replace");
-            std::string& t = d.files[static_cast<std::size_t>(i)].text;
-            std::size_t count = 0, at = std::string::npos;
-            for (std::size_t p = t.find(oldText); p != std::string::npos; p = t.find(oldText, p + 1))
-            {
-                if (count == 0)
-                    at = p;
-                ++count;
-            }
-            if (count == 0)
-                return fail("old_text does not occur in " + file + " (check whitespace and the latest text: "
-                            "read_file shows it)");
-            if (count > 1)
-                return fail("old_text occurs " + std::to_string(count) + " times in " + file
-                            + ": include more of the surrounding lines so it occurs once");
-            t.replace(at, oldText.size(), newText);
-            d.active = i;
-            setActivity("Editing " + file);
-            host_.chatSetDraft(d);
-            {
-                const std::lock_guard<std::mutex> lock(mutex_);
-                markSeen(file, t);
-            }
-            note("edited " + file);
-            return "Edited " + file + ".";
-        }
+            return editFileText(input, isError);           // ChatFiles.cpp
         if (name == "edit_circuit")
         {
             std::string file;
@@ -3633,9 +3650,15 @@ namespace playground
                 if (!host_.chatSetDraftIf(d, file, before))
                     continue;
                 // What changed, in words: each command's line, the netlist's lines (its drawing aside), what the
-                // circuit compiler says of the new text, and the text itself when it is short.
+                // circuit compiler says of the new text, and the text itself when it is short. Its version, as a write's:
+                // edit_file's `expected` takes it, and one from before this edit is told the change was Claude's own.
+                std::string version;
+                {
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    version = keepVersion(file, a.text);
+                }
                 std::string out = "Edited " + file + ": " + std::to_string(ops.size()) + (ops.size() == 1 ? " command" : " commands")
-                                + ", one step the user can undo.\n";
+                                + ", one step the user can undo; version " + version + ".\n";
                 for (const std::string& said : a.said)
                     out += "- " + said + "\n";
                 const std::string was = cir::stripLayout(before), now = cir::stripLayout(a.text);
@@ -3773,6 +3796,8 @@ namespace playground
         {
             setActivity("Compiling");
             const Draft d = host_.chatDraft();
+            // The dials as the program that played declared them: listed again only when the new one's differ.
+            const std::string declared = dialDeclarations(host_.chatDials(), host_.chatDialOptions());
             const CompileStatus s = host_.chatRun(d.files);
             if (s.ok)
             {
@@ -3782,9 +3807,11 @@ namespace playground
                 note("ran it: compiled in " + number(std::round(s.ms)) + " ms, " + std::to_string(dials) + " dial"
                      + (dials == 1 ? "" : "s"));
                 const std::string checks = evaluateChecks();
-                return "Compiled in " + number(std::round(s.ms)) + " ms; it plays now.\nIts dials:\n"
-                     + dialLines(s.controls, host_) + panelLine(s.panel, s.controls)
-                     + (s.notes.empty() ? "" : "Notes:\n" + capped(s.notes)) + (checks.empty() ? "" : "\n" + checks);
+                const bool same = dialDeclarations(s.controls, s.panel.options) == declared;
+                return "Compiled in " + number(std::round(s.ms)) + " ms; it plays now.\n"
+                     + (same ? "Its dials: unchanged (" + std::to_string(dials) + ").\n" : "Its dials:\n" + dialLines(s.controls, host_))
+                     + panelLine(s.panel, s.controls) + (s.notes.empty() ? "" : "Notes:\n" + capped(s.notes))
+                     + (checks.empty() ? "" : "\n" + checks);
             }
             int errors = 0;
             for (std::size_t p = s.errors.find(": error:"); p != std::string::npos; p = s.errors.find(": error:", p + 1))
@@ -3824,7 +3851,7 @@ namespace playground
         {
             setActivity("Measuring the sound");
             std::string why;
-            measure::Request req = renderOf(input, &why);
+            measure::Request req = scenario::renderOf(input, &why);
             req.current = currentDials();
             Sources files = host_.chatDraft().files;   // a copy: the trial edits (ChatScenario.h) go there
             int trials = 0;
@@ -3843,18 +3870,25 @@ namespace playground
                 return fail("set_checks needs checks: a list of them (empty to clear them)");
             if (arr->size() > kMaxChecks)
                 return fail("At most " + std::to_string(kMaxChecks) + " checks");
+            measure::DialsFrom from = measure::DialsFrom::current;
+            if (!dialsFromOf(input.getProperty("dials_from", juce::var()), from))
+                return fail("dials_from is current, snapshot or defaults. Nothing was set.");
+            const std::map<std::string, float> snapshot = from == measure::DialsFrom::snapshot ? currentDials()
+                                                                                               : std::map<std::string, float>{};
             std::vector<measure::Check> checks;
             for (int i = 0; i < arr->size(); ++i)
             {
                 const juce::var& c = (*arr)[i];
                 measure::Check k;
+                k.dialsFrom = from;
+                k.snapshot = snapshot;
                 std::string why;
                 if (!goalOf(c, k.goal, why))
                     return fail("Check " + std::to_string(i + 1) + ": " + why + " Nothing was set.");
                 k.label = str(c, "label");
                 if (k.label.empty())
                     k.label = k.goal.metric;
-                k.request = renderOf(c, &why);
+                k.request = scenario::renderOf(c, &why);
                 if (!why.empty())
                     return fail("Check " + std::to_string(i + 1) + ": " + why + " Nothing was set.");
                 if (k.request.fromCapture)                   // gone after a reload: it could never pass again
@@ -3877,13 +3911,15 @@ namespace playground
             }
             note("set " + std::to_string(checks.size()) + " check" + (checks.size() == 1 ? "" : "s"));
             return "Set " + std::to_string(checks.size()) + " check" + (checks.size() == 1 ? "" : "s")
+                 + (from == measure::DialsFrom::snapshot ? ", the dials they do not name as they are now"
+                    : from == measure::DialsFrom::defaults ? ", the dials they do not name at their defaults" : "")
                  + ". The plugin measures them after every run_program and when you end your turn.\n" + evaluateChecks();
         }
         if (name == "tune_dials")
         {
             measure::TuneRequest q;
             std::string unfit;
-            q.render = renderOf(input, &unfit);
+            q.render = scenario::renderOf(input, &unfit);
             q.render.current = currentDials();
             if (!unfit.empty() || !scenario::resolve(q.render, host_, unfit))
                 return fail(unfit);

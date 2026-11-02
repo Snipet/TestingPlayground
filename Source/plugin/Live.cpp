@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <bitset>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <complex>
@@ -363,13 +364,17 @@ namespace playground
 
     // ---- the hint -------------------------------------------------------------------------------------------------------
     // One cursor for the instance: Claude Desktop's calls carry no conversation, so the line says "the last MCP call"
-    // (get_status's token is each conversation's own).
+    // (get_status's token is each conversation's own). It names the first kHintNamed changes as the journal says them,
+    // their values with them, without their times; get_status with since gives all of them. Its token is handed out,
+    // so what changes after it goes into a line of its own: a drag or typing that goes on past a result is not merged
+    // into a line the hint already named, where the next one would miss it.
     std::string ChatAgent::mcpHint()
     {
+        constexpr std::size_t kHintNamed = 3, kHintLine = 160;
         Changes ch;
         {
             const std::lock_guard<std::mutex> lock(liveMutex_);
-            ch = host_.chatChanges(mcpLook_, false);
+            ch = host_.chatChanges(mcpLook_, true);
             mcpLook_ = ch.token;
         }
         if (!ch.known || (ch.changes == 0 && ch.alerts == 0))
@@ -379,8 +384,26 @@ namespace playground
             what = "The user changed " + std::to_string(ch.changes) + (ch.changes == 1 ? " thing" : " things");
         if (ch.alerts > 0)
             what += ch.changes > 0 ? " and the output guard acted" : "The output guard acted";
-        return "(" + what + " since the last MCP call here: get_status with since shows " + (ch.changes + ch.alerts == 1 ? "it" : "them")
-             + ".)";
+        std::string named;
+        std::size_t shown = 0;
+        for (const std::string& l : ch.lines)
+        {
+            if (shown == kHintNamed)
+                break;
+            // "14:02:31-33 you moved cutoff 1.20 kHz -> 3.40 kHz": the change without its time
+            const std::size_t sp = l.find(' ');
+            const bool timed = sp != std::string::npos && sp > 0
+                            && std::all_of(l.begin(), l.begin() + static_cast<std::ptrdiff_t>(sp),
+                                           [](char c) { return std::isdigit(static_cast<unsigned char>(c)) != 0 || c == ':' || c == '-'; });
+            std::string said = timed ? l.substr(sp + 1) : l;
+            if (said.size() > kHintLine)
+                said = said.substr(0, kHintLine - 3) + "...";
+            named += (shown == 0 ? ": " : "; ") + said;
+            ++shown;
+        }
+        const std::size_t more = ch.lines.size() - shown;
+        return "(" + what + " since the last MCP call here" + named + (more > 0 ? "; +" + std::to_string(more) + " more" : "")
+             + ". get_status with since shows " + (ch.changes + ch.alerts == 1 ? "it" : "them") + ".)";
     }
 
     // ---- get_status ----------------------------------------------------------------------------------------------------

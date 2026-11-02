@@ -4,17 +4,20 @@
 // find (nan, click, runaway, silence, dc or any): the request rendered in a Session of its own (Measure.h: its
 // scenario; an effect's input its signal, else the sweep) twice.
 //   Pass 1 plays it in calls of 16 samples (the Engine's grid), and after each call reads every field (Patch::fieldMap)
-//   of every instance that sounds, and of Shared: when one first goes non-finite, or past 1e6. With the output guard's
+//   of every instance that sounds, and of Shared: when one first goes non-finite, or runs away (past 1e6 and a thousand
+//   times its size, its largest magnitude, in its instance's first 10 ms of sound: Shared's and an effect's, the
+//   render's first; so a state large from the start, a pressure in pascals, is not a runaway). With the output guard's
 //   alerts and the output itself, that finds each problem: nan (a field gone non-finite, or the guard's NaN alert),
-//   runaway (a field past 1e6, or the guard's clip), click (a 10 ms window's step far above the second largest of the
-//   twenty windows around it: a step that comes back, as a low saw's wrap does, is the sound's own), silence (the
+//   runaway (a field that runs away, or the guard's clip), click (Measure.h's clicks(), the rule the click metric takes:
+//   a 10 ms window's step far above the second largest of the twenty windows around it, so a step that comes back, as a
+//   low saw's wrap does, is the sound's own), silence (the
 //   output stops at once while a key is held or the input plays, or never sounds) and dc (a mean offset held for
-//   200 ms). A field already non-finite or past 1e6 before the first call (init's sentinel, say) is a note
-//   (TraceResult::fromStart), never the problem, and hides nothing after it.
+//   200 ms). A field already non-finite before the first call (init's sentinel, say) is a note (TraceResult::fromStart),
+//   never the problem, and hides nothing after it.
 //   Pass 2 plays it again the same way up to a window of at most kTraceWindow samples before the problem, and in calls
 //   of one sample through it, keeping every field of the voices that sound there, sample by sample: the problem's exact
 //   sample, the events within 32 samples of it (the request's notes, moves and edits; a voice that starts, ends, is
-//   stolen or dropped) and up to three culprits: the fields that went non-finite first (nan) or passed 1e6 first
+//   stolen or dropped) and up to three culprits: the fields that went non-finite first (nan) or ran away first
 //   (runaway), or whose step there is at least ten times their usual step (click, silence, dc), each with its values
 //   over the 4 calls before and after it and the lines that write it (fminus/Lang.h resolves each assignment's name: a
 //   heuristic). Pass 2's output must equal pass 1's: when it does not, the program's output depends on how its calls
@@ -97,7 +100,8 @@ namespace playground::measure
         bool splitDiffers = false;                // pass 2's output differed from pass 1's
         std::size_t splitAt = 0;                  // where first
         bool stopped = false;                     // the time limit or a cancel cut it short
-        std::vector<std::string> fromStart;       // fields already non-finite or past 1e6 before the first call
+        std::vector<std::string> fromStart;       // fields already non-finite before the first call
+        std::vector<float> l, r;                  // what pass 1 rendered (in its calls of 16 samples), for a probe to compare
     };
 
     TraceResult trace(const Sources& files, const TraceRequest& request);

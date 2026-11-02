@@ -82,7 +82,7 @@
 //   RANDOM    a fresh start as EXAMPLES makes one: over the editor's changes it asks first, and on the menu's choice
 //             a seed's program (fminus/Random.h) and its library files (the library's) are the only tabs, the program
 //             shown and run with no note, no undo step back, nothing left to lose; the RANDOM button makes another,
-//             asking nothing, which runs with no note; over twelve tabs of other files, its own are all that is left
+//             asking nothing, which runs with no note; over sixteen tabs of other files, its own are all that is left
 //   PROJECTS  (a folder of the probe's own) the PROJECTS pill opens the card, the program's title in its field; a name
 //             typed and Return save the program and its dials as a new project: the card closes, the status says so,
 //             the pill names it with its version; an edit makes it EDITED; Cmd-S saves version 2, and again nothing
@@ -1255,7 +1255,7 @@ PROBE(gui, dump)
         P.eq("random.button_runs", port.status().ok && port.status().notes.empty() ? 1 : 0, 1);
         std::printf("RANDOM made: %s\n", made.substr(0, made.find('\n')).c_str());
         writePng(P, host, "gui.dump.random.png", "random");
-        // Twelve tabs (the program's and empty ones): RANDOM over them leaves its own only.
+        // Sixteen tabs, the most (the program's and empty ones): RANDOM over them leaves its own only.
         const funkgui::Point tab0 = panel.centreOfTab(0);
         while (panel.fileCount() < static_cast<int>(pg::kMaxFiles))
         {
@@ -1266,9 +1266,9 @@ PROBE(gui, dump)
         }
         host.click(tab0.x, tab0.y);
         const pg::random::Program other = pg::random::make(77);
-        P.eq("random.over_twelve_asks", !panel.makeRandom(77) && host.chooseMenuItem(1) ? 1 : 0, 1);
+        P.eq("random.over_sixteen_asks", !panel.makeRandom(77) && host.chooseMenuItem(1) ? 1 : 0, 1);
         settleRun(processor, host);
-        P.eq("random.over_twelve_its_own", panel.fileCount() == 1 + static_cast<int>(other.library.size())
+        P.eq("random.over_sixteen_its_own", panel.fileCount() == 1 + static_cast<int>(other.library.size())
                                                && panel.editor().text() == other.text && port.status().ok
                                                ? 1 : 0, 1);
         // Back to the program alone, as before.

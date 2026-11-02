@@ -23,7 +23,12 @@ namespace playground::measure
     {
         constexpr bool kInstrument = product::kIsInstrument;
         constexpr int kGrid = 16;                          // pass 1's calls (the Engine's grid)
-        constexpr double kBig = 1e6;                       // a field past it runs away
+        // A field runs away when it goes past kBig and has grown kGrowth times its size (its largest magnitude) in its
+        // instance's first kFirstSeconds of sound (Shared's and an effect's: the render's first): a state that is large
+        // from the start (a pressure in pascals) is its own size, not a runaway.
+        constexpr double kBig = 1e6;
+        constexpr double kGrowth = 1000.0;
+        constexpr double kFirstSeconds = 0.01;
         constexpr std::size_t kAfter = 64;                 // pass 2's window goes on past the problem's call
         constexpr long kNear = 32;                         // samples: the events near a problem
         constexpr std::size_t kMaxValues = std::size_t{ 4 } << 20;   // pass 2 keeps at most this many (floats)
@@ -108,22 +113,6 @@ namespace playground::measure
             const auto mid = v.begin() + static_cast<std::ptrdiff_t>(v.size() / 2);
             std::nth_element(v.begin(), mid, v.end());
             return *mid;
-        }
-
-        // The second largest (the largest of one; 0 of none): a step that comes back twice in a neighbourhood is the
-        // sound's own (a low saw's wrap), where one alone stands out.
-        double secondLargest(const std::vector<double>& v)
-        {
-            double a = 0.0, b = 0.0;
-            for (const double x : v)
-                if (x > a)
-                {
-                    b = a;
-                    a = x;
-                }
-                else if (x > b)
-                    b = x;
-            return v.size() < 2 ? a : b;
         }
 
         bool finite(double v) noexcept { return std::isfinite(v); }
@@ -213,11 +202,18 @@ namespace playground::measure
         class Pass1 final : public RenderHooks
         {
         public:
-            Pass1(const Patch& patch, std::vector<std::size_t> scan, std::vector<std::size_t> watch, int voice, Clock& clock)
-                : patch_(patch), map_(patch.fieldMap()), scan_(std::move(scan)), watch_(std::move(watch)), voice_(voice), clock_(clock)
+            Pass1(const Patch& patch, std::vector<std::size_t> scan, std::vector<std::size_t> watch, int voice, std::size_t first,
+                  Clock& clock)
+                : patch_(patch), map_(patch.fieldMap()), scan_(std::move(scan)), watch_(std::move(watch)), voice_(voice), clock_(clock),
+                  first_(std::max<std::size_t>(first, 1))
             {
                 slots_ = static_cast<std::size_t>(patch.instances()) + 1;
                 state_.assign(slots_ * scan_.size(), 0);
+                size_.assign(slots_ * scan_.size(), 0.0);
+                from_.assign(slots_, kStart);
+                scanOf_.assign(map_.size(), -1);
+                for (std::size_t k = 0; k < scan_.size(); ++k)
+                    scanOf_[scan_[k]] = static_cast<int>(k);
                 moved.assign(scan_.size(), 0);
                 jumpSize.assign(watch_.size(), 0.0);
                 jumpAt.assign(watch_.size(), 0);
@@ -239,6 +235,7 @@ namespace playground::measure
 
             bool afterCall(const CallInfo& c) override
             {
+                at_ = c.at;
                 CallRec r;
                 r.at = c.at;
                 r.length = c.length;
@@ -270,12 +267,24 @@ namespace playground::measure
                 return clock_.ok();
             }
 
+            // Whether value v of field `field` (the map's) of instance `slot` (-1: Shared's) has run away (kBig, kGrowth):
+            // never before that instance has sounded its first kFirstSeconds (its size is not known until then).
+            bool runsAway(int slot, std::size_t field, double v) const
+            {
+                const auto s = static_cast<std::size_t>(slot < 0 ? static_cast<int>(slots_) - 1 : slot);
+                if (field >= scanOf_.size() || scanOf_[field] < 0 || s >= slots_ || from_[s] == kStart || lastAt_ < from_[s] + first_)
+                    return false;
+                const double a = std::fabs(v);
+                return std::isfinite(v) && map_[field].type == Field::Type::real && a > kBig
+                    && a >= kGrowth * size_[s * scan_.size() + static_cast<std::size_t>(scanOf_[field])];
+            }
+
             std::vector<CallRec> calls;
             std::vector<Voice> voices;
-            std::vector<Transition> bad, big;              // the first non-finite, and past 1e6, in order (64 each)
-            // Those already so before the first call (init, or a default: often a sentinel), one a field (64 each);
+            std::vector<Transition> bad, big;              // the first non-finite, and runaways, in order (64 each)
+            // Those already non-finite before the first call (init, or a default: often a sentinel), one a field (64);
             // such a field's later moments are not looked at.
-            std::vector<Transition> startBad, startBig;
+            std::vector<Transition> startBad;
             std::vector<char> moved;                       // per scanned field: not 0 in a voice that sounded
             // The watch, a call each: the value (the mean of every voice's, with all), its range, how many voices
             // had one, and whether one was non-finite.
@@ -293,6 +302,17 @@ namespace playground::measure
             void scanSlot(int slot, std::size_t ci, bool sounding)
             {
                 const auto s = static_cast<std::size_t>(slot < 0 ? static_cast<int>(slots_) - 1 : slot);
+                // The instance's first kFirstSeconds of sound, from the call it first sounds in: its fields' sizes then
+                // are what a runaway grows from; past them, a field may run away.
+                bool first = false, past = false;
+                if (ci != kStart)
+                {
+                    if (sounding && from_[s] == kStart)
+                        from_[s] = at_;
+                    first = sounding && from_[s] != kStart && at_ < from_[s] + first_;
+                    past = from_[s] != kStart && at_ >= from_[s] + first_;
+                    lastAt_ = std::max(lastAt_, at_);
+                }
                 for (std::size_t k = 0; k < scan_.size(); ++k)
                 {
                     const Field& f = map_[scan_[k]];
@@ -308,10 +328,16 @@ namespace playground::measure
                             record(ci == kStart ? startBad : bad, { ci, slot, scan_[k], v });
                         }
                     }
-                    else if (f.type == Field::Type::real && std::fabs(v) > kBig && (st & 2) == 0)
+                    else if (f.type == Field::Type::real)
                     {
-                        st |= 2;
-                        record(ci == kStart ? startBig : big, { ci, slot, scan_[k], v });
+                        double& size = size_[s * scan_.size() + k];
+                        if (first)
+                            size = std::max(size, std::fabs(v));
+                        else if (past && std::fabs(v) > kBig && std::fabs(v) >= kGrowth * size && (st & 2) == 0)
+                        {
+                            st |= 2;
+                            record(big, { ci, slot, scan_[k], v });
+                        }
                     }
                     if (sounding && v != 0.0)
                         moved[k] = 1;
@@ -373,7 +399,13 @@ namespace playground::measure
             int voice_;
             Clock& clock_;
             std::size_t slots_ = 1;
-            std::vector<uint8_t> state_;                   // slots x scanned: 1 non-finite seen, 2 past 1e6 seen
+            std::size_t first_;                            // kFirstSeconds, in samples
+            std::size_t at_ = 0;                           // the call's first sample (afterCall)
+            std::size_t lastAt_ = 0;                      // the last call scanned
+            std::vector<uint8_t> state_;                   // slots x scanned: 1 non-finite seen, 2 a runaway seen
+            std::vector<double> size_;                     // slots x scanned: the largest magnitude in the first kFirstSeconds
+            std::vector<std::size_t> from_;                // per slot: the sample it first sounded at (kStart: not yet)
+            std::vector<int> scanOf_;                      // per field of the map: its place in scan_ (-1: not scanned)
             std::vector<double> last_;
             std::vector<std::size_t> lastCall_;
             std::vector<Voice> snap_;
@@ -521,7 +553,8 @@ namespace playground::measure
                             j += 2;                            // a lane
                         const std::string_view op = text(ts, j);
                         const bool assigns = op == "=" || op == "+=" || op == "-=" || op == "*=" || op == "/=" || op == "%="
-                                          || op == "++" || op == "--" || (i > 0 && (text(ts, i - 1) == "++" || text(ts, i - 1) == "--"));
+                                          || op == "&=" || op == "|=" || op == "^=" || op == "<<=" || op == ">>=" || op == "++"
+                                          || op == "--" || (i > 0 && (text(ts, i - 1) == "++" || text(ts, i - 1) == "--"));
                         if (!assigns)
                             continue;
                         const lang::Pos p{ ts[i].line, ts[i].col };
@@ -730,67 +763,23 @@ namespace playground::measure
             return f;
         }
 
-        // Each 10 ms window's largest step; a click is one far larger than the second largest of its neighbours' (ten
-        // windows each side: a step that comes back, as a low saw's wrap does, is the sound's own) and a good part of
-        // the level there (five windows each side).
+        // The clicks by Measure.h's rule (clicks(), the metrics' own): a 10 ms window's step far above the second
+        // largest of the ten windows each side (a step that comes back, as a low saw's wrap does, is the sound's own)
+        // and a good part of the level there; the one that stands out most first.
         std::vector<Found> findClicks(const Context& x, std::size_t most)
         {
             std::vector<Found> out;
-            const std::vector<float>& l = x.sound.l;
-            const std::vector<float>& r = x.sound.r;
-            const std::size_t n = std::min(l.size(), r.size());
-            const std::size_t w = std::max<std::size_t>(1, static_cast<std::size_t>(0.01 * x.rate));
-            std::vector<double> step, peak;
-            std::vector<std::size_t> at;
-            for (std::size_t a = 0; a < n; a += w)
+            for (const Click& c : clicks(x.sound.l, x.sound.r, x.rate))
             {
-                double s = 0.0, p = 0.0;
-                std::size_t where = a;
-                for (std::size_t i = a; i < std::min(n, a + w); ++i)
-                {
-                    p = std::max({ p, static_cast<double>(std::fabs(l[i])), static_cast<double>(std::fabs(r[i])) });
-                    if (i == 0)
-                        continue;
-                    const double d = std::max(std::fabs(static_cast<double>(l[i]) - l[i - 1]), std::fabs(static_cast<double>(r[i]) - r[i - 1]));
-                    if (d > s)
-                    {
-                        s = d;
-                        where = i;
-                    }
-                }
-                step.push_back(s);
-                peak.push_back(p);
-                at.push_back(where);
+                if (out.size() >= most)
+                    break;
+                Found f;
+                f.kind = TraceFind::click;
+                f.at = c.at;
+                f.size = c.size;
+                f.usual = c.usual;
+                out.push_back(f);
             }
-            std::vector<Found> all;
-            for (std::size_t k = 0; k < step.size(); ++k)
-            {
-                std::vector<double> around;
-                double local = 0.0;
-                for (std::size_t j = k >= 10 ? k - 10 : 0; j < std::min(step.size(), k + 11); ++j)
-                {
-                    if (j + 5 >= k && j <= k + 5)
-                        local = std::max(local, peak[j]);
-                    if (j != k)
-                        around.push_back(step[j]);
-                }
-                const double usual = secondLargest(around);
-                if (step[k] > 0.05 && step[k] > 3.0 * usual && step[k] > 0.35 * local)
-                {
-                    Found f;
-                    f.kind = TraceFind::click;
-                    f.at = at[k];
-                    f.size = step[k];
-                    f.usual = usual;
-                    all.push_back(f);
-                }
-            }
-            std::stable_sort(all.begin(), all.end(), [](const Found& a, const Found& b) {
-                return a.size / std::max(a.usual, 1e-9) > b.size / std::max(b.usual, 1e-9);
-            });
-            for (const Found& f : all)
-                if (out.size() < most)
-                    out.push_back(f);
             return out;
         }
 
@@ -810,6 +799,8 @@ namespace playground::measure
                     for (; e < x.tl.events.size() && x.tl.events[e].first < end; ++e)
                     {
                         const Event& ev = x.tl.events[e].second;
+                        if ((ev.kind == EventKind::noteOn || ev.kind == EventKind::noteOff) && ev.note >= down.size())
+                            continue;                        // no MIDI note (a malformed message): the Engine plays none
                         if (ev.kind == EventKind::noteOn)
                         {
                             downCount += down[ev.note] == 0 ? 1 : 0;
@@ -1133,7 +1124,7 @@ namespace playground::measure
                 for (std::size_t s = p.w0; p.has(s); ++s)
                 {
                     const double v = p.value(s, t);
-                    if (big ? (finite(v) && std::fabs(v) > kBig && x.map[p.pairs[t].field].type == Field::Type::real) : !finite(v))
+                    if (big ? x.p1.runsAway(p.pairs[t].slot, p.pairs[t].field, v) : !finite(v))
                         return s == p.w0 ? kStart : s;
                 }
                 return kStart;
@@ -1461,7 +1452,8 @@ namespace playground::measure
                     head += ", " + (on->at == S ? std::string("at its note-on") : apart(S - on->at, x.rate) + " after its note-on");
             }
             if (f.kind == TraceFind::runaway)
-                head += !firstsAt.empty() && firstsAt.front() <= S ? std::string(" (a field passes 1e6)") : " (the output passes +-4, which the guard clips)";
+                head += !firstsAt.empty() && firstsAt.front() <= S ? std::string(" (a field passes 1e6, a thousand times its size in its first 10 ms)")
+                                                                   : " (the output passes +-4, which the guard clips)";
             if (f.kind == TraceFind::click)
                 head += fmt(": a step of %.3f", f.size) + fmt(" (the steps around it: %.3f)", f.usual);
             if (f.kind == TraceFind::silence && f.never)
@@ -1475,7 +1467,7 @@ namespace playground::measure
                 if (f.kind == TraceFind::nan)
                     line += "non-finite from sample " + grouped(c.at);
                 else if (f.kind == TraceFind::runaway)
-                    line += "past 1e6 from sample " + grouped(c.at);
+                    line += "past 1e6 (a thousand times its first 10 ms) from sample " + grouped(c.at);
                 else
                     line += "steps " + val(*c.field, c.step) + " (usually " + val(*c.field, c.usual) + ")";
                 std::vector<std::string> b, a;
@@ -1783,7 +1775,7 @@ namespace playground::measure
         vr.render = q.render;
         vr.input = static_cast<ViewInput>(std::clamp(q.input, 0, static_cast<int>(ViewInput::silence)));
         const int watchVoice = q.voiceGiven ? q.voice : kTraceNewest;
-        Pass1 p1(*patch, scan, watch, watchVoice, clock);
+        Pass1 p1(*patch, scan, watch, watchVoice, static_cast<std::size_t>(kFirstSeconds * rate), clock);
         Sound sound = renderSound(session, vr, &p1);
         const Timeline tl = session.timeline(vr.render, sound.l.size());
         const bool stoppedFirst = clock.stopped;
@@ -1863,7 +1855,7 @@ namespace playground::measure
                                       + (kInstrument ? " of " + std::to_string(voices) + (voices == 1 ? " voice" : " voices") : std::string())
                                       + " after each call)");
                 if (any || find == TraceFind::runaway)
-                    checked.push_back("a runaway (the guard's clip, a field past 1e6)");
+                    checked.push_back("a runaway (the guard's clip, a field past 1e6 at a thousand times its first 10 ms)");
                 if (any || find == TraceFind::click)
                     checked.push_back("clicks (no step stands out from those around it)");
                 if (any || find == TraceFind::silence)
@@ -1874,20 +1866,16 @@ namespace playground::measure
                 out.lines.push_back(stoppedFirst ? "Nothing found in the " + span + " rendered before it stopped; checked: " + joined(checked, "; ") + "."
                                                  : "Nothing found; checked: " + joined(checked, "; ") + ", over " + span + ".");
             }
-            // Fields already non-finite or past 1e6 before the first call: a note, never a problem that hides the rest.
+            // Fields already non-finite before the first call: a note, never a problem that hides the rest. (One large
+            // from the start is its own size: a runaway grows from it.)
             std::vector<std::string> parts;
-            const auto note = [&](const std::vector<Transition>& ts, bool wanted, const char* what) {
-                for (const Transition& t : ts)
+            if (any || find == TraceFind::nan)
+                for (const Transition& t : p1.startBad)
                 {
-                    if (!wanted)
-                        break;
                     out.fromStart.push_back(map[t.field].path);
                     if (parts.size() < 3)
-                        parts.push_back(map[t.field].path + " " + num(t.value) + what);
+                        parts.push_back(map[t.field].path + " " + num(t.value));
                 }
-            };
-            note(p1.startBad, any || find == TraceFind::nan, "");
-            note(p1.startBig, any || find == TraceFind::runaway, " (past 1e6)");
             if (!parts.empty())
                 out.lines.push_back("Already so before the first call (its module's init, or a default; harmless when the "
                                     "program sets it before it reads it): " + joined(parts)
@@ -2035,6 +2023,8 @@ namespace playground::measure
         out.stopped = clock.stopped;
         if (clock.stopped && !stoppedFirst)
             out.lines.push_back(std::string("(Stopped in the calls of 1 sample: ") + clock.why() + "; what they did not reach says so.)");
+        out.l = std::move(sound.l);                       // nothing reads `sound` after this
+        out.r = std::move(sound.r);
         return out;
     }
 }

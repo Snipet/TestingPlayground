@@ -23,7 +23,7 @@ namespace playground
 
     using Sources = std::vector<SourceFile>;
 
-    inline constexpr std::size_t kMaxFiles = 12;          // the tabs the editor has room for (they narrow to fit)
+    inline constexpr std::size_t kMaxFiles = 16;          // the tabs the editor has room for (they narrow to fit)
     inline constexpr std::size_t kMaxNameLength = 24;
     inline constexpr const char* kProgramName = "program.fm";
 

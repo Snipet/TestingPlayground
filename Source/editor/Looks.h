@@ -68,6 +68,10 @@ namespace playground::ui::looks
     void vu(funkgui::Canvas& c, const funkgui::Theme& th, const Display& d, float needle, bool audio, const char* lo,
             const char* hi);
     void led(funkgui::Canvas& c, const funkgui::Theme& th, const Display& d, float brightness);
+    // number: `text` in its box (the cell's width less 4), smaller when it would not fit (half size at least) and cut
+    // at the box past that, so a readout never spills onto its neighbours. kReadout is its digits' style, which a
+    // .gui file's layout measures a number's cell with.
+    inline constexpr funkgui::TextStyle kReadout{ 15.0f, 0.6f, 0.14f, true };
     void number(funkgui::Canvas& c, const funkgui::Theme& th, const Display& d, const char* text);
     // scope: `ys` in -1..1 (the screen's height), `n` of them across its width.
     void scope(funkgui::Canvas& c, const funkgui::Theme& th, const Display& d, const float* ys, int n);

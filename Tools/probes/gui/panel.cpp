@@ -6,6 +6,7 @@
 //   gui.panel.png         the PANEL view: the interface across the left column; .paper.png in PAPER
 //   gui.panel.meters.png  its METERS page, audio flowing (meter, VU, light, number, scope, spectrum)
 //   gui.panel.small.png   the least size, CODE view, scrolled to its end
+//   gui.panel.readouts.png  READOUTS' panel: number displays of Shared's fields and of the main module's, formatted
 // and checks:
 //   CODE      the program runs with no note; the dials' own items give way to the interface's; every item it shows is
 //             inside its area, in the left column, none overlapping another; the area under the problems list
@@ -27,6 +28,11 @@
 //   SCROLL    at the least size the CODE view's interface is taller than its strip: the wheel over its ground
 //             scrolls it (its items move up, none drawn outside its area), and over a knob it turns the knob instead
 //   PRAGMAS   a program without a .gui file in the PANEL view: its #pragma panel dials from the column's top
+//   READOUTS  a program whose Shared's init sets its fields, with no note played: number displays of shared->level
+//             (0.750), of an int, shared->notes (3, not 3.000), of shared->speed with unit="rpm" decimals=0 scale=60
+//             (1250 rpm, as a knob reads), and a meter of shared->level at three quarters, all whether a voice sounds
+//             or not; the main module's int field a whole number too; a readout with a unit (-1200.0 cents) and one of
+//             twelve digits each drawn whole inside its box
 #include "Probe.h"
 
 #include "editor/DisplayItem.h"
@@ -37,6 +43,7 @@
 
 #include "Product.h"
 
+#include <funkgui/canvas/PrimList.h>
 #include <funkgui/panel/HeadlessGuiScope.h>
 #include <funkgui/panel/HeadlessHost.h>
 #include <funkgui/prefs/UiPreferences.h>
@@ -422,7 +429,7 @@ PROBE(gui, panel)
         if (meter != nullptr)
             P.near("audio.meter", std::atof(meter->readout().c_str()), outDb, 0.4);
         if (number != nullptr)
-            P.eq("audio.number", number->readout() == "7.000" ? 1 : 0, 1);
+            P.eq("audio.number", number->readout() == "7" ? 1 : 0, 1);   // count, an int: a whole number
         if (light != nullptr)
             P.near("audio.light", static_cast<double>(light->level()), 1.0, 0.01);
         P.eq("audio.spectrum_shown", spectrum != nullptr && !spectrum->spectrum().empty() ? 1 : 0, 1);
@@ -490,6 +497,107 @@ PROBE(gui, panel)
         const funkgui::Point code = panel.centreOfView(false);
         host.click(code.x, code.y);
         host.settle();
+    }
+
+    // ---- READOUTS ------------------------------------------------------------------------------------------------------
+    {
+        const std::string shared = "module Shared\n{\n    float level, speed, detune, big;\n    int notes;\n"
+                                   "    void init(float rate) { level = 0.75f; notes = 3; speed = 20.8333333f; detune = -1200; big = 123456789012.0f; }\n"
+                                   "};\n\n";
+        const std::string main = kInstrument
+                                     ? "module Voice\n{\n    Shared* shared;\n    param float gain [[fminus::default(0.5)]];\n    int count;\n"
+                                       "    void start(float n, float v) { count = 3; }\n"
+                                       "    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n"
+                                     : "module Effect\n{\n    Shared* shared;\n    param float gain [[fminus::default(0.5)]];\n    int count;\n"
+                                       "    void process(float* restrict left, float* restrict right, int n) { count = 3; }\n};\n";
+        const std::string readoutGui = "row gap=10 {\n"
+                                "    section \"SHARED\" {\n"
+                                "        number shared->level label=\"LEVEL\"\n"
+                                "        number shared->notes label=\"NOTES\"\n"
+                                "        number shared->speed label=\"SPEED\" unit=\"rpm\" decimals=0 scale=60\n"
+                                "        meter shared->level label=\"METER\"\n"
+                                "        number shared->detune label=\"DETUNE\" unit=\"cents\" decimals=1\n"
+                                "        number shared->big label=\"BIG\"\n"
+                                "    }\n"
+                                "    section \"VOICE\" {\n"
+                                "        knob gain\n"
+                                "        number count label=\"COUNT\"\n"
+                                "    }\n"
+                                "}\n";
+        load(processor, { { pg::kProgramName, shared + main }, { "panel.gui", readoutGui } });
+        settleRun(processor, host);
+        const pg::CompileStatus st = port.status();
+        P.eq("readouts.runs_with_no_note", st.ok && st.notes.empty() ? 1 : 0, 1);
+        if (!st.notes.empty())
+            std::printf("%s", st.notes.c_str());
+        const funkgui::Point view = panel.centreOfView(true);
+        host.click(view.x, view.y);
+        host.settle();
+        processor.prepareToPlay(48000.0, 256);
+        juce::AudioBuffer<float> buffer(2, 256);
+        for (int k = 0; k < 60; ++k)                     // no note: the synth's voices are silent
+        {
+            buffer.clear();
+            juce::MidiBuffer midi;
+            processor.processBlock(buffer, midi);
+            host.tick(1);
+        }
+        host.settle();
+        std::string level, notes, speed, count, detune;
+        float meterLevel = -1.0f;
+        // A readout's glyphs whole in its box (looks::number's: the cell less 2 each side, from 18 down, 30 high): as
+        // many text quads centred in it as it has characters but spaces.
+        const funkgui::PrimList& frame = host.draw();
+        const auto inBox = [&](const pg::ui::DisplayItem& item) {
+            const funkgui::Rect& r = item.cell();
+            const funkgui::Rect box{ r.x + 2.0f, r.y + 18.0f, r.w - 4.0f, 30.0f };
+            int glyphs = 0;
+            for (const funkgui::Prim& q : frame.prims)
+                if (static_cast<int>(q.d2[2] + 0.5f) == static_cast<int>(funkgui::PrimKind::text)
+                    && box.contains({ 0.5f * (q.x0 + q.x1), 0.5f * (q.y0 + q.y1) }))
+                    ++glyphs;
+            const auto chars = std::count_if(item.readout().begin(), item.readout().end(), [](char ch) { return ch != ' '; });
+            std::printf("readout %s: %d glyphs in its box of %.0f px, %d characters\n", item.readout().c_str(), glyphs,
+                        static_cast<double>(box.w), static_cast<int>(chars));
+            return glyphs == static_cast<int>(chars);
+        };
+        bool detuneFits = false, bigFits = false;
+        for (int d = 0; d < pg::kMaxDisplays; ++d)
+        {
+            const pg::ui::DisplayItem& item = panel.displayItem(d);
+            if (!item.shown())
+                continue;
+            const pg::PanelDisplay& x = item.display();
+            std::printf("readout %s %s: %s\n", x.source.c_str(), x.label.c_str(), item.readout().c_str());
+            if (x.kind == pg::DisplayKind::meter)
+                meterLevel = item.level();
+            else if (x.label == "LEVEL")
+                level = item.readout();
+            else if (x.label == "NOTES")
+                notes = item.readout();
+            else if (x.label == "SPEED")
+                speed = item.readout();
+            else if (x.label == "COUNT")
+                count = item.readout();
+            else if (x.label == "DETUNE")
+            {
+                detune = item.readout();
+                detuneFits = inBox(item);
+            }
+            else if (x.label == "BIG")
+                bigFits = inBox(item);
+        }
+        P.eq("readouts.shared_float", level == "0.750" ? 1 : 0, 1);
+        P.eq("readouts.shared_int_whole", notes == "3" ? 1 : 0, 1);
+        P.eq("readouts.formatted_as_a_knob", speed == "1250 rpm" ? 1 : 0, 1);
+        // A unit's readout has a cell wide enough; a field's huge value is drawn smaller: neither spills out of its box.
+        P.eq("readouts.unit_formatted", detune == "-1200.0 cents" ? 1 : 0, 1);
+        P.eq("readouts.unit_in_its_box", detuneFits ? 1 : 0, 1);
+        P.eq("readouts.huge_in_its_box", bigFits ? 1 : 0, 1);
+        P.near("readouts.shared_meter", static_cast<double>(meterLevel), 0.75, 0.01);
+        // The main module's int: the effect's process writes 3; the synth's voice sounds none, so it reads 0.
+        P.eq("readouts.main_int_whole", count == (kInstrument ? "0" : "3") ? 1 : 0, 1);
+        writePng(P, host, "gui.panel.readouts.png", "readouts");
     }
     return P.finish();
 }

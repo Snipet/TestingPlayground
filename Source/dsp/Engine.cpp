@@ -63,6 +63,15 @@ namespace playground
     void Engine::prepare(double sampleRate, int maxBlockSize)
     {
         const std::lock_guard<std::mutex> lock(mutex_);
+        // The voices that sound go, each with its stop() (Engine.h, "Voices"), unless a waiting program replaces theirs:
+        // first, while what that stop() reads is as their last block left it (a gliding dial's stream points into
+        // streamBuf_, which the block size below may move).
+        if (current_ != nullptr && pending_.load(std::memory_order_acquire) == nullptr)
+        {
+            const fsdsp::ScopedFtz ftz;
+            for (Voice& v : voices_)
+                stopVoice(v);
+        }
         fs_ = sampleRate > 0.0 ? static_cast<float>(sampleRate) : 48000.0f;
         rate_.store(fs_, std::memory_order_relaxed);
         maxBlock_ = std::max(1, maxBlockSize);
@@ -117,7 +126,7 @@ namespace playground
         xfading_ = false;
         xfade_.lin.cur = 1.0f;
         xfade_.setTarget(1.0f);
-        voices_ = {};
+        voices_ = {};                                // (their stop() came first, above)
         clock_ = 0;
         if (current_ != nullptr && current_->rate() != fs_)
         {
@@ -478,6 +487,15 @@ namespace playground
         instanceGen_[static_cast<std::size_t>(instance)] = circuitGen_;
     }
 
+    void Engine::stopVoice(Voice& v) noexcept
+    {
+        if (v.patch == nullptr || v.patch != current_ || v.released)
+            return;
+        current_->stop(v.instance);
+        v.released = true;
+        v.pedal = false;
+    }
+
     void Engine::freeVoice(Voice& v, uint64_t at) noexcept
     {
         if (v.patch == current_ && v.instance >= 0 && v.instance < Patch::kInstances)
@@ -721,7 +739,8 @@ namespace playground
             for (int c = 0; c < 2; ++c)
                 frame_.inPeak[c] = frame_.inRms[c] = frame_.outPeak[c] = frame_.outRms[c] = 0.0f;
 
-        // The program's taps: an effect's instance, an instrument's newest voice that sounds.
+        // The program's taps: an effect's instance, an instrument's newest voice that sounds (none: its fields read 0),
+        // and Shared's fields from its one Shared, whether a voice sounds or not.
         for (float& t : frame_.taps)
             t = 0.0f;
         frame_.program = current_ != nullptr ? current_->program() : 0;
@@ -741,9 +760,8 @@ namespace playground
             }
             else
                 instance = 0;
-            if (instance >= 0)
-                for (int t = 0; t < std::min(current_->taps(), kMaxDisplays); ++t)
-                    frame_.taps[t] = current_->tap(t, instance);
+            for (int t = 0; t < std::min(current_->taps(), kMaxDisplays); ++t)
+                frame_.taps[t] = current_->tap(t, instance);
         }
         // The player and the host (Meters' second part): the transport, the keys held, the voices.
         frame_.samples += static_cast<uint64_t>(n);
@@ -1150,7 +1168,7 @@ namespace playground
         if (current_ == nullptr || maxBlock_ == 0)
             return;
         // The key's own voice stops first; then, with every voice taken, the oldest released one (else the oldest)
-        // fades out to make room.
+        // gets its stop() (when it had none) and fades out to make room.
         int sounding = 0;
         Voice* oldest = nullptr;
         Voice* oldestReleased = nullptr;
@@ -1172,6 +1190,7 @@ namespace playground
         if (sounding >= Patch::kVoices)
             if (Voice* victim = oldestReleased != nullptr ? oldestReleased : oldest; victim != nullptr)
             {
+                stopVoice(*victim);                  // at once: a key-up after it finds no voice to stop
                 victim->fading = true;
                 victim->fall = victim->gain / static_cast<float>(stealFade_);
                 ++frame_.steals;
@@ -1186,6 +1205,7 @@ namespace playground
             if (quietest == nullptr)
                 return;
             instance = quietest->instance;
+            stopVoice(*quietest);                    // its stop() before the new note's start, when it had none
             freeVoice(*quietest, kNever);            // cut short: its instance is called afresh
             ++frame_.steals;
         }
@@ -1354,6 +1374,7 @@ namespace playground
                 frame_.droppedKey = v.key;
                 frame_.droppedAt = frame_.samples + static_cast<uint64_t>(from);
                 blockFlags_ |= BlockStat::alert;
+                stopVoice(v);                        // its stop(), when it had none: every start one
                 freeVoice(v, kNever);                // its instance is called afresh
                 continue;
             }
@@ -1376,9 +1397,15 @@ namespace playground
                     outR[i] += v.gain * voiceR_[static_cast<std::size_t>(i)];
                 }
             }
-            v.ending = v.ending || !sounding || (v.fading && v.gain <= 0.0f);
+            // A stolen voice's fade runs its 2 ms whatever its process says after the stop() the steal gave it, so
+            // that nothing steps; a swapped-out program's voice (no stop()) ends as its process says.
+            const bool stolen = v.fading && v.patch == current_;
+            v.ending = v.ending || (!sounding && !stolen) || (v.fading && v.gain <= 0.0f);
             if (v.ending && onGrid)
+            {
+                stopVoice(v);                        // it ended while held: its stop() now, so every start has one
                 freeVoice(v, clock_ + static_cast<uint64_t>(to));
+            }
         }
     }
 

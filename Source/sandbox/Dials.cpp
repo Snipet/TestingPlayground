@@ -96,6 +96,26 @@ namespace playground::sandbox
                 return false;
             return std::all_of(s.begin(), s.end(), [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; });
         }
+
+        // A field's or a param's type as FMinus reflects it, which the plugin's displays and dials take (Patch): an
+        // enumeration's is an int ("enum Stage" -> "int", "enum Stage[4]" -> "int[4]"; `param enum Stage s` is a param
+        // int), where Lang spells it as declared, for its hover.
+        std::string reflected(const std::string& type)
+        {
+            if (type.rfind("enum ", 0) != 0)
+                return type;
+            std::size_t k = 5;
+            while (k < type.size() && (std::isalnum(static_cast<unsigned char>(type[k])) || type[k] == '_'))
+                ++k;
+            return "int" + type.substr(k);
+        }
+
+        // A field a display may name: an identifier, or Shared's through a pointer ("shared->level").
+        bool fieldName(const std::string& s)
+        {
+            const std::size_t arrow = s.find("->");
+            return arrow == std::string::npos ? identifier(s) : identifier(s.substr(0, arrow)) && identifier(s.substr(arrow + 2));
+        }
     }
 
     Declared readProgram(const Sources& files, bool instrument)
@@ -114,6 +134,7 @@ namespace playground::sandbox
         service.setFiles(programs);
         const std::string module = instrument ? "Voice" : "Effect";
         std::vector<const lang::Symbol*> params;
+        std::vector<PanelField> sharedFields;              // the module Shared's, which a display names through a pointer
         for (const lang::Symbol& s : service.symbols())
         {
             const bool mine = s.file >= 0 && static_cast<std::size_t>(s.file) < service.files().size() && service.files()[static_cast<std::size_t>(s.file)].program;
@@ -124,13 +145,16 @@ namespace playground::sandbox
                 out.module = module;
                 out.file = service.files()[static_cast<std::size_t>(s.file)].name;
             }
+            if (s.container == "Shared" && s.kind == lang::Kind::field)
+                sharedFields.push_back({ s.name, reflected(s.type) });
             if (s.container != module)
                 continue;
             if (s.kind == lang::Kind::param)
                 params.push_back(&s);
             else if (s.kind == lang::Kind::field)
-                out.fields.push_back({ s.name, s.type });
+                out.fields.push_back({ s.name, reflected(s.type) });
         }
+        out.fields = displayFields(out.fields, sharedFields);
         std::stable_sort(params.begin(), params.end(), [](const lang::Symbol* a, const lang::Symbol* b) {
             return a->file != b->file ? a->file < b->file : a->at < b->at;
         });
@@ -143,7 +167,8 @@ namespace playground::sandbox
             }
             Dial d;
             d.name = s->name;
-            d.type = s->type == "bool" ? ControlType::toggle : s->type == "int" ? ControlType::integer : ControlType::real;
+            const std::string type = reflected(s->type);   // `param enum Wave wave` is FMinus's param int
+            d.type = type == "bool" ? ControlType::toggle : type == "int" ? ControlType::integer : ControlType::real;
             const std::vector<double> range = numbersOf(s->signature, "fminus::range");
             const std::vector<double> def = numbersOf(s->signature, "fminus::default");
             if (d.type == ControlType::toggle)
@@ -440,6 +465,11 @@ namespace playground::sandbox
             }
             if (std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_' || c == '=')
                 w += c;
+            else if (c == '-' && next == '>' && !w.empty())
+            {
+                w += "->";                                // shared->level: one name
+                ++i;
+            }
             else
             {
                 flush();
@@ -450,7 +480,7 @@ namespace playground::sandbox
         flush();
         std::vector<std::string> out;
         const auto add = [&](const std::string& name) {
-            if (identifier(name) && name != "in" && name != "out" && std::find(out.begin(), out.end(), name) == out.end())
+            if (fieldName(name) && name != "in" && name != "out" && std::find(out.begin(), out.end(), name) == out.end())
                 out.push_back(name);
         };
         static constexpr const char* kDisplays[] = { "meter", "vu", "led", "number", "scope", "spectrum" };

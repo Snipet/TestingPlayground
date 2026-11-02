@@ -178,6 +178,33 @@ namespace playground::scenario
         }
     }
 
+    measure::Request renderOf(const juce::var& input, std::string* why, measure::Request req)
+    {
+        const auto numberArg = [&](const char* k, float& out) {
+            const juce::var v = input.getProperty(k, juce::var());
+            if (isNumber(v))
+                out = static_cast<float>(static_cast<double>(v));
+        };
+        const juce::var notes = input.getProperty("notes", juce::var());
+        if (const auto* arr = notes.getArray())
+            for (const auto& n : *arr)
+                if (isNumber(n))
+                    req.notes.push_back(static_cast<int>(std::lround(static_cast<double>(n))));
+        numberArg("velocity", req.velocity);
+        numberArg("hold_seconds", req.holdSeconds);
+        numberArg("tail_seconds", req.tailSeconds);
+        numberArg("bpm", req.bpm);
+        numberArg("modwheel", req.modwheel);
+        numberArg("pitchbend", req.pitchbend);
+        const juce::var dials = input.getProperty("dials", juce::var());
+        if (const auto* o = dials.getDynamicObject())
+            for (const auto& kv : o->getProperties())
+                if (isNumber(kv.value) || kv.value.isBool())
+                    req.dials[kv.name.toString().toStdString()] = static_cast<float>(static_cast<double>(kv.value));
+        read(input, req, why);
+        return req;
+    }
+
     juce::var schema()
     {
         return claude::object({ { "type", "object" }, { "description", "How it is played (CHECKING YOUR WORK)" } });

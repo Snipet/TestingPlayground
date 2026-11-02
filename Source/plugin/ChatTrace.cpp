@@ -1,7 +1,8 @@
 // Source/plugin/ChatTrace.cpp: the chat's trace (ChatAgent.h), read-only: where a problem in the sound starts, or what
 // the program's fields do, in an offline render (dsp/Debug.h). Its source is the editor's files (with try_edits), the
 // program that plays (its own code, never the frozen copy) or the user's recording (ChatScenario.h's captured()); its
-// render the scenario's. find's result is at most twenty lines.
+// render measure_output's (scenario::renderOf: the notes, the times, the dials, the wheels, the scenario). find's
+// result is at most twenty lines.
 #include "plugin/ChatAgent.h"
 
 #include "plugin/ChatScenario.h"
@@ -35,25 +36,37 @@ namespace playground
     juce::var ChatAgent::traceDefinition()
     {
         // Lean: tools.json sits in every one of Claude Desktop's conversations, so the words find and source take are in
-        // the description's second paragraph (the guide's notes), and a word they do not take is refused naming them.
-        juce::var props = claude::object({ { "find", claude::object({ { "type", "string" } }) },
-                                           { "fields", claude::object({ { "type", "array" } }) },
-                                           { "list", claude::object({ { "type", "boolean" } }) },
+        // the description's second paragraph (the guide's notes), and a word they do not take is refused naming them;
+        // the render's settings are measure_output's (scenario::renderOf), undescribed here.
+        const auto typed = [](const char* type) { return claude::object({ { "type", type } }); };
+        juce::var props = claude::object({ { "find", typed("string") },
+                                           { "fields", typed("array") },
+                                           { "list", typed("boolean") },
                                            { "voice", juce::var(new juce::DynamicObject()) },
-                                           { "source", claude::object({ { "type", "string" } }) },
+                                           { "source", typed("string") },
                                            { "scenario", scenario::schema() },
                                            { "try_edits", scenario::trialSchema() },
-                                           { "points", claude::object({ { "type", "integer" } }) },
-                                           { "around", claude::object({ { "type", "number" } }) },
-                                           { "detail", claude::object({ { "type", "boolean" } }) } });
+                                           { "points", typed("integer") },
+                                           { "around", typed("number") },
+                                           { "detail", typed("boolean") } });
+        auto* o = props.getDynamicObject();
+        if constexpr (product::kIsInstrument)
+            for (const char* k : { "velocity", "modwheel", "pitchbend" })
+                o->setProperty(k, typed("number"));
+        if constexpr (product::kIsInstrument)
+            o->setProperty("notes", typed("array"));
+        for (const char* k : { "hold_seconds", "tail_seconds", "bpm" })
+            o->setProperty(k, typed("number"));
+        o->setProperty("dials", typed("object"));
         return claude::object(
             { { "name", "trace" },
               { "description",
-                "Find where a problem in the sound starts (the moment, the voice, the first field to go bad and the lines "
+                juce::String("Find where a problem in the sound starts (the moment, the voice, the first field to go bad and the lines "
                 "that write it), or watch the program's fields, in an offline render.\n\n"
                 "It changes nothing. find: nan, click, runaway, silence, dc or any (the default without fields): each "
                 "problem's moment, voice and note, the events within 32 samples, up to 3 culprit fields (the first to go "
-                "non-finite or past 1e6; at a step, those that jump 10 times their usual step) with their values around it "
+                "non-finite, or past 1e6 at a thousand times its size in its first 10 ms; at a step, those that jump 10 "
+                "times their usual step) with their values around it "
                 "and the lines that assign them, and a verdict. A NaN only in a local leaves no field bad. fields: up to 8 "
                 "paths or globs (filter.*; list: true names them): min, max, mean, first, last, the first non-finite moment, "
                 "the largest jump and a sparkline each; points (at most 64) adds raw values, a sample each around `around` "
@@ -61,8 +74,10 @@ namespace playground
                 "(the default), playing (its own code, not the frozen copy) or capture (the user's recording, replayed "
                 "through the program that played it; scenario from and to: a part of it). It renders in calls of 16 samples, "
                 "then of 1 sample before each problem, and says when the output depends on how the calls are split. detail: "
-                "more of each. scenario and try_edits as measure_output's (an effect plays the scenario's input, else the "
-                "sweep)." },
+                "more of each. The render as measure_output's: ")
+                    + (product::kIsInstrument ? "notes, velocity, the wheels, " : "")
+                    + "hold_seconds, tail_seconds, bpm, dials, scenario and try_edits (an effect plays the scenario's input, "
+                      "else the sweep)." },
               { "eager_input_streaming", true },
               { "input_schema", claude::object({ { "type", "object" }, { "properties", props } }) } });
     }
@@ -148,12 +163,16 @@ namespace playground
         else if (source != "capture")
             return done("source is editor, playing or capture.", true);
 
-        // The recording (source "capture"): the scenario is it (from, to: a part of it), replayed through the program that
-        // played it, as it played (ChatScenario.h); read once, here, for the files and the render alike.
-        if (source == "capture")
-            q.render.fromCapture = true;
-        if (!scenario::read(input, q.render, &why))
-            return done(why, true);
+        // The render as measure_output's (the notes, the times, the dials, the wheels, the scenario). The recording
+        // (source "capture"): the scenario is it (from, to: a part of it), replayed through the program that played it,
+        // as it played (ChatScenario.h); read once, here, for the files and the render alike.
+        {
+            measure::Request base;
+            base.fromCapture = source == "capture";
+            q.render = scenario::renderOf(input, &why, base);
+            if (!why.empty())
+                return done(why, true);
+        }
         if (q.render.fromCapture)
         {
             if (!scenario::captured(host_, recording, why, q.render.captureFrom, q.render.captureTo))

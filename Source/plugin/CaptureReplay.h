@@ -71,7 +71,8 @@ namespace playground::capture
     std::string forecast(const Take& take);
 
     // What the tool reports of a sound: octave bands (measure's Comparison::kBands, 31.5 Hz to 16 kHz, dBFS; -240 for
-    // none), the spectral centroid and the stereo correlation, from spaced windows (live: a few milliseconds).
+    // none), the spectral centroid (power-weighted over 20 Hz to 20 kHz, as the centroid metrics weigh it) and the
+    // stereo correlation, from spaced windows (live: a few milliseconds).
     struct Spectrum
     {
         std::array<double, 10> bandsDb{};

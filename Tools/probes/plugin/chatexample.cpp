@@ -3,12 +3,17 @@
 // plugin.chatexample: what the chat's system prompt teaches, and Claude's measure_output tool (dsp/Measure.h), at
 // 48 kHz:
 //   PROMPT   the system prompt has the large-program section, the tools' workflow (measure_output, add_library_file),
+//            FMINUS, THE LANGUAGE as FMinus compiles it (switch, the bitwise operators, enum, the top level's constants,
+//            hash and randf among what it has and none of them among what it has not; its example compiled alone with
+//            no message, its table, its switch and its noise computing what they say),
 //            what the editor's RANDOM button makes and what PROJECTS keeps (versions, presets),
 //            THE INTERFACE with the .gui file's language, THE LIBRARY with every library file's header word for word (a
 //            netlist's * lines too), CIRCUITS (the .cir netlists, last) and the circuit example naming the library files
 //            it comes with, and
 //            the program built from the library and its panel.gui, word for word; the program's other files are the
-//            library's, as it has them
+//            library's, as it has them; the metrics (CHECKING YOUR WORK): the terms, then a line each with the metric's
+//            own words, its tolerance in words Goals' (toleranceOf), none of the tolerance words of before, and
+//            tune_dials' time limit
 //   EXAMPLE  that program (ChatAgent::promptExample, this plugin's kind) compiles with no message (its panel.gui
 //            too); its dials are named, with ranges and defaults inside them, every one a control of its interface in
 //            a titled section, with two displays at least; it plays two seconds finite and audible with no alert (an effect over noise, an instrument a
@@ -20,8 +25,8 @@
 //   MEASURE  measure::run on programs whose answer is known: an instrument's sine voice at 0.25 (peak -12.0 dBFS,
 //            its partial at the note's frequency, the voice ending, a chord's level reported) or an effect's gain of
 //            0.5 (-6.0 dB on the sine and on the noise, an impulse's response at once); the spectrum's peak of a
-//            1 kHz sine within 0.5 Hz; a program that does not compile reports its messages; a dial name that is
-//            not one is reported; a voice that never ends (or an effect that makes sound from silence) is flagged;
+//            1 kHz sine within 0.5 Hz, its power centroid within 1 Hz; a program that does not compile reports its
+//            messages; a dial name that is not one is reported; a voice that never ends (or an effect that makes sound from silence) is flagged;
 //            the example's own report is not silent and has no alert; an instrument's Inharmonic line: clean for the
 //            sine voice; at C7 a naive saw's aliases above -40 dB, a wavetable voice's (wavetable.fm, its table built
 //            once in a module Shared) clean; a saw's own edges are no click, a phase that jumps once is
@@ -38,9 +43,12 @@
 #include "Audio.h"
 #include "Rig.h"
 
+#include "dsp/Goals.h"
 #include "dsp/Measure.h"
 #include "fminus/Patch.h"
 #include "plugin/ChatAgent.h"
+
+#include "fminus/FMinus.h"
 
 #include "Library.h"
 #include "Product.h"
@@ -299,6 +307,92 @@ PROBE(plugin, chatexample)
     P.eq("prompt.fft", has(prompt, "fft_create(n)") && has(prompt, "fft_forward(plan, in, bins)")
                            && has(prompt, "fft_inverse(plan, bins, out)") ? 1 : 0, 1);
     P.eq("prompt.shared", has(prompt, "module Shared") && has(prompt, "Shared*") ? 1 : 0, 1);
+    // FMINUS, THE LANGUAGE says what FMinus compiles: the newer constructs among what it has and none of them among what
+    // it has not, and its example compiles (FMinus alone, with no message) and computes what it says.
+    {
+        const std::size_t from = prompt.find("\nFMINUS, THE LANGUAGE\n"), to = prompt.find("\nDSP PRACTICE IN THIS PLUGIN\n");
+        const std::string language = from != std::string::npos && to != std::string::npos ? prompt.substr(from, to - from) : std::string();
+        const std::size_t no = language.find("\n- Not in FMinus:");
+        const std::string notIn = no == std::string::npos ? std::string() : language.substr(no, language.find('\n', no + 1) - no);
+        P.eq("prompt.language_has", has(language, "switch (C's)") && has(language, "& | ^ ~ << >> on ints")
+                                        && has(language, "&= |= ^= <<= >>=") && has(language, "an enum's int constants size arrays")
+                                        && has(language, "the top level holds const tables and scalars") && has(language, "hash(n)")
+                                        && has(language, "randf(n)") && has(language, "a float only to 2^24") ? 1 : 0, 1);
+        P.eq("prompt.language_has_not", !notIn.empty() && !has(notIn, "enum") && !has(notIn, "switch") && !has(notIn, "bitwise")
+                                            && !has(notIn, "constants") && has(notIn, "unsigned") ? 1 : 0, 1);
+        const std::size_t ex = language.find("For example:\n\n");
+        const std::size_t exEnd = ex == std::string::npos ? ex : language.find("\n\n- ", ex + 14);
+        const std::string code = exEnd == std::string::npos ? std::string() : language.substr(ex + 14, exEnd - ex - 13);
+        std::string errors;
+        fminus::Program::Options o;
+        o.fileName = "example.fm";
+        const auto program = code.empty() ? nullptr : fminus::Program::compile(code, errors, o);
+        std::printf("the language's example: %zu bytes, %s\n", code.size(), errors.empty() ? "no message" : errors.c_str());
+        P.eq("prompt.language_example_compiles", program != nullptr && errors.empty() ? 1 : 0, 1);
+        std::string why;
+        auto* stepOf = program ? program->function<float(int)>("stepOf", why) : nullptr;
+        auto* wave = program ? program->function<float(int, float, int)>("wave", why) : nullptr;
+        bool says = stepOf != nullptr && wave != nullptr;
+        if (says)
+        {
+            says = stepOf(0) == 0.0f && stepOf(3 << 13) == 12.0f && stepOf(9 << 13) == 3.0f && wave(0, 0.75f, 0) == 0.5f;
+            // the noise: randf of the count, in [-1, 1), a mean near 0 over a second's counts
+            double sum = 0.0;
+            float lo = 1.0f, hi = -1.0f;
+            for (int c = 0; c < 48000; ++c)
+            {
+                const float x = wave(1, 0.0f, c);
+                sum += x;
+                lo = std::min(lo, x);
+                hi = std::max(hi, x);
+            }
+            std::printf("the language's example: noise from %.4f to %.4f, its mean %.5f\n", lo, hi, sum / 48000.0);
+            says = says && lo >= -1.0f && hi < 1.0f && hi - lo > 1.9f && std::fabs(sum / 48000.0) < 0.01 && wave(1, 0.0f, 7) == wave(1, 0.5f, 7);
+        }
+        P.eq("prompt.language_example_computes", says ? 1 : 0, 1);
+    }
+    // The metrics: the terms their lines use, then a line each, its words the metric's own; the tolerance each line
+    // gives ("+-0.5 dB", "+-5 %, at least 1 Hz") is Goals' (toleranceOf, for a target of 1000 and of 0); none of the
+    // tolerance words of before ("5 % of a frequency"), and tune_dials' time limit.
+    {
+        int lines = 0, tolerances = 0;
+        for (const pg::measure::MetricInfo& m : pg::measure::metrics())
+        {
+            const std::string head = std::string("\n- ") + m.name + " (";
+            const std::size_t at = prompt.find(head);
+            const std::size_t end = at == std::string::npos ? at : prompt.find("): ", at);
+            if (at == std::string::npos || end == std::string::npos)
+                continue;
+            lines += prompt.compare(end + 3, std::string(m.what).size() + 1, std::string(m.what) + "\n") == 0 ? 1 : 0;
+            const std::string said = prompt.substr(at + head.size(), end - at - head.size());
+            const std::size_t pm = said.find("+-");
+            if (pm == std::string::npos)
+                continue;
+            const double x = std::strtod(said.c_str() + pm + 2, nullptr);
+            const std::size_t after = said.find_first_not_of("0123456789.", pm + 2);
+            const bool share = after != std::string::npos && said.compare(after, 2, " %") == 0;
+            const std::size_t least = said.find("at least ");
+            const double floor = least == std::string::npos ? x : std::strtod(said.c_str() + least + 9, nullptr);
+            pg::measure::Goal g;
+            g.metric = m.name;
+            g.hasTarget = true;
+            g.target = 1000.0;
+            const double far = pg::measure::toleranceOf(g);
+            g.target = 0.0;
+            const double near = pg::measure::toleranceOf(g);
+            const bool same = share ? std::fabs(far - x / 100.0 * 1000.0) < 1e-9 && std::fabs(near - floor) < 1e-12
+                                    : std::fabs(far - x) < 1e-12 && std::fabs(near - x) < 1e-12;
+            tolerances += same ? 1 : 0;
+            if (!same)
+                std::printf("the guide's tolerance of %s, \"%s\", is not Goals' (%g at 1000, %g at 0)\n", m.name, said.c_str(), far, near);
+        }
+        const auto count = static_cast<int64_t>(pg::measure::metrics().size());
+        P.eq("prompt.metric_lines", lines, count);
+        P.eq("prompt.metric_tolerances", tolerances, count);
+        P.eq("prompt.metric_terms", has(prompt, pg::measure::metricTerms()) && !has(prompt, "5 % of a frequency")
+                                        && !has(prompt, "1 dB for levels") ? 1 : 0, 1);
+        P.eq("prompt.tune_time_limit", has(prompt, "for up to its time limit: 120 s unless set") ? 1 : 0, 1);
+    }
     P.eq("prompt.host", has(prompt, "THE HOST: TEMPO") && has(prompt, "Host* host;") && has(prompt, "lfo.follow(")
                             && has(prompt, "<host_file name=\"host.fm\">\n" + std::string(pg::Patch::hostSource()) + "</host_file>")
                             ? 1 : 0, 1);
@@ -456,7 +550,7 @@ PROBE(plugin, chatexample)
         const std::vector<pg::measure::Peak> peaks = pg::measure::spectrumPeaks(sine, kFs, 4, &centroid);
         P.eq("measure.sine_one_peak", static_cast<int64_t>(peaks.size()), 1);
         P.near("measure.sine_peak_hz", peaks.empty() ? 0.0 : peaks[0].hz, 1000.0, 0.5);
-        P.near("measure.sine_centroid_hz", centroid, 1000.0, 60.0);
+        P.near("measure.sine_centroid_hz", centroid, 1000.0, 1.0);    // power-weighted: a sine's own frequency
     }
     const std::string broken = pg::measure::run(pg::singleFile("module Nothing {};\n"), {});
     P.eq("measure.uncompiled_says_so", broken.rfind("It did not compile", 0) == 0 ? 1 : 0, 1);
@@ -574,7 +668,7 @@ PROBE(plugin, chatexample)
         std::string forever = voice;
         forever.replace(forever.find("return held || env > 0.0001f;"), 29, "return true;");
         const std::string f = pg::measure::run(pg::singleFile(forever), {});
-        P.eq("measure.never_ends_flagged", has(f, "No voice ended") && has(f, "Note: A voice that never returns false") ? 1 : 0,
+        P.eq("measure.never_ends_flagged", has(f, "No voice ended within 1.50 s: process kept returning true") && !has(f, "Note: A voice") ? 1 : 0,
              1);
     }
     else

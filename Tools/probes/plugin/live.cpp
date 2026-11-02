@@ -19,7 +19,8 @@
 //           host's automation; a typed edit, and its diff against the file at the token; RUN; a version and a preset
 //           saved and the preset applied (its dials no move); the host's bypass and its end, its transport starting, a
 //           new sample rate; the next call with the new token: nothing; another instance's token: the whole state;
-//           another tool's result starts with the hint while changes wait, and not when none do; each token handed out
+//           another tool's result starts with the hint while changes wait (the first three named with their values,
+//           and how many more), and not when none do; each token handed out
 //           its own, two tokens from before an edit both shown it (one conversation's look moves nothing of another's),
 //           Claude Desktop's own write no change but in the diff; a host move just before a preset that leaves that
 //           dial alone still a move; a bypass ending after a token: that token's reader reads the end, an older
@@ -435,7 +436,7 @@ PROBE(plugin, live)
         const std::string token = tokenOf(status);
         P.eq("since.token", token.empty() ? 0 : 1, 1);
         const std::string read = textOf(a.mcpCall("read_file", object({ { "name", "program.fm" } })));
-        P.eq("since.no_hint_without_changes", read.rfind("module ", 0) == 0 ? 1 : 0, 1);
+        P.eq("since.no_hint_without_changes", read.rfind("program.fm: ", 0) == 0 && has(read, "\nmodule ") ? 1 : 0, 1);
 
         // The changes.
         const int cutoff = slotOf(q, "cutoff"), mix = slotOf(q, "mix");
@@ -473,6 +474,10 @@ PROBE(plugin, live)
         const std::string hinted = textOf(a.mcpCall("read_file", object({ { "name", "panel.gui" } })));
         std::printf("read_file's result after the changes: %s\n", hinted.substr(0, hinted.find('\n')).c_str());
         P.eq("since.hint", hinted.rfind("(The user changed ", 0) == 0 && has(hinted, "get_status with since shows them.)") ? 1 : 0, 1);
+        // It names the first three, oldest first, with their values and without their times, and how many more there are.
+        const std::string hintLine = hinted.substr(0, hinted.find('\n'));
+        P.eq("since.hint_names_three", has(hintLine, " since the last MCP call here: you moved cutoff 1.00 kHz -> 2.52 kHz; the host moved mix 50 % -> ")
+                                           && has(hintLine, "; you edited program.fm; +") && has(hintLine, " more. get_status with since shows them.)") ? 1 : 0, 1);
         const std::string since = textOf(a.mcpCall("get_status", object({ { "since", juce::String(token) } })));
         std::printf("get_status since:\n%s", since.c_str());
         P.eq("since.drag_one_line", count(since, "you moved cutoff 1.00 kHz -> 2.52 kHz\n"), 1);

@@ -4,9 +4,13 @@
 //   LINK     a processor listens on a private socket in the folder (0600, the folder 0700) and leaves tools.json and
 //            guide.md there; info names its kind, plugin and files; tools are the chat's, but ask_user and
 //            ask_planner, each MCP description its first sentence or paragraph (tools.json's size printed, with the
-//            full descriptions for comparison, and compact; at most 26,000 bytes, the slack printed), a setting's
-//            description given once (view_sound's render settings, set_checks' goals: not again in a check's or
-//            tune_dials'); edit_circuit's description its first sentence, its face "Edit a circuit", its `name`
+//            full descriptions for comparison, and compact), a setting's description given once (view_sound's render
+//            settings, set_checks' goals: not again in a check's or tune_dials'); tune_dials' metric a plain string,
+//            set_checks' the metrics' names, and its dials_from (current, snapshot, defaults); read_file's from, lines and
+//            find, edit_file's edits and expected (only its name required), trace's render settings (its dials; the
+//            synth's notes); an instrument's notes,
+//            velocity and wheels in the synth's measure_output and
+//            in none of the effect's tools; edit_circuit's description its first sentence, its face "Edit a circuit", its `name`
 //            undescribed (edit_file's words), view_panel's naming the schematic, its `name` too; the guide's start says it is driven
 //            from outside; a guide request naming no part (a 0.2.0 server's) gets the whole guide
 //   GUIDE    the guide in parts (mcp/McpGuide.h): start (working from outside, FMINUS, DSP PRACTICE, CHECKING, the
@@ -20,8 +24,8 @@
 //            part refused, naming the parts
 //   CALL     write_file through the socket writes the processor's draft (the chat's card notes Claude Desktop once);
 //            run_program compiles and plays it; a dial set reads back at once (before the message thread applies it);
-//            read_file gives it back; view_panel answers with a PNG (drawn by the GPU, its text says); an unknown
-//            tool, and ask_user, are errors
+//            read_file gives it back (after its line count and version); view_panel answers with a PNG (drawn by the GPU, its text says); an unknown
+//            tool, and ask_user, are errors; tune_dials refuses a metric that is none, naming the plugin's
 //   WAVE     on a second connection, with a slow program in the editor: get_status and info answered while a tune runs
 //            (each reply a whole line); the tune cancelled, its dial as it was; a call waiting behind it cancelled,
 //            answered at once; a tune with a time limit of a second stops there with the best so far; pictures fit
@@ -33,8 +37,10 @@
 //   NAMES    the first processor is "Synth 1" ("Effect 1"), its socket 1.sock; a second one "Synth 2"
 //   SERVER   the server program (<Name>MCP) over stdio, as Claude Desktop runs it: initialize (its protocol version,
 //            2025-11-25 too, tools with listChanged, prompts, instructions that keep tools and ids from the user),
-//            tools/list (list_instances, playground_guide, gui_sandbox and the chat's tools, each with `instance` and a
-//            title in words, the ones that only look marked read-only), list_instances naming this processor by its name,
+//            tools/list (list_instances, playground_guide, gui_sandbox and the chat's tools, each with `instance` (in a
+//            few words: the instructions say how to name one) and a title in words, the ones that only look marked
+//            read-only; the reply's line, what Claude Desktop receives,
+//            at most kToolsBound bytes: its size and the slack printed), list_instances naming this processor by its name,
 //            get_status and write_file routed to it, playground_guide (its start, and a part); the processor then knows
 //            Claude Desktop is connected, and its port says so with its name; the prompts (Make a sound, Improve the
 //            sound, Explain the sound, Fix what I hear), one filled in with the user's words, fix_what_i_hear naming no
@@ -52,6 +58,7 @@
 //            still list (from tools.json) and the guide's parts come from guide.md, as the plugin gave them
 #include "Probe.h"
 
+#include "dsp/Measure.h"
 #include "mcp/McpGuide.h"
 #include "mcp/McpProtocol.h"
 #include "plugin/ChatAgent.h"
@@ -64,12 +71,14 @@
 
 #include <funkgui/panel/HeadlessGuiScope.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <csignal>
 #include <fcntl.h>
+#include <functional>
 #include <map>
 #include <poll.h>
 #include <spawn.h>
@@ -86,6 +95,13 @@ namespace pg = playground;
 namespace
 {
     constexpr bool kInstrument = pg::product::kIsInstrument;
+
+    // The tool budget: what Claude Desktop receives of the tools, which goes into every one of its conversations: the
+    // server's tools/list reply as it writes it on stdout (one line, as JUCE writes it: the chat's tools as MCP has them,
+    // each with the server's `instance`, and the server's own), the same bound for both products. It was set at the
+    // synth's size when it was first measured so, 23,963 bytes (the effect's 23,124), rounded up to the next 100; until
+    // then the bound was 26,000 bytes on tools.json as the link writes it (pretty-printed), which LINK still prints.
+    constexpr std::size_t kToolsBound = 24000;
 
     std::string program()
     {
@@ -351,6 +367,7 @@ namespace
         }
 
         std::map<int, juce::var> early;                  // replies read while waiting for another's
+        std::map<int, std::size_t> bytes;                // each reply's line as the server wrote it, its line feed aside
         std::vector<int> order;                          // the ids of the replies, in the order they came
         int lines = 0, whole = 0;
 
@@ -379,10 +396,12 @@ namespace
                         continue;
                     ++lines;
                     const juce::var v = juce::JSON::parse(juce::String::fromUTF8(got.c_str()));
+                    const std::size_t size = got.size();
                     got.clear();
                     whole += v.isObject() ? 1 : 0;
                     if (!v.hasProperty("id"))
                         continue;
+                    bytes[static_cast<int>(v["id"])] = size;
                     order.push_back(static_cast<int>(v["id"]));
                     if (static_cast<int>(v["id"]) == id)
                     {
@@ -518,11 +537,71 @@ PROBE(plugin, mcp)
                      && !tuneDials["inputSchema"]["properties"]["goals"]["items"]["properties"]["min"].hasProperty("description")
                      && setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["min"].hasProperty("description")
                  ? 1 : 0, 1);
-        // The budget (tools.json as the link writes it, pretty-printed; Desktop gets it compact): 25,000 bytes until
-        // the schematic's tools, 26,000 since (the synth had 218 bytes to spare before them, they take about 1,060).
+        // tune_dials' metric a plain string (the tool checks it: CALL), set_checks' the metrics' names.
+        const juce::var tunedMetric = tuneDials["inputSchema"]["properties"]["goals"]["items"]["properties"]["metric"];
+        const juce::var checkedMetric = setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["metric"];
+        P.eq("link.tune_metric_string", tunedMetric["type"].toString() == "string" && !tunedMetric.hasProperty("enum")
+                                            && checkedMetric["enum"].size() == static_cast<int>(pg::measure::metrics().size()) ? 1 : 0, 1);
+        // read_file's part (from, lines, find) and edit_file's list and guard (edits, expected; only its name required).
+        {
+            juce::var readFile, editFile, trace;
+            if (const juce::Array<juce::var>* t = tools.getArray())
+                for (const juce::var& tool : *t)
+                {
+                    if (tool["name"].toString() == "read_file")
+                        readFile = tool["inputSchema"];
+                    else if (tool["name"].toString() == "edit_file")
+                        editFile = tool["inputSchema"];
+                    else if (tool["name"].toString() == "trace")
+                        trace = tool["inputSchema"];
+                }
+            // trace's render settings, measure_output's, undescribed (lean).
+            P.eq("link.trace_render", trace["properties"].hasProperty("dials") && trace["properties"].hasProperty("hold_seconds")
+                                          && trace["properties"].hasProperty("notes") == kInstrument
+                                          && !trace["properties"]["dials"].hasProperty("description") ? 1 : 0, 1);
+            P.eq("link.file_tools", readFile["properties"].hasProperty("from") && readFile["properties"].hasProperty("lines")
+                                        && readFile["properties"].hasProperty("find") && editFile["properties"].hasProperty("edits")
+                                        && editFile["properties"].hasProperty("expected") && editFile["required"].size() == 1 ? 1 : 0, 1);
+        }
+        // set_checks' dials_from: where a check takes the dials it does not name (its three words, described).
+        const juce::var dialsFrom = setChecks["inputSchema"]["properties"]["dials_from"];
+        P.eq("link.checks_dials_from", dialsFrom["enum"].size() == 3 && dialsFrom["enum"][1].toString() == "snapshot"
+                                           && dialsFrom.hasProperty("description")
+                                           && setChecks["inputSchema"]["required"].size() == 1 ? 1 : 0, 1);
+        // An instrument's render settings (its notes, velocity and wheels) in an instrument's tools only: measure_output
+        // has them in the synth, and no tool of the effect's lists them.
+        {
+            std::vector<std::string> found;
+            std::function<void(const juce::var&, const std::string&)> walk = [&](const juce::var& node, const std::string& at) {
+                if (juce::DynamicObject* o = node.getDynamicObject())
+                {
+                    if (juce::DynamicObject* props = o->getProperty("properties").getDynamicObject())
+                        for (const char* k : { "notes", "velocity", "modwheel", "pitchbend" })
+                            if (props->hasProperty(k))
+                                found.push_back(at + "." + k);
+                    for (const auto& kv : o->getProperties())
+                        walk(kv.value, at);
+                }
+                else if (const juce::Array<juce::var>* arr = node.getArray())
+                    for (const juce::var& v : *arr)
+                        walk(v, at);
+            };
+            if (const juce::Array<juce::var>* t = tools.getArray())
+                for (const juce::var& tool : *t)
+                    walk(tool["inputSchema"], tool["name"].toString().toStdString());
+            const auto listed = [&](const std::string& path) { return std::find(found.begin(), found.end(), path) != found.end(); };
+            std::string all;
+            for (const std::string& f : found)
+                all += " " + f;
+            std::printf("an instrument's settings in the tools:%s\n", all.empty() ? " none" : all.c_str());
+            const bool own = kInstrument ? listed("measure_output.notes") && listed("measure_output.velocity")
+                                               && listed("measure_output.modwheel") && listed("measure_output.pitchbend")
+                                         : found.empty();
+            P.eq("link.instrument_settings", own ? 1 : 0, 1);
+        }
+        // tools.json as the link writes it (pretty-printed, above) and on one line, for comparison: the budget is on what
+        // the server sends Claude Desktop (kToolsBound, SERVER).
         std::printf("tools.json compact: %d bytes\n", juce::JSON::toString(tools, true).length());
-        std::printf("tools.json slack: %lld bytes under 26,000\n", static_cast<long long>(26000 - size));
-        P.le("link.tools_bytes", static_cast<double>(size), 26000.0);
         // edit_circuit and view_panel's schematic, as MCP has them: each description its first sentence, standing alone;
         // `name` described once (edit_file's words: "The file's name"), dropped from theirs
         juce::var editCircuit, viewPanel, editFile;
@@ -673,7 +752,14 @@ PROBE(plugin, mcp)
         a->poll();
     }
     res = ask(*a, r, 6, "call", object({ { "name", "read_file" }, { "arguments", object({ { "name", "program.fm" } }) } }))["result"];
-    P.eq("call.read", firstText(res) == text ? 1 : 0, 1);
+    // The file whole after a line of its count and version.
+    {
+        const std::string read = firstText(res);
+        const std::size_t eol = read.find('\n');
+        std::printf("read_file's first line: %s\n", read.substr(0, eol).c_str());
+        P.eq("call.read", eol != std::string::npos && read.rfind("program.fm: ", 0) == 0 && read.find(", version ") < eol
+                              && read.substr(eol + 1) == text ? 1 : 0, 1);
+    }
     res = ask(*a, r, 7, "call", object({ { "name", "view_panel" }, { "arguments", juce::var(new juce::DynamicObject()) } }))["result"];
     bool png = false;
     if (const juce::Array<juce::var>* c = res["content"].getArray())
@@ -686,6 +772,19 @@ PROBE(plugin, mcp)
     P.eq("call.unknown", static_cast<bool>(res["isError"]) ? 1 : 0, 1);
     res = ask(*a, r, 9, "call", object({ { "name", "ask_user" }, { "arguments", juce::var(new juce::DynamicObject()) } }))["result"];
     P.eq("call.chat_only", static_cast<bool>(res["isError"]) ? 1 : 0, 1);
+    {
+        // tune_dials' metric is a plain string in its schema: one that is no metric is refused, naming this plugin's.
+        juce::Array<juce::var> goals;
+        goals.add(object({ { "metric", "loudness" }, { "max", 1.0 } }));
+        res = ask(*a, r, 11, "call", object({ { "name", "tune_dials" },
+                                              { "arguments", object({ { "tune", juce::Array<juce::var>{ "level" } }, { "goals", goals } }) } }))["result"];
+        const std::string said = firstText(res);
+        std::printf("tune_dials, metric loudness: %s\n", said.c_str());
+        bool named = !pg::measure::metrics().empty();
+        for (const pg::measure::MetricInfo& m : pg::measure::metrics())
+            named = named && has(said, m.name);
+        P.eq("call.tune_metric_refused", static_cast<bool>(res["isError"]) && has(said, "no metric 'loudness'") && named ? 1 : 0, 1);
+    }
     close(fd);
 
     // ---- WAVE: calls side by side, cancel, the time limit, pictures that fit ---------------------------------------------
@@ -786,9 +885,23 @@ PROBE(plugin, mcp)
         P.eq("server.initialize", rep["result"]["protocolVersion"].toString() == "2025-06-18" && static_cast<bool>(rep["result"]["capabilities"]["tools"]["listChanged"])
                                       && rep["result"]["capabilities"].hasProperty("prompts")
                                       && rep["result"]["instructions"].toString().contains("playground_guide")
-                                      && rep["result"]["instructions"].toString().contains("never ask them about tools") ? 1 : 0, 1);
-        rep = s.request({ a.get() }, "tools/list", {});
+                                      && rep["result"]["instructions"].toString().contains("never ask them about tools")
+                                      && rep["result"]["instructions"].toString().contains("or its track's or its project's, in the user's words") ? 1 : 0, 1);
+        const int listId = s.post("tools/list", {});
+        rep = s.wait({ a.get() }, listId);
         const juce::var list = rep["result"]["tools"];
+        {
+            // The budget: the reply as Claude Desktop receives it, its line's bytes (kToolsBound).
+            const std::size_t wire = s.bytes[listId];
+            std::string each;
+            if (const juce::Array<juce::var>* t = list.getArray())
+                for (const juce::var& tool : *t)
+                    each += " " + tool["name"].toString().toStdString() + " " + std::to_string(juce::JSON::toString(tool, true).length());
+            std::printf("tools/list by tool, bytes on one line:%s\n", each.c_str());
+            std::printf("tools/list over stdio (%s): %zu bytes; slack: %lld bytes under %zu\n", pg::product::kName, wire,
+                        static_cast<long long>(kToolsBound) - static_cast<long long>(wire), kToolsBound);
+            P.le("server.tools_bytes", static_cast<double>(wire > 0 ? wire : kToolsBound + 1), static_cast<double>(kToolsBound));
+        }
         bool instanceArg = true;
         int pluginTools = 0;
         if (const juce::Array<juce::var>* t = list.getArray())
@@ -796,8 +909,10 @@ PROBE(plugin, mcp)
                 if (tool["name"].toString() != "list_instances" && tool["name"].toString() != "playground_guide"
                     && tool["name"].toString() != "gui_sandbox")   // the server's own (plugin.sandbox)
                 {
+                    // `instance` on each, its words short (the instructions say how to name one)
                     ++pluginTools;
-                    instanceArg = instanceArg && tool["inputSchema"]["properties"].hasProperty("instance");
+                    instanceArg = instanceArg && tool["inputSchema"]["properties"]["instance"]["description"].toString()
+                                                     == juce::String(kInstrument ? "Which synth" : "Which effect") + ", when several are open";
                 }
         std::printf("tools/list: %d of the plugin's, %d bytes in all\n", pluginTools, juce::JSON::toString(list, false).length());
         P.eq("server.tools", hasTool(list, "list_instances") && hasTool(list, "playground_guide") && hasTool(list, "gui_sandbox") && hasTool(list, "write_file")

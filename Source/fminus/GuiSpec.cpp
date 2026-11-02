@@ -144,7 +144,11 @@ namespace playground
                 {
                     std::size_t k = i;
                     while (k < s.size() && nameChar(s[k]))
+                    {
                         ++k;
+                        if (k + 2 < s.size() && s[k] == '-' && s[k + 1] == '>' && nameStart(s[k + 2]))
+                            k += 2;                      // shared->level: a field of Shared, one name
+                    }
                     std::string v(s.substr(i, k - i));
                     advance(k - i);
                     push(Token::Kind::name, std::move(v), 0.0, l, cl);
@@ -719,7 +723,8 @@ namespace playground
                 return c;
             }
 
-            // A field of the main module a display, a live= or a shader may read (and why not, when it is none).
+            // A field a display, a live= or a shader may read: the main module's, or Shared's through its pointer
+            // (displayFields: "shared->level"); and why not, when it is none.
             bool fieldOk(const Token& at, const std::string& name, const char* who)
             {
                 const auto f = std::find_if(fields_.begin(), fields_.end(), [&](const PanelField& x) { return x.name == name; });
@@ -729,8 +734,10 @@ namespace playground
                     for (const PanelField& x : fields_)
                         if (x.type == "float" || x.type == "int" || x.type == "bool")
                             have += (have.empty() ? "" : ", ") + x.name;
-                    note(at, f == fields_.end() ? "there is no field " + name + " in the main module (" + who + " reads a float, "
-                                                  "int or bool field" + (have.empty() ? std::string(")") : ": " + have + ")")
+                    const bool viaPointer = name.find("->") != std::string::npos;
+                    note(at, f == fields_.end() ? "there is no field " + name + (viaPointer ? "" : " in the main module") + " (" + who
+                                                      + " reads a float, int or bool field of the main module, or of Shared "
+                                                        "through its pointer" + (have.empty() ? std::string(")") : ": " + have + ")")
                              : f->type.rfind("param", 0) == 0 ? name + " is a dial; " + who + " reads a field the program "
                                                                            "writes"
                                                               : name + " is a " + f->type + "; " + who + " reads a float, "
@@ -1570,7 +1577,7 @@ namespace playground
                 const std::string& w = e.name.value;
                 if (e.args.empty() || !e.args[0].is(Token::Kind::name))
                 {
-                    note(e.name, w + " takes a source: in, out, or a field of the main module (" + w + " out)");
+                    note(e.name, w + " takes a source: in, out, or a field of the main module or of Shared (" + w + " out)");
                     return;
                 }
                 PanelDisplay d;
@@ -1584,11 +1591,29 @@ namespace playground
                 n.line = e.name.line;
                 bool lo = false, hi = false;
                 const bool sized = d.kind == DisplayKind::scope || d.kind == DisplayKind::spectrum;
+                const bool readout = d.kind == DisplayKind::number;
+                const Prop* formatProp = nullptr;          // a number's unit=, decimals= or scale=, for a note on audio
                 for (const Prop& p : e.props)
                 {
                     if (commonProp(n, p))
                         continue;
-                    if (p.key == "label")
+                    if (readout && (p.key == "unit" || p.key == "decimals" || p.key == "scale"))
+                    {
+                        // As a knob's value reads (formatValue): its unit, its places (0 to 4), times its scale.
+                        formatProp = formatProp != nullptr ? formatProp : &p;
+                        if (p.key == "unit")
+                            d.unit = text(p.value, sizeof(Control::unit) - 1, "unit");
+                        else if (p.key == "decimals")
+                            d.decimals = static_cast<int8_t>(number(p, 0.0f, 4.0f, -1.0f));
+                        else
+                        {
+                            const float sc = number(p, -1.0e6f, 1.0e6f, 1.0f);
+                            if (sc == 0.0f)
+                                note(p.value, "scale=0 would show every value as 0: 1 instead");
+                            d.scale = sc == 0.0f ? 1.0f : sc;
+                        }
+                    }
+                    else if (p.key == "label")
                         d.label = text(p.value, kMaxDialLabel, "label");
                     else if (p.key == "color")
                         d.color = n.color = color(p.value);
@@ -1607,10 +1632,18 @@ namespace playground
                     else if (p.key == "grow")
                         n.grow = number(p, 0.0f, 100.0f, 0.0f);
                     else
-                        unknown(p, w, "label=, color=, min=, max=, grow=, margin=, self=" + std::string(sized ? ", width=, height=" : ""));
+                        unknown(p, w, "label=, color=, min=, max=, grow=, margin=, self=" + std::string(sized ? ", width=, height=" : "")
+                                          + std::string(readout ? ", unit=, decimals=, scale=" : ""));
                 }
-                if (d.label.empty())                     // its source's name ("OUT"), not the one it is known by
-                    d.label = d.source.substr(0, kMaxDialLabel);
+                if (formatProp != nullptr && d.audio())
+                {
+                    note(formatProp->value, w + " " + d.source + " shows dBFS: unit=, decimals= and scale= are a field's");
+                    d.unit.clear();
+                    d.decimals = -1;
+                    d.scale = 1.0f;
+                }
+                if (d.label.empty())                     // its source's name ("OUT"; Shared's own, "LEVEL"), not the one
+                    d.label = sourceLabel(d.source);     // it is known by
                 if ((lo || hi) && !(d.hi > d.lo))
                 {
                     note(e.name, "min= must be under max=: " + d.source + " shows 0 to 1");
@@ -1629,6 +1662,10 @@ namespace playground
                 }
                 if (!d.audio() && !fieldOk(e.args[0], d.source, "a display"))
                     return;
+                if (!d.audio())
+                    for (const PanelField& f : fields_)
+                        if (f.name == d.source)
+                            d.integer = f.type != "float";
                 if (static_cast<int>(spec_.displays.size()) >= kMaxDisplays)
                 {
                     note(e.name, "a panel shows " + std::to_string(kMaxDisplays) + " displays at most: this " + w

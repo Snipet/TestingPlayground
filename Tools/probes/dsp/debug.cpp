@@ -18,7 +18,11 @@
 //   SAME    the same request twice gives the same lines
 //   SILENCE a voice that ends while its key is held (the synth), a gain stepped to 0 (the effect): found, and why
 //   DC      a constant added: found near the start
-//   FROMSTART a sentinel past 1e6 that init sets: a note, not a runaway, and the click after it is still found
+//   FROMSTART a sentinel past 1e6 that init sets: no runaway and no note (its own size), the click after it still found
+//   STEADY  a field large from the start (a pressure about 2e6): no runaway; GROWS the same field from 100, growing
+//           0.1 % a sample: a runaway where it passes 1e6 (sample 9215), its culprit the field
+//   RENDER  trace's render with notes, a velocity, the times and a dial asked for: measure_output's (the synth's) or
+//           view_sound's (the effect's) to the bit, and not the render without the dial
 //   BUFFER  a delay line fed back at 1.1: the runaway's and the NaN's verdicts name the buffer trace does not read
 //   TIE     two fields bad in the same sample named together; ATTACK (the synth) a note-on's click is the note-on's
 //   LOWSAW  a saw at note 24, whose wrap comes every third window: no click
@@ -845,6 +849,32 @@ module Effect
 };
 )";
 
+    // A state large from the start (a cylinder's pressure in pascals, about 2e6) that stays so: no runaway. With
+    // `grows`, it starts at 100 and grows by 0.1 % a sample instead, past 1e6 at about 0.19 s: a runaway.
+    std::string pressureProgram(bool grows)
+    {
+        const std::string set = grows ? "pressure = 100;" : "pressure = 2000000;";
+        const std::string tick = grows ? "pressure *= 1.001f;" : "pressure = 2000000 + 100000 * sinf(6.28318531f * phase);";
+        if constexpr (kInstrument)
+            return "module Voice\n{\n    float rate;\n    float phase;\n    float step;\n    float pressure;\n    bool held;\n\n"
+                   "    void init(float r)\n    {\n        rate = r;\n    }\n\n"
+                   "    void start(float note, float vel)\n    {\n        step = 440 * expf(0.0577622650f * (note - 69)) / rate;\n        "
+                 + set + "\n        held = true;\n    }\n\n"
+                   "    void stop()\n    {\n        held = false;\n    }\n\n"
+                   "    bool process(float* restrict left, float* restrict right, int n)\n    {\n"
+                   "        for (int i = 0; i < n; ++i)\n        {\n            phase += step;\n            if (phase >= 1)\n"
+                   "                phase -= 1;\n            " + tick + "\n"
+                   "            const float y = 0.1f * sinf(6.28318531f * phase);\n            left[i] += y;\n            right[i] += y;\n"
+                   "        }\n        return held;\n    }\n};\n";
+        else
+            return "module Effect\n{\n    float rate;\n    float phase;\n    float pressure;\n\n"
+                   "    void init(float r)\n    {\n        rate = r;\n        " + set + "\n    }\n\n"
+                   "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                   "        for (int i = 0; i < n; ++i)\n        {\n            phase += 220 / rate;\n            if (phase >= 1)\n"
+                   "                phase -= 1;\n            " + tick + "\n"
+                   "            left[i] *= 0.5f;\n            right[i] *= 0.5f;\n        }\n    }\n};\n";
+    }
+
     // `program` with a field init sets to a sentinel past 1e6 (lastFc = 1e9), harmless: process never reads it.
     std::string withSentinel(std::string program)
     {
@@ -1135,7 +1165,60 @@ PROBE(dsp, debug)
         P.eq("fromstart.click_still_found", c != nullptr && (c->at + 1) % 10007 == 0 && !c->culprits.empty()
                                                 && c->culprits[0].path == "phase" ? 1 : 0, 1);
         P.eq("fromstart.no_runaway", firstOf(r, ms::TraceFind::runaway) == nullptr ? 1 : 0, 1);
-        P.eq("fromstart.noted", has(r.fromStart, "lastFc") && anyHas(r.lines, "lastFc 1e+09") ? 1 : 0, 1);
+        // Large from the start is the field's own size: not a runaway, and nothing to note (a NaN there would be).
+        P.eq("fromstart.large_not_noted", !has(r.fromStart, "lastFc") && !anyHas(r.lines, "lastFc 1e+09") ? 1 : 0, 1);
+    }
+
+    // ---- STEADY, GROWS: a field runs away past 1e6 only at a thousand times its size in its first 10 ms ---------------
+    {
+        const ms::TraceResult steady = ms::trace(pg::singleFile(pressureProgram(false)), held(ms::TraceFind::runaway, 0.4));
+        print("STEADY", steady);
+        P.eq("steady.no_runaway", steady.problems.empty() && anyHas(steady.lines, "Nothing found") ? 1 : 0, 1);
+        const ms::TraceResult grows = ms::trace(pg::singleFile(pressureProgram(true)), held(ms::TraceFind::runaway, 0.4));
+        print("GROWS", grows);
+        const ms::TraceProblem* g = firstOf(grows, ms::TraceFind::runaway);
+        // 100 x 1.001^n passes 1e6 at n = 9215 (its first 10 ms reach about 161, a thousand times that is less).
+        P.eq("grows.runaway", g != nullptr && !g->culprits.empty() && g->culprits[0].path == "pressure"
+                                  && anyHas(grows.lines, "a thousand times its size in its first 10 ms") ? 1 : 0, 1);
+        P.near("grows.at_sample", g != nullptr && !g->culprits.empty() ? static_cast<double>(g->culprits[0].at) : -1.0, 9215.0, 10.0);
+    }
+
+    // ---- RENDER: trace renders what measure_output (and view_sound) render: the notes, the velocity, the times and the
+    // dials asked for, the same bits ----------------------------------------------------------------------------------------
+    {
+        const pg::Sources files = pg::singleFile(pg::kExamples[0].source);
+        ms::TraceRequest q;
+        q.find = ms::TraceFind::any;
+        q.render.holdSeconds = 0.3f;
+        q.render.tailSeconds = 0.2f;
+        q.render.velocity = 0.5f;
+        if constexpr (kInstrument)
+            q.render.notes = { 52, 59 };
+        ms::Session session(files);
+        const pg::Controls& controls = session.controls();
+        std::string dial;
+        for (const pg::Control& k : controls)
+            if (k.used && k.type == pg::ControlType::real && dial.empty())
+            {
+                dial = k.name;
+                q.render.dials[dial] = k.min + 0.8f * (k.max - k.min);
+            }
+        const ms::TraceResult r = ms::trace(files, q);
+        ms::Session::Render want;
+        if constexpr (kInstrument)
+            want = session.render(q.render, nullptr, nullptr, 0);
+        ms::ViewRequest vr;
+        vr.render = q.render;
+        const ms::Sound sound = ms::renderSound(files, vr);
+        const std::vector<float>& wl = kInstrument ? want.l : sound.l;
+        const std::vector<float>& wr = kInstrument ? want.r : sound.r;
+        ms::TraceRequest plain = q;
+        plain.render.dials.clear();
+        const ms::TraceResult d = ms::trace(files, plain);
+        std::printf("RENDER: %zu samples, the dial %s at %.3f; measure_output's render %zu samples\n", r.l.size(), dial.c_str(),
+                    dial.empty() ? 0.0 : static_cast<double>(q.render.dials[dial]), wl.size());
+        P.eq("render.as_measured", !r.l.empty() && r.l == wl && r.r == wr && sound.l == r.l ? 1 : 0, 1);
+        P.eq("render.dials_count", !dial.empty() && d.l.size() == r.l.size() && d.l != r.l ? 1 : 0, 1);
     }
 
     // ---- BUFFER: a feedback that grows in a buffer trace does not read -------------------------------------------------

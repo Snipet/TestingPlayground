@@ -363,9 +363,11 @@ namespace playground::capture
         {
             const double hz = static_cast<double>(k) * rate / static_cast<double>(kWindow);
             const double ms = power[k] * scale;
-            const double mag = std::sqrt(power[k]);
-            weighted += hz * mag;
-            sum += mag;
+            if (hz >= measure::kBandLowHz && hz <= measure::kBandHighHz)   // the centroid metrics' weighting and band
+            {
+                weighted += hz * power[k];
+                sum += power[k];
+            }
             for (std::size_t b = 0; b < bands.size(); ++b)
             {
                 const double c = measure::Comparison::kBands[b];

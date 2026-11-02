@@ -4,12 +4,14 @@
 // byte offset into it (the editor's text is ASCII).
 //
 //   lexLine(), lex()   FMinus's tokens, as its scanner (Lexer.l) reads them: identifiers, its keywords (C's that it
-//                      has, and module, param, parallel, this, restrict, sizeof), its type words (float, int, bool,
-//                      void, float2, float4, float8, poly), numbers (C's: 1.5f, .5, 2e3, 0x1F, 0x1p-3f), operators,
-//                      punctuation, // and /* */ comments (a block comment spans lines: lexLine carries the state) and
-//                      directives (a line whose first non-blank character is #: #include "file" and #pragma, one
-//                      token each). FMinus has no strings: a quote outside a directive, and any other character
-//                      FMinus does not read, is `unknown`.
+//                      has: switch, case, default and enum among them; and module, param, parallel, this, restrict,
+//                      sizeof), its type words (float, int, bool, void, float2, float4, float8, poly), numbers (C's:
+//                      1.5f, .5, 2e3, 0x1F, 0x1p-3f), operators (longest first: <<= before <<, the bitwise & | ^ ~
+//                      << >> and their assignments), punctuation, // and /* */ comments (a block comment spans lines:
+//                      lexLine carries the state) and directives (a line whose first non-blank character is #:
+//                      #include "file" and #pragma, one token each). A word after `::` is an identifier, as C23 reads a
+//                      keyword in an attribute (fminus::default). FMinus has no strings: a quote outside a directive,
+//                      and any other character FMinus does not read, is `unknown`.
 //   lexCirLine(),      a circuit netlist's tokens (a .cir file, SPICE's: fminus/Circuits.h), on the same kinds: a
 //   lexCir()           comment (a line whose first non-blank character is *, and ; to the line's end), a directive
 //                      (.title, .pot, ...: the word), a keyword (an element's name, the line's first word: R1, Ptone,
@@ -25,16 +27,22 @@
 //                      either), tick(the signal, then the law inputs: float2 and floats with .channels 2) and clear()
 //                      (step and the fields depend on the configuration, which the self-test may change: left out);
 //     symbols          every declaration: modules, their fields, params and methods, functions, their arguments and
-//                      the locals of their bodies, each with its type, signature, place, the scope it is seen in and
-//                      its documentation (the comment lines over it, else the one after it on its line; a module's
-//                      member without either: the lines of its module's usage header that name it, `filter.lp` or
-//                      `host->bpm`)
+//                      the locals of their bodies, the constants (C's enumerations, their tags and their constants,
+//                      at the top level, in a module or in a block, and the top level's const tables and scalars),
+//                      each with its type, signature, place, the scope it is seen in and its documentation (the
+//                      comment lines over it, else the one after it on its line; a module's member without either: the
+//                      lines of its module's usage header that name it, `filter.lp` or `host->bpm`). An enumeration
+//                      constant's value is folded as C's integer constant expressions are (its list's earlier
+//                      constants and the other files' enumeration constants by name; one before it plus 1 when it has
+//                      no `=`), its signature `SQUARE = 4`
 //     complete()       what may be typed at a place: after `.` or `->` the members of what is before it (a module's
 //                      fields, params and methods, a vector's lanes); after `[[` the attributes; in `#include "` the
 //                      files; after `#pragma ` its words; else the locals and arguments in scope, the module's own
 //                      members (in a method), the functions and modules of the files the program reads, the
-//                      library's modules (which add their #include), the builtins with their signatures, the
-//                      keywords and type words and a few snippets (a for loop, the contract's methods). Ranked as an
+//                      library's modules (which add their #include), the constants (a block's, the module's, the top
+//                      level's of the files the program reads), the builtins with their signatures, the keywords and
+//                      type words and a few snippets (a for loop, the contract's methods); after `enum` the
+//                      enumerations' tags. Ranked as an
 //                      editor does: what starts with the typed prefix (its case first), then what holds its letters in
 //                      order; nearer scopes first
 //     signature()      in a call's parentheses: the function's, the method's or the builtin's signature, its
@@ -44,7 +52,8 @@
 //     occurrences()    the places of the word under a place that name the same declaration, in its file
 //   circuitDials()     the dials a program's circuits get (Patch.h's "Circuits"), over the files FMinus compiles (the
 //                      first and what it #includes, in turn): each field of the main module whose type is a netlist's
-//                      module (a scalar or an array), that netlist's pots and switches read line by line (their
+//                      module (a scalar or an array, its extent a number or an expression of enumeration constants,
+//                      as FMinus folds one), that netlist's pots and switches read line by line (their
 //                      defaults, a switch's positions), whether the program calls that module's set() itself (a member
 //                      call named set, in its FMinus files, whose receiver is of that module, or one whose
 //                      receiver is not known: the test is conservative, so a pot is never driven twice) and the dials'
@@ -53,9 +62,15 @@
 //   format()           the house style of the examples and the library (LangFormat.cpp): Allman braces, four spaces
 //                      a level, a single statement under its if/for/while/else a level deeper, continuation lines
 //                      under their open parenthesis (else a level deeper), C's spacing (binary operators and commas
-//                      spaced, unary and member operators tight, `float* p`, `(int)x`, `if (`, `f(`), trailing
-//                      blanks and runs of blank lines removed, a comment after code kept at its column where it fits.
-//                      Lines are only re-indented, re-spaced and broken before a `{` or after a `}`: never joined. It
+//                      spaced, the bitwise ones too, unary and member operators tight, `~x`, `float* p`, `(int)x`,
+//                      `(enum Wave)x`, `if (`, `f(`), trailing blanks and runs of blank lines removed, a comment after
+//                      code kept at its column where it fits. A switch's body is a block whose case and default labels
+//                      sit a level inside its braces and whose statements sit a level deeper than the labels (a label's
+//                      `:` tight, a block after a label under it); an enumeration's braces Allman's, as a module's,
+//                      its constants a level inside them, a line each or on one line as written; an initialiser's list
+//                      (a table's) a level inside its braces, and a line of one longer than kWidth columns broken after
+//                      its commas to fit. Lines are only re-indented, re-spaced and broken (before a `{`, after a `}`,
+//                      and a long list after a comma): never joined. It
 //                      checks its own work: the formatted text's tokens are the original's, in order and with the same
 //                      spelling, and every directive and comment is the same text, or it returns the text unchanged
 //                      with why. Idempotent: formatting its output again changes nothing.
@@ -129,7 +144,9 @@ namespace playground::lang
     enum class Kind : uint8_t
     {
         keyword, type, module, function, method, field, param, argument, local, builtin, snippet, file, attribute,
-        lane, word
+        lane, word,
+        constant,                                // an enumeration constant, or a const of the top level (a table)
+        enumeration                              // an enumeration's tag: `enum Wave`
     };
     const char* kindName(Kind k) noexcept;                   // "module", "method", ... (completion's detail, tests)
 
@@ -144,8 +161,11 @@ namespace playground::lang
         std::string doc;                         // its documentation, plain lines
         int file = -1;                           // Service::files() index
         Pos at{};                                // its name
-        Range scope{};                           // where a local or an argument is seen (its block, from its name)
+        Range scope{};                           // where a local, an argument or a block's constant is seen (its
+                                                 // block, from its name); empty for the top level's and a module's
         bool body = false;                       // a function or method with a body (not a prototype)
+        std::string enumeration;                 // an enumeration constant's tag ("Wave"; "" for an anonymous one)
+        std::optional<int64_t> value;            // an enumeration constant's value, when it folds
     };
 
     struct Completion
@@ -278,9 +298,11 @@ namespace playground::lang
         std::vector<Range> occurrences(int file, Pos at) const;
 
         // Every declaration of every file (in file order), and the module names known (sorted): the highlighter's
-        // and the formatter's types.
+        // and the formatter's types; and the constants' names (enumeration constants and the top level's consts,
+        // sorted), which the highlighter shows as constants.
         const std::vector<Symbol>& symbols() const noexcept;
         const std::vector<std::string>& typeNames() const noexcept;
+        const std::vector<std::string>& constantNames() const noexcept;
         // The word (identifier) at a place: its range, empty when none touches it.
         Range wordAt(int file, Pos at) const;
         // The program's circuits as dials (circuitDials() below).
@@ -313,9 +335,14 @@ namespace playground::lang
         std::string why;
     };
 
+    // The house style's width: a line of an initialiser's list longer than this is broken after its commas.
+    inline constexpr int kWidth = 120;
+
     // `typeNames`: the program's module names (a `*` after one is a pointer's, `Svf* f`); the ones the text declares
-    // itself are found anyway.
-    Formatted format(std::string_view text, const std::vector<std::string>& typeNames = {});
+    // itself are found anyway. `constantNames`: the program's constants (Service::constantNames), which a `*` after
+    // multiplies (`Gain * x`), as it does after any name with no lowercase letter (`TWO_PI * phase`).
+    Formatted format(std::string_view text, const std::vector<std::string>& typeNames = {},
+                     const std::vector<std::string>& constantNames = {});
     // A place in `before` moved to the same token's place in `after` (a formatted text: the same tokens), so the caret
     // stays on what it was on.
     Pos mapFormatted(std::string_view before, std::string_view after, Pos p);

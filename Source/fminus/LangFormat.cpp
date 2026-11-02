@@ -2,13 +2,26 @@
 // the library.
 //
 // One pass over the lines, keeping a stack of the brackets open (a block, an initialiser list, a parenthesis, an index,
-// an attribute's [[ ]]), the if/for/while/else heads whose single statement is still to come (a level deeper; an else
-// takes the indent of the if it closes, as C binds it: the nearest), and whether a statement goes on over the line's
-// end (a continuation line: a level deeper, or under its open parenthesis). Each line is cut where a `{` that opens a
-// block ends it after code, and after a `}` that more code follows (`} else {`); then indented and spaced. Lines inside
-// a block comment are kept as they are; a directive starts its line. The result is checked against the text: the same
-// tokens, in order, with the same spelling (comments and directives the same text), or the text is returned as it
+// an attribute's [[ ]]), the if/for/while/switch/else heads whose single statement is still to come (a level deeper; an
+// else takes the indent of the if it closes, as C binds it: the nearest), and whether a statement goes on over the
+// line's end (a continuation line: a level deeper, or under its open parenthesis). Each line is cut where a `{` that
+// opens a block ends it after code, and after a `}` that more code follows (`} else {`); then indented and spaced. Lines
+// inside a block comment are kept as they are; a directive starts its line. The result is checked against the text: the
+// same tokens, in order, with the same spelling (comments and directives the same text), or the text is returned as it
 // was.
+//
+// The rules of the newer constructs, all of them as the house style already treats blocks and lists:
+//   switch       its head as an if's (the block under it, Allman); in its block the case and default labels a level
+//                inside the braces, the statements after a label a level deeper than the label (a line that starts
+//                with a label at the label's level, the rest of it as written); a label's `:` tight to its value (a ?:
+//                inside the value keeps its spaced `:`), a block after a label (`case 1:` then `{`) under the label
+//   enum         its braces Allman's, as a module's (`enum Wave` then `{` on a line of its own), its constants a level
+//                inside them, one a line or several on one, as written; `enum { N = 16 };` stays on its line
+//   a table      an initialiser's list (a const table's, the top level's or a block's) a level inside its braces, and a
+//                line of one longer than kWidth columns broken after its commas so that each line fits (a piece that
+//                cannot fit, one element longer than that, on a line of its own)
+//   bits         & | ^ << >> and the compound &= |= ^= <<= >>= spaced as the other binary operators; ~ tight to its
+//                operand as ! is; `(enum Wave)x` a cast
 #include "fminus/Lang.h"
 
 #include <algorithm>
@@ -58,8 +71,9 @@ namespace playground::lang
         {
             if (isIdentChar(a) && isIdentChar(b))
                 return true;
-            static constexpr const char* kPairs[] = { "++", "--", "+=", "-=", "*=", "/=", "%=", "->", "<=", ">=", "==",
-                                                      "!=", "&&", "||", "::", "//", "/*", "*/" };
+            static constexpr const char* kPairs[] = { "++", "--", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<",
+                                                      ">>", "->", "<=", ">=", "==", "!=", "&&", "||", "::", "//", "/*",
+                                                      "*/" };
             for (const char* p : kPairs)
                 if (p[0] == a && p[1] == b)
                     return true;
@@ -72,8 +86,10 @@ namespace playground::lang
             int indent = 0;                      // a block's or a list's line indent (its contents a level deeper)
             int align = 0;                       // a bracket's: where its continuation lines start
             int openIndent = 0;                  // the indent of the line it opened on
-            bool head = false;                   // the parenthesis of an if, for or while
+            bool head = false;                   // the parenthesis of an if, for, while or switch
             bool isIf = false;
+            bool switchHead = false;             // the parenthesis of a switch
+            bool isSwitch = false;               // a block that is a switch's body: its labels a level in, the rest two
             bool castable = false;               // may be a cast's: not after a name or sizeof
             bool types = true;                   // only type words inside so far
             int count = 0;                       // tokens inside
@@ -85,12 +101,24 @@ namespace playground::lang
             int indent = 0;                      // the head's line indent (its statement a level deeper)
             std::size_t depth = 0;               // the brackets open around it
             bool isIf = false;
+            bool isSwitch = false;
+        };
+
+        // A piece of a line where it may be broken: after a comma of an initialiser's list, `at` the line's length then,
+        // and the indent the rest takes (the list's contents').
+        struct Break
+        {
+            std::size_t at = 0;
+            int indent = 0;
         };
 
         class Formatter
         {
         public:
-            explicit Formatter(const std::vector<std::string>& types) : types_(types) {}
+            Formatter(const std::vector<std::string>& types, const std::vector<std::string>& constants)
+                : types_(types), constants_(constants)
+            {
+            }
 
             void line(std::string_view text, bool startsInComment, const std::vector<Token>& toks)
             {
@@ -275,12 +303,20 @@ namespace playground::lang
             }
 
             // ---- indentation ---------------------------------------------------------------------------------------
-            int blockIndent() const
+            // The innermost block or list (null for none).
+            const Frame* innerBlock() const
             {
                 for (auto it = frames_.rbegin(); it != frames_.rend(); ++it)
                     if (it->kind == '{' || it->kind == 'i')
-                        return it->indent + 4;
-                return 0;
+                        return &*it;
+                return nullptr;
+            }
+
+            // The indent of a statement in the innermost block (a switch's: a level past its labels).
+            int blockIndent() const
+            {
+                const Frame* b = innerBlock();
+                return b == nullptr ? 0 : b->indent + (b->isSwitch ? 8 : 4);
             }
 
             int baseIndent() const
@@ -352,12 +388,18 @@ namespace playground::lang
                     else
                     {
                         popped_.clear();
+                        const Frame* block = innerBlock();
                         if (f.text == "}")
-                            indent = blockIndent() - 4 < 0 ? 0 : blockIndent() - 4;
+                            indent = block != nullptr ? block->indent : 0;
+                        else if (f.kind == Tok::keyword && (f.text == "case" || f.text == "default") && block != nullptr
+                                 && block->isSwitch && !stmtOpen_)
+                            indent = block->indent + 4;      // a switch's label: a level inside its braces
                         else if (f.text == "{")
                         {
                             if (!heads_.empty() && heads_.back().depth == frames_.size() && !initBrace({}))
                                 indent = heads_.back().indent;
+                            else if (prevLabelColon_)
+                                indent = labelIndent_;       // a block after a label: under it
                             else if (stmtOpen_ && stmtDepth_ == frames_.size())
                                 indent = stmtIndent_;
                             else
@@ -376,6 +418,8 @@ namespace playground::lang
                 const int origIndent = leadingBlanks(original);
                 bool onLine = false;                     // a token is on the line already
                 int lastEnd = -1;                        // the original column after the token before
+                bool wrapped = false;
+                breaks_.clear();
                 for (int i = 0; i < static_cast<int>(seg.size()); ++i)
                 {
                     const Token& t = seg[static_cast<std::size_t>(i)];
@@ -383,11 +427,19 @@ namespace playground::lang
                     {
                         if (i > lastCode && lastCode >= 0)
                         {
-                            // A comment after the code: at its column, moved with the line's indent, where it fits.
+                            if (!wrapped)
+                            {
+                                wrap(l);
+                                wrapped = true;
+                            }
+                            // A comment after the code: at its column, moved with the line's indent, where it fits. On
+                            // a long list's line that was broken, the column was the unbroken line's: the comment
+                            // follows the code of the last line, with its gap.
+                            const std::size_t nl = l.rfind('\n');
                             const int want = t.col + (indent - origIndent);
-                            const int end = static_cast<int>(l.size());
+                            const int end = static_cast<int>(nl == std::string::npos ? l.size() : l.size() - nl - 1);
                             const int gap = lastEnd >= 0 ? std::max(1, t.col - lastEnd) : 1;
-                            const int col = want >= end + 1 ? want : end + gap;
+                            const int col = nl == std::string::npos && want >= end + 1 ? want : end + gap;
                             l.append(static_cast<std::size_t>(col - end), ' ');
                         }
                         else if (onLine)
@@ -407,6 +459,53 @@ namespace playground::lang
                     onLine = true;
                     lastEnd = seg[static_cast<std::size_t>(i)].col + seg[static_cast<std::size_t>(i)].len;
                 }
+                if (!wrapped)
+                    wrap(l);
+            }
+
+            // A line of an initialiser's list longer than kWidth, broken after its list's commas (breaks_): each line as
+            // long as fits, the rest at the list's contents' indent; a piece that cannot fit (an element longer than
+            // the line) on a line of its own. A comma that ends the line is no break.
+            void wrap(std::string& l) const
+            {
+                if (static_cast<int>(l.size()) <= kWidth || breaks_.empty())
+                    return;
+                std::string out;
+                std::size_t from = 0, next = 0;
+                int lead = 0;                            // the piece's indent (the first's is in l)
+                while (lead + static_cast<int>(l.size() - from) > kWidth)
+                {
+                    const auto width = [&](std::size_t to) { return lead + static_cast<int>(to - from); };
+                    while (next < breaks_.size() && breaks_[next].at <= from)
+                        ++next;
+                    std::size_t pick = breaks_.size();
+                    for (std::size_t k = next; k < breaks_.size() && breaks_[k].at < l.size(); ++k)
+                    {
+                        if (width(breaks_[k].at) > kWidth)
+                        {
+                            if (pick == breaks_.size())
+                                pick = k;
+                            break;
+                        }
+                        pick = k;
+                    }
+                    if (pick == breaks_.size())
+                        break;
+                    const Break& b = breaks_[pick];
+                    out.append(static_cast<std::size_t>(lead), ' ');
+                    out.append(l, from, b.at - from);
+                    out += '\n';
+                    from = b.at;
+                    while (from < l.size() && l[from] == ' ')
+                        ++from;
+                    lead = b.indent;
+                    next = pick + 1;
+                }
+                if (out.empty())
+                    return;
+                out.append(static_cast<std::size_t>(lead), ' ');
+                out.append(l, from, std::string::npos);
+                l = std::move(out);
             }
 
             static bool isAttrPair(const Token& a, const Token& b)
@@ -424,13 +523,36 @@ namespace playground::lang
                 const bool attrOpen = x == "[" && next != nullptr && next->text == "[" && (frames_.empty() || frames_.back().kind != 'a');
                 const bool attrClose = x == "]" && next != nullptr && next->text == "]" && !frames_.empty() && frames_.back().kind == 'a';
                 bool unary = false, postfix = false, pointer = false;
+                // A switch's label: `case` or `default` to its `:` (the first at its depth that closes no ?).
+                bool labelColon = false;
+                if (t.kind == Tok::keyword && (x == "case" || x == "default"))
+                {
+                    labelOpen_ = true;
+                    labelQuestions_ = 0;
+                    labelDepth_ = frames_.size();
+                    labelLineIndent_ = indent;
+                }
+                else if (labelOpen_ && (x == ";" || x == "{" || x == "}"))
+                    labelOpen_ = false;                      // no label's value holds one: a label without its `:`
+                else if (labelOpen_ && frames_.size() == labelDepth_ && x == "?")
+                    ++labelQuestions_;
+                else if (labelOpen_ && frames_.size() == labelDepth_ && x == ":")
+                {
+                    if (labelQuestions_ > 0)
+                        --labelQuestions_;
+                    else
+                        labelColon = true;
+                }
                 if (t.kind == Tok::op)
                 {
-                    if (x == "!")
+                    if (x == "!" || x == "~")
                         unary = true;
                     else if (x == "++" || x == "--")
                         (prevOperand_ ? postfix : unary) = true;
-                    else if (x == "*" && hasPrev_ && (isType(prev_) || (prev_.kind == Tok::identifier && maybeTypeName(next))))
+                    else if (x == "*" && hasPrev_
+                             && (isType(prev_)
+                                 || (prev_.kind == Tok::identifier
+                                     && (maybeTypeName(next) || (hasPrevPrev_ && prevPrev_.kind == Tok::keyword && prevPrev_.text == "enum")))))
                         pointer = true;
                     else if ((x == "-" || x == "+" || x == "*" || x == "&") && !prevOperand_)
                         unary = true;
@@ -446,7 +568,7 @@ namespace playground::lang
                     else if (prevPointer_)
                         tight = !(t.kind == Tok::identifier || t.kind == Tok::keyword || t.kind == Tok::type);
                     else if (x == ")" || x == "]" || x == "," || x == ";" || attrClose || x == "." || x == "->" || x == "::"
-                             || postfix || pointer)
+                             || postfix || pointer || labelColon)
                         tight = !attrOpen;
                     else if (x == "(")
                         tight = prev_.kind == Tok::identifier || p == "sizeof" || prev_.kind == Tok::type
@@ -475,11 +597,13 @@ namespace playground::lang
                 {
                     Frame& fr = frames_.back();
                     ++fr.count;
-                    if (!(t.kind == Tok::type || x == "const"))
+                    // a cast's: type words, const, and an enumeration's `enum Tag`
+                    if (!(t.kind == Tok::type || x == "const" || x == "enum"
+                          || (t.kind == Tok::identifier && hasPrev_ && prev_.kind == Tok::keyword && prev_.text == "enum")))
                         fr.types = false;
                 }
                 int used = i;
-                bool castClose = false;
+                bool castClose = false, switchParen = false;
                 if (attrOpen)
                 {
                     l += "[[";
@@ -507,8 +631,10 @@ namespace playground::lang
                             fr.kind = '(';
                             fr.align = last ? indent + 4 : static_cast<int>(l.size());
                             fr.openIndent = indent;
-                            fr.head = hasPrev_ && prev_.kind == Tok::keyword && (prev_.text == "if" || prev_.text == "for" || prev_.text == "while");
+                            fr.head = hasPrev_ && prev_.kind == Tok::keyword
+                                   && (prev_.text == "if" || prev_.text == "for" || prev_.text == "while" || prev_.text == "switch");
                             fr.isIf = fr.head && prev_.text == "if";
+                            fr.switchHead = fr.head && prev_.text == "switch";
                             fr.castable = !(hasPrev_ && (prev_.kind == Tok::identifier || prev_.text == "sizeof" || prev_.kind == Tok::type
                                                          || prev_.text == ")" || prev_.text == "]"));
                             frames_.push_back(fr);
@@ -522,11 +648,12 @@ namespace playground::lang
                                 const Frame fr = frames_.back();
                                 frames_.pop_back();
                                 castClose = fr.castable && fr.types && fr.count > 0;
+                                switchParen = fr.switchHead;
                                 if (fr.head)
                                 {
                                     if (last)
                                     {
-                                        heads_.push_back({ indent, frames_.size(), fr.isIf });
+                                        heads_.push_back({ indent, frames_.size(), fr.isIf, fr.switchHead });
                                         stmtOpen_ = false;
                                     }
                                     else if (fr.isIf)
@@ -554,12 +681,13 @@ namespace playground::lang
                             for (int k = 0; k < i; ++k)
                                 if (isCode(seg[static_cast<std::size_t>(k)]))
                                     lineBefore.push_back(seg[static_cast<std::size_t>(k)]);
-                            fr.kind = initBrace(lineBefore) ? 'i' : '{';
+                            fr.kind = initBrace(lineBefore) || enumBrace() ? 'i' : '{';
                             fr.indent = indent;
                             fr.openIndent = indent;
                             if (fr.kind == '{')
                             {
                                 fr.ownsHead = !heads_.empty() && heads_.back().depth == frames_.size();
+                                fr.isSwitch = (fr.ownsHead && heads_.back().isSwitch) || prevSwitchParen_;
                                 stmtOpen_ = false;
                             }
                             frames_.push_back(fr);
@@ -595,6 +723,15 @@ namespace playground::lang
                                 completeHeads();
                             }
                         }
+                        else if (x == "," && !frames_.empty() && frames_.back().kind == 'i')
+                            breaks_.push_back({ l.size(), frames_.back().indent + 4 });
+                    }
+                    else if (labelColon)
+                    {
+                        // the label ends: what follows it starts a statement
+                        labelOpen_ = false;
+                        stmtOpen_ = false;
+                        labelIndent_ = labelLineIndent_;
                     }
                     else if (t.kind == Tok::keyword && (x == "else" || x == "parallel") && last)
                     {
@@ -611,6 +748,8 @@ namespace playground::lang
                 prevPointer_ = pointer;
                 prevAttrOpen_ = attrOpen;
                 prevCastClose_ = castClose;
+                prevSwitchParen_ = switchParen;
+                prevLabelColon_ = labelColon;
                 if (attrClose)
                     prevOperand_ = false;
                 else if (t.kind == Tok::identifier || t.kind == Tok::number)
@@ -628,11 +767,22 @@ namespace playground::lang
                 return used;
             }
 
-            // A name before `*` that is a type's though no module of that name is known: capitalised, at a statement's
+            // A `{` after `enum` or `enum Tag`: an enumeration's list (its braces split as a block's, Allman).
+            bool enumBrace() const
+            {
+                const auto isEnum = [](const Token& t) { return t.kind == Tok::keyword && t.text == "enum"; };
+                return hasPrev_ && (isEnum(prev_) || (prev_.kind == Tok::identifier && hasPrevPrev_ && isEnum(prevPrev_)));
+            }
+
+            // A name before `*` that is a type's though no module of that name is known: capitalised and no constant's
+            // (the program's, or a name with no lowercase letter: `sinf(TWO_PI * phase)` multiplies), at a statement's
             // or a parameter's start, and a name after the `*` (`Svf* f;`, `(Svf* p, int n)`).
             bool maybeTypeName(const Token* next) const
             {
                 if (prev_.text.empty() || !(prev_.text[0] >= 'A' && prev_.text[0] <= 'Z'))
+                    return false;
+                if (std::none_of(prev_.text.begin(), prev_.text.end(), [](char c) { return c >= 'a' && c <= 'z'; })
+                    || std::binary_search(constants_.begin(), constants_.end(), std::string(prev_.text)))
                     return false;
                 const std::string_view b = hasPrevPrev_ ? prevPrev_.text : std::string_view{};
                 const bool start = !hasPrevPrev_ || b == ";" || b == "{" || b == "}" || b == "(" || b == "," || b == "const";
@@ -640,6 +790,7 @@ namespace playground::lang
             }
 
             const std::vector<std::string>& types_;
+            const std::vector<std::string>& constants_;   // sorted
             std::vector<std::string> out_;
             bool blankPending_ = false;
             std::vector<Frame> frames_;
@@ -650,7 +801,13 @@ namespace playground::lang
             std::size_t stmtDepth_ = 0;
             Token prev_{}, prevPrev_{};
             bool hasPrev_ = false, hasPrevPrev_ = false, prevOperand_ = false, prevUnary_ = false, prevPointer_ = false,
-                 prevAttrOpen_ = false, prevCastClose_ = false;
+                 prevAttrOpen_ = false, prevCastClose_ = false, prevSwitchParen_ = false, prevLabelColon_ = false;
+            // A switch's label being read (from its case or default to its `:`), and the indent of the line it was on.
+            bool labelOpen_ = false;
+            int labelQuestions_ = 0;
+            std::size_t labelDepth_ = 0;
+            int labelLineIndent_ = 0, labelIndent_ = 0;
+            std::vector<Break> breaks_;              // the line's: where a long list's line may be broken
         };
 
         // A text's tokens as format() compares them: kind and spelling, comments without trailing blanks.
@@ -663,7 +820,7 @@ namespace playground::lang
         }
     }
 
-    Formatted format(std::string_view text, const std::vector<std::string>& typeNames)
+    Formatted format(std::string_view text, const std::vector<std::string>& typeNames, const std::vector<std::string>& constantNames)
     {
         Formatted r;
         r.text = std::string(text);
@@ -693,7 +850,9 @@ namespace playground::lang
         std::sort(types.begin(), types.end());
         types.erase(std::unique(types.begin(), types.end()), types.end());
 
-        Formatter f(types);
+        std::vector<std::string> constants = constantNames;
+        std::sort(constants.begin(), constants.end());
+        Formatter f(types, constants);
         for (std::size_t i = 0; i < lines.size(); ++i)
             f.line(lines[i], inComment[i], toks[i]);
         std::string out = f.finish();

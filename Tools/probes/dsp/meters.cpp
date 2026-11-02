@@ -9,6 +9,10 @@
 //   TAPS    the fields the displays show, in display order: a float, an int, a bool, as the program wrote them last
 //   VOICE   an instrument's fields come from its newest sounding voice (a second note's while both sound, the first's
 //           after the second's voice has ended), 0 once none sounds
+//   SHARED  a display of a field of the module Shared (#pragma panel number shared->held) reads its one Shared: the
+//           keys its voices count while they sound, and a field its init set, whether a voice sounds or not (before any
+//           note and after the last has ended, while the main module's field reads 0); an effect's as its process
+//           writes it
 //   SCOPE   the last samples of the output are the Engine's output, bit for bit (mono: the sides' mean); an effect's
 //           input likewise
 //   FRAME   the frame counts the blocks (a last, shorter one too)
@@ -630,6 +634,50 @@ PROBE(dsp, meters)
         rig.run(probe::Stereo(static_cast<std::size_t>(kBlock) * 8), kBlock, all);
         rig.engine().meters(m);
         P.near("voice.none_left", static_cast<double>(m.taps[3]), 0.0, 1e-6);
+    }
+
+    // SHARED: displays of Shared's fields, whether a voice sounds or not.
+    {
+        const std::string shared = "#pragma panel number shared->held\n#pragma panel number v\n#pragma panel number shared->level\n"
+                                   "module Shared\n{\n    int held;\n    float level;\n    void init(float rate) { level = 0.5f; }\n};\n";
+        const std::string main = kInstrument
+                                     ? "module Voice\n{\n    Shared* shared;\n    float v;\n    bool on;\n"
+                                       "    void start(float note, float velocity) { v = note; on = true; shared->held += 1; }\n"
+                                       "    void stop() { on = false; shared->held -= 1; }\n"
+                                       "    bool process(float* restrict left, float* restrict right, int n) { return on; }\n};\n"
+                                     : "module Effect\n{\n    Shared* shared;\n    float v;\n"
+                                       "    void process(float* restrict left, float* restrict right, int n) { v = 2; shared->held = 5; }\n};\n";
+        probe::Rig r(kFs, kBlock);
+        std::string why;
+        P.eq("shared.compiles", r.load(shared + main, &why) ? 1 : 0, 1);
+        if (!why.empty())
+            std::printf("%s", why.c_str());
+        P.eq("shared.three_taps", static_cast<int64_t>(r.panel().displays.size()), 3);
+        pg::Meters sm;
+        r.run(probe::Stereo(static_cast<std::size_t>(kBlock) * 2), kBlock);
+        r.engine().meters(sm);
+        P.near("shared.before_any_note", static_cast<double>(sm.taps[2]), 0.5, 1e-6);
+        if constexpr (kInstrument)
+        {
+            P.near("shared.main_field_no_voice", static_cast<double>(sm.taps[1]), 0.0, 0.0);
+            r.run(probe::Stereo(static_cast<std::size_t>(kBlock) * 2), kBlock,
+                  { { 0, pg::EventKind::noteOn, 60, 0.8f }, { 0, pg::EventKind::noteOn, 64, 0.8f } });
+            r.engine().meters(sm);
+            P.near("shared.counted_while_sounding", static_cast<double>(sm.taps[0]), 2.0, 0.0);
+            P.near("shared.main_field_newest", static_cast<double>(sm.taps[1]), 64.0, 0.0);
+            r.run(probe::Stereo(static_cast<std::size_t>(kBlock) * 2), kBlock,
+                  { { 0, pg::EventKind::noteOff, 60, 0.0f }, { 0, pg::EventKind::noteOff, 64, 0.0f } });
+            r.engine().meters(sm);
+            P.eq("shared.no_voice_left", r.engine().activeVoices(), 0);
+            P.near("shared.after_the_last", static_cast<double>(sm.taps[2]), 0.5, 1e-6);
+            P.near("shared.count_back", static_cast<double>(sm.taps[0]), 0.0, 0.0);
+            P.near("shared.main_field_none", static_cast<double>(sm.taps[1]), 0.0, 0.0);
+        }
+        else
+        {
+            P.near("shared.as_process_writes", static_cast<double>(sm.taps[0]), 5.0, 0.0);
+            P.near("shared.main_field", static_cast<double>(sm.taps[1]), 2.0, 0.0);
+        }
     }
 
     // FALL: half a second of silence (an instrument's voices have ended above).

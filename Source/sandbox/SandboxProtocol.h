@@ -48,7 +48,7 @@ namespace playground::sandbox
 
     // What open reads from disk: a .gui file, or a program's folder (its .fm, .gui and .sc files), read only.
     inline constexpr std::size_t kMaxFileBytes = 256u * 1024u;
-    inline constexpr std::size_t kMaxFiles = 12;             // the editor's tabs (kMaxFiles)
+    inline constexpr std::size_t kMaxFiles = 16;             // the editor's tabs (kMaxFiles)
     inline constexpr std::size_t kMaxTotalBytes = 1024u * 1024u;
 
     // The helper's file name, beside the server's.
