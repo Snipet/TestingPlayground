@@ -553,7 +553,8 @@ namespace playground::measure
                             j += 2;                            // a lane
                         const std::string_view op = text(ts, j);
                         const bool assigns = op == "=" || op == "+=" || op == "-=" || op == "*=" || op == "/=" || op == "%="
-                                          || op == "++" || op == "--" || (i > 0 && (text(ts, i - 1) == "++" || text(ts, i - 1) == "--"));
+                                          || op == "&=" || op == "|=" || op == "^=" || op == "<<=" || op == ">>=" || op == "++"
+                                          || op == "--" || (i > 0 && (text(ts, i - 1) == "++" || text(ts, i - 1) == "--"));
                         if (!assigns)
                             continue;
                         const lang::Pos p{ ts[i].line, ts[i].col };
