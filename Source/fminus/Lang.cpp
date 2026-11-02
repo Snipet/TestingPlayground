@@ -274,11 +274,15 @@ namespace playground::lang
         // 32 bits: + - * / % with C's errors for an overflow and a division by 0, a shift by its count's low five bits,
         // << dropping the bits shifted out and >> keeping the sign, ~ & | ^, comparisons and ! as 0 or 1, && || ?:
         // evaluating only what C does, so what they skip has no error), its names (enumeration constants) through
-        // `lookup`: nothing when it is no constant, or not one FMinus would take.
+        // `lookup`: nothing when it is no constant, or not one FMinus would take. Its recursion is at most kMaxDepth
+        // levels deep (a ?: branch or a unary operator one, a parenthesis two: 63 parentheses around a number): an
+        // expression nested deeper folds to nothing, so no text runs a thread's stack out (the compiler's thread
+        // folds every program's constants for its circuits' dials, Patch's checkedBindings).
         class Folder
         {
         public:
             using Lookup = std::function<std::optional<int64_t>(std::string_view)>;
+            static constexpr int kMaxDepth = 128;
 
             Folder(const std::vector<Token>& t, int from, int to, const Lookup& lookup)
                 : t_(t), k_(from), to_(std::min(to, static_cast<int>(t.size()))), lookup_(lookup)
@@ -314,8 +318,21 @@ namespace playground::lang
             }
             static int64_t wrap(int64_t v) { return static_cast<int64_t>(static_cast<int32_t>(static_cast<uint32_t>(v))); }
 
+            // One level of the recursion, counted while it lasts.
+            struct Level
+            {
+                explicit Level(int& depth) : d(depth) { ++d; }
+                ~Level() { --d; }
+                Level(const Level&) = delete;
+                Level& operator=(const Level&) = delete;
+                int& d;
+            };
+
             V conditional()
             {
+                const Level level(depth_);
+                if (depth_ > kMaxDepth)
+                    return std::nullopt;
                 const V c = logical(0);
                 if (!c || !take("?"))
                     return c;
@@ -405,6 +422,9 @@ namespace playground::lang
 
             V unary()
             {
+                const Level level(depth_);
+                if (depth_ > kMaxDepth)
+                    return std::nullopt;
                 if (take("-"))
                 {
                     const V v = unary();
@@ -498,6 +518,7 @@ namespace playground::lang
             int k_ = 0, to_ = 0;
             const Lookup& lookup_;
             int skip_ = 0;
+            int depth_ = 0;                      // the levels open (Level), each a conditional() or a unary()
         };
 
         // ---- one file, indexed --------------------------------------------------------------------------------------

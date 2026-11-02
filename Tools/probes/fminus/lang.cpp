@@ -61,7 +61,9 @@
 //             the tags after `enum`, the new keywords and builtins (hash, randf) with their signatures; hover (a
 //             constant's value and enumeration, a table's declaration and its file, a tag's list, switch's meaning,
 //             randf's); signature help in hash( and randf(; go to definition of a constant, a table and a tag in the
-//             other file; a constant's occurrences; a circuit field's extent of enumeration constants folded; and
+//             other file; a constant's occurrences; a circuit field's extent of enumeration constants folded; a
+//             constant nested 2,000 parentheses deep compiled on a thread of the default stack (as the Compiler's),
+//             with no value, and one 63 deep folded; and
 //             Patch::check's messages as RUN's for a switch on a float and a write to a constant table, the program
 //             itself clean
 #include "Probe.h"
@@ -85,7 +87,9 @@
 #include <cstring>
 #include <map>
 #include <set>
+#include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace pg = playground;
@@ -1341,6 +1345,33 @@ PROBE(fminus, lang)
             const lg::CircuitDials dials = lg::circuitDials(cs, pg::product::kIsInstrument);
             P.eq("newer.circuit_extent", dials.bindings.size() == 1 && dials.bindings[0].dims == std::vector<int>{ 2 }
                                              && dials.bindings[0].count() == 2 && dials.bindings[0].names.size() == 3 ? 1 : 0, 1);
+        }
+
+        // An enumeration constant nested 2,000 parentheses deep, which FMinus folds: on a thread of the default stack
+        // (as the Compiler's, which folds a program's constants for its circuits' dials), Patch::compile compiles it
+        // and Lang gives it no value (past Folder's depth); one 63 deep still folds.
+        {
+            const auto nested = [](std::size_t levels) { return std::string(levels, '(') + "1" + std::string(levels, ')'); };
+            const pg::Sources deep = pg::singleFile(std::string(pg::kExamples[0].source) + "enum { DEEP = " + nested(2000) + ", NEAR = "
+                                                    + nested(63) + " * 2 };\n");
+            bool compiled = false;
+            std::optional<int64_t> deepValue, nearValue;
+            std::thread([&] {
+                const pg::Patch::Result r = pg::Patch::compile(deep, 48000.0f);
+                compiled = r.patch != nullptr && r.errors.empty();
+                lg::Service d;
+                d.setFiles(deep);
+                for (const lg::Symbol& x : d.symbols())
+                {
+                    if (x.name == "DEEP")
+                        deepValue = x.value;
+                    if (x.name == "NEAR")
+                        nearValue = x.value;
+                }
+            }).join();
+            std::printf("newer: 2,000 parentheses deep: %s, DEEP %s, NEAR %s\n", compiled ? "compiled" : "NOT COMPILED",
+                        deepValue ? std::to_string(*deepValue).c_str() : "-", nearValue ? std::to_string(*nearValue).c_str() : "-");
+            P.eq("newer.fold_deep", compiled && !deepValue && nearValue == 2 ? 1 : 0, 1);
         }
 
         // Patch::check: the program clean; a switch on a float and a write to a constant table as RUN says them
