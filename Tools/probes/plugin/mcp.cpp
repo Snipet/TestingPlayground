@@ -5,7 +5,9 @@
 //            guide.md there; info names its kind, plugin and files; tools are the chat's, but ask_user and
 //            ask_planner, each MCP description its first sentence or paragraph (tools.json's size printed, with the
 //            full descriptions for comparison, and compact), a setting's description given once (view_sound's render
-//            settings, set_checks' goals: not again in a check's or tune_dials'); edit_circuit's description its first sentence, its face "Edit a circuit", its `name`
+//            settings, set_checks' goals: not again in a check's or tune_dials'); tune_dials' metric a plain string,
+//            set_checks' the metrics' names; an instrument's notes, velocity and wheels in the synth's measure_output and
+//            in none of the effect's tools; edit_circuit's description its first sentence, its face "Edit a circuit", its `name`
 //            undescribed (edit_file's words), view_panel's naming the schematic, its `name` too; the guide's start says it is driven
 //            from outside; a guide request naming no part (a 0.2.0 server's) gets the whole guide
 //   GUIDE    the guide in parts (mcp/McpGuide.h): start (working from outside, FMINUS, DSP PRACTICE, CHECKING, the
@@ -20,7 +22,7 @@
 //   CALL     write_file through the socket writes the processor's draft (the chat's card notes Claude Desktop once);
 //            run_program compiles and plays it; a dial set reads back at once (before the message thread applies it);
 //            read_file gives it back; view_panel answers with a PNG (drawn by the GPU, its text says); an unknown
-//            tool, and ask_user, are errors
+//            tool, and ask_user, are errors; tune_dials refuses a metric that is none, naming the plugin's
 //   WAVE     on a second connection, with a slow program in the editor: get_status and info answered while a tune runs
 //            (each reply a whole line); the tune cancelled, its dial as it was; a call waiting behind it cancelled,
 //            answered at once; a tune with a time limit of a second stops there with the best so far; pictures fit
@@ -32,8 +34,9 @@
 //   NAMES    the first processor is "Synth 1" ("Effect 1"), its socket 1.sock; a second one "Synth 2"
 //   SERVER   the server program (<Name>MCP) over stdio, as Claude Desktop runs it: initialize (its protocol version,
 //            2025-11-25 too, tools with listChanged, prompts, instructions that keep tools and ids from the user),
-//            tools/list (list_instances, playground_guide, gui_sandbox and the chat's tools, each with `instance` and a
-//            title in words, the ones that only look marked read-only; the reply's line, what Claude Desktop receives,
+//            tools/list (list_instances, playground_guide, gui_sandbox and the chat's tools, each with `instance` (in a
+//            few words: the instructions say how to name one) and a title in words, the ones that only look marked
+//            read-only; the reply's line, what Claude Desktop receives,
 //            at most kToolsBound bytes: its size and the slack printed), list_instances naming this processor by its name,
 //            get_status and write_file routed to it, playground_guide (its start, and a part); the processor then knows
 //            Claude Desktop is connected, and its port says so with its name; the prompts (Make a sound, Improve the
@@ -52,6 +55,7 @@
 //            still list (from tools.json) and the guide's parts come from guide.md, as the plugin gave them
 #include "Probe.h"
 
+#include "dsp/Measure.h"
 #include "mcp/McpGuide.h"
 #include "mcp/McpProtocol.h"
 #include "plugin/ChatAgent.h"
@@ -64,12 +68,14 @@
 
 #include <funkgui/panel/HeadlessGuiScope.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <csignal>
 #include <fcntl.h>
+#include <functional>
 #include <map>
 #include <poll.h>
 #include <spawn.h>
@@ -528,6 +534,42 @@ PROBE(plugin, mcp)
                      && !tuneDials["inputSchema"]["properties"]["goals"]["items"]["properties"]["min"].hasProperty("description")
                      && setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["min"].hasProperty("description")
                  ? 1 : 0, 1);
+        // tune_dials' metric a plain string (the tool checks it: CALL), set_checks' the metrics' names.
+        const juce::var tunedMetric = tuneDials["inputSchema"]["properties"]["goals"]["items"]["properties"]["metric"];
+        const juce::var checkedMetric = setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["metric"];
+        P.eq("link.tune_metric_string", tunedMetric["type"].toString() == "string" && !tunedMetric.hasProperty("enum")
+                                            && checkedMetric["enum"].size() == static_cast<int>(pg::measure::metrics().size()) ? 1 : 0, 1);
+        // An instrument's render settings (its notes, velocity and wheels) in an instrument's tools only: measure_output
+        // has them in the synth, and no tool of the effect's lists them.
+        {
+            std::vector<std::string> found;
+            std::function<void(const juce::var&, const std::string&)> walk = [&](const juce::var& node, const std::string& at) {
+                if (juce::DynamicObject* o = node.getDynamicObject())
+                {
+                    if (juce::DynamicObject* props = o->getProperty("properties").getDynamicObject())
+                        for (const char* k : { "notes", "velocity", "modwheel", "pitchbend" })
+                            if (props->hasProperty(k))
+                                found.push_back(at + "." + k);
+                    for (const auto& kv : o->getProperties())
+                        walk(kv.value, at);
+                }
+                else if (const juce::Array<juce::var>* arr = node.getArray())
+                    for (const juce::var& v : *arr)
+                        walk(v, at);
+            };
+            if (const juce::Array<juce::var>* t = tools.getArray())
+                for (const juce::var& tool : *t)
+                    walk(tool["inputSchema"], tool["name"].toString().toStdString());
+            const auto listed = [&](const std::string& path) { return std::find(found.begin(), found.end(), path) != found.end(); };
+            std::string all;
+            for (const std::string& f : found)
+                all += " " + f;
+            std::printf("an instrument's settings in the tools:%s\n", all.empty() ? " none" : all.c_str());
+            const bool own = kInstrument ? listed("measure_output.notes") && listed("measure_output.velocity")
+                                               && listed("measure_output.modwheel") && listed("measure_output.pitchbend")
+                                         : found.empty();
+            P.eq("link.instrument_settings", own ? 1 : 0, 1);
+        }
         // tools.json as the link writes it (pretty-printed, above) and on one line, for comparison: the budget is on what
         // the server sends Claude Desktop (kToolsBound, SERVER).
         std::printf("tools.json compact: %d bytes\n", juce::JSON::toString(tools, true).length());
@@ -694,6 +736,19 @@ PROBE(plugin, mcp)
     P.eq("call.unknown", static_cast<bool>(res["isError"]) ? 1 : 0, 1);
     res = ask(*a, r, 9, "call", object({ { "name", "ask_user" }, { "arguments", juce::var(new juce::DynamicObject()) } }))["result"];
     P.eq("call.chat_only", static_cast<bool>(res["isError"]) ? 1 : 0, 1);
+    {
+        // tune_dials' metric is a plain string in its schema: one that is no metric is refused, naming this plugin's.
+        juce::Array<juce::var> goals;
+        goals.add(object({ { "metric", "loudness" }, { "max", 1.0 } }));
+        res = ask(*a, r, 11, "call", object({ { "name", "tune_dials" },
+                                              { "arguments", object({ { "tune", juce::Array<juce::var>{ "level" } }, { "goals", goals } }) } }))["result"];
+        const std::string said = firstText(res);
+        std::printf("tune_dials, metric loudness: %s\n", said.c_str());
+        bool named = !pg::measure::metrics().empty();
+        for (const pg::measure::MetricInfo& m : pg::measure::metrics())
+            named = named && has(said, m.name);
+        P.eq("call.tune_metric_refused", static_cast<bool>(res["isError"]) && has(said, "no metric 'loudness'") && named ? 1 : 0, 1);
+    }
     close(fd);
 
     // ---- WAVE: calls side by side, cancel, the time limit, pictures that fit ---------------------------------------------
@@ -794,7 +849,8 @@ PROBE(plugin, mcp)
         P.eq("server.initialize", rep["result"]["protocolVersion"].toString() == "2025-06-18" && static_cast<bool>(rep["result"]["capabilities"]["tools"]["listChanged"])
                                       && rep["result"]["capabilities"].hasProperty("prompts")
                                       && rep["result"]["instructions"].toString().contains("playground_guide")
-                                      && rep["result"]["instructions"].toString().contains("never ask them about tools") ? 1 : 0, 1);
+                                      && rep["result"]["instructions"].toString().contains("never ask them about tools")
+                                      && rep["result"]["instructions"].toString().contains("or its track's or its project's, in the user's words") ? 1 : 0, 1);
         const int listId = s.post("tools/list", {});
         rep = s.wait({ a.get() }, listId);
         const juce::var list = rep["result"]["tools"];
@@ -817,8 +873,10 @@ PROBE(plugin, mcp)
                 if (tool["name"].toString() != "list_instances" && tool["name"].toString() != "playground_guide"
                     && tool["name"].toString() != "gui_sandbox")   // the server's own (plugin.sandbox)
                 {
+                    // `instance` on each, its words short (the instructions say how to name one)
                     ++pluginTools;
-                    instanceArg = instanceArg && tool["inputSchema"]["properties"].hasProperty("instance");
+                    instanceArg = instanceArg && tool["inputSchema"]["properties"]["instance"]["description"].toString()
+                                                     == juce::String(kInstrument ? "Which synth" : "Which effect") + ", when several are open";
                 }
         std::printf("tools/list: %d of the plugin's, %d bytes in all\n", pluginTools, juce::JSON::toString(list, false).length());
         P.eq("server.tools", hasTool(list, "list_instances") && hasTool(list, "playground_guide") && hasTool(list, "gui_sandbox") && hasTool(list, "write_file")

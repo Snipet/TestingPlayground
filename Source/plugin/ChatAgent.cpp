@@ -557,16 +557,19 @@ namespace playground
                    "needs a line or two, or none: say so. The user reads your plan.)";
         }
 
-        // A goal's properties in a schema.
-        juce::var goalProps(bool weight)
+        // A goal's properties in a schema: set_checks' (the metrics' names as an enum) or tune_dials' (`tune`: its
+        // metric a plain string, which goalOf checks, naming the metrics when it is none of them; the weight). The
+        // metric's words are the same in both, so MCP's copy gives them once (dropRepeated).
+        juce::var goalProps(bool tune)
         {
-            juce::var p = claude::object({ { "metric", metricEnum("What to measure (CHECKING YOUR WORK lists them)") },
+            constexpr const char* what = "What to measure (CHECKING YOUR WORK lists them)";
+            juce::var p = claude::object({ { "metric", tune ? prop("string", what) : metricEnum(what) },
                                            { "min", prop("number", "At least this, in the metric's unit") },
                                            { "max", prop("number", "At most this, in the metric's unit") },
                                            { "target", prop("number", "Near this (instead of min and max)") },
                                            { "tolerance", prop("number", "How near the target counts, in the metric's "
                                                                          "unit (default: the metric's own)") } });
-            if (weight)
+            if (tune)
                 p.getDynamicObject()->setProperty("weight", prop("number", "How much this goal counts against the "
                                                                            "others (default 1)"));
             return p;
@@ -1777,16 +1780,21 @@ namespace playground
                                         { "value", prop("number", "The value, inside the parameter's range") } }),
                        { "name", "value" }));
         {
-            juce::var notes = claude::object({ { "type", "array" },
-                                               { "items", claude::object({ { "type", "integer" } }) },
-                                               { "description", "An instrument's MIDI notes, played together (69 is A, "
-                                                                "440 Hz). Default: one note, 48 (C3). An effect "
-                                                                "ignores it." } });
-            juce::var dials = claude::object({ { "type", "object" },
-                                               { "additionalProperties", claude::object({ { "type", "number" } }) },
-                                               { "description", "Dial values to render with, by parameter name, in "
-                                                                "the parameter's own units. Dials not named keep the "
-                                                                "values they have now." } });
+            // The render settings the others take (addRenderProps: an instrument's notes, velocity and wheels in an
+            // instrument only), in words of its own where it renders otherwise (an effect's sine, noise and impulse).
+            juce::var props = claude::object({});
+            addRenderProps(props);
+            auto* o = props.getDynamicObject();
+            if constexpr (!kInstrument)
+            {
+                o->setProperty("hold_seconds", prop("number", "How long the sine and the noise play; default 1, "
+                                                              "at most 10"));
+                o->setProperty("tail_seconds", prop("number", "How long to go on after the impulse; default 1.5, "
+                                                              "at most 10"));
+            }
+            o->setProperty("bpm", prop("number", "The host's tempo for a program that reads it (host.fm: the host plays "
+                                                 "from the song's start); default 120"));
+            o->setProperty("try_edits", scenario::trialSchema());
             tools.add(tool("measure_output",
                            "Render the program in the editor offline and measure what comes out. An instrument: the "
                            "notes held and released, reporting the held level (peak and RMS in dBFS, DC, the stereo "
@@ -1799,25 +1807,7 @@ namespace playground
                            "guard's alerts and the CPU cost. You cannot hear the plugin: measure every new sound once "
                            "it compiles, and measure when debugging what the user hears. It compiles the files as "
                            "they are now (they need not be running) and changes nothing that plays.",
-                           claude::object({ { "notes", notes },
-                                            { "velocity", prop("number", "An instrument's velocity, 0 to 1 (default 0.8)") },
-                                            { "hold_seconds", prop("number", "How long the notes are held (an effect: how "
-                                                                             "long the sine and the noise play); default "
-                                                                             "1, at most 10") },
-                                            { "tail_seconds", prop("number", "How long to go on after the release (an "
-                                                                             "effect: after the impulse); default 1.5, at "
-                                                                             "most 10") },
-                                            { "dials", dials },
-                                            { "bpm", prop("number", "The host's tempo for a program that reads it "
-                                                                    "(host.fm: the host plays from the song's start); "
-                                                                    "default 120") },
-                                            { "modwheel", prop("number", "An instrument's mod wheel, 0 to 1, from the "
-                                                                         "start (default 0)") },
-                                            { "pitchbend", prop("number", "An instrument's pitch wheel, -1 to 1, from "
-                                                                          "the start (default 0)") },
-                                            { "scenario", scenario::schema() },
-                                            { "try_edits", scenario::trialSchema() } }),
-                           {}));
+                           props, {}));
         }
         tools.add(tool("view_panel",
                        "See the plugin's interface: a picture (PNG) of the program's panel as the user sees it in the "
@@ -3139,13 +3129,15 @@ namespace playground
                "their DAW (or its Standalone app) and sees what you do in its editor; its chat's card notes each tool you "
                "use. The plugin does not send you its state with each message as it does its chat (the <plugin_state> "
                "below): call get_status for the files, the dials and the last run, and read_file before editing a file. "
-               "With more than one instance of the plugin open, every tool takes `instance` (list_instances names them). "
+               "With more than one instance of the plugin open, every tool takes `instance`: the one meant, by its "
+               "name (\"" + std::string(kInstrument ? "Synth" : "Effect") + " 2\"), its track or its project, in the "
+               "user's words (list_instances names them). "
                "This guide comes in parts (playground_guide's part): \"start\" is what every piece of work needs, and its end "
                "names the others and when to read them; a section it calls \"below\" that is not in the part you read is in "
                "another part. The tools' descriptions here are short: what they leave out is in " + mcp::guide::kNotes
              + ", at the end of the part that needs it; and a setting described in one tool's schema without a number is "
-               "not described again in a later one's (a check's and tune_dials' render settings are as view_sound's, their "
-               "goals as set_checks'). "
+               "not described again in a later one's (a check's and tune_dials' render settings are as measure_output's, "
+               "their goals as set_checks', whose metric lists the names tune_dials' takes). "
                "What follows is the guide the plugin's chat works from.\n\n"
              + systemPrompt() + "\n" + mcp::guide::kNotes + "\n\n" + notes;
     }
