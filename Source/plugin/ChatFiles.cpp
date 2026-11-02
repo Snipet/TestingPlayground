@@ -283,14 +283,16 @@ namespace playground
         const std::string head = file + ": " + std::to_string(count) + (count == 1 ? " line" : " lines") + ", version " + version;
         if (!part)
             return head + ".\n" + t;
+        if (count == 0)
+            return head + ": it is empty.\n";
 
         // The range (all of it unless from or lines say), then the lines in it that hold `find`.
         int from = 1, to = count;
         if (isNumber(fromVar))
             from = static_cast<int>(std::lround(static_cast<double>(fromVar)));
-        if (from < 1 || (count > 0 && from > count) || (count == 0 && from > 1))
+        if (from < 1 || from > count)
             return fail(file + " has " + std::to_string(count) + (count == 1 ? " line" : " lines") + ": from is 1 to "
-                        + std::to_string(std::max(count, 1)));
+                        + std::to_string(count));
         if (isNumber(linesVar))
         {
             const int n = static_cast<int>(std::lround(static_cast<double>(linesVar)));
