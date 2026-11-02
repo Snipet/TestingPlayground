@@ -73,10 +73,11 @@
 //            refused), by a text (the lines that hold it with two around each, groups apart; none); a part read is not
 //            the file seen, nor is an edit after it (the next state sends it, with the user's line and the edit, and
 //            names unchanged a file read whole), and an edit of a file seen is seen; edit_file's miss gives the closest
-//            passage, numbered, and what differs (the characters; only the whitespace), a passage that occurs four
-//            times names its lines; a list with one bad edit changes nothing and names it; a good one is one write the
-//            editor undoes in one step; `expected` refuses a write after the user's edit, keeps it and shows its line
-//            (the result's first line naming the edit), and with the version it gives the write goes
+//            passage, numbered, and what differs (the characters; only the whitespace; a fragment of a long line, a
+//            letter off, gets that line), a passage that occurs four times names its lines; a list with one bad edit
+//            changes nothing and names it; a good one is one write the editor undoes in one step; `expected` refuses a
+//            write after the user's edit, keeps it and shows its line (the result's first line naming the edit), and
+//            with the version it gives the write goes
 //   SOUND    view_sound through the agent (a program that sounds): its result a PNG of 1120 x 800 and what it shows,
 //            the tool's entry with the picture's thumbnail (480 px), the session without the PNG but with the thumbnail;
 //            a program that does not compile draws nothing and says why
@@ -1696,6 +1697,20 @@ PROBE(plugin, chat)
                                       && has(toolText(spaces), "line 4 differs only in its spaces or tabs") ? 1 : 0, 1);
         const pg::ChatAgent::McpResult many = call("edit_file", input({ { "name", "notes.fm" }, { "old_text", "return x * 1" }, { "new_text", "x" } }));
         P.eq("files.occurs_many", many.isError && has(toolText(many), "old_text occurs 4 times in notes.fm (lines 1, 10, 11 and 12)") ? 1 : 0, 1);
+        // A fragment of a long line with a letter missing: that line is the closest (its other characters do not drown it).
+        {
+            const std::string longLine = "const float y = level * (0.6f * osc.process(phase, shape) + noiseAmount * noise.next())"
+                                         " * env.value(attack, release);";
+            pg::Draft ld = processor.editorPort().draft();
+            ld.files.push_back({ "long.fm", "// long.fm\n" + longLine + "\n" });
+            processor.editorPort().setDraft(ld);
+            const pg::ChatAgent::McpResult frag = call("edit_file", input({ { "name", "long.fm" }, { "old_text", "noiseAmount * noise.nxt()" },
+                                                                             { "new_text", "x" } }));
+            std::printf("edit_file, a fragment of a long line:\n%s\n", toolText(frag).c_str());
+            P.eq("files.miss_fragment", frag.isError && has(toolText(frag), "The closest passage, line 2:\n2\t" + longLine + "\n") ? 1 : 0, 1);
+            ld.files.pop_back();
+            processor.editorPort().setDraft(ld);
+        }
         // A list with one bad edit changes nothing and names it.
         juce::Array<juce::var> bad;
         bad.add(input({ { "old_text", juce::String(lineOf(2)) }, { "new_text", "float v2(float x) { return -x; }" } }));

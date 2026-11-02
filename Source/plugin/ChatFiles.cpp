@@ -88,11 +88,9 @@ namespace playground
             return s;
         }
 
-        // How alike two squashed lines are: their shared pairs over all of them (Dice's coefficient), 0 to 1.
-        double dice(const Squashed& a, const Squashed& b)
+        // The character pairs two squashed lines share (each pair as often as both have it).
+        std::size_t sharedPairs(const Squashed& a, const Squashed& b)
         {
-            if (a.pairs.empty() || b.pairs.empty())
-                return a.text == b.text ? 1.0 : 0.0;
             std::size_t i = 0, j = 0, shared = 0;
             while (i < a.pairs.size() && j < b.pairs.size())
             {
@@ -107,14 +105,32 @@ namespace playground
                 else
                     ++j;
             }
-            return 2.0 * static_cast<double>(shared) / static_cast<double>(a.pairs.size() + b.pairs.size());
+            return shared;
+        }
+
+        // How alike two squashed lines are: their shared pairs over all of them (Dice's coefficient), 0 to 1.
+        double dice(const Squashed& a, const Squashed& b)
+        {
+            if (a.pairs.empty() || b.pairs.empty())
+                return a.text == b.text ? 1.0 : 0.0;
+            return 2.0 * static_cast<double>(sharedPairs(a, b)) / static_cast<double>(a.pairs.size() + b.pairs.size());
+        }
+
+        // How much of `part` a line holds: the pairs they share over part's, 0 to 1. A fragment of a long line scores
+        // on its own characters, which Dice's coefficient drowns in the line's others.
+        double held(const Squashed& line, const Squashed& part)
+        {
+            if (part.pairs.empty())
+                return 0.0;                                      // a character or none: dice's (the same or not)
+            return static_cast<double>(sharedPairs(line, part)) / static_cast<double>(part.pairs.size());
         }
 
         enum class Edge : uint8_t { whole, first, last, only };   // which of old_text's lines (its first may be the end of
                                                                   // a line, its last the start of one)
 
         // A file's line against one of old_text's: 1 the same (or, at an edge, the part it would be), 0.9 the same but
-        // for whitespace, else up to 0.85 as alike as their characters are.
+        // for whitespace, else up to 0.85 as alike as their characters are (at an edge, where old_text's line may be
+        // part of the file's, as much of it as the file's holds, if that is more).
         double alike(std::string_view file, const Squashed& fs, std::string_view old, const Squashed& os, Edge edge)
         {
             if (file == old)
@@ -126,7 +142,7 @@ namespace playground
                 return 1.0;
             if (fs.text == os.text)
                 return 0.9;
-            return 0.85 * dice(fs, os);
+            return 0.85 * (edge == Edge::whole ? dice(fs, os) : std::max(dice(fs, os), held(fs, os)));
         }
 
         // What differs between a file's line and one of old_text's, in words: only the whitespace, or the part that is

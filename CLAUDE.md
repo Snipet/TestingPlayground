@@ -702,7 +702,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   part, or changed by the user since, goes whole with the next state.
   edit_file replaces one passage or a list (`edits`), in order, each occurring once in what the ones before it left,
   all or none, in one write (one undo step); a passage that does not occur gets the closest one back, numbered, and
-  what differs. It writes through `chatSetDraftIf` (the text it read, the others left as they are now: what the user
+  what differs (a line of old_text that may be part of a file's line, its first or last, scores by how much of it that
+  line holds). It writes through `chatSetDraftIf` (the text it read, the others left as they are now: what the user
   typed meanwhile is never overwritten; the edits run once more on the new text), and with `expected` (a version) only
   while the file is still that version, else nothing, saying the user changed it and showing the lines changed since.
 - **add_library_file** puts a library file in the editor as a tab (never over a file of that name) and returns its
