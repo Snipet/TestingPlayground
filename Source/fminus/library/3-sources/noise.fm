@@ -41,10 +41,11 @@ module Noise
         count = (count + n) & 0x3FFFFFFF;
     }
 
-    // Uniform in [0, 1).
+    // Uniform in (0, 1], in steps of 2^-24: never 0, so logf(uniform()) stays finite (Box-Muller, Poisson intervals).
+    // 0.50000006f is 0.5 + 2^-24, so each value is exact.
     float uniform()
     {
-        return 0.5f * white() + 0.5f;
+        return 0.5f * white() + 0.50000006f;
     }
 
     // Paul Kellet's economy filter: three one-poles that sum to -3 dB/octave.

@@ -36,7 +36,9 @@
 //             randf now, and against the version before it (Park-Miller's generator by Schrage's method, kept here)
 //             the same statistics: the mean within 0.01 of the old one's, the RMS and the spectral flatness (Welch's
 //             spectrum, 20 Hz to 20 kHz) within 0.5 dB of the old ones; fill() gives what as many calls of white()
-//             give, bit for bit, in parts of any size; each one's cost a sample printed
+//             give, bit for bit, in parts of any size; uniform() in (0, 1], as before randf: never 0, its least 2^-24
+//             and its greatest 1 (the seeds whose first draw is randf's -1 and 1 - 2^-23, worked out through
+//             lowbias32's inverse and checked through hash); each one's cost a sample printed
 //   ADSR      the attack reaches 1 in its time (within 0.1 ms), the decay settles on the sustain, the release ends
 //             within 1.4 times its time; a gate while it sounds rises from where it is, without a step
 //   LFO       every shape stays in -1..1; the sine (a polynomial) within 0.0011 of sin at its phase; the square flips
@@ -69,6 +71,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <memory>
 #include <numbers>
@@ -384,6 +387,27 @@ void fillRun(float* y, int n, int part, int seed)
         noise.seed(seed);
     for (int at = 0; at < n; at += part)
         noise.fill(y + at, n - at < part ? n - at : part);
+}
+
+// n draws of uniform(), unseeded.
+void uniformRun(float* y, int n)
+{
+    Noise noise;
+    for (int i = 0; i < n; ++i)
+        y[i] = noise.uniform();
+}
+
+// uniform()'s first draw after seed(n): its white() is randf(hash(n)), which hashes hash(n) again.
+float uniformAfter(int n)
+{
+    Noise noise;
+    noise.seed(n);
+    return noise.uniform();
+}
+
+int hashOf(int n)
+{
+    return hash(n);
 }
 )FM";
 
@@ -1031,6 +1055,40 @@ PROBE(fminus, library)
                 fill(parts.data(), N, 333, 5);
                 fill(ones.data(), N, 1, 5);
                 P.eq("noise.fill_as_white", parts == calls && ones == calls ? 1 : 0, 1);
+                // uniform() in (0, 1], as before randf: never 0 (a log of it stays finite). Its extremes come one draw
+                // in 2^24, so the seeds that give them first are worked out: randf(m) is -1 when hash(m) is
+                // 0x80000000 (its top 24 bits, signed, -2^23) and 1 - 2^-23 when it is 0x7fffff00, and the first draw
+                // after seed(n) is randf(hash(n)), so n = unhash(unhash(that)), with lowbias32's inverse (Wellons's).
+                auto* uniform = function<void(float*, int)>(p.get(), "uniformRun");
+                auto* after = function<float(int)>(p.get(), "uniformAfter");
+                auto* hashOf = function<int(int)>(p.get(), "hashOf");
+                P.eq("noise.uniform_runs", uniform != nullptr && after != nullptr && hashOf != nullptr ? 1 : 0, 1);
+                if (uniform != nullptr && after != nullptr && hashOf != nullptr)
+                {
+                    std::vector<float> u(n);
+                    uniform(u.data(), N);
+                    const auto [lo, hi] = std::minmax_element(u.begin(), u.end());
+                    const auto unhash = [](uint32_t x) {
+                        x ^= x >> 16;
+                        x *= 0x43021123u;
+                        x ^= x >> 15 ^ x >> 30;
+                        x *= 0x1d69e2a5u;
+                        x ^= x >> 16;
+                        return x;
+                    };
+                    const auto seedFor = [&](uint32_t h) { return static_cast<int>(unhash(unhash(h))); };
+                    const int least = seedFor(0x80000000u), greatest = seedFor(0x7fffff00u);
+                    const bool found = static_cast<uint32_t>(hashOf(hashOf(least))) == 0x80000000u
+                                    && static_cast<uint32_t>(hashOf(hashOf(greatest))) == 0x7fffff00u;
+                    const float a = after(least), b = after(greatest);
+                    std::printf("uniform(): %d draws in [%.9g, %.9g]; seed %d's first draw %.9g, seed %d's %.9g\n", N,
+                                static_cast<double>(*lo), static_cast<double>(*hi), least, static_cast<double>(a), greatest,
+                                static_cast<double>(b));
+                    P.eq("noise.uniform_in_range", *lo > 0.0f && *hi <= 1.0f ? 1 : 0, 1);
+                    P.eq("noise.uniform_seeds_found", found ? 1 : 0, 1);
+                    P.eq("noise.uniform_least", a == 0x1p-24f ? 1 : 0, 1);
+                    P.eq("noise.uniform_greatest", b == 1.0f ? 1 : 0, 1);
+                }
                 // the cost of a sample of each (a bench: printed, never held to a number)
                 const auto ns = [&](const auto& run) {
                     double best = 1e30;
