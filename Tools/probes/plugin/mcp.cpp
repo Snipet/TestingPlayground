@@ -4,9 +4,8 @@
 //   LINK     a processor listens on a private socket in the folder (0600, the folder 0700) and leaves tools.json and
 //            guide.md there; info names its kind, plugin and files; tools are the chat's, but ask_user and
 //            ask_planner, each MCP description its first sentence or paragraph (tools.json's size printed, with the
-//            full descriptions for comparison, and compact; at most 26,000 bytes, the slack printed), a setting's
-//            description given once (view_sound's render settings, set_checks' goals: not again in a check's or
-//            tune_dials'); edit_circuit's description its first sentence, its face "Edit a circuit", its `name`
+//            full descriptions for comparison, and compact), a setting's description given once (view_sound's render
+//            settings, set_checks' goals: not again in a check's or tune_dials'); edit_circuit's description its first sentence, its face "Edit a circuit", its `name`
 //            undescribed (edit_file's words), view_panel's naming the schematic, its `name` too; the guide's start says it is driven
 //            from outside; a guide request naming no part (a 0.2.0 server's) gets the whole guide
 //   GUIDE    the guide in parts (mcp/McpGuide.h): start (working from outside, FMINUS, DSP PRACTICE, CHECKING, the
@@ -34,7 +33,8 @@
 //   SERVER   the server program (<Name>MCP) over stdio, as Claude Desktop runs it: initialize (its protocol version,
 //            2025-11-25 too, tools with listChanged, prompts, instructions that keep tools and ids from the user),
 //            tools/list (list_instances, playground_guide, gui_sandbox and the chat's tools, each with `instance` and a
-//            title in words, the ones that only look marked read-only), list_instances naming this processor by its name,
+//            title in words, the ones that only look marked read-only; the reply's line, what Claude Desktop receives,
+//            at most kToolsBound bytes: its size and the slack printed), list_instances naming this processor by its name,
 //            get_status and write_file routed to it, playground_guide (its start, and a part); the processor then knows
 //            Claude Desktop is connected, and its port says so with its name; the prompts (Make a sound, Improve the
 //            sound, Explain the sound, Fix what I hear), one filled in with the user's words, fix_what_i_hear naming no
@@ -86,6 +86,13 @@ namespace pg = playground;
 namespace
 {
     constexpr bool kInstrument = pg::product::kIsInstrument;
+
+    // The tool budget: what Claude Desktop receives of the tools, which goes into every one of its conversations: the
+    // server's tools/list reply as it writes it on stdout (one line, as JUCE writes it: the chat's tools as MCP has them,
+    // each with the server's `instance`, and the server's own), the same bound for both products. It was set at the
+    // synth's size when it was first measured so, 23,963 bytes (the effect's 23,124), rounded up to the next 100; until
+    // then the bound was 26,000 bytes on tools.json as the link writes it (pretty-printed), which LINK still prints.
+    constexpr std::size_t kToolsBound = 24000;
 
     std::string program()
     {
@@ -351,6 +358,7 @@ namespace
         }
 
         std::map<int, juce::var> early;                  // replies read while waiting for another's
+        std::map<int, std::size_t> bytes;                // each reply's line as the server wrote it, its line feed aside
         std::vector<int> order;                          // the ids of the replies, in the order they came
         int lines = 0, whole = 0;
 
@@ -379,10 +387,12 @@ namespace
                         continue;
                     ++lines;
                     const juce::var v = juce::JSON::parse(juce::String::fromUTF8(got.c_str()));
+                    const std::size_t size = got.size();
                     got.clear();
                     whole += v.isObject() ? 1 : 0;
                     if (!v.hasProperty("id"))
                         continue;
+                    bytes[static_cast<int>(v["id"])] = size;
                     order.push_back(static_cast<int>(v["id"]));
                     if (static_cast<int>(v["id"]) == id)
                     {
@@ -518,11 +528,9 @@ PROBE(plugin, mcp)
                      && !tuneDials["inputSchema"]["properties"]["goals"]["items"]["properties"]["min"].hasProperty("description")
                      && setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["min"].hasProperty("description")
                  ? 1 : 0, 1);
-        // The budget (tools.json as the link writes it, pretty-printed; Desktop gets it compact): 25,000 bytes until
-        // the schematic's tools, 26,000 since (the synth had 218 bytes to spare before them, they take about 1,060).
+        // tools.json as the link writes it (pretty-printed, above) and on one line, for comparison: the budget is on what
+        // the server sends Claude Desktop (kToolsBound, SERVER).
         std::printf("tools.json compact: %d bytes\n", juce::JSON::toString(tools, true).length());
-        std::printf("tools.json slack: %lld bytes under 26,000\n", static_cast<long long>(26000 - size));
-        P.le("link.tools_bytes", static_cast<double>(size), 26000.0);
         // edit_circuit and view_panel's schematic, as MCP has them: each description its first sentence, standing alone;
         // `name` described once (edit_file's words: "The file's name"), dropped from theirs
         juce::var editCircuit, viewPanel, editFile;
@@ -787,8 +795,21 @@ PROBE(plugin, mcp)
                                       && rep["result"]["capabilities"].hasProperty("prompts")
                                       && rep["result"]["instructions"].toString().contains("playground_guide")
                                       && rep["result"]["instructions"].toString().contains("never ask them about tools") ? 1 : 0, 1);
-        rep = s.request({ a.get() }, "tools/list", {});
+        const int listId = s.post("tools/list", {});
+        rep = s.wait({ a.get() }, listId);
         const juce::var list = rep["result"]["tools"];
+        {
+            // The budget: the reply as Claude Desktop receives it, its line's bytes (kToolsBound).
+            const std::size_t wire = s.bytes[listId];
+            std::string each;
+            if (const juce::Array<juce::var>* t = list.getArray())
+                for (const juce::var& tool : *t)
+                    each += " " + tool["name"].toString().toStdString() + " " + std::to_string(juce::JSON::toString(tool, true).length());
+            std::printf("tools/list by tool, bytes on one line:%s\n", each.c_str());
+            std::printf("tools/list over stdio (%s): %zu bytes; slack: %lld bytes under %zu\n", pg::product::kName, wire,
+                        static_cast<long long>(kToolsBound) - static_cast<long long>(wire), kToolsBound);
+            P.le("server.tools_bytes", static_cast<double>(wire > 0 ? wire : kToolsBound + 1), static_cast<double>(kToolsBound));
+        }
         bool instanceArg = true;
         int pluginTools = 0;
         if (const juce::Array<juce::var>* t = list.getArray())

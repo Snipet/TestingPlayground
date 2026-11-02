@@ -505,9 +505,14 @@ place (its `products/<key>.cmake`, and its names in the docs).
   THEIR SHORT DESCRIPTIONS LEAVE OUT, in that part. MCP's copy of the schemas also leaves out a property's description
   an earlier property of the same name has word for word (`dropRepeated`: a goal's words in tune_dials are
   set_checks'; the guide says so), except a description with a number in it (a range, a default, a cap), which
-  every copy keeps: Desktop may load or switch on one tool without the one that described it first. tools.json
-  stays at most 26,000 bytes as the link writes it (pretty-printed; Desktop gets it compact; 25,000 until the
-  schematic's tools, which the user allowed the 1,000 more): `plugin.mcp` checks, and prints the slack. Each product has its own server, extension and socket folder.
+  every copy keeps: Desktop may load or switch on one tool without the one that described it first. **The tool
+  budget** is on what Claude Desktop receives: the server's tools/list reply as it goes over stdio (one line: the
+  chat's tools as MCP has them, each with the server's `instance`, and the server's own), at most 24,000 bytes for
+  each product, the synth's size when it was first measured so (23,963 bytes; the effect's 23,124) rounded up to the
+  next 100, so that what every Desktop conversation carries does not grow: a feature comes as a property or words on
+  a tool that has room, or a trim elsewhere pays for it. `plugin.mcp` checks, and prints each product's size and its
+  slack (and tools.json as the link writes it, pretty-printed, for comparison: until then the bound was 26,000 bytes
+  on that). Each product has its own server, extension and socket folder.
   The server is juce_core only; it finds the instances by their sockets (`<n>.sock`, the lowest number free: the
   instance's name, "Effect 2" or "Synth 2", shown in the chat card while connected) and falls back on the tools.json
   and guide.md the newest left. It is for someone who never sees a tool: its instructions keep tools and ids from the
