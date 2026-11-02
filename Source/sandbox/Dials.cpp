@@ -97,8 +97,9 @@ namespace playground::sandbox
             return std::all_of(s.begin(), s.end(), [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; });
         }
 
-        // A field's type as FMinus reflects it, which the plugin's displays take (Patch): an enumeration's is an int
-        // ("enum Stage" -> "int", "enum Stage[4]" -> "int[4]"), where Lang spells it as declared, for its hover.
+        // A field's or a param's type as FMinus reflects it, which the plugin's displays and dials take (Patch): an
+        // enumeration's is an int ("enum Stage" -> "int", "enum Stage[4]" -> "int[4]"; `param enum Stage s` is a param
+        // int), where Lang spells it as declared, for its hover.
         std::string reflected(const std::string& type)
         {
             if (type.rfind("enum ", 0) != 0)
@@ -166,7 +167,8 @@ namespace playground::sandbox
             }
             Dial d;
             d.name = s->name;
-            d.type = s->type == "bool" ? ControlType::toggle : s->type == "int" ? ControlType::integer : ControlType::real;
+            const std::string type = reflected(s->type);   // `param enum Wave wave` is FMinus's param int
+            d.type = type == "bool" ? ControlType::toggle : type == "int" ? ControlType::integer : ControlType::real;
             const std::vector<double> range = numbersOf(s->signature, "fminus::range");
             const std::vector<double> def = numbersOf(s->signature, "fminus::default");
             if (d.type == ControlType::toggle)

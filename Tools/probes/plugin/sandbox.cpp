@@ -17,10 +17,10 @@
 //            render's; a dial's unit shown only from the .gui's unit=, as in the plugin; an edit naming the first by
 //            its number acts on the first (put back in the helper), a render naming the second shows the second as it
 //            was; a number no sandbox has refused; apply without a number refused
-//   SHADER   a program's folder opened from disk (the .fm, the .gui, the .sc; its dials declared; its fields listed
-//            for the displays but those no display can show, an enumeration's an int as FMinus makes it, Shared's
-//            through its pointer, shared->tone): the shader drawn by the GPU in its colour, not
-//            FunkGui's striped placeholder (gui.sandbox.shader.png)
+//   SHADER   a program's folder opened from disk (the .fm, the .gui, the .sc; its dials declared, a `param enum` an int
+//            dial as FMinus makes it, which a menu of its names takes; its fields listed for the displays but those no
+//            display can show, an enumeration's an int as FMinus makes it, Shared's through its pointer, shared->tone):
+//            the shader drawn by the GPU in its colour, not FunkGui's striped placeholder (gui.sandbox.shader.png)
 //   RESTART  the helper killed between calls: the next call starts it again, says so, with the panel as it was (the
 //            same picture, at the last render's size)
 //   NONE     apply with no instance open gives the .gui's text back, saying how the user can use it, by number (the
@@ -320,19 +320,21 @@ namespace
         return list;
     }
 
-    // A program of the product's kind with two dials and three fields (a float a display can show, an enumeration's,
-    // which FMinus makes an int, and an array it cannot show), and a Shared of two fields its displays reach through its
-    // pointer, for the folder SHADER opens.
+    // A program of the product's kind with three dials (the last an enumeration's, which FMinus makes a param int) and
+    // three fields (a float a display can show, an enumeration's, which FMinus makes an int, and an array it cannot
+    // show), and a Shared of two fields its displays reach through its pointer, for the folder SHADER opens.
     std::string program()
     {
         const std::string shared = "enum Stage\n{\n    RISING,\n    FALLING\n};\n\nmodule Shared\n{\n    float tone;\n    int keys;\n};\n";
         return shared + (kInstrument ? "module Voice\n{\n    param float glow [[fminus::range(0, 1)]] [[fminus::default(0.7)]];\n"
-                             "    param float level [[fminus::range(-36, 0)]] [[fminus::default(-12)]];\n    bool held;\n"
+                             "    param float level [[fminus::range(-36, 0)]] [[fminus::default(-12)]];\n"
+                             "    param enum Stage shape [[fminus::range(0, 1)]];\n    bool held;\n"
                              "    float shine;\n    enum Stage stage;\n    float ring[4];\n    Shared* shared;\n"
                              "    void start(float n, float v) { held = true; }\n    void stop() { held = false; }\n"
                              "    bool process(float* restrict left, float* restrict right, int n) { return held; }\n};\n"
                            : "module Effect\n{\n    param float glow [[fminus::range(0, 1)]] [[fminus::default(0.7)]];\n"
                              "    param float level [[fminus::range(-36, 0)]] [[fminus::default(-12)]];\n"
+                             "    param enum Stage shape [[fminus::range(0, 1)]];\n"
                              "    float shine;\n    enum Stage stage;\n    float ring[4];\n    Shared* shared;\n"
                              "    void process(float* restrict left, float* restrict right, int n) { }\n};\n");
     }
@@ -502,14 +504,17 @@ PROBE(plugin, sandbox)
         const std::filesystem::path folder = std::filesystem::path(dir) / "program";
         std::filesystem::create_directories(folder);
         std::ofstream(folder / pg::kProgramName) << program();
-        std::ofstream(folder / "panel.gui") << "section \"GLOW\" {\n    shader \"glow.sc\" inputs=\"glow\" width=200 height=100\n    knob glow\n    knob level\n}\n";
+        std::ofstream(folder / "panel.gui") << "section \"GLOW\" {\n    shader \"glow.sc\" inputs=\"glow\" width=200 height=100\n    knob glow\n    knob level\n"
+                                                "    menu shape \"RISING\" \"FALLING\"\n}\n";
         std::ofstream(folder / "glow.sc") << "void main()\n{\n    gl_FragColor = vec4(0.9, 0.1, 0.6, 1.0);\n}\n";
         const Result r = s.sandbox(object({ { "action", "open" }, { "from", "file" }, { "path", juce::String(folder.string()) } }));
         std::printf("folder:\n%s", r.text.c_str());
         shaderNumber = numberIn(r.text);
-        P.eq("shader.declared", !r.error && has(r.text, "2 from the program's declarations") && has(r.text, "Shaders: 1 of 1 built") ? 1 : 0, 1);
+        P.eq("shader.declared", !r.error && has(r.text, "3 from the program's declarations") && has(r.text, "Shaders: 1 of 1 built") ? 1 : 0, 1);
         P.eq("shader.fields", has(r.text, "Fields a display may show: ") && has(r.text, "shine (float)") && !has(r.text, "ring") ? 1 : 0, 1);
         P.eq("shader.enum_field", has(r.text, "stage (int)") ? 1 : 0, 1);
+        float mx = 0, my = 0, mw = 0, mh = 0;   // the menu of the enumeration's param laid out, with no note on it
+        P.eq("shader.enum_param", rectOf(r.text, "menu shape", mx, my, mw, mh) && !has(r.text, "a menu takes") ? 1 : 0, 1);
         P.eq("shader.shared_fields", has(r.text, "shared->tone (float), shared->keys (int)") ? 1 : 0, 1);
         const Result pic = s.sandbox(object({ { "action", "render" }, { "width", 480 }, { "height", 200 }, { "detail", "high" } }));
         writeBytes(probe::outPath("gui.sandbox.shader.png"), pic.png);
