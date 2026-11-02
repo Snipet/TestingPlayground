@@ -56,8 +56,8 @@
 //   WHEEL     (an instrument) a take that starts with a racing wheel turned, its throttle down, a gear and buttons in,
 //             of a program that reads them, the wheel moving in it: the take's first block holds that state, its replay
 //             (the state's off-rest control changes at its first sample) plays it bit for bit, and its moments are
-//             named ("steering to +0.41", none "controller 16"); REPLAY's take, the wheel at rest: no moment for it at
-//             the start
+//             named ("steering to +0.41", none "controller 16"); stop's report says what the wheel did ("Played:
+//             racing wheel: steering ..."); REPLAY's take, the wheel at rest: no moment for it at the start
 //   BEAT      no host transport, a program whose level follows the song's position, run in the editor just before an
 //             arm with restart: the restart plays that run's files; the take starts at the Engine's own position and
 //             replays bit for bit, twice in one Session (the second after the first ended with the pedal down); a take
@@ -1003,9 +1003,12 @@ PROBE(plugin, capture)
             }
             r.block(n, silence, midi);
         }
-        tool(r.rec, object({ { "action", "stop" } }));
+        const std::string said = textOf(tool(r.rec, object({ { "action", "stop" } })));
         const cap::Reply taken = r.rec.recorder().act(cap::Action::take, {});
         const bool ok = taken.take != nullptr && !taken.take->blocks.empty();
+        std::printf("wheel, stop:\n%s", said.c_str());
+        P.eq("wheel.played_said", has(said, "Played: racing wheel: steering +0.41 to +0.") && has(said, ", throttle up to 0.78, gear 2, buttons 0x9.")
+                                      && !has(said, "not used") ? 1 : 0, 1);
         const std::array<uint8_t, pg::wheelcc::kStateCcs> turned{ { 90, 33, 100, 5, 0, 0, 0, 0, 2, 9, 0, 0, 0 } };
         P.eq("wheel.compiled", compiled ? 1 : 0, 1);
         P.eq("wheel.take_mid_turn", ok && taken.take->restarted && taken.take->blocks.front().racing == turned ? 1 : 0, 1);

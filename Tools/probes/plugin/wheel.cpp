@@ -29,6 +29,9 @@
 //   ENGINE    the instrument: the map's control changes, through Processor::processBlock (toEvent) and the Engine, land in
 //             the Host block as the map says they do (steering, the three pedals, the gear, the buttons); a source
 //             sending only MSBs reads 7 bits; an effect's Host block stays at rest
+//   SCENARIO  (an instrument) a render's scenario moving the steering, the pedals and the gear (ChatScenario's wheels:
+//             a gear past 7 and an unknown name refused, the names written back): a voice playing the fields as DC
+//             reads them at their times (the steering's -1 exactly), and the marks name each move
 //   DRIVER    plugin/WheelDriver.h's decisions over a fake transport whose devices record what they are sent:
 //     READ      on, a G29 in its own mode: 900 degrees, then the spring, then read; the first flush takes only values
 //               a report carried (the seed rule: IOKit's zeros before any report, a pedal pressed, the steering left and
@@ -49,7 +52,9 @@
 //     RESEND    resend() while read: the whole state again; nothing while off
 #include "Probe.h"
 
+#include "dsp/Measure.h"
 #include "dsp/Meters.h"
+#include "plugin/ChatScenario.h"
 #include "plugin/Processor.h"
 #include "plugin/WheelDriver.h"
 #include "plugin/WheelMap.h"
@@ -166,6 +171,34 @@ namespace
             return s;
         }
     };
+
+    [[maybe_unused]] juce::var move(const char* wheel, double at, double value)
+    {
+        auto* o = new juce::DynamicObject();
+        o->setProperty("wheel", wheel);
+        o->setProperty("at", at);
+        o->setProperty("value", value);
+        return juce::var(o);
+    }
+
+    // A tool's input whose scenario moves these wheels.
+    [[maybe_unused]] juce::var wheelsScenario(const juce::Array<juce::var>& moves)
+    {
+        auto* sc = new juce::DynamicObject();
+        sc->setProperty("wheels", moves);
+        auto* in = new juce::DynamicObject();
+        in->setProperty("scenario", juce::var(sc));
+        return juce::var(in);
+    }
+
+    // A voice that plays a racing wheel's fields as DC: the steering on the left, the pedals and the gear on the right.
+    constexpr const char* kFieldsVoice =
+        "#include \"host.fm\"\nmodule Voice\n{\n    Host* host;\n    bool held;\n"
+        "    void start(float note, float velocity) { held = velocity > 0 || note > 0; }\n    void stop() { held = false; }\n"
+        "    bool process(float* restrict left, float* restrict right, int n)\n    {\n        for (int i = 0; i < n; ++i)\n        {\n"
+        "            left[i] += host->steering;\n"
+        "            right[i] += 0.1f * host->throttle + 0.2f * host->brake + 0.4f * host->clutch + 0.05f * host->gear;\n"
+        "        }\n        return held;\n    }\n};\n";
 
     wh::Value hid(uint32_t page, uint32_t usage, int64_t value, int64_t min, int64_t max, uint64_t timestamp)
     {
@@ -400,6 +433,50 @@ PROBE(plugin, wheel)
         else
             P.eq("engine.effect_at_rest", h.steering == 0.0f && h.throttle == 0.0f && h.brake == 0.0f && h.clutch == 0.0f
                                               && h.gear == 0 && h.buttons == 0 ? 1 : 0, 1);
+    }
+
+    // ---- SCENARIO: a render's racing wheel (ChatScenario's wheels) ----------------------------------------------------
+    if constexpr (kInstrument)
+    {
+        pg::measure::Request req;
+        req.notes = { 60 };
+        req.holdSeconds = 0.6f;
+        req.tailSeconds = 0.1f;
+        std::string why;
+        const bool read = pg::scenario::read(wheelsScenario({ move("steering", 0.1, 0.5), move("throttle", 0.15, 0.8),
+                                                              move("brake", 0.2, 1.0), move("clutch", 0.2, 0.25),
+                                                              move("gear", 0.25, -1.0), move("steering", 0.3, -1.0) }),
+                                             req, &why);
+        P.eq("scenario.read", read && req.wheels.size() == 6 ? 1 : 0, 1);
+        pg::measure::Request bad;
+        std::string gearWhy, nameWhy;
+        P.eq("scenario.gear_range", !pg::scenario::read(wheelsScenario({ move("gear", 0.1, 9.0) }), bad, &gearWhy)
+                                        && gearWhy.find("wheels[0]") != std::string::npos ? 1 : 0, 1);
+        P.eq("scenario.unknown", !pg::scenario::read(wheelsScenario({ move("horn", 0.1, 1.0) }), bad, &nameWhy)
+                                     && nameWhy.find("steering, throttle, brake, clutch or gear") != std::string::npos ? 1 : 0, 1);
+        P.eq("scenario.written_back", pg::scenario::toVar(req)["wheels"][4]["wheel"].toString() == "gear" ? 1 : 0, 1);
+        pg::measure::Session session(pg::singleFile(kFieldsVoice));
+        P.eq("scenario.compiles", session.compiled() ? 1 : 0, 1);
+        if (session.compiled())
+        {
+            const pg::measure::Session::Render out = session.render(req, nullptr, nullptr, session.lengthOf(req));
+            const auto at = [&](const std::vector<float>& ch, double t) {
+                const auto i = static_cast<std::size_t>(t * 48000.0);
+                return i < ch.size() ? static_cast<double>(ch[i]) : 1e9;
+            };
+            P.near("scenario.at_rest", at(out.r, 0.05) + std::fabs(at(out.l, 0.05)), 0.0, 1e-9);
+            P.near("scenario.steering", at(out.l, 0.12), 4096.0 / 8191.0, 1e-6);   // 12288
+            P.near("scenario.throttle", at(out.r, 0.17), 0.1 * 13106.0 / 16383.0, 1e-6);
+            P.near("scenario.pedals", at(out.r, 0.22), 0.1 * 13106.0 / 16383.0 + 0.2 + 0.4 * 4096.0 / 16383.0, 1e-6);
+            P.near("scenario.reverse", at(out.r, 0.27), 0.1 * 13106.0 / 16383.0 + 0.2 + 0.4 * 4096.0 / 16383.0 - 0.05, 1e-6);
+            P.near("scenario.full_left", at(out.l, 0.32), -1.0, 1e-9);
+            std::string marks;
+            for (const pg::measure::Mark& mk : session.timeline(req).marks)
+                if (mk.note < 0)
+                    marks += (marks.empty() ? "" : "; ") + mk.what;
+            same(P, "scenario.marks", marks, "steering to +0.50; the throttle to 0.80; the brake to 1.00; the clutch to 0.25; "
+                                             "the gear to reverse; steering to -1.00");
+        }
     }
 
     // ---- DRIVER ------------------------------------------------------------------------------------------------------

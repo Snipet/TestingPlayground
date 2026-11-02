@@ -130,6 +130,37 @@ namespace playground
                  + out + ".\n";
         }
 
+        // A racing wheel's part of "Played:" (host.fm's fields off rest at some time in the take, its start too), "" for
+        // none: "racing wheel: steering -0.20 to +0.45, throttle up to 0.80, gear 1 to 3, buttons 0x5".
+        [[maybe_unused]] std::string racingWords(const capture::Summary& s, bool first)
+        {
+            static constexpr const char* kAxes[] = { "steering", "throttle", "brake", "clutch" };
+            std::string w;
+            const auto add = [&w](const std::string& part) { w += (w.empty() ? "" : ", ") + part; };
+            for (std::size_t a = 0; a < std::size(kAxes); ++a)
+            {
+                const double lo = static_cast<double>(s.racingLow[a]), hi = static_cast<double>(s.racingHigh[a]);
+                if (lo == 0.0 && hi == 0.0)
+                    continue;
+                if (a == 0)
+                    add(lo == hi ? fmt("steering %+.2f", lo) : fmt("steering %+.2f", lo) + fmt(" to %+.2f", hi));
+                else
+                    add(std::string(kAxes[a]) + (lo == hi ? fmt(" %.2f", hi) : fmt(" up to %.2f", hi)));
+            }
+            if (s.gearLow != 0 || s.gearHigh != 0)
+            {
+                const auto gear = [](int g) { return g < 0 ? std::string("reverse") : g == 0 ? std::string("neutral") : std::to_string(g); };
+                add("gear " + gear(s.gearLow) + (s.gearLow != s.gearHigh ? " to " + gear(s.gearHigh) : std::string()));
+            }
+            if (s.buttonsDown != 0)
+            {
+                char b[32];
+                std::snprintf(b, sizeof b, "buttons 0x%x", static_cast<unsigned>(s.buttonsDown));
+                add(b);
+            }
+            return w.empty() ? std::string() : std::string(first ? "" : "; ") + "racing wheel: " + w;
+        }
+
         const char* startWords(capture::Start s)
         {
             switch (s)
@@ -275,6 +306,7 @@ namespace playground
                 played += (played.empty() ? "" : "; ") + fmt("pressure up to %.2f", static_cast<double>(s.pressureHigh));
             if (s.allNotesOff > 0)
                 played += (played.empty() ? "" : "; ") + fmt("all notes off %d times", s.allNotesOff);
+            played += racingWords(s, played.empty());
             out += played.empty() ? "Pedal and wheels: not used.\n" : "Played: " + played + ".\n";
             if (s.steals > 0 || s.dropped > 0)
                 out += fmt("Voices: %d stolen, %d dropped (sixteen sound at once at most).\n", s.steals, s.dropped);

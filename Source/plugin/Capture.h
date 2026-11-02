@@ -241,6 +241,11 @@ namespace playground::capture
         int pedalDowns = 0;
         int modEvents = 0, bendEvents = 0, pressureEvents = 0, allNotesOff = 0;
         float modLow = 1.0f, modHigh = 0.0f, bendLow = 1.0f, bendHigh = -1.0f, pressureHigh = 0.0f;
+        // A racing wheel's (wheelcc), from the first block's state through its control changes as the Engine reads
+        // them: the steering's and the pedals' least and most, the gears, every button down at some time.
+        std::array<float, wheelcc::kAxes> racingLow{}, racingHigh{};
+        int gearLow = 0, gearHigh = 0;
+        uint32_t buttonsDown = 0;
         std::vector<DialMove> dials;
         std::vector<std::pair<double, uint64_t>> programs;     // each program from its first block (the first at 0)
         double frozenSeconds = 0.0, frozenFrom = -1.0, frozenTo = -1.0;

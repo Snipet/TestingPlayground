@@ -99,7 +99,13 @@ namespace playground::measure
         bend,                                     // the pitch wheel, -1..1
         pressure,                                 // channel pressure, 0..1
         sustain,                                  // the pedal: down from 0.5
+        steering,                                 // a racing wheel's (wheelcc, as host.fm reads them): -1..1, 14 bits
+        throttle,                                 // its pedals, 0..1, 14 bits
+        brake,
+        clutch,
+        gear,                                     // -1 reverse, 0 neutral, 1..7 (rounded)
     };
+    inline constexpr int kWheelKinds = static_cast<int>(Wheel::gear) + 1;
 
     struct WheelMove
     {

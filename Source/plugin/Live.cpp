@@ -278,6 +278,16 @@ namespace playground
         };
 
         std::string num(double v) { return fmt(std::fabs(v) >= 100.0 || v == std::round(v) ? "%.0f" : "%.3g", v); }
+
+        [[maybe_unused]] std::string hexOf(int v)
+        {
+            char b[16];
+            std::snprintf(b, sizeof b, "0x%x", static_cast<unsigned>(v));
+            return b;
+        }
+
+        // A racing wheel's fields (host.fm), as listen names them; each at rest at 0.
+        constexpr const char* kRacing[] = { "steering", "throttle", "brake", "clutch", "gear" };
     }
 
     // ---- the tools' definitions --------------------------------------------------------------------------------------
@@ -600,6 +610,8 @@ namespace playground
         std::bitset<128> notes;
         int velLo = 128, velHi = -1;
         Seen mod, bend, after;
+        Seen racing[5];                                         // a racing wheel's: the steering, the pedals, the gear
+        int buttonsNow = 0, buttonsWere = 0;                    // its buttons now, and every one down in the window
         bool pedalNow = false, pedalWas = false, bypassNow = r.bypassed, bypassWas = false;
         uint32_t alerts = 0;
         uint64_t lastFft = 0, counted = 0;
@@ -673,6 +685,13 @@ namespace playground
                     mod.add(static_cast<double>(m.host.modwheel));
                     bend.add(static_cast<double>(m.host.pitchbend));
                     after.add(static_cast<double>(m.host.aftertouch));
+                    racing[0].add(static_cast<double>(m.host.steering));
+                    racing[1].add(static_cast<double>(m.host.throttle));
+                    racing[2].add(static_cast<double>(m.host.brake));
+                    racing[3].add(static_cast<double>(m.host.clutch));
+                    racing[4].add(static_cast<double>(m.host.gear));
+                    buttonsNow = m.host.buttons;
+                    buttonsWere |= m.host.buttons;
                     pedalNow = m.host.sustain;
                     pedalWas = pedalWas || m.host.sustain;
                     mostVoices = std::max(mostVoices, static_cast<int>(m.voices));
@@ -695,6 +714,12 @@ namespace playground
         const double rate = static_cast<double>(last.rate > 0.0f ? last.rate : r.rate);
         const uint32_t noteOns = m1.noteOns - m0.noteOns, steals = m1.steals - m0.steals, dropped = m1.dropped - m0.dropped;
         const bool playsDraft = cir::sameProgram(host_.chatRunning(), host_.chatDraft().files);   // *@ lines aside
+        const auto racingMoved = [&] {                          // a racing wheel off rest at some time in the window
+            for (const Seen& x : racing)
+                if (x.count > 0 && (x.lo != 0.0 || x.hi != 0.0))
+                    return true;
+            return buttonsWere != 0;
+        };
 
         Bands outB = bandsOf(outS, rate, false), inB = bandsOf(inS, rate, false);
         double outCentroid = 0.0, inCentroid = 0.0;
@@ -779,6 +804,17 @@ namespace playground
                                                         { "velocity_min", velHi >= 0 ? velLo : -1 }, { "velocity_max", velHi },
                                                         { "held", heldNow }, { "modwheel", mod.now }, { "pitchbend", bend.now },
                                                         { "aftertouch", after.now }, { "pedal", pedalNow } }));
+                if (racingMoved())
+                {
+                    auto* w = new juce::DynamicObject();
+                    const juce::var wheel(w);
+                    for (std::size_t k = 0; k < std::size(kRacing); ++k)
+                        if (racing[k].count > 0 && (racing[k].lo != 0.0 || racing[k].hi != 0.0))
+                            w->setProperty(kRacing[k], claude::object({ { "now", racing[k].now }, { "min", racing[k].lo }, { "max", racing[k].hi } }));
+                    if (buttonsWere != 0)
+                        w->setProperty("buttons", claude::object({ { "now", buttonsNow }, { "down_in_window", buttonsWere } }));
+                    o->setProperty("racing_wheel", wheel);
+                }
                 o->setProperty("voices", claude::object({ { "most", mostVoices }, { "of", Patch::kVoices }, { "released", mostReleased },
                                                           { "pedal_held", mostPedal }, { "fading", mostFading },
                                                           { "steals", static_cast<int>(steals) }, { "dropped", static_cast<int>(dropped) } }));
@@ -902,6 +938,17 @@ namespace playground
             };
             out += "; " + wheel("mod wheel", mod, "%.2f") + ", " + wheel("pitch bend", bend, "%+.2f") + ", "
                  + wheel("aftertouch", after, "%.2f") + ", pedal " + (pedalNow ? "down" : (pedalWas ? "up (down for part of it)" : "up"));
+            if (racingMoved())                                  // a racing wheel (host.fm), what was off rest
+            {
+                std::string w;
+                for (std::size_t k = 0; k < std::size(kRacing); ++k)
+                    if (racing[k].count > 0 && (racing[k].lo != 0.0 || racing[k].hi != 0.0))
+                        w += (w.empty() ? "" : ", ") + wheel(kRacing[k], racing[k], k == 0 ? "%+.2f" : k == 4 ? "%.0f" : "%.2f");
+                if (buttonsWere != 0)
+                    w += std::string(w.empty() ? "" : ", ") + "buttons " + hexOf(buttonsNow)
+                       + (buttonsWere != buttonsNow ? " (" + hexOf(buttonsWere) + " down in the window)" : std::string());
+                out += "; racing wheel: " + w;
+            }
             if (noteOns == 0 && held.empty() && mostVoices == 0 && blocks > 0 && m1.hostKnown && h.playing)
                 out += ". No note-ons while the host plays: no MIDI arrives (is the track armed, its input routed here?)";
             out += ".\n";
