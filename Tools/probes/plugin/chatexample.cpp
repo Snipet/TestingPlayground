@@ -3,6 +3,9 @@
 // plugin.chatexample: what the chat's system prompt teaches, and Claude's measure_output tool (dsp/Measure.h), at
 // 48 kHz:
 //   PROMPT   the system prompt has the large-program section, the tools' workflow (measure_output, add_library_file),
+//            FMINUS, THE LANGUAGE as FMinus compiles it (switch, the bitwise operators, enum, the top level's constants,
+//            hash and randf among what it has and none of them among what it has not; its example compiled alone with
+//            no message, its table, its switch and its noise computing what they say),
 //            what the editor's RANDOM button makes and what PROJECTS keeps (versions, presets),
 //            THE INTERFACE with the .gui file's language, THE LIBRARY with every library file's header word for word (a
 //            netlist's * lines too), CIRCUITS (the .cir netlists, last) and the circuit example naming the library files
@@ -44,6 +47,8 @@
 #include "dsp/Measure.h"
 #include "fminus/Patch.h"
 #include "plugin/ChatAgent.h"
+
+#include "fminus/FMinus.h"
 
 #include "Library.h"
 #include "Product.h"
@@ -302,6 +307,50 @@ PROBE(plugin, chatexample)
     P.eq("prompt.fft", has(prompt, "fft_create(n)") && has(prompt, "fft_forward(plan, in, bins)")
                            && has(prompt, "fft_inverse(plan, bins, out)") ? 1 : 0, 1);
     P.eq("prompt.shared", has(prompt, "module Shared") && has(prompt, "Shared*") ? 1 : 0, 1);
+    // FMINUS, THE LANGUAGE says what FMinus compiles: the newer constructs among what it has and none of them among what
+    // it has not, and its example compiles (FMinus alone, with no message) and computes what it says.
+    {
+        const std::size_t from = prompt.find("\nFMINUS, THE LANGUAGE\n"), to = prompt.find("\nDSP PRACTICE IN THIS PLUGIN\n");
+        const std::string language = from != std::string::npos && to != std::string::npos ? prompt.substr(from, to - from) : std::string();
+        const std::size_t no = language.find("\n- Not in FMinus:");
+        const std::string notIn = no == std::string::npos ? std::string() : language.substr(no, language.find('\n', no + 1) - no);
+        P.eq("prompt.language_has", has(language, "switch (C's)") && has(language, "& | ^ ~ << >> on ints")
+                                        && has(language, "&= |= ^= <<= >>=") && has(language, "an enum's int constants size arrays")
+                                        && has(language, "the top level holds const tables and scalars") && has(language, "hash(n)")
+                                        && has(language, "randf(n)") && has(language, "a float only to 2^24") ? 1 : 0, 1);
+        P.eq("prompt.language_has_not", !notIn.empty() && !has(notIn, "enum") && !has(notIn, "switch") && !has(notIn, "bitwise")
+                                            && !has(notIn, "constants") && has(notIn, "unsigned") ? 1 : 0, 1);
+        const std::size_t ex = language.find("For example:\n\n");
+        const std::size_t exEnd = ex == std::string::npos ? ex : language.find("\n\n- ", ex + 14);
+        const std::string code = exEnd == std::string::npos ? std::string() : language.substr(ex + 14, exEnd - ex - 13);
+        std::string errors;
+        fminus::Program::Options o;
+        o.fileName = "example.fm";
+        const auto program = code.empty() ? nullptr : fminus::Program::compile(code, errors, o);
+        std::printf("the language's example: %zu bytes, %s\n", code.size(), errors.empty() ? "no message" : errors.c_str());
+        P.eq("prompt.language_example_compiles", program != nullptr && errors.empty() ? 1 : 0, 1);
+        std::string why;
+        auto* stepOf = program ? program->function<float(int)>("stepOf", why) : nullptr;
+        auto* wave = program ? program->function<float(int, float, int)>("wave", why) : nullptr;
+        bool says = stepOf != nullptr && wave != nullptr;
+        if (says)
+        {
+            says = stepOf(0) == 0.0f && stepOf(3 << 13) == 12.0f && stepOf(9 << 13) == 3.0f && wave(0, 0.75f, 0) == 0.5f;
+            // the noise: randf of the count, in [-1, 1), a mean near 0 over a second's counts
+            double sum = 0.0;
+            float lo = 1.0f, hi = -1.0f;
+            for (int c = 0; c < 48000; ++c)
+            {
+                const float x = wave(1, 0.0f, c);
+                sum += x;
+                lo = std::min(lo, x);
+                hi = std::max(hi, x);
+            }
+            std::printf("the language's example: noise from %.4f to %.4f, its mean %.5f\n", lo, hi, sum / 48000.0);
+            says = says && lo >= -1.0f && hi < 1.0f && hi - lo > 1.9f && std::fabs(sum / 48000.0) < 0.01 && wave(1, 0.0f, 7) == wave(1, 0.5f, 7);
+        }
+        P.eq("prompt.language_example_computes", says ? 1 : 0, 1);
+    }
     // The metrics: the terms their lines use, then a line each, its words the metric's own; the tolerance each line
     // gives ("+-0.5 dB", "+-5 %, at least 1 Hz") is Goals' (toleranceOf, for a target of 1000 and of 0); none of the
     // tolerance words of before ("5 % of a frequency"), and tune_dials' time limit.

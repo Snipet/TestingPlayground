@@ -131,7 +131,7 @@ module Voice
 };
 
 - start begins a note on a voice that may have played another before: set everything the note needs (fields keep their values between notes). stop releases it. process adds the voice's next n samples into both channels (they arrive at 0, so writing works too) and returns false once the voice is silent for good, which frees it. A voice that never returns false holds its slot forever: always let the release end.
-- The signatures must be exactly these. Sixteen voices sound at once; a seventeenth note steals the oldest released voice (else the oldest): stop() at once, then a 2 ms fade. A key pressed again while its note sounds stops that voice first. Each start() gets one stop() (BUILDING A LARGE PROGRAM says when). The sustain pedal is the plugin's: a key let go while it is down gets its stop when the pedal comes up. The pitch and mod wheels, aftertouch and the host's tempo and position reach a program through host.fm (THE HOST, below).
+- The signatures must be exactly these. Sixteen voices sound at once; a seventeenth note steals the oldest released voice (else the oldest): stop() at once, then a 2 ms fade. A key pressed again while its note sounds stops that voice first. Each start() gets one stop() (BUILDING A LARGE PROGRAM says when). The sustain pedal is the plugin's: a key let go while it is down gets its stop when the pedal comes up.
 - The module's fields are its state: they start at 0 when the program runs; init sets the rate-dependent ones. Keep state per sample, so the output does not depend on the host's block size (the plugin calls voices in parts that end on multiples of 16 samples).
 - Dials: the module's first 32 parameters, in declaration order, are the dials and the host's P1 to P32, the same values in every voice. A float parameter is read sample by sample, cutoff[i], and glides over 20 ms when its dial turns (cutoff[0] reads it once a call). An int or bool parameter is read once a call. fminus::range sets the dial's span and fminus::default its starting value.
 - The audio thread: start, stop and process may not allocate (FMinus refuses a program whose methods could reach calloc, malloc or free from them). Allocate in init (each voice's own, calloc: zeroed) and free in end, or use a fixed array field.
@@ -161,11 +161,10 @@ module Voice
         const char* const kHostInstrument = R"(
 THE HOST: TEMPO, POSITION, WHEELS (host.fm)
 
-The plugin tells a program what the host and the player are doing through one module, Host, in host.fm: a file the plugin provides (no tab of its own: #include "host.fm" and it is there). Declare `Host* host;` in Voice (Shared may have one too) and the plugin points it at the Host, filled before every start, stop and process; read it, never write it. Its text is below.
+The plugin tells a program what the host and the player are doing through one module, Host, in host.fm: a file the plugin provides (no tab of its own: #include "host.fm" and it is there). Its text is below: declare `Host* host;` as it says.
 - The pitch wheel: give the program a bend range (2 semitones is usual; 12 or 24 for leads and dives, a dial when the sound wants it) and take the frequency from the note and the bend each call: 440 * expf(0.0577622650f * (note + host->pitchbend * range - 69)) / rate. Without that the wheel does nothing, and a player expects it to bend.
 - The mod wheel (host->modwheel, 0 to 1) and aftertouch (host->aftertouch): give each a job that suits the sound, usually vibrato or an LFO's depth (depth = lfodepth[i] + host->modwheel * (1 - lfodepth[i])), else the filter's brightness or a swell; say in your answer what they do.
-- The sustain pedal is the plugin's (a key let go while it is down gets its stop when the pedal comes up): nothing to write.
-- Tempo sync: an LFO's rate or a delay's time in beats (an int dial of divisions, 1/16 to 4 bars, beside the free rate, or a switch between them): Hz = host->bpm / 60 / beats; a delay of `beats` quarter notes lasts beats * 60 / host->bpm seconds. To follow the song as well (the same phase at the same place in the bar, whenever it is played), take the phase from the position: lfo.follow(host->beat + i * host->bpm / (60 * rate), beats) in place of lfo.advance (lfo.fm). host->beat stands still while the host is stopped, so an LFO that follows the song stops with it; one that only takes its rate from the tempo runs on.
+- Tempo sync: an LFO's rate or a delay's time in beats (an int dial of divisions, 1/16 to 4 bars, beside the free rate, or a switch between them): Hz = host->bpm / 60 / beats; a delay of `beats` quarter notes lasts beats * 60 / host->bpm seconds. To follow the song as well, take the phase from the position: lfo.follow(host->beat + i * host->bpm / (60 * rate), beats) in place of lfo.advance (lfo.fm). host->beat stands still while the host is stopped, so an LFO that follows the song stops with it; one that only takes its rate from the tempo runs on.
 - Tracking: the key is the note start gets. A filter that follows the keyboard: fc = cutoff[i] * expf(0.0577622650f * keytrack * (note - 60)) (keytrack 0 to 1: at 1 the filter moves with the pitch; often a dial); an envelope's times can follow it too (shorter decays high up, as a piano's), and velocity can reach more than the level (the brightness, the attack).
 - measure_output takes bpm, modwheel and pitchbend, to measure these; a keyboard element with wheels (keyboard ... wheels) lets the user play the wheels without a controller.
 
@@ -176,8 +175,8 @@ The plugin tells a program what the host and the player are doing through one mo
         const char* const kHostEffect = R"(
 THE HOST: TEMPO AND POSITION (host.fm)
 
-The plugin tells a program what the host is doing through one module, Host, in host.fm: a file the plugin provides (no tab of its own: #include "host.fm" and it is there). Declare `Host* host;` in Effect and the plugin points it at the Host, filled before every process; read it, never write it. Its text is below (an effect gets no MIDI: its wheels stay at rest).
-- Tempo sync: a delay's time or an LFO's rate in beats (an int dial of divisions, 1/16 to 4 bars, beside the free time, or a switch between them): a delay of `beats` quarter notes lasts beats * 60 / host->bpm seconds (ramp a change of it, or crossfade, so a tempo change does not click); an LFO's Hz = host->bpm / 60 / beats. To follow the song as well (the same phase at the same place in the bar: a tremolo or a filter sweep in time), take the phase from the position: lfo.follow(host->beat + i * host->bpm / (60 * rate), beats) in place of lfo.advance (lfo.fm). host->beat stands still while the host is stopped, so what follows the song stops with it.
+The plugin tells a program what the host is doing through one module, Host, in host.fm: a file the plugin provides (no tab of its own: #include "host.fm" and it is there). Its text is below: declare `Host* host;` as it says (an effect gets no MIDI: its wheels stay at rest).
+- Tempo sync: a delay's time or an LFO's rate in beats (an int dial of divisions, 1/16 to 4 bars, beside the free time, or a switch between them): a delay of `beats` quarter notes lasts beats * 60 / host->bpm seconds (ramp a change of it, or crossfade, so a tempo change does not click); an LFO's Hz = host->bpm / 60 / beats. To follow the song as well (a tremolo or a filter sweep in time), take the phase from the position: lfo.follow(host->beat + i * host->bpm / (60 * rate), beats) in place of lfo.advance (lfo.fm). host->beat stands still while the host is stopped, so what follows the song stops with it.
 - measure_output takes bpm, to measure a synced effect.
 
 <host_file name="host.fm">
@@ -187,18 +186,34 @@ The plugin tells a program what the host is doing through one module, Host, in h
         const char* const kLanguage = R"(
 FMINUS, THE LANGUAGE
 
-FMinus is a subset of C (C's syntax and semantics, clang's error messages) with modules, parameters and vectors added. What the compiler has:
+FMinus is a subset of C (C's syntax and semantics, clang's error messages: "file.fm:LINE:COL: error: ...") with modules, parameters and vectors added. What the compiler has:
 
 - Types: float (32-bit; an unsuffixed constant like 1.5 is a float), int (32-bit, signed; overflow is undefined), bool, void. Pointers to float, int, float2/float4/float8 and modules, one level deep, const and restrict. Arrays of one dimension (float h[16]; int k[3] = {1, 2, 3};), also of modules (Osc osc[4];). float2, float4, float8 are OpenCL-style vectors: (float4)(a, b, c, d), swizzles v.x v.wzyx, math applied lane by lane.
-- Not in FMinus: double, long, unsigned, char and strings, printf, struct/union/enum (use a module, and int constants), typedef, switch, do-while, goto, the bitwise operators (& | ^ ~ << >>), global variables and global constants (put state in the module's fields, data made once for the whole program in a module Shared (the contract), and constants in const locals or small functions), function pointers, 2-D arrays, pointers to pointers.
-- Statements: blocks, if/else, while, for, break, continue, return, expression statements. Declarations anywhere in a block, block-scoped. And FMinus's own threads, parallel for and parallel { } (THREADS, below); parallel is a keyword.
-- Operators: C's, with C's precedence: arithmetic (% works on floats too, as fmodf), comparisons, && || ! (short-circuit), ?: (only the taken branch runs), = += -= *= /= %=, ++ --, casts (float)i (int)x (bool)x. Integer division truncates (1 / 2 is 0): write 1.0f / 2 or (float)a / b.
+- Not in FMinus: double, long, unsigned, char and strings, printf, struct/union (use a module), typedef, do-while, goto, global variables (state goes in a module's fields; data for the whole program in a module Shared), function pointers, 2-D arrays, pointers to pointers.
+- Statements: blocks, if/else, while, for, switch (C's), break, continue, return, expression statements. Declarations anywhere in a block, block-scoped. And FMinus's own threads, parallel for and parallel { } (THREADS, below); parallel is a keyword.
+- Operators: C's, with C's precedence: arithmetic (% works on floats too, as fmodf), comparisons, && || ! (short-circuit), ?: (only the taken branch runs), & | ^ ~ << >> on ints (>> keeps the sign: mask it for a logical shift), = += -= *= /= %= &= |= ^= <<= >>=, ++ --, casts (float)i (int)x (bool)x. Integer division truncates (1 / 2 is 0): write 1.0f / 2 or (float)a / b.
+- Constants: an enum's int constants size arrays and label cases (a const int cannot); the top level holds const tables and scalars, made once, read by what follows (1 MiB at most). Count samples in an int (exact for 12 hours at 48 kHz; a float only to 2^24, 6 minutes). For example:
+
+enum { STEPS = 8 };
+enum Wave { SAW, NOISE };
+const float kSteps[STEPS] = { 0, 3, 7, 12, 7, 3, 0, -5 };
+
+float stepOf(int count) { return kSteps[(count >> 13) & (STEPS - 1)]; }
+
+float wave(enum Wave w, float phase, int count)
+{
+    switch (w)
+    {
+        case SAW: return 2 * phase - 1;
+        default: return randf(count);
+    }
+}
+
 - Functions: C functions at the top level, callable before their definition. A function may be called from a module's method.
 - Modules (C++ structs with methods, simplified): `module Name { fields; params; methods };`. Fields take no initializer and start at 0 (set them in init or start); fields cannot be const. Methods see the fields by name and may call the module's other methods by name; `this` is the module's address. A module's name is a type after its declaration: a module holds modules declared before it (Svf filter;) and arrays of them. Pass a module to a function by pointer (Osc* o, o->tick()); assigning one module to another copies it. No constructors, inheritance, overloading or access control.
 - Parameters: `param float name [[fminus::range(lo, hi)]] [[fminus::default(v)]];` (float, int or bool) are module fields the host sets and the methods only read, as name[i] (sample i of the call) or name[0]. Only the main module's first 32 are dials; the parameters of modules it holds stay at their defaults.
-- Builtins: fabsf sqrtf floorf fminf fmaxf (exact), sinf cosf tanf expf logf tanhf (accurate to a few ulp), on floats and vectors; malloc calloc free (int sizes; init and end only); reduce_add reduce_min reduce_max (vector to float); sizeof(type); the FFT: void* plan = fft_create(n) (real: n floats, n a multiple of 32 made of 2s, 3s and 5s, as 256, 1024, 2048) or fft_create_complex(n) (n float2s, a multiple of 16), made in init and freed in end with fft_destroy(plan); fft_forward(plan, in, bins) (n floats into n / 2 + 1 bins, float2s of (re, im)) and fft_inverse(plan, bins, out) (back, n times the input: neither direction scales), which may run on the audio thread. Other C math functions come from the system's libm by a prototype marked nonblocking, as the audio thread requires: `float powf(float x, float y) [[clang::nonblocking]];` (likewise atanf sinhf roundf ceilf log10f exp2f ...). Prefer the builtins: powf(a, b) is expf(b * logf(a)). A function of the program's own may not take a builtin's name (tanf included).
+- Builtins: fabsf sqrtf floorf fminf fmaxf (exact), sinf cosf tanf expf logf tanhf (accurate to a few ulp), on floats and vectors; malloc calloc free (int sizes; init and end only); reduce_add reduce_min reduce_max (vector to float); sizeof(type); the FFT: void* plan = fft_create(n) (real; n a multiple of 32 made of 2s, 3s and 5s: 256, 1024, 2048) or fft_create_complex(n) (float2s; a multiple of 16) in init, fft_destroy(plan) in end; fft_forward(plan, in, bins) (n floats to n / 2 + 1 float2 bins, (re, im)) and fft_inverse(plan, bins, out) (back, n times the input: neither scales), on the audio thread too; hash(n) and randf(n) (a float in [-1, 1)): white noise from a count, no state, the same bits everywhere. Other C math functions come from the system's libm by a prototype marked nonblocking, as the audio thread requires: `float powf(float x, float y) [[clang::nonblocking]];` (likewise atanf sinhf roundf ceilf log10f exp2f ...). Prefer the builtins: powf(a, b) is expf(b * logf(a)). A function or constant of the program's own may not take a builtin's name (tanf included).
 - Comments: // and /* */. Directives: only #include "file.fm" (another tab, by name; read once, as with #pragma once) and #pragma (ignored). No macros, no #if.
-- Errors come back in clang's words, "file.fm:LINE:COL: error: ...", from run_program.
 )";
 
         const char* const kCraft = R"(
@@ -208,7 +223,7 @@ DSP PRACTICE IN THIS PLUGIN
 - Oscillators: phase accumulators in [0, 1), phase += freq / rate, wrap with if (phase >= 1) phase -= 1. Band-limit saw and square waves (osc.fm does, with polyBLEP); a plain sinf per sample is fine for sines. Wavetables: wavetable.fm band-limits each frame with the FFT into copies a half octave apart, so nothing aliases at any pitch; build the table once in a module Shared. Frequency of a MIDI note: 440 * expf(0.0577622650f * (note - 69)) (noteToHz in util.fm).
 - Filters: a topology-preserving filter stays stable under modulation (svf.fm, ladder.fm, onepole.fm); g = tan(pi * fc / rate) as sinf(w) / cosf(w) with w kept below about 1.5 (svfG, ladderG and onePoleG compute it, for a cutoff that moves every sample: Cost, below). biquad.fm for an equalizer's bells and shelves set once a call.
 - Envelopes: exponential segments (env *= coefficient, or env += a * (target - env)) per sample (adsr.fm). A release must reach silence so process can return false.
-- Noise: without bitwise operators, Park-Miller with Schrage's method (noise.fm: white, pink, brown).
+- Noise: noise.fm (white, pink, brown); its white is randf of a count of samples.
 - Delays: a ring buffer from calloc in init, freed in end (delay.fm, reverb.fm), or a fixed array field; read between samples for modulated delays.
 - Saturation: tanhf; for gentler curves x / (1 + fabsf(x)) (shaper.fm has these and more).
 - Level: keep peaks near 1 (an instrument's voice near 0.2 to 0.3). Make dial ranges musical, and defaults that sound good at once.

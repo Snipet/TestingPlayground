@@ -682,6 +682,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   product's kind (`ChatAgent::promptExample`: the program, its `panel.gui` and the library files it includes), which
   `plugin.chatexample` compiles and plays: a change to the contract (Patch.h), the panel's lines, the language's
   rules, a library file's header or the examples changes it too, and the example must keep compiling with no note.
+  FMINUS, THE LANGUAGE says what FMinus at its pin compiles, with one example of its newer constructs (an enum's
+  sizes, a top-level table, a switch, noise from a count), which `plugin.chatexample` compiles alone and runs: a pin
+  move that changes the language changes the section, within the start part's token bound (`plugin.mcp`).
 - **Pictures** (`attach`/`detach`, `ChatImages.h`): read on the agent's job thread (`ChatAgent::queueJob`), kept as
   sent (the file's own PNG or JPEG bytes when they fit, else encoded again) with a thumbnail (RGBA8, and encoded for
   the session); sent as base64 image blocks before the message's text; six a message, twenty in the history. The
