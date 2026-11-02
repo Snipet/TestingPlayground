@@ -79,25 +79,38 @@ namespace playground::measure
             return n > 0 ? std::sqrt(e / static_cast<double>(n)) : 0.0;
         }
 
-        double dc(const Stereo& s, std::size_t from, std::size_t to)
+        // Over spans (the held part): the RMS of both channels, the mean sample, the left/right correlation (1: mono, 0:
+        // unrelated, -1: out of phase) and the balance in dB (left's energy over right's).
+        double rmsOver(const Stereo& s, const std::vector<Span>& spans)
+        {
+            double e = 0.0;
+            std::size_t n = 0;
+            for (const auto& [from, to] : spans)
+                for (std::size_t i = from; i < to && i < s.size(); ++i, ++n)
+                    e += 0.5 * (static_cast<double>(s.l[i]) * s.l[i] + static_cast<double>(s.r[i]) * s.r[i]);
+            return n > 0 ? std::sqrt(e / static_cast<double>(n)) : 0.0;
+        }
+
+        double dcOver(const Stereo& s, const std::vector<Span>& spans)
         {
             double m = 0.0;
             std::size_t n = 0;
-            for (std::size_t i = from; i < to && i < s.size(); ++i, ++n)
-                m += 0.5 * (static_cast<double>(s.l[i]) + s.r[i]);
+            for (const auto& [from, to] : spans)
+                for (std::size_t i = from; i < to && i < s.size(); ++i, ++n)
+                    m += 0.5 * (static_cast<double>(s.l[i]) + s.r[i]);
             return n > 0 ? m / static_cast<double>(n) : 0.0;
         }
 
-        // The left/right correlation (1: mono, 0: unrelated, -1: out of phase), and the balance in dB (left over right).
-        void stereo(const Stereo& s, std::size_t from, std::size_t to, double& corr, double& balanceDb)
+        void stereoOver(const Stereo& s, const std::vector<Span>& spans, double& corr, double& balanceDb)
         {
             double ll = 0.0, rr = 0.0, lr = 0.0;
-            for (std::size_t i = from; i < to && i < s.size(); ++i)
-            {
-                ll += static_cast<double>(s.l[i]) * s.l[i];
-                rr += static_cast<double>(s.r[i]) * s.r[i];
-                lr += static_cast<double>(s.l[i]) * s.r[i];
-            }
+            for (const auto& [from, to] : spans)
+                for (std::size_t i = from; i < to && i < s.size(); ++i)
+                {
+                    ll += static_cast<double>(s.l[i]) * s.l[i];
+                    rr += static_cast<double>(s.r[i]) * s.r[i];
+                    lr += static_cast<double>(s.l[i]) * s.r[i];
+                }
             corr = ll > 0.0 && rr > 0.0 ? lr / std::sqrt(ll * rr) : (ll == rr ? 1.0 : 0.0);
             balanceDb = ll > 0.0 && rr > 0.0 ? 10.0 * std::log10(ll / rr) : 0.0;
         }
@@ -297,107 +310,100 @@ namespace playground::measure
             return out;
         }
 
-        // The energy of x farther than six bins from hz (a four-term Blackman-Harris window over the largest power of
-        // two that fits, up to 32768 samples) against all of it, in dB: a sine's THD+N (its harmonics, aliases and
-        // noise); -240 when nothing is away from it.
-        [[maybe_unused]] double awayDb(const std::vector<float>& x, double rate, double hz)
-        {
-            std::size_t n = 1;
-            while (n * 2 <= x.size() && n < 32768)
-                n *= 2;
-            if (n < 256)
-                return -240.0;
-            const std::size_t off = (x.size() - n) / 2;
-            std::vector<std::complex<double>> a(n);
-            const double step = 2.0 * std::numbers::pi / static_cast<double>(n - 1);
-            for (std::size_t i = 0; i < n; ++i)
-            {
-                const double t = step * static_cast<double>(i);
-                const double w = 0.35875 - 0.48829 * std::cos(t) + 0.14128 * std::cos(2.0 * t) - 0.01168 * std::cos(3.0 * t);
-                a[i] = { static_cast<double>(x[off + i]) * w, 0.0 };
-            }
-            fftInPlace(a);
-            const double hzPerBin = rate / static_cast<double>(n);
-            double all = 0.0, away = 0.0;
-            for (std::size_t k = 1; k < n / 2; ++k)
-            {
-                const double e = std::norm(a[k]);
-                all += e;
-                if (std::fabs(static_cast<double>(k) * hzPerBin - hz) > 6.0 * hzPerBin)
-                    away += e;
-            }
-            return all > 0.0 && away > 0.0 ? 10.0 * std::log10(away / all) : -240.0;
-        }
-
         // ---- the metrics ---------------------------------------------------------------------------------------------
         constexpr double kInf = std::numeric_limits<double>::infinity();
 
+        // The words every line uses (metricTerms): "held" and "the spectrum" are defined there, once.
+        constexpr const char* kInstrumentTerms =
+            "Held: from 50 ms after each note-on (half the note if shorter) to its note-off, a phrase's notes together. "
+            "The spectrum: the held part's power, Welch's average of 0.1 s Hann frames overlapped by half, the same at "
+            "every rate. The band: 20 Hz to 20 kHz. After each unit, the tolerance a target takes unless its goal gives "
+            "one.\n";
+        constexpr const char* kEffectTerms =
+            "Held: a test signal from 50 ms after it starts to its end (hold_seconds). The spectrum: the held part's power, "
+            "Welch's average of 0.1 s Hann frames overlapped by half, the same at every rate. The band: 20 Hz to 20 kHz. "
+            "After each unit, the tolerance a target takes unless its goal gives one.\n";
+
         constexpr MetricInfo kInstrumentMetrics[] = {
-            { "peak_db", "dBFS", "the held part's peak (the notes together)", 1.0, false, 0.0 },
-            { "rms_db", "dBFS", "the held part's RMS level", 1.0, false, 0.0 },
-            { "dc", "", "the held part's DC offset (its mean sample)", 0.002, false, 0.0 },
+            { "peak_db", "dBFS", "the largest sample from the first note-on to the last note-off", 1.0, false, 0.0 },
+            { "rms_db", "dBFS", "the RMS of both channels while held, DC and all", 1.0, false, 0.0 },
+            { "dc", "", "the mean sample while held", 0.002, false, 0.0 },
             { "correlation", "", "left against right while held: 1 mono, 0 unrelated, -1 out of phase", 0.05, false, 0.0 },
-            { "balance_db", "dB", "left over right while held", 0.5, false, 0.0 },
-            { "centroid_hz", "Hz", "the spectral centroid while held: how bright it is", 0.05, true, 1.0 },
-            { "fundamental_hz", "Hz", "the lowest partial within 30 dB of the strongest while held (0: none)", 0.005, true, 0.5 },
-            { "pitch_cents", "cents", "that partial against the lowest note's frequency", 5.0, false, 0.0 },
+            { "balance_db", "dB", "left's energy over right's while held", 0.5, false, 0.0 },
+            { "centroid_hz", "Hz", "the spectrum's power-weighted mean frequency in the band: how bright", 0.05, true, 1.0 },
+            { "fundamental_hz", "Hz",
+              "the spectrum's strongest partial within 600 cents of the expected pitch (the lowest note, bent by the pitch "
+              "wheel's start at 2 semitones; nearer it than another note), else its harmonics' best sum there (0: silent)",
+              0.005, true, 0.5 },
+            { "pitch_cents", "cents", "fundamental_hz against the expected pitch", 5.0, false, 0.0 },
             { "inharmonic_db", "dB",
-              "one note only: the strongest component below 20 kHz that is no harmonic of it, under the strongest "
-              "(aliasing, or the sound's own detuning, FM or noise; -200: none above -90)",
+              "one note only: in 0.4 s Blackman-Harris frames while held, the strongest component in the band farther than "
+              "15 Hz from every harmonic of the expected pitch, under the strongest (aliasing, or the sound's own detuning, "
+              "FM or noise; -200: none above -90)",
               3.0, false, 0.0 },
-            { "step", "", "the largest step between two samples", 0.01, false, 0.0 },
+            { "step", "", "the largest step between two samples of a channel, the whole render (a jump's is the same at any "
+                          "rate, a smooth wave's smaller at a higher one)",
+              0.01, false, 0.0 },
             { "click", "",
               "1 when the render has a click, else 0: of its 10 ms windows, one whose largest step is over 0.05, 3 times the "
               "second largest of the 10 windows each side and 0.35 of the peak within 5 windows (trace's rule)",
               0.5, false, 0.0 },
-            { "attack_s", "s", "from the note-on until its peaks (windows of a cycle) are within 3 dB of their loudest while held",
+            { "attack_s", "s",
+              "from the first note-on until the peaks of one-cycle windows (of the lowest note) first come within 3 dB of "
+              "their loudest while held",
               0.1, true, 0.002 },
             { "decay_s", "s",
-              "from its loudest moment until the level (10 ms windows) is 60 dB under it for good: a pluck's or a bell's "
-              "decay (infinity: not by the end)",
+              "from the render's loudest 10 ms (RMS) until the 10 ms RMS stays 60 dB under it: a pluck's or a bell's "
+              "decay",
               0.1, true, 0.002 },
-            { "release_s", "s",
-              "from the note-off until the level is 60 dB under the held level for good (infinity: not by the end)", 0.1,
-              true, 0.002 },
-            { "voice_end_s", "s", "from the note-off until the last voice ended (process returned false; infinity: never)",
+            { "release_s", "s", "from the last note-off until the 10 ms RMS stays 60 dB under rms_db",
+              0.1, true, 0.002 },
+            { "voice_end_s", "s", "from the last note-off until the last voice ended (process returned false)",
               0.1, true, 0.002 },
             { "chord_peak_db", "dBFS",
-              "one note only: the peak of a chord (the note, a third, a fifth and an octave above) at the same velocity", 1.0,
-              false, 0.0 },
-            { "alerts", "", "the output guard's alerts: 0 none, 1 NaN or infinite samples, 2 samples clipped, 3 both", 0.5,
-              false, 0.0 },
+              "one note only: the largest sample of a chord (the note, a third, a fifth and an octave above) held 0.6 s at "
+              "the same velocity",
+              1.0, false, 0.0 },
+            { "alerts", "", "the output guard's alerts in the render: 0 none, 1 NaN or infinite samples, 2 samples clipped, "
+                            "3 both",
+              0.5, false, 0.0 },
             { "cpu_percent", "%",
               "the notes' share of one core in real time while held: the rendering thread's own time, of the program's own "
               "code with its dials still (a moving dial costs more; the frozen copy the plugin plays once they rest, usually "
               "less)",
               0.1, true, 0.01 },
-            { "cpu16_percent", "%", "the share of sixteen voices at once, measured with sixteen notes held", 0.1, true,
+            { "cpu16_percent", "%", "the same of sixteen notes held 0.15 s at once (the least of two renders)", 0.1, true,
               0.01 },
         };
 
         constexpr MetricInfo kEffectMetrics[] = {
-            { "sine_peak_db", "dBFS", "a 220 Hz sine's (-12 dBFS) output peak", 1.0, false, 0.0 },
-            { "sine_rms_db", "dBFS", "its output RMS", 1.0, false, 0.0 },
-            { "sine_gain_db", "dB", "its output RMS over its input's", 0.5, false, 0.0 },
+            { "sine_peak_db", "dBFS", "the largest output sample of a 220 Hz sine at -12 dBFS", 1.0, false, 0.0 },
+            { "sine_rms_db", "dBFS", "its output's RMS of both channels while held", 1.0, false, 0.0 },
+            { "sine_gain_db", "dB", "its output RMS over its input's, while held", 0.5, false, 0.0 },
             { "thd_db", "dB",
-              "its output's energy away from 220 Hz (harmonics, aliases, noise) against all of it: THD+N, how much the "
-              "effect distorts (-240: none)",
+              "in 0.4 s Blackman-Harris frames while held, its output's power in the band farther than 15 Hz from 220 Hz "
+              "(harmonics, aliases, noise) against all of it there: THD+N, how much the effect distorts (-240: none)",
               1.0, false, 0.0 },
-            { "dc", "", "the sine's output DC offset (its mean sample)", 0.002, false, 0.0 },
-            { "correlation", "", "the sine's output, left against right: 1 mono, 0 unrelated, -1 out of phase", 0.05, false, 0.0 },
-            { "balance_db", "dB", "the sine's output, left over right", 0.5, false, 0.0 },
-            { "noise_gain_db", "dB", "noise's (-18 dBFS RMS) output RMS over its input's", 0.5, false, 0.0 },
-            { "centroid_in_hz", "Hz", "the noise's spectral centroid going in", 0.05, true, 1.0 },
-            { "centroid_out_hz", "Hz", "the noise's spectral centroid coming out: how bright the effect leaves it", 0.05, true, 1.0 },
-            { "impulse_peak_db", "dBFS", "the impulse response's peak (the impulse is 0.5, -6 dBFS)", 1.0, false, 0.0 },
-            { "impulse_delay_ms", "ms", "when the impulse response peaks", 0.05, true, 0.1 },
+            { "dc", "", "the sine's output mean sample while held", 0.002, false, 0.0 },
+            { "correlation", "", "the sine's output, left against right while held: 1 mono, 0 unrelated, -1 out of phase",
+              0.05, false, 0.0 },
+            { "balance_db", "dB", "the sine's output, left's energy over right's while held", 0.5, false, 0.0 },
+            { "noise_gain_db", "dB", "white noise's (-18 dBFS RMS) output RMS over its input's, while held", 0.5, false, 0.0 },
+            { "centroid_in_hz", "Hz", "the noise's spectrum going in, its power-weighted mean frequency in the band (about 10 kHz)",
+              0.05, true, 1.0 },
+            { "centroid_out_hz", "Hz", "the same of the noise coming out: how bright the effect leaves it", 0.05, true, 1.0 },
+            { "impulse_peak_db", "dBFS", "the largest output sample after an impulse of 0.5 (-6 dBFS)", 1.0, false, 0.0 },
+            { "impulse_delay_ms", "ms", "when that sample comes", 0.05, true, 0.1 },
             { "impulse_decay_s", "s",
-              "from that peak until the response is 60 dB under it for good (infinity: not by the end of the tail)", 0.1, true,
-              0.002 },
-            { "silence_db", "dBFS", "the output's RMS from silence in: self-oscillation, DC or noise of its own", 3.0, false, 0.0 },
-            { "step", "", "the largest step between two samples, of any of the signals", 0.01, false, 0.0 },
-            { "alerts", "", "the output guard's alerts: 0 none, 1 NaN or infinite samples, 2 samples clipped, 3 both", 0.5,
+              "from that sample until its render's 10 ms RMS stays 60 dB under it", 0.1, true, 0.002 },
+            { "silence_db", "dBFS", "the output's RMS over 0.5 s of silence in: self-oscillation, DC or noise of its own", 3.0,
               false, 0.0 },
+            { "step", "", "the largest step between two samples of a channel, in any signal's render (a jump's is the same "
+                          "at any rate, a smooth wave's smaller at a higher one)",
+              0.01, false, 0.0 },
+            { "alerts", "", "the output guard's alerts in the renders: 0 none, 1 NaN or infinite samples, 2 samples clipped, "
+                            "3 both",
+              0.5, false, 0.0 },
             { "cpu_percent", "%",
               "the renders' share of one core in real time: the rendering thread's own time, of the program's own code with "
               "its dials still (a moving dial costs more; the frozen copy the plugin plays once they rest, usually less)",
@@ -446,6 +452,388 @@ namespace playground::measure
         if (unit == "%")
             return fmt(std::fabs(v) < 0.1 ? "%.3f%%" : "%.2f%%", v);
         return fmt("%.3g", v);
+    }
+
+    std::string toleranceText(const MetricInfo& m)
+    {
+        // In the metric's unit (a level's in dB), or a share of the target, never under its least.
+        if (m.relative)
+            return "+-" + fmt("%g", m.tolerance * 100.0) + " %, at least " + fmt("%g", m.floor);
+        return "+-" + fmt("%g", m.tolerance);
+    }
+
+    const char* metricTerms() { return kInstrument ? kInstrumentTerms : kEffectTerms; }
+
+    // ---- the spectra and the steps --------------------------------------------------------------------------------------
+    namespace
+    {
+        // The taper's value at i of m samples (symmetric: 0 and m - 1 its ends).
+        double taperAt(Taper t, std::size_t i, std::size_t m)
+        {
+            const double x = 2.0 * std::numbers::pi * static_cast<double>(i) / static_cast<double>(std::max<std::size_t>(m - 1, 1));
+            if (t == Taper::hann)
+                return 0.5 - 0.5 * std::cos(x);
+            return 0.35875 - 0.48829 * std::cos(x) + 0.14128 * std::cos(2.0 * x) - 0.01168 * std::cos(3.0 * x);
+        }
+
+        // A bin's log power, never minus infinity.
+        double logPower(double p) { return std::log(p + 1e-300); }
+
+        // A local maximum over two bins each side.
+        bool localMax(const std::vector<double>& p, std::size_t k)
+        {
+            return k >= 2 && k + 2 < p.size() && p[k] >= p[k - 1] && p[k] >= p[k + 1] && p[k] >= p[k - 2] && p[k] >= p[k + 2];
+        }
+    }
+
+    std::vector<Span> heldSpans(const Timeline& tl, std::size_t heldEnd, double rate)
+    {
+        std::vector<Span> spans;
+        std::array<long, 128> on;
+        on.fill(-1);
+        const auto settle = static_cast<std::size_t>(kSettleSeconds * rate);
+        const auto close = [&](std::size_t key, std::size_t at) {
+            if (on[key] < 0)
+                return;
+            const auto a = static_cast<std::size_t>(on[key]);
+            on[key] = -1;
+            if (at > a)
+                spans.push_back({ a + std::min((at - a) / 2, settle), at });
+        };
+        for (const auto& [at, e] : tl.events)
+        {
+            const std::size_t key = e.note;
+            if (e.kind == EventKind::noteOn)
+            {
+                close(key, at);                              // pressed again while held: the next starts here
+                on[key] = static_cast<long>(at);
+            }
+            else if (e.kind == EventKind::noteOff)
+                close(key, at);
+            else if (e.kind == EventKind::allNotesOff)
+                for (std::size_t k = 0; k < on.size(); ++k)
+                    close(k, at);
+        }
+        for (std::size_t k = 0; k < on.size(); ++k)
+            close(k, heldEnd);                               // still down at the end
+        std::sort(spans.begin(), spans.end());
+        std::vector<Span> joined;
+        for (const Span& s : spans)
+        {
+            if (s.second <= s.first)
+                continue;
+            if (!joined.empty() && s.first <= joined.back().second)
+                joined.back().second = std::max(joined.back().second, s.second);
+            else
+                joined.push_back(s);
+        }
+        return joined;
+    }
+
+    Spectrum spectrum(const std::vector<float>& x, double rate, const std::vector<Span>& spans, Taper taper, double seconds)
+    {
+        constexpr std::size_t kLeast = 16;                   // a span shorter than this has no frame
+        Spectrum s;
+        s.rate = rate;
+        const std::size_t frame = std::max<std::size_t>(kLeast, static_cast<std::size_t>(std::llround(seconds * rate)));
+        std::size_t n = 1;
+        while (n < frame)
+            n *= 2;
+        s.hzPerBin = rate / static_cast<double>(n);
+        s.power.assign(n / 2 + 1, 0.0);
+        std::size_t shortest = frame;
+        for (const auto& [from, to] : spans)
+            if (const std::size_t end = std::min(to, x.size()); end >= from + kLeast)
+                shortest = std::min(shortest, end - from);
+        s.resolutionHz = rate / static_cast<double>(shortest);
+        std::vector<std::complex<double>> a(n);
+        std::vector<double> w;
+        double w2 = 0.0, total = 0.0;
+        for (const auto& [from, to] : spans)
+        {
+            const std::size_t end = std::min(to, x.size());
+            if (end < from + kLeast)
+                continue;
+            const std::size_t len = end - from, m = std::min(len, frame);
+            // Frames spread evenly from the span's start to its end, at most half a frame apart.
+            const std::size_t count = len <= frame ? 1 : (len - frame + frame / 2 - 1) / (frame / 2) + 1;
+            if (w.size() != m)
+            {
+                w.resize(m);
+                w2 = 0.0;
+                for (std::size_t i = 0; i < m; ++i)
+                {
+                    w[i] = taperAt(taper, i, m);
+                    w2 += w[i] * w[i];
+                }
+            }
+            const double weight = static_cast<double>(len) / static_cast<double>(count) / w2;
+            for (std::size_t f = 0; f < count; ++f)
+            {
+                const std::size_t at = from + (count == 1 ? 0 : (len - m) * f / (count - 1));
+                for (std::size_t i = 0; i < n; ++i)
+                    a[i] = i < m ? std::complex<double>(static_cast<double>(x[at + i]) * w[i], 0.0) : std::complex<double>();
+                fftInPlace(a);
+                for (std::size_t k = 0; k < s.power.size(); ++k)
+                    s.power[k] += weight * std::norm(a[k]);
+                ++s.frames;
+            }
+            total += static_cast<double>(len);
+        }
+        if (total > 0.0)
+            for (double& p : s.power)
+                p /= total;
+        return s;
+    }
+
+    double Spectrum::centroid(double lo, double hi) const
+    {
+        const double top = std::min(hi, 0.5 * rate);
+        double num = 0.0, den = 0.0;
+        for (std::size_t k = 1; k < power.size(); ++k)
+        {
+            const double hz = static_cast<double>(k) * hzPerBin;
+            if (hz < lo)
+                continue;
+            if (hz > top)
+                break;
+            num += hz * power[k];
+            den += power[k];
+        }
+        return den > 0.0 ? num / den : 0.0;
+    }
+
+    double Spectrum::strongest() const
+    {
+        double top = 0.0;
+        for (std::size_t k = 1; k < power.size(); ++k)
+            top = std::max(top, power[k]);
+        return top;
+    }
+
+    void Spectrum::refine(std::size_t k, double& hz, double& lp) const
+    {
+        hz = static_cast<double>(k) * hzPerBin;
+        lp = k < power.size() ? logPower(power[k]) : logPower(0.0);
+        if (k < 1 || k + 1 >= power.size())
+            return;
+        const double y0 = logPower(power[k - 1]), y1 = logPower(power[k]), y2 = logPower(power[k + 1]);
+        const double den = y0 - 2.0 * y1 + y2;
+        const double d = den < 0.0 ? std::clamp(0.5 * (y0 - y2) / den, -0.5, 0.5) : 0.0;
+        hz = (static_cast<double>(k) + d) * hzPerBin;
+        lp = y1 - 0.25 * (y0 - y2) * d;
+    }
+
+    std::vector<Peak> Spectrum::peaks(int count, double withinDb) const
+    {
+        const double top = strongest();
+        if (!(top > 1e-30) || count <= 0)
+            return {};
+        const double least = top * std::pow(10.0, -withinDb / 10.0);
+        std::vector<Peak> found;
+        double loudest = logPower(0.0);
+        for (std::size_t k = 2; k + 2 < power.size(); ++k)
+        {
+            if (power[k] < least || !localMax(power, k))
+                continue;
+            Peak p;
+            double lp = 0.0;
+            refine(k, p.hz, lp);
+            p.db = lp;                                       // its log power, until the loudest is known
+            loudest = std::max(loudest, lp);
+            found.push_back(p);
+        }
+        for (Peak& p : found)
+            p.db = 10.0 * (p.db - loudest) / std::numbers::ln10;
+        std::stable_sort(found.begin(), found.end(), [](const Peak& x0, const Peak& x1) { return x0.db > x1.db; });
+        if (found.size() > static_cast<std::size_t>(count))
+            found.resize(static_cast<std::size_t>(count));
+        std::sort(found.begin(), found.end(), [](const Peak& x0, const Peak& x1) { return x0.hz < x1.hz; });
+        return found;
+    }
+
+    Pitch pitchOf(const Spectrum& s, double expectedHz, double loHz, double hiHz)
+    {
+        const double top = s.strongest();
+        if (!(top > 1e-30) || !(expectedHz > 0.0) || !(s.hzPerBin > 0.0) || s.power.size() < 8)
+            return {};
+        const std::vector<double>& p = s.power;
+        // The strongest partial in the range: a local maximum within 60 dB of the strongest, 10 dB over the range's median.
+        const std::size_t klo = std::max<std::size_t>(2, static_cast<std::size_t>(std::ceil(loHz / s.hzPerBin)));
+        const std::size_t khi = std::min(p.size() - 3, static_cast<std::size_t>(std::max(0.0, std::floor(hiHz / s.hzPerBin))));
+        if (klo <= khi)
+        {
+            std::vector<double> range(p.begin() + static_cast<std::ptrdiff_t>(klo), p.begin() + static_cast<std::ptrdiff_t>(khi + 1));
+            std::nth_element(range.begin(), range.begin() + static_cast<std::ptrdiff_t>(range.size() / 2), range.end());
+            const double median = range[range.size() / 2];
+            std::size_t best = 0;
+            for (std::size_t k = klo; k <= khi; ++k)
+                if (localMax(p, k) && p[k] >= top * 1e-6 && p[k] >= 10.0 * median && (best == 0 || p[k] > p[best]))
+                    best = k;
+            if (best > 0)
+            {
+                Pitch out;
+                double lp = 0.0;
+                s.refine(best, out.hz, lp);
+                out.partial = true;
+                return out;
+            }
+        }
+        // None: the f0 whose harmonics in the band sum the most magnitude, a cent at a time.
+        const double bandTop = std::min(kBandHighHz, 0.5 * s.rate - 2.0 * s.hzPerBin);
+        const auto at = [&](double hz) {
+            const double b = hz / s.hzPerBin;
+            const auto k = static_cast<std::size_t>(b);
+            if (k + 1 >= p.size())
+                return 0.0;
+            const double t = b - static_cast<double>(k);
+            return std::sqrt((1.0 - t) * p[k] + t * p[k + 1]);
+        };
+        double bestF = 0.0, bestScore = 0.0;
+        for (int c = -static_cast<int>(kPitchCents); c <= static_cast<int>(kPitchCents); ++c)
+        {
+            const double f0 = expectedHz * std::exp2(static_cast<double>(c) / 1200.0);
+            if (f0 <= loHz || f0 >= hiHz)
+                continue;
+            double score = 0.0;
+            for (int h = 1; h <= 20 && h * f0 <= bandTop; ++h)
+                score += at(h * f0);
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestF = f0;
+            }
+        }
+        if (!(bestF > 0.0))
+            return {};
+        // Placed by its strongest harmonic: the largest bin within a resolution bin of it, refined.
+        int strongest = 1;
+        for (int h = 2; h <= 20 && h * bestF <= bandTop; ++h)
+            if (at(h * bestF) > at(strongest * bestF))
+                strongest = h;
+        const auto reach = static_cast<std::size_t>(std::ceil(s.resolutionHz / s.hzPerBin));
+        const auto c0 = static_cast<std::size_t>(std::llround(strongest * bestF / s.hzPerBin));
+        std::size_t k = std::min(c0, p.size() - 1);
+        for (std::size_t j = c0 > reach ? c0 - reach : 1; j <= c0 + reach && j + 1 < p.size(); ++j)
+            if (p[j] > p[k])
+                k = j;
+        Pitch out;
+        out.hz = bestF;
+        if (k >= 1 && k + 1 < p.size() && p[k] >= p[k - 1] && p[k] >= p[k + 1])
+        {
+            double hz = 0.0, lp = 0.0;
+            s.refine(k, hz, lp);
+            out.hz = hz / strongest;
+        }
+        return out;
+    }
+
+    Peak inharmonic(const Spectrum& s, double f0, double maxHz)
+    {
+        Peak worst{ 0.0, -200.0 };
+        const double top = s.strongest();
+        if (!(f0 > 0.0) || !(top > 1e-30) || s.power.size() < 8)
+            return worst;
+        const std::vector<double>& p = s.power;
+        const double away = 6.0 * s.resolutionHz;
+        const std::size_t first = std::max<std::size_t>(2, static_cast<std::size_t>(kBandLowHz / s.hzPerBin));
+        const std::size_t last = std::min(p.size() - 2, static_cast<std::size_t>(std::min(maxHz, 0.5 * s.rate) / s.hzPerBin));
+        std::size_t at = 0;
+        for (std::size_t k = first; k <= last; ++k)
+        {
+            const double hz = static_cast<double>(k) * s.hzPerBin;
+            const double h = std::max(1.0, std::round(hz / f0));         // the nearest harmonic (below f0: f0)
+            if (std::fabs(hz - h * f0) <= away)
+                continue;                                                // within a harmonic's main lobe
+            if (at == 0 || p[k] > p[at])
+                at = k;
+        }
+        if (at == 0 || !(p[at] > 0.0))
+            return worst;
+        double lp = 0.0;
+        s.refine(at, worst.hz, lp);
+        worst.db = 10.0 * std::log10(p[at] / top);
+        return worst;
+    }
+
+    Peak inharmonic(const std::vector<float>& x, double rate, double f0, double maxHz)
+    {
+        return inharmonic(spectrum(x, rate, { { 0, x.size() } }, Taper::blackmanHarris, kPuritySeconds), f0, maxHz);
+    }
+
+    double awayDb(const Spectrum& s, double hz)
+    {
+        const double away = 6.0 * s.resolutionHz, top = std::min(kBandHighHz, 0.5 * s.rate);
+        double all = 0.0, off = 0.0;
+        for (std::size_t k = 1; k < s.power.size(); ++k)
+        {
+            const double f = static_cast<double>(k) * s.hzPerBin;
+            if (f < kBandLowHz)
+                continue;
+            if (f > top)
+                break;
+            all += s.power[k];
+            if (std::fabs(f - hz) > away)
+                off += s.power[k];
+        }
+        return all > 0.0 && off > 0.0 ? 10.0 * std::log10(off / all) : -240.0;
+    }
+
+    std::vector<Peak> spectrumPeaks(const std::vector<float>& x, double rate, int count, double* centroidHz)
+    {
+        const Spectrum s = spectrum(x, rate, { { 0, x.size() } });
+        if (centroidHz != nullptr)
+            *centroidHz = s.centroid();
+        return s.peaks(count);
+    }
+
+    std::vector<Click> clicks(const std::vector<float>& l, const std::vector<float>& r, double rate)
+    {
+        const std::size_t n = std::min(l.size(), r.size());
+        const std::size_t w = std::max<std::size_t>(1, static_cast<std::size_t>(0.01 * rate));
+        std::vector<double> step, peak;
+        std::vector<std::size_t> at;
+        for (std::size_t a = 0; a < n; a += w)
+        {
+            double s = 0.0, p = 0.0;
+            std::size_t where = a;
+            for (std::size_t i = a; i < std::min(n, a + w); ++i)
+            {
+                p = std::max({ p, static_cast<double>(std::fabs(l[i])), static_cast<double>(std::fabs(r[i])) });
+                if (i == 0)
+                    continue;
+                const double d = std::max(std::fabs(static_cast<double>(l[i]) - l[i - 1]), std::fabs(static_cast<double>(r[i]) - r[i - 1]));
+                if (d > s)
+                {
+                    s = d;
+                    where = i;
+                }
+            }
+            step.push_back(s);
+            peak.push_back(p);
+            at.push_back(where);
+        }
+        std::vector<Click> out;
+        std::vector<double> around;
+        for (std::size_t k = 0; k < step.size(); ++k)
+        {
+            around.clear();
+            double local = 0.0;
+            for (std::size_t j = k >= 10 ? k - 10 : 0; j < std::min(step.size(), k + 11); ++j)
+            {
+                if (j + 5 >= k && j <= k + 5)
+                    local = std::max(local, peak[j]);
+                if (j != k)
+                    around.push_back(step[j]);
+            }
+            const double usual = secondLargest(around);
+            if (step[k] > 0.05 && step[k] > 3.0 * usual && step[k] > 0.35 * local)
+                out.push_back({ at[k], step[k], usual });
+        }
+        std::stable_sort(out.begin(), out.end(), [](const Click& a, const Click& b) {
+            return a.size / std::max(a.usual, 1e-9) > b.size / std::max(b.usual, 1e-9);
+        });
+        return out;
     }
 
     bool Request::sameRender(const Request& o) const
@@ -544,55 +932,6 @@ namespace playground::measure
         return out;
     }
 
-    std::vector<Click> clicks(const std::vector<float>& l, const std::vector<float>& r, double rate)
-    {
-        const std::size_t n = std::min(l.size(), r.size());
-        const std::size_t w = std::max<std::size_t>(1, static_cast<std::size_t>(0.01 * rate));
-        std::vector<double> step, peak;
-        std::vector<std::size_t> at;
-        for (std::size_t a = 0; a < n; a += w)
-        {
-            double s = 0.0, p = 0.0;
-            std::size_t where = a;
-            for (std::size_t i = a; i < std::min(n, a + w); ++i)
-            {
-                p = std::max({ p, static_cast<double>(std::fabs(l[i])), static_cast<double>(std::fabs(r[i])) });
-                if (i == 0)
-                    continue;
-                const double d = std::max(std::fabs(static_cast<double>(l[i]) - l[i - 1]), std::fabs(static_cast<double>(r[i]) - r[i - 1]));
-                if (d > s)
-                {
-                    s = d;
-                    where = i;
-                }
-            }
-            step.push_back(s);
-            peak.push_back(p);
-            at.push_back(where);
-        }
-        std::vector<Click> out;
-        std::vector<double> around;
-        for (std::size_t k = 0; k < step.size(); ++k)
-        {
-            around.clear();
-            double local = 0.0;
-            for (std::size_t j = k >= 10 ? k - 10 : 0; j < std::min(step.size(), k + 11); ++j)
-            {
-                if (j + 5 >= k && j <= k + 5)
-                    local = std::max(local, peak[j]);
-                if (j != k)
-                    around.push_back(step[j]);
-            }
-            const double usual = secondLargest(around);
-            if (step[k] > 0.05 && step[k] > 3.0 * usual && step[k] > 0.35 * local)
-                out.push_back({ at[k], step[k], usual });
-        }
-        std::stable_sort(out.begin(), out.end(), [](const Click& a, const Click& b) {
-            return a.size / std::max(a.usual, 1e-9) > b.size / std::max(b.usual, 1e-9);
-        });
-        return out;
-    }
-
     std::vector<Step> largestSteps(const std::vector<float>& l, const std::vector<float>& r, std::size_t count, double rate)
     {
         // The largest step, then the clicks (largest first), each at least 10 ms from those before it.
@@ -649,107 +988,6 @@ namespace playground::measure
         if (!tl.moves.empty() && tl.blocks.empty() && tl.block > 1 && at % static_cast<std::size_t>(tl.block) == 0)
             out += "; at a block's start, where a moving dial takes its next value";
         return out;
-    }
-
-    std::vector<Peak> spectrumPeaks(const std::vector<float>& x, double rate, int count, double* centroidHz)
-    {
-        std::size_t n = 1;
-        while (n * 2 <= x.size() && n < 16384)
-            n *= 2;
-        if (centroidHz != nullptr)
-            *centroidHz = 0.0;
-        if (n < 64)
-            return {};
-        const std::size_t off = (x.size() - n) / 2;          // the middle of what was given
-        std::vector<std::complex<double>> a(n);
-        for (std::size_t i = 0; i < n; ++i)
-        {
-            const double w = 0.5 - 0.5 * std::cos(2.0 * std::numbers::pi * static_cast<double>(i) / static_cast<double>(n - 1));
-            a[i] = { static_cast<double>(x[off + i]) * w, 0.0 };
-        }
-        fftInPlace(a);
-        const std::size_t bins = n / 2;
-        std::vector<double> mag(bins);
-        double top = 0.0, sum = 0.0, weighted = 0.0;
-        for (std::size_t k = 0; k < bins; ++k)
-        {
-            mag[k] = std::abs(a[k]);
-            top = std::max(top, mag[k]);
-            if (k > 0)
-            {
-                sum += mag[k];
-                weighted += mag[k] * static_cast<double>(k) * rate / static_cast<double>(n);
-            }
-        }
-        if (centroidHz != nullptr && sum > 0.0)
-            *centroidHz = weighted / sum;
-        if (!(top > 1e-9))
-            return {};
-        std::vector<Peak> found;
-        for (std::size_t k = 2; k + 2 < bins; ++k)
-        {
-            const double m = mag[k];
-            if (m < top * 0.01 || m < mag[k - 1] || m < mag[k + 1] || m < mag[k - 2] || m < mag[k + 2])
-                continue;                                    // 40 dB under the strongest, or not a local maximum
-            // Parabolic interpolation on the log magnitude.
-            const double y0 = std::log(mag[k - 1] + 1e-30), y1 = std::log(m + 1e-30), y2 = std::log(mag[k + 1] + 1e-30);
-            const double den = y0 - 2.0 * y1 + y2;
-            const double d = den != 0.0 ? 0.5 * (y0 - y2) / den : 0.0;
-            found.push_back({ (static_cast<double>(k) + std::clamp(d, -0.5, 0.5)) * rate / static_cast<double>(n),
-                              toDb(m / top) });
-        }
-        std::sort(found.begin(), found.end(), [](const Peak& x0, const Peak& x1) { return x0.db > x1.db; });
-        if (found.size() > static_cast<std::size_t>(std::max(0, count)))
-            found.resize(static_cast<std::size_t>(std::max(0, count)));
-        std::sort(found.begin(), found.end(), [](const Peak& x0, const Peak& x1) { return x0.hz < x1.hz; });
-        return found;
-    }
-
-    Peak inharmonic(const std::vector<float>& x, double rate, double f0, double maxHz)
-    {
-        std::size_t n = 1;
-        while (n * 2 <= x.size() && n < 32768)
-            n *= 2;
-        Peak worst{ 0.0, -200.0 };
-        if (n < 256 || !(f0 > 0.0))
-            return worst;
-        const std::size_t off = (x.size() - n) / 2;
-        std::vector<std::complex<double>> a(n);
-        const double step = 2.0 * std::numbers::pi / static_cast<double>(n - 1);
-        for (std::size_t i = 0; i < n; ++i)
-        {
-            const double t = step * static_cast<double>(i);
-            const double w = 0.35875 - 0.48829 * std::cos(t) + 0.14128 * std::cos(2.0 * t) - 0.01168 * std::cos(3.0 * t);
-            a[i] = { static_cast<double>(x[off + i]) * w, 0.0 };
-        }
-        fftInPlace(a);
-        const std::size_t bins = n / 2;
-        const double hzPerBin = rate / static_cast<double>(n);
-        std::vector<double> mag(bins);
-        double top = 0.0;
-        for (std::size_t k = 0; k < bins; ++k)
-            top = std::max(top, mag[k] = std::abs(a[k]));
-        if (!(top > 1e-12))
-            return worst;
-        const std::size_t last = std::min(bins - 2, static_cast<std::size_t>(std::min(maxHz, 0.5 * rate) / hzPerBin));
-        std::size_t at = 0;
-        for (std::size_t k = std::max<std::size_t>(2, static_cast<std::size_t>(20.0 / hzPerBin)); k <= last; ++k)
-        {
-            const double hz = static_cast<double>(k) * hzPerBin;
-            const double h = std::max(1.0, std::round(hz / f0));         // the nearest harmonic (below f0: f0)
-            if (std::fabs(hz - h * f0) <= 6.0 * hzPerBin)
-                continue;                                                // within a harmonic's main lobe
-            if (at == 0 || mag[k] > mag[at])
-                at = k;
-        }
-        if (at == 0 || !(mag[at] > 0.0))
-            return worst;
-        const double y0 = std::log(mag[at - 1] + 1e-300), y1 = std::log(mag[at] + 1e-300), y2 = std::log(mag[at + 1] + 1e-300);
-        const double den = y0 - 2.0 * y1 + y2;
-        const double d = den != 0.0 ? std::clamp(0.5 * (y0 - y2) / den, -0.5, 0.5) : 0.0;
-        worst.hz = (static_cast<double>(at) + d) * hzPerBin;
-        worst.db = toDb(mag[at] / top);
-        return worst;
     }
 
     // ---- the session ----------------------------------------------------------------------------------------------------
@@ -1502,11 +1740,15 @@ namespace playground::measure
                 out += "Played: from the first note-on (" + seconds(static_cast<double>(from) / rate) + ") to the last note-off ("
                      + seconds(static_cast<double>(heldEnd) / rate) + "), then " + seconds(tail) + " more.\n";
 
-            const std::size_t settle = from + std::min((heldEnd - from) / 2, static_cast<std::size_t>(0.05 * rate));
-            const double heldPeak = peak(r.out, from, heldEnd), heldRms = rms(r.out, settle, heldEnd);
+            // The held part: each note from 50 ms after its note-on to its note-off (Measure.h), the spectra all of it.
+            std::vector<Span> held = heldSpans(plan, heldEnd, rate);
+            if (held.empty())
+                held.push_back({ from, heldEnd });
+            const std::vector<float> m = mono(r.out, 0, r.out.size());
+            const double heldPeak = peak(r.out, from, heldEnd), heldRms = rmsOver(r.out, held);
             double corr = 1.0, bal = 0.0;
-            stereo(r.out, settle, heldEnd, corr, bal);
-            const double heldDc = dc(r.out, settle, heldEnd);
+            stereoOver(r.out, held, corr, bal);
+            const double heldDc = dcOver(r.out, held);
             v["peak_db"] = toDb(heldPeak);
             v["rms_db"] = toDb(heldRms);
             v["dc"] = heldDc;
@@ -1520,27 +1762,32 @@ namespace playground::measure
                 warnings.push_back("Peaks above 0 dBFS with " + std::to_string(notes.size())
                                    + " note(s): a voice should peak near 0.2 to 0.3, since sixteen can sound at once.");
 
-            const double lowestHz = noteHz(*std::min_element(notes.begin(), notes.end()));
+            // The expected pitch: the lowest note, bent by the pitch wheel where the request starts it, at the usual 2
+            // semitones (host.fm); the pitch looks within 600 cents of it, and nearer it than the next note up.
+            const int lowest = *std::min_element(notes.begin(), notes.end());
+            const double lowestHz = noteHz(lowest);
+            const double bend = std::exp2(2.0 * static_cast<double>(std::clamp(request.pitchbend, -1.0f, 1.0f)) / 12.0);
+            const double expectedHz = lowestHz * bend;
+            double loHz = expectedHz * std::exp2(-kPitchCents / 1200.0), hiHz = expectedHz * std::exp2(kPitchCents / 1200.0);
+            for (const int n : notes)
+                if (n > lowest)
+                    hiHz = std::min(hiHz, std::sqrt(expectedHz * noteHz(n) * bend));
             if (need({ "centroid_hz", "fundamental_hz", "pitch_cents" }))
             {
-                double centroid = 0.0;
-                const std::vector<Peak> peaks = spectrumPeaks(mono(r.out, settle, heldEnd), rate, 8, &centroid);
+                const Spectrum sp = spectrum(m, rate, held);
+                const double centroid = sp.centroid();
                 v["centroid_hz"] = centroid;
                 out += "Spectrum while held: centroid " + fmt("%.0f Hz", centroid) + "; strongest partials "
-                     + partials(peaks) + ".";
-                const Peak* lowest = nullptr;
-                for (const Peak& p : peaks)
-                    if (p.db > -30.0 && p.hz > 15.0)
-                    {
-                        lowest = &p;
-                        break;
-                    }
-                v["fundamental_hz"] = lowest != nullptr ? lowest->hz : 0.0;
-                if (lowest != nullptr)
+                     + partials(sp.peaks(8)) + ".";
+                const Pitch pitch = pitchOf(sp, expectedHz, loHz, hiHz);
+                v["fundamental_hz"] = pitch.hz;
+                if (pitch.hz > 0.0)
                 {
-                    v["pitch_cents"] = 1200.0 * std::log2(lowest->hz / lowestHz);
-                    out += " The lowest within 30 dB of the strongest is " + fmt("%.1f Hz", lowest->hz)
-                         + "; the lowest note is " + fmt("%.1f Hz", lowestHz) + ".";
+                    v["pitch_cents"] = 1200.0 * std::log2(pitch.hz / expectedHz);
+                    out += " Pitch: " + fmt("%.2f Hz", pitch.hz) + fmt(", %+.1f cents from the expected ", v["pitch_cents"])
+                         + fmt("%.2f Hz", expectedHz) + " (note " + std::to_string(lowest)
+                         + (bend != 1.0 ? ", bent" : "") + ")"
+                         + (pitch.partial ? std::string() : std::string(": no partial near it, its harmonics' sum")) + ".";
                 }
                 out += "\n";
             }
@@ -1633,7 +1880,7 @@ namespace playground::measure
                 if (need({ "inharmonic_db" }))
                 {
                     // What is no harmonic of the note: aliasing, unless the sound means it.
-                    const Peak odd = inharmonic(mono(r.out, settle, heldEnd), rate, noteHz(n), 20000.0);
+                    const Peak odd = inharmonic(spectrum(m, rate, held, Taper::blackmanHarris, kPuritySeconds), expectedHz, kBandHighHz);
                     v["inharmonic_db"] = odd.db;
                     if (heldRms >= 1e-5)
                     {
@@ -1662,7 +1909,7 @@ namespace playground::measure
                     const double cp = peak(c.out, 0, chordN);
                     v["chord_peak_db"] = toDb(cp);
                     out += "A chord (" + names + ") at the same velocity: peak " + dbfs(cp) + ", RMS "
-                         + dbfs(rms(c.out, std::min(chordN / 2, settle), chordN)) + ".\n";
+                         + dbfs(rms(c.out, std::min(chordN / 2, static_cast<std::size_t>(kSettleSeconds * rate)), chordN)) + ".\n";
                     if (cp > 1.0)
                         warnings.push_back("The chord peaks above 0 dBFS: lower the voice's level.");
                 }
@@ -1742,18 +1989,21 @@ namespace playground::measure
                 return std::move(r.out);
             };
 
-            const std::size_t settle = std::min(holdN / 2, static_cast<std::size_t>(0.05 * rate));
+            // A signal's held part: from 50 ms after it starts (half of it when shorter) to its end (Measure.h).
+            const std::size_t settle = std::min(holdN / 2, static_cast<std::size_t>(kSettleSeconds * rate));
+            const std::vector<Span> held{ { settle, holdN } };
             if (everything || need({ "sine_peak_db", "sine_rms_db", "sine_gain_db", "thd_db", "dc", "correlation", "balance_db" }))
             {
                 const Stereo sine = signal(holdN, [&](std::size_t i) {
                     return sineAmp * static_cast<float>(std::sin(2.0 * std::numbers::pi * 220.0 * static_cast<double>(i) / rate));
                 });
                 const Stereo o = through(sine, "the sine", holdN);
-                const double inRms = rms(sine, settle, holdN), outRms = rms(o, settle, holdN);
+                const double inRms = rmsOver(sine, held), outRms = rmsOver(o, held);
                 double corr = 1.0, bal = 0.0;
-                stereo(o, settle, holdN, corr, bal);
-                const double outDc = dc(o, settle, holdN);
-                const double thd = outRms > 1e-9 ? awayDb(mono(o, settle, holdN), rate, 220.0) : -240.0;
+                stereoOver(o, held, corr, bal);
+                const double outDc = dcOver(o, held);
+                const std::vector<float> mo = mono(o, 0, holdN);
+                const double thd = outRms > 1e-9 ? awayDb(spectrum(mo, rate, held, Taper::blackmanHarris, kPuritySeconds), 220.0) : -240.0;
                 v["sine_peak_db"] = toDb(peak(o, 0, holdN));
                 v["sine_rms_db"] = toDb(outRms);
                 v["sine_gain_db"] = outRms > 1e-12 ? toDb(outRms / inRms) : -240.0;
@@ -1765,8 +2015,8 @@ namespace playground::measure
                      + dbfs(outRms) + (outRms > 1e-9 ? fmt(" (gain %+.1f dB)", toDb(outRms / inRms)) : std::string())
                      + ", DC " + fmt("%.4f", outDc) + ", left/right correlation " + fmt("%.2f", corr)
                      + fmt(" (balance %+.1f dB)", bal) + ". Partials out: "
-                     + partials(spectrumPeaks(mono(o, settle, holdN), rate, 8))
-                     + (outRms > 1e-9 ? "; THD+N (all but 220 Hz) " + valueText("thd_db", thd) : std::string()) + ".\n";
+                     + partials(spectrum(mo, rate, held).peaks(8))
+                     + (outRms > 1e-9 ? "; THD+N (all but 220 Hz, in the band) " + valueText("thd_db", thd) : std::string()) + ".\n";
                 if (outRms < 1e-5)
                     warnings.push_back("The sine comes out silent (or nearly).");
                 if (peak(o, 0, holdN) > 1.0)
@@ -1781,12 +2031,11 @@ namespace playground::measure
                     return noiseAmp * (static_cast<float>(seed >> 8) / 8388608.0f - 1.0f);
                 });
                 const Stereo o = through(noise, "the noise", holdN);
-                const double inRms = rms(noise, settle, holdN), outRms = rms(o, settle, holdN);
+                const double inRms = rmsOver(noise, held), outRms = rmsOver(o, held);
                 double corr = 1.0, bal = 0.0;
-                stereo(o, settle, holdN, corr, bal);
-                double cin = 0.0, cout = 0.0;
-                spectrumPeaks(mono(noise, settle, holdN), rate, 0, &cin);
-                spectrumPeaks(mono(o, settle, holdN), rate, 0, &cout);
+                stereoOver(o, held, corr, bal);
+                const double cin = spectrum(mono(noise, 0, holdN), rate, held).centroid();
+                const double cout = spectrum(mono(o, 0, holdN), rate, held).centroid();
                 v["noise_gain_db"] = outRms > 1e-12 ? toDb(outRms / inRms) : -240.0;
                 v["centroid_in_hz"] = cin;
                 v["centroid_out_hz"] = cout;
@@ -1856,9 +2105,8 @@ namespace playground::measure
                 own.r.resize(n + tailN, 0.0f);
                 const Stereo o = through(own, "its own input", n);
                 const double inRms = rms(own, 0, n), outRms = rms(o, 0, n);
-                double cin = 0.0, cout = 0.0;
-                spectrumPeaks(mono(own, 0, n), rate, 0, &cin);
-                spectrumPeaks(mono(o, 0, n), rate, 0, &cout);
+                const double cin = spectrum(mono(own, 0, n), rate, { { 0, n } }).centroid();
+                const double cout = spectrum(mono(o, 0, n), rate, { { 0, n } }).centroid();
                 out += "Its own input, " + seconds(static_cast<double>(n) / rate) + ": in peak " + dbfs(peak(own, 0, n)) + ", RMS "
                      + dbfs(inRms) + "; out peak " + dbfs(peak(o, 0, n)) + ", RMS " + dbfs(outRms)
                      + (inRms > 1e-9 && outRms > 1e-9 ? fmt(" (gain %+.1f dB)", toDb(outRms / inRms)) : std::string())

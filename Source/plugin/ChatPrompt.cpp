@@ -221,16 +221,14 @@ CHECKING YOUR WORK
 You cannot hear the plugin, but these tools check what you build against what was asked, so you need not trust it:
 - view_sound draws the sound: the waveform and the level over time, a spectrogram (frequency against time), the average spectrum and a close-up of a few cycles. Look when the shape matters: an envelope, a sweep, a filter's slope, aliasing (lines folding back down the spectrogram), a click (a spike, a thin vertical line), a wave's shape, a tail, a modulation's motion. The user sees the picture too. About 1,200 input tokens a picture: once for a new sound, and again after a change you need to see.
 - set_checks states what the work must pass, as numbers the plugin measures: a metric with min, max or a target, each in a render of its own (measure_output's settings: %RENDER%; the defaults when left out). Write them from the request, before you build, for what a number can show: %EXAMPLES%. A few checks that matter beat many. The plugin measures them after every run_program (the results follow its own) and when you end a turn in which you changed something (the files, the dials or the checks); while one fails, that turn goes on with the results (twice at most): fix the program, or change a check that asks for the wrong thing, or say why it cannot pass. The user sees them as a checklist, and can clear them.
-- tune_dials finds dial values for goals by rendering many times (tens to a few hundred renders, a few seconds), instead of guessing and measuring by hand: once the program does the right thing and only its settings are off (%TUNING%). Name the float dials it may move (up to eight) and the goals; it sets the best values on the dials, and says how close each goal came. It cannot make a program do what it cannot: a goal that stays unmet means the program needs changing, or another dial matters.
+- tune_dials finds dial values for goals by rendering many times (tens to a few hundred renders, for up to its time limit: 120 s unless set), instead of guessing and measuring by hand: once the program does the right thing and only its settings are off (%TUNING%). Name the float dials it may move (up to eight) and the goals; it sets the best values on the dials, and says how close each goal came. It cannot make a program do what it cannot: a goal that stays unmet means the program needs changing, or another dial matters.
 - scenario: how the user plays it, in measure_output, view_sound, a check (which keeps it), tune_dials, compare and trace: {%SCENARIO% rate: Hz or "host", block: 1 to 8192 or "host"}; times up to 10 s, then the tail. A dial moves once a host block, as a host's automation does, so its sound depends on the block size.%SCENARIOUSE%
 - try_edits: [{file, old_text, new_text} or {name, content}] on a copy of the files, in measure_output, view_sound, compare (on b) and trace: nothing in the plugin changes. Edit for real once a trial works.
 - compare: two sources rendered alike: identical bits, or how and where they differ ({a: "version:3", b: "editor"}; a fix: both "editor", try_edits on b).
 - trace: where a problem starts, once a tool shows one (an alert, a click, silence) or the user hears one; fields watches the program's fields. Fix it with try_edits and trace again until it finds nothing.
 - the user's recording (capture stop keeps it), as a scenario: %CAPTURE%, its dials, the host and its blocks as they played (from, to: a part of it, in seconds); compare {a: "capture", b: "editor"} holds what played against your code on it. Each says how closely a replay of the program that played matched what played: bit for bit, or from when, and why not.
 
-The metrics, the names checks and goals use (a value that never comes, as a release that does not end within the tail, is infinity, which only "at least" meets):
-%METRICS%A target's tolerance is the metric's own unless one is given (1 dB for levels, 5 % of a frequency, 10 % of a time).
-)";
+The metrics, the names checks and goals use (a value that never comes, as a release that does not end within the tail, is infinity, which only "at least" meets). %METRICS%)";
 
         const char* const kThreads = R"(
 THREADS: parallel for AND parallel { }
@@ -713,19 +711,23 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
             s += kLanguage;
             s += replaceAll(kCraft, "%COSTEXAMPLE%", instrument ? " The Modular voice below is built so." : "");
             {
-                std::string metrics;
+                // The terms the lines use, then a line a metric: its unit and the tolerance a target takes (Goals.h's
+                // toleranceOf, which plugin.chatexample holds this text to), then exactly what it measures.
+                std::string metrics = measure::metricTerms();
                 for (const measure::MetricInfo& m : measure::metrics())
-                    metrics += std::string("- ") + m.name + (std::string(m.unit).empty() ? std::string() : std::string(" (") + m.unit + ")")
-                             + ": " + m.what + "\n";
+                    metrics += std::string("- ") + m.name + " ("
+                             + (std::string(m.unit).empty() ? std::string() : std::string(m.unit) + ", ")
+                             + measure::toleranceText(m) + "): " + m.what + "\n";
                 std::string c = replaceAll(kChecking, "%METRICS%", metrics);
                 c = replaceAll(c, "%RENDER%",
                                instrument ? "notes, velocity, hold_seconds, tail_seconds, dials, the host, the wheels and a scenario"
                                           : "hold_seconds, tail_seconds, dials, the host and a scenario");
                 c = replaceAll(c, "%EXAMPLES%",
-                               instrument ? "\"a short pluck\": decay_s at most 1; \"bright\": centroid_hz at least 2000; "
-                                            "\"no aliasing\": inharmonic_db at most -70 at note 96; \"no clicks\": click at "
-                                            "most 0; \"in tune\": pitch_cents near 0; \"a slow pad\": attack_s at least 0.5; "
-                                            "and for every sound alerts at most 0, and peak_db at most -6 with a chord"
+                               instrument ? "\"a short pluck\": decay_s at most 1; \"bright\": centroid_hz at least 600 (a raw "
+                                            "saw's at C3: about 400); \"no aliasing\": inharmonic_db at most -70 at note 96; "
+                                            "\"no clicks\": click at most 0; \"in tune\": pitch_cents near 0; \"a slow pad\": "
+                                            "attack_s at least 0.5; and for every sound alerts at most 0, and peak_db at most -6 "
+                                            "with a chord"
                                           : "\"clean until pushed\": thd_db at most -60, and at least -20 with the drive "
                                             "up; \"unity gain\": sine_gain_db near 0; \"a dark tone\": centroid_out_hz "
                                             "at most 3000; \"a long tail\": impulse_decay_s at least 2; \"quiet when idle\": "
@@ -752,7 +754,7 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
                                           : "{input: \"capture\"} replays its input");
                 c = replaceAll(c, "%TUNING%",
                                instrument ? "\"the release at 1.2 s\", \"the level at -18 dBFS RMS\", \"the centroid at "
-                                            "1500 Hz\""
+                                            "500 Hz\""
                                           : "\"the THD+N at -30 dB\", \"unity gain\", \"the noise's centroid at 4 kHz "
                                             "out\"");
                 s += c;

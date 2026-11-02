@@ -435,11 +435,18 @@ place (its `products/<key>.cmake`, and its names in the docs).
   (`dropThinking`). Changing either is fine; editing a message already sent is not.
 - **measure_output** renders the editor's files offline (`dsp/Measure.h`, a fresh compile in an Engine of its own,
   never the one that plays) and reports in words; `plugin.chatexample` checks its numbers on programs whose answer is
-  known. The same pass records named numbers (`measure::metrics()`: each a name, a unit, a line of what it is and a
-  default tolerance; the system prompt's CHECKING YOUR WORK lists them from the table, so a metric added there is
-  taught at once); a request's `want` runs only the renders and the analysis they need. Its click metric and its
-  step lines take trace's rule (`measure::clicks`: a step far above the second largest of the windows around it),
-  so the two never disagree (`dsp.metrics`). Its CPU figures are the
+  known. The same pass records named numbers (`measure::metrics()`: each a name, a unit, a line of exactly what it
+  measures, its span, window, weighting and band, in the words `metricTerms()` defines, and a default tolerance; the
+  system prompt's CHECKING YOUR WORK lists them from the table, the terms first, each line's tolerance written by
+  `toleranceText` from the same table `Goals` reads (`plugin.chatexample` holds the guide's to `toleranceOf`), so a
+  metric added there is taught at once); a request's `want` runs only the renders and the analysis they need. Every
+  metric is over its own span and the same at every rate: the held part (`heldSpans`: each note from 50 ms after its
+  note-on, half the note when shorter, to its note-off; an effect's signal from 50 ms in to its end), its spectra
+  Welch's average over all of it in frames fixed in seconds (`measure::spectrum`: 0.1 s Hann for the centroid, the
+  partials and the pitch, 0.4 s Blackman-Harris for inharmonic_db and thd_db), the centroids power-weighted over 20 Hz
+  to 20 kHz, the pitch the strongest partial within 600 cents of the expected note (`pitchOf`, a harmonic sum
+  without one), and one click rule (`measure::clicks`) for the click metric, the step lines and trace (`dsp.metrics`
+  checks each at 48 and 192 kHz). Change a definition and its line together. Its CPU figures are the
   rendering thread's own time (`CLOCK_THREAD_CPUTIME_ID`, read at a render's few boundaries, never a block's), in an
   Engine as the audio thread runs it with no editor open: an instrument's `cpu_percent` over the held part, and
   `cpu16_percent` measured with sixteen notes held (the least of two short renders), not extrapolated; of the

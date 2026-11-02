@@ -8,7 +8,9 @@
 //            netlist's * lines too), CIRCUITS (the .cir netlists, last) and the circuit example naming the library files
 //            it comes with, and
 //            the program built from the library and its panel.gui, word for word; the program's other files are the
-//            library's, as it has them
+//            library's, as it has them; the metrics (CHECKING YOUR WORK): the terms, then a line each with the metric's
+//            own words, its tolerance in words Goals' (toleranceOf), none of the tolerance words of before, and
+//            tune_dials' time limit
 //   EXAMPLE  that program (ChatAgent::promptExample, this plugin's kind) compiles with no message (its panel.gui
 //            too); its dials are named, with ranges and defaults inside them, every one a control of its interface in
 //            a titled section, with two displays at least; it plays two seconds finite and audible with no alert (an effect over noise, an instrument a
@@ -20,8 +22,8 @@
 //   MEASURE  measure::run on programs whose answer is known: an instrument's sine voice at 0.25 (peak -12.0 dBFS,
 //            its partial at the note's frequency, the voice ending, a chord's level reported) or an effect's gain of
 //            0.5 (-6.0 dB on the sine and on the noise, an impulse's response at once); the spectrum's peak of a
-//            1 kHz sine within 0.5 Hz; a program that does not compile reports its messages; a dial name that is
-//            not one is reported; a voice that never ends (or an effect that makes sound from silence) is flagged;
+//            1 kHz sine within 0.5 Hz, its power centroid within 1 Hz; a program that does not compile reports its
+//            messages; a dial name that is not one is reported; a voice that never ends (or an effect that makes sound from silence) is flagged;
 //            the example's own report is not silent and has no alert; an instrument's Inharmonic line: clean for the
 //            sine voice; at C7 a naive saw's aliases above -40 dB, a wavetable voice's (wavetable.fm, its table built
 //            once in a module Shared) clean; a saw's own edges are no click, a phase that jumps once is
@@ -38,6 +40,7 @@
 #include "Audio.h"
 #include "Rig.h"
 
+#include "dsp/Goals.h"
 #include "dsp/Measure.h"
 #include "fminus/Patch.h"
 #include "plugin/ChatAgent.h"
@@ -299,6 +302,48 @@ PROBE(plugin, chatexample)
     P.eq("prompt.fft", has(prompt, "fft_create(n)") && has(prompt, "fft_forward(plan, in, bins)")
                            && has(prompt, "fft_inverse(plan, bins, out)") ? 1 : 0, 1);
     P.eq("prompt.shared", has(prompt, "module Shared") && has(prompt, "Shared*") ? 1 : 0, 1);
+    // The metrics: the terms their lines use, then a line each, its words the metric's own; the tolerance each line
+    // gives ("+-0.5 dB", "+-5 %, at least 1 Hz") is Goals' (toleranceOf, for a target of 1000 and of 0); none of the
+    // tolerance words of before ("5 % of a frequency"), and tune_dials' time limit.
+    {
+        int lines = 0, tolerances = 0;
+        for (const pg::measure::MetricInfo& m : pg::measure::metrics())
+        {
+            const std::string head = std::string("\n- ") + m.name + " (";
+            const std::size_t at = prompt.find(head);
+            const std::size_t end = at == std::string::npos ? at : prompt.find("): ", at);
+            if (at == std::string::npos || end == std::string::npos)
+                continue;
+            lines += prompt.compare(end + 3, std::string(m.what).size() + 1, std::string(m.what) + "\n") == 0 ? 1 : 0;
+            const std::string said = prompt.substr(at + head.size(), end - at - head.size());
+            const std::size_t pm = said.find("+-");
+            if (pm == std::string::npos)
+                continue;
+            const double x = std::strtod(said.c_str() + pm + 2, nullptr);
+            const std::size_t after = said.find_first_not_of("0123456789.", pm + 2);
+            const bool share = after != std::string::npos && said.compare(after, 2, " %") == 0;
+            const std::size_t least = said.find("at least ");
+            const double floor = least == std::string::npos ? x : std::strtod(said.c_str() + least + 9, nullptr);
+            pg::measure::Goal g;
+            g.metric = m.name;
+            g.hasTarget = true;
+            g.target = 1000.0;
+            const double far = pg::measure::toleranceOf(g);
+            g.target = 0.0;
+            const double near = pg::measure::toleranceOf(g);
+            const bool same = share ? std::fabs(far - x / 100.0 * 1000.0) < 1e-9 && std::fabs(near - floor) < 1e-12
+                                    : std::fabs(far - x) < 1e-12 && std::fabs(near - x) < 1e-12;
+            tolerances += same ? 1 : 0;
+            if (!same)
+                std::printf("the guide's tolerance of %s, \"%s\", is not Goals' (%g at 1000, %g at 0)\n", m.name, said.c_str(), far, near);
+        }
+        const auto count = static_cast<int64_t>(pg::measure::metrics().size());
+        P.eq("prompt.metric_lines", lines, count);
+        P.eq("prompt.metric_tolerances", tolerances, count);
+        P.eq("prompt.metric_terms", has(prompt, pg::measure::metricTerms()) && !has(prompt, "5 % of a frequency")
+                                        && !has(prompt, "1 dB for levels") ? 1 : 0, 1);
+        P.eq("prompt.tune_time_limit", has(prompt, "for up to its time limit: 120 s unless set") ? 1 : 0, 1);
+    }
     P.eq("prompt.host", has(prompt, "THE HOST: TEMPO") && has(prompt, "Host* host;") && has(prompt, "lfo.follow(")
                             && has(prompt, "<host_file name=\"host.fm\">\n" + std::string(pg::Patch::hostSource()) + "</host_file>")
                             ? 1 : 0, 1);
@@ -456,7 +501,7 @@ PROBE(plugin, chatexample)
         const std::vector<pg::measure::Peak> peaks = pg::measure::spectrumPeaks(sine, kFs, 4, &centroid);
         P.eq("measure.sine_one_peak", static_cast<int64_t>(peaks.size()), 1);
         P.near("measure.sine_peak_hz", peaks.empty() ? 0.0 : peaks[0].hz, 1000.0, 0.5);
-        P.near("measure.sine_centroid_hz", centroid, 1000.0, 60.0);
+        P.near("measure.sine_centroid_hz", centroid, 1000.0, 1.0);    // power-weighted: a sine's own frequency
     }
     const std::string broken = pg::measure::run(pg::singleFile("module Nothing {};\n"), {});
     P.eq("measure.uncompiled_says_so", broken.rfind("It did not compile", 0) == 0 ? 1 : 0, 1);

@@ -1844,16 +1844,11 @@ namespace playground
                                                  "from the song's start); default 120"));
             o->setProperty("try_edits", scenario::trialSchema());
             tools.add(tool("measure_output",
-                           "Render the program in the editor offline and measure what comes out. An instrument: the "
-                           "notes held and released, reporting the held level (peak and RMS in dBFS, DC, the stereo "
-                           "correlation), the strongest partials and the spectral centroid, with one note the strongest "
-                           "component that is no harmonic of it (aliasing, or the sound's own), the largest step between "
-                           "two samples (clicks), when the release falls 60 dB and whether the voice ends, and a "
-                           "chord's summed level. An effect: a sine, noise, an impulse and silence through it, "
-                           "reporting the gain, the partials it adds, the brightness in and out, the impulse "
-                           "response's delay and decay, and any sound it makes from silence. Both: the output "
-                           "guard's alerts and the CPU cost. It compiles the files as they are now (they need not be "
-                           "running) and changes nothing that plays.",
+                           "Render the program in the editor offline and measure what comes out. Its report gives "
+                           "the metrics (CHECKING YOUR WORK) in words, with the strongest partials and the largest "
+                           "steps' nearest events: an instrument's notes held and released (one note: also a chord), "
+                           "an effect's sine, noise, impulse and silence. It compiles the files as they are now (they "
+                           "need not be running) and changes nothing that plays.",
                            props, {}));
         }
         tools.add(tool("view_panel",
@@ -1908,12 +1903,9 @@ namespace playground
                                  "renders it (the notes held, then released), drawn: the waveform and the level over "
                                  "time, a spectrogram (frequency against time, 20 Hz to 20 kHz on a log scale), the "
                                  "average spectrum while held (a note's harmonics marked) and a close-up of a few "
-                                 "cycles (or of from_seconds to to_seconds). You cannot hear the plugin: look when the "
-                                 "sound's shape matters, as an envelope's attack and release, a filter's sweep, "
-                                 "aliasing (lines that fold back down in the spectrogram), a click (a spike in the "
-                                 "waveform, a thin vertical line in the spectrogram), a wave's shape, noise, a "
-                                 "modulation's motion. It compiles the files as they are now and changes nothing that "
-                                 "plays; the user sees the picture too."
+                                 "cycles (or of from_seconds to to_seconds). When to look: CHECKING YOUR WORK. It "
+                                 "compiles the files as they are now and changes nothing that plays; the user sees the "
+                                 "picture too."
                                : "See the sound: a picture (PNG) of the program rendered offline with an input (a sweep "
                                  "by default), drawn: the waveform and the level over time, a spectrogram (frequency "
                                  "against time, 20 Hz to 20 kHz on a log scale), the average spectrum while the input "
@@ -1984,9 +1976,7 @@ namespace playground
                            "the program offline many times (as measure_output does, up to budget renders) and "
                            "searching, instead of guessing: from the dials as they are, through points spread over "
                            "their ranges, then a simplex search. Goals are metrics (CHECKING YOUR WORK) with min, max "
-                           "or a target. Use it to fit a level, a brightness, an envelope's times, a filter, an "
-                           "amount of drive, once the program does the right thing and only its settings are off; it "
-                           "cannot make a program do what it cannot. The best values go on the dials, as set_dial "
+                           "or a target. The best values go on the dials, as set_dial "
                            "sets them, unless apply is false; the result gives the dials and the measurements before "
                            "and after. Dials not tuned keep their values (or those in dials). It changes no file.",
                            props, { "tune", "goals" }));

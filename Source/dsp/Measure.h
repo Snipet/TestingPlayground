@@ -10,18 +10,24 @@
 //
 //   an instrument  the notes (default one, C3) held for holdSeconds at `velocity`, released, then tailSeconds more:
 //                  the held level (peak, RMS, DC, the stereo correlation and balance), the spectrum's strongest
-//                  partials and its centroid over the held part (and how the lowest strong one compares with the
-//                  lowest note's frequency), the largest step between two samples and the clicks (clicks(), trace's
-//                  rule), the envelope (when it reaches its loudest, and when it falls 60 dB from there), when the
-//                  sound falls 60 dB below its held level after the release and when the last voice ended (process
-//                  returned false), the output guard's alerts, and the CPU time (the notes while held, and sixteen
-//                  voices at once: a render of sixteen notes held, the least of two). With one note, the strongest
-//                  component that is no harmonic of it (aliasing, or the sound's own: detuning, FM, noise), and a
-//                  chord (the note, a third, a fifth and an octave above) is rendered too, for the summed level.
+//                  partials and its centroid, the pitch (the strongest partial near the expected note), the largest
+//                  step between two samples and the clicks (clicks(), trace's rule), the envelope (when it reaches its
+//                  loudest, and when it falls 60 dB from there), when the sound falls 60 dB below its held level
+//                  after the release and when the last voice ended (process returned false), the output guard's
+//                  alerts, and the CPU time (the notes while held, and sixteen voices at once: a render of sixteen
+//                  notes held, the least of two). With one note, the strongest component that is no harmonic of it
+//                  (aliasing, or the sound's own: detuning, FM, noise), and a chord (the note, a third, a fifth and an
+//                  octave above) is rendered too, for the summed level.
 //   an effect      a sine of 220 Hz at -12 dBFS and noise at -18 dBFS RMS, each for holdSeconds, an impulse followed
 //                  by tailSeconds of silence, and silence alone: the output's level and the gain for each, the sine's
-//                  partials (what the effect adds), the noise's spectral centroid in and out, the impulse response's
-//                  peak, delay and decay (60 dB), what comes out of silence, the alerts and the CPU time.
+//                  partials (what the effect adds) and its THD+N, the noise's spectral centroid in and out, the impulse
+//                  response's peak, delay and decay (60 dB), what comes out of silence, the alerts and the CPU time.
+//
+// Every metric is measured over a span the metric's words (MetricInfo::what) name, and the same at every sample rate.
+// The held part (heldSpans) is an instrument's notes from kSettleSeconds after each note-on (half the note when it is
+// shorter) to its note-off, a phrase's notes joined where they overlap; an effect's test signal from kSettleSeconds
+// after it starts to its end. Its levels are over all of it, and its spectra Welch's average over all of it (Spectrum:
+// frames fixed in seconds, so a frame holds the same stretch of sound at 48 and at 192 kHz).
 //
 // Off the audio thread only (it compiles and allocates). Deterministic: the same files and request give the same
 // report and numbers but for the CPU times, which are the rendering thread's own time (not the wall clock's) in the
@@ -262,7 +268,8 @@ namespace playground::measure
     {
         const char* name;                         // "release_s"
         const char* unit;                         // "dB", "dBFS", "Hz", "s", "ms", "cents", "%", "" (a ratio or a flag)
-        const char* what;                         // a line of what it measures, for Claude's instructions
+        const char* what;                         // exactly what it measures (its span, window, weighting and band, in
+                                                  // the words metricTerms() defines), for Claude's instructions
         double tolerance;                         // how near counts as met: in the unit, or a share of the target when
         bool relative;                            // relative (5 % of 2000 Hz)
         double floor;                             // a relative tolerance's least, in the unit (near a target of 0)
@@ -274,6 +281,11 @@ namespace playground::measure
     const MetricInfo* metricInfo(std::string_view name);    // null: no metric of this kind has that name
     // A value as text in its unit ("2.31 s", "-12.4 dBFS", "never", "1180 Hz").
     std::string valueText(std::string_view metric, double value);
+    // The tolerance a target on it takes when a goal gives none (Goals.h's toleranceOf), as the instructions write it
+    // after its unit: "+-1" (in the unit; a level's in dB), "+-5 %, at least 1" (a share of the target, never under 1).
+    std::string toleranceText(const MetricInfo& metric);
+    // The words the metrics' lines use, for the instructions before them: the held part, the spectrum, the band.
+    const char* metricTerms();
 
     struct Result
     {
@@ -333,7 +345,7 @@ namespace playground::measure
     // The report, a few lines of plain text; when the program does not compile, its messages.
     std::string run(const Sources& files, const Request& request);
 
-    // ---- the analysis, for the probes and SoundView.h -------------------------------------------------------------
+    // ---- the analysis the metrics read, for the probes, SoundView.h and trace (Debug.h) -----------------------------
     // An FFT in place: a.size() a power of two, forward (e^-i).
     void fft(std::vector<std::complex<double>>& a);
     struct Peak
@@ -341,14 +353,72 @@ namespace playground::measure
         double hz = 0.0;
         double db = 0.0;                          // relative to the strongest
     };
-    // The strongest local maxima of `x`'s spectrum (a Hann window over the largest power of two that fits, up to
-    // 16384 samples), at most `count`, by frequency; and the spectrum's centroid in Hz.
-    std::vector<Peak> spectrumPeaks(const std::vector<float>& x, double rate, int count, double* centroidHz = nullptr);
-    // The strongest component of `x`'s spectrum between 20 Hz and maxHz that is no harmonic of f0 (farther than six
-    // bins from every multiple of it): an alias, or the sound's own. A four-term Blackman-Harris window (sidelobes
-    // under -92 dB) over the largest power of two that fits, up to 32768 samples; db relative to the strongest
-    // component, -200 when nothing is found.
+
+    using Span = std::pair<std::size_t, std::size_t>;        // samples [first, second)
+    inline constexpr double kSettleSeconds = 0.05;           // a held part starts this long after its note-on
+    inline constexpr double kSpectrumSeconds = 0.1;          // the Hann frames: the centroid, the partials, the pitch
+    inline constexpr double kPuritySeconds = 0.4;            // the Blackman-Harris frames: inharmonic_db, thd_db
+    inline constexpr double kBandLowHz = 20.0, kBandHighHz = 20000.0;   // the band (the Nyquist frequency when lower)
+    inline constexpr double kPitchCents = 600.0;             // how far from the expected note the pitch looks
+
+    // The held part of a timeline's notes (an instrument's): from kSettleSeconds after each note-on (half the note when
+    // it is shorter) to its note-off (a key pressed again while held ends it there and starts the next; a key still down
+    // ends at `heldEnd`), the spans joined where they overlap, by sample. Notes held together give one span.
+    std::vector<Span> heldSpans(const Timeline& timeline, std::size_t heldEnd, double rate);
+
+    enum class Taper : uint8_t
+    {
+        hann,                                     // sidelobes -31 dB, a main lobe of 2 bins each side
+        blackmanHarris,                           // four terms: sidelobes under -92 dB, a main lobe of 4 bins each side
+    };
+
+    // Welch's average power spectrum of `x` over `spans`: in each span, frames of `seconds` (one frame of the span's
+    // length when it is shorter) spread evenly from its start to its end, overlapped by half or more, each tapered and
+    // zero-padded to the power of two at or above the frame's length, its power over the taper's (so noise gives its
+    // mean square whatever the frame); each span counts as its length. Frames fixed in seconds: at any rate the same
+    // stretch of sound, the same resolution in Hz.
+    struct Spectrum
+    {
+        double rate = 0.0;
+        double hzPerBin = 0.0;                    // rate over the FFT's size
+        double resolutionHz = 0.0;                // 1 / the shortest frame's length in seconds (a bin of the frame's own)
+        std::vector<double> power;                // bins 0 to the Nyquist frequency's
+        std::size_t frames = 0;                   // 0: no span long enough (16 samples)
+
+        // The power-weighted mean frequency over [lo, min(hi, the Nyquist frequency)]; 0 with no power there.
+        double centroid(double lo = kBandLowHz, double hi = kBandHighHz) const;
+        // Its strongest partials: local maxima (over two bins each side) within `withinDb` of the strongest bin, at most
+        // `count`, by frequency, each placed and sized by a parabola through its log power and its neighbours'.
+        std::vector<Peak> peaks(int count, double withinDb = 40.0) const;
+        // The strongest bin's power (0: silent), and a bin's place and log power refined by that parabola.
+        double strongest() const;
+        void refine(std::size_t bin, double& hz, double& logPower) const;
+    };
+    Spectrum spectrum(const std::vector<float>& x, double rate, const std::vector<Span>& spans, Taper taper = Taper::hann,
+                      double seconds = kSpectrumSeconds);
+
+    // The pitch near `expectedHz`, in (loHz, hiHz): the strongest partial there (a local maximum within 60 dB of the
+    // spectrum's strongest and 10 dB above the median of the range); without one, the f0 there (in steps of a cent)
+    // whose harmonics up to the 20th, in the band, sum the most magnitude, placed by the strongest of them. 0: silent.
+    struct Pitch
+    {
+        double hz = 0.0;
+        bool partial = false;                     // a partial of its own (false: its harmonics' sum)
+    };
+    Pitch pitchOf(const Spectrum& spectrum, double expectedHz, double loHz, double hiHz);
+
+    // The strongest component of a spectrum between 20 Hz and maxHz (and the Nyquist frequency) that is no harmonic of
+    // f0 (farther than six of its resolution bins from every multiple of it: 15 Hz with kPuritySeconds frames): an
+    // alias, or the sound's own. db relative to the strongest component, -200 when nothing is found. The second form
+    // reads all of `x` through kPuritySeconds Blackman-Harris frames.
+    Peak inharmonic(const Spectrum& spectrum, double f0, double maxHz);
     Peak inharmonic(const std::vector<float>& x, double rate, double f0, double maxHz);
+    // The energy in the band farther than six resolution bins from `hz`, against all of it in the band, in dB: a sine's
+    // THD+N (its harmonics, aliases and noise); -240 when nothing is away from it.
+    double awayDb(const Spectrum& spectrum, double hz);
+    // The strongest partials of all of `x` (kSpectrumSeconds Hann frames; Spectrum::peaks), at most `count`, by
+    // frequency; and its centroid (Spectrum::centroid).
+    std::vector<Peak> spectrumPeaks(const std::vector<float>& x, double rate, int count, double* centroidHz = nullptr);
 
     // The click rule, the metrics' and trace's (Debug.h): in 10 ms windows from the first sample, each window's largest
     // step between two neighbouring samples (of either channel); a window's step is a click when it is over 0.05, over

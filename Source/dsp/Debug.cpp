@@ -762,9 +762,9 @@ namespace playground::measure
             return f;
         }
 
-        // The clicks by Measure.h's rule (clicks(), the metrics' own): a 10 ms window's step far above the second largest
-        // of the ten windows each side (a step that comes back, as a low saw's wrap does, is the sound's own) and a good
-        // part of the level there; the one that stands out most first.
+        // The clicks by Measure.h's rule (clicks(), the metrics' own): a 10 ms window's step far above the second
+        // largest of the ten windows each side (a step that comes back, as a low saw's wrap does, is the sound's own)
+        // and a good part of the level there; the one that stands out most first.
         std::vector<Found> findClicks(const Context& x, std::size_t most)
         {
             std::vector<Found> out;
