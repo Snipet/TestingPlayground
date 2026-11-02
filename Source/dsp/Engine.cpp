@@ -736,7 +736,8 @@ namespace playground
             for (int c = 0; c < 2; ++c)
                 frame_.inPeak[c] = frame_.inRms[c] = frame_.outPeak[c] = frame_.outRms[c] = 0.0f;
 
-        // The program's taps: an effect's instance, an instrument's newest voice that sounds.
+        // The program's taps: an effect's instance, an instrument's newest voice that sounds (none: its fields read 0),
+        // and Shared's fields from its one Shared, whether a voice sounds or not.
         for (float& t : frame_.taps)
             t = 0.0f;
         frame_.program = current_ != nullptr ? current_->program() : 0;
@@ -756,9 +757,8 @@ namespace playground
             }
             else
                 instance = 0;
-            if (instance >= 0)
-                for (int t = 0; t < std::min(current_->taps(), kMaxDisplays); ++t)
-                    frame_.taps[t] = current_->tap(t, instance);
+            for (int t = 0; t < std::min(current_->taps(), kMaxDisplays); ++t)
+                frame_.taps[t] = current_->tap(t, instance);
         }
         // The player and the host (Meters' second part): the transport, the keys held, the voices.
         frame_.samples += static_cast<uint64_t>(n);

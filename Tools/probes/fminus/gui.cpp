@@ -11,6 +11,12 @@
 //             decimals= and scale= make the value's text (Hz from 1000 up as kHz), and a typed text maps back
 //   DISPLAYS  meter, vu, led, number, scope and spectrum of out and of the main module's fields, a field's tap in
 //             order, two of one source; min= and max=
+//   SHARED    a display of a field of the module Shared through the main module's pointer (number shared->level,
+//             meter shared->notes, led shared->on; live=shared->level), tapped in order like the main module's; an
+//             int's and a bool's display whole numbers; a number's unit=, decimals= and scale= kept; a field Shared
+//             lacks, an array of it, a pointer that is not the Shared* one, and Shared's fields in a program without
+//             one are notes as the main module's are; number out with unit= is a note (dBFS); the #pragma panel lines
+//             take shared->level too
 //   REST      a parameter no control names comes last, in a section without a title, with a note naming it
 //   NOTES     what the plugin cannot use is a note on its line and column, and the rest stands: an unknown element,
 //             property or value, a parameter that is none or has a control already, a switch, buttons or a menu on a
@@ -438,6 +444,57 @@ panel background=#1d1b19 accent=orange {
         P.eq("styles.note_keyboard", has(m.notes, "panel.gui:6:1: note: an effect plays no notes") ? (kInstrument ? 0 : 1) : (kInstrument ? 1 : 0), 1);
         P.eq("styles.mistakes_rest_stands", find(m.panel.gui, pg::GuiKind::knob, "", cutoff) >= 0
                                                 && find(m.panel.gui, pg::GuiKind::knob, "", resonance) >= 0 ? 1 : 0, 1);
+    }
+
+    // ---- SHARED --------------------------------------------------------------------------------------------------------
+    {
+        const std::string shared = "module Shared\n{\n    float level;\n    int notes;\n    bool on;\n    float table[8];\n};\n\n";
+        const std::string main = program();
+        const std::size_t open = main.find("{\n") + 2;
+        const std::string withShared = shared + main.substr(0, open) + "    Shared* shared;\n    float speed;\n" + main.substr(open);
+        const std::string gui = "row {\n"                                                 // line 1
+                                "    number shared->level\n"                              // 2: tap 0
+                                "    meter shared->notes min=0 max=16\n"                  // 3: tap 1, an int
+                                "    led shared->on\n"                                    // 4: tap 2, a bool
+                                "    number speed unit=\"rpm\" decimals=0 scale=60\n"   // 5: tap 3
+                                "    number count\n"                                      // 6: tap 4, an int
+                                "    number shared->nope\n"                               // 7: a note
+                                "    number shared->table\n"                              // 8: a note
+                                "    number host->bpm\n"                                  // 9: a note
+                                "    number out unit=\"dB\"\n"                          // 10: a note, then dBFS
+                                "    knob cutoff live=shared->level\n"                    // 11
+                                "}\n";
+        const Compiled c = compile({ { pg::kProgramName, withShared }, { "panel.gui", gui } });
+        P.eq("shared.compiles", c.ok ? 1 : 0, 1);
+        const std::vector<pg::PanelDisplay>& d = c.panel.displays;
+        std::printf("shared: %zu displays; notes:\n%s", d.size(), c.notes.c_str());
+        P.eq("shared.displays", static_cast<int64_t>(d.size()), 7);   // six drawn, the live= tap hidden
+        if (d.size() == 7)
+        {
+            P.eq("shared.sources", d[0].source == "shared->level" && d[1].source == "shared->notes" && d[2].source == "shared->on"
+                                       && d[3].source == "speed" && d[4].source == "count" && d[5].source == "out" ? 1 : 0, 1);
+            P.eq("shared.taps", d[0].tap == 0 && d[1].tap == 1 && d[2].tap == 2 && d[3].tap == 3 && d[4].tap == 4 && d[5].tap == -1
+                                    && d[6].tap == 5 ? 1 : 0, 1);
+            P.eq("shared.whole", !d[0].integer && d[1].integer && d[2].integer && !d[3].integer && d[4].integer ? 1 : 0, 1);
+            P.eq("shared.number_format", d[3].unit == "rpm" && d[3].decimals == 0 && d[3].scale == 60.0f && d[3].formatted()
+                                             && !d[0].formatted() ? 1 : 0, 1);
+            P.eq("shared.audio_unformatted", !d[5].formatted() ? 1 : 0, 1);
+            P.eq("shared.live", d[6].hidden && d[6].source == "shared->level" ? 1 : 0, 1);
+        }
+        P.eq("shared.note_nope", has(c.notes, "panel.gui:7:12: note: there is no field shared->nope (") ? 1 : 0, 1);
+        P.eq("shared.note_array", has(c.notes, "panel.gui:8:12: note: shared->table is a float[8]") ? 1 : 0, 1);
+        P.eq("shared.note_other_pointer", has(c.notes, "panel.gui:9:12: note: there is no field host->bpm (") ? 1 : 0, 1);
+        P.eq("shared.note_audio_format", has(c.notes, "panel.gui:10:16: note: number out shows dBFS") ? 1 : 0, 1);
+        P.eq("shared.no_note_on_the_rest", !has(c.notes, "panel.gui:2:") && !has(c.notes, "panel.gui:3:") && !has(c.notes, "panel.gui:4:")
+                                               && !has(c.notes, "panel.gui:5:") && !has(c.notes, "panel.gui:6:")
+                                               && !has(c.notes, "panel.gui:11:") ? 1 : 0, 1);
+        // No Shared: its fields are none.
+        const Compiled none = withGui("number shared->level\nknob cutoff\n");
+        P.eq("shared.none_without_shared", none.panel.displays.empty() && has(none.notes, "there is no field shared->level") ? 1 : 0, 1);
+        // The #pragma panel lines name one too.
+        const Compiled pragma = compile({ { pg::kProgramName, "#pragma panel number shared->notes \"N\"\n" + withShared } });
+        P.eq("shared.pragma", pragma.panel.displays.size() == 1 && pragma.panel.displays[0].source == "shared->notes"
+                                  && pragma.panel.displays[0].integer && pragma.panel.displays[0].tap == 0 ? 1 : 0, 1);
     }
 
     // ---- an instrument has no input ------------------------------------------------------------------------------------

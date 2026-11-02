@@ -53,7 +53,7 @@
 // a program's state stays there: running the program again starts it from scratch.
 //
 // Meters. Each block the Engine reads the fields the program's displays show (Patch::tap: an effect's instance, an
-// instrument's newest sounding voice) and publishes them (Meters) through a seqlock, which the editor reads at its frame
+// instrument's newest sounding voice, and the module Shared's one, whether a voice sounds or not) and publishes them (Meters) through a seqlock, which the editor reads at its frame
 // rate. While someone reads them (readers(): an editor open, a tool that listens; addReader), it also measures what
 // came in (an effect's input) and what goes out, and keeps the last kScopeLength samples of each for the scopes; with
 // no reader the levels read 0 and the scopes stand still, which saves an effect about as much as a light program

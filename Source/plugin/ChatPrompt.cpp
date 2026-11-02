@@ -324,10 +324,10 @@ void main()
 
 Classes and defaults, written at the top: class "main" size=large arc=orange, then knob cutoff class="main" (or class="main warm": several, in order); defaults knob look=ring gives every knob that look, defaults section look=card radius=8 every section. An element's own properties beat its classes', which beat the defaults.
 
-Displays, of in (an effect's input), out (the output) or a float, int or bool field of the main module that process writes (once a call is enough: env = level;), with label=, color=, and min= and max= for a field (0 and 1 when unsaid):
+Displays, of in (an effect's input), out (the output) or a float, int or bool field the program writes (once a call is enough: env = level;): the main module's, or Shared's through the main module's pointer to it, shared->level (its one Shared, read whether a voice sounds or not), with label=, color=, and min= and max= for a field (0 and 1 when unsaid):
 meter out (LED bars)  vu out (an analog VU meter, 0 VU at -18 dBFS RMS)  led gate (a light, its brightness the value; of out a clip light)
-number count (a readout)  scope out (an oscilloscope; of a field its last 2.5 seconds)  spectrum out (an analyser, 20 Hz to 20 kHz)
-scope and spectrum take width= and height=. Sixteen displays at most (each live= field counts as one). An instrument's fields are its newest sounding voice's.
+number count (a readout: an int's or a bool's a whole number; a field's unit=, decimals= and scale= as a knob's: number speed unit="rpm" decimals=0 reads 1250 rpm)  scope out (an oscilloscope; of a field its last 2.5 seconds)  spectrum out (an analyser, 20 Hz to 20 kHz)
+scope and spectrum take width= and height=. Sixteen displays at most (each live= field counts as one; live= and a shader's inputs take Shared's fields too). An instrument's main-module fields are its newest sounding voice's, 0 while none sounds: a mono engine's state, a held-note count or an LFO that runs on between notes, kept in Shared, shows steadily.
 
 - Cells: a medium knob 60 x 80 px, a small one 52 x 52, a large one 86 x 106 (a knob of size=N about N + 50 tall); a slider 44 x 96; a switch 44 x 80; a vu 112 x 80, a meter 34 x 80; a scope 150 x 80, a spectrum 220 x 80, an envelope 150 x 80, a pad 120 x 136; a keyboard 16 px a white key by 72. A section adds 20 at its top and 10 on its other sides; a bar of pages 42 over them.
 - After it runs, look at it with view_panel (one picture, about 2,000 tokens) and adjust what you see: the layout is what the user judges.

@@ -786,10 +786,16 @@ namespace playground
             patch->setHost(HostBlock{});
         }
         patch->sources_ = files;
-        // The panel, and a tap (where it sits in an instance) for each display of one of the main module's fields.
-        std::vector<PanelField> fields;
+        // The panel, and a tap (where it sits in an instance, or in the one Shared) for each display of a field: the
+        // main module's, or Shared's through its Shared* field (displayFields: "shared->level").
+        std::vector<PanelField> fields, sharedFields;
         for (const fminus::Program::Module::Field& f : s.module->fields)
             fields.push_back({ f.name, f.type });
+        const fminus::Program::Module* sharedModule = patch->shared_ != nullptr ? program.module(kSharedModule) : nullptr;
+        if (sharedModule != nullptr)
+            for (const fminus::Program::Module::Field& f : sharedModule->fields)
+                sharedFields.push_back({ f.name, f.type });
+        fields = displayFields(fields, sharedFields);
         // A .gui file (GuiSpec.h), the first one, makes the interface; else the #pragma panel lines do.
         const SourceFile* gui = nullptr;
         for (const SourceFile& f : files)
@@ -818,15 +824,20 @@ namespace playground
         {
             if (d.tap < 0)
                 continue;
-            for (const fminus::Program::Module::Field& f : s.module->fields)
-                if (f.name == d.source)
-                {
-                    Tap t;
-                    t.offset = f.offset;
-                    t.type = f.type == "float" ? Tap::Type::real : (f.type == "int" ? Tap::Type::integer : Tap::Type::boolean);
-                    patch->taps_.push_back(t);
-                    break;
-                }
+            const std::size_t arrow = d.source.find("->");
+            const fminus::Program::Module* home = arrow == std::string::npos ? s.module : sharedModule;
+            const std::string name = arrow == std::string::npos ? d.source : d.source.substr(arrow + 2);
+            if (home != nullptr)
+                for (const fminus::Program::Module::Field& f : home->fields)
+                    if (f.name == name)
+                    {
+                        Tap t;
+                        t.offset = f.offset;
+                        t.type = f.type == "float" ? Tap::Type::real : (f.type == "int" ? Tap::Type::integer : Tap::Type::boolean);
+                        t.shared = home != s.module;
+                        patch->taps_.push_back(t);
+                        break;
+                    }
         }
         // The probe table (Patch.h, "Probes"): each main-module field of a netlist's module (a scalar or an array), its
         // elements and the probe fields' offsets in one, each checked against its type and the sizes; the netlists'
@@ -1162,10 +1173,13 @@ namespace playground
 
     float Patch::tap(int t, int i) const noexcept
     {
-        if (t < 0 || t >= static_cast<int>(taps_.size()) || i < 0 || i >= static_cast<int>(instances_.size()))
+        if (t < 0 || t >= static_cast<int>(taps_.size()))
             return 0.0f;
         const Tap& k = taps_[static_cast<std::size_t>(t)];
-        const char* at = static_cast<const char*>(instances_[static_cast<std::size_t>(i)]) + k.offset;
+        const void* home = k.shared ? shared_ : i >= 0 && i < static_cast<int>(instances_.size()) ? instances_[static_cast<std::size_t>(i)] : nullptr;
+        if (home == nullptr)
+            return 0.0f;
+        const char* at = static_cast<const char*>(home) + k.offset;
         switch (k.type)
         {
             case Tap::Type::real:

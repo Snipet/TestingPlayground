@@ -91,7 +91,11 @@ namespace playground
                 {
                     const std::size_t start = i;
                     while (i < s.size() && nameChar(s[i]))
+                    {
                         ++i;
+                        if (i + 2 < s.size() && s[i] == '-' && s[i + 1] == '>' && nameStart(s[i + 2]))
+                            i += 2;                          // shared->level: a field of Shared, one name
+                    }
                     out.push_back({ Token::Kind::name, std::string(s.substr(start, i - start)), 0.0 });
                 }
                 else if (digit(c) || ((c == '-' || c == '.') && i + 1 < s.size() && (digit(s[i + 1]) || s[i + 1] == '.')))
@@ -298,8 +302,9 @@ namespace playground
                     for (const PanelField& x : fields)
                         if (x.type == "float" || x.type == "int" || x.type == "bool")
                             have += (have.empty() ? "" : ", ") + x.name;
-                    noteAt(l, "there is no field " + d.source + " in the main module (a display shows in, out or a float, "
-                                  "int or bool field" + (have.empty() ? std::string(")") : ": " + have + ")"));
+                    noteAt(l, "there is no field " + d.source + (d.source.find("->") != std::string::npos ? "" : " in the main module")
+                                  + " (a display shows in, out or a float, int or bool field of the main module, or of Shared "
+                                    "through its pointer" + (have.empty() ? std::string(")") : ": " + have + ")"));
                     continue;
                 }
                 if (f->type.rfind("param", 0) == 0)
@@ -312,6 +317,7 @@ namespace playground
                     noteAt(l, d.source + " is a " + f->type + "; a display shows a float, int or bool field");
                     continue;
                 }
+                d.integer = f->type != "float";
             }
             if (displayOf(d.name) >= 0)
             {
@@ -604,5 +610,21 @@ namespace playground
                 noteAt(*p.line, "there is no section \"" + p.title + "\" to colour");
         }
         return spec;
+    }
+
+    std::vector<PanelField> displayFields(const std::vector<PanelField>& fields, const std::vector<PanelField>& shared)
+    {
+        const auto squeezed = [](std::string t) {
+            t.erase(std::remove(t.begin(), t.end(), ' '), t.end());
+            return t;
+        };
+        std::vector<PanelField> out = fields;
+        const auto via = std::find_if(fields.begin(), fields.end(), [&](const PanelField& f) { return squeezed(f.type) == "Shared*"; });
+        if (via == fields.end())
+            return out;
+        for (const PanelField& f : shared)
+            if (f.type.rfind("param", 0) != 0)          // its params are no dials: left at their defaults
+                out.push_back({ via->name + "->" + f.name, f.type });
+        return out;
     }
 }

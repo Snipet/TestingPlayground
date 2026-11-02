@@ -42,6 +42,25 @@ namespace playground::ui
             return buf;
         }
 
+        // A field's readout as display d shows it: a number's unit=, decimals= and scale= as a knob's value reads
+        // (formatValue: an int's places 0 unless said); else an int's or a bool's whole number, a float's figures.
+        std::string fieldText(const PanelDisplay& d, float v)
+        {
+            if (d.kind == DisplayKind::number && d.formatted())
+            {
+                Control c;
+                std::snprintf(c.unit, sizeof c.unit, "%s", d.unit.c_str());
+                c.decimals = d.decimals >= 0 ? d.decimals : (d.integer ? int8_t{ 0 } : int8_t{ -1 });
+                c.scale = d.scale;
+                char buf[48];
+                formatValue(c, v, buf, sizeof buf);
+                return buf;
+            }
+            if (d.integer)
+                return std::to_string(std::lround(v));
+            return figures(v);
+        }
+
         std::string decibels(float linear)
         {
             if (linear < 1.0e-5f)
@@ -291,7 +310,7 @@ namespace playground::ui
             if (audio)
                 next = decibels(std::max(peak[0], peak[1]));
             else
-                next = figures(field);
+                next = fieldText(display_, field);
             moved = moved || next != readout_;
             readout_ = std::move(next);
         }

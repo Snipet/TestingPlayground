@@ -5,7 +5,8 @@
 //           its range; the highest of the last second held, then falling
 //   vu      VU ballistics (about 300 ms to settle) on the audio's RMS, 0 VU at -18 dBFS; or on a field's value
 //   led     the audio's clip light (a peak at 0 dBFS lights it for 0.4 s); or a field's value as its brightness
-//   number  the audio's peak in dBFS, or the field's value, eight times a second
+//   number  the audio's peak in dBFS, or the field's value, eight times a second (an int's or a bool's a whole number;
+//           with unit=, decimals= or scale=, as a knob's value reads)
 //   scope   the audio's last 21 ms from a rising zero crossing; or the field's last 2.5 seconds
 //   spectrum (a .gui file's) the audio's last 2048 samples through a Hann window and an FFT, in dB against a full-
 //           scale sine, at kSpectrumPoints frequencies from 20 Hz to 20 kHz spaced evenly in octaves (each the

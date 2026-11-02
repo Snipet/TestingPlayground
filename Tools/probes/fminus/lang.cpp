@@ -24,7 +24,9 @@
 //             quotes the files (the program's, host.fm, the library's); a local in its scope (and not after it), the
 //             loop's variable in the loop; a builtin with its signature (tanhf, and tanf, FMinus's builtin since
 //             c75caab); a keyword; a library module the program does
-//             not read, which adds its #include (lfo.fm); nothing in a comment
+//             not read, which adds its #include (lfo.fm); nothing in a comment; a #pragma panel display's source: in
+//             and out, the main module's float, int and bool fields and Shared's through its pointer (shared->level),
+//             after `shared->` Shared's own names, no array and no param
 //   SIGNATURE in a call: a method's (receiver's type resolved), a builtin's, a function's of another file, a vector
 //             literal's lanes; the parameter the place is in, and its place in the label
 //   HOVER     a method (its declaration and the usage header's line for it), a Host field (host.fm's line), a module
@@ -632,6 +634,23 @@ PROBE(fminus, lang)
         s.setFiles(programFiles(program));
         c = s.complete(0, posOf(program, "A probe", 3));
         P.eq("complete.not_in_comments", c.items.empty() ? 1 : 0, 1);
+
+        // A #pragma panel display's source, Shared's fields through the main module's pointer among them.
+        const std::string panel = "#pragma panel number \n#pragma panel number sh\n#pragma panel meter shared->l\n"
+                                  "module Shared\n{\n    float level;\n    int keys;\n    float table[4];\n};\n\n"
+                                  "module Effect\n{\n    param float gain;\n    Shared* shared;\n    float env;\n"
+                                  "    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
+        s.setFiles({ { "program.fm", panel } });
+        c = s.complete(0, { 0, 21 });
+        std::printf("complete a display's source: %s\n", labels(c, 20).c_str());
+        P.eq("complete.display_sources", item(c, "env") != nullptr && item(c, "shared->level") != nullptr && item(c, "shared->keys") != nullptr
+                                             && item(c, "out") != nullptr && item(c, "gain") == nullptr && item(c, "shared->table") == nullptr
+                                             && item(c, "shared") == nullptr ? 1 : 0, 1);
+        c = s.complete(0, { 1, 23 });
+        P.eq("complete.display_shared", !c.items.empty() && c.items[0].label.rfind("shared->", 0) == 0 && item(c, "env") == nullptr ? 1 : 0, 1);
+        c = s.complete(0, { 2, 29 });
+        std::printf("complete after shared->: %s\n", labels(c, 20).c_str());
+        P.eq("complete.display_after_arrow", item(c, "level") != nullptr && item(c, "shared->level") == nullptr && c.prefix == "l" ? 1 : 0, 1);
     }
 
     // ---- SIGNATURE --------------------------------------------------------------------------------------------------

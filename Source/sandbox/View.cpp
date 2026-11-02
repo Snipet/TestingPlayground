@@ -144,7 +144,8 @@ namespace playground::sandbox
             if (x.tap < 0 || x.tap >= kMaxDisplays || x.hidden)
                 continue;
             const float t = 0.55f + 0.3f * std::sin(phase + 1.7f * static_cast<float>(d));
-            meters_.taps[x.tap] = x.lo + t * (x.hi - x.lo);
+            const float v = x.lo + t * (x.hi - x.lo);
+            meters_.taps[x.tap] = x.integer ? std::round(v) : v;
         }
         for (const GuiNode& n : spec_.gui.nodes)
         {

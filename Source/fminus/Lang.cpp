@@ -1974,6 +1974,45 @@ namespace playground::lang
                 else if (rest.rfind("style", 0) == 0)
                     for (const std::string_view w : kPanelStyles)
                         offer(std::string(w), Kind::word, "a dial style", {}, {}, 0);
+                // A display's source (meter, vu, led, number, scope): in and out, the main module's float, int and
+                // bool fields, and Shared's through the main module's Shared* field ("shared->level"; after "shared->",
+                // Shared's own names).
+                const std::string word = rest.substr(0, rest.find(' '));
+                const bool display = word == "meter" || word == "vu" || word == "led" || word == "number" || word == "scope";
+                if (display)
+                {
+                    const auto scalar = [](const Symbol& s) { return s.type == "float" || s.type == "int" || s.type == "bool"; };
+                    const auto squeezed = [](std::string t) {
+                        t.erase(std::remove(t.begin(), t.end(), ' '), t.end());
+                        return t;
+                    };
+                    std::string via;                     // the main module's first Shared* field
+                    for (const auto& g : m.files)
+                        for (const Symbol& s : g->decls)
+                            if (via.empty() && s.kind == Kind::field && (s.container == "Effect" || s.container == "Voice")
+                                && squeezed(s.type) == "Shared*")
+                                via = s.name;
+                    const bool afterArrow = !via.empty() && trimmed(rest.substr(word.size())) == via + "->";
+                    if (rest != word && !afterArrow)
+                        return finish();                 // past the source: a range, as, a "label"
+                    for (const auto& g : m.files)
+                        for (const Symbol& s : g->decls)
+                        {
+                            if (s.kind != Kind::field || !scalar(s))
+                                continue;
+                            if (!afterArrow && (s.container == "Effect" || s.container == "Voice"))
+                                offer(s.name, Kind::field, s.signature, s.doc, {}, 1);
+                            else if (s.container == "Shared" && !via.empty())
+                                offer(afterArrow ? s.name : via + "->" + s.name, Kind::field, s.signature, s.doc, {}, 2);
+                        }
+                    if (!afterArrow)
+                    {
+                        offer("out", Kind::word, "the output", "The plugin's output, left and right, in dBFS.", {}, 0);
+                        if (!m.options.instrument)
+                            offer("in", Kind::word, "the input", "The effect's input, left and right, in dBFS.", {}, 0);
+                    }
+                    return finish();
+                }
                 // The main module's params, for the lines that name dials.
                 if (!rest.empty())
                     for (const auto& g : m.files)

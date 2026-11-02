@@ -52,18 +52,21 @@
 //                           its cell (width=, height=; it stretches as a scope does), four at most: its inputs (up to
 //                           eight: parameters, fields, in, out) are its in0..in7 (fminus/Shaders.h); the compiler
 //                           builds it, and a shader that does not compile is a note on its own line
-// A knob's or a slider's live=field marks where a field of the program has the parameter now (a hidden display's tap).
+// A knob's or a slider's live=field marks where a field of the program has the parameter now (a hidden display's tap;
+// Shared's too, shared->x, as a display names it).
 //
 // Classes and defaults, anywhere in the file (read first): `class "big" size=72 arc=yellow` gives its properties to an
 // element with class="big" (several: class="big warm", in order); `defaults knob look=ring` gives them to every knob.
 // An element's own properties come last, so they win; a class's or the defaults' property an element does not take is
 // left out without a note.
 //
-// Displays, of `in` or `out` (the plugin's audio: an effect's input, the output) or a float, int or bool field of the
-// main module the program writes (an instrument's from its newest sounding voice), with label=, color=, and min= max=
-// for a field (0 and 1 when unsaid):
+// Displays, of `in` or `out` (the plugin's audio: an effect's input, the output) or a float, int or bool field the
+// program writes: the main module's (an instrument's from its newest sounding voice), or the module Shared's through
+// the main module's Shared* field, `shared->level` (its one Shared, whether a voice sounds or not), with label=,
+// color=, and min= max= for a field (0 and 1 when unsaid):
 //   meter out   vu out   led gate   number cutoffHz   scope out   spectrum out
-// scope and spectrum (an analyser of in or out) take width= and height=.
+// scope and spectrum (an analyser of in or out) take width= and height=. A number shows an int's or a bool's field as
+// a whole number, and takes a knob's unit=, decimals= and scale= for a field (`number rpm unit="rpm" decimals=0`).
 //
 // A parameter that no control names comes last, in a section without a title. What the plugin cannot use is a note,
 // "panel.gui:12:5: note: ...", and the rest stands.
