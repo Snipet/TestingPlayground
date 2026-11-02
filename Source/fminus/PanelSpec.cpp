@@ -288,6 +288,8 @@ namespace playground
                                   "optional: \"" + t.value + "\" is left out");
                 }
             }
+            if (!labelled && !named && d.source.find("->") != std::string::npos)
+                d.label = sourceLabel(d.source);     // Shared's field's own name ("LEVEL"), not "SHARED->LEVEL"
             if (d.source == "in" && instrument)
             {
                 noteAt(l, "an instrument has no input: in shows nothing");
@@ -610,6 +612,12 @@ namespace playground
                 noteAt(*p.line, "there is no section \"" + p.title + "\" to colour");
         }
         return spec;
+    }
+
+    std::string sourceLabel(const std::string& source)
+    {
+        const std::size_t arrow = source.find("->");
+        return source.substr(arrow == std::string::npos ? 0 : arrow + 2, kMaxDialLabel);
     }
 
     std::vector<PanelField> displayFields(const std::vector<PanelField>& fields, const std::vector<PanelField>& shared)

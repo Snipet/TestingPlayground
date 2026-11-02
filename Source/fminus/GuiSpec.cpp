@@ -1642,8 +1642,8 @@ namespace playground
                     d.decimals = -1;
                     d.scale = 1.0f;
                 }
-                if (d.label.empty())                     // its source's name ("OUT"), not the one it is known by
-                    d.label = d.source.substr(0, kMaxDialLabel);
+                if (d.label.empty())                     // its source's name ("OUT"; Shared's own, "LEVEL"), not the one
+                    d.label = sourceLabel(d.source);     // it is known by
                 if ((lo || hi) && !(d.hi > d.lo))
                 {
                     note(e.name, "min= must be under max=: " + d.source + " shows 0 to 1");

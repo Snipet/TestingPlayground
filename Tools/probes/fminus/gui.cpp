@@ -16,7 +16,7 @@
 //             int's and a bool's display whole numbers; a number's unit=, decimals= and scale= kept; a field Shared
 //             lacks, an array of it, a pointer that is not the Shared* one, and Shared's fields in a program without
 //             one are notes as the main module's are; number out with unit= is a note (dBFS); the #pragma panel lines
-//             take shared->level too
+//             take shared->level too; a display given no label is labelled by Shared's field's own name ("level")
 //   REST      a parameter no control names comes last, in a section without a title, with a note naming it
 //   NOTES     what the plugin cannot use is a note on its line and column, and the rest stands: an unknown element,
 //             property or value, a parameter that is none or has a control already, a switch, buttons or a menu on a
@@ -480,6 +480,7 @@ panel background=#1d1b19 accent=orange {
                                              && !d[0].formatted() ? 1 : 0, 1);
             P.eq("shared.audio_unformatted", !d[5].formatted() ? 1 : 0, 1);
             P.eq("shared.live", d[6].hidden && d[6].source == "shared->level" ? 1 : 0, 1);
+            P.eq("shared.label_its_own_name", d[0].label == "level" && d[1].label == "notes" && d[3].label == "speed" ? 1 : 0, 1);
         }
         P.eq("shared.note_nope", has(c.notes, "panel.gui:7:12: note: there is no field shared->nope (") ? 1 : 0, 1);
         P.eq("shared.note_array", has(c.notes, "panel.gui:8:12: note: shared->table is a float[8]") ? 1 : 0, 1);
@@ -492,9 +493,13 @@ panel background=#1d1b19 accent=orange {
         const Compiled none = withGui("number shared->level\nknob cutoff\n");
         P.eq("shared.none_without_shared", none.panel.displays.empty() && has(none.notes, "there is no field shared->level") ? 1 : 0, 1);
         // The #pragma panel lines name one too.
-        const Compiled pragma = compile({ { pg::kProgramName, "#pragma panel number shared->notes \"N\"\n" + withShared } });
-        P.eq("shared.pragma", pragma.panel.displays.size() == 1 && pragma.panel.displays[0].source == "shared->notes"
-                                  && pragma.panel.displays[0].integer && pragma.panel.displays[0].tap == 0 ? 1 : 0, 1);
+        const Compiled pragma = compile({ { pg::kProgramName, "#pragma panel number shared->notes \"N\"\n#pragma panel meter shared->level\n"
+                                                              "#pragma panel led shared->on as lit\n" + withShared } });
+        const std::vector<pg::PanelDisplay>& pd = pragma.panel.displays;
+        P.eq("shared.pragma", pd.size() == 3 && pd[0].source == "shared->notes" && pd[0].integer && pd[0].tap == 0 ? 1 : 0, 1);
+        // Labelled as said, else by Shared's field's own name (not "SHARED->LEVEL"), else by `as`'s name.
+        P.eq("shared.pragma_labels", pd.size() == 3 && pd[0].label == "N" && pd[1].label == "level" && pd[1].name == "shared->level"
+                                         && pd[2].label.empty() && pd[2].name == "lit" ? 1 : 0, 1);
     }
 
     // ---- an instrument has no input ------------------------------------------------------------------------------------

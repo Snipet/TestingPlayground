@@ -27,7 +27,8 @@
 // sounds), or the module Shared's through the main module's Shared* field (`shared->level`: its one Shared, whether a
 // voice sounds or not). A field's scope is its trace over the last seconds; an int's or a bool's readout a whole
 // number. A section names a display by its name, the source's unless
-// `as` gives another, which a second display of one source needs: #pragma panel scope out as wave "SCOPE".
+// `as` gives another, which a second display of one source needs: #pragma panel scope out as wave "SCOPE". Without a
+// "label" it shows that name (a display of Shared's without `as`: its field's own, LEVEL).
 //
 // The sections go left to right in the order of their lines, and to another row when one is full. Dials and
 // displays no section names come last, in a section of their own without a title. A line, or a part of one, the
@@ -63,7 +64,8 @@ namespace playground
         std::string name;                                   // what a section line calls it: the source's, or `as`'s
         std::string source;                                 // "in", "out", a field of the main module, or Shared's
                                                             // through the main module's Shared* field ("shared->x")
-        std::string label;                                  // "": the source's name
+        std::string label;                                  // "": its name (a .gui file's, and a #pragma panel
+                                                            // display of Shared's without `as`: sourceLabel's)
         float lo = 0.0f, hi = 1.0f;                         // a field's range
         int tap = -1;                                       // a field's tap (Patch::taps), in display order; -1: audio
         std::string color;                                  // a colour's name (kPanelColors), "" for the default
@@ -215,6 +217,10 @@ namespace playground
     // through the main module's first Shared* field, each as "<that field>-><its name>" ("shared->level"), as the
     // field map names them (Patch.h); no Shared* field, none of them. A display takes a float, int or bool of these.
     std::vector<PanelField> displayFields(const std::vector<PanelField>& fields, const std::vector<PanelField>& shared);
+
+    // The label a display of `source` takes when it is given none: the source ("out", "env"), or Shared's field's own
+    // name ("shared->level": "level"), kMaxDialLabel characters at most.
+    std::string sourceLabel(const std::string& source);
 
     // The colours a panel line may name.
     inline constexpr const char* kPanelColors[] = { "red",  "orange", "yellow", "green", "teal",
