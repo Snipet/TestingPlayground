@@ -7,7 +7,7 @@
 //     note-on dropped while bypassed is not among them, since the Engine never got it);
 //   - the dials' 32 normalised values as the Engine got them (setControls, once a block);
 //   - the Engine's mod wheel, pitch wheel, pressure and pedal at its start (its Host block: a replay from there starts
-//     on them);
+//     on them), and a racing wheel's control changes as they stood (Engine::wheelCcs);
 //   - the host's transport as the Engine got it (setTransport), and the bypass;
 //   - the program that played (Meters::program after the block) and whether its frozen copy did;
 //   - the output guard's alerts raised in it (Engine::alertTally) and its processing time over its length;
@@ -146,6 +146,8 @@ namespace playground::capture
         std::array<float, kMaxControls> dials{};   // normalised, as the Engine got them (Controls.h)
         std::array<float, 4> wheels{};             // the Engine's at its start (its Host block): the mod wheel, the pitch
                                                    // wheel, pressure, the pedal (1 down): what a replay from here starts on
+        std::array<uint8_t, wheelcc::kStateCcs> racing{};  // a racing wheel's control changes' values then
+                                                   // (Engine::wheelCcs), which a replay sends first
 
         static constexpr uint8_t kKnown = 1u << 0;     // the host gave a transport (Transport::known)
         static constexpr uint8_t kPlaying = 1u << 1;

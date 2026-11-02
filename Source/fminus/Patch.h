@@ -34,7 +34,7 @@
 //   instance, which every field of type Host* of the main module (and of Shared) points at, and which the Engine fills
 //   before every call of start, stop and process (setHost): the tempo, the song's position at the call's first sample,
 //   the time signature, whether the host plays, and an instrument's mod wheel, pitch bend, aftertouch and sustain
-//   pedal. A program reads it, never writes it.
+//   pedal, and a racing wheel's steering, pedals, gear and buttons. A program reads it, never writes it.
 //
 // Circuits. A file of the program whose name ends in .cir is a SPICE-style netlist (fminus/Circuits.h): an #include of
 // it reads the FMinus module FMinus's circuit compiler generates from it (fminus::circuit::generate), generated when an
@@ -411,7 +411,8 @@ namespace playground
         {
             static constexpr std::size_t kNone = static_cast<std::size_t>(-1);
             std::size_t bpm = kNone, beat = kNone, barStart = kNone, beatsPerBar = kNone, beatUnit = kNone,
-                        playing = kNone, modwheel = kNone, pitchbend = kNone, aftertouch = kNone, sustain = kNone;
+                        playing = kNone, modwheel = kNone, pitchbend = kNone, aftertouch = kNone, sustain = kNone,
+                        steering = kNone, throttle = kNone, brake = kNone, clutch = kNone, gear = kNone, buttons = kNone;
             std::size_t boolSize = 1;
         };
         void* host_ = nullptr;

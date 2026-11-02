@@ -263,6 +263,7 @@ namespace playground::capture
         pending_.dials = dials;
         const HostBlock& h = engine.host();                  // the audio thread's own: the wheels and the pedal now
         pending_.wheels = { h.modwheel, h.pitchbend, h.aftertouch, h.sustain ? 1.0f : 0.0f };
+        pending_.racing = engine.wheelCcs();
         // The samples this block writes: announced before they are (Capture.h).
         maxStore(r->samplesAnnounced, r->s + len);
         std::atomic_thread_fence(std::memory_order_release);

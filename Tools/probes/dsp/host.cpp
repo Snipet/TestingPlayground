@@ -16,7 +16,10 @@
 //   WHEELS    (an instrument) the mod wheel, the pitch bend and aftertouch from their events; the pitch wheel up bends
 //             the sine 2 semitones (440 Hz to 493.9)
 //   PEDAL     (an instrument) a key let go while the sustain pedal is down keeps its voice; the pedal up stops it
-//   EFFECT    (an effect) the wheels stay at rest
+//   RACING    (an instrument) a racing wheel's control changes (wheelcc): the steering's MSB and LSB (-1 to 1), the
+//             pedals' (0 to 1), the gear (127 reverse), the buttons' four parts; an MSB alone resets its LSB; the
+//             values stay until changed; restart() puts them at rest
+//   EFFECT    (an effect) the wheels stay at rest, a racing wheel's too, whatever events come
 //   EXAMPLES  the examples that read it: an instrument's Sine bent 2 semitones by the pitch wheel; an effect's Tremolo
 //             at SYNC 1/4 taking its phase from the song's position (from beat 0.5: at full level, a quarter
 //             cycle on at its lowest), its Echo repeating after TIME (350 ms), and at SYNC 1/4 after a beat at 90 BPM
@@ -30,6 +33,7 @@
 #include "Product.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -43,17 +47,23 @@ namespace
     constexpr double kFs = 48000.0;
 
     // The fields, in display (tap) order.
-    enum Tap : int { tBpm, tBeat, tWheel, tBend, tTouch, tSustain, tPlaying, tPerBar, tBar };
+    enum Tap : int { tBpm, tBeat, tWheel, tBend, tTouch, tSustain, tPlaying, tPerBar, tBar,
+                     tSteer, tThrottle, tBrake, tClutch, tGear, tButtons };
 
     const char* kLines = "#pragma panel number sbpm\n#pragma panel number sbeat\n#pragma panel number swheel\n"
                          "#pragma panel number sbend\n#pragma panel number stouch\n#pragma panel led ssus\n"
-                         "#pragma panel led splay\n#pragma panel number sper\n#pragma panel number sbar\n";
+                         "#pragma panel led splay\n#pragma panel number sper\n#pragma panel number sbar\n"
+                         "#pragma panel number ssteer\n#pragma panel number sthrottle\n#pragma panel number sbrake\n"
+                         "#pragma panel number sclutch\n#pragma panel number sgear\n#pragma panel number sbuttons\n";
 
     const char* kCopy = "        sbpm = host->bpm;\n        sbeat = host->beat;\n        swheel = host->modwheel;\n"
                         "        sbend = host->pitchbend;\n        stouch = host->aftertouch;\n        ssus = host->sustain;\n"
-                        "        splay = host->playing;\n        sper = host->beatsPerBar;\n        sbar = host->barStart;\n";
+                        "        splay = host->playing;\n        sper = host->beatsPerBar;\n        sbar = host->barStart;\n"
+                        "        ssteer = host->steering;\n        sthrottle = host->throttle;\n        sbrake = host->brake;\n"
+                        "        sclutch = host->clutch;\n        sgear = host->gear;\n        sbuttons = host->buttons;\n";
 
-    const char* kFields = "    Host* host;\n    float sbpm, sbeat, swheel, sbend, stouch, sbar;\n    bool ssus, splay;\n    int sper;\n";
+    const char* kFields = "    Host* host;\n    float sbpm, sbeat, swheel, sbend, stouch, sbar, ssteer, sthrottle, sbrake, sclutch;\n"
+                          "    bool ssus, splay;\n    int sper, sgear, sbuttons;\n";
 
     std::string program()
     {
@@ -167,7 +177,7 @@ PROBE(dsp, host)
     if (!messages.empty())
         std::printf("%s", messages.c_str());
     P.eq("load.compiles", ok ? 1 : 0, 1);
-    P.eq("load.nine_displays", static_cast<int64_t>(rig.panel().displays.size()), 9);
+    P.eq("load.fifteen_displays", static_cast<int64_t>(rig.panel().displays.size()), 15);
     if (!ok)
         return P.finish();
     const std::size_t second = static_cast<std::size_t>(kFs);
@@ -260,11 +270,53 @@ PROBE(dsp, host)
         plain.load(program());
         plain.run(quiet, 256, { { 0, pg::EventKind::noteOn, 60, 0.8f }, { 9600, pg::EventKind::noteOff, 60, 0.0f } });
         P.eq("pedal.none_stops", plain.engine().activeVoices(), 0);
+
+        // ---- RACING ----------------------------------------------------------------------------------------------------
+        probe::Rig wheel(kFs, 256);
+        wheel.load(program());
+        const auto cc = [](std::size_t at, int number, int value) {
+            return probe::Note{ at, pg::EventKind::controller, number, static_cast<float>(value) / 127.0f };
+        };
+        std::vector<probe::Note> racing = note;
+        racing.push_back(cc(100, 16, 96));                           // steering 96 << 7 = 12288
+        racing.push_back(cc(101, 48, 0));
+        racing.push_back(cc(102, 17, 127));                          // throttle all the way
+        racing.push_back(cc(103, 49, 127));
+        racing.push_back(cc(104, 18, 64));                           // brake 8192
+        racing.push_back(cc(105, 20, 127));                          // reverse
+        racing.push_back(cc(106, 21, 1));                            // bit 0
+        racing.push_back(cc(107, 23, 8));                            // bit 17
+        wheel.run(in, 256, racing);
+        P.near("racing.steering", static_cast<double>(tap(wheel, tSteer)), 4096.0 / 8191.0, 1e-6);
+        P.near("racing.throttle", static_cast<double>(tap(wheel, tThrottle)), 1.0, 1e-6);
+        P.near("racing.brake", static_cast<double>(tap(wheel, tBrake)), 8192.0 / 16383.0, 1e-6);
+        P.near("racing.clutch_at_rest", static_cast<double>(tap(wheel, tClutch)), 0.0, 1e-9);
+        P.eq("racing.reverse", static_cast<int64_t>(tap(wheel, tGear)), -1);
+        P.eq("racing.buttons", static_cast<int64_t>(tap(wheel, tButtons)), static_cast<int64_t>(1 | (1 << 17)));
+        // An LSB alone moves the fine part; an MSB after it resets it; the gear and the rest stay meanwhile.
+        wheel.run(in, 256, { cc(10, 48, 64) });
+        P.near("racing.lsb_alone", static_cast<double>(tap(wheel, tSteer)), (12288.0 + 64.0 - 8192.0) / 8191.0, 1e-6);
+        wheel.run(in, 256, { cc(10, 16, 32), cc(20, 20, 3), cc(30, 23, 0) });
+        P.near("racing.msb_resets_lsb", static_cast<double>(tap(wheel, tSteer)), (4096.0 - 8192.0) / 8191.0, 1e-6);
+        P.eq("racing.gear", static_cast<int64_t>(tap(wheel, tGear)), 3);
+        P.eq("racing.buttons_part", static_cast<int64_t>(tap(wheel, tButtons)), 1);
+        P.near("racing.throttle_stays", static_cast<double>(tap(wheel, tThrottle)), 1.0, 1e-6);
+        wheel.engine().restart();
+        P.eq("racing.restart_at_rest", wheel.engine().host().steering == 0.0f && wheel.engine().host().throttle == 0.0f
+                                           && wheel.engine().host().gear == 0 && wheel.engine().host().buttons == 0 ? 1 : 0, 1);
+        const std::array<uint8_t, pg::wheelcc::kStateCcs> rest{ { 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 } };   // the centre's MSB
+        P.eq("racing.restart_ccs_at_rest", wheel.engine().wheelCcs() == rest ? 1 : 0, 1);
     }
     else
     {
         // ---- EFFECT ----------------------------------------------------------------------------------------------------
         P.eq("effect.wheels_at_rest", tap(rig, tWheel) == 0.0f && tap(rig, tBend) == 0.0f && tap(rig, tSustain) == 0.0f ? 1 : 0, 1);
+        probe::Rig wheel(kFs, 256);
+        wheel.load(program());
+        wheel.run(in, 256, { { 0, pg::EventKind::controller, 16, 1.0f }, { 0, pg::EventKind::controller, 17, 1.0f },
+                             { 0, pg::EventKind::controller, 20, 3.0f / 127.0f }, { 0, pg::EventKind::controller, 21, 1.0f } });
+        P.eq("effect.racing_at_rest", tap(wheel, tSteer) == 0.0f && tap(wheel, tThrottle) == 0.0f && tap(wheel, tGear) == 0.0f
+                                          && tap(wheel, tButtons) == 0.0f ? 1 : 0, 1);
     }
 
     // ---- EXAMPLES ------------------------------------------------------------------------------------------------------

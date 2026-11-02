@@ -1339,6 +1339,8 @@ namespace playground::measure
                             if (at > 0 || e.velocity >= 0.5f)        // (up at the start: at rest, no moment)
                                 tl.marks.push_back({ at, e.velocity >= 0.5f ? "the pedal down" : "the pedal up", -1, false });
                         }
+                        else if (e.note >= wheelcc::kSteering + wheelcc::kLsb && e.note < wheelcc::kSteering + wheelcc::kLsb + wheelcc::kAxes)
+                            break;                                   // a racing wheel's fine part: its MSB's mark says it
                         else if (at > 0 || e.velocity != 0.0f)
                             tl.marks.push_back({ at, (e.note == 1 ? std::string("the mod wheel") : "controller " + std::to_string(e.note))
                                                          + " to " + fmt("%.2f", static_cast<double>(e.velocity)),

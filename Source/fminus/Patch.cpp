@@ -777,6 +777,12 @@ namespace playground
             at("pitchbend", "float", l.pitchbend);
             at("aftertouch", "float", l.aftertouch);
             at("sustain", "bool", l.sustain);
+            at("steering", "float", l.steering);
+            at("throttle", "float", l.throttle);
+            at("brake", "float", l.brake);
+            at("clutch", "float", l.clutch);
+            at("gear", "int", l.gear);
+            at("buttons", "int", l.buttons);
             for (const fminus::Program::Module::Field& f : m->fields)
                 if (f.name == "playing" || f.name == "sustain")
                     l.boolSize = f.size;
@@ -1005,6 +1011,12 @@ namespace playground
         put(l.pitchbend, h.pitchbend);
         put(l.aftertouch, h.aftertouch);
         flag(l.sustain, h.sustain);
+        put(l.steering, h.steering);
+        put(l.throttle, h.throttle);
+        put(l.brake, h.brake);
+        put(l.clutch, h.clutch);
+        put(l.gear, static_cast<int32_t>(h.gear));
+        put(l.buttons, static_cast<int32_t>(h.buttons));
     }
 
     void Patch::process(float* left, float* right, int n) noexcept

@@ -9,8 +9,8 @@
 // a block at a time (none: the Engine's own song position at its start, Engine::setBeat); its dials as the processor
 // sent them, the 32 normalised values where they changed (Request::frames, of the program's dials: another program
 // takes them by name); the Engine's clock at its start (the voices' 16-sample grid, Engine::setClock); the wheels and
-// the pedal as they stood, always (the mod and pitch wheels as the request's, pressure and the pedal as events at its
-// first sample); an effect's input as it reached the Engine. A part (from, to: seconds of the take) starts and ends on
+// the pedal as they stood, always (the mod and pitch wheels as the request's, pressure, the pedal and a racing wheel's
+// control changes as events at its first sample); an effect's input as it reached the Engine. A part (from, to: seconds of the take) starts and ends on
 // its host blocks. Rendered with the files of the program that played at its start (compiled at the take's rate), it
 // gives what played bit for bit when the program started from its fresh state there and its own code played (its
 // netlists generated as they were, with the configurations the take keeps: a self-test's answer stored since, or the

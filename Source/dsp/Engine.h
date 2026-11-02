@@ -22,9 +22,10 @@
 // The host (host.fm, Patch.h). setTransport() takes the host's transport once a block; the Engine keeps the song's
 // position from there, sample by sample (its own clock at 120 BPM when the host says nothing), and fills the program's
 // Host block before each call into it (start, stop, process, every part of a block), so a call reads the position of
-// its own first sample. An instrument's controllers (the mod wheel, pitch bend, aftertouch) change at their events'
-// offsets, and so does the sustain pedal, which the Engine applies itself: a key let go while it is down keeps its
-// voice until the pedal comes up, which then stops it.
+// its own first sample. An instrument's controllers (the mod wheel, pitch bend, aftertouch, a racing wheel's: wheelcc)
+// change at their events' offsets and stay until the next (restart() puts them at rest), and so does the sustain
+// pedal, which the Engine applies itself: a key let go while it is down keeps its voice until the pedal comes up,
+// which then stops it.
 //
 // Dials. setControls() takes the host's normalised values (P1 to P32) once a block. A real control glides to its new
 // value over 20 ms, sample by sample, and while it moves the program reads it as a stream of those samples (a null
@@ -175,6 +176,10 @@ namespace playground
         void setTransport(const Transport& t) noexcept;
         // The Host block as the last call saw it (for the probes, while the audio thread is stopped).
         const HostBlock& host() const noexcept { return host_; }
+        // The 7-bit values of a racing wheel's control changes (wheelcc::stateCc(i)'s, in that order) that bring a
+        // fresh Engine where this one is (what a recording's replay starts from: plugin/CaptureReplay.cpp). The audio
+        // thread's own.
+        std::array<uint8_t, wheelcc::kStateCcs> wheelCcs() const noexcept;
         // At most prepare()'s maxBlockSize samples (the processor cuts a host's larger block); events sorted by offset.
         void process(float* const* channels, int numChannels, int numSamples, std::span<const Event> events) noexcept;
 
@@ -308,6 +313,7 @@ namespace playground
         void processEffect(float* const* channels, int numChannels, int n) noexcept;
         void syncHost(int offset) noexcept;           // the Host block at the call's sample `offset`, into the programs
         void controller(const Event& e) noexcept;     // a controller, pitch bend or pressure event
+        void wheel(int cc, int value) noexcept;       // a racing wheel's control change (wheelcc), its 7-bit value
         void processInstrument(float* const* channels, int numChannels, int n, std::span<const Event> events) noexcept;
         void noteOn(int key, float velocity) noexcept;
         void noteOff(int key) noexcept;
@@ -399,6 +405,8 @@ namespace playground
         uint64_t noteCount_ = 0;
         uint64_t clock_ = 0;                          // samples processed since prepare(): the grid's origin
         HostBlock host_;                              // what the programs' Host block holds (host.fm)
+        std::array<uint16_t, wheelcc::kAxes> wheel14_{ { wheelcc::kCentre, 0, 0, 0 } };   // a racing wheel's 14-bit
+                                                      // values as its MSBs and LSBs left them (controller)
         double beat_ = 0.0;                           // the song's position at this call's first sample
         double bpm_ = 120.0;
         bool running_ = true;                         // the position moves (the host plays, or it said nothing)

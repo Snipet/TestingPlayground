@@ -178,8 +178,15 @@ namespace playground
         };
 
         // The Event of a MIDI message an instrument plays, else false: note-on (at velocity 0, a note-off), note-off,
-        // and the controllers All Sound Off (120) and All Notes Off (123), both allNotesOff. The caller sets the
-        // offset. (An effect never calls it: maybe_unused.)
+        // the controllers All Sound Off (120) and All Notes Off (123), both allNotesOff, the mod wheel, the sustain
+        // pedal and a racing wheel's (wheelcc: 16 to 24, 48 to 51). The caller sets the offset. (An effect never
+        // calls it: maybe_unused.)
+        constexpr bool isWheelCc(uint8_t cc) noexcept
+        {
+            using namespace wheelcc;
+            return (cc >= kSteering && cc < kButtons + kButtonCcs) || (cc >= kSteering + kLsb && cc < kSteering + kLsb + kAxes);
+        }
+
         [[maybe_unused]] bool toEvent(const juce::MidiMessageMetadata& m, Event& e) noexcept
         {
             if (m.numBytes < 1)
@@ -197,7 +204,7 @@ namespace playground
                 e.kind = EventKind::noteOff;
             else if (status == 0xb0 && (d1 == 120 || d1 == 123))
                 e.kind = EventKind::allNotesOff;
-            else if (status == 0xb0 && (d1 == 1 || d1 == 64))  // the mod wheel, the sustain pedal
+            else if (status == 0xb0 && (d1 == 1 || d1 == 64 || isWheelCc(d1)))   // the mod wheel, the sustain pedal
             {
                 e.kind = EventKind::controller;
                 e.velocity = static_cast<float>(d2) / 127.0f;
