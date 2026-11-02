@@ -318,6 +318,9 @@ namespace playground
         static std::string promptPrint();                           // the system prompt's and tools' hash
         void markSeen(const std::string& name, const std::string& text);   // the chat's Claude knows this text (mutex
                                                                     // held; Claude Desktop's views mark nothing here)
+        // Its own edit turned `before` into `after`: it knows `after` only if it knew `before` (mutex held). A file it
+        // read a part of, or the user changed since it saw it, stays unseen, so the next state sends it.
+        void carrySeen(const std::string& name, const std::string& before, const std::string& after);
         void addEntry(ChatEntry::Kind kind, std::string text);     // mutex held
         void appendToLast(ChatEntry::Kind kind, std::string_view text);   // mutex held
         void setActivity(std::string activity);

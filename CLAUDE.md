@@ -697,7 +697,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   always). write_file of a `.cir` whose text has no `*@` line keeps the old ones and says so.
 - **read_file and edit_file** (`plugin/ChatFiles.cpp`): every read and write says the file's line count and version
   (its text's hash; the newest 16 versions' texts kept, `fileVersions_`). read_file gives a file whole, or a range
-  (`from`, `lines`) or the lines holding a text (`find`, two around each), numbered, and a part read marks nothing seen.
+  (`from`, `lines`) or the lines holding a text (`find`, two around each), numbered, and a part read marks nothing seen;
+  an edit marks the file seen only when the chat's Claude had seen the text it edited (`carrySeen`), so a file read in
+  part, or changed by the user since, goes whole with the next state.
   edit_file replaces one passage or a list (`edits`), in order, each occurring once in what the ones before it left,
   all or none, in one write (one undo step); a passage that does not occur gets the closest one back, numbered, and
   what differs. It writes through `chatSetDraftIf` (the text it read, the others left as they are now: what the user

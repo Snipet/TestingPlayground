@@ -1604,6 +1604,12 @@ namespace playground
             seen_[name] = hashText(seenText(name, text));
     }
 
+    void ChatAgent::carrySeen(const std::string& name, const std::string& before, const std::string& after)
+    {
+        if (const auto it = seen_.find(name); it != seen_.end() && it->second == hashText(seenText(name, before)))
+            markSeen(name, after);
+    }
+
     void ChatAgent::addEntry(ChatEntry::Kind kind, std::string t)
     {
         ChatEntry e;

@@ -2,15 +2,15 @@
 // MCP's alike.
 //
 // read_file gives a file whole, or a range of its lines (from, lines) or the lines that hold a text (find, two lines
-// around each), numbered; a part read leaves the chat's record of what its Claude saw (markSeen) alone. edit_file
-// replaces one passage (old_text, new_text) or a list of them (edits), in order, each occurring exactly once in the text
-// the ones before it left (try_edits' rule), all or none: one write, one step the user can undo. A passage that does not
-// occur is answered with the closest one in the file, its lines numbered, and what differs. The write goes through
-// chatSetDraftIf: only while the file is still the text the tool read, so what the user types meanwhile is never
-// overwritten (the edits are tried once more on the new text). With `expected`, the version Claude read (every read and
-// write says the file's version, its text's hash), it writes only while the file is still that version: otherwise it
-// writes nothing, says the user changed it, and shows the lines that changed since (the newest kFileVersions versions
-// given are kept for that).
+// around each), numbered; a part read leaves the chat's record of what its Claude saw (markSeen) alone, and an edit
+// marks the file seen only when its Claude had seen the text it edited (carrySeen). edit_file replaces one passage
+// (old_text, new_text) or a list of them (edits), in order, each occurring exactly once in the text the ones before it
+// left (try_edits' rule), all or none: one write, one step the user can undo. A passage that does not occur is answered
+// with the closest one in the file, its lines numbered, and what differs. The write goes through chatSetDraftIf: only
+// while the file is still the text the tool read, so what the user types meanwhile is never overwritten (the edits are
+// tried once more on the new text). With `expected`, the version Claude read (every read and write says the file's
+// version, its text's hash), it writes only while the file is still that version: otherwise it writes nothing, says the
+// user changed it, and shows the lines that changed since (the newest kFileVersions versions given are kept for that).
 #include "plugin/ChatAgent.h"
 
 #include "dsp/TextDiff.h"
@@ -501,7 +501,7 @@ namespace playground
             std::string version;
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
-                markSeen(file, t);
+                carrySeen(file, before, t);                      // seen only if what it edited was
                 version = keepVersion(file, t);
                 addEntry(ChatEntry::Kind::tool, "edited " + file + (edits.size() > 1 ? " (" + std::to_string(edits.size()) + " changes)" : ""));
             }

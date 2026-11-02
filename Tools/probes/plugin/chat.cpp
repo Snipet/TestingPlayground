@@ -70,12 +70,13 @@
 //            "schematic": a PNG at 100 % with every part labelled, its text giving each part line's place and the pins'
 //            points; the user's view, file views and tab as they were
 //   FILES    read_file by lines (exactly those, numbered, after the line count and version; to the end; past it
-//            refused), by a text (the lines that hold it with two around each, groups apart; none); a part read is
-//            not the file seen (the next state sends it, and names unchanged a file read whole); edit_file's miss gives
-//            the closest passage, numbered, and what differs (the characters; only the whitespace), a passage that
-//            occurs four times names its lines; a list with one bad edit changes nothing and names it; a good one is
-//            one write the editor undoes in one step; `expected` refuses a write after the user's edit, keeps it and
-//            shows its line (the result's first line naming the edit), and with the version it gives the write goes
+//            refused), by a text (the lines that hold it with two around each, groups apart; none); a part read is not
+//            the file seen, nor is an edit after it (the next state sends it, with the user's line and the edit, and
+//            names unchanged a file read whole), and an edit of a file seen is seen; edit_file's miss gives the closest
+//            passage, numbered, and what differs (the characters; only the whitespace), a passage that occurs four
+//            times names its lines; a list with one bad edit changes nothing and names it; a good one is one write the
+//            editor undoes in one step; `expected` refuses a write after the user's edit, keeps it and shows its line
+//            (the result's first line naming the edit), and with the version it gives the write goes
 //   SOUND    view_sound through the agent (a program that sounds): its result a PNG of 1120 x 800 and what it shows,
 //            the tool's entry with the picture's thumbnail (480 px), the session without the PNG but with the thumbnail;
 //            a program that does not compile draws nothing and says why
@@ -1620,7 +1621,8 @@ PROBE(plugin, chat)
         P.eq("files.find_none", has(none, "; no line holds \"nothing like it\".") ? 1 : 0, 1);
 
         // A part read is not the file seen: the user edits both files while the chat's Claude listens; it then reads a
-        // part of notes.fm and other.fm whole, and the next state sends notes.fm again and names other.fm unchanged.
+        // part of notes.fm and other.fm whole, and edits notes.fm. The next state sends notes.fm again (the user's line
+        // and the edit in it: an edit of a text it had not seen whole marks nothing seen) and names other.fm unchanged.
         {
             script->add(fake::Response::ok(fake::Sse().start().text("A look first.").end()));
             agent.send("look at the files");
@@ -1630,6 +1632,8 @@ PROBE(plugin, chat)
                                                .start()
                                                .tool("toolu_f2", "read_file", input({ { "name", "notes.fm" }, { "from", 1 }, { "lines", 2 } }))
                                                .tool("toolu_f3", "read_file", input({ { "name", "other.fm" } }))
+                                               .tool("toolu_f4", "edit_file", input({ { "name", "notes.fm" }, { "old_text", "return x * 2.0f;" },
+                                                                                      { "new_text", "return x * 2.5f;" } }))
                                                .end("tool_use")));
             script->add(fake::Response::ok(fake::Sse().start().text("Read.").end()));
             agent.send("read the top of notes.fm");
@@ -1650,6 +1654,26 @@ PROBE(plugin, chat)
                 if (str(b, "text").rfind("<plugin_state>", 0) == 0)
                     state = str(b, "text");
             P.eq("files.part_read_unseen", has(state, "<file name=\"notes.fm\">\n") && has(state, "<file name=\"other.fm\" lines=\"3\" unchanged=\"true\"/>") ? 1 : 0, 1);
+            P.eq("files.part_read_edit_unseen", has(state, "return x * 2.5f;") && has(state, "// typed while it listened\n") ? 1 : 0, 1);
+            // An edit of a text it had seen is seen: the state after it names notes.fm unchanged.
+            script->add(fake::Response::ok(fake::Sse()
+                                               .start()
+                                               .tool("toolu_f5", "edit_file", input({ { "name", "notes.fm" }, { "old_text", "// typed while it listened\n" },
+                                                                                      { "new_text", "// edited once seen\n" } }))
+                                               .end("tool_use")));
+            script->add(fake::Response::ok(fake::Sse().start().text("Edited.").end()));
+            agent.send("reword the comment");
+            agent.waitIdle();
+            processor.getParameters()[0]->setValueNotifyingHost(0.45f);
+            script->add(fake::Response::ok(fake::Sse().start().text("Seen.").end()));
+            agent.send("and now?");
+            agent.waitIdle();
+            std::string after;
+            for (const auto& b : arr(messagesOf(script->body(script->postCount() - 1)).getLast().getProperty("content", {})))
+                if (str(b, "text").rfind("<plugin_state>", 0) == 0)
+                    after = str(b, "text");
+            P.eq("files.edit_of_seen_seen", has(fileText("notes.fm"), "// edited once seen\n")
+                                                && has(after, "<file name=\"notes.fm\" lines=\"13\" unchanged=\"true\"/>") ? 1 : 0, 1);
             pg::Draft back = processor.editorPort().draft();
             for (pg::SourceFile& f : back.files)
                 if (f.name == "notes.fm")
