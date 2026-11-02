@@ -723,11 +723,11 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
                                instrument ? "notes, velocity, hold_seconds, tail_seconds, dials, the host, the wheels and a scenario"
                                           : "hold_seconds, tail_seconds, dials, the host and a scenario");
                 c = replaceAll(c, "%EXAMPLES%",
-                               instrument ? "\"a short pluck\": decay_s at most 1; \"bright\": centroid_hz at least 600 (a raw "
-                                            "saw's at C3: about 400); \"no aliasing\": inharmonic_db at most -70 at note 96; "
-                                            "\"no clicks\": click at most 0; \"in tune\": pitch_cents near 0; \"a slow pad\": "
-                                            "attack_s at least 0.5; and for every sound alerts at most 0, and peak_db at most -6 "
-                                            "with a chord"
+                               instrument ? "\"a short pluck\": decay_s at most 1; \"bright\": centroid_hz at least 300 (at C3 "
+                                            "a raw saw's about 400, a sine's 131); \"no aliasing\": inharmonic_db at most -70 at "
+                                            "note 96; \"no clicks\": click at most 0; \"in tune\": pitch_cents near 0; \"a slow "
+                                            "pad\": attack_s at least 0.5; and for every sound alerts at most 0, and peak_db at "
+                                            "most -6 with a chord"
                                           : "\"clean until pushed\": thd_db at most -60, and at least -20 with the drive "
                                             "up; \"unity gain\": sine_gain_db near 0; \"a dark tone\": centroid_out_hz "
                                             "at most 3000; \"a long tail\": impulse_decay_s at least 2; \"quiet when idle\": "
@@ -754,7 +754,7 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
                                           : "{input: \"capture\"} replays its input");
                 c = replaceAll(c, "%TUNING%",
                                instrument ? "\"the release at 1.2 s\", \"the level at -18 dBFS RMS\", \"the centroid at "
-                                            "500 Hz\""
+                                            "300 Hz\""
                                           : "\"the THD+N at -30 dB\", \"unity gain\", \"the noise's centroid at 4 kHz "
                                             "out\"");
                 s += c;

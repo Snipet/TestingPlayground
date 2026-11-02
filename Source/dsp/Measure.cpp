@@ -340,7 +340,7 @@ namespace playground::measure
             { "inharmonic_db", "dB",
               "one note only: in 0.4 s Blackman-Harris frames while held, the strongest component in the band farther than "
               "15 Hz from every harmonic of the expected pitch, under the strongest (aliasing, or the sound's own detuning, "
-              "FM or noise; -200: none above -90)",
+              "FM or noise; under -90: none, the floor)",
               3.0, false, 0.0 },
             { "step", "", "the largest step between two samples of a channel, the whole render (a jump's is the same at any "
                           "rate, a smooth wave's smaller at a higher one)",
