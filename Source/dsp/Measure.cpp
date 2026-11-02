@@ -1986,8 +1986,12 @@ namespace playground::measure
                 cpu += r.cpuMs;
                 audio += static_cast<double>(r.cpuSamples) / rate;
                 alerts |= r.alerts;
-                for (const Step& st : largestSteps(r.out.l, r.out.r, 3, rate))
+                // The impulse's own steps (the impulse and its echoes, the response it is there to show) are no click.
+                for (Step st : largestSteps(r.out.l, r.out.r, 3, rate))
+                {
+                    st.click = st.click && !starts;
                     found.push_back({ st, name, nearestMark(tl, st.at, rate) });
+                }
                 return std::move(r.out);
             };
 

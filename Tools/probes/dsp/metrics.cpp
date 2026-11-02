@@ -15,7 +15,8 @@
 //            D3, a bass line E2, F#2, G2, A2) and a sine at C2 and at E2 read their lowest note's own partial
 //   CLICKS   measure's click metric and trace's click finding agree: a sound with a step every 40 ms (an engine's
 //            firing, longer than 1.5 cycles of its note) has none by either, a sine that jumps once has one by both; an
-//            effect's: its report marks no step a click for the engine's, one for the jump, as trace finds
+//            effect's: its report marks no step a click for the engine's, one for the jump, as trace finds, and none
+//            for an effect that passes its input (the test impulse and its echoes are the response, not clicks)
 //   TERMS    every metric's words name what metricTerms() defines or a span of its own; toleranceText is Goals'
 //            toleranceOf
 #include "Probe.h"
@@ -278,6 +279,14 @@ module Voice
 )";
     }
 
+    // An effect that passes its input as it is.
+    [[maybe_unused]] const char* kPassEffect = R"(module Effect
+{
+    void init(float r) {}
+    void process(float* restrict left, float* restrict right, int n) {}
+};
+)";
+
     ms::Result measured(const pg::Sources& files, double rate, ms::Request r)
     {
         r.rate = rate;
@@ -451,6 +460,18 @@ PROBE(dsp, metrics)
                 P.ge("clicks.engine_step_large", at(m.values, "step"), 0.35 * std::pow(10.0, at(m.values, "peak_db") / 20.0));
                 P.le("clicks.engine_period_long", 1.5 / noteHz(48), 0.04);
             }
+    }
+
+    if constexpr (!kInstrument)
+    {
+        // An effect that passes its input: the impulse's step is the test signal's own, no click.
+        ms::Request r;
+        r.holdSeconds = 0.5f;
+        r.tailSeconds = 0.2f;
+        const ms::Result m = measured(pg::singleFile(kPassEffect), 48000.0, r);
+        std::printf("an effect that passes its input:\n%s", m.report.c_str());
+        P.eq("clicks.pass_none_marked", has(m.report, "(a click)") ? 0 : 1, 1);
+        P.eq("clicks.pass_impulse_listed", has(m.report, " in the impulse at ") ? 1 : 0, 1);
     }
 
     // ---- TERMS ---------------------------------------------------------------------------------------------------------
