@@ -11,7 +11,8 @@
 //            gap between them left out (the phrase with a rest reads as without it)
 //   PITCH    a note with a partial an octave below at -6 dB (a sub-order) reads the note's pitch (pitch_cents within a
 //            cent, the partial its own); one without its fundamental (harmonics 2 to 6) reads it from its harmonics'
-//            sum within 2 cents; a chord of a fifth reads its lowest note
+//            sum within 2 cents; a chord of a fifth reads its lowest note; low notes close together (a chord of C3 and
+//            D3, a bass line E2, F#2, G2, A2) and a sine at C2 and at E2 read their lowest note's own partial
 //   CLICKS   measure's click metric and trace's click finding agree: a sound with a step every 40 ms (an engine's
 //            firing, longer than 1.5 cycles of its note) has none by either, a sine that jumps once has one by both; an
 //            effect's: its report marks no step a click for the engine's, one for the jump, as trace finds
@@ -384,6 +385,27 @@ PROBE(dsp, metrics)
         fifth.notes = { 60, 67 };
         const ms::Result f = measured(pg::singleFile(kHarmonicVoice), 48000.0, fifth);
         P.near("pitch.fifth_lowest", at(f.values, "pitch_cents"), 0.0, 2.0);
+        // Low notes close together: C3 and D3 are 16 Hz apart, a bass line's E2 and F#2 10 Hz; and a low sine, whose
+        // range of 600 cents spans a few tens of Hz. Each reads its lowest note's own partial.
+        const auto own = [&](const std::string& k, const ms::Result& m, double within) {
+            std::printf("%s: pitch %+.2f cents%s\n", k.c_str(), at(m.values, "pitch_cents"),
+                        has(m.report, "its harmonics' sum") ? " (its harmonics' sum)" : "");
+            P.near("pitch." + k + "_cents", at(m.values, "pitch_cents"), 0.0, within);
+            P.eq("pitch." + k + "_partial", has(m.report, "its harmonics' sum") ? 0 : 1, 1);
+        };
+        ms::Request close = r;
+        close.notes = { 48, 50 };
+        own("low_chord", measured(pg::singleFile(kHarmonicVoice), 48000.0, close), 2.0);
+        ms::Request line;
+        line.phrase = { { 40, 0.0, 0.5, 0.8f }, { 42, 0.5, 0.5, 0.8f }, { 43, 1.0, 0.5, 0.8f }, { 45, 1.5, 0.5, 0.8f } };
+        line.tailSeconds = 0.3f;
+        own("bass_line", measured(pg::singleFile(kHarmonicVoice), 48000.0, line), 2.0);
+        for (const int n : { 36, 40 })
+        {
+            ms::Request low = r;
+            low.notes = { n };
+            own("sine_" + std::to_string(n), measured(pg::singleFile(partialsVoice(1, 1, 0.0f)), 48000.0, low), 1.0);
+        }
     }
 
     // ---- CLICKS --------------------------------------------------------------------------------------------------------

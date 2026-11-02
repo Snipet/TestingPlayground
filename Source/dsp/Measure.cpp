@@ -332,8 +332,9 @@ namespace playground::measure
             { "balance_db", "dB", "left's energy over right's while held", 0.5, false, 0.0 },
             { "centroid_hz", "Hz", "the spectrum's power-weighted mean frequency in the band: how bright", 0.05, true, 1.0 },
             { "fundamental_hz", "Hz",
-              "the spectrum's strongest partial within 600 cents of the expected pitch (the lowest note, bent by the pitch "
-              "wheel's start at 2 semitones; nearer it than another note), else its harmonics' best sum there (0: silent)",
+              "in 0.4 s Hann frames while held, the strongest partial within 600 cents of the expected pitch (the lowest "
+              "note, bent by the pitch wheel's start at 2 semitones; nearer it than another note), else its harmonics' best "
+              "sum there (0: silent)",
               0.005, true, 0.5 },
             { "pitch_cents", "cents", "fundamental_hz against the expected pitch", 5.0, false, 0.0 },
             { "inharmonic_db", "dB",
@@ -1779,7 +1780,8 @@ namespace playground::measure
                 v["centroid_hz"] = centroid;
                 out += "Spectrum while held: centroid " + fmt("%.0f Hz", centroid) + "; strongest partials "
                      + partials(sp.peaks(8)) + ".";
-                const Pitch pitch = pitchOf(sp, expectedHz, loHz, hiHz);
+                // The pitch from frames of its own, long enough to part a low chord's notes (Measure.h).
+                const Pitch pitch = pitchOf(spectrum(m, rate, held, Taper::hann, kPitchSeconds), expectedHz, loHz, hiHz);
                 v["fundamental_hz"] = pitch.hz;
                 if (pitch.hz > 0.0)
                 {

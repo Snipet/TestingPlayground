@@ -356,7 +356,8 @@ namespace playground::measure
 
     using Span = std::pair<std::size_t, std::size_t>;        // samples [first, second)
     inline constexpr double kSettleSeconds = 0.05;           // a held part starts this long after its note-on
-    inline constexpr double kSpectrumSeconds = 0.1;          // the Hann frames: the centroid, the partials, the pitch
+    inline constexpr double kSpectrumSeconds = 0.1;          // the Hann frames: the centroid, the partials
+    inline constexpr double kPitchSeconds = 0.4;             // the Hann frames of the pitch (low close notes part)
     inline constexpr double kPuritySeconds = 0.4;            // the Blackman-Harris frames: inharmonic_db, thd_db
     inline constexpr double kBandLowHz = 20.0, kBandHighHz = 20000.0;   // the band (the Nyquist frequency when lower)
     inline constexpr double kPitchCents = 600.0;             // how far from the expected note the pitch looks
@@ -400,6 +401,8 @@ namespace playground::measure
     // The pitch near `expectedHz`, in (loHz, hiHz): the strongest partial there (a local maximum within 60 dB of the
     // spectrum's strongest and 10 dB above the median of the range); without one, the f0 there (in steps of a cent)
     // whose harmonics up to the 20th, in the band, sum the most magnitude, placed by the strongest of them. 0: silent.
+    // The metrics read it from kPitchSeconds Hann frames: a main lobe of 5 Hz each side, so that a low chord's notes
+    // (C3 and D3 are 16 Hz apart, E2 and F#2 10 Hz) and a low note's range of 600 cents hold distinct bins.
     struct Pitch
     {
         double hz = 0.0;

@@ -442,10 +442,10 @@ place (its `products/<key>.cmake`, and its names in the docs).
   metric added there is taught at once); a request's `want` runs only the renders and the analysis they need. Every
   metric is over its own span and the same at every rate: the held part (`heldSpans`: each note from 50 ms after its
   note-on, half the note when shorter, to its note-off; an effect's signal from 50 ms in to its end), its spectra
-  Welch's average over all of it in frames fixed in seconds (`measure::spectrum`: 0.1 s Hann for the centroid, the
-  partials and the pitch, 0.4 s Blackman-Harris for inharmonic_db and thd_db), the centroids power-weighted over 20 Hz
-  to 20 kHz, the pitch the strongest partial within 600 cents of the expected note (`pitchOf`, a harmonic sum
-  without one), and one click rule (`measure::clicks`) for the click metric, the step lines and trace (`dsp.metrics`
+  Welch's average over all of it in frames fixed in seconds (`measure::spectrum`: 0.1 s Hann for the centroid and the
+  partials, 0.4 s Hann for the pitch, 0.4 s Blackman-Harris for inharmonic_db and thd_db), the centroids
+  power-weighted over 20 Hz to 20 kHz, the pitch the strongest partial within 600 cents of the expected note
+  (`pitchOf`, a harmonic sum without one), and one click rule (`measure::clicks`) for the click metric, the step lines and trace (`dsp.metrics`
   checks each at 48 and 192 kHz). Change a definition and its line together. Its CPU figures are the
   rendering thread's own time (`CLOCK_THREAD_CPUTIME_ID`, read at a render's few boundaries, never a block's), in an
   Engine as the audio thread runs it with no editor open: an instrument's `cpu_percent` over the held part, and
