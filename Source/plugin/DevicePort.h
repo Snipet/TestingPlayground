@@ -27,11 +27,13 @@ namespace playground
         friend bool operator==(const ChannelPair&, const ChannelPair&) = default;
     };
 
+    // A MIDI input, or another source the Standalone makes MIDI of (a racing wheel: standalone/RacingWheel.h).
     struct MidiInputDevice
     {
         std::string name;
         std::string identifier;                  // what switchMidi takes
         bool on = false;
+        std::string status;                      // a short line under its switch ("" for none): what it is doing
         friend bool operator==(const MidiInputDevice&, const MidiInputDevice&) = default;
     };
 
@@ -67,7 +69,8 @@ namespace playground
         double inputLatencyMs = 0.0, outputLatencyMs = 0.0;
 
         bool takesMidi = false;                  // the product takes MIDI (an instrument): the card's MIDI section
-        std::vector<MidiInputDevice> midi;       // the MIDI inputs, and which are on
+        std::vector<MidiInputDevice> midi;       // the MIDI inputs, and which are on (a racing wheel's after them,
+                                                 // while it is connected)
 
         bool muteApplies = false;                // an effect's input may feed back through speakers: JUCE's guard
         bool muted = false;                      // the input is muted (silence in place of it)

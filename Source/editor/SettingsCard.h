@@ -8,7 +8,8 @@
 //           loop through the speakers would feed back); unmuting is the user's click alone
 //   AUDIO   the device type (when there are several), the sample rate, the buffer size with its ms, and the latency the
 //           device reports (in and out)
-//   MIDI    an instrument's only: each MIDI input with a switch, or "No MIDI inputs"
+//   MIDI    an instrument's only: each MIDI input with a switch (a racing wheel's among them, its status under its
+//           name), or "No MIDI inputs"
 //   Done    or Escape, or a click outside the card: closed
 // A device's error (a choice it refused) is under the section whose choice it was, in the danger colour. The numbers
 // follow the devices while it is open: it reads them again whenever DevicePort::serial moves (a device plugged in, a

@@ -382,6 +382,8 @@ namespace @FP_NAMESPACE@
     target_sources(${PRODUCT_NAME}_Standalone PRIVATE ${FP_STANDALONE_SOURCES})
     target_compile_definitions(${PRODUCT_NAME}_Standalone PRIVATE JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1)
     target_link_libraries(${PRODUCT_NAME}_Standalone PRIVATE fp_flags)
+    # The racing wheel (standalone/RacingWheel.cpp): IOKit's HID manager, the Standalone's alone.
+    target_link_libraries(${PRODUCT_NAME}_Standalone PRIVATE "-framework IOKit" "-framework CoreFoundation")
   endif()
 
   # Each bundle exports its entry points and nothing else: the AU its factories, the VST3 its three functions, what
@@ -568,5 +570,14 @@ fp_add_installer()
 
 # ---- the lints, once for every product's bundles (cmake/Probes.cmake) -----------------------------------------------
 fp_add_lints()
+
+# ---- wheel-dump: a developer's tool, outside `all` and never installed ----------------------------------------------
+# Tools/wheel-dump/: a connected Logitech G29's HID elements and their live values, beside what plugin/WheelMap.h's
+# table makes of them (README, "A racing wheel"). `cmake --build build-dev --target wheel-dump`, then
+# build-dev/wheel-dump.
+add_executable(wheel-dump EXCLUDE_FROM_ALL ${PROJECT_SOURCE_DIR}/Tools/wheel-dump/main.cpp
+                                           ${FP_SOURCE_ROOT}/plugin/WheelMap.cpp)
+target_include_directories(wheel-dump PRIVATE ${FP_SOURCE_ROOT})
+target_link_libraries(wheel-dump PRIVATE fp_flags fp_warnings "-framework IOKit" "-framework CoreFoundation")
 
 message(STATUS "${PROJECT_NAME}: ${_fp_products}; ${CMAKE_BUILD_TYPE}, LTO ${FP_LTO}, Werror ${FP_WERROR}")
