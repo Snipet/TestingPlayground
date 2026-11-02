@@ -339,8 +339,10 @@ namespace playground::lang
     inline constexpr int kWidth = 120;
 
     // `typeNames`: the program's module names (a `*` after one is a pointer's, `Svf* f`); the ones the text declares
-    // itself are found anyway.
-    Formatted format(std::string_view text, const std::vector<std::string>& typeNames = {});
+    // itself are found anyway. `constantNames`: the program's constants (Service::constantNames), which a `*` after
+    // multiplies (`Gain * x`), as it does after any name with no lowercase letter (`TWO_PI * phase`).
+    Formatted format(std::string_view text, const std::vector<std::string>& typeNames = {},
+                     const std::vector<std::string>& constantNames = {});
     // A place in `before` moved to the same token's place in `after` (a formatted text: the same tokens), so the caret
     // stays on what it was on.
     Pos mapFormatted(std::string_view before, std::string_view after, Pos p);

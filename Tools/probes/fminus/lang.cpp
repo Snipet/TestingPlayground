@@ -42,9 +42,10 @@
 //             copies of each (no indent; tokens single-spaced, braces K&R; no space at all where none is needed) format
 //             back to it (comment gaps aside), each result formatted again unchanged; a messy program formats to the
 //             house style, a messy switch and enumeration too (a label typed without its `:` ending with its
-//             statement), a table on one long line broken after its commas within kWidth columns and stable (with a
-//             comment after it, the comment after the last line's code); text with a character FMinus does not read
-//             is left as it is, with why
+//             statement), a `*` after a constant spaced as a product (TWO_PI * phase, a constant of the program's
+//             Gain * x) where a capitalised type's is a pointer's (Svf* p), a table on one long line broken after its
+//             commas within kWidth columns and stable (with a comment after it, the comment after the last line's
+//             code); text with a character FMinus does not read is left as it is, with why
 //   RENDER    each example of this product (with the library files it includes), formatted, renders what it rendered
 //             before, bit for bit (measure::Session:
 //             an effect over noise, an instrument's chord); RANDOM programs with every file formatted (the program and
@@ -1021,6 +1022,20 @@ PROBE(fminus, lang)
         // A label typed without its `:` ends with its statement: a later `:` (an error too) is no label's, spaced.
         const lg::Formatted half = lg::format("int f(int x)\n{\n    switch (x)\n    {\n        case 1 x = 2;\n        x = 1:2;\n    }\n}\n", {});
         P.eq("format.label_without_colon", half.ok && half.text.find("        x = 1 : 2;\n") != std::string::npos ? 1 : 0, 1);
+
+        // A `*` after a constant multiplies, at an argument's or an element's start too: a name with no lowercase
+        // letter (TWO_PI, N) and one of the program's constants (Gain, from constantNames); a capitalised name the
+        // program knows as neither is still a type's (Svf* p).
+        {
+            const std::string text = "float g(Svf*p, float phase, float x)\n{\n    const int t[2] = { N*M, 1 };\n"
+                                     "    return sinf(TWO_PI*phase) + fminf(Gain*x, 1.0f);\n}\n";
+            const lg::Formatted c = lg::format(text, {}, { "Gain" });
+            std::printf("constants before *:\n%s", c.text.c_str());
+            P.eq("format.constant_times", c.ok && c.text.find("sinf(TWO_PI * phase) + fminf(Gain * x, 1.0f)") != std::string::npos
+                                              && c.text.find("{ N * M, 1 }") != std::string::npos
+                                              && c.text.find("float g(Svf* p, float phase") != std::string::npos
+                                              && !lg::format(c.text, {}, { "Gain" }).changed ? 1 : 0, 1);
+        }
 
         // A table on one long line: broken after its commas, every line within kWidth, its tokens the same, stable.
         std::string table = "const float kTable[48] = {";

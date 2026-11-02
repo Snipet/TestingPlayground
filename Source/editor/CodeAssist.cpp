@@ -1567,7 +1567,7 @@ namespace playground::ui
         sync();
         funkgui::TextEditor& E = ed();
         const std::string old = E.text();
-        const lang::Formatted r = lang::format(old, service_.typeNames());
+        const lang::Formatted r = lang::format(old, service_.typeNames(), service_.constantNames());
         if (!r.ok)
         {
             tabs_.notice("FORMAT: " + upper(r.why));
@@ -1596,7 +1596,7 @@ namespace playground::ui
                 continue;
             funkgui::TextEditor& E = tabs_.editor(i);
             const std::string old = E.text();
-            const lang::Formatted r = lang::format(old, service_.typeNames());
+            const lang::Formatted r = lang::format(old, service_.typeNames(), service_.constantNames());
             if (!r.ok || !r.changed)
                 continue;
             const lang::Pos c = lang::mapFormatted(old, r.text, pos(E.caret()));

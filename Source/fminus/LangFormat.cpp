@@ -115,7 +115,10 @@ namespace playground::lang
         class Formatter
         {
         public:
-            explicit Formatter(const std::vector<std::string>& types) : types_(types) {}
+            Formatter(const std::vector<std::string>& types, const std::vector<std::string>& constants)
+                : types_(types), constants_(constants)
+            {
+            }
 
             void line(std::string_view text, bool startsInComment, const std::vector<Token>& toks)
             {
@@ -771,11 +774,15 @@ namespace playground::lang
                 return hasPrev_ && (isEnum(prev_) || (prev_.kind == Tok::identifier && hasPrevPrev_ && isEnum(prevPrev_)));
             }
 
-            // A name before `*` that is a type's though no module of that name is known: capitalised, at a statement's
+            // A name before `*` that is a type's though no module of that name is known: capitalised and no constant's
+            // (the program's, or a name with no lowercase letter: `sinf(TWO_PI * phase)` multiplies), at a statement's
             // or a parameter's start, and a name after the `*` (`Svf* f;`, `(Svf* p, int n)`).
             bool maybeTypeName(const Token* next) const
             {
                 if (prev_.text.empty() || !(prev_.text[0] >= 'A' && prev_.text[0] <= 'Z'))
+                    return false;
+                if (std::none_of(prev_.text.begin(), prev_.text.end(), [](char c) { return c >= 'a' && c <= 'z'; })
+                    || std::binary_search(constants_.begin(), constants_.end(), std::string(prev_.text)))
                     return false;
                 const std::string_view b = hasPrevPrev_ ? prevPrev_.text : std::string_view{};
                 const bool start = !hasPrevPrev_ || b == ";" || b == "{" || b == "}" || b == "(" || b == "," || b == "const";
@@ -783,6 +790,7 @@ namespace playground::lang
             }
 
             const std::vector<std::string>& types_;
+            const std::vector<std::string>& constants_;   // sorted
             std::vector<std::string> out_;
             bool blankPending_ = false;
             std::vector<Frame> frames_;
@@ -812,7 +820,7 @@ namespace playground::lang
         }
     }
 
-    Formatted format(std::string_view text, const std::vector<std::string>& typeNames)
+    Formatted format(std::string_view text, const std::vector<std::string>& typeNames, const std::vector<std::string>& constantNames)
     {
         Formatted r;
         r.text = std::string(text);
@@ -842,7 +850,9 @@ namespace playground::lang
         std::sort(types.begin(), types.end());
         types.erase(std::unique(types.begin(), types.end()), types.end());
 
-        Formatter f(types);
+        std::vector<std::string> constants = constantNames;
+        std::sort(constants.begin(), constants.end());
+        Formatter f(types, constants);
         for (std::size_t i = 0; i < lines.size(); ++i)
             f.line(lines[i], inComment[i], toks[i]);
         std::string out = f.finish();
