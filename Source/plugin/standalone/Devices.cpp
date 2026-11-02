@@ -295,9 +295,16 @@ namespace playground::standalone
             file->saveIfNeeded();
     }
 
+    void Devices::resendWheel()
+    {
+        if (wheel_ != nullptr)
+            wheel_->resend();
+    }
+
     void Devices::changeListenerCallback(juce::ChangeBroadcaster*)
     {
         listenToTypes();
+        resendWheel();                                   // a restart dropped what the collector held
         changed();
     }
 

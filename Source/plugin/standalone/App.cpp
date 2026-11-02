@@ -218,6 +218,7 @@ namespace playground::standalone
             holder_.createPlugin();
             updateContent();
             holder_.startPlaying();
+            devices_.resendWheel();                      // the new processor's Engine holds the wheel at rest
         }
 
         // Settings... (Cmd-,): the editor opens its card over the devices (EditorPort::settingsAsked), in a window

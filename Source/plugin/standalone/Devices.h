@@ -15,7 +15,9 @@
 // An instrument also has a Logitech G29 racing wheel (RacingWheel.h) among its MIDI inputs, listed after them while it
 // is connected, with its status: switched like a MIDI input (its identifier RacingWheel::kIdentifier), its choice kept
 // in the same file under "racingWheel", and its control changes posted into the holder's player's MidiMessageCollector,
-// as JUCE's own MIDI inputs feed it (time-stamped as theirs).
+// as JUCE's own MIDI inputs feed it (time-stamped as theirs). What it sent goes again (resendWheel) after each of the
+// manager's change messages (a device restart: AudioProcessorPlayer::audioDeviceAboutToStart resets the collector,
+// dropping what was queued) and after the app's Reset to Default State (a processor made afresh, at rest).
 //
 // serial() moves with every change the card should see: the manager's change messages (a device opened, closed or set
 // up, its list changed), each device type's list changing (hot plug), the MIDI inputs' list changing
@@ -57,6 +59,9 @@ namespace playground::standalone
         void switchMidi(const std::string& identifier, bool on) override;
         void setMuted(bool muted) override;
         void playTestTone() override;
+
+        // The racing wheel's whole state again, while it is read (RacingWheel::resend): its receiver may have lost it.
+        void resendWheel();
 
     private:
         // The most channels the product takes in and out (as showAudioSettingsDialog computes them; the least is 0).
