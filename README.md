@@ -424,7 +424,7 @@ module Voice
     analog VU meter's needle (0 VU at -18 dBFS RMS); `led`: a light, a field's value its brightness (of the audio: a
     clip light); `number`: a readout of the field (of the audio: its peak in dBFS); `scope`: an oscilloscope (of a
     field: its trace over the last 2.5 seconds). A section names a display by its source, or by the name `as` gives
-    it, which a second display of one source needs: `#pragma panel scope out as wave "WAVE"`. Eight displays at most.
+    it, which a second display of one source needs: `#pragma panel scope out as wave "WAVE"`. Sixteen displays at most.
     The colours: red, orange, yellow, green, teal, blue, violet, pink, cream, grey.
 
   A row too wide for the window wraps, its sections shared out evenly; shorter rows widen toward the widest; when
@@ -764,8 +764,11 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   key plays its note (louder lower on the key; a drag slides across the keys).
 - **The session** keeps the program that plays (all its files), the files as you left them (run or not), the tab shown,
   the dials and the project open (its version, the preset applied). A session whose program no longer compiles (an older
-  FMinus, say) leaves the program that played playing (in a new instance, the first example, Init), and the session's
-  files in the editor. A session saved before files loads as a program of one file.
+  FMinus, say) leaves the program that played playing (in a new instance, the first example, Init), its errors in the
+  status, and the session's files in the editor. This build's FMinus has `switch`, `case`, `default` and `enum` as
+  keywords and `hash` and `randf` as builtins: a program saved by an earlier build that names a variable, a field or a
+  function so no longer compiles until that name is changed (a project's versions too). A session saved before files
+  loads as a program of one file.
 - **The window** resizes in both directions, from 1000 x 600 (logical px, before the zoom) up: the editor and the chat's
   conversation take the height, the chat about a third of the width. The session keeps the size.
 - **The Standalone** (each product's app) is a Mac window of its own kind: no title bar over the editor, its close,
