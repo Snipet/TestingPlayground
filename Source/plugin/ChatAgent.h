@@ -277,6 +277,14 @@ namespace playground
         juce::var traceTool(const juce::var& toolUse);             // trace's (ChatTrace.cpp)
         juce::var captureTool(const juce::var& toolUse);           // capture's (ChatCapture.cpp)
         std::string toolText(const std::string& name, const juce::var& input, bool& isError);
+        // read_file and edit_file (ChatFiles.cpp): a file whole, a range of its lines or the lines that hold a text,
+        // numbered (a part read marks nothing seen); one passage or a list of them replaced, all or none, in one write
+        // that never overwrites what the user typed meanwhile (chatSetDraftIf), and with `expected` only while the file
+        // is still that version. Every read and write says the file's version (its text's hash); keepVersion keeps the
+        // text of the newest kFileVersions given (mutex held), so a refused write shows what changed since.
+        std::string readFileText(const juce::var& input, bool& isError);
+        std::string editFileText(const juce::var& input, bool& isError);
+        std::string keepVersion(const std::string& name, const std::string& text);
         // The checks measured on the editor's files and the plugin's dials: their entry brought up to date, and the
         // results in words for Claude ("" with no checks). The worker's.
         std::string evaluateChecks();
@@ -340,6 +348,13 @@ namespace playground
         std::string keyProblem_;
         std::map<std::string, uint64_t> seen_;                      // file name -> the text the chat's Claude saw
                                                                     // (hashText; Claude Desktop's: mcpMarks_)
+        struct FileVersion
+        {
+            std::string name, version;                              // a file, and its text's version as read_file says it
+            std::shared_ptr<const std::string> text;
+        };
+        static constexpr std::size_t kFileVersions = 16;
+        std::deque<FileVersion> fileVersions_;                      // the newest versions read or written (keepVersion)
         uint64_t lastSignature_ = 0;                                // the plugin's state as Claude last got it
         bool resendState_ = false;                                  // a summary came: the state goes with what follows
         std::vector<std::string> requests_;                         // bodies sent (probes)

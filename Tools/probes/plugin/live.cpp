@@ -436,7 +436,7 @@ PROBE(plugin, live)
         const std::string token = tokenOf(status);
         P.eq("since.token", token.empty() ? 0 : 1, 1);
         const std::string read = textOf(a.mcpCall("read_file", object({ { "name", "program.fm" } })));
-        P.eq("since.no_hint_without_changes", read.rfind("module ", 0) == 0 ? 1 : 0, 1);
+        P.eq("since.no_hint_without_changes", read.rfind("program.fm: ", 0) == 0 && has(read, "\nmodule ") ? 1 : 0, 1);
 
         // The changes.
         const int cutoff = slotOf(q, "cutoff"), mix = slotOf(q, "mix");

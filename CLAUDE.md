@@ -690,6 +690,14 @@ place (its `products/<key>.cmake`, and its names in the docs).
   view_panel's view "schematic" is `pictureSchematic` (`editor/Picture.cpp`: a `SchematicPicture`, a Panel of its own
   that holds no editor Panel, so it owns no probe and reads or writes no file view; the drawing at 100 %, labels
   always). write_file of a `.cir` whose text has no `*@` line keeps the old ones and says so.
+- **read_file and edit_file** (`plugin/ChatFiles.cpp`): every read and write says the file's line count and version
+  (its text's hash; the newest 16 versions' texts kept, `fileVersions_`). read_file gives a file whole, or a range
+  (`from`, `lines`) or the lines holding a text (`find`, two around each), numbered, and a part read marks nothing seen.
+  edit_file replaces one passage or a list (`edits`), in order, each occurring once in what the ones before it left,
+  all or none, in one write (one undo step); a passage that does not occur gets the closest one back, numbered, and
+  what differs. It writes through `chatSetDraftIf` (the text it read, the others left as they are now: what the user
+  typed meanwhile is never overwritten; the edits run once more on the new text), and with `expected` (a version) only
+  while the file is still that version, else nothing, saying the user changed it and showing the lines changed since.
 - **add_library_file** puts a library file in the editor as a tab (never over a file of that name) and returns its
   whole text, so Claude has seen it (`seen_`); the program's `#include` is Claude's to write.
 

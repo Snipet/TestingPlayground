@@ -6,7 +6,8 @@
 //            ask_planner, each MCP description its first sentence or paragraph (tools.json's size printed, with the
 //            full descriptions for comparison, and compact), a setting's description given once (view_sound's render
 //            settings, set_checks' goals: not again in a check's or tune_dials'); tune_dials' metric a plain string,
-//            set_checks' the metrics' names, and its dials_from (current, snapshot, defaults); an instrument's notes,
+//            set_checks' the metrics' names, and its dials_from (current, snapshot, defaults); read_file's from, lines and
+//            find, edit_file's edits and expected (only its name required); an instrument's notes,
 //            velocity and wheels in the synth's measure_output and
 //            in none of the effect's tools; edit_circuit's description its first sentence, its face "Edit a circuit", its `name`
 //            undescribed (edit_file's words), view_panel's naming the schematic, its `name` too; the guide's start says it is driven
@@ -22,7 +23,7 @@
 //            part refused, naming the parts
 //   CALL     write_file through the socket writes the processor's draft (the chat's card notes Claude Desktop once);
 //            run_program compiles and plays it; a dial set reads back at once (before the message thread applies it);
-//            read_file gives it back; view_panel answers with a PNG (drawn by the GPU, its text says); an unknown
+//            read_file gives it back (after its line count and version); view_panel answers with a PNG (drawn by the GPU, its text says); an unknown
 //            tool, and ask_user, are errors; tune_dials refuses a metric that is none, naming the plugin's
 //   WAVE     on a second connection, with a slow program in the editor: get_status and info answered while a tune runs
 //            (each reply a whole line); the tune cancelled, its dial as it was; a call waiting behind it cancelled,
@@ -540,6 +541,21 @@ PROBE(plugin, mcp)
         const juce::var checkedMetric = setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["metric"];
         P.eq("link.tune_metric_string", tunedMetric["type"].toString() == "string" && !tunedMetric.hasProperty("enum")
                                             && checkedMetric["enum"].size() == static_cast<int>(pg::measure::metrics().size()) ? 1 : 0, 1);
+        // read_file's part (from, lines, find) and edit_file's list and guard (edits, expected; only its name required).
+        {
+            juce::var readFile, editFile;
+            if (const juce::Array<juce::var>* t = tools.getArray())
+                for (const juce::var& tool : *t)
+                {
+                    if (tool["name"].toString() == "read_file")
+                        readFile = tool["inputSchema"];
+                    else if (tool["name"].toString() == "edit_file")
+                        editFile = tool["inputSchema"];
+                }
+            P.eq("link.file_tools", readFile["properties"].hasProperty("from") && readFile["properties"].hasProperty("lines")
+                                        && readFile["properties"].hasProperty("find") && editFile["properties"].hasProperty("edits")
+                                        && editFile["properties"].hasProperty("expected") && editFile["required"].size() == 1 ? 1 : 0, 1);
+        }
         // set_checks' dials_from: where a check takes the dials it does not name (its three words, described).
         const juce::var dialsFrom = setChecks["inputSchema"]["properties"]["dials_from"];
         P.eq("link.checks_dials_from", dialsFrom["enum"].size() == 3 && dialsFrom["enum"][1].toString() == "snapshot"
@@ -729,7 +745,14 @@ PROBE(plugin, mcp)
         a->poll();
     }
     res = ask(*a, r, 6, "call", object({ { "name", "read_file" }, { "arguments", object({ { "name", "program.fm" } }) } }))["result"];
-    P.eq("call.read", firstText(res) == text ? 1 : 0, 1);
+    // The file whole after a line of its count and version.
+    {
+        const std::string read = firstText(res);
+        const std::size_t eol = read.find('\n');
+        std::printf("read_file's first line: %s\n", read.substr(0, eol).c_str());
+        P.eq("call.read", eol != std::string::npos && read.rfind("program.fm: ", 0) == 0 && read.find(", version ") < eol
+                              && read.substr(eol + 1) == text ? 1 : 0, 1);
+    }
     res = ask(*a, r, 7, "call", object({ { "name", "view_panel" }, { "arguments", juce::var(new juce::DynamicObject()) } }))["result"];
     bool png = false;
     if (const juce::Array<juce::var>* c = res["content"].getArray())

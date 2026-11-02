@@ -1769,8 +1769,13 @@ namespace playground
         juce::Array<juce::var> tools;
         tools.add(tool("read_file",
                        "Read one of the plugin's files as it is now in the editor. Call this before editing a file you "
-                       "have not seen in its current form (the user may have typed in it since the last plugin_state).",
-                       claude::object({ { "name", prop("string", "The file's name, such as program.fm") } }),
+                       "have not seen in its current form (the user may have typed in it since the last plugin_state). "
+                       "Its first line gives the file's line count and version (edit_file's expected); a part (from, "
+                       "lines, find) comes with its lines numbered.",
+                       claude::object({ { "name", prop("string", "The file's name, such as program.fm") },
+                                        { "from", prop("integer", "The first line to read, from 1") },
+                                        { "lines", prop("integer", "How many lines (default: to the end)") },
+                                        { "find", prop("string", "A text: the lines that hold it, 2 around each") } }),
                        { "name" }));
         tools.add(tool("write_file",
                        "Create a file or replace a file's whole text. Use it for a new program or a large rewrite; use "
@@ -1784,11 +1789,17 @@ namespace playground
         tools.add(tool("edit_file",
                        "Replace one exact passage of a file with new text. old_text must occur exactly once in the "
                        "file, with the same whitespace; include enough surrounding lines to make it unique. Prefer "
-                       "this to write_file for changes to part of a file.",
+                       "this to write_file for changes to part of a file. A passage that does not occur gets the "
+                       "closest one back, numbered, and what differs.",
                        claude::object({ { "name", prop("string", "The file's name") },
                                         { "old_text", prop("string", "The passage as it is now, exactly") },
-                                        { "new_text", prop("string", "What replaces it") } }),
-                       { "name", "old_text", "new_text" }));
+                                        { "new_text", prop("string", "What replaces it") },
+                                        { "edits", claude::object({ { "type", "array" },
+                                                                    { "description", "[{old_text, new_text}] in place of those "
+                                                                                     "two: in order, all or none" } }) },
+                                        { "expected", prop("string", "read_file's version: write only if the file is still "
+                                                                     "it") } }),
+                       { "name" }));
         {
             juce::var ops = claude::object({ { "type", "array" },
                                              { "items", claude::object({ { "type", "string" } }) },
@@ -3555,22 +3566,7 @@ namespace playground
         };
 
         if (name == "read_file")
-        {
-            std::string file;
-            if (!stringArg("name", file))
-                return fail("read_file needs a name");
-            const Draft d = host_.chatDraft();
-            const int i = findFile(d, file);
-            if (i < 0)
-                return fail("There is no file " + file + ". The files: " + names(d));
-            setActivity("Reading " + file);
-            const std::string& t = d.files[static_cast<std::size_t>(i)].text;
-            {
-                const std::lock_guard<std::mutex> lock(mutex_);
-                markSeen(file, t);
-            }
-            return t;
-        }
+            return readFileText(input, isError);           // ChatFiles.cpp
         if (name == "write_file")
         {
             std::string file, content;
@@ -3615,14 +3611,16 @@ namespace playground
             d.active = i;
             setActivity("Writing " + file);
             host_.chatSetDraft(d);
+            std::string version;
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
                 markSeen(file, content);
+                version = keepVersion(file, content);
             }
             const int lines = lineCount(content);
             const std::string count = std::to_string(lines) + (lines == 1 ? " line" : " lines");
             note("wrote " + file + " (" + count + ")");
-            std::string out = "Wrote " + file + " (" + count + ").";
+            std::string out = "Wrote " + file + " (" + count + "; version " + version + ").";
             if (keptLines > 0)
                 out += " Kept the drawing's " + std::to_string(keptLines) + " *@ lines; send edit_circuit 'layout' to redraw it.";
             bool included = i == 0;
@@ -3634,41 +3632,7 @@ namespace playground
             return out;
         }
         if (name == "edit_file")
-        {
-            std::string file, oldText, newText;
-            if (!stringArg("name", file) || !stringArg("old_text", oldText) || !stringArg("new_text", newText))
-                return fail("edit_file needs name, old_text and new_text");
-            Draft d = host_.chatDraft();
-            const int i = findFile(d, file);
-            if (i < 0)
-                return fail("There is no file " + file + ". The files: " + names(d));
-            if (oldText.empty())
-                return fail("old_text is empty: give the exact passage to replace");
-            std::string& t = d.files[static_cast<std::size_t>(i)].text;
-            std::size_t count = 0, at = std::string::npos;
-            for (std::size_t p = t.find(oldText); p != std::string::npos; p = t.find(oldText, p + 1))
-            {
-                if (count == 0)
-                    at = p;
-                ++count;
-            }
-            if (count == 0)
-                return fail("old_text does not occur in " + file + " (check whitespace and the latest text: "
-                            "read_file shows it)");
-            if (count > 1)
-                return fail("old_text occurs " + std::to_string(count) + " times in " + file
-                            + ": include more of the surrounding lines so it occurs once");
-            t.replace(at, oldText.size(), newText);
-            d.active = i;
-            setActivity("Editing " + file);
-            host_.chatSetDraft(d);
-            {
-                const std::lock_guard<std::mutex> lock(mutex_);
-                markSeen(file, t);
-            }
-            note("edited " + file);
-            return "Edited " + file + ".";
-        }
+            return editFileText(input, isError);           // ChatFiles.cpp
         if (name == "edit_circuit")
         {
             std::string file;

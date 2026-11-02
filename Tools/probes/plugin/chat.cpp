@@ -69,6 +69,13 @@
 //            seen; write_file of a netlist without *@ lines keeps the drawing and says so; view_panel's view
 //            "schematic": a PNG at 100 % with every part labelled, its text giving each part line's place and the pins'
 //            points; the user's view, file views and tab as they were
+//   FILES    read_file by lines (exactly those, numbered, after the line count and version; to the end; past it
+//            refused), by a text (the lines that hold it with two around each, groups apart; none); a part read is
+//            not the file seen (the next state sends it, and names unchanged a file read whole); edit_file's miss gives
+//            the closest passage, numbered, and what differs (the characters; only the whitespace), a passage that
+//            occurs four times names its lines; a list with one bad edit changes nothing and names it; a good one is
+//            one write the editor undoes in one step; `expected` refuses a write after the user's edit, keeps it and
+//            shows its line, and with the version it gives the write goes
 //   SOUND    view_sound through the agent (a program that sounds): its result a PNG of 1120 x 800 and what it shows,
 //            the tool's entry with the picture's thumbnail (480 px), the session without the PNG but with the thumbnail;
 //            a program that does not compile draws nothing and says why
@@ -394,6 +401,23 @@ namespace
             if (str(b, "type") == "text")
                 out += (out.empty() ? "" : "\n") + str(b, "text");
         return out;
+    }
+
+    // The tool's own text of an MCP result: its text blocks but the hint of what the user changed.
+    std::string toolText(const pg::ChatAgent::McpResult& r)
+    {
+        std::string out;
+        for (const juce::var& b : arr(r.content))
+            if (str(b, "type") == "text" && str(b, "text").find("since the last MCP call here") == std::string::npos)
+                out += (out.empty() ? "" : "\n") + str(b, "text");
+        return out;
+    }
+
+    // The version a read or a write gave ("notes.fm: 12 lines, version 1a2b3c4d."), "" when it says none.
+    std::string versionIn(const std::string& said)
+    {
+        const std::size_t at = said.find("version ");
+        return at == std::string::npos || at + 16 > said.size() ? std::string() : said.substr(at + 8, 8);
     }
 }
 
@@ -1538,6 +1562,162 @@ PROBE(plugin, chat)
                 juce::File(juce::String(probe::outPath("plugin.chat.view_schematic.png"))).replaceWithData(png.getData(), png.getDataSize());
         }
         processor.editorPort().setDraft(saved);
+    }
+
+    // ---- FILES -------------------------------------------------------------------------------------------------------------
+    {
+        const pg::Draft saved = processor.editorPort().draft();
+        std::string notes, other = "// other.fm\nfloat other(float x) { return x; }\n";
+        for (int i = 1; i <= 12; ++i)
+            notes += "float v" + std::to_string(i) + "(float x) { return x * " + std::to_string(i) + ".0f; }\n";
+        const auto lineOf = [&](int n) {
+            std::size_t at = 0;
+            for (int k = 1; k < n; ++k)
+                at = notes.find('\n', at) + 1;
+            return notes.substr(at, notes.find('\n', at) - at);
+        };
+        pg::Draft fd;
+        fd.files = { saved.files.front(), { "notes.fm", notes }, { "other.fm", other } };
+        fd.active = 1;
+        processor.editorPort().setDraft(fd);
+        pg::ui::Panel panel(processor.ports(), processor.editorPort());
+        funkgui::HeadlessHost host(panel, 0, 1.0f);
+        host.settle();
+        const auto fileText = [&](const std::string& name) {
+            for (const pg::SourceFile& f : processor.editorPort().draft().files)
+                if (f.name == name)
+                    return f.text;
+            return std::string();
+        };
+        const auto call = [&](const char* tool, const juce::var& in) {
+            const pg::ChatAgent::McpResult r = agent.mcpCall(tool, in);
+            processor.poll();
+            for (int k = 0; k < 40 && panel.editor().text() != fileText("notes.fm"); ++k)
+                host.tick(1);                                 // the editor merges what was written
+            return r;
+        };
+
+        // read_file by lines: exactly those, numbered, after the file's line count and version.
+        const std::string range = toolText(call("read_file", input({ { "name", "notes.fm" }, { "from", 4 }, { "lines", 3 } })));
+        std::printf("read_file from 4, 3 lines:\n%s", range.c_str());
+        const std::string version = versionIn(range);
+        P.eq("files.read_lines", range == "notes.fm: 12 lines, version " + version + "; lines 4 to 6:\n4\t" + lineOf(4) + "\n5\t" + lineOf(5)
+                                              + "\n6\t" + lineOf(6) + "\n" && version.size() == 8 ? 1 : 0, 1);
+        const std::string tail = toolText(call("read_file", input({ { "name", "notes.fm" }, { "from", 11 } })));
+        P.eq("files.read_to_the_end", has(tail, "; lines 11 to 12:\n11\t") && has(tail, "\n12\t" + lineOf(12) + "\n") ? 1 : 0, 1);
+        const pg::ChatAgent::McpResult past = call("read_file", input({ { "name", "notes.fm" }, { "from", 13 } }));
+        P.eq("files.read_past_the_end", past.isError && has(toolText(past), "notes.fm has 12 lines: from is 1 to 12") ? 1 : 0, 1);
+        // find: the lines that hold it, numbered, two around each (groups apart by "--").
+        const std::string one = toolText(call("read_file", input({ { "name", "notes.fm" }, { "find", "v7(" } })));
+        const std::string four = toolText(call("read_file", input({ { "name", "notes.fm" }, { "find", "return x * 1" } })));
+        std::printf("find v7(:\n%s\nfind \"return x * 1\":\n%s", one.c_str(), four.c_str());
+        P.eq("files.find_one", has(one, "; 1 line holds \"v7(\" (7), with 2 lines around each:\n5\t" + lineOf(5) + "\n6\t")
+                                   && has(one, "\n9\t" + lineOf(9) + "\n") && !has(one, "\n4\t") && !has(one, "\n10\t") ? 1 : 0, 1);
+        P.eq("files.find_groups", has(four, "; 4 lines hold \"return x * 1\" (1, 10, 11, 12)") && has(four, "\n3\t" + lineOf(3) + "\n--\n8\t")
+                                      && has(four, "\n12\t" + lineOf(12) + "\n") && !has(four, "\n4\t") ? 1 : 0, 1);
+        const std::string none = toolText(call("read_file", input({ { "name", "notes.fm" }, { "find", "nothing like it" } })));
+        P.eq("files.find_none", has(none, "; no line holds \"nothing like it\".") ? 1 : 0, 1);
+
+        // A part read is not the file seen: the user edits both files while the chat's Claude listens; it then reads a
+        // part of notes.fm and other.fm whole, and the next state sends notes.fm again and names other.fm unchanged.
+        {
+            script->add(fake::Response::ok(fake::Sse().start().text("A look first.").end()));
+            agent.send("look at the files");
+            agent.waitIdle();
+            script->add(fake::Response::ok(fake::Sse().start().tool("toolu_f1", "listen", input({ { "seconds", 1.0 } })).end("tool_use")));
+            script->add(fake::Response::ok(fake::Sse()
+                                               .start()
+                                               .tool("toolu_f2", "read_file", input({ { "name", "notes.fm" }, { "from", 1 }, { "lines", 2 } }))
+                                               .tool("toolu_f3", "read_file", input({ { "name", "other.fm" } }))
+                                               .end("tool_use")));
+            script->add(fake::Response::ok(fake::Sse().start().text("Read.").end()));
+            agent.send("read the top of notes.fm");
+            for (int k = 0; k < 2000 && agent.chatState().activity != "Listening"; ++k)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            pg::Draft typed = processor.editorPort().draft();
+            for (pg::SourceFile& f : typed.files)
+                if (f.name == "notes.fm" || f.name == "other.fm")
+                    f.text += "// typed while it listened\n";
+            processor.editorPort().setDraft(typed);
+            agent.waitIdle();
+            processor.getParameters()[0]->setValueNotifyingHost(0.4f);     // a state goes with the next message
+            script->add(fake::Response::ok(fake::Sse().start().text("Seen.").end()));
+            agent.send("and now?");
+            agent.waitIdle();
+            std::string state;
+            for (const auto& b : arr(messagesOf(script->body(script->postCount() - 1)).getLast().getProperty("content", {})))
+                if (str(b, "text").rfind("<plugin_state>", 0) == 0)
+                    state = str(b, "text");
+            P.eq("files.part_read_unseen", has(state, "<file name=\"notes.fm\">\n") && has(state, "<file name=\"other.fm\" lines=\"3\" unchanged=\"true\"/>") ? 1 : 0, 1);
+            pg::Draft back = processor.editorPort().draft();
+            for (pg::SourceFile& f : back.files)
+                if (f.name == "notes.fm")
+                    f.text = notes;
+            processor.editorPort().setDraft(back);
+            for (int k = 0; k < 40 && panel.editor().text() != notes; ++k)
+                host.tick(1);
+        }
+
+        // edit_file: a passage that does not occur gets the closest one back, numbered, and what differs.
+        const pg::ChatAgent::McpResult miss = call("edit_file", input({ { "name", "notes.fm" }, { "old_text", "float v5(float x) { return x * 5.5f; }" },
+                                                                         { "new_text", "float v5(float x) { return x; }" } }));
+        std::printf("edit_file, a miss:\n%s\n", toolText(miss).c_str());
+        P.eq("files.miss_closest", miss.isError && has(toolText(miss), "old_text does not occur in notes.fm. The closest passage, line 5:\n5\t" + lineOf(5) + "\n")
+                                       && has(toolText(miss), "What differs: line 5 is `" + lineOf(5) + "` where old_text has `float v5(float x) { return x * 5.5f; }` (`0` against `5`)")
+                                       && has(toolText(miss), "Nothing was changed.") && fileText("notes.fm") == notes ? 1 : 0, 1);
+        const pg::ChatAgent::McpResult spaces = call("edit_file", input({ { "name", "notes.fm" }, { "old_text", juce::String(lineOf(3) + "\n  " + lineOf(4)) },
+                                                                           { "new_text", "x" } }));
+        P.eq("files.miss_spaces", spaces.isError && has(toolText(spaces), "The closest passage, lines 3 to 4:\n3\t")
+                                      && has(toolText(spaces), "line 4 differs only in its spaces or tabs") ? 1 : 0, 1);
+        const pg::ChatAgent::McpResult many = call("edit_file", input({ { "name", "notes.fm" }, { "old_text", "return x * 1" }, { "new_text", "x" } }));
+        P.eq("files.occurs_many", many.isError && has(toolText(many), "old_text occurs 4 times in notes.fm (lines 1, 10, 11 and 12)") ? 1 : 0, 1);
+        // A list with one bad edit changes nothing and names it.
+        juce::Array<juce::var> bad;
+        bad.add(input({ { "old_text", juce::String(lineOf(2)) }, { "new_text", "float v2(float x) { return -x; }" } }));
+        bad.add(input({ { "old_text", "no such line" }, { "new_text", "x" } }));
+        bad.add(input({ { "old_text", juce::String(lineOf(9)) }, { "new_text", "float v9(float x) { return -x; }" } }));
+        const pg::ChatAgent::McpResult refused = call("edit_file", input({ { "name", "notes.fm" }, { "edits", juce::var(bad) } }));
+        P.eq("files.list_one_bad", refused.isError && has(toolText(refused), "Edit 2 of 3: old_text does not occur in notes.fm (as the edits before it leave it)")
+                                       && has(toolText(refused), "Nothing was changed.") && fileText("notes.fm") == notes && panel.editor().text() == notes ? 1 : 0, 1);
+        // A good list: every edit, in one write the user undoes in one step.
+        juce::Array<juce::var> good;
+        good.add(bad[0]);
+        good.add(bad[2]);
+        std::string want = notes;
+        want.replace(want.find(lineOf(2)), lineOf(2).size(), "float v2(float x) { return -x; }");
+        want.replace(want.find(lineOf(9)), lineOf(9).size(), "float v9(float x) { return -x; }");
+        const pg::ChatAgent::McpResult edited = call("edit_file", input({ { "name", "notes.fm" }, { "edits", juce::var(good) } }));
+        std::printf("edit_file, two edits: %s\n", toolText(edited).c_str());
+        funkgui::TextEditor& ed = panel.editor();
+        const bool merged = ed.text() == want && fileText("notes.fm") == want;
+        const bool back = ed.undo() && ed.text() == notes;
+        const bool again = ed.redo() && ed.text() == want;
+        P.eq("files.list_applied", !edited.isError && has(toolText(edited), "Edited notes.fm: 2 edits, one step the user can undo; version now ") && merged ? 1 : 0, 1);
+        P.eq("files.list_one_undo_step", back && again ? 1 : 0, 1);
+        host.tick(2);
+        // expected: written only while the file is the version read; the user's edit in between is kept, and shown.
+        const std::string read = toolText(call("read_file", input({ { "name", "notes.fm" } })));
+        const std::string v1 = versionIn(read);
+        P.eq("files.read_whole", read == "notes.fm: 12 lines, version " + v1 + ".\n" + fileText("notes.fm") ? 1 : 0, 1);
+        pg::Draft user = processor.editorPort().draft();
+        for (pg::SourceFile& f : user.files)
+            if (f.name == "notes.fm")
+                f.text.insert(f.text.find("float v6"), "// the user's line\n");
+        processor.editorPort().setDraft(user);
+        const std::string theirs = fileText("notes.fm");
+        juce::Array<juce::var> mine;
+        mine.add(input({ { "old_text", "float v1(" }, { "new_text", "float w1(" } }));
+        const pg::ChatAgent::McpResult guarded = call("edit_file", input({ { "name", "notes.fm" }, { "edits", juce::var(mine) }, { "expected", juce::String(v1) } }));
+        std::printf("edit_file with expected, after the user's edit:\n%s\n", toolText(guarded).c_str());
+        P.eq("files.expected_refuses", guarded.isError && has(toolText(guarded), "notes.fm changed since version " + v1 + " (the user's edit, which is kept): nothing was written.")
+                                           && has(toolText(guarded), "\n+// the user's line\n") && fileText("notes.fm") == theirs ? 1 : 0, 1);
+        const std::string refusal = toolText(guarded);
+        const std::size_t nowAt = refusal.find("Its version now: ");
+        const std::string v2 = nowAt == std::string::npos ? std::string() : refusal.substr(nowAt + 17, 8);
+        const pg::ChatAgent::McpResult retried = call("edit_file", input({ { "name", "notes.fm" }, { "edits", juce::var(mine) }, { "expected", juce::String(v2) } }));
+        P.eq("files.expected_then_writes", !retried.isError && has(fileText("notes.fm"), "float w1(") && has(fileText("notes.fm"), "// the user's line\n") ? 1 : 0, 1);
+        processor.editorPort().setDraft(saved);
+        host.tick(2);
     }
 
     // ---- SOUND, CHECKS, TUNE: a processor of their own, playing a program that sounds --------------------------------------------------------------------
