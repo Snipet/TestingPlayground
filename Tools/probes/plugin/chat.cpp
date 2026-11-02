@@ -75,7 +75,7 @@
 //            the closest passage, numbered, and what differs (the characters; only the whitespace), a passage that
 //            occurs four times names its lines; a list with one bad edit changes nothing and names it; a good one is
 //            one write the editor undoes in one step; `expected` refuses a write after the user's edit, keeps it and
-//            shows its line, and with the version it gives the write goes
+//            shows its line (the result's first line naming the edit), and with the version it gives the write goes
 //   SOUND    view_sound through the agent (a program that sounds): its result a PNG of 1120 x 800 and what it shows,
 //            the tool's entry with the picture's thumbnail (480 px), the session without the PNG but with the thumbnail;
 //            a program that does not compile draws nothing and says why
@@ -1709,7 +1709,10 @@ PROBE(plugin, chat)
         juce::Array<juce::var> mine;
         mine.add(input({ { "old_text", "float v1(" }, { "new_text", "float w1(" } }));
         const pg::ChatAgent::McpResult guarded = call("edit_file", input({ { "name", "notes.fm" }, { "edits", juce::var(mine) }, { "expected", juce::String(v1) } }));
-        std::printf("edit_file with expected, after the user's edit:\n%s\n", toolText(guarded).c_str());
+        std::printf("edit_file with expected, after the user's edit:\n%s\n", allText(guarded).c_str());
+        // The result's first line names what the user changed since the last MCP call (the edit, by its file).
+        P.eq("files.hint_names_the_edit", allText(guarded).rfind("(The user changed 1 thing since the last MCP call here: you edited notes.fm. "
+                                                                 "get_status with since shows it.)", 0) == 0 ? 1 : 0, 1);
         P.eq("files.expected_refuses", guarded.isError && has(toolText(guarded), "notes.fm changed since version " + v1 + " (the user's edit, which is kept): nothing was written.")
                                            && has(toolText(guarded), "\n+// the user's line\n") && fileText("notes.fm") == theirs ? 1 : 0, 1);
         const std::string refusal = toolText(guarded);

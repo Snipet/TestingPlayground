@@ -577,7 +577,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   marks the chat's `seen_` (`markSeen`), so the plugin's chat is sent a file Claude Desktop wrote; a chat turn never
   runs beside a call of Claude Desktop's (New chat and a session load keep `busy_` while one runs). Every other MCP
   result starts with a line when something changed since the last MCP call (`ChatAgent::mcpHint`, one cursor for the
-  instance: the first three changes as the journal says them, their values with them, and how many more); a read of the server's own (get_status's `peek`, the GUI sandbox's, in no schema) moves neither it nor
+  instance: the first three changes as the journal says them, their values with them, and how many more; its token is
+  handed out, so a drag or typing that goes on after it is a line of its own, never merged into one it named); a read of the server's own (get_status's `peek`, the GUI sandbox's, in no schema) moves neither it nor
   the tokens. The journal learns who: the editor's ports are `GesturePort`s (a dial moved between polls with one of them
   is the user's, else the host's), `setDraft` is the editor's and `chatSetDraft`, `chatRun`, `chatSetDial` the plugin
   chat's (or Claude Desktop's); `poll()` compares the dials, the bypass and the transport once a poll and takes as seen

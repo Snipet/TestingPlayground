@@ -365,14 +365,16 @@ namespace playground
     // ---- the hint -------------------------------------------------------------------------------------------------------
     // One cursor for the instance: Claude Desktop's calls carry no conversation, so the line says "the last MCP call"
     // (get_status's token is each conversation's own). It names the first kHintNamed changes as the journal says them,
-    // their values with them, without their times; get_status with since gives all of them.
+    // their values with them, without their times; get_status with since gives all of them. Its token is handed out,
+    // so what changes after it goes into a line of its own: a drag or typing that goes on past a result is not merged
+    // into a line the hint already named, where the next one would miss it.
     std::string ChatAgent::mcpHint()
     {
         constexpr std::size_t kHintNamed = 3, kHintLine = 160;
         Changes ch;
         {
             const std::lock_guard<std::mutex> lock(liveMutex_);
-            ch = host_.chatChanges(mcpLook_, false);
+            ch = host_.chatChanges(mcpLook_, true);
             mcpLook_ = ch.token;
         }
         if (!ch.known || (ch.changes == 0 && ch.alerts == 0))
