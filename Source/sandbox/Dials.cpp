@@ -97,6 +97,18 @@ namespace playground::sandbox
             return std::all_of(s.begin(), s.end(), [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; });
         }
 
+        // A field's type as FMinus reflects it, which the plugin's displays take (Patch): an enumeration's is an int
+        // ("enum Stage" -> "int", "enum Stage[4]" -> "int[4]"), where Lang spells it as declared, for its hover.
+        std::string reflected(const std::string& type)
+        {
+            if (type.rfind("enum ", 0) != 0)
+                return type;
+            std::size_t k = 5;
+            while (k < type.size() && (std::isalnum(static_cast<unsigned char>(type[k])) || type[k] == '_'))
+                ++k;
+            return "int" + type.substr(k);
+        }
+
         // A field a display may name: an identifier, or Shared's through a pointer ("shared->level").
         bool fieldName(const std::string& s)
         {
@@ -133,13 +145,13 @@ namespace playground::sandbox
                 out.file = service.files()[static_cast<std::size_t>(s.file)].name;
             }
             if (s.container == "Shared" && s.kind == lang::Kind::field)
-                sharedFields.push_back({ s.name, s.type });
+                sharedFields.push_back({ s.name, reflected(s.type) });
             if (s.container != module)
                 continue;
             if (s.kind == lang::Kind::param)
                 params.push_back(&s);
             else if (s.kind == lang::Kind::field)
-                out.fields.push_back({ s.name, s.type });
+                out.fields.push_back({ s.name, reflected(s.type) });
         }
         out.fields = displayFields(out.fields, sharedFields);
         std::stable_sort(params.begin(), params.end(), [](const lang::Symbol* a, const lang::Symbol* b) {
