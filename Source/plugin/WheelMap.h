@@ -19,11 +19,13 @@
 //
 // The control changes (channel 1), each sent only when its value changes (Map::flush):
 //   16 / 48   steering, 14 bits (MSB / LSB): 0 full left, 8192 the centre, 16383 full right
-//   17 / 49   throttle, 14 bits: 0 released, 16383 down; 18 / 50 the brake; 19 / 51 the clutch
+//   17 / 49   throttle, 14 bits: 0 released, 16383 down; 18 / 50 the brake; 19 / 51 the clutch (a pedal's first 1 %
+//             of travel reads released, kDeadband: its pot's jitter at rest sends nothing)
 //   20        the gear & 0x7F: 127 reverse, 0 neutral, 1 to 7
 //   21 to 24  the buttons' mask (kBits), 7 bits each: bits 0-6, 7-13, 14-20, 21-27
-// An MSB resets its LSB to 0, as MIDI says: a new MSB goes first, and its LSB after it unless that is 0. One button is
-// also the start key (kStartButton, the PS button): note 36 (C2), velocity 100, while it is held.
+// An MSB resets its LSB to 0, as MIDI says: a new MSB goes first, and its LSB after it unless that is 0. A change of an
+// axis smaller than kJitter within one MSB waits until it grows (an encoder's jitter), unless it comes to rest. One
+// button is also the start key (kStartButton, the PS button): note 36 (C2), velocity 100, while it is held.
 #pragma once
 
 #include "dsp/Events.h"
@@ -117,6 +119,8 @@ namespace playground::wheel
         { 0, Pad::left, "d-pad left" },
     };
     inline constexpr int kButtonsMax = 64;                   // the buttons Map keeps (1 to 64)
+    inline constexpr int kDeadband = 100;                    // a pedal's travel within 1 / kDeadband of rest: released
+    inline constexpr int kJitter = 3;                        // an axis's least change sent within one MSB (14 bits)
 
     // The start key: a button that plays one note while it is held (note-on at its press, note-off at its release), so
     // that a program whose voice runs only while it has a note (an engine that cranks on its first key and then keeps
@@ -161,6 +165,11 @@ namespace playground::wheel
         void rest(std::vector<Message>& out);
         // Nothing sent yet: the next flush sends everything (the wheel switched on, a synth that may hold anything).
         void forget() noexcept { sentValid_ = false; }
+        // The receiver may have lost what was sent (a synth made afresh, a device restart that dropped what was queued):
+        // the next flush sends every control change again, and the start key's note-off when the key is up and its
+        // note-on was ever sent (a note-off lost leaves the note held). A key held is not played again: a second
+        // note-on would restart the voice the player holds.
+        void resend() noexcept;
 
         const State& state() const noexcept { return now_; }
 
@@ -169,7 +178,8 @@ namespace playground::wheel
         float pedal(Axis a) const noexcept { return wheelcc::pedalOf(now_.v14[static_cast<std::size_t>(a)]); }
 
         // An axis's 14-bit value of an element's (its logical range): the steering scaled so the range's middle is
-        // 8192 (0 to 65535: 32768 the centre, value / 4), a pedal so its rest is 0 and the far end 16383.
+        // 8192 (0 to 65535: 32768 the centre, value / 4), a pedal so its rest is 0 and the far end 16383 (its travel
+        // past kDeadband spread over the whole range).
         static int axisValue(Axis a, bool restAtMax, int64_t value, int64_t min, int64_t max) noexcept;
         // The d-pad's direction bits (Pad::up's 1, right's 2, down's 4, left's 8) of a hat's value: 8 positions (up,
         // up-right, ..., up-left from the logical minimum) or 4; anything outside the range is the centre.
@@ -184,6 +194,8 @@ namespace playground::wheel
         State sent_;
         bool sentValid_ = false;
         bool noteOn_ = false;                                // the start key's note-on sent, its note-off not yet
+        bool noteEver_ = false;                              // its note-on sent at some time
+        bool offAgain_ = false;                              // resend: its note-off again, if it is still up
     };
 
     // An element's range as its descriptor meant it: a maximum below the minimum is an unsigned one read as signed

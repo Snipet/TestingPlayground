@@ -119,7 +119,11 @@ namespace playground::wheel
         if (span <= 0)
             return 0;
         const int64_t pressed = std::clamp<int64_t>(restAtMax ? max - value : value - min, 0, span);
-        return static_cast<int>((pressed * kMost + span / 2) / span);
+        const int64_t dead = (span + kDeadband / 2) / kDeadband;   // 1 % of the travel, rounded (8 bits: 3 of 255)
+        if (pressed <= dead || span <= dead)
+            return 0;
+        const int64_t travel = span - dead;
+        return static_cast<int>(((pressed - dead) * kMost + travel / 2) / travel);
     }
 
     uint32_t Map::padBits(int64_t value, int64_t min, int64_t max) noexcept
@@ -187,15 +191,35 @@ namespace playground::wheel
 
     void Map::flush(std::vector<Message>& out)
     {
-        diff(sent_, sentValid_, now_, out);
-        sent_ = now_;
+        State to = now_;
+        if (sentValid_)
+            for (std::size_t a = 0; a < to.v14.size(); ++a)
+            {
+                // Jitter: a change within one MSB smaller than kJitter waits (what was sent stands) until it grows,
+                // unless it comes to rest.
+                const int v = to.v14[a], s = sent_.v14[a], rest = a == 0 ? wheelcc::kCentre : 0;
+                if ((v >> 7) == (s >> 7) && v != rest && (v > s ? v - s : s - v) < kJitter)
+                    to.v14[a] = s;
+            }
+        diff(sent_, sentValid_, to, out);
+        sent_ = to;
         sentValid_ = true;
         const bool start = ((held_ >> (kStartButton - 1)) & 1u) != 0;   // after the controls: start reads them
+        if (offAgain_ && !start && !noteOn_)
+            out.push_back({ Message::kNoteOff, kStartNote, 0 });
+        offAgain_ = false;
         if (start != noteOn_)
         {
             out.push_back(start ? Message{ Message::kNoteOn, kStartNote, kStartVelocity } : Message{ Message::kNoteOff, kStartNote, 0 });
             noteOn_ = start;
+            noteEver_ = noteEver_ || start;
         }
+    }
+
+    void Map::resend() noexcept
+    {
+        sentValid_ = false;
+        offAgain_ = noteEver_ && !noteOn_;
     }
 
     void Map::rest(std::vector<Message>& out)
@@ -204,7 +228,7 @@ namespace playground::wheel
             diff(sent_, true, State{}, out);
         if (noteOn_)
             out.push_back({ Message::kNoteOff, kStartNote, 0 });
-        noteOn_ = false;
+        noteOn_ = offAgain_ = false;
         now_ = sent_ = State{};
         held_ = 0;
         pad_ = 0;

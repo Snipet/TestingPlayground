@@ -3,18 +3,23 @@
 // loop: the message thread, in every run loop mode (a menu or a drag open, it still reads). Compiled into the
 // Standalone only, like App.cpp; Devices.h owns one (an instrument's only) and lists it among the MIDI inputs.
 //
-// It watches for a G29 (plugin/WheelMap.h's kindOf: vendor 0x046D, any of its three product ids) and, while it is on:
+// It watches for a G29 (plugin/WheelMap.h's kindOf: vendor 0x046D, any of its three product ids) and hands what it sees
+// to a wheel::Driver (plugin/WheelDriver.h), which decides; this is its transport (the reports, the values, two timers
+// on the main run loop). While it is on:
 //   - a G29 in compatibility mode (0xC294, its switch at PS3 without Logitech's software) is switched to its own mode
-//     with hid-lg4ff's two reports (wheel::kToNative); it leaves and comes back as 0xC24F (status: "switching to its
-//     full mode", or after 8 s without it, what to do);
+//     with hid-lg4ff's two reports (wheel::kToNative), at most once each time it is switched on; it leaves and comes
+//     back as 0xC24F (status: "switching to its full mode" meanwhile, the entry listed; after 8 s without it, or when
+//     it comes back in its compatibility mode, what to do);
 //   - a G29 in its own mode (0xC24F) is set up as a game does (hid-lg4ff's commands: 900 degrees, wheel::kRange, and a
-//     moderate autocentre spring, wheel::kSpring) and read: its elements' values go through a wheel::Map, and the
-//     messages that come out (control changes, and the start key's note) are handed to Hooks::send, at most every
-//     4 ms (a report's values together);
+//     moderate autocentre spring, wheel::kSpring) and read: the values its reports carry (never IOKit's cache before
+//     the first report) go through a wheel::Map, and the messages that come out (control changes, and the start key's
+//     note) are handed to Hooks::send, a report's values together, at most 125 times a second;
 //   - a G29 at PS4 (0xC260) is not read (status: "set the switch on the wheel to PS3").
 // Switched off, or the wheel leaving: the spring stops (wheel::kSpringOff) and what it sent goes back to rest
-// (Map::rest: centred, released, neutral, no button, the start key's note off), so the synth holds no throttle open. On quitting, the spring
-// stops. Off, the device is open (non-exclusively: a game may read it too) but nothing is read from it or sent to it.
+// (Map::rest: centred, released, neutral, no button, the start key's note off), so the synth holds no throttle open. On
+// quitting, the spring stops (a crash or a force-quit leaves it on until the wheel is unplugged). Off, the device is
+// open (non-exclusively: a game may read it too) but nothing is read from it or sent to it. resend() sends the whole
+// state again, for a receiver that may have lost it (a device restart, a synth made afresh: Devices.h).
 //
 // Message thread only. Hooks::changed is called whenever present() or status() may have changed (a device coming,
 // going, switching, an error), never from inside a Hooks call.
@@ -45,9 +50,10 @@ namespace playground::standalone
         RacingWheel(const RacingWheel&) = delete;
         RacingWheel& operator=(const RacingWheel&) = delete;
 
-        bool present() const noexcept;           // a G29 is connected, in any mode
+        bool present() const noexcept;           // a G29 is connected, in any mode, or a switch has news
         bool on() const noexcept;
         void setOn(bool on);
+        void resend();                           // the whole state again, while it is read
         std::string status() const;              // a short line for the card, "" when there is none
 
     private:

@@ -9,10 +9,12 @@
 //   COMMANDS  hid-lg4ff's bytes: the switch to its own mode, 900 degrees, the spring (moderate and full), the spring off
 //   FIRST     a fresh map's first flush says the whole state (at rest: steering 64, the rest 0; an LSB of 0 never
 //             follows its MSB), and a second sends nothing
-//   STEERING  16-bit X to 14 bits: full right 127/127, the centre 64 alone (its LSB reset by the MSB), one step right of
-//             it the LSB alone, full left 0; -1 and 1 as the synth reads them; a 10-bit range's middle is the centre
-//   PEDALS    Z, Rz and Y at their maximum read 0 (released); at their minimum 16383 (127/127); half way about 0.5; a
-//             pedal whose rest is its minimum the other way round
+//   STEERING  16-bit X to 14 bits: full right 127/127, the centre 64 alone (its LSB reset by the MSB), a few steps right
+//             of it the LSB alone, full left 0; -1 and 1 as the synth reads them; a 10-bit range's middle is the centre
+//   JITTER    within one MSB a change under kJitter waits until it grows (then the whole of it goes), and one to the
+//             centre always goes
+//   PEDALS    Z, Rz and Y at their maximum read 0 (released); at their minimum 16383 (127/127); half way about 0.5 (past
+//             the deadband); a pedal whose rest is its minimum the other way round; within 1 % of rest, rest (kDeadband)
 //   GEAR      the shifter's buttons 13 to 18 gears 1 to 6, 19 reverse (127), none neutral
 //   BUTTONS   cross bit 0 (CC 21), + bit 12 (CC 22), PS bit 17 (CC 23); a button the table has no row for, nothing
 //   START     the PS button is the start key too: note-on 36 at velocity 100 after the control changes as it goes down,
@@ -21,14 +23,35 @@
 //   CHANGE    a value set again sends nothing; an element of another page is refused
 //   REST      rest() sends only what brings the synth back to rest (centred, released, neutral, no button), then
 //             nothing more (an MSB resets its LSB: no LSB needed); forget() makes the next flush send everything
+//   RESEND    resend(): every control change again, and the start key's note-off when it is up and its note was ever
+//             sent; held, no second note-on; a map that never sent a note sends none
 //   RANGE     a 16-bit maximum written as a signed -1 read as 65535
 //   ENGINE    the instrument: the map's control changes, through Processor::processBlock (toEvent) and the Engine, land in
 //             the Host block as the map says they do (steering, the three pedals, the gear, the buttons); a source
 //             sending only MSBs reads 7 bits; an effect's Host block stays at rest
+//   DRIVER    plugin/WheelDriver.h's decisions over a fake transport whose devices record what they are sent:
+//     READ      on, a G29 in its own mode: 900 degrees, then the spring, then read; the first flush takes only values
+//               a report carried (the seed rule: IOKit's zeros before any report, a pedal pressed, the steering left and
+//               the hat up, read as rest); a value after a quiet spell goes kGather later, the next no sooner than
+//               kInterval after the last flush
+//     OFF       switched off: the spring off, listening stops, the rest messages; on again: the range and spring again
+//               and the whole state; its spring's stop failing is on the card while off
+//     UNPLUG    the wheel gone while read: nothing sent to it, the rest messages, the entry gone
+//     RANGE     the range failing: no spring sent, the card says so, the wheel read all the same
+//     OTHERS    a G29 at PS4 sent nothing (the card: the switch to PS3), a device of another kind not even listed
+//     SWITCH    a compatibility-mode G29, on: hid-lg4ff's two reports and the 8 s timer; it leaving keeps the entry
+//               listed, switching, and the timer armed; the G29 coming back ends it and is read; plugged in again in its
+//               compatibility mode, not switched again until switched off and on (at most one switch each "on")
+//     FAILED    back in its compatibility mode while switching: no second switch, the card says what to do; gone and
+//               the timer firing: the same, listed until switched off; its first report failing: the same, no timer
+//     DENIED    macOS refusing the manager: nothing switched, the card says where to allow it
+//     QUIT      quit() with a G29 read: the spring off and nothing else; after it nothing is sent, switched or read
+//     RESEND    resend() while read: the whole state again; nothing while off
 #include "Probe.h"
 
 #include "dsp/Meters.h"
 #include "plugin/Processor.h"
+#include "plugin/WheelDriver.h"
 #include "plugin/WheelMap.h"
 
 #include "Product.h"
@@ -36,9 +59,10 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <cmath>
-#include <utility>
 #include <cstdio>
+#include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace pg = playground;
@@ -86,6 +110,67 @@ namespace
             std::printf("%s: got \"%s\", wanted \"%s\"\n", name.c_str(), got.c_str(), want.c_str());
         P.eq(name, got == want ? 1 : 0, 1);
     }
+
+    // A transport of made-up devices (WheelDriver.h): each named, holding the values the probe gives it; what the
+    // driver does, in order, as lines ("g29: f8 81 ...", "listen g29", "arm flush 0.008", "send 16:64 ...").
+    struct Fake final : wh::Transport
+    {
+        std::map<wh::Device, std::string> names;
+        std::map<wh::Device, std::vector<wh::Value>> held;
+        std::vector<std::string> log;
+        int failing = 0;                                     // a report whose first two bytes are `failing`'s fails
+        double clock = 100.0;
+        bool armed[2] = { false, false };
+        int changes = 0;
+
+        std::string name(wh::Device d) const { return d == nullptr ? "none" : names.at(d); }
+
+        int report(wh::Device d, const wh::Report& r) override
+        {
+            log.push_back(name(d) + ": " + text(r));
+            return ((r[0] << 8) | r[1]) == failing ? static_cast<int>(0xE00002BCu) : 0;   // kIOReturnError
+        }
+        std::vector<wh::Value> values(wh::Device d) override { return held[d]; }
+        void listen(wh::Device d) override { log.push_back("listen " + name(d)); }
+        void arm(wh::Timer t, double seconds) override
+        {
+            armed[static_cast<int>(t)] = true;
+            char b[64];
+            std::snprintf(b, sizeof b, "arm %s %.3f", t == wh::Timer::flush ? "flush" : "switch", seconds);
+            log.emplace_back(b);
+        }
+        void disarm(wh::Timer t) override
+        {
+            if (armed[static_cast<int>(t)])
+                log.push_back(std::string("disarm ") + (t == wh::Timer::flush ? "flush" : "switch"));
+            armed[static_cast<int>(t)] = false;
+        }
+        double now() override { return clock; }
+        // A timer going off: no longer armed, then the driver told.
+        void fire(wh::Driver& d, wh::Timer t)
+        {
+            armed[static_cast<int>(t)] = false;
+            d.fire(t);
+        }
+        void send(const std::vector<wh::Message>& m) override { log.push_back("send " + text(m)); }
+        void changed() override { ++changes; }
+
+        // The lines since the last look, joined by " | " (the timers' and changed's left out unless asked).
+        std::string take(bool timers = false)
+        {
+            std::string s;
+            for (const std::string& l : log)
+                if (timers || (l.rfind("arm ", 0) != 0 && l.rfind("disarm ", 0) != 0))
+                    s += (s.empty() ? "" : " | ") + l;
+            log.clear();
+            return s;
+        }
+    };
+
+    wh::Value hid(uint32_t page, uint32_t usage, int64_t value, int64_t min, int64_t max, uint64_t timestamp)
+    {
+        return { page, usage, value, min, max, 16, timestamp };
+    }
 }
 
 PROBE(plugin, wheel)
@@ -121,8 +206,16 @@ PROBE(plugin, wheel)
     map.input(kDesk, kX, 32768, 0, 65535);
     same(P, "steering.centre_msb_alone", flushed(map), "16:64");
     P.near("steering.centre_reads", static_cast<double>(map.steering()), 0.0, 1e-6);
-    map.input(kDesk, kX, 32772, 0, 65535);
-    same(P, "steering.step_lsb_alone", flushed(map), "48:1");
+    map.input(kDesk, kX, 32788, 0, 65535);                          // 8197
+    same(P, "steering.step_lsb_alone", flushed(map), "48:5");
+    map.input(kDesk, kX, 32796, 0, 65535);                          // 8199: two steps, under kJitter
+    same(P, "jitter.small_waits", flushed(map), "");
+    map.input(kDesk, kX, 32800, 0, 65535);                          // 8200: three from what was sent
+    same(P, "jitter.grown_goes", flushed(map), "48:8");
+    map.input(kDesk, kX, 32772, 0, 65535);                          // 8193
+    same(P, "jitter.back_down", flushed(map), "48:1");
+    map.input(kDesk, kX, 32768, 0, 65535);                          // the centre: a step, but rest
+    same(P, "jitter.rest_always", flushed(map), "48:0");
     map.input(kDesk, kX, 0, 0, 65535);
     same(P, "steering.full_left", flushed(map), "16:0");
     P.near("steering.left_reads", static_cast<double>(map.steering()), -1.0, 1e-6);
@@ -136,13 +229,17 @@ PROBE(plugin, wheel)
     P.near("pedals.throttle_reads", static_cast<double>(map.pedal(wh::Axis::throttle)), 1.0, 1e-6);
     map.input(kDesk, kZ, 128, 0, 255);
     flushed(map);
-    P.near("pedals.throttle_half", static_cast<double>(map.pedal(wh::Axis::throttle)), 127.0 / 255.0, 1e-3);
+    P.near("pedals.throttle_half", static_cast<double>(map.pedal(wh::Axis::throttle)), 124.0 / 252.0, 1e-3);   // past 3 of 255
     map.input(kDesk, kRz, 0, 0, 255);
     map.input(kDesk, kY, 255, 0, 255);
     same(P, "pedals.brake_down_clutch_released", flushed(map), "18:127 50:127");
     map.input(kDesk, kY, 0, 0, 255);
     same(P, "pedals.clutch_down", flushed(map), "19:127 51:127");
     P.eq("pedals.rest_at_min", wh::Map::axisValue(wh::Axis::throttle, false, 255, 0, 255), 16383);
+    P.eq("pedals.deadband_rest", wh::Map::axisValue(wh::Axis::brake, true, 252, 0, 255), 0);       // 3 of 255 down
+    P.eq("pedals.deadband_past", wh::Map::axisValue(wh::Axis::brake, true, 251, 0, 255), 65);      // a step past it
+    P.eq("pedals.deadband_10_bit", wh::Map::axisValue(wh::Axis::clutch, true, 1013, 0, 1023), 0);  // 10 of 1023
+    P.eq("pedals.deadband_full", wh::Map::axisValue(wh::Axis::clutch, true, 0, 0, 1023), 16383);
 
     for (int b = 13; b <= 18; ++b)
     {
@@ -200,6 +297,24 @@ PROBE(plugin, wheel)
         same(P, "rest.flush_nothing", flushed(map), "");
         map.forget();
         same(P, "rest.forget_says_all", flushed(map), "16:64 17:0 18:0 19:0 20:0 21:0 22:0 23:0 24:0");
+    }
+
+    // ---- RESEND ----------------------------------------------------------------------------------------------------
+    {
+        wh::Map m;
+        flushed(m);
+        m.resend();
+        same(P, "resend.no_note_ever", flushed(m), "16:64 17:0 18:0 19:0 20:0 21:0 22:0 23:0 24:0");
+        m.input(kDesk, kZ, 0, 0, 255);
+        m.input(kBtn, 25, 1, 0, 1);
+        flushed(m);
+        m.resend();
+        same(P, "resend.held_no_note_again", flushed(m), "16:64 17:127 49:127 18:0 19:0 20:0 21:0 22:0 23:8 24:0");
+        m.input(kBtn, 25, 0, 0, 1);
+        same(P, "resend.let_go", flushed(m), "23:0 off36:0");
+        m.resend();
+        same(P, "resend.up_note_off_again", flushed(m), "16:64 17:127 49:127 18:0 19:0 20:0 21:0 22:0 23:0 24:0 off36:0");
+        same(P, "resend.then_nothing", flushed(m), "");
     }
 
     // ---- RANGE -----------------------------------------------------------------------------------------------------
@@ -285,6 +400,163 @@ PROBE(plugin, wheel)
         else
             P.eq("engine.effect_at_rest", h.steering == 0.0f && h.throttle == 0.0f && h.brake == 0.0f && h.clutch == 0.0f
                                               && h.gear == 0 && h.buttons == 0 ? 1 : 0, 1);
+    }
+
+    // ---- DRIVER ------------------------------------------------------------------------------------------------------
+    {
+        int tags[5]{};
+        const wh::Device g29 = &tags[0], compat = &tags[1], compat2 = &tags[2], ps4 = &tags[3], other = &tags[4];
+        Fake f;
+        f.names = { { g29, "g29" }, { compat, "compat" }, { compat2, "compat2" }, { ps4, "ps4" }, { other, "other" } };
+        // What IOKit holds before reports: zeros with no timestamp (a pedal at 0 is pressed, the steering full left, the
+        // hat up, the PS button down); the steering from a report (three quarters right: 12288, MSB 96).
+        f.held[g29] = { hid(kDesk, kX, 49152, 0, 65535, 7), hid(kDesk, kZ, 0, 0, 255, 0), hid(kDesk, kRz, 0, 0, 255, 0),
+                        hid(kDesk, kY, 0, 0, 255, 0), hid(kDesk, wh::kHat, 0, 0, 7, 0), hid(kBtn, 25, 1, 0, 1, 0) };
+        const std::string range = "g29: f8 81 84 03 00 00 00", spring = "g29: fe 0d 03 03 48 00 00 | g29: 14 00 00 00 00 00 00";
+        const std::string off = "g29: f5 00 00 00 00 00 00", whole = "send 16:96 17:0 18:0 19:0 20:0 21:0 22:0 23:0 24:0";
+        const std::string toNative = ": f8 0a 00 00 00 00 00 | ", toNative2 = ": f8 09 05 01 01 00 00";
+        const std::string failed = "it did not switch to its full mode: plug it in again, then turn this off and on";
+
+        // READ
+        wh::Driver d(f, true);
+        d.opened(0);
+        P.eq("driver.nothing_listed", d.present() ? 0 : 1, 1);
+        d.added(g29, wh::Kind::g29);
+        same(P, "driver.read.range_spring_seed", f.take(), range + " | " + spring + " | listen g29 | " + whole);
+        same(P, "driver.read.status", d.status(), "");
+        f.clock = 100.002;                                           // 2 ms after the first flush
+        d.value(g29, hid(kDesk, kZ, 0, 0, 255, 9));                  // the throttle down, from a report
+        same(P, "driver.rate.interval", f.take(true), "arm flush 0.006");
+        f.clock = 100.008;
+        f.fire(d, wh::Timer::flush);
+        same(P, "driver.rate.flushed", f.take(true), "send 17:127 49:127");
+        f.clock = 101.0;                                             // after a quiet spell
+        d.value(g29, hid(kDesk, kZ, 255, 0, 255, 10));
+        d.value(g29, hid(kDesk, kRz, 255, 0, 255, 10));              // one report's values, one flush
+        f.fire(d, wh::Timer::flush);
+        same(P, "driver.rate.gather", f.take(true), "arm flush 0.001 | send 17:0");
+        d.value(g29, hid(0xFF00, 1, 5, 0, 255, 11));                 // no row
+        d.value(compat, hid(kDesk, kZ, 0, 0, 255, 11));              // not the one read
+        same(P, "driver.read.others_nothing", f.take(true), "");
+
+        // OFF
+        d.setOn(false);
+        same(P, "driver.off.spring_off_rest", f.take(), "listen none | " + off + " | send 16:64");
+        P.eq("driver.off.listed", d.present() && !d.on() && d.status().empty() ? 1 : 0, 1);
+        d.setOn(true);
+        same(P, "driver.off.on_again", f.take(), range + " | " + spring + " | listen g29 | " + whole);
+        f.failing = 0xf500;
+        d.setOn(false);
+        f.failing = 0;
+        same(P, "driver.off.spring_failing", d.status(), "its spring may still be on (0xe00002bc): unplug it to stop it");
+        d.setOn(true);
+        f.take();
+        same(P, "driver.off.cleared_on", d.status(), "");
+
+        // UNPLUG
+        d.removed(g29);
+        same(P, "driver.unplug.rest_nothing_to_it", f.take(), "listen none | send 16:64");
+        P.eq("driver.unplug.gone", d.present() ? 0 : 1, 1);
+
+        // RANGE
+        f.failing = 0xf881;
+        d.added(g29, wh::Kind::g29);
+        f.failing = 0;
+        same(P, "driver.range.no_spring", f.take(), range + " | listen g29 | " + whole);
+        same(P, "driver.range.said", d.status(), "its range and spring were not set (0xe00002bc)");
+        d.removed(g29);
+        f.take();
+
+        // OTHERS
+        d.added(ps4, wh::Kind::ps4);
+        same(P, "driver.others.ps4_nothing_sent", f.take(true), "");
+        same(P, "driver.others.ps4_said", d.status(), "set the switch on the wheel to PS3");
+        d.removed(ps4);
+        d.added(other, wh::Kind::none);
+        P.eq("driver.others.other_not_listed", d.present() ? 0 : 1, 1);
+        same(P, "driver.others.other_nothing_sent", f.take(true), "");
+
+        // SWITCH
+        d.added(compat, wh::Kind::compat);
+        same(P, "driver.switch.reports_timer", f.take(true), "compat" + toNative + "compat" + toNative2 + " | arm switch 8.000");
+        same(P, "driver.switch.said", d.status(), "switching to its full mode");
+        d.removed(compat);                                           // re-enumerating
+        P.eq("driver.switch.listed_while_away", d.present() && f.armed[1] ? 1 : 0, 1);
+        same(P, "driver.switch.still_said", d.status(), "switching to its full mode");
+        same(P, "driver.switch.timer_kept", f.take(true), "");
+        d.added(g29, wh::Kind::g29);
+        same(P, "driver.switch.back_read", f.take(true), "disarm switch | " + range + " | " + spring + " | listen g29 | " + whole);
+        same(P, "driver.switch.done", d.status(), "");
+        d.removed(g29);                                              // unplugged and plugged in again: compatibility mode
+        d.added(compat2, wh::Kind::compat);
+        same(P, "driver.switch.once_each_on", f.take(true), "listen none | send 16:64");
+        same(P, "driver.switch.once_said", d.status(), "back in its PS3 mode: turn this off and on to switch it");
+        d.setOn(false);
+        same(P, "driver.switch.off_said", d.status(), "in its PS3 mode: switched to its full mode when on");
+        d.setOn(true);
+        same(P, "driver.switch.on_again", f.take(true), "compat2" + toNative + "compat2" + toNative2 + " | arm switch 8.000");
+
+        // FAILED
+        d.removed(compat2);
+        d.added(compat, wh::Kind::compat);                           // it came back in its compatibility mode
+        same(P, "driver.failed.back_no_second", f.take(true), "disarm switch");
+        same(P, "driver.failed.back_said", d.status(), failed);
+        d.setOn(false);
+        d.setOn(true);
+        f.take();
+        d.removed(compat);
+        f.fire(d, wh::Timer::switched);                                 // 8 s and nothing came back
+        P.eq("driver.failed.late_listed", d.present() ? 1 : 0, 1);
+        same(P, "driver.failed.late_said", d.status(), failed);
+        d.setOn(false);
+        P.eq("driver.failed.off_gone", d.present() ? 0 : 1, 1);
+        f.failing = 0xf80a;
+        d.added(compat, wh::Kind::compat);
+        d.setOn(true);
+        f.failing = 0;
+        same(P, "driver.failed.first_report", f.take(true), "compat: f8 0a 00 00 00 00 00");
+        same(P, "driver.failed.first_report_said", d.status(),
+             "it could not be switched to its full mode (0xe00002bc): plug it in again, then turn this off and on");
+        d.removed(compat);
+        d.setOn(false);
+        f.take(true);
+
+        // DENIED
+        {
+            wh::Driver denied(f, true);
+            denied.opened(wh::Driver::kNotPermitted);
+            denied.added(compat, wh::Kind::compat);
+            same(P, "driver.denied.nothing_sent", f.take(true), "");
+            same(P, "driver.denied.said", denied.status(), "macOS keeps it from this app: allow it in Privacy & Security, Input Monitoring");
+            denied.quit();
+        }
+
+        // RESEND
+        d.setOn(true);
+        d.added(g29, wh::Kind::g29);
+        f.clock = 200.0;
+        d.value(g29, hid(kDesk, kZ, 0, 0, 255, 20));
+        f.fire(d, wh::Timer::flush);
+        f.take(true);
+        d.resend();
+        same(P, "driver.resend.whole", f.take(true), "send 16:96 17:127 49:127 18:0 19:0 20:0 21:0 22:0 23:0 24:0");
+
+        // QUIT
+        d.quit();
+        same(P, "driver.quit.spring_off_only", f.take(true), "listen none | " + off);
+        d.value(g29, hid(kDesk, kZ, 255, 0, 255, 21));
+        f.fire(d, wh::Timer::flush);
+        d.added(compat, wh::Kind::compat);
+        d.setOn(false);
+        d.resend();
+        same(P, "driver.quit.then_nothing", f.take(true), "");
+
+        wh::Driver idle(f, false);
+        idle.added(g29, wh::Kind::g29);
+        idle.resend();
+        same(P, "driver.resend.off_nothing", f.take(true), "");
+        idle.quit();
+        same(P, "driver.quit.off_nothing", f.take(true), "");
     }
     return P.finish();
 }
