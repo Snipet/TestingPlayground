@@ -1,17 +1,19 @@
 // Tools/wheel-dump/main.cpp: wheel-dump, a developer's tool (never installed, outside `all`: CMakeLists.txt builds it
 // with `--target wheel-dump`). It finds a connected Logitech G29 (any of its modes, and any other Logitech joystick or
 // game pad), says what plugin/WheelMap.h makes of it, lists its HID elements (type, usage page and usage, logical
-// minimum and maximum, report size) with the table's row for each, and then prints, ten times a second, the elements
-// that changed (their raw values and what the synth will read) and the MIDI the Standalone would send for them (the
-// control changes, and the start key's note). It is how WheelMap.h's table is checked on the device (README, "A racing
-// wheel"):
+// minimum and maximum, report size, the value IOKit holds and its timestamp: 0 until a report carried it, when the 0
+// it holds is not the wheel's) with the table's row for each, and then prints, ten times a second, the elements that
+// changed (their raw values and what the synth will read) and the MIDI the Standalone would send for them (the control
+// changes, and the start key's note). Like the Standalone (plugin/WheelDriver.h), it takes a value only from a report.
+// It is how WheelMap.h's table is checked on the device (README, "A racing wheel"):
 //
 //   wheel-dump              list, then watch (Ctrl-C ends it)
 //   wheel-dump --list       list and end
 //   wheel-dump --switch     a G29 in compatibility mode (0xC294): send hid-lg4ff's switch to its own mode, as the
 //                           Standalone does when its entry is on, and go on with the G29 that comes back
 //   wheel-dump --spring     a G29 in its own mode: 900 degrees and the Standalone's autocentre spring while it runs
-//                           (off again when it ends)
+//                           (off again when it ends: Ctrl-C, SIGTERM or SIGHUP; Ctrl-Z stops it with the spring off,
+//                           and fg sets it again; a SIGKILL or a crash leaves it on until the wheel is unplugged)
 //
 // IOKit's HID manager on the main run loop, opened shared: a game (or the Standalone) may read the wheel meanwhile.
 #include "plugin/WheelMap.h"
@@ -24,6 +26,7 @@
 #include <dispatch/dispatch.h>
 
 #include <csignal>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -144,11 +147,25 @@ namespace
         return {};
     }
 
-    void report(IOHIDDeviceRef device, const wheel::Report& r, const char* what)
+    bool report(IOHIDDeviceRef device, const wheel::Report& r, const char* what)
     {
         const IOReturn e = IOHIDDeviceSetReport(device, kIOHIDReportTypeOutput, 0, r.data(), static_cast<CFIndex>(r.size()));
         std::printf("  sent %s: %02x %02x %02x %02x %02x %02x %02x (%s)\n", what, r[0], r[1], r[2], r[3], r[4], r[5], r[6],
                     e == kIOReturnSuccess ? "ok" : "failed");
+        std::fflush(stdout);
+        return e == kIOReturnSuccess;
+    }
+
+    // 900 degrees, then the spring (none when the range fails), as the Standalone sets them.
+    void springOn()
+    {
+        if (tool.device == nullptr)
+            return;
+        if (!report(tool.device, wheel::rangeReport(wheel::kRange), "the range, 900 degrees (hid-lg4ff: lg4ff_set_range_g25)"))
+            return;
+        const auto spring = wheel::springReports(wheel::kSpring);
+        tool.springOn = report(tool.device, spring[0], "the spring (hid-lg4ff: lg4ff_set_autocenter_default)")
+                     && report(tool.device, spring[1], "activate auto-centre");
     }
 
     void springOff()
@@ -170,25 +187,39 @@ namespace
         const CFArrayRef all = IOHIDDeviceCopyMatchingElements(device, nullptr, kIOHIDOptionsTypeNone);
         if (all == nullptr)
             return;
-        std::printf("  %-11s %-26s %8s %8s %4s  %s\n", "type", "usage", "min", "max", "bits", "WheelMap.h");
+        // Each input element's value as IOKit holds it, and its timestamp: 0 (no report yet) and that value is not the
+        // wheel's, so it is left out (the seed rule: what the Standalone does too).
+        std::printf("  %-11s %-26s %8s %8s %4s %8s %20s  %s\n", "type", "usage", "min", "max", "bits", "value", "timestamp",
+                    "WheelMap.h");
         for (CFIndex i = 0, n = CFArrayGetCount(all); i < n; ++i)
         {
             const auto e = static_cast<IOHIDElementRef>(const_cast<void*>(CFArrayGetValueAtIndex(all, i)));
             const IOHIDElementType t = IOHIDElementGetType(e);
             if (t == kIOHIDElementTypeCollection)
                 continue;
+            const bool input = t == kIOHIDElementTypeInput_Misc || t == kIOHIDElementTypeInput_Button || t == kIOHIDElementTypeInput_Axis;
+            IOHIDValueRef v = nullptr;
+            const bool held = input && IOHIDDeviceGetValue(device, e, &v) == kIOReturnSuccess && v != nullptr;
+            const long long value = held ? static_cast<long long>(IOHIDValueGetIntegerValue(v)) : 0;
+            const unsigned long long stamp = held ? static_cast<unsigned long long>(IOHIDValueGetTimeStamp(v)) : 0;
+            char shown[24] = "-", when[24] = "-";
+            if (held)
+            {
+                std::snprintf(shown, sizeof shown, "%lld", value);
+                std::snprintf(when, sizeof when, "%llu", stamp);
+            }
             const uint32_t page = IOHIDElementGetUsagePage(e), usage = IOHIDElementGetUsage(e);
-            std::printf("  %-11s %-26s %8ld %8ld %4u  %s\n", typeName(t), usageName(page, usage).c_str(),
+            std::printf("  %-11s %-26s %8ld %8ld %4u %8s %20s  %s%s\n", typeName(t), usageName(page, usage).c_str(),
                         static_cast<long>(IOHIDElementGetLogicalMin(e)), static_cast<long>(IOHIDElementGetLogicalMax(e)),
-                        IOHIDElementGetReportSize(e) * IOHIDElementGetReportCount(e), rowOf(page, usage).c_str());
-            if (t == kIOHIDElementTypeInput_Misc || t == kIOHIDElementTypeInput_Button || t == kIOHIDElementTypeInput_Axis)
+                        IOHIDElementGetReportSize(e) * IOHIDElementGetReportCount(e), shown, when, rowOf(page, usage).c_str(),
+                        held && stamp == 0 ? " (no report yet: left out)" : "");
+            if (input)
             {
                 Element& el = tool.elements[e];
                 el.ref = e;
-                IOHIDValueRef v = nullptr;
-                if (IOHIDDeviceGetValue(device, e, &v) == kIOReturnSuccess && v != nullptr)
+                if (held && stamp != 0)
                 {
-                    el.value = el.printed = IOHIDValueGetIntegerValue(v);
+                    el.value = el.printed = value;
                     el.known = true;
                 }
             }
@@ -225,13 +256,7 @@ namespace
             return;
         }
         if (kind == wheel::Kind::g29 && tool.options.spring)
-        {
-            report(device, wheel::rangeReport(wheel::kRange), "the range, 900 degrees (hid-lg4ff: lg4ff_set_range_g25)");
-            const auto spring = wheel::springReports(wheel::kSpring);
-            report(device, spring[0], "the spring (hid-lg4ff: lg4ff_set_autocenter_default)");
-            report(device, spring[1], "activate auto-centre");
-            tool.springOn = true;
-        }
+            springOn();
         tool.map.forget();
         for (auto& [ref, el] : tool.elements)
             if (el.known)
@@ -239,6 +264,7 @@ namespace
         tool.ccs.clear();
         tool.map.flush(tool.ccs);
         std::printf("watching (Ctrl-C ends it): the elements that change, ten times a second, and the MIDI\n");
+        std::fflush(stdout);
     }
 
     void onAdded(void*, IOReturn, void*, IOHIDDeviceRef device)
@@ -375,13 +401,35 @@ int main(int argc, char** argv)
     const CFRunLoopTimerRef tick = CFRunLoopTimerCreate(kCFAllocatorDefault, CFAbsoluteTimeGetCurrent() + 0.1, 0.1, 0, 0, onTick, &context);
     CFRunLoopAddTimer(CFRunLoopGetMain(), tick, kCFRunLoopDefaultMode);
 
-    // Ctrl-C: the spring off, then out.
-    std::signal(SIGINT, SIG_IGN);
-    const dispatch_source_t interrupt = dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, SIGINT, 0, dispatch_get_main_queue());
-    dispatch_source_set_event_handler(interrupt, ^{
-        CFRunLoopStop(CFRunLoopGetMain());
-    });
-    dispatch_resume(interrupt);
+    // The signals that end or stop it, on the main queue (the run loop's): the spring off first. Ctrl-C ends it here;
+    // SIGTERM and SIGHUP then take their default action (the process ends as they say); Ctrl-Z (SIGTSTP) stops it with
+    // SIGSTOP (which reaches no handler), and when it goes on (fg) the spring is set again.
+    std::vector<dispatch_source_t> sources;
+    for (const int sig : { SIGINT, SIGTERM, SIGHUP, SIGTSTP })
+    {
+        std::signal(sig, SIG_IGN);
+        const dispatch_source_t source = dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, static_cast<uintptr_t>(sig), 0,
+                                                                dispatch_get_main_queue());
+        dispatch_source_set_event_handler(source, ^{
+            const bool spring = tool.springOn;
+            springOff();
+            if (sig == SIGINT)
+                CFRunLoopStop(CFRunLoopGetMain());
+            else if (sig == SIGTSTP)
+            {
+                std::raise(SIGSTOP);
+                if (spring)
+                    springOn();
+            }
+            else
+            {
+                std::signal(sig, SIG_DFL);
+                std::raise(sig);
+            }
+        });
+        dispatch_resume(source);
+        sources.push_back(source);
+    }
 
     std::printf("waiting for a Logitech G29 (or any Logitech joystick or game pad)...\n");
     std::fflush(stdout);
