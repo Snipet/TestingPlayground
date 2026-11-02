@@ -11,8 +11,8 @@
 //             follows its MSB), and a second sends nothing
 //   STEERING  16-bit X to 14 bits: full right 127/127, the centre 64 alone (its LSB reset by the MSB), a few steps right
 //             of it the LSB alone, full left 0; -1 and 1 as the synth reads them; a 10-bit range's middle is the centre
-//   JITTER    within one MSB a change under kJitter waits until it grows (then the whole of it goes), and one to the
-//             centre always goes
+//   JITTER    a change under kJitter waits until it grows (then the whole of it goes), across the centre's MSB too,
+//             and one to the centre always goes
 //   PEDALS    Z, Rz and Y at their maximum read 0 (released); at their minimum 16383 (127/127); half way about 0.5 (past
 //             the deadband); a pedal whose rest is its minimum the other way round; within 1 % of rest, rest (kDeadband)
 //   GEAR      the shifter's buttons 13 to 18 gears 1 to 6, 19 reverse (127), none neutral
@@ -249,6 +249,12 @@ PROBE(plugin, wheel)
     same(P, "jitter.back_down", flushed(map), "48:1");
     map.input(kDesk, kX, 32768, 0, 65535);                          // the centre: a step, but rest
     same(P, "jitter.rest_always", flushed(map), "48:0");
+    map.input(kDesk, kX, 32767, 0, 65535);                          // 8191: a step left, its MSB 63
+    same(P, "jitter.across_msb_waits", flushed(map), "");
+    map.input(kDesk, kX, 32756, 0, 65535);                          // 8189: three from the centre
+    same(P, "jitter.across_msb_grown", flushed(map), "16:63 48:125");
+    map.input(kDesk, kX, 32768, 0, 65535);
+    same(P, "jitter.across_msb_back", flushed(map), "16:64");
     map.input(kDesk, kX, 0, 0, 65535);
     same(P, "steering.full_left", flushed(map), "16:0");
     P.near("steering.left_reads", static_cast<double>(map.steering()), -1.0, 1e-6);

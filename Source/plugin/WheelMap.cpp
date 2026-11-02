@@ -195,10 +195,10 @@ namespace playground::wheel
         if (sentValid_)
             for (std::size_t a = 0; a < to.v14.size(); ++a)
             {
-                // Jitter: a change within one MSB smaller than kJitter waits (what was sent stands) until it grows,
-                // unless it comes to rest.
+                // Jitter: a change smaller than kJitter waits (what was sent stands) until it grows, unless it comes
+                // to rest (across an MSB too: the steering's centre, 8192, is on one).
                 const int v = to.v14[a], s = sent_.v14[a], rest = a == 0 ? wheelcc::kCentre : 0;
-                if ((v >> 7) == (s >> 7) && v != rest && (v > s ? v - s : s - v) < kJitter)
+                if (v != rest && (v > s ? v - s : s - v) < kJitter)
                     to.v14[a] = s;
             }
         diff(sent_, sentValid_, to, out);

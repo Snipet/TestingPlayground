@@ -24,8 +24,9 @@
 //   20        the gear & 0x7F: 127 reverse, 0 neutral, 1 to 7
 //   21 to 24  the buttons' mask (kBits), 7 bits each: bits 0-6, 7-13, 14-20, 21-27
 // An MSB resets its LSB to 0, as MIDI says: a new MSB goes first, and its LSB after it unless that is 0. A change of an
-// axis smaller than kJitter within one MSB waits until it grows (an encoder's jitter), unless it comes to rest. One
-// button is also the start key (kStartButton, the PS button): note 36 (C2), velocity 100, while it is held.
+// axis smaller than kJitter waits until it grows (an encoder's jitter, the steering's at its centre too, which is on
+// an MSB's edge), unless it comes to rest. One button is also the start key (kStartButton, the PS button): note 36
+// (C2), velocity 100, while it is held.
 #pragma once
 
 #include "dsp/Events.h"
@@ -120,7 +121,7 @@ namespace playground::wheel
     };
     inline constexpr int kButtonsMax = 64;                   // the buttons Map keeps (1 to 64)
     inline constexpr int kDeadband = 100;                    // a pedal's travel within 1 / kDeadband of rest: released
-    inline constexpr int kJitter = 3;                        // an axis's least change sent within one MSB (14 bits)
+    inline constexpr int kJitter = 3;                        // an axis's least change sent (of 14 bits), but to rest
 
     // The start key: a button that plays one note while it is held (note-on at its press, note-off at its release), so
     // that a program whose voice runs only while it has a note (an engine that cranks on its first key and then keeps
