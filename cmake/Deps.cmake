@@ -22,7 +22,9 @@
 #                         bitwise operators on int (& | ^ ~ << >> and their assignments), the builtins hash and randf
 #                         (white noise from a counter), const tables of constants stored once (local, and at the top
 #                         level, shared by the functions after them), switch with case and default, and enum, whose
-#                         constants size arrays: switch, case, default and enum are keywords from it on
+#                         constants size arrays: switch, case, default and enum are keywords from it on; 689716e (its
+#                         branch lang) an enumeration constant after a variable, a constant or a function of its name
+#                         is clang's plain "redefinition of 'x'"
 #
 # ~/audio/.deps is a read-only cache written by FCompressor's Scripts/deps.sh: this build reads it and never writes it.
 # FETCHCONTENT_SOURCE_DIR_<NAME> bypasses GIT_TAG, which is why every dependency's version and commit are checked after
@@ -45,7 +47,7 @@ set(FP_BGFX_SUB_SHAS     bgfx=c7684e20da1e385edc439ef39cdb42b8c661016f
 set(FP_FUNKGUI_TAG       v0.23.1)
 set(FP_FUNKGUI_SHA       913dafae2df9047589f31cb1e7bf92af1c1f5f45)
 set(FP_FUNKGUI_VERSION   0.23.1)
-set(FP_FMINUS_SHA        b0236858d422f548d3660c1bfdc72b561782e7d8)   # no tags: a commit (the language: bits, switch, enum)
+set(FP_FMINUS_SHA        689716e5affc331df1a67c04e2320d6402987a65)   # no tags: a commit (the language: bits, switch, enum)
 set(FP_FMINUS_LLVM       23.1.3)                                     # the LLVM that commit pins (cmake/FMinusPins.cmake)
 
 # ---- helpers ---------------------------------------------------------------------------------------------------------
