@@ -1797,7 +1797,7 @@ namespace playground::measure
                 // The largest step, then the clicks (trace's rule), each with its nearest moment (the click locator).
                 const std::vector<Step> steps = largestSteps(r.out.l, r.out.r, 3, rate);
                 const double step = steps.empty() ? 0.0 : steps.front().size;
-                const bool click = std::any_of(steps.begin(), steps.end(), [](const Step& st) { return st.click; });
+                const bool click = !clicks(r.out.l, r.out.r, rate).empty();   // any, as trace finds them
                 v["step"] = step;
                 v["click"] = click ? 1.0 : 0.0;
                 out += "Largest step between two samples"
