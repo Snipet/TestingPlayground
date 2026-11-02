@@ -361,8 +361,13 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - **`fminus/Lang.h` is the language, as an editor sees it**: plain C++ over the files' text, no FMinus call. Its
   tables (keywords, type words, the builtins with their signatures, the attributes, `#pragma panel`'s words) follow
   FMinus at its pin and PanelSpec: a pin move that adds a keyword or a builtin adds it there, with `fminus.lang` rows.
+  Its index has what C declares: an enumeration's tag and constants (the top level's, a module's, a block's in its
+  scope; each constant's value folded as FMinus folds an integer constant expression, `Folder`, across the files) and
+  the top level's const tables and scalars, which complete, hover, go to and highlight (`constantNames`, the
+  editor's `csConstant`) as the other symbols do; a circuit field's extent of enumeration constants folds so too.
 - **The formatter never changes what a program means**: it re-indents, re-spaces and breaks lines (before a `{` that
-  opens a block, around a `}` after code), never joins them, and it compares the tokens it wrote with the text's and
+  opens a block, around a `}` after code, and an initialiser's list longer than `lang::kWidth`, 120 columns, after its
+  commas), never joins them, and it compares the tokens it wrote with the text's and
   gives the text back unchanged when one differs. `fminus.lang` renders the examples and RANDOM programs formatted:
   the same bits.
 - **The check while typing** runs on the compiler's thread after a RUN waiting, never swaps the program that plays,

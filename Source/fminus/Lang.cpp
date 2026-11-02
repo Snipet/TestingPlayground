@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <locale>
 #include <memory>
@@ -20,9 +21,10 @@ namespace playground::lang
 {
     namespace
     {
-        constexpr std::array<std::string_view, 16> kKeywords = { "break", "const", "continue", "else", "false", "for",
-                                                                 "if", "module", "param", "parallel", "restrict",
-                                                                 "return", "sizeof", "this", "true", "while" };
+        constexpr std::array<std::string_view, 20> kKeywords = { "break",  "case",     "const",    "continue", "default",
+                                                                 "else",   "enum",     "false",    "for",      "if",
+                                                                 "module", "param",    "parallel", "restrict", "return",
+                                                                 "sizeof", "switch",   "this",     "true",     "while" };
         constexpr std::array<std::string_view, 8> kTypeWords = { "bool", "float", "float2", "float4", "float8",
                                                                  "int", "poly", "void" };
 
@@ -72,6 +74,12 @@ namespace playground::lang
             { "fft_inverse", "void", "void* plan, const float2* in, float* out",
               "Bins back to n samples (float2 to float2 with a complex plan): n times the signal, unnormalised." },
             { "fft_destroy", "void", "void* plan", "Frees a plan: in end." },
+            { "hash", "int", "int n", "n's 32 bits mixed into a well-spread int (lowbias32, a bijection), the same "
+                                      "wherever it is computed: a seed that keeps two sources apart, randf(hash(voice) "
+                                      "^ count)." },
+            { "randf", "float", "int n", "A float uniform in [-1, 1) from hash(n)'s top 24 bits, with no state: white "
+                                         "noise from a count of samples, out[i] = randf(count + i), which vectorises "
+                                         "and is the same at any block size." },
         };
 
         struct WordDoc
@@ -90,15 +98,28 @@ namespace playground::lang
               "where the statement ends." },
             { "restrict", "float* restrict p", "A promise (C99's) that nothing else reaches this memory while the "
                                                "pointer is used: the optimiser may vectorise freely." },
-            { "const", "const float x = e;", "Never assigned after its initialiser; through a const pointer, read only." },
+            { "const", "const float x = e;", "Never assigned after its initialiser; through a const pointer, read only. "
+                                             "A const table of constants is stored once; at the top level, const tables "
+                                             "and scalars are the program's, read by every function and module after "
+                                             "them (1 MiB at most)." },
             { "this", "this", "The module's own address, in its method." },
             { "sizeof", "sizeof(type)", "The type's size in bytes, an int: calloc(n, sizeof(float))." },
             { "if", "if (condition) statement else statement", "An else closes the nearest if." },
             { "else", "if (condition) statement else statement", "" },
             { "for", "for (int i = 0; i < n; ++i) statement", "A loop; its declarations are the loop's." },
             { "while", "while (condition) statement", "" },
-            { "break", "break;", "Leaves the innermost loop." },
-            { "continue", "continue;", "The innermost loop's next iteration." },
+            { "break", "break;", "Leaves the innermost loop or switch." },
+            { "continue", "continue;", "The innermost loop's next iteration (a switch's: the loop around it)." },
+            { "switch", "switch (value) { case 1: ... break; default: ... }",
+              "C's: on an int, a bool or an enum's value. Each case's value is an integer constant expression (an enum "
+              "constant names one); the statements after a label run on through the next ones until a break." },
+            { "case", "case VALUE:", "A switch's label: an integer constant expression (an enum constant, 2 * N). A "
+                                     "declaration may follow it (C23's labels)." },
+            { "default", "default:", "The switch's label for every value no case has; a switch without one does nothing "
+                                     "then." },
+            { "enum", "enum Wave { SAW, SQUARE = 4, TRIANGLE };",
+              "C's enumeration: named int constants (SAW is 0, TRIANGLE 5), which size arrays and label cases; enum "
+              "Wave is an int. Declared on its own, at the top level, in a module or in a block." },
             { "return", "return value;", "" },
             { "true", "true", "A bool: 1." },
             { "false", "false", "A bool: 0." },
@@ -225,8 +246,16 @@ namespace playground::lang
                 if (!out.empty())
                 {
                     const std::string_view p = t[static_cast<std::size_t>(i - 1)].text;
-                    const bool tight = x == "," || x == ";" || x == ")" || x == "]" || x == "." || x == "->" || x == "::"
-                                    || p == "(" || p == "[" || p == "." || p == "->" || p == "::" || p == "!"
+                    // a - or + with no operand before it is a sign: -5, (-1, 1)
+                    const bool sign = (p == "-" || p == "+")
+                                   && (i - 2 < from
+                                       || (t[static_cast<std::size_t>(i - 2)].kind == Tok::op)
+                                       || (t[static_cast<std::size_t>(i - 2)].kind == Tok::punct && t[static_cast<std::size_t>(i - 2)].text != ")"
+                                           && t[static_cast<std::size_t>(i - 2)].text != "]")
+                                       || (t[static_cast<std::size_t>(i - 2)].kind == Tok::keyword && t[static_cast<std::size_t>(i - 2)].text != "this"
+                                           && t[static_cast<std::size_t>(i - 2)].text != "true" && t[static_cast<std::size_t>(i - 2)].text != "false"));
+                    const bool tight = sign || x == "," || x == ";" || x == ")" || x == "]" || x == "." || x == "->" || x == "::"
+                                    || p == "(" || p == "[" || p == "." || p == "->" || p == "::" || p == "!" || p == "~"
                                     || (x == "(" && (t[static_cast<std::size_t>(i - 1)].kind == Tok::identifier || p == "sizeof"))
                                     || (x == "[" && p != "]" && t[static_cast<std::size_t>(i - 1)].kind == Tok::identifier)
                                     || (x == "[" && p == "[") || (x == "]" && p == "]") || (x == "*" && t[static_cast<std::size_t>(i - 1)].kind == Tok::type)
@@ -239,6 +268,237 @@ namespace playground::lang
             }
             return out;
         }
+
+        // ---- C's integer constant expressions ---------------------------------------------------------------------
+        // An integer constant expression over code tokens [from, to), folded as FMinus folds one (C11 6.6p6, its ints
+        // 32 bits: + - * / % with C's errors for an overflow and a division by 0, a shift by its count's low five bits,
+        // << dropping the bits shifted out and >> keeping the sign, ~ & | ^, comparisons and ! as 0 or 1, && || ?:
+        // evaluating only what C does, so what they skip has no error), its names (enumeration constants) through
+        // `lookup`: nothing when it is no constant, or not one FMinus would take.
+        class Folder
+        {
+        public:
+            using Lookup = std::function<std::optional<int64_t>(std::string_view)>;
+
+            Folder(const std::vector<Token>& t, int from, int to, const Lookup& lookup)
+                : t_(t), k_(from), to_(std::min(to, static_cast<int>(t.size()))), lookup_(lookup)
+            {
+            }
+
+            std::optional<int64_t> run()
+            {
+                const std::optional<int64_t> v = conditional();
+                return v && k_ == to_ ? v : std::nullopt;
+            }
+
+        private:
+            using V = std::optional<int64_t>;
+
+            bool at(std::string_view x) const
+            {
+                return k_ < to_ && t_[static_cast<std::size_t>(k_)].kind != Tok::identifier && t_[static_cast<std::size_t>(k_)].text == x;
+            }
+            bool take(std::string_view x)
+            {
+                if (!at(x))
+                    return false;
+                ++k_;
+                return true;
+            }
+            // An int's value, or what C refuses (an overflow), which an operand && || ?: skip may hold.
+            V checked(int64_t v) const
+            {
+                if (v < std::numeric_limits<int32_t>::min() || v > std::numeric_limits<int32_t>::max())
+                    return skip_ > 0 ? V(0) : std::nullopt;
+                return v;
+            }
+            static int64_t wrap(int64_t v) { return static_cast<int64_t>(static_cast<int32_t>(static_cast<uint32_t>(v))); }
+
+            V conditional()
+            {
+                const V c = logical(0);
+                if (!c || !take("?"))
+                    return c;
+                skip_ += *c != 0 ? 0 : 1;
+                const V a = conditional();
+                skip_ -= *c != 0 ? 0 : 1;
+                if (!a || !take(":"))
+                    return std::nullopt;
+                skip_ += *c != 0 ? 1 : 0;
+                const V b = conditional();
+                skip_ -= *c != 0 ? 1 : 0;
+                if (!b)
+                    return std::nullopt;
+                return *c != 0 ? a : b;
+            }
+
+            // The binary operators, loosest first (C's precedence), level by level.
+            V logical(int level)
+            {
+                static constexpr std::string_view kLevels[][4] = {
+                    { "||" }, { "&&" }, { "|" }, { "^" }, { "&" }, { "==", "!=" }, { "<", "<=", ">", ">=" },
+                    { "<<", ">>" }, { "+", "-" }, { "*", "/", "%" },
+                };
+                constexpr int kCount = static_cast<int>(std::size(kLevels));
+                if (level == kCount)
+                    return unary();
+                V a = logical(level + 1);
+                while (a)
+                {
+                    std::string_view op;
+                    for (const std::string_view o : kLevels[level])
+                        if (!o.empty() && at(o))
+                            op = o;
+                    if (op.empty())
+                        return a;
+                    ++k_;
+                    // && and || skip their right side when the left decides
+                    const bool skips = (op == "&&" && *a == 0) || (op == "||" && *a != 0);
+                    skip_ += skips ? 1 : 0;
+                    const V b = logical(level + 1);
+                    skip_ -= skips ? 1 : 0;
+                    if (!b)
+                        return std::nullopt;
+                    a = apply(op, *a, *b);
+                }
+                return a;
+            }
+
+            V apply(std::string_view op, int64_t a, int64_t b) const
+            {
+                if (op == "||")
+                    return (a != 0 || b != 0) ? 1 : 0;
+                if (op == "&&")
+                    return (a != 0 && b != 0) ? 1 : 0;
+                if (op == "|")
+                    return a | b;
+                if (op == "^")
+                    return a ^ b;
+                if (op == "&")
+                    return a & b;
+                if (op == "==")
+                    return a == b ? 1 : 0;
+                if (op == "!=")
+                    return a != b ? 1 : 0;
+                if (op == "<")
+                    return a < b ? 1 : 0;
+                if (op == "<=")
+                    return a <= b ? 1 : 0;
+                if (op == ">")
+                    return a > b ? 1 : 0;
+                if (op == ">=")
+                    return a >= b ? 1 : 0;
+                if (op == "<<")
+                    return wrap(static_cast<int64_t>(static_cast<uint32_t>(a) << (b & 31)));
+                if (op == ">>")
+                    return a >> (b & 31);
+                if (op == "+")
+                    return checked(a + b);
+                if (op == "-")
+                    return checked(a - b);
+                if (op == "*")
+                    return checked(a * b);
+                if (b == 0)
+                    return skip_ > 0 ? V(0) : std::nullopt;     // a division by 0
+                return checked(op == "/" ? a / b : a % b);
+            }
+
+            V unary()
+            {
+                if (take("-"))
+                {
+                    const V v = unary();
+                    return v ? checked(-*v) : std::nullopt;
+                }
+                if (take("+"))
+                    return unary();
+                if (take("~"))
+                {
+                    const V v = unary();
+                    return v ? V(~*v) : std::nullopt;
+                }
+                if (take("!"))
+                {
+                    const V v = unary();
+                    return v ? V(*v == 0 ? 1 : 0) : std::nullopt;
+                }
+                // a cast to int (or to an enumeration, an int)
+                if (at("(") && k_ + 2 < to_ && t_[static_cast<std::size_t>(k_ + 1)].text == "int"
+                    && t_[static_cast<std::size_t>(k_ + 2)].text == ")")
+                {
+                    k_ += 3;
+                    return unary();
+                }
+                if (at("(") && k_ + 3 < to_ && t_[static_cast<std::size_t>(k_ + 1)].text == "enum"
+                    && t_[static_cast<std::size_t>(k_ + 3)].text == ")")
+                {
+                    k_ += 4;
+                    return unary();
+                }
+                return primary();
+            }
+
+            V primary()
+            {
+                if (k_ >= to_)
+                    return std::nullopt;
+                const Token& t = t_[static_cast<std::size_t>(k_)];
+                if (take("("))
+                {
+                    const V v = conditional();
+                    return v && take(")") ? v : std::nullopt;
+                }
+                if (t.kind == Tok::keyword && (t.text == "true" || t.text == "false"))
+                {
+                    ++k_;
+                    return t.text == "true" ? 1 : 0;
+                }
+                if (t.kind == Tok::identifier)
+                {
+                    ++k_;
+                    return lookup_ ? lookup_(t.text) : std::nullopt;
+                }
+                if (t.kind == Tok::number)
+                {
+                    ++k_;
+                    return number(t.text);
+                }
+                return std::nullopt;
+            }
+
+            // An int constant: decimal, octal (a leading 0) or hex, at most INT_MAX; a float's is none.
+            static V number(std::string_view x)
+            {
+                int base = 10;
+                std::size_t i = 0;
+                if (x.size() > 1 && x[0] == '0' && (x[1] == 'x' || x[1] == 'X'))
+                {
+                    base = 16;
+                    i = 2;
+                }
+                else if (x.size() > 1 && x[0] == '0')
+                    base = 8;
+                if (i >= x.size())
+                    return std::nullopt;
+                int64_t v = 0;
+                for (; i < x.size(); ++i)
+                {
+                    const char c = x[i];
+                    const int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : 99;
+                    if (d >= base)
+                        return std::nullopt;                  // a float's ., e or f, a suffix
+                    v = v * base + d;
+                    if (v > std::numeric_limits<int32_t>::max())
+                        return std::nullopt;
+                }
+                return v;
+            }
+
+            const std::vector<Token>& t_;
+            int k_ = 0, to_ = 0;
+            const Lookup& lookup_;
+            int skip_ = 0;
+        };
 
         // ---- one file, indexed --------------------------------------------------------------------------------------
         struct Body
@@ -265,6 +525,14 @@ namespace playground::lang
             std::vector<Symbol> decls;
             std::vector<Body> bodies;
             std::vector<ModuleSpan> modules;
+            // Its enumeration constants whose values are folded once every file is indexed (foldValues): the
+            // constant (a decls index), its expression's code tokens [from, to) (none: from < 0, the one before
+            // plus 1), the constant before it in its list (-1 for none).
+            struct Pending
+            {
+                int decl = -1, from = -1, to = -1, before = -1;
+            };
+            std::vector<Pending> pending;
             std::string header;                  // the comment lines the file starts with
             // A netlist's (indexCircuit): its pots and switches, in order, as circuitDials() gives them.
             std::vector<CircuitPot> pots;
@@ -376,7 +644,17 @@ namespace playground::lang
                         i = moduleAt(i);
                         continue;
                     }
-                    const int e = function(i, {});
+                    if (const int e = enumeration(i, {}, std::nullopt); e > i)
+                    {
+                        i = e;
+                        continue;
+                    }
+                    if (const int e = function(i, {}); e > i)
+                    {
+                        i = e;
+                        continue;
+                    }
+                    const int e = constants(i);
                     i = e > i ? e : i + 1;
                 }
             }
@@ -391,7 +669,7 @@ namespace playground::lang
             const Token& tok(int i) const { return t_[static_cast<std::size_t>(i)]; }
             int partner(int i) const { return i >= 0 && i < n_ ? f_.match[static_cast<std::size_t>(i)] : -1; }
 
-            // A type at i: [const] (type word | poly type word | identifier); the index after it, -1 for none.
+            // A type at i: [const] (type word | poly type word | enum tag | identifier); the index after it, -1 for none.
             int type(int i, std::string& out) const
             {
                 int j = i;
@@ -401,7 +679,14 @@ namespace playground::lang
                     s = "const ";
                     ++j;
                 }
-                if (j < n_ && tok(j).kind == Tok::type)
+                if (is(j, "enum"))
+                {
+                    if (!ident(j + 1))
+                        return -1;
+                    s += "enum " + std::string(tok(j + 1).text);
+                    j += 2;
+                }
+                else if (j < n_ && tok(j).kind == Tok::type)
                 {
                     if (tok(j).text == "poly")
                     {
@@ -473,6 +758,11 @@ namespace playground::lang
                         k = param(k, m.name, close);
                         continue;
                     }
+                    if (const int en = enumeration(k, m.name, std::nullopt); en > k)
+                    {
+                        k = en;
+                        continue;
+                    }
                     int e = function(k, m.name);
                     if (e > k)
                     {
@@ -511,6 +801,159 @@ namespace playground::lang
                         continue;
                     }
                     ++k;
+                }
+                return limit;
+            }
+
+            // An enumeration at i, C's: [const] enum [Tag] { NAME [= expr], ... [,] } ; its tag and its constants, a
+            // module's (seen by its methods) when `module` names one, a block's when `scope` is given (to the block's
+            // end), else the top level's. The index after it; i when i starts none.
+            int enumeration(int i, const std::string& module, std::optional<Pos> scopeEnd)
+            {
+                int j = is(i, "const") ? i + 1 : i;
+                if (!is(j, "enum"))
+                    return i;
+                const int keyword = j++;
+                int tag = -1;
+                if (ident(j))
+                    tag = j++;
+                if (!is(j, "{") || partner(j) <= j)
+                    return i;
+                const int open = j, close = partner(j);
+                if (tag >= 0)
+                {
+                    Symbol t;
+                    t.kind = Kind::enumeration;
+                    t.name = std::string(tok(tag).text);
+                    t.type = "enum " + t.name;
+                    t.at = startOf(tok(tag));
+                    t.container = module;
+                    if (scopeEnd)
+                        t.scope = { t.at, *scopeEnd };
+                    t.signature = joinTokens(t_, keyword, close + 1);
+                    if (t.signature.size() > 160)
+                        t.signature = t.signature.substr(0, 156) + " ...";
+                    t.doc = docFor(tok(i).line);
+                    add(t);
+                }
+                int before = -1;
+                for (int k = open + 1; k < close;)
+                {
+                    if (!ident(k))
+                    {
+                        ++k;
+                        continue;
+                    }
+                    const Token& name = tok(k);
+                    int e = k + 1, from = -1, to = -1;
+                    if (is(e, "="))
+                        from = e + 1;
+                    while (e < close && !is(e, ","))
+                        e = (is(e, "(") || is(e, "[")) && partner(e) > e ? partner(e) + 1 : e + 1;
+                    if (from >= 0)
+                        to = e;
+                    Symbol c;
+                    c.kind = Kind::constant;
+                    c.name = std::string(name.text);
+                    c.type = "int";
+                    c.at = startOf(name);
+                    c.container = module;
+                    c.enumeration = tag >= 0 ? std::string(tok(tag).text) : std::string();
+                    if (scopeEnd)
+                        c.scope = { c.at, *scopeEnd };
+                    c.signature = from >= 0 ? c.name + " = " + joinTokens(t_, from, to) : c.name;
+                    c.doc = docFor(name.line);
+                    const int index = add(c);
+                    f_.pending.push_back({ index, from, to, before });
+                    before = index;
+                    k = e + 1;
+                }
+                int after = close + 1;
+                if (is(after, ";"))
+                    ++after;
+                return after;
+            }
+
+            // The top level's constants at i, C's file-scope const objects: const type declarator (, declarator)* ;
+            // (a table, a scalar, a pointer to an element), each with its initialiser. The index after its ';', i when
+            // i starts none.
+            int constants(int i)
+            {
+                if (!is(i, "const"))
+                    return i;
+                std::string base;
+                int j = type(i, base);
+                if (j < 0)
+                    return i;
+                bool any = false;
+                while (j < n_)
+                {
+                    std::string ty = base;
+                    j = pointer(j, ty);
+                    if (!ident(j))
+                        break;
+                    const Token& name = tok(j++);
+                    std::string extent;
+                    if (is(j, "[") && partner(j) > j)
+                    {
+                        extent = joinTokens(t_, j, partner(j) + 1);
+                        j = partner(j) + 1;
+                    }
+                    if (!any && !(is(j, "=") || is(j, ";") || is(j, ",")))
+                        return i;
+                    any = true;
+                    int e = j, from = -1;
+                    if (is(e, "="))
+                        from = ++e;
+                    while (e < n_ && !is(e, ",") && !is(e, ";"))
+                        e = (is(e, "(") || is(e, "[") || is(e, "{")) && partner(e) > e ? partner(e) + 1 : e + 1;
+                    Symbol c;
+                    c.kind = Kind::constant;
+                    c.name = std::string(name.text);
+                    c.type = ty + extent;
+                    c.at = startOf(name);
+                    std::string init = from >= 0 ? joinTokens(t_, from, e) : std::string();
+                    if (init.size() > 64)
+                        init = init.substr(0, 60) + " ...";
+                    c.signature = ty + (ty.back() == '*' ? "" : " ") + c.name + extent + (init.empty() ? "" : " = " + init);
+                    c.doc = docFor(name.line);
+                    add(c);
+                    j = e;
+                    if (is(j, ","))
+                    {
+                        ++j;
+                        continue;
+                    }
+                    break;
+                }
+                if (!any)
+                    return i;
+                return is(j, ";") ? j + 1 : j;
+            }
+
+            // Past a label at i (`case expr :` or `default :`, C23's: a block item of its own), where a statement may
+            // start: after its `:` (a ?: inside the value has its own).
+            int pastLabel(int i, int limit) const
+            {
+                int questions = 0;
+                for (int j = i + 1; j < limit;)
+                {
+                    if ((is(j, "(") || is(j, "[")) && partner(j) > j)
+                    {
+                        j = partner(j) + 1;
+                        continue;
+                    }
+                    if (is(j, "?"))
+                        ++questions;
+                    else if (is(j, ":"))
+                    {
+                        if (questions == 0)
+                            return j + 1;
+                        --questions;
+                    }
+                    else if (is(j, ";") || is(j, "{") || is(j, "}"))
+                        return j;
+                    ++j;
                 }
                 return limit;
             }
@@ -759,6 +1202,23 @@ namespace playground::lang
                     }
                     if (start)
                     {
+                        if (is(k, "case") || is(k, "default"))
+                        {
+                            k = pastLabel(k, close);
+                            start = true;
+                            continue;
+                        }
+                        if (is(k, "enum") || (is(k, "const") && is(k + 1, "enum")))
+                        {
+                            const int blockClose = partner(blocks.back()) > 0 ? partner(blocks.back()) : close;
+                            const int e = enumeration(k, {}, startOf(tok(blockClose)));
+                            if (e > k)
+                            {
+                                k = e;
+                                start = true;
+                                continue;
+                            }
+                        }
                         const int f = is(k, "parallel") && is(k + 1, "for") ? k + 1 : k;
                         if (is(f, "for") && is(f + 1, "(") && partner(f + 1) > f + 1)
                         {
@@ -769,7 +1229,7 @@ namespace playground::lang
                             start = true;
                             continue;
                         }
-                        if ((is(k, "if") || is(k, "while")) && is(k + 1, "(") && partner(k + 1) > k + 1)
+                        if ((is(k, "if") || is(k, "while") || is(k, "switch")) && is(k + 1, "(") && partner(k + 1) > k + 1)
                         {
                             k = partner(k + 1) + 1;
                             start = true;
@@ -810,6 +1270,7 @@ namespace playground::lang
             f.code.clear();
             f.match.clear();
             f.includes.clear();
+            f.pending.clear();
             f.decls.clear();
             f.bodies.clear();
             f.modules.clear();
@@ -990,6 +1451,7 @@ namespace playground::lang
             f.all = lex(f.text);
             f.code.clear();
             f.includes.clear();
+            f.pending.clear();
             f.decls.clear();
             f.bodies.clear();
             f.modules.clear();
@@ -1050,6 +1512,51 @@ namespace playground::lang
                     if (first)
                         s.doc = f.header;
                 }
+        }
+
+        bool isEnumerator(const Symbol& s) { return s.kind == Kind::constant && s.type == "int"; }
+
+        // The enumeration constants' values (FileData::pending), folded over every file once all are indexed: a pass
+        // folds what it can (an expression whose names have values, the constant before one plus 1), and passes go on
+        // while one adds a value, so a constant may name one of another file, or of a list after it. Each signature
+        // then says its value, `SQUARE = 4`, or keeps its expression as written when it does not fold.
+        void foldValues(const std::vector<FileData*>& files)
+        {
+            const Folder::Lookup lookup = [&files](std::string_view name) -> std::optional<int64_t> {
+                for (const FileData* f : files)
+                    for (const Symbol& s : f->decls)
+                        if (isEnumerator(s) && s.name == name && s.value)
+                            return s.value;
+                return std::nullopt;
+            };
+            for (bool more = true; more;)
+            {
+                more = false;
+                for (FileData* f : files)
+                    for (const FileData::Pending& p : f->pending)
+                    {
+                        Symbol& c = f->decls[static_cast<std::size_t>(p.decl)];
+                        if (c.value)
+                            continue;
+                        std::optional<int64_t> v;
+                        if (p.from >= 0)
+                            v = Folder(f->code, p.from, p.to, lookup).run();
+                        else if (p.before < 0)
+                            v = 0;
+                        else if (const std::optional<int64_t> b = f->decls[static_cast<std::size_t>(p.before)].value;
+                                 b && *b < std::numeric_limits<int32_t>::max())
+                            v = *b + 1;
+                        if (v)
+                        {
+                            c.value = v;
+                            more = true;
+                        }
+                    }
+            }
+            for (FileData* f : files)
+                for (const FileData::Pending& p : f->pending)
+                    if (Symbol& c = f->decls[static_cast<std::size_t>(p.decl)]; c.value)
+                        c.signature = c.name + " = " + std::to_string(*c.value);
         }
 
         // The lines of a module's documentation that name `member` (`filter.lp`, `host->bpm`, `y = filter.tick(x);`)
@@ -1232,7 +1739,10 @@ namespace playground::lang
                 while (j < n && isIdentChar(at(j)))
                     ++j;
                 const std::string_view w = s.substr(static_cast<std::size_t>(i), static_cast<std::size_t>(j - i));
-                push(isKeyword(w) ? Tok::keyword : isTypeWord(w) ? Tok::type : Tok::identifier, i, j, false);
+                // After `::` a keyword is a name, as C23 reads one in an attribute: fminus::default.
+                const bool scoped = !out.empty() && out.back().line == ln && out.back().text == "::";
+                push(scoped ? Tok::identifier : isKeyword(w) ? Tok::keyword : isTypeWord(w) ? Tok::type : Tok::identifier, i, j,
+                     false);
                 i = j;
                 continue;
             }
@@ -1282,9 +1792,21 @@ namespace playground::lang
                 i = j;
                 continue;
             }
-            static constexpr std::string_view kTwo[] = { "++", "--", "+=", "-=", "*=", "/=", "%=", "->", "<=", ">=",
-                                                         "==", "!=", "&&", "||", "::" };
+            // The longest operator first: <<= and >>= before << and >>, which come before < and >.
+            static constexpr std::string_view kThree[] = { "<<=", ">>=" };
+            static constexpr std::string_view kTwo[] = { "++", "--", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<",
+                                                         ">>", "->", "<=", ">=", "==", "!=", "&&", "||", "::" };
             bool two = false;
+            for (const std::string_view op : kThree)
+                if (at(i) == op[0] && at(i + 1) == op[1] && at(i + 2) == op[2])
+                {
+                    push(Tok::op, i, i + 3, false);
+                    i += 3;
+                    two = true;
+                    break;
+                }
+            if (two)
+                continue;
             for (const std::string_view op : kTwo)
                 if (at(i) == op[0] && at(i + 1) == op[1])
                 {
@@ -1295,7 +1817,7 @@ namespace playground::lang
                 }
             if (two)
                 continue;
-            if (std::strchr("+-*/%=<>!&?:", c) != nullptr)
+            if (std::strchr("+-*/%=<>!&|^~?:", c) != nullptr)
                 push(Tok::op, i, i + 1, false);
             else if (std::strchr("()[]{},;.", c) != nullptr)
                 push(Tok::punct, i, i + 1, false);
@@ -1527,6 +2049,8 @@ namespace playground::lang
             case Kind::attribute: return "attribute";
             case Kind::lane:      return "lane";
             case Kind::word:      return "word";
+            case Kind::constant:  return "constant";
+            case Kind::enumeration: return "enum";
         }
         return "";
     }
@@ -1539,13 +2063,13 @@ namespace playground::lang
         std::vector<std::unique_ptr<FileData>> library;
         std::vector<File> view;                           // files(), as the API gives them
         std::vector<Symbol> symbols;
-        std::vector<std::string> typeNames;
+        std::vector<std::string> typeNames, constantNames;
 
         void rebuild()
         {
             view.clear();
             symbols.clear();
-            std::set<std::string> types;
+            std::set<std::string> types, constants;
             for (const auto& f : files)
             {
                 view.push_back({ f->name, f->text, f->program });
@@ -1554,10 +2078,15 @@ namespace playground::lang
                     symbols.push_back(s);
                     if (s.kind == Kind::module)
                         types.insert(s.name);
+                    else if (s.kind == Kind::constant)
+                        constants.insert(s.name);
                 }
             }
             typeNames.assign(types.begin(), types.end());
+            constantNames.assign(constants.begin(), constants.end());
         }
+
+        static bool scoped(const Symbol& s) { return !(s.scope.from == s.scope.to); }
 
         int indexOf(std::string_view name) const
         {
@@ -1662,29 +2191,51 @@ namespace playground::lang
             return nullptr;
         }
 
-        // A local or argument named `name` seen at p (the innermost: declared last before p).
-        const Symbol* localNamed(const FileData& f, std::string_view name, Pos p) const
+        // A local, an argument or a block's constant named `name` seen at p (the innermost: declared last before p);
+        // with `tag`, a block's enumeration of that tag (C's tags are a name space of their own).
+        const Symbol* localNamed(const FileData& f, std::string_view name, Pos p, bool tag = false) const
         {
             const Symbol* best = nullptr;
             for (const Symbol& s : f.decls)
-                if ((s.kind == Kind::local || s.kind == Kind::argument) && s.name == name && s.scope.from <= p
-                    && p <= s.scope.to && (best == nullptr || best->at < s.at))
+            {
+                const bool kind = tag ? s.kind == Kind::enumeration && scoped(s)
+                                      : s.kind == Kind::local || s.kind == Kind::argument || (s.kind == Kind::constant && scoped(s));
+                if (kind && s.name == name && s.scope.from <= p && p <= s.scope.to && (best == nullptr || best->at < s.at))
                     best = &s;
+            }
             return best;
         }
 
-        // A function or module named `name` in the files a file sees (a definition before a prototype).
-        const Symbol* globalNamed(int file, std::string_view name) const
+        // A module's own constant (an enumeration's, seen by its methods) named `name`, or with `tag` its enumeration.
+        const Symbol* moduleConstant(std::string_view module, std::string_view name, bool tag) const
         {
+            for (const auto* set : { &files, &library })
+                for (const auto& f : *set)
+                    for (const Symbol& s : f->decls)
+                        if (s.kind == (tag ? Kind::enumeration : Kind::constant) && s.container == module && !scoped(s) && s.name == name)
+                            return &s;
+            return nullptr;
+        }
+
+        // What the top level declares, in the files a file sees: a function or a module named `name` (a definition
+        // before a prototype), a constant (an enumeration's, a const of the top level), or with `tag` an enumeration.
+        const Symbol* globalNamed(int file, std::string_view name, bool tag = false) const
+        {
+            const auto wanted = [tag](const Symbol& s) {
+                if (tag)
+                    return s.kind == Kind::enumeration && s.container.empty() && !scoped(s);
+                return s.kind == Kind::function || s.kind == Kind::module
+                    || (s.kind == Kind::constant && s.container.empty() && !scoped(s));
+            };
             const Symbol* best = nullptr;
             for (const int fi : visible(file))
                 for (const Symbol& s : files[static_cast<std::size_t>(fi)]->decls)
-                    if ((s.kind == Kind::function || s.kind == Kind::module) && s.name == name && (best == nullptr || (!best->body && s.body)))
+                    if (wanted(s) && s.name == name && (best == nullptr || (!best->body && s.body)))
                         best = &s;
             if (best == nullptr)
                 for (const auto& f : files)
                     for (const Symbol& s : f->decls)
-                        if ((s.kind == Kind::function || s.kind == Kind::module) && s.name == name && (best == nullptr || (!best->body && s.body)))
+                        if (wanted(s) && s.name == name && (best == nullptr || (!best->body && s.body)))
                             best = &s;
             return best;
         }
@@ -1782,12 +2333,18 @@ namespace playground::lang
                 return base.empty() ? nullptr : memberNamed(base, t.text);
             }
             const Pos p = startOf(t);
-            if (const Symbol* s = localNamed(*f, t.text, p))
+            const bool tag = isText(*f, i - 1, "enum");      // `enum Wave`: the tag, never a variable
+            if (const Symbol* s = localNamed(*f, t.text, p, tag))
                 return s;
             if (const std::string m = moduleAt(*f, p); !m.empty())
-                if (const Symbol* s = memberNamed(m, t.text))
+            {
+                if (!tag)
+                    if (const Symbol* s = memberNamed(m, t.text))
+                        return s;
+                if (const Symbol* s = moduleConstant(m, t.text, tag))
                     return s;
-            return globalNamed(file, t.text);
+            }
+            return globalNamed(file, t.text, tag);
         }
     };
 
@@ -1835,8 +2392,13 @@ namespace playground::lang
         // A file's index is part of its symbols: index every file again when any changed (they are small).
         if (changed)
         {
+            std::vector<FileData*> all;
             for (std::size_t i = 0; i < m.files.size(); ++i)
+            {
                 indexFile(*m.files[i], static_cast<int>(i));
+                all.push_back(m.files[i].get());
+            }
+            foldValues(all);
             m.rebuild();
         }
     }
@@ -1852,12 +2414,17 @@ namespace playground::lang
             indexFile(*f, -1);
             impl_->library.push_back(std::move(f));
         }
+        std::vector<FileData*> all;
+        for (const auto& f : impl_->library)
+            all.push_back(f.get());
+        foldValues(all);
     }
 
     const std::vector<Service::File>& Service::files() const noexcept { return impl_->view; }
     int Service::fileIndex(std::string_view name) const noexcept { return impl_->indexOf(name); }
     const std::vector<Symbol>& Service::symbols() const noexcept { return impl_->symbols; }
     const std::vector<std::string>& Service::typeNames() const noexcept { return impl_->typeNames; }
+    const std::vector<std::string>& Service::constantNames() const noexcept { return impl_->constantNames; }
 
     Range Service::wordAt(int file, Pos at) const
     {
@@ -2094,18 +2661,34 @@ namespace playground::lang
             }
         }
 
-        // Everything a name may be here.
         const Pos p = out.replace.from;
+        const std::string module = m.moduleAt(*f, p);
+        // After `enum`: the enumerations' tags (C's tags are a name space of their own): a block's in scope, the
+        // module's, the top level's of the files the program reads.
+        if (const int b = Impl::lastBefore(*f, p); b >= 0 && Impl::isText(*f, b, "enum"))
+        {
+            for (const Symbol& s : f->decls)
+                if (s.kind == Kind::enumeration && Impl::scoped(s) && s.scope.from < p && p <= s.scope.to)
+                    offer(s.name, s.kind, s.signature, s.doc, {}, 0);
+            for (const int fi : m.visible(file))
+                for (const Symbol& s : m.files[static_cast<std::size_t>(fi)]->decls)
+                    if (s.kind == Kind::enumeration && !Impl::scoped(s) && (s.container.empty() || s.container == module))
+                        offer(s.name, s.kind, s.signature, s.doc, {}, s.container.empty() ? 2 : 1);
+            return finish();
+        }
+
+        // Everything a name may be here.
         for (const Symbol& s : f->decls)
-            if ((s.kind == Kind::local || s.kind == Kind::argument) && s.scope.from < p && p <= s.scope.to && s.at < p)
+            if ((s.kind == Kind::local || s.kind == Kind::argument || (s.kind == Kind::constant && Impl::scoped(s)))
+                && s.scope.from < p && p <= s.scope.to && s.at < p)
             {
                 const std::size_t before = items.size();
-                offer(s.name, s.kind, s.type, s.doc, {}, 0);
+                offer(s.name, s.kind, s.kind == Kind::constant ? s.signature : s.type, s.doc, {}, 0);
                 withCode(before, s.signature);
             }
-        const std::string module = m.moduleAt(*f, p);
         const Symbol* function = m.functionAt(*f, p);
         if (!module.empty())
+        {
             for (const Symbol* s : m.membersOf(module))
                 if (!(s->at == p))
                 {
@@ -2114,16 +2697,30 @@ namespace playground::lang
                           s->kind == Kind::method ? s->name + (s->params.empty() ? "()" : "($0)") : std::string(), 1);
                     withCode(before, s->signature);
                 }
+            // the module's own enumerations' constants
+            for (const auto& g : m.files)
+                for (const Symbol& s : g->decls)
+                    if (s.kind == Kind::constant && s.container == module && !Impl::scoped(s) && !(s.at == p))
+                    {
+                        const std::size_t before = items.size();
+                        offer(s.name, s.kind, s.signature, s.doc, {}, 1);
+                        withCode(before, s.signature);
+                    }
+        }
         std::set<std::string> modulesSeen;
         for (const int fi : m.visible(file))
             for (const Symbol& s : m.files[static_cast<std::size_t>(fi)]->decls)
-                if ((s.kind == Kind::function || s.kind == Kind::module) && !(fi == file && s.at == p))
+                if ((s.kind == Kind::function || s.kind == Kind::module || (s.kind == Kind::constant && s.container.empty() && !Impl::scoped(s)))
+                    && !(fi == file && s.at == p))
                 {
                     if (s.kind == Kind::module)
                         modulesSeen.insert(s.name);
-                    offer(s.name, s.kind, s.kind == Kind::function ? s.signature : "module",
+                    const std::size_t before = items.size();
+                    offer(s.name, s.kind, s.kind == Kind::module ? std::string("module") : s.signature,
                           s.doc.size() > 600 ? s.doc.substr(0, 600) + "..." : s.doc,
                           s.kind == Kind::function ? s.name + (s.params.empty() ? "()" : "($0)") : std::string(), 2);
+                    if (s.kind == Kind::constant)
+                        withCode(before, s.signature);
                 }
         for (const BuiltinInfo& b : kBuiltins)
             offer(std::string(b.name), Kind::builtin,
@@ -2373,6 +2970,24 @@ namespace playground::lang
                     h.code = s->signature;
                     h.doc = s->doc;
                     break;
+                case Kind::constant:
+                {
+                    h.code = s->signature;
+                    std::string what;
+                    if (isEnumerator(*s))
+                        what = (s->enumeration.empty() ? std::string("an enumeration constant, an int")
+                                                       : "a constant of enum " + s->enumeration + ", an int")
+                             + (s->container.empty() ? "" : " (in module " + s->container + ")");
+                    else
+                        what = "a constant of the program (" + s->type + "): stored once, read by every function and "
+                               "module after it";
+                    h.doc = what + (s->doc.empty() ? "" : "\n" + s->doc);
+                    break;
+                }
+                case Kind::enumeration:
+                    h.code = s->signature;
+                    h.doc = "an enumeration: enum " + s->name + " is an int" + (s->doc.empty() ? "" : "\n" + s->doc);
+                    break;
                 case Kind::module:
                 {
                     h.code = s->signature;
@@ -2540,10 +3155,17 @@ namespace playground::lang
                 for (std::size_t k = at + 1; k < close && close != std::string::npos; ++k)
                     if (x->type[k] != ' ')
                         extent += x->type[k];
-                bool digits = !extent.empty() && extent.size() <= 6;   // a literal extent; a constant's: 0 (unknown)
-                for (const char c : extent)
-                    digits = digits && c >= '0' && c <= '9';
-                b.dims.push_back(digits ? std::atoi(extent.c_str()) : 0);
+                // A number, or an expression of enumeration constants as FMinus folds it (`amp[CHANNELS]`); what does not
+                // fold to 1 to 2^30 is 0 (unknown), and Patch then gives the binding no dials.
+                const std::vector<Token> toks = lex(extent);
+                const Folder::Lookup lookup = [&m](std::string_view name) -> std::optional<int64_t> {
+                    for (const Symbol& c : m.symbols)
+                        if (isEnumerator(c) && c.name == name && c.value)
+                            return c.value;
+                    return std::nullopt;
+                };
+                const std::optional<int64_t> v = Folder(toks, 0, static_cast<int>(toks.size()), lookup).run();
+                b.dims.push_back(v && *v >= 1 && *v <= (int64_t{ 1 } << 30) ? static_cast<int>(*v) : 0);
             }
             b.pots = netlist->pots;
             b.switches = netlist->switches;
