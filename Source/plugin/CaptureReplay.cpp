@@ -187,6 +187,9 @@ namespace playground::capture
             q.pitchbend = w[1];
             q.events.push_back({ 0, Event{ 0, EventKind::pressure, 0, w[2] } });
             q.events.push_back({ 0, Event{ 0, EventKind::controller, 64, w[3] >= 0.5f ? 1.0f : 0.0f } });
+            for (int i = 0; i < wheelcc::kStateCcs; ++i)        // a racing wheel's where they stood off rest
+                if (const uint8_t v = t.blocks[first].racing[static_cast<std::size_t>(i)]; v != wheelcc::restOf(i))
+                    q.events.push_back({ 0, Event{ 0, EventKind::controller, wheelcc::stateCc(i), static_cast<float>(v) / 127.0f } });
             for (const Note& x : t.events)
                 if (x.sample >= s0 && x.sample < s1)
                     q.events.push_back({ static_cast<std::size_t>(x.sample - s0), x.event(0) });

@@ -340,11 +340,26 @@ namespace playground::ui
                 label("Inputs");
                 for (std::size_t i = 0; i < s.midi.size(); ++i)
                 {
-                    const std::string name = asciiText(s.midi[i].name);
+                    const MidiInputDevice& m = s.midi[i];
+                    const std::string name = asciiText(m.name);
                     control(Act::midi, static_cast<int>(i), { ctrlX, y, std::min(ctrlW, std::ceil(kSwitchW + 10.0f + textW(name, chat::kSmall) + 8.0f)), kRowH },
-                            name, "MIDI input " + s.midi[i].name, true)
-                        .on = s.midi[i].on;
-                    y += i + 1 < s.midi.size() ? kFlowStep : kRowStep;
+                            name, "MIDI input " + m.name + (m.status.empty() ? "" : ": " + m.status), true)
+                        .on = m.on;
+                    const float step = i + 1 < s.midi.size() ? kFlowStep : kRowStep;
+                    if (m.status.empty())
+                    {
+                        y += step;
+                        continue;
+                    }
+                    // Its status under its name, as the mute's why is under its switch.
+                    const float noteX = ctrlX + kSwitchW + 10.0f;
+                    y += kRowH + 2.0f;
+                    for (std::string& l : wrapped(asciiText(m.status), chat::kSmall, ctrlW - (noteX - ctrlX)))
+                    {
+                        line(Line::Kind::note, std::move(l), { noteX, y, ctrlW - (noteX - ctrlX), 16.0f });
+                        y += 16.0f;
+                    }
+                    y += step - kRowH - 2.0f;
                 }
             }
             errors(DeviceSection::midi);

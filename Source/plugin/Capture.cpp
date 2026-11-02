@@ -263,6 +263,7 @@ namespace playground::capture
         pending_.dials = dials;
         const HostBlock& h = engine.host();                  // the audio thread's own: the wheels and the pedal now
         pending_.wheels = { h.modwheel, h.pitchbend, h.aftertouch, h.sustain ? 1.0f : 0.0f };
+        pending_.racing = engine.wheelCcs();
         // The samples this block writes: announced before they are (Capture.h).
         maxStore(r->samplesAnnounced, r->s + len);
         std::atomic_thread_fence(std::memory_order_release);
@@ -902,6 +903,25 @@ namespace playground::capture
                 s.dials.push_back(d);
         }
 
+        // A racing wheel's state at the start (Engine::wheelCcs then), as the Engine decodes it.
+        std::array<int, wheelcc::kAxes> v14{ { wheelcc::kCentre, 0, 0, 0 } };
+        int gear = 0;
+        uint32_t buttons = 0;
+        if (!t.blocks.empty())
+        {
+            const auto& r = t.blocks.front().racing;
+            for (std::size_t a = 0; a < v14.size(); ++a)
+                v14[a] = (r[2 * a] << 7) | r[2 * a + 1];
+            gear = wheelcc::gearOf(r[2 * wheelcc::kAxes]);
+            for (int b = 0; b < wheelcc::kButtonCcs; ++b)
+                buttons |= static_cast<uint32_t>(r[static_cast<std::size_t>(2 * wheelcc::kAxes + 1 + b)]) << (b * wheelcc::kButtonBits);
+        }
+        const auto axisOf = [&](std::size_t a) { return a == 0 ? wheelcc::steeringOf(v14[a]) : wheelcc::pedalOf(v14[a]); };
+        for (std::size_t a = 0; a < v14.size(); ++a)
+            s.racingLow[a] = s.racingHigh[a] = axisOf(a);
+        s.gearLow = s.gearHigh = gear;
+        s.buttonsDown = buttons;
+
         // The notes, the pedal and the wheels, from the events in order.
         std::array<bool, 128> held{}, sustained{};
         int nHeld = 0, nSustained = 0;
@@ -960,6 +980,27 @@ namespace playground::capture
                         ++s.modEvents;
                         s.modLow = std::min(s.modLow, x.velocity);
                         s.modHigh = std::max(s.modHigh, x.velocity);
+                    }
+                    else
+                    {
+                        // A racing wheel's, decoded as Engine::wheel does (an MSB resets its LSB).
+                        using namespace wheelcc;
+                        const int v = std::clamp(static_cast<int>(x.velocity * 127.0f + 0.5f), 0, 127), cc = x.note;
+                        if ((cc >= kSteering && cc < kSteering + kAxes) || (cc >= kSteering + kLsb && cc < kSteering + kLsb + kAxes))
+                        {
+                            const bool msb = cc < kSteering + kLsb;
+                            const auto a = static_cast<std::size_t>(cc - kSteering - (msb ? 0 : kLsb));
+                            v14[a] = msb ? v << 7 : (v14[a] & ~0x7F) | v;
+                            s.racingLow[a] = std::min(s.racingLow[a], axisOf(a));
+                            s.racingHigh[a] = std::max(s.racingHigh[a], axisOf(a));
+                        }
+                        else if (cc == kGear)
+                        {
+                            s.gearLow = std::min(s.gearLow, gearOf(v));
+                            s.gearHigh = std::max(s.gearHigh, gearOf(v));
+                        }
+                        else if (cc >= kButtons && cc < kButtons + kButtonCcs)
+                            s.buttonsDown |= static_cast<uint32_t>(v) << ((cc - kButtons) * kButtonBits);
                     }
                     break;
                 case EventKind::pitchBend:

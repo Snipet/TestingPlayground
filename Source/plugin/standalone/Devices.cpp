@@ -62,6 +62,8 @@ namespace playground::standalone
         {
             return rate > 0.0 ? static_cast<double>(samples) * 1000.0 / rate : 0.0;
         }
+
+        constexpr const char* kWheelKey = "racingWheel";  // the wheel switched on (the settings file, beside JUCE's)
     }
 
     Devices::Devices(juce::StandalonePluginHolder& holder) : holder_(holder)
@@ -71,10 +73,27 @@ namespace playground::standalone
         muted_.referTo(holder_.getMuteInputValue());
         muted_.addListener(this);
         midiList_ = juce::MidiDeviceListConnection::make([this] { changed(); });
+        if (holder_.processor != nullptr && holder_.processor->acceptsMidi())
+        {
+            RacingWheel::Hooks hooks;
+            hooks.changed = [this] { changed(); };
+            hooks.send = [this](const std::vector<wheel::Message>& ccs) {
+                // As a MIDI input's messages reach the player (juce::MidiInput: the time in seconds of
+                // Time::getMillisecondCounterHiRes), which its collector places in the next block.
+                juce::MidiMessageCollector& collector = holder_.player.getMidiMessageCollector();
+                const double now = juce::Time::getMillisecondCounterHiRes() * 0.001;
+                for (const wheel::Message& m : ccs)               // channel 1's status bytes
+                    collector.addMessageToQueue(juce::MidiMessage(m.status, m.number, m.value).withTimeStamp(now));
+            };
+            juce::PropertySet* settings = holder_.settings.get();
+            const bool on = settings != nullptr && settings->getBoolValue(kWheelKey, false);
+            wheel_ = std::make_unique<RacingWheel>(std::move(hooks), on);
+        }
     }
 
     Devices::~Devices()
     {
+        wheel_.reset();                                  // its spring stopped, before anything it posts into goes
         midiList_.reset();
         muted_.removeListener(this);
         for (juce::AudioIODeviceType* t : types_)
@@ -154,7 +173,9 @@ namespace playground::standalone
         s.takesMidi = holder_.processor != nullptr && holder_.processor->acceptsMidi();
         if (s.takesMidi)
             for (const juce::MidiDeviceInfo& m : juce::MidiInput::getAvailableDevices())
-                s.midi.push_back({ m.name.toStdString(), m.identifier.toStdString(), dm.isMidiInputDeviceEnabled(m.identifier) });
+                s.midi.push_back({ m.name.toStdString(), m.identifier.toStdString(), dm.isMidiInputDeviceEnabled(m.identifier), {} });
+        if (s.takesMidi && wheel_ != nullptr && wheel_->present())
+            s.midi.push_back({ wheel::kName, RacingWheel::kIdentifier, wheel_->on(), wheel_->status() });
         s.muteApplies = holder_.getProcessorHasPotentialFeedbackLoop();
         s.muted = static_cast<bool>(holder_.getMuteInputValue().getValue());
         if (!error_.empty())
@@ -246,7 +267,14 @@ namespace playground::standalone
 
     void Devices::switchMidi(const std::string& identifier, bool on)
     {
-        holder_.deviceManager.setMidiInputDeviceEnabled(juce::String(identifier), on);
+        if (wheel_ != nullptr && identifier == RacingWheel::kIdentifier)
+        {
+            wheel_->setOn(on);
+            if (juce::PropertySet* settings = holder_.settings.get())
+                settings->setValue(kWheelKey, on);
+        }
+        else
+            holder_.deviceManager.setMidiInputDeviceEnabled(juce::String(identifier), on);
         save();
         changed();
     }
@@ -267,9 +295,16 @@ namespace playground::standalone
             file->saveIfNeeded();
     }
 
+    void Devices::resendWheel()
+    {
+        if (wheel_ != nullptr)
+            wheel_->resend();
+    }
+
     void Devices::changeListenerCallback(juce::ChangeBroadcaster*)
     {
         listenToTypes();
+        resendWheel();                                   // a restart dropped what the collector held
         changed();
     }
 

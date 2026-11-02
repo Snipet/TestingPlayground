@@ -10,26 +10,26 @@ namespace playground
     {
         constexpr const char* kHostFile = R"FM(// host.fm: what the host and the player are doing, for a program to read. The plugin provides this file: #include it.
 //
-// Declare a field `Host* host;` in the main module (each Voice, or the Effect; Shared may have one too) and the plugin
-// points it at the one Host, which it fills before every call of start, stop and process. Read it; never write it.
+// Declare `Host* host;` in the main module (each Voice, or the Effect; Shared may have one too): the plugin points it
+// at the one Host and fills it before every call of start, stop and process. Read it; never write it.
 //
 //   host->bpm          the tempo, beats a minute (the host's; 120 when it says none)
 //   host->beat         the song position at this call's first sample, in quarter notes; sample i of the call is at
-//                      host->beat + i * host->bpm / (60 * rate). It moves while the host plays (when the host says
-//                      nothing, as the Standalone, it runs on at 120 BPM from when the program started)
-//   host->barStart     where the bar the song is in began, in quarter notes (host->beat - host->barStart: the beats
-//                      into it)
+//                      host->beat + i * host->bpm / (60 * rate). It moves while the host plays (a host that says
+//                      nothing, as the Standalone: on at 120 BPM from the program's start)
+//   host->barStart     the bar's start, in quarter notes (host->beat - host->barStart: the beats into the bar)
 //   host->beatsPerBar, host->beatUnit   the time signature (4 and 4)
 //   host->playing      the host's transport runs
 //   host->modwheel     the mod wheel (MIDI CC 1), 0 to 1
-//   host->pitchbend    the pitch wheel, -1 to 1 (0 at rest): the program chooses its range (2 semitones is usual)
+//   host->pitchbend    the pitch wheel, -1 to 1 (0 at rest)
 //   host->aftertouch   channel pressure, 0 to 1
-//   host->sustain      the sustain pedal is down (the plugin holds the notes itself: a key let go while it is down
-//                      gets its stop when the pedal comes up)
-//
-// A synced LFO: its rate host->bpm / 60 / beats (beats a cycle: 1 a quarter note, 4 a bar of 4/4, 0.5 an eighth), or,
-// to follow the song (the same phase at the same place, whenever it is played), its phase from the position:
-// phase = fract((host->beat + i * host->bpm / (60 * rate)) / beats).
+//   host->sustain      the sustain pedal is down (the plugin holds the notes)
+//   host->steering     a racing wheel (MIDI CCs 16 to 24; the Standalone's G29): -1 left to 1 right
+//   host->throttle, host->brake, host->clutch   its pedals, 0 released to 1
+//   host->gear         -1 reverse, 0 neutral, 1 to 7
+//   host->buttons      a bit each, a G29's: 0 cross, 1 square, 2 circle, 3 triangle, 4 right paddle, 5 left paddle,
+//                      6 R2, 7 L2, 8 share, 9 options, 10 R3, 11 L3, 12 +, 13 -, 14 dial right, 15 dial left,
+//                      16 return, 17 PS (also the start key: note 36 while held), 18-21 the d-pad up, right, down, left
 module Host
 {
     float bpm;
@@ -42,6 +42,8 @@ module Host
     float pitchbend;
     float aftertouch;
     bool sustain;
+    float steering, throttle, brake, clutch;
+    int gear, buttons;
 };
 )FM";
     }

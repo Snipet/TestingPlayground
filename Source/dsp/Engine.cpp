@@ -149,6 +149,7 @@ namespace playground
     {
         prepare(fs_, maxBlock_);
         host_ = HostBlock{};                         // the wheels, the pedal and the song's position at rest, as new
+        wheel14_ = { wheelcc::kCentre, 0, 0, 0 };
         beat_ = 0.0;
         bpm_ = 120.0;
         running_ = true;
@@ -1271,6 +1272,68 @@ namespace playground
                     }
             host_.sustain = down;
         }
+        else if (e.kind == EventKind::controller)
+            wheel(e.note, std::clamp(static_cast<int>(e.velocity * 127.0f + 0.5f), 0, 127));
+    }
+
+    // A racing wheel's control change (wheelcc): a 14-bit axis's MSB (its LSB reset to 0) or LSB, the gear, a part of
+    // the buttons' mask. Any other controller changes nothing.
+    void Engine::wheel(int cc, int v) noexcept
+    {
+        using namespace wheelcc;
+        const auto axis = [this](int a) {
+            const int v14 = wheel14_[static_cast<std::size_t>(a)];
+            if (a == 0)
+                host_.steering = steeringOf(v14);
+            else
+            {
+                const float p = pedalOf(v14);
+                (a == 1 ? host_.throttle : a == 2 ? host_.brake : host_.clutch) = p;
+            }
+        };
+        if (cc >= kSteering && cc < kSteering + kAxes)
+        {
+            const int a = cc - kSteering;
+            wheel14_[static_cast<std::size_t>(a)] = static_cast<uint16_t>(v << 7);
+            axis(a);
+        }
+        else if (cc >= kSteering + kLsb && cc < kSteering + kLsb + kAxes)
+        {
+            const int a = cc - kSteering - kLsb;
+            uint16_t& v14 = wheel14_[static_cast<std::size_t>(a)];
+            v14 = static_cast<uint16_t>((v14 & ~0x7F) | v);
+            axis(a);
+        }
+        else if (cc == kGear)
+            host_.gear = gearOf(v);
+        else if (cc >= kButtons && cc < kButtons + kButtonCcs)
+        {
+            const int shift = (cc - kButtons) * kButtonBits;
+            const uint32_t mask = 0x7Fu << shift;
+            const uint32_t bits = (static_cast<uint32_t>(host_.buttons) & ~mask) | (static_cast<uint32_t>(v) << shift);
+            host_.buttons = static_cast<int>(bits);
+        }
+    }
+
+    std::array<uint8_t, wheelcc::kStateCcs> Engine::wheelCcs() const noexcept
+    {
+        using namespace wheelcc;
+        std::array<uint8_t, kStateCcs> out{};
+        for (int i = 0; i < kStateCcs; ++i)
+        {
+            const int cc = stateCc(i);
+            int v = 0;
+            if (cc >= kSteering && cc < kSteering + kAxes)
+                v = wheel14_[static_cast<std::size_t>(cc - kSteering)] >> 7;
+            else if (cc >= kSteering + kLsb && cc < kSteering + kLsb + kAxes)
+                v = wheel14_[static_cast<std::size_t>(cc - kSteering - kLsb)] & 0x7F;
+            else if (cc == kGear)
+                v = host_.gear & 0x7F;
+            else
+                v = static_cast<int>((static_cast<uint32_t>(host_.buttons) >> ((cc - kButtons) * kButtonBits)) & 0x7Fu);
+            out[static_cast<std::size_t>(i)] = static_cast<uint8_t>(v);
+        }
+        return out;
     }
 
     void Engine::syncHost(int offset) noexcept

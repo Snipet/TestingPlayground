@@ -23,6 +23,8 @@
 //   ACTIONS  a channel pair's switch, a MIDI input's switch, the mute's switch (the notice gone once unmuted) and Test
 //            call the port; the output device, the sample rate and the buffer size chosen through their menus (the
 //            host's, the current one ticked) call it with those values, and the card shows them
+//   WHEEL    (the synth) the racing wheel among the MIDI inputs (standalone/RacingWheel.h's entry), its status under its
+//            name and in its accessibility title; its switch calls the port with its identifier; unplugged, it goes
 //   SERIAL   a device plugged in while the card is open: the output's menu lists it
 //   ERROR    the port's error shown under its section (Audio), in words to a screen reader too; JUCE's error with
 //            line breaks in lines of its own, no break drawn
@@ -39,6 +41,7 @@
 #include "plugin/EditorPort.h"
 #include "plugin/Processor.h"
 #include "plugin/ProjectStore.h"
+#include "plugin/WheelMap.h"
 
 #include "Product.h"
 
@@ -88,7 +91,8 @@ namespace
             s_.buffer = 256;
             s_.takesMidi = kInstrument;
             if (s_.takesMidi)
-                s_.midi = { { "IAC Driver Bus 1", "iac-1", false }, { "KeyStep 37", "keystep-37", true } };
+                s_.midi = { { "IAC Driver Bus 1", "iac-1", false, {} }, { "KeyStep 37", "keystep-37", true, {} },
+                            { pg::wheel::kName, pg::wheel::kIdentifier, true, "switching to its full mode" } };
             s_.muteApplies = !kInstrument;
             s_.muted = !kInstrument;
             refit();
@@ -129,10 +133,15 @@ namespace
         void setMuted(bool muted) override { did(std::string("mute:") + (muted ? "on" : "off"), [&] { s_.muted = muted; }); }
         void playTestTone() override { calls.push_back("tone"); }
 
-        // The world changing: a device plugged in, an error.
+        // The world changing: a device plugged in, an error, the racing wheel unplugged.
         void plugIn(const std::string& name)
         {
             s_.outputs.push_back(name);
+            ++serial_;
+        }
+        void unplugWheel()
+        {
+            std::erase_if(s_.midi, [](const pg::MidiInputDevice& m) { return m.identifier == pg::wheel::kIdentifier; });
             ++serial_;
         }
         void fail(const std::string& error, pg::DeviceSection where)
@@ -464,6 +473,20 @@ PROBE(gui, settings)
     {
         click(Act::midi, 0);
         P.eq("actions.midi", fake.last() == "midi:iac-1:on" ? 1 : 0, 1);
+        // The racing wheel (standalone/RacingWheel.h), a MIDI input among them, its status under its name.
+        const auto places = card.places(W(), H());
+        bool titled = false, status = false;
+        for (const pg::ui::SettingsCard::Control& c : places.controls)
+            titled = titled || (c.act == Act::midi && c.index == 2 && c.title.find("Logitech G29 Racing Wheel: switching") != std::string::npos);
+        for (const pg::ui::SettingsCard::Line& l : places.lines)
+            status = status || (l.kind == pg::ui::SettingsCard::Line::Kind::note && l.text == "switching to its full mode");
+        P.eq("wheel.listed_titled", titled ? 1 : 0, 1);
+        P.eq("wheel.status_shown", status ? 1 : 0, 1);
+        click(Act::midi, 2);
+        P.eq("wheel.switch", fake.last() == std::string("midi:") + pg::wheel::kIdentifier + ":off" ? 1 : 0, 1);
+        fake.unplugWheel();
+        settle();
+        P.eq("wheel.gone_with_it", card.centreOf(Act::midi, 2, W(), H()).has_value() ? 0 : 1, 1);
     }
     else
     {

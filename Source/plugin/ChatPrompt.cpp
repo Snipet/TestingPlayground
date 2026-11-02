@@ -161,7 +161,7 @@ module Voice
         const char* const kHostInstrument = R"(
 THE HOST: TEMPO, POSITION, WHEELS (host.fm)
 
-The plugin tells a program what the host and the player are doing through one module, Host, in host.fm: a file the plugin provides (no tab of its own: #include "host.fm" and it is there). Its text is below: declare `Host* host;` as it says.
+The plugin tells a program what the host and the player are doing through one module, Host, in host.fm, the plugin's own file (no tab of its own; its text below).
 - The pitch wheel: give the program a bend range (2 semitones is usual; 12 or 24 for leads and dives, a dial when the sound wants it) and take the frequency from the note and the bend each call: 440 * expf(0.0577622650f * (note + host->pitchbend * range - 69)) / rate. Without that the wheel does nothing, and a player expects it to bend.
 - The mod wheel (host->modwheel, 0 to 1) and aftertouch (host->aftertouch): give each a job that suits the sound, usually vibrato or an LFO's depth (depth = lfodepth[i] + host->modwheel * (1 - lfodepth[i])), else the filter's brightness or a swell; say in your answer what they do.
 - Tempo sync: an LFO's rate or a delay's time in beats (an int dial of divisions, 1/16 to 4 bars, beside the free rate, or a switch between them): Hz = host->bpm / 60 / beats; a delay of `beats` quarter notes lasts beats * 60 / host->bpm seconds. To follow the song as well, take the phase from the position: lfo.follow(host->beat + i * host->bpm / (60 * rate), beats) in place of lfo.advance (lfo.fm). host->beat stands still while the host is stopped, so an LFO that follows the song stops with it; one that only takes its rate from the tempo runs on.
@@ -175,7 +175,7 @@ The plugin tells a program what the host and the player are doing through one mo
         const char* const kHostEffect = R"(
 THE HOST: TEMPO AND POSITION (host.fm)
 
-The plugin tells a program what the host is doing through one module, Host, in host.fm: a file the plugin provides (no tab of its own: #include "host.fm" and it is there). Its text is below: declare `Host* host;` as it says (an effect gets no MIDI: its wheels stay at rest).
+The plugin tells a program what the host is doing through one module, Host, in host.fm, the plugin's own file (no tab of its own, its text below; an effect gets no MIDI: its wheels stay at rest).
 - Tempo sync: a delay's time or an LFO's rate in beats (an int dial of divisions, 1/16 to 4 bars, beside the free time, or a switch between them): a delay of `beats` quarter notes lasts beats * 60 / host->bpm seconds (ramp a change of it, or crossfade, so a tempo change does not click); an LFO's Hz = host->bpm / 60 / beats. To follow the song as well (a tremolo or a filter sweep in time), take the phase from the position: lfo.follow(host->beat + i * host->bpm / (60 * rate), beats) in place of lfo.advance (lfo.fm). host->beat stands still while the host is stopped, so what follows the song stops with it.
 - measure_output takes bpm, to measure a synced effect.
 
@@ -751,7 +751,8 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
                                instrument ? "phrase: [{note, at, len, vel}] (up to 256, seconds; len 0.5, vel 0.8 by default; it "
                                             "replaces notes and hold_seconds, held until its last note-off), automate: [{dial, at, "
                                             "to, over}] (up to 32: a float glides to `to` over `over` s, an int or a bool steps), "
-                                            "wheels: [{wheel: mod|bend|pressure|sustain, at, value}] (up to 64), host: {bpm, "
+                                            "wheels: [{wheel: mod|bend|pressure|sustain|steering|throttle|brake|clutch|gear, at, value}] (up to "
+                                            "64), host: {bpm, "
                                             "stop_at, jump_to_beat, jump_at},"
                                           : "automate: [{dial, at, to, over}] (up to 32, seconds: a float glides to `to` over "
                                             "`over` s, an int or a bool steps), host: {bpm, stop_at, jump_to_beat, jump_at}, input: "

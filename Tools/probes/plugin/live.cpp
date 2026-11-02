@@ -8,8 +8,9 @@
 //           through a gain of -6 dB: the input's RMS (-15.1 dBFS), the gain in to out (-6 dB), the output's peak at
 //           1 kHz, the display's field (0.501); an instrument's: three note-ons (A4, C5, E5) counted with their range
 //           and velocity, the keys held, three voices at once, none stolen or dropped, the spectrum's strongest peak at
-//           one of the notes; the CPU per block; the text and the JSON; the meters' readers raised while it listens
-//           and back after
+//           one of the notes; a racing wheel's fields off rest (steering, throttle, gear, buttons; the brake at rest
+//           left out); the CPU per block; the text and the JSON; the meters' readers raised while it listens and back
+//           after
 //   BYPASS  the host's bypass: listen says so
 //   SILENT  a host that calls nothing: listen says the host is not calling the plugin, and measures nothing
 //   LINK    through the socket: a listen of 5 s, get_status answered meanwhile (before the listen's reply), then a cancel
@@ -173,6 +174,9 @@ namespace
                         for (const auto& [k, note] : { std::pair{ 40, 69 }, std::pair{ 50, 72 }, std::pair{ 60, 76 } })
                             if (b == at + k)
                                 midi.addEvent(juce::MidiMessage::noteOn(1, note, static_cast<juce::uint8>(100)), 8);
+                    if (at >= 0 && b == at + 45)                     // a racing wheel: half right, half throttle, 2nd, cross
+                        for (const auto& [cc, value] : { std::pair{ 16, 96 }, std::pair{ 17, 64 }, std::pair{ 20, 2 }, std::pair{ 21, 1 } })
+                            midi.addEvent(juce::MidiMessage::controllerEvent(1, cc, value), 16);
                 }
                 if (bypass.load())
                     p.processBlockBypassed(buffer, midi);
@@ -327,6 +331,11 @@ PROBE(plugin, live)
             P.eq("listen.peak_at_a_note", atANote ? 1 : 0, 1);
             P.eq("listen.text_no_new_notes", has(t, "MIDI: 0 note-ons") ? 1 : 0, 1);
             P.eq("listen.text_held", has(t, "held now: A4 C5 E5") ? 1 : 0, 1);
+            const juce::var rw = v["racing_wheel"];
+            P.eq("listen.racing_json", std::fabs(static_cast<double>(rw["steering"]["now"]) - 0.5) < 1e-3
+                                           && static_cast<double>(rw["steering"]["min"]) == 0.0 && static_cast<int>(rw["gear"]["now"]) == 2
+                                           && static_cast<int>(rw["buttons"]["now"]) == 1 && rw["brake"].isVoid() ? 1 : 0, 1);
+            P.eq("listen.racing_text", has(t, "; racing wheel: steering +0.50, throttle 0.50, gear 2, buttons 0x1.") ? 1 : 0, 1);
         }
         else
         {
@@ -335,6 +344,7 @@ PROBE(plugin, live)
             P.near("listen.out_peak", static_cast<double>(lv["out"]["peak_dbfs"]), -18.0, 0.3);
             P.near("listen.peak_1khz", top, 1000.0, 10.0);
             P.eq("listen.text_gain", has(t, "Gain in to out: -6.0 dB") ? 1 : 0, 1);
+            P.eq("listen.no_racing", v["racing_wheel"].isVoid() && !has(t, "racing wheel") ? 1 : 0, 1);
         }
         const juce::var shown = v["displays"];
         P.eq("listen.display", shown.size() == 1 ? 1 : 0, 1);

@@ -12,17 +12,27 @@
 // (saveAudioDeviceState, at shutdown); here they are written after every change too, and the file saved, so a crash
 // keeps them.
 //
+// An instrument also has a Logitech G29 racing wheel (RacingWheel.h) among its MIDI inputs, listed after them while it
+// is connected, with its status: switched like a MIDI input (its identifier RacingWheel::kIdentifier), its choice kept
+// in the same file under "racingWheel", and its control changes posted into the holder's player's MidiMessageCollector,
+// as JUCE's own MIDI inputs feed it (time-stamped as theirs). What it sent goes again (resendWheel) after each of the
+// manager's change messages (a device restart: AudioProcessorPlayer::audioDeviceAboutToStart resets the collector,
+// dropping what was queued) and after the app's Reset to Default State (a processor made afresh, at rest).
+//
 // serial() moves with every change the card should see: the manager's change messages (a device opened, closed or set
 // up, its list changed), each device type's list changing (hot plug), the MIDI inputs' list changing
-// (juce::MidiDeviceListConnection), the mute changing, and the actions. Message thread only.
+// (juce::MidiDeviceListConnection), the wheel coming, going or saying something new, the mute changing, and the
+// actions. Message thread only.
 #pragma once
 
 #include "plugin/DevicePort.h"
+#include "plugin/standalone/RacingWheel.h"
 
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>   // after juce_audio_utils, which it needs
 
 #include <atomic>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -50,6 +60,9 @@ namespace playground::standalone
         void setMuted(bool muted) override;
         void playTestTone() override;
 
+        // The racing wheel's whole state again, while it is read (RacingWheel::resend): its receiver may have lost it.
+        void resendWheel();
+
     private:
         // The most channels the product takes in and out (as showAudioSettingsDialog computes them; the least is 0).
         int maxChannels(bool input) const;
@@ -70,6 +83,7 @@ namespace playground::standalone
         juce::Value muted_;                              // refers to the holder's shouldMuteInput
         std::vector<juce::AudioIODeviceType*> types_;    // the types listened to
         juce::MidiDeviceListConnection midiList_;
+        std::unique_ptr<RacingWheel> wheel_;             // an instrument's (it takes MIDI); last made, first gone
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(Devices)
     };

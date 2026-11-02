@@ -909,11 +909,12 @@ namespace playground::measure
             ++moved[m.dial];
         for (const auto& [dial, n] : moved)
             parts.push_back(dial + (n == 1 ? " moves once" : n == 2 ? " moves twice" : " moves " + std::to_string(n) + " times"));
-        int counts[4] = {};
+        int counts[kWheelKinds] = {};
         for (const WheelMove& w : r.wheels)
             ++counts[static_cast<int>(w.wheel)];
-        const char* wheelNames[4] = { "the mod wheel", "the pitch wheel", "pressure", "the pedal" };
-        for (int k = 0; k < 4; ++k)
+        const char* wheelNames[kWheelKinds] = { "the mod wheel", "the pitch wheel", "pressure", "the pedal", "the steering",
+                                                "the throttle", "the brake", "the clutch", "the gear" };
+        for (int k = 0; k < kWheelKinds; ++k)
             if (counts[k] > 0)
                 parts.push_back(std::string(wheelNames[k]) + " " + std::to_string(counts[k])
                                 + (counts[k] == 1 ? " time" : " times"));
@@ -1232,6 +1233,47 @@ namespace playground::measure
             recordingParts(tl, req, controls, base, rate);
         }
 
+        // A control change's 7-bit value, as Engine::controller reads it.
+        [[maybe_unused]] int sevenBits(const Event& e)
+        {
+            return std::clamp(static_cast<int>(e.velocity * 127.0f + 0.5f), 0, 127);
+        }
+
+        // A racing wheel's axis (wheelcc: 0 the steering, 1 to 3 the pedals) at its 14-bit value, as a mark's words.
+        constexpr const char* kPedalNames[] = { "the throttle", "the brake", "the clutch" };
+
+        [[maybe_unused]] std::string axisMark(int axis, int v14)
+        {
+            if (axis == 0)
+                return "steering to " + fmt("%+.2f", static_cast<double>(wheelcc::steeringOf(v14)));
+            return std::string(kPedalNames[axis - 1]) + " to " + fmt("%.2f", static_cast<double>(wheelcc::pedalOf(v14)));
+        }
+
+        // Another control change's mark (the sustain pedal's and the axes' apart), "" for none: the mod wheel, a racing
+        // wheel's gear and buttons by name, any other by number. At the start a value at rest is no moment.
+        [[maybe_unused]] std::string controllerMark(std::size_t at, const Event& e)
+        {
+            using namespace wheelcc;
+            const int cc = e.note, v = sevenBits(e);
+            if (cc == kGear)
+            {
+                const int g = gearOf(v);
+                return at > 0 || g != 0 ? "the gear to " + (g < 0 ? std::string("reverse") : g == 0 ? std::string("neutral") : std::to_string(g))
+                                        : std::string();
+            }
+            if (cc >= kButtons && cc < kButtons + kButtonCcs)
+            {
+                const int lo = (cc - kButtons) * kButtonBits;
+                char b[64];
+                std::snprintf(b, sizeof b, "the buttons' bits %d-%d to 0x%02x", lo, lo + kButtonBits - 1, v);
+                return at > 0 || v != 0 ? std::string(b) : std::string();
+            }
+            if (at > 0 || e.velocity != 0.0f)
+                return (cc == 1 ? std::string("the mod wheel") : "controller " + std::to_string(cc)) + " to "
+                     + fmt("%.2f", static_cast<double>(e.velocity));
+            return {};
+        }
+
         // An instrument's MIDI: `keys` held from the start until offAt (the wheels where the request puts them, at the
         // start, before the notes), or (keys null) the request's scenario: its phrase (else its notes held for holdN), the
         // wheels after those, a recording's events in place of the notes; with their marks.
@@ -1275,6 +1317,31 @@ namespace playground::measure
                         case Wheel::bend: evs.push_back({ at, 0, Event{ 0, EventKind::pitchBend, 0, std::clamp(w.value, -1.0f, 1.0f) } }); break;
                         case Wheel::pressure: evs.push_back({ at, 0, Event{ 0, EventKind::pressure, 0, std::clamp(w.value, 0.0f, 1.0f) } }); break;
                         case Wheel::sustain: evs.push_back({ at, 0, Event{ 0, EventKind::controller, 64, w.value >= 0.5f ? 1.0f : 0.0f } }); break;
+                        case Wheel::steering:
+                        case Wheel::throttle:
+                        case Wheel::brake:
+                        case Wheel::clutch:
+                        {
+                            // As a racing wheel sends it (wheelcc): the 14 bits' MSB, then the LSB unless 0 (the MSB
+                            // reset it); -1 is 0, which the Engine reads as -1 exactly.
+                            using namespace wheelcc;
+                            const int a = static_cast<int>(w.wheel) - static_cast<int>(Wheel::steering);
+                            const double v = static_cast<double>(w.value);
+                            const int v14 = a == 0 ? (v <= -1.0 ? 0 : static_cast<int>(std::lround(kCentre + std::min(v, 1.0) * (kMost - kCentre))))
+                                                   : static_cast<int>(std::lround(std::clamp(v, 0.0, 1.0) * kMost));
+                            evs.push_back({ at, 0, Event{ 0, EventKind::controller, static_cast<uint8_t>(kSteering + a),
+                                                          static_cast<float>(v14 >> 7) / 127.0f } });
+                            if ((v14 & 0x7F) != 0)
+                                evs.push_back({ at, 0, Event{ 0, EventKind::controller, static_cast<uint8_t>(kSteering + kLsb + a),
+                                                              static_cast<float>(v14 & 0x7F) / 127.0f } });
+                            break;
+                        }
+                        case Wheel::gear:
+                        {
+                            const int g = std::clamp(static_cast<int>(std::lround(static_cast<double>(w.value))), -1, 7);
+                            evs.push_back({ at, 0, Event{ 0, EventKind::controller, wheelcc::kGear, static_cast<float>(g & 0x7F) / 127.0f } });
+                            break;
+                        }
                     }
                 }
             std::stable_sort(evs.begin(), evs.end(), [](const Ev& x, const Ev& y) { return x.at != y.at ? x.at < y.at : x.rank < y.rank; });
@@ -1293,6 +1360,10 @@ namespace playground::measure
             lastOff.fill(-1);
             int heldCount = 0;
             bool first = true;
+            // A racing wheel's axes as the Engine holds them (wheelcc), and each one's last mark (its MSB's).
+            std::array<int, wheelcc::kAxes> v14{ { wheelcc::kCentre, 0, 0, 0 } };
+            std::array<std::size_t, wheelcc::kAxes> axisMarkAt;
+            axisMarkAt.fill(~std::size_t{ 0 });
             for (const auto& [at, e] : tl.events)
             {
                 const std::size_t k = e.note;
@@ -1339,10 +1410,25 @@ namespace playground::measure
                             if (at > 0 || e.velocity >= 0.5f)        // (up at the start: at rest, no moment)
                                 tl.marks.push_back({ at, e.velocity >= 0.5f ? "the pedal down" : "the pedal up", -1, false });
                         }
-                        else if (at > 0 || e.velocity != 0.0f)
-                            tl.marks.push_back({ at, (e.note == 1 ? std::string("the mod wheel") : "controller " + std::to_string(e.note))
-                                                         + " to " + fmt("%.2f", static_cast<double>(e.velocity)),
-                                                 -1, false });
+                        else if (const int cc = e.note; (cc >= wheelcc::kSteering && cc < wheelcc::kSteering + wheelcc::kAxes)
+                                                        || (cc >= wheelcc::kSteering + wheelcc::kLsb && cc < wheelcc::kSteering + wheelcc::kLsb + wheelcc::kAxes))
+                        {
+                            // An axis: its MSB a moment (none at the start at rest), its LSB at that moment the finer
+                            // value of it; an LSB alone (a fine move) none.
+                            const bool msb = cc < wheelcc::kSteering + wheelcc::kLsb;
+                            const int a = cc - wheelcc::kSteering - (msb ? 0 : wheelcc::kLsb);
+                            const auto ua = static_cast<std::size_t>(a);
+                            v14[ua] = msb ? sevenBits(e) << 7 : (v14[ua] & ~0x7F) | sevenBits(e);
+                            if (msb && (at > 0 || v14[ua] != (a == 0 ? wheelcc::kCentre : 0)))
+                            {
+                                axisMarkAt[ua] = tl.marks.size();
+                                tl.marks.push_back({ at, axisMark(a, v14[ua]), -1, false });
+                            }
+                            else if (!msb && axisMarkAt[ua] < tl.marks.size() && tl.marks[axisMarkAt[ua]].at == at)
+                                tl.marks[axisMarkAt[ua]].what = axisMark(a, v14[ua]);
+                        }
+                        else if (std::string what = controllerMark(at, e); !what.empty())
+                            tl.marks.push_back({ at, std::move(what), -1, false });
                         break;
                     case EventKind::pitchBend:
                         if (at > 0 || e.velocity != 0.0f)

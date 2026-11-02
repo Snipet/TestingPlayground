@@ -53,6 +53,11 @@
 //   RESTART   mode next with restart after notes and the pedal (an effect: a sine): it waits for the program's fresh
 //             compile and its swap, starts at the next note (sound), and replays bit for bit; restart with mode last is
 //             refused
+//   WHEEL     (an instrument) a take that starts with a racing wheel turned, its throttle down, a gear and buttons in,
+//             of a program that reads them, the wheel moving in it: the take's first block holds that state, its replay
+//             (the state's off-rest control changes at its first sample) plays it bit for bit, and its moments are
+//             named ("steering to +0.41", none "controller 16"); stop's report says what the wheel did ("Played:
+//             racing wheel: steering ..."); REPLAY's take, the wheel at rest: no moment for it at the start
 //   BEAT      no host transport, a program whose level follows the song's position, run in the editor just before an
 //             arm with restart: the restart plays that run's files; the take starts at the Engine's own position and
 //             replays bit for bit, twice in one Session (the second after the first ended with the pedal down); a take
@@ -435,6 +440,21 @@ namespace
                 "        const float g = 0.5f + 0.25f * sinf(6.28318531f * host->beat);\n"
                 "        for (int i = 0; i < n; ++i)\n        {\n            left[i] *= g;\n            right[i] *= g;\n        }\n"
                 "    }\n};\n");
+    }
+
+    // A voice whose level and pitch follow a racing wheel (host.fm's steering, throttle, brake, gear and buttons).
+    [[maybe_unused]] pg::Sources wheelProgram()
+    {
+        return pg::singleFile(
+            "#include \"host.fm\"\nmodule Voice\n{\n    Host* host;\n    float ph, step;\n    bool held;\n"
+            "    void start(float note, float velocity) { step = 440.0f * expf(0.0577622650f * (note - 69)) / 48000; held = true; }\n"
+            "    void stop() { held = false; }\n"
+            "    bool process(float* restrict left, float* restrict right, int n)\n    {\n"
+            "        const float g = 0.1f + 0.1f * host->throttle + 0.05f * host->brake + 0.02f * host->gear + 0.01f * (host->buttons & 15);\n"
+            "        const float k = step * (1.0f + 0.25f * host->steering);\n"
+            "        for (int i = 0; i < n; ++i)\n        {\n            const float s = g * sinf(6.28318531f * ph);\n"
+            "            ph += k;\n            if (ph >= 1) ph -= 1;\n            left[i] += s;\n            right[i] += s;\n        }\n"
+            "        return held;\n    }\n};\n");
     }
 
     // The pictures the chat's session keeps (its saved entries' thumbnails).
@@ -905,6 +925,13 @@ PROBE(plugin, capture)
             const cap::Fidelity f = cap::replayOf(t, 0.0, -1.0, rp, why) ? cap::nullTest(t, rp) : cap::Fidelity{};
             std::printf("replay: %s\n", f.line.c_str());
             P.eq("replay.null_test", f.identical && f.line == "Replay: matches what played bit for bit." ? 1 : 0, 1);
+            // A racing wheel at rest sends nothing at the replay's start, so no moment is named there for it.
+            bool wheelAtStart = false;
+            for (const auto& [at, e] : rp.request.events)
+                wheelAtStart = wheelAtStart || (at == 0 && e.kind == pg::EventKind::controller && e.note >= 16 && e.note != 64);
+            for (const pg::measure::Mark& mk : cap::timelineOf(t, rp, pg::Controls{}).marks)
+                wheelAtStart = wheelAtStart || (mk.at == 0 && (has(mk.what, "controller ") || has(mk.what, "steering")));
+            P.eq("replay.wheel_at_rest_no_mark", wheelAtStart ? 0 : 1, 1);
         }
         else
             P.eq("replay.kept", 0, 1);
@@ -943,6 +970,62 @@ PROBE(plugin, capture)
         P.eq("privacy.replay_pictures_not_kept", !cp.isError && hasImage(cp) && keptPictures(r.rec) == 0 ? 1 : 0, 1);
         const std::string after = textOf(tool(r.rec, object({ { "action", "status" } })));
         P.eq("replay.status_says", has(after, "Replay: matches what played bit for bit.") ? 1 : 0, 1);
+    }
+
+    // ---- WHEEL: a take that starts with the racing wheel turned and its pedal down, replayed bit for bit -----------------
+    if constexpr (kInstrument)
+    {
+        Rig r;
+        r.head.known = false;
+        const pg::Sources prog = wheelProgram();
+        r.ref.editorPort().run(prog);
+        r.ref.settle();
+        const auto cc = [](int number, int value) { return juce::MidiMessage::controllerEvent(1, number, value); };
+        // Before it: steering 90/33 (a quarter right and a bit), the throttle 100/5, the gear 2, buttons 0 and 3.
+        r.block(256, silence, { { 0, cc(16, 90) }, { 0, cc(48, 33) }, { 0, cc(17, 100) }, { 1, cc(49, 5) }, { 2, cc(20, 2) },
+                                { 3, cc(21, 9) } });
+        r.rec.editorPort().run(prog);
+        tool(r.rec, object({ { "action", "arm" }, { "mode", "next" }, { "restart", true }, { "seconds", 1 } }));
+        r.rec.compiler().wait();
+        r.rec.poll();
+        const bool compiled = r.rec.compiler().status().ok && r.rec.compiler().status().sources == prog;
+        for (std::size_t k = 0; r.pos < static_cast<uint64_t>(1.6 * kFs); ++k)
+        {
+            const int n = patternAt(k);
+            std::vector<std::pair<int, juce::MidiMessage>> midi;
+            if (k == 12 && n > 0)
+                midi.push_back({ n / 2, juce::MidiMessage::noteOn(1, 57, static_cast<juce::uint8>(100)) });   // the take starts
+            if (k > 12 && k % 5 == 0 && n > 0)                   // the wheel turning on, the throttle easing off
+            {
+                midi.push_back({ n / 3, cc(16, 90 + static_cast<int>(k % 30)) });
+                midi.push_back({ n / 3, cc(48, static_cast<int>((k * 7) % 128)) });
+                midi.push_back({ n - 1, cc(17, 100 - static_cast<int>(k % 50)) });
+            }
+            r.block(n, silence, midi);
+        }
+        const std::string said = textOf(tool(r.rec, object({ { "action", "stop" } })));
+        const cap::Reply taken = r.rec.recorder().act(cap::Action::take, {});
+        const bool ok = taken.take != nullptr && !taken.take->blocks.empty();
+        std::printf("wheel, stop:\n%s", said.c_str());
+        P.eq("wheel.played_said", has(said, "Played: racing wheel: steering +0.41 to +0.") && has(said, ", throttle up to 0.78, gear 2, buttons 0x9.")
+                                      && !has(said, "not used") ? 1 : 0, 1);
+        const std::array<uint8_t, pg::wheelcc::kStateCcs> turned{ { 90, 33, 100, 5, 0, 0, 0, 0, 2, 9, 0, 0, 0 } };
+        P.eq("wheel.compiled", compiled ? 1 : 0, 1);
+        P.eq("wheel.take_mid_turn", ok && taken.take->restarted && taken.take->blocks.front().racing == turned ? 1 : 0, 1);
+        P.eq("wheel.bits", ok && replaysBitForBit(*taken.take) ? 1 : 0, 1);
+        bool named = false, numbered = false;
+        if (ok)
+        {
+            cap::Replay rp;
+            std::string why;
+            if (cap::replayOf(*taken.take, 0.0, -1.0, rp, why, false))
+                for (const pg::measure::Mark& mk : cap::timelineOf(*taken.take, rp, pg::Controls{}).marks)
+                {
+                    named = named || (mk.at == 0 && mk.what == "steering to +0.41");
+                    numbered = numbered || has(mk.what, "controller ");
+                }
+        }
+        P.eq("wheel.marks_named", named && !numbered ? 1 : 0, 1);
     }
 
     // ---- CIRCUITS: a take of a netlist's provisional configuration, replayed once the self-test's answer is stored ------
