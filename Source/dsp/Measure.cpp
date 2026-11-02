@@ -504,6 +504,8 @@ namespace playground::measure
         for (const auto& [at, e] : tl.events)
         {
             const std::size_t key = e.note;
+            if ((e.kind == EventKind::noteOn || e.kind == EventKind::noteOff) && key >= on.size())
+                continue;                                    // no MIDI note (a malformed message): the Engine plays none
             if (e.kind == EventKind::noteOn)
             {
                 close(key, at);                              // pressed again while held: the next starts here
@@ -1294,6 +1296,8 @@ namespace playground::measure
             for (const auto& [at, e] : tl.events)
             {
                 const std::size_t k = e.note;
+                if ((e.kind == EventKind::noteOn || e.kind == EventKind::noteOff) && k >= held.size())
+                    continue;                                // no MIDI note (a malformed message): the Engine plays none
                 switch (e.kind)
                 {
                     case EventKind::noteOn:

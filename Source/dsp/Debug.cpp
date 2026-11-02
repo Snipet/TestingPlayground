@@ -798,6 +798,8 @@ namespace playground::measure
                     for (; e < x.tl.events.size() && x.tl.events[e].first < end; ++e)
                     {
                         const Event& ev = x.tl.events[e].second;
+                        if ((ev.kind == EventKind::noteOn || ev.kind == EventKind::noteOff) && ev.note >= down.size())
+                            continue;                        // no MIDI note (a malformed message): the Engine plays none
                         if (ev.kind == EventKind::noteOn)
                         {
                             downCount += down[ev.note] == 0 ? 1 : 0;

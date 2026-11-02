@@ -17,6 +17,7 @@
 //            firing, longer than 1.5 cycles of its note) has none by either, a sine that jumps once has one by both; an
 //            effect's: its report marks no step a click for the engine's, one for the jump, as trace finds, and none
 //            for an effect that passes its input (the test impulse and its echoes are the response, not clicks)
+//   HELD     heldSpans: a note number above 127 (a malformed message, which the Engine ignores) is no held part
 //   TERMS    every metric's words name what metricTerms() defines or a span of its own; toleranceText is Goals'
 //            toleranceOf
 #include "Probe.h"
@@ -472,6 +473,22 @@ PROBE(dsp, metrics)
         std::printf("an effect that passes its input:\n%s", m.report.c_str());
         P.eq("clicks.pass_none_marked", has(m.report, "(a click)") ? 0 : 1, 1);
         P.eq("clicks.pass_impulse_listed", has(m.report, " in the impulse at ") ? 1 : 0, 1);
+    }
+
+    // ---- HELD ----------------------------------------------------------------------------------------------------------
+    {
+        // C3 held from 0.1 s to 0.6 s, with a note-on and a note-off of note 200 in it: the same span as C3's alone.
+        ms::Timeline tl;
+        tl.events.push_back({ 4800, pg::Event{ 0, pg::EventKind::noteOn, 48, 0.8f } });
+        const std::vector<ms::Span> alone = ms::heldSpans(tl, 48000, 48000.0);
+        tl.events.insert(tl.events.begin() + 1, { 9600, pg::Event{ 0, pg::EventKind::noteOn, 200, 0.8f } });
+        tl.events.push_back({ 19200, pg::Event{ 0, pg::EventKind::noteOff, 200, 0.0f } });
+        tl.events.push_back({ 28800, pg::Event{ 0, pg::EventKind::noteOff, 48, 0.0f } });
+        const std::vector<ms::Span> with = ms::heldSpans(tl, 48000, 48000.0);
+        std::printf("held with note 200: %zu span(s), the first [%zu, %zu)\n", with.size(), with.empty() ? 0 : with[0].first,
+                    with.empty() ? 0 : with[0].second);
+        P.eq("held.no_midi_note_ignored", with.size() == 1 && with[0] == ms::Span{ 4800 + 2400, 28800 } ? 1 : 0, 1);
+        P.eq("held.alone_to_the_end", alone.size() == 1 && alone[0] == ms::Span{ 4800 + 2400, 48000 } ? 1 : 0, 1);
     }
 
     // ---- TERMS ---------------------------------------------------------------------------------------------------------
