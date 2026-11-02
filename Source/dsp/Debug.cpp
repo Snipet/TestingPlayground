@@ -115,22 +115,6 @@ namespace playground::measure
             return *mid;
         }
 
-        // The second largest (the largest of one; 0 of none): a step that comes back twice in a neighbourhood is the
-        // sound's own (a low saw's wrap), where one alone stands out.
-        double secondLargest(const std::vector<double>& v)
-        {
-            double a = 0.0, b = 0.0;
-            for (const double x : v)
-                if (x > a)
-                {
-                    b = a;
-                    a = x;
-                }
-                else if (x > b)
-                    b = x;
-            return v.size() < 2 ? a : b;
-        }
-
         bool finite(double v) noexcept { return std::isfinite(v); }
 
         // A field's value as text: an int's or a bool's whole.
@@ -778,67 +762,23 @@ namespace playground::measure
             return f;
         }
 
-        // Each 10 ms window's largest step; a click is one far larger than the second largest of its neighbours' (ten
-        // windows each side: a step that comes back, as a low saw's wrap does, is the sound's own) and a good part of
-        // the level there (five windows each side).
+        // The clicks by Measure.h's rule (clicks(), the metrics' own): a 10 ms window's step far above the second largest
+        // of the ten windows each side (a step that comes back, as a low saw's wrap does, is the sound's own) and a good
+        // part of the level there; the one that stands out most first.
         std::vector<Found> findClicks(const Context& x, std::size_t most)
         {
             std::vector<Found> out;
-            const std::vector<float>& l = x.sound.l;
-            const std::vector<float>& r = x.sound.r;
-            const std::size_t n = std::min(l.size(), r.size());
-            const std::size_t w = std::max<std::size_t>(1, static_cast<std::size_t>(0.01 * x.rate));
-            std::vector<double> step, peak;
-            std::vector<std::size_t> at;
-            for (std::size_t a = 0; a < n; a += w)
+            for (const Click& c : clicks(x.sound.l, x.sound.r, x.rate))
             {
-                double s = 0.0, p = 0.0;
-                std::size_t where = a;
-                for (std::size_t i = a; i < std::min(n, a + w); ++i)
-                {
-                    p = std::max({ p, static_cast<double>(std::fabs(l[i])), static_cast<double>(std::fabs(r[i])) });
-                    if (i == 0)
-                        continue;
-                    const double d = std::max(std::fabs(static_cast<double>(l[i]) - l[i - 1]), std::fabs(static_cast<double>(r[i]) - r[i - 1]));
-                    if (d > s)
-                    {
-                        s = d;
-                        where = i;
-                    }
-                }
-                step.push_back(s);
-                peak.push_back(p);
-                at.push_back(where);
+                if (out.size() >= most)
+                    break;
+                Found f;
+                f.kind = TraceFind::click;
+                f.at = c.at;
+                f.size = c.size;
+                f.usual = c.usual;
+                out.push_back(f);
             }
-            std::vector<Found> all;
-            for (std::size_t k = 0; k < step.size(); ++k)
-            {
-                std::vector<double> around;
-                double local = 0.0;
-                for (std::size_t j = k >= 10 ? k - 10 : 0; j < std::min(step.size(), k + 11); ++j)
-                {
-                    if (j + 5 >= k && j <= k + 5)
-                        local = std::max(local, peak[j]);
-                    if (j != k)
-                        around.push_back(step[j]);
-                }
-                const double usual = secondLargest(around);
-                if (step[k] > 0.05 && step[k] > 3.0 * usual && step[k] > 0.35 * local)
-                {
-                    Found f;
-                    f.kind = TraceFind::click;
-                    f.at = at[k];
-                    f.size = step[k];
-                    f.usual = usual;
-                    all.push_back(f);
-                }
-            }
-            std::stable_sort(all.begin(), all.end(), [](const Found& a, const Found& b) {
-                return a.size / std::max(a.usual, 1e-9) > b.size / std::max(b.usual, 1e-9);
-            });
-            for (const Found& f : all)
-                if (out.size() < most)
-                    out.push_back(f);
             return out;
         }
 

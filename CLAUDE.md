@@ -71,7 +71,7 @@ place (its `products/<key>.cmake`, and its names in the docs).
 ## Build and test
 
 - `cmake --workflow --preset dev-verify`: configure, build (both products' Standalone, AU, VST3, MCP server and probes,
-  and the installer) and run every test in `build-dev`: each of the 38 probes once for each product
+  and the installer) and run every test in `build-dev`: each of the 39 probes once for each product
   (`effect:fminus.examples`, `synth:fminus.examples`, ...), and the lints and the installer's probes once
   (`installer.engine`, `installer.gui`: `build-dev/probe-out/installer/gui.installer*.png`, look at them after any
   change to its window). Done means it exits 0 with no warning from our sources (they build with `-Werror`). While
@@ -437,7 +437,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   never the one that plays) and reports in words; `plugin.chatexample` checks its numbers on programs whose answer is
   known. The same pass records named numbers (`measure::metrics()`: each a name, a unit, a line of what it is and a
   default tolerance; the system prompt's CHECKING YOUR WORK lists them from the table, so a metric added there is
-  taught at once); a request's `want` runs only the renders and the analysis they need. Its CPU figures are the
+  taught at once); a request's `want` runs only the renders and the analysis they need. Its click metric and its
+  step lines take trace's rule (`measure::clicks`: a step far above the second largest of the windows around it),
+  so the two never disagree (`dsp.metrics`). Its CPU figures are the
   rendering thread's own time (`CLOCK_THREAD_CPUTIME_ID`, read at a render's few boundaries, never a block's), in an
   Engine as the audio thread runs it with no editor open: an instrument's `cpu_percent` over the held part, and
   `cpu16_percent` measured with sixteen notes held (the least of two short renders), not extrapolated; of the
@@ -482,7 +484,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   of the voices that sound after each (`Patch::fieldMap`, `Patch::read`: inside the instances' memory as FMinus lays it
   out, never through a pointer), the alerts a call from `CallInfo` (never `Engine::takeAlerts`); a field runs away
   past 1e6 at a thousand times its size in its instance's first 10 ms of sound (Shared's and an effect's: the
-  render's), so a state large from the start is not one; pass 2 renders again in
+  render's), so a state large from the start is not one, and a click is `measure::clicks`'s (the click metric's rule,
+  so measure_output and trace agree); pass 2 renders again in
   1-sample calls through a window of at most 4096 samples before each problem, and its output must equal pass 1's: when
   it does not, the program keeps state per call, and the result says so. The lines that write a field come from
   `fminus/Lang.h`'s resolution of each assignment (a heuristic). Deterministic but for its time limit (90 s) and a

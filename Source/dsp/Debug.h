@@ -8,8 +8,9 @@
 //   times its size, its largest magnitude, in its instance's first 10 ms of sound: Shared's and an effect's, the
 //   render's first; so a state large from the start, a pressure in pascals, is not a runaway). With the output guard's
 //   alerts and the output itself, that finds each problem: nan (a field gone non-finite, or the guard's NaN alert),
-//   runaway (a field that runs away, or the guard's clip), click (a 10 ms window's step far above the second largest of the
-//   twenty windows around it: a step that comes back, as a low saw's wrap does, is the sound's own), silence (the
+//   runaway (a field that runs away, or the guard's clip), click (Measure.h's clicks(), the rule the click metric takes:
+//   a 10 ms window's step far above the second largest of the twenty windows around it, so a step that comes back, as a
+//   low saw's wrap does, is the sound's own), silence (the
 //   output stops at once while a key is held or the input plays, or never sounds) and dc (a mean offset held for
 //   200 ms). A field already non-finite before the first call (init's sentinel, say) is a note (TraceResult::fromStart),
 //   never the problem, and hides nothing after it.

@@ -102,7 +102,7 @@ namespace playground::measure
             balanceDb = ll > 0.0 && rr > 0.0 ? 10.0 * std::log10(ll / rr) : 0.0;
         }
 
-        // The click locator's line: the largest steps, each with its time and its nearest moment.
+        // The click locator's line: the largest steps, each with its time, its nearest moment and whether it is a click.
         [[maybe_unused]] std::string stepsText(const std::vector<Step>& steps, const Timeline& tl, double rate, const char* where = nullptr)
         {
             std::string out;
@@ -111,28 +111,25 @@ namespace playground::measure
                 char buf[48];
                 std::snprintf(buf, sizeof buf, "%.3f at %.3f s", st.size, static_cast<double>(st.at) / rate);
                 out += (out.empty() ? "" : "; ") + std::string(buf) + (where != nullptr ? std::string(" in ") + where : "")
-                     + ", " + nearestMark(tl, st.at, rate);
+                     + ", " + nearestMark(tl, st.at, rate) + (st.click ? " (a click)" : "");
             }
             return out.empty() ? std::string("none (silent)") : out;
         }
 
-        // The steps a sound makes every cycle: the median over [from, to) of each window's largest step between two
-        // neighbouring samples (windows of w samples), against which a click is the one step far larger.
-        [[maybe_unused]] double usualStep(const Stereo& s, std::size_t from, std::size_t to, std::size_t w)
+        // The second largest (the largest of one; 0 of none): a step that comes back twice in a neighbourhood is the
+        // sound's own (a low saw's wrap), where one alone stands out.
+        double secondLargest(const std::vector<double>& v)
         {
-            std::vector<double> maxima;
-            for (std::size_t a = std::max<std::size_t>(from, 1); w > 0 && a + w <= std::min(to, s.size()); a += w)
-            {
-                double m = 0.0;
-                for (std::size_t i = a; i < a + w; ++i)
-                    m = std::max(m, std::max(std::fabs(static_cast<double>(s.l[i]) - s.l[i - 1]),
-                                             std::fabs(static_cast<double>(s.r[i]) - s.r[i - 1])));
-                maxima.push_back(m);
-            }
-            if (maxima.empty())
-                return 0.0;
-            std::nth_element(maxima.begin(), maxima.begin() + static_cast<std::ptrdiff_t>(maxima.size() / 2), maxima.end());
-            return maxima[maxima.size() / 2];
+            double a = 0.0, b = 0.0;
+            for (const double x : v)
+                if (x > a)
+                {
+                    b = a;
+                    a = x;
+                }
+                else if (x > b)
+                    b = x;
+            return v.size() < 2 ? a : b;
         }
 
         // When the level (10 ms windows) has fallen `belowDb` under `refDb` for good, in samples after `from`; -1 when it
@@ -349,7 +346,10 @@ namespace playground::measure
               "(aliasing, or the sound's own detuning, FM or noise; -200: none above -90)",
               3.0, false, 0.0 },
             { "step", "", "the largest step between two samples", 0.01, false, 0.0 },
-            { "click", "", "1 when that step looks like a click (far larger than the sound's own steps), else 0", 0.5, false, 0.0 },
+            { "click", "",
+              "1 when the render has a click, else 0: of its 10 ms windows, one whose largest step is over 0.05, 3 times the "
+              "second largest of the 10 windows each side and 0.35 of the peak within 5 windows (trace's rule)",
+              0.5, false, 0.0 },
             { "attack_s", "s", "from the note-on until its peaks (windows of a cycle) are within 3 dB of their loudest while held",
               0.1, true, 0.002 },
             { "decay_s", "s",
@@ -544,40 +544,86 @@ namespace playground::measure
         return out;
     }
 
-    std::vector<Step> largestSteps(const std::vector<float>& l, const std::vector<float>& r, std::size_t count, double rate)
+    std::vector<Click> clicks(const std::vector<float>& l, const std::vector<float>& r, double rate)
     {
-        // Each 10 ms window's largest step, then the largest windows' steps, each at least a window from the others.
-        const std::size_t w = std::max<std::size_t>(1, static_cast<std::size_t>(0.01 * rate));
         const std::size_t n = std::min(l.size(), r.size());
-        std::vector<Step> windows;
-        for (std::size_t a = 1; a < n; a += w)
+        const std::size_t w = std::max<std::size_t>(1, static_cast<std::size_t>(0.01 * rate));
+        std::vector<double> step, peak;
+        std::vector<std::size_t> at;
+        for (std::size_t a = 0; a < n; a += w)
         {
-            Step best;
+            double s = 0.0, p = 0.0;
+            std::size_t where = a;
             for (std::size_t i = a; i < std::min(n, a + w); ++i)
             {
+                p = std::max({ p, static_cast<double>(std::fabs(l[i])), static_cast<double>(std::fabs(r[i])) });
+                if (i == 0)
+                    continue;
                 const double d = std::max(std::fabs(static_cast<double>(l[i]) - l[i - 1]), std::fabs(static_cast<double>(r[i]) - r[i - 1]));
-                if (d > best.size)
+                if (d > s)
                 {
-                    best.size = d;
-                    best.at = i;
+                    s = d;
+                    where = i;
                 }
             }
-            if (best.size > 0.0)
-                windows.push_back(best);
+            step.push_back(s);
+            peak.push_back(p);
+            at.push_back(where);
         }
-        std::stable_sort(windows.begin(), windows.end(), [](const Step& a, const Step& b) { return a.size > b.size; });
-        // The sound's own steps: the median window's largest. After the largest, only the steps that stand out from them.
-        const double usual = windows.empty() ? 0.0 : windows[windows.size() / 2].size;
-        std::vector<Step> out;
-        for (const Step& st : windows)
+        std::vector<Click> out;
+        std::vector<double> around;
+        for (std::size_t k = 0; k < step.size(); ++k)
         {
-            if (out.size() >= count || (!out.empty() && st.size <= 1.5 * usual))
+            around.clear();
+            double local = 0.0;
+            for (std::size_t j = k >= 10 ? k - 10 : 0; j < std::min(step.size(), k + 11); ++j)
+            {
+                if (j + 5 >= k && j <= k + 5)
+                    local = std::max(local, peak[j]);
+                if (j != k)
+                    around.push_back(step[j]);
+            }
+            const double usual = secondLargest(around);
+            if (step[k] > 0.05 && step[k] > 3.0 * usual && step[k] > 0.35 * local)
+                out.push_back({ at[k], step[k], usual });
+        }
+        std::stable_sort(out.begin(), out.end(), [](const Click& a, const Click& b) {
+            return a.size / std::max(a.usual, 1e-9) > b.size / std::max(b.usual, 1e-9);
+        });
+        return out;
+    }
+
+    std::vector<Step> largestSteps(const std::vector<float>& l, const std::vector<float>& r, std::size_t count, double rate)
+    {
+        // The largest step, then the clicks (largest first), each at least 10 ms from those before it.
+        const std::size_t w = std::max<std::size_t>(1, static_cast<std::size_t>(0.01 * rate));
+        const std::size_t n = std::min(l.size(), r.size());
+        Step top;
+        for (std::size_t i = 1; i < n; ++i)
+        {
+            const double d = std::max(std::fabs(static_cast<double>(l[i]) - l[i - 1]), std::fabs(static_cast<double>(r[i]) - r[i - 1]));
+            if (d > top.size)
+            {
+                top.size = d;
+                top.at = i;
+            }
+        }
+        std::vector<Step> out;
+        if (count == 0 || !(top.size > 0.0))
+            return out;
+        std::vector<Click> found = clicks(l, r, rate);
+        top.click = std::any_of(found.begin(), found.end(), [&](const Click& c) { return c.at == top.at; });
+        out.push_back(top);
+        std::stable_sort(found.begin(), found.end(), [](const Click& a, const Click& b) { return a.size > b.size; });
+        for (const Click& c : found)
+        {
+            if (out.size() >= count)
                 break;
             const bool near = std::any_of(out.begin(), out.end(), [&](const Step& o) {
-                return (st.at > o.at ? st.at - o.at : o.at - st.at) < w;
+                return (c.at > o.at ? c.at - o.at : o.at - c.at) < w;
             });
             if (!near)
-                out.push_back(st);
+                out.push_back({ c.size, c.at, true });
         }
         return out;
     }
@@ -1501,23 +1547,19 @@ namespace playground::measure
 
             if (need({ "step", "click" }))
             {
-                // The largest steps, each with its nearest moment of the render (the click locator).
+                // The largest step, then the clicks (trace's rule), each with its nearest moment (the click locator).
                 const std::vector<Step> steps = largestSteps(r.out.l, r.out.r, 3, rate);
                 const double step = steps.empty() ? 0.0 : steps.front().size;
-                // A wave's own edges come every cycle: windows of a cycle and a half of the lowest note, at least 10 ms.
-                const std::size_t window = static_cast<std::size_t>(std::max(0.01 * rate, 1.5 * rate / lowestHz));
-                const double usual = usualStep(r.out, settle, heldEnd, window);
-                const bool click = heldPeak > 0.0 && step > 0.35 * heldPeak && step > 0.05 && step > 2.0 * usual;
+                const bool click = std::any_of(steps.begin(), steps.end(), [](const Step& st) { return st.click; });
                 v["step"] = step;
                 v["click"] = click ? 1.0 : 0.0;
-                out += std::string(steps.size() > 1 ? "Largest steps between two samples: " : "Largest step between two samples: ")
-                     + stepsText(steps, tl, rate)
-                     + (heldPeak > 0.0 ? fmt(" (the largest %.0f%% of the held peak", step / heldPeak * 100.0) : std::string(" ("))
-                     + (heldPeak > 0.0 ? "; " : "") + "the held sound's own largest steps, every cycle: "
-                     + fmt("%.3f", usual) + ").\n";
+                out += "Largest step between two samples"
+                     + (heldPeak > 0.0 ? fmt(" (%.0f%% of the held peak)", step / heldPeak * 100.0) : std::string())
+                     + (steps.size() > 1 ? ", then the clicks: " : ": ") + stepsText(steps, tl, rate)
+                     + (click ? "" : "; no click (no step far above those around it)") + ".\n";
                 if (click)
-                    warnings.push_back("A step that large, and far larger than the sound's own, is likely a click (an "
-                                       "envelope or a phase that jumps).");
+                    warnings.push_back("A step far above those around it is likely a click (an envelope or a phase that "
+                                       "jumps): trace with find click names the fields that jumped there.");
             }
 
             // The envelope: its peaks in windows of a cycle of the lowest note (at least 1 ms) while held, and the level
@@ -1833,8 +1875,9 @@ namespace playground::measure
                 std::string steps;
                 for (const Found& f : found)
                     steps += (steps.empty() ? "" : "; ") + fmt("%.3f", f.step.size) + " in " + f.where + " at "
-                           + seconds(static_cast<double>(f.step.at) / rate) + ", " + f.near;
-                out += std::string(found.size() > 1 ? "Largest steps between two samples: " : "Largest step between two samples: ")
+                           + seconds(static_cast<double>(f.step.at) / rate) + ", " + f.near + (f.step.click ? " (a click)" : "");
+                out += std::string(found.size() > 1 ? "Largest steps between two samples (each signal's largest, and its clicks): "
+                                                     : "Largest step between two samples: ")
                      + (steps.empty() ? std::string("none (silent)") : steps) + ".\n";
                 out += "Alerts: " + alertsText(alerts) + ".\n";
                 out += "CPU: " + percent(cpuShare(cpu, audio)) + " of one core (" + fmt("%.2f ms", cpu) + " to render "

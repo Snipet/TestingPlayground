@@ -11,13 +11,13 @@
 //   an instrument  the notes (default one, C3) held for holdSeconds at `velocity`, released, then tailSeconds more:
 //                  the held level (peak, RMS, DC, the stereo correlation and balance), the spectrum's strongest
 //                  partials and its centroid over the held part (and how the lowest strong one compares with the
-//                  lowest note's frequency), the largest step between two samples, the envelope (when it reaches its
-//                  loudest, and when it falls 60 dB from there), when the sound falls 60 dB below its held level
-//                  after the release and when the last voice ended (process returned false), the output guard's
-//                  alerts, and the CPU time (the notes while held, and sixteen voices at once: a render of sixteen
-//                  notes held, the least of two). With one note, the strongest component that is no harmonic of it
-//                  (aliasing, or the sound's own: detuning, FM, noise), and a chord (the note, a third, a fifth and an
-//                  octave above) is rendered too, for the summed level.
+//                  lowest note's frequency), the largest step between two samples and the clicks (clicks(), trace's
+//                  rule), the envelope (when it reaches its loudest, and when it falls 60 dB from there), when the
+//                  sound falls 60 dB below its held level after the release and when the last voice ended (process
+//                  returned false), the output guard's alerts, and the CPU time (the notes while held, and sixteen
+//                  voices at once: a render of sixteen notes held, the least of two). With one note, the strongest
+//                  component that is no harmonic of it (aliasing, or the sound's own: detuning, FM, noise), and a
+//                  chord (the note, a third, a fifth and an octave above) is rendered too, for the summed level.
 //   an effect      a sine of 220 Hz at -12 dBFS and noise at -18 dBFS RMS, each for holdSeconds, an impulse followed
 //                  by tailSeconds of silence, and silence alone: the output's level and the gain for each, the sine's
 //                  partials (what the effect adds), the noise's spectral centroid in and out, the impulse response's
@@ -350,14 +350,28 @@ namespace playground::measure
     // component, -200 when nothing is found.
     Peak inharmonic(const std::vector<float>& x, double rate, double f0, double maxHz);
 
-    // The click locator: the `count` largest steps between two neighbouring samples (of either channel), each the
-    // largest within 10 ms of it, largest first: the largest, then those that stand out from the sound's own steps (more
-    // than 1.5 times the median 10 ms window's largest); and a step's nearest moment of a timeline in words ("0.4 ms
-    // after note-on 52 (the same key again 0.12 s after its release)"; "no event within 50 ms" when none is near).
+    // The click rule, the metrics' and trace's (Debug.h): in 10 ms windows from the first sample, each window's largest
+    // step between two neighbouring samples (of either channel); a window's step is a click when it is over 0.05, over
+    // three times the second largest of the ten windows each side (a step that comes back, as a low saw's wrap or an
+    // engine's firing does, is the sound's own) and over 0.35 of the largest sample within five windows each side.
+    // Every click, the one that stands out most (its step over that second largest) first.
+    struct Click
+    {
+        std::size_t at = 0;                       // the sample after the step
+        double size = 0.0;
+        double usual = 0.0;                       // the second largest step around it
+    };
+    std::vector<Click> clicks(const std::vector<float>& l, const std::vector<float>& r, double rate);
+
+    // The click locator: the largest step between two neighbouring samples (of either channel), then the clicks (by the
+    // rule above) farther than 10 ms from it, largest first, `count` at most; and a step's nearest moment of a timeline
+    // in words ("0.4 ms after note-on 52 (the same key again 0.12 s after its release)"; "no event within 50 ms" when
+    // none is near).
     struct Step
     {
         double size = 0.0;
         std::size_t at = 0;                       // the sample after the step
+        bool click = false;                       // a click by the rule
     };
     std::vector<Step> largestSteps(const std::vector<float>& l, const std::vector<float>& r, std::size_t count, double rate);
     std::string nearestMark(const Timeline& timeline, std::size_t at, double rate);

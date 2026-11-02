@@ -124,8 +124,8 @@ namespace playground
             std::string out;
             for (const measure::Step& st : steps)
                 out += (out.empty() ? "" : "; ") + fmt("%.3f at %.3f s, ", st.size, static_cast<double>(st.at) / t.rate)
-                     + measure::nearestMark(tl, st.at, t.rate);
-            return std::string(steps.size() > 1 ? "Largest steps between two samples (a click is one far above the rest): "
+                     + measure::nearestMark(tl, st.at, t.rate) + (st.click ? " (a click)" : "");
+            return std::string(steps.size() > 1 ? "Largest step between two samples, then the clicks (steps far above those around them): "
                                                 : "Largest step between two samples: ")
                  + out + ".\n";
         }
