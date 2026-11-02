@@ -4,14 +4,18 @@
 // different seeds do not repeat each other.
 //
 //   Noise noise;                   a field of your module
-//   noise.seed(n);                 optional, n from 1: another sequence (two voices, two seeds)
+//   noise.seed(n);                 optional: another sequence, from its start (two voices, two seeds)
 //   y = noise.white();             -1 to 1, uniform; or
 //   y = noise.pink();              as loud as white (the same RMS; its peaks reach about 3); or
 //   y = noise.brown();             the same
-// Each draws the next value: call one of them a sample.
+//   noise.fill(w, n);              n white samples into w, as n calls of white() give them, in a loop that
+//                                  vectorises: a block's noise in a loop of its own, then w[i] where it is mixed
+// Each draws the next value: call one of them a sample. White is FMinus's randf of a count of samples, a few integer
+// instructions a sample with no state but the count, the same sequence at any block size.
 module Noise
 {
-    int state;
+    int key;
+    int count;
     float b0;
     float b1;
     float b2;
@@ -19,25 +23,28 @@ module Noise
 
     void seed(int n)
     {
-        state = n > 0 ? n : 1;
-    }
-
-    // Park-Miller's generator, by Schrage's method (no 64-bit products): uniform in (0, 1).
-    float uniform()
-    {
-        if (state <= 0)
-            state = 22222;
-        const int hi = state / 127773;
-        const int lo = state % 127773;
-        state = 16807 * lo - 2836 * hi;
-        if (state <= 0)
-            state += 2147483647;
-        return (float)state / 2147483647.0f;
+        key = hash(n);
+        count = 0;
     }
 
     float white()
     {
-        return 2 * uniform() - 1;
+        const float x = randf(key ^ count);
+        count = (count + 1) & 0x3FFFFFFF;          // 2^30 samples (6 hours at 48 kHz), then again: no int overflows
+        return x;
+    }
+
+    void fill(float* restrict w, int n)
+    {
+        for (int i = 0; i < n; ++i)
+            w[i] = randf(key ^ ((count + i) & 0x3FFFFFFF));
+        count = (count + n) & 0x3FFFFFFF;
+    }
+
+    // Uniform in [0, 1).
+    float uniform()
+    {
+        return 0.5f * white() + 0.5f;
     }
 
     // Paul Kellet's economy filter: three one-poles that sum to -3 dB/octave.
