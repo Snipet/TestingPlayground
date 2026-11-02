@@ -6,7 +6,7 @@
 //   gui.ir.lowered.png  the lowered view, the find bar over it
 //   gui.ir.frozen.png   the frozen copy's, while it plays
 //   gui.ir.paper.png    PAPER: the optimised view
-//   gui.ir.tabs.png     the least window, twelve files and a long program name: the IR tab beside the narrowed tabs
+//   gui.ir.tabs.png     the least window, sixteen files and a long program name: the IR tab beside the narrowed tabs
 // and checks:
 //   NOBODY    with no IR tab open nothing is kept: a RUN keeps no text (the compiler wants none, holds none), and
 //             Patch::compile keeps none unless asked (asked, both texts, with the program's process function)
@@ -45,7 +45,7 @@
 //             the view says the copy stopped, a comment line more, the selection on the same text of LLVM's
 //   CLOSE     the tab's close box: the file under it shown again, the processor wants nothing, the compiler holds
 //             nothing; a RUN then keeps nothing; a Panel that goes with its IR tab open leaves nothing wanted
-//   TABS      the least window, twelve files, a long program name, the lowered view: the files' tabs end before the IR
+//   TABS      the least window, sixteen files, a long program name, the lowered view: the files' tabs end before the IR
 //             tab, which keeps at least 64 px inside the card; a click on the last file's tab and on the IR tab each
 //             does its own; the read-only notice whole in the card's header
 #include "Probe.h"
@@ -806,7 +806,7 @@ PROBE(gui, ir)
     P.eq("close.panel_gone_nothing_held", kept(processor.compiler().ir()) ? 0 : 1, 1);
 
     // ---- TABS --------------------------------------------------------------------------------------------------------
-    // The least window, twelve files and a long program name: the IR tab takes no more than the files' tabs leave at
+    // The least window, sixteen files (kMaxFiles) and a long program name: the IR tab takes no more than the files' tabs leave at
     // their narrowest, so none runs under it, and the read-only notice fits the card's header.
     {
         pg::Draft many;
@@ -819,7 +819,7 @@ PROBE(gui, ir)
         host.setZoom({ 100, 125, 150, 200 }, 100);
         P.eq("tabs.least_size", host.resize(pg::ui::kMinWidth, pg::ui::kMinHeight) ? 1 : 0, 1);
         host.settle();
-        P.eq("tabs.twelve", panel.fileCount(), static_cast<int64_t>(pg::kMaxFiles));
+        P.eq("tabs.sixteen", panel.fileCount(), static_cast<int64_t>(pg::kMaxFiles));
         panel.openIrView(static_cast<int>(pg::ui::irview::View::lowered));
         host.settle();
         const funkgui::Rect irTab = panel.irTabRect();

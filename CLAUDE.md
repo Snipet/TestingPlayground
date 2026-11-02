@@ -81,9 +81,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `-L <label>`, `-V` pass through to ctest). Run the probes through ctest only: outside CTest a probe's stores are the
   user's own folders. The editor rendered headless lands in `build-dev/probe-out/<key>/` (`gui.dump*.png`,
   `gui.code*.png`: the code editor's completion, signature, hover, problems, find bar and PAPER; `gui.ir*.png`: the IR
-  view's optimised, lowered (the find bar) and frozen views, PAPER, and its tab beside twelve narrowed ones;
+  view's optimised, lowered (the find bar) and frozen views, PAPER, and its tab beside sixteen narrowed ones;
   `gui.schematic*.png`: a netlist's Schematic view, the library's netlists drawn, PAPER, the least window with 32 dials
-  folded and with twelve tabs and the IR tab, a wire and a move mid-drag, the problems' marks, an empty netlist, 25 %
+  folded and with sixteen tabs and the IR tab, a wire and a move mid-drag, the problems' marks, an empty netlist, 25 %
   and 400 %, the circuit dials' knobs, a netlist after Play this circuit, a part's field with the `1M` warning, a net
   named and shown as labels, a playing netlist's probes (a readout card and two pinned lanes);
   `gui.chat*.png`: the empty chat, a conversation, the key dialog with a key pasted and with one stored, PAPER, the
@@ -619,7 +619,7 @@ place (its `products/<key>.cmake`, and its names in the docs).
     first). `<prefix>SANDBOX_TEST_HANG` (a request it never answers) is the probe's.
   - **Read only but apply.** open reads an instance's files through get_status (files "all" and `peek`, the server's
     own: live, no write, and nothing kept of the look, no token, no mark, `mcpHint`'s cursor where it was, so what the
-    user changed still starts Claude's next result), a file or folder the user named (read only, 256 KB a file, twelve
+    user changed still starts Claude's next result), a file or folder the user named (read only, 256 KB a file, sixteen
     files); apply alone writes, through the link's write_file and run_program, into the program's own .gui file (the
     first .gui, else panel.gui), and only when the user asks (the guide says so), its answer starting with write_file's
     line of what the user changed. The plugin's own chat has no sandbox. Its notes are in the guide's interface part

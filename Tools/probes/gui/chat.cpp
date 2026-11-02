@@ -67,7 +67,7 @@
 //   COLLAPSE the header's chevron folds the chat into a rail (the processor keeps it, its state too): the editor takes
 //            the room, the chat's items go (the message box among them); an answer while folded lights the rail's dot;
 //            the rail's button opens the chat again, the dot gone, the answer in it, the editor as wide as before
-//   RESIZE   a size below the least is raised to it; at the least size (with twelve files, their tabs narrowed) and at
+//   RESIZE   a size below the least is raised to it; at the least size (with sixteen files, the most, their tabs narrowed) and at
 //            a large one every item lies inside the panel, the chat's column right of the editor; the editor and the conversation grow with the height; the
 //            processor keeps the editor's size in the session
 #include "Probe.h"
@@ -1037,7 +1037,7 @@ PROBE(gui, chat)
     {
         host.resize(500, 300);
         host.settle();
-        // Twelve files: their tabs narrow to fit the bar.
+        // Sixteen files (kMaxFiles): their tabs narrow to fit the bar, + reachable until the last.
         for (int k = 0; k < 2 * static_cast<int>(pg::kMaxFiles) && panel.fileCount() < static_cast<int>(pg::kMaxFiles); ++k)
         {
             const funkgui::Point plus = panel.centreOfNewTab();
@@ -1053,7 +1053,7 @@ PROBE(gui, chat)
                             static_cast<double>(panel.explorerCard().w), panel.explorerOpen() ? 1 : 0,
                             panel.explorerShown() ? 1 : 0, panel.width());
         }
-        P.eq("resize.twelve_files", panel.fileCount(), static_cast<int64_t>(pg::kMaxFiles));
+        P.eq("resize.sixteen_files", panel.fileCount(), static_cast<int64_t>(pg::kMaxFiles));
         P.eq("resize.least_w", panel.width(), pg::ui::kMinWidth);
         P.eq("resize.least_h", panel.height(), pg::ui::kMinHeight);
         P.eq("resize.least_inside", allInside(host, panel) ? 1 : 0, 1);

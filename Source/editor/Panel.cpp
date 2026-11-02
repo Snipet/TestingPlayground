@@ -676,9 +676,11 @@ namespace playground::ui
         constexpr float kTabPad = 12.0f;                 // before a tab's name, and after it
         constexpr float kTabCloseW = 14.0f;              // a closable tab's close box, after its name
         constexpr float kTabMinW = 64.0f;
-        constexpr float kTabNarrowW = 36.0f;             // the least a tab narrows to when many do not fit (twelve fit
-                                                         // a program's card of kProgramMinW, the IR tab open too: it
-                                                         // takes no more than they leave)
+        constexpr float kTabNarrowW = 26.0f;             // the least a tab narrows to when many do not fit (kMaxFiles,
+                                                         // sixteen, fit a program's card of kProgramMinW, the IR tab
+                                                         // open and a netlist's pills too: it takes no more than they
+                                                         // leave); a letter of its name, and its close box beside it
+                                                         // while it shows or is under the pointer
         constexpr float kTabMaxW = 150.0f;
         constexpr float kTabGap = 4.0f;
         constexpr float kNewTabW = 24.0f;
@@ -1202,7 +1204,10 @@ namespace playground::ui
         funkgui::Rect closeRect(int i) const
         {
             const funkgui::Rect t = tabRect(i);
-            return { t.right() - tabPad(i) - kTabCloseW + 4.0f, t.y + 4.0f, kTabCloseW, kTabH - 8.0f };
+            const float right = t.right() - tabPad(i) + 4.0f;
+            // A narrowed tab's box keeps clear of its middle, so that a click there shows its file (at kTabNarrowW).
+            const float x = narrow(i) ? std::max(right - kTabCloseW, t.centreX() + 1.0f) : right - kTabCloseW;
+            return { x, t.y + 4.0f, right - x, kTabH - 8.0f };
         }
         // A tab narrowed to fit: less padding, and its close box only while it is shown (not under the IR tab) or under
         // the pointer.
@@ -3749,7 +3754,7 @@ namespace playground::ui
     funkgui::Point Panel::centreOfTab(int i) const
     {
         const funkgui::Rect r = files().tabRect(i);
-        return { r.x + kTabPad + 4.0f, r.centreY() };
+        return { std::min(r.x + kTabPad + 4.0f, r.centreX() - 1.0f), r.centreY() };   // a narrowed tab's: left of its box
     }
     funkgui::Point Panel::centreOfNewTab() const
     {

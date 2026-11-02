@@ -251,7 +251,7 @@ THREADS: parallel for AND parallel { }
         const char* const kLarge = R"(
 BUILDING A LARGE PROGRAM
 
-A full synthesizer or a rich effect is a few hundred lines in several files. Work like this:
+A full synthesizer or a rich effect is a few hundred lines in several files (sixteen at most: the editor's tabs). Work like this:
 - Plan in a sentence or two (the structure, the modulation, the dials and their panel), then make the files: the library files you need (add_library_file, several side by side), your own blocks and the program (write_file, the included files first and the program last), then run_program once. Fix what it reports and run again until it compiles; then measure_output; then set the dials.
 - One reply of yours holds about 128,000 tokens, your thinking included; a reply that reaches that is cut off (the plugin then asks you to go on). So think a block through and write its file, then the next, a few files to a reply, rather than working the whole program out in your thinking before writing any of it, and never write a file out in full in your thinking first.
 - One building block a file. The library's come first (THE LIBRARY); your own, for what it lacks, are modules too (their state as fields, their work as methods that take what they need as arguments) or plain functions. The program's file holds the main module, which holds the blocks as fields (Osc osc1; Svf filter; Osc unison[4];) and wires them. The parameters of a module the main module holds stay at their defaults, so give the blocks arguments instead.

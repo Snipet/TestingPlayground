@@ -6,7 +6,7 @@
 //   gui.schematic.screamer.png the Tube Screamer's netlist (screamer.cir), laid out from its text alone
 //   gui.schematic.paper.png    PAPER, a part and a wire selected, an error, a warning and a note marked
 //   gui.schematic.small.png    the least window (1000 x 600), 32 dials folded into the bar under the drawing
-//   gui.schematic.switch.png   the least window, twelve tabs and the IR tab: the pills icon-only, no tab under its least
+//   gui.schematic.switch.png   the least window, sixteen tabs and the IR tab: the pills icon-only, no tab under its least
 //   gui.schematic.wire.png     a wire being drawn, from a pin, mid-drag
 //   gui.schematic.move.png     two parts being moved, their wires rubber-banded, mid-drag
 //   gui.schematic.errors.png   an error, a warning and a note on parts (badges, an outline, a ring), an unconnected pin,
@@ -1528,7 +1528,7 @@ PROBE(gui, schematic)
         P.eq("room.default_32_shown", !r.panel->dialsFolded() && !r.panel->dialsBarShown() && r.panel->centreOfDial(31) ? 1 : 0, 1);
         P.ge("room.default_32_canvas", r.view().canvasRect().h, 240.0);
     }
-    // twelve tabs and the IR tab at the least size: the pills icon-only, no tab under its least
+    // sixteen tabs (kMaxFiles) and the IR tab at the least size: the pills icon-only, no tab under its least
     {
         std::vector<std::pair<std::string, std::string>> files = { { "g.cir", planted } };
         for (int k = 1; static_cast<int>(files.size()) + 1 < static_cast<int>(pg::kMaxFiles); ++k)
@@ -1542,7 +1542,7 @@ PROBE(gui, schematic)
         host.click(tab.x, tab.y);
         panel.setSchematic(true);
         host.settle();
-        P.eq("switch.twelve", panel.fileCount(), static_cast<int64_t>(pg::kMaxFiles));
+        P.eq("switch.sixteen", panel.fileCount(), static_cast<int64_t>(pg::kMaxFiles));
         P.eq("switch.ir_open", panel.irOpen() && !panel.irShown() ? 1 : 0, 1);
         P.eq("switch.icon_only", panel.viewPillsShown() && !panel.viewPillsLabelled() ? 1 : 0, 1);
         float least = 1.0e9f;
@@ -1552,8 +1552,8 @@ PROBE(gui, schematic)
                     static_cast<double>(least), static_cast<double>(panel.fileTabRect(panel.fileCount() - 1).right()),
                     static_cast<double>(panel.viewPillRect(false).x), static_cast<double>(panel.viewPillRect(true).right()),
                     static_cast<double>(panel.irTabRect().w), static_cast<double>(panel.irTabRect().x));
-        P.ge("switch.no_tab_under_least", least, 36.0 - 1e-3);
-        P.ge("switch.ir_tab_least", panel.irTabRect().w, 36.0 - 1e-3);
+        P.ge("switch.no_tab_under_least", least, 26.0 - 1e-3);   // kTabNarrowW
+        P.ge("switch.ir_tab_least", panel.irTabRect().w, 26.0 - 1e-3);
         P.eq("switch.apart", panel.fileTabRect(panel.fileCount() - 1).right() < panel.viewPillRect(false).x
                                  && panel.viewPillRect(true).right() <= panel.irTabRect().x ? 1 : 0, 1);
         P.near("switch.pill_width", panel.viewPillRect(true).w, 28.0, 1e-3);
