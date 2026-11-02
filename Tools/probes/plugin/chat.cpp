@@ -94,7 +94,8 @@
 //   CHECKDIALS a check that passes at the defaults fails once the user turns the level (gain) up, and its FAIL line
 //            names that dial with its value and default; dials_from snapshot measures the dials as they were when set
 //            (the user's move aside), shows so in the card, is saved with its snapshot and loads; defaults measures at
-//            the defaults; a word it does not take is refused
+//            the defaults; a word it does not take is refused; a failing check at the defaults sends the turn on with
+//            words that say each check takes its own dials (not "the dials as they are now")
 //   TUNE     tune_dials: a level for an RMS (an instrument) or a gain for a gain (an effect): the goal met, the dial
 //            set (measured afterwards, it gives the goal); an unknown dial an error result
 //   TRIAL    try_edits (ChatScenario.h): measure_output with a passage edited and a file added on a copy says so in
@@ -1899,7 +1900,8 @@ PROBE(plugin, chat)
                                           && has(setResult, "- FAIL ") && !has(setResult, "- pass ") ? 1 : 0, 1);
             // "Done." ended the turn while one failed: the next request carries the results as the user's line.
             const juce::var nudge = lastUser(before + 2);
-            P.eq("checks.nudged", str(nudge, "role") == "user" && says(nudge, "(From the plugin: your checks") && says(nudge, "- FAIL ") ? 1 : 0, 1);
+            P.eq("checks.nudged", str(nudge, "role") == "user" && says(nudge, "(From the plugin: your checks, measured on the files and dials as they are now.\n")
+                                      && says(nudge, "- FAIL ") ? 1 : 0, 1);
             P.eq("checks.history_valid", alternates(messagesOf(ss->body(before + 4))) ? 1 : 0, 1);
             const std::string runResult = resultText(before + 4);
             P.eq("checks.after_run", has(runResult, "Compiled in") && has(runResult, "Checks: 2 of 2 pass") && !has(runResult, "- pass ") ? 1 : 0, 1);
@@ -2038,6 +2040,21 @@ PROBE(plugin, chat)
             P.eq("checkdials.defaults", has(defaults, "the dials they do not name at their defaults") && has(defaults, "Checks: 1 of 1 pass.") ? 1 : 0, 1);
             const pg::ChatAgent::McpResult bad = sa.mcpCall("set_checks", input({ { "checks", juce::var(list) }, { "dials_from", "sometimes" } }));
             P.eq("checkdials.bad_refused", bad.isError && has(allText(bad), "dials_from is current, snapshot or defaults") ? 1 : 0, 1);
+            // A failing check that takes the dials at their defaults: the turn goes on with words that do not say it
+            // was measured on the dials as they are now.
+            juce::Array<juce::var> loud;
+            loud.add(input({ { "label", "Impossibly loud" }, { "metric", pg::product::kIsInstrument ? "rms_db" : "sine_rms_db" }, { "min", 30.0 } }));
+            ss->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .tool("toolu_d1", "set_checks", input({ { "checks", loud }, { "dials_from", "defaults" } }))
+                                           .end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("Done.").end()));
+            ss->add(fake::Response::ok(fake::Sse().start().text("Still done.").end()));
+            ss->add(fake::Response::ok(fake::Sse().start().text("It cannot pass.").end()));
+            const int bn = turn("as loud as it goes", 4);
+            const juce::var nudge = lastUser(bn + 2);
+            P.eq("checkdials.nudge_words", says(nudge, "(From the plugin: your checks, measured on the files as they are now, each with the dials it takes.\n")
+                                               && says(nudge, "dials at defaults") ? 1 : 0, 1);
             sa.clearChecks();
             setDial(was);
         }

@@ -497,7 +497,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   the editor's files and the plugin's dials after every run_program that compiles (the results end its result: the
   count and each check that fails; the card shows every one) and
   when a reply ends a turn in which a tool changed something (`kChangingTools`, a result that is no error); a failure
-  there adds the results as a user text message and the turn goes on, at most `kMaxCheckNudges` (2) times a turn. One
+  there adds the results as a user text message (saying the dials as they are now only when every check takes
+  those) and the turn goes on, at most `kMaxCheckNudges` (2) times a turn. One
   `ChatEntry::Kind::checks` card a turn, brought up to date in place; its Clear calls `ChatPort::clearChecks`. A check
   takes the dials it does not name from the plugin as they are when measured (the default: tune_dials' and set_dial's
   results show in the checks), from its snapshot (set_checks' `dials_from`: the dials when it was set) or the

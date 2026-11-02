@@ -2568,10 +2568,12 @@ namespace playground
             if (toolUses.empty() && !cutOff && stopReason == "end_turn" && worked && !cancel_.load()
                 && checkNudges < kMaxCheckNudges)
             {
-                bool checking = false;
+                bool checking = false, current = true;   // current: every check takes the dials as they are now
                 {
                     const std::lock_guard<std::mutex> lock(mutex_);
                     checking = !checks_.empty();
+                    for (const measure::Check& c : checks_)
+                        current = current && c.dialsFrom == measure::DialsFrom::current;
                 }
                 if (checking)
                 {
@@ -2585,7 +2587,9 @@ namespace playground
                     {
                         ++checkNudges;
                         const std::string line =
-                            "(From the plugin: your checks, measured on the files and dials as they are now.\n" + results
+                            std::string("(From the plugin: your checks, measured on the files")
+                            + (current ? " and dials as they are now" : " as they are now, each with the dials it takes")
+                            + ".\n" + results
                             + "Fix what fails, or change a check with set_checks if it asks for the wrong thing, or say why "
                               "it cannot pass. Your turn ends when you answer without a tool call"
                             + (checkNudges == kMaxCheckNudges ? std::string(", and the plugin will not ask again this turn.)")
