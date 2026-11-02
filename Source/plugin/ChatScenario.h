@@ -2,7 +2,8 @@
 // WORK teaches both).
 //
 // scenario: how a musician plays it, one property of measure_output, view_sound, each of set_checks' checks (which
-// keeps it, so it guards every later run), tune_dials and compare (and trace, the trace lane's):
+// keeps it, so it guards every later run), tune_dials, compare and trace (renderOf reads it with the render's other
+// settings):
 //
 //   { phrase:   [{note, at, len, vel}] (at most 256; seconds; len 0.5 and vel 0.8 by default) or "capture",
 //     automate: [{dial, at, to, over}] (at most 32: a float glides from where it is to `to` over `over` seconds, as the
@@ -39,6 +40,10 @@
 
 namespace playground::scenario
 {
+    // A render's settings from a tool's input (measure_output's, view_sound's, a check's, tune_dials', trace's): the
+    // notes, the velocity, the times, the host's tempo, the wheels at the start, the dials asked for and the scenario
+    // (read(): why, when it cannot be), over `request` (trace's source "capture" starts from the recording).
+    measure::Request renderOf(const juce::var& input, std::string* why = nullptr, measure::Request request = {});
     // The property's schema: one line, details in the guide.
     juce::var schema();
     // The tool input's `scenario` into `request` (nothing there: unchanged); false with why (naming the part) when it

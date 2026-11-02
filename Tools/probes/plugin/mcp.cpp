@@ -7,7 +7,8 @@
 //            full descriptions for comparison, and compact), a setting's description given once (view_sound's render
 //            settings, set_checks' goals: not again in a check's or tune_dials'); tune_dials' metric a plain string,
 //            set_checks' the metrics' names, and its dials_from (current, snapshot, defaults); read_file's from, lines and
-//            find, edit_file's edits and expected (only its name required); an instrument's notes,
+//            find, edit_file's edits and expected (only its name required), trace's render settings (its dials; the
+//            synth's notes); an instrument's notes,
 //            velocity and wheels in the synth's measure_output and
 //            in none of the effect's tools; edit_circuit's description its first sentence, its face "Edit a circuit", its `name`
 //            undescribed (edit_file's words), view_panel's naming the schematic, its `name` too; the guide's start says it is driven
@@ -543,7 +544,7 @@ PROBE(plugin, mcp)
                                             && checkedMetric["enum"].size() == static_cast<int>(pg::measure::metrics().size()) ? 1 : 0, 1);
         // read_file's part (from, lines, find) and edit_file's list and guard (edits, expected; only its name required).
         {
-            juce::var readFile, editFile;
+            juce::var readFile, editFile, trace;
             if (const juce::Array<juce::var>* t = tools.getArray())
                 for (const juce::var& tool : *t)
                 {
@@ -551,7 +552,13 @@ PROBE(plugin, mcp)
                         readFile = tool["inputSchema"];
                     else if (tool["name"].toString() == "edit_file")
                         editFile = tool["inputSchema"];
+                    else if (tool["name"].toString() == "trace")
+                        trace = tool["inputSchema"];
                 }
+            // trace's render settings, measure_output's, undescribed (lean).
+            P.eq("link.trace_render", trace["properties"].hasProperty("dials") && trace["properties"].hasProperty("hold_seconds")
+                                          && trace["properties"].hasProperty("notes") == kInstrument
+                                          && !trace["properties"]["dials"].hasProperty("description") ? 1 : 0, 1);
             P.eq("link.file_tools", readFile["properties"].hasProperty("from") && readFile["properties"].hasProperty("lines")
                                         && readFile["properties"].hasProperty("find") && editFile["properties"].hasProperty("edits")
                                         && editFile["properties"].hasProperty("expected") && editFile["required"].size() == 1 ? 1 : 0, 1);

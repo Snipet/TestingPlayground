@@ -476,15 +476,19 @@ place (its `products/<key>.cmake`, and its names in the docs).
   (`ChatCompare`, `dsp/Compare.h`) renders two sources in two Sessions with one request; its "playing" is the
   program's own code, never the frozen copy, and it says so.
 - **trace** (`dsp/Debug.h`, `plugin/ChatTrace.cpp`): offline only, in a Session's own Engine, never the one that plays
-  (`Engine::playingPatch` and `voices` are offline accessors). Pass 1 renders in 16-sample calls and reads every field
+  (`Engine::playingPatch` and `voices` are offline accessors). Its render is measure_output's (`scenario::renderOf`:
+  the notes, the velocity, the times, the host's tempo, the wheels, the dials asked for and the scenario; the same
+  bits). Pass 1 renders in 16-sample calls and reads every field
   of the voices that sound after each (`Patch::fieldMap`, `Patch::read`: inside the instances' memory as FMinus lays it
-  out, never through a pointer), the alerts a call from `CallInfo` (never `Engine::takeAlerts`); pass 2 renders again in
+  out, never through a pointer), the alerts a call from `CallInfo` (never `Engine::takeAlerts`); a field runs away
+  past 1e6 at a thousand times its size in its instance's first 10 ms of sound (Shared's and an effect's: the
+  render's), so a state large from the start is not one; pass 2 renders again in
   1-sample calls through a window of at most 4096 samples before each problem, and its output must equal pass 1's: when
   it does not, the program keeps state per call, and the result says so. The lines that write a field come from
   `fminus/Lang.h`'s resolution of each assignment (a heuristic). Deterministic but for its time limit (90 s) and a
   cancel (`cancel_`); find's result at most twenty lines; `dsp.debug` checks it on planted bugs. It never claims what it
-  did not check: a problem a stop kept from pass 2 is "not traced", "the same bits" needs compared samples, a field bad
-  before the first call is a note, not the problem, and with no field gone bad the verdict names the state the map
+  did not check: a problem a stop kept from pass 2 is "not traced", "the same bits" needs compared samples, a field
+  non-finite before the first call is a note, not the problem, and with no field gone bad the verdict names the state the map
   leaves out (`Patch::unmapped`) before it blames a local. Its source "capture" is the user's recording replayed through
   the program that played it (`scenario::Captured::files`, the take's own, with its netlists' `pins`; the one that
   plays now when the take no longer knows it), read once for the files and the render (`scenario::resolve` with the recording).

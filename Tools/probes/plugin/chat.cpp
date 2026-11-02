@@ -103,7 +103,8 @@
 //            gain of 0.5; version:N with no project open says so; dials "current" keeps a {dials} side's own
 //   TRACE    trace through the agent (dsp/Debug.h): the program that sounds has nothing to find; a trial edit that makes
 //            its gain a NaN finds it at the first sample, in a local, the editor untouched; the recording, which there is
-//            none of yet, and a find it does not know are errors that say so
+//            none of yet, and a find it does not know are errors that say so; with notes, the times and a dial asked for
+//            it renders them, the dials as measure_output's
 //   PLANNER  a planning model (setPlanner): none at first, one the models do not list refused; chosen, a message's
 //            first request goes to it (its model, tool_choice none, the tools defined, no thinking block in its
 //            history, the brief after the user's words), its plan streams into a plan entry, and the builder's first
@@ -2173,6 +2174,20 @@ PROBE(plugin, chat)
             P.eq("trace.find_refused", results.size() == 4 && static_cast<bool>(results[3].getProperty("is_error", false))
                                            && has(unknown, "find is one of") ? 1 : 0, 1);
             P.eq("trace.entry", has(lastText(sa.chatState(), pg::ChatEntry::Kind::tool), "traced the sound") ? 1 : 0, 1);
+            // The render as measure_output's: the notes, the times and the dials asked for (the same dials rendered).
+            juce::var asked = input({ { "dials", input({ { levelDial, pg::product::kIsInstrument ? -30.0 : -6.0 } }) }, { "hold_seconds", 0.3 },
+                                      { "tail_seconds", 0.2 } });
+            if constexpr (pg::product::kIsInstrument)
+                asked.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57, 64 });
+            const std::string measured = toolText(sa.mcpCall("measure_output", asked));
+            asked.getDynamicObject()->setProperty("find", "any");
+            const std::string traced = toolText(sa.mcpCall("trace", asked));
+            const std::size_t d0 = measured.find("Dials: ");
+            const std::string dials = d0 == std::string::npos ? std::string() : measured.substr(d0 + 7, measured.find(".\n", d0) - d0 - 7);
+            std::printf("trace with dials and notes:\n%s\nmeasure_output's dials: %s\n", traced.c_str(), dials.c_str());
+            P.eq("trace.render_as_measured", !dials.empty() && has(dials, std::string(levelDial) + (pg::product::kIsInstrument ? " -30" : " -6"))
+                                                 && has(traced, "; dials " + dials + "; in calls of 16 samples.")
+                                                 && has(traced, pg::product::kIsInstrument ? "Notes 57 (A3) 64 (E4)" : "for 0.30 s") ? 1 : 0, 1);
         }
     }
 

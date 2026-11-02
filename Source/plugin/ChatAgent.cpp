@@ -429,36 +429,6 @@ namespace playground
 
         bool isNumber(const juce::var& v) { return v.isDouble() || v.isInt() || v.isInt64(); }
 
-        // A render's settings from a tool's input (measure_output's, view_sound's, a check's, tune_dials's): the notes,
-        // the velocity, the times, the host, the dials asked for and the scenario (ChatScenario.h: why, when it cannot be).
-        measure::Request renderOf(const juce::var& input, std::string* why = nullptr)
-        {
-            measure::Request req;
-            const auto numberArg = [&](const char* k, float& out) {
-                const juce::var v = input.getProperty(k, juce::var());
-                if (isNumber(v))
-                    out = static_cast<float>(static_cast<double>(v));
-            };
-            const juce::var notes = input.getProperty("notes", juce::var());
-            if (const auto* arr = notes.getArray())
-                for (const auto& n : *arr)
-                    if (isNumber(n))
-                        req.notes.push_back(static_cast<int>(std::lround(static_cast<double>(n))));
-            numberArg("velocity", req.velocity);
-            numberArg("hold_seconds", req.holdSeconds);
-            numberArg("tail_seconds", req.tailSeconds);
-            numberArg("bpm", req.bpm);
-            numberArg("modwheel", req.modwheel);
-            numberArg("pitchbend", req.pitchbend);
-            const juce::var dials = input.getProperty("dials", juce::var());
-            if (const auto* o = dials.getDynamicObject())
-                for (const auto& kv : o->getProperties())
-                    if (isNumber(kv.value) || kv.value.isBool())
-                        req.dials[kv.name.toString().toStdString()] = static_cast<float>(static_cast<double>(kv.value));
-            scenario::read(input, req, why);
-            return req;
-        }
-
         // The render's settings as a tool's input schema has them (measure_output's own, which the others share).
         void addRenderProps(juce::var& props)
         {
@@ -1417,7 +1387,7 @@ namespace playground
                 if (!goalOf(c, k.goal, why) || static_cast<int>(checks_.size()) >= kMaxChecks)
                     continue;
                 k.label = str(c, "label");
-                k.request = renderOf(c);
+                k.request = scenario::renderOf(c);
                 if (!dialsFromOf(c.getProperty("dials_from", juce::var()), k.dialsFrom))
                     k.dialsFrom = measure::DialsFrom::current;
                 if (const auto* shot = c.getProperty("snapshot", juce::var()).getDynamicObject())
@@ -3465,7 +3435,7 @@ namespace playground
             setActivity("Drawing the sound");
             measure::ViewRequest vr = soundpicture::request();
             std::string why;
-            vr.render = renderOf(input, &why);
+            vr.render = scenario::renderOf(input, &why);
             vr.render.current = currentDials();
             if constexpr (!kInstrument)
             {
@@ -3875,7 +3845,7 @@ namespace playground
         {
             setActivity("Measuring the sound");
             std::string why;
-            measure::Request req = renderOf(input, &why);
+            measure::Request req = scenario::renderOf(input, &why);
             req.current = currentDials();
             Sources files = host_.chatDraft().files;   // a copy: the trial edits (ChatScenario.h) go there
             int trials = 0;
@@ -3912,7 +3882,7 @@ namespace playground
                 k.label = str(c, "label");
                 if (k.label.empty())
                     k.label = k.goal.metric;
-                k.request = renderOf(c, &why);
+                k.request = scenario::renderOf(c, &why);
                 if (!why.empty())
                     return fail("Check " + std::to_string(i + 1) + ": " + why + " Nothing was set.");
                 if (k.request.fromCapture)                   // gone after a reload: it could never pass again
@@ -3943,7 +3913,7 @@ namespace playground
         {
             measure::TuneRequest q;
             std::string unfit;
-            q.render = renderOf(input, &unfit);
+            q.render = scenario::renderOf(input, &unfit);
             q.render.current = currentDials();
             if (!unfit.empty() || !scenario::resolve(q.render, host_, unfit))
                 return fail(unfit);
