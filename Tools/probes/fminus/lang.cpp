@@ -61,9 +61,10 @@
 //             the tags after `enum`, the new keywords and builtins (hash, randf) with their signatures; hover (a
 //             constant's value and enumeration, a table's declaration and its file, a tag's list, switch's meaning,
 //             randf's); signature help in hash( and randf(; go to definition of a constant, a table and a tag in the
-//             other file; a constant's occurrences; a circuit field's extent of enumeration constants folded; a
-//             constant nested 2,000 parentheses deep compiled on a thread of the default stack (as the Compiler's),
-//             with no value, and one 63 deep folded; and
+//             other file; a constant's occurrences; a circuit field's extent of enumeration constants folded; a name
+//             folded as the constant its place sees (a block's in its block alone, a module's own, the top level's: in
+//             a constant's value and a circuit field's extent); a constant nested 2,000 parentheses deep compiled on a
+//             thread of the default stack (as the Compiler's), with no value, and one 63 deep folded; and
 //             Patch::check's messages as RUN's for a switch on a float and a write to a constant table, the program
 //             itself clean
 #include "Probe.h"
@@ -1345,6 +1346,32 @@ PROBE(fminus, lang)
             const lg::CircuitDials dials = lg::circuitDials(cs, pg::product::kIsInstrument);
             P.eq("newer.circuit_extent", dials.bindings.size() == 1 && dials.bindings[0].dims == std::vector<int>{ 2 }
                                              && dials.bindings[0].count() == 2 && dials.bindings[0].names.size() == 3 ? 1 : 0, 1);
+        }
+
+        // A name is the constant its place sees, as C's scopes choose it: a function's block declares TAPS and CHANNELS
+        // before the top level does; they hold in that block alone (HALF folds from the block's TAPS, SIZE from the top
+        // level's), a module's own TAPS holds in the module (ONE), and a circuit field's extent is the top level's
+        // CHANNELS, not the block's.
+        {
+            const std::string text = std::string("#include \"screamer.cir\"\n")
+                                   + "int early()\n{\n    enum { TAPS = 4, CHANNELS = 3 };\n    enum { HALF = TAPS / 2 };\n"
+                                     "    return HALF + CHANNELS;\n}\n"
+                                     "enum { TAPS = 8, CHANNELS = 2 };\nenum { SIZE = TAPS * 2 };\nmodule "
+                                   + kMain + "\n{\n    enum { TAPS = 1 };\n    enum { ONE = TAPS };\n    Screamer amp[CHANNELS];\n};\n";
+            lg::Service ss;
+            ss.setFiles({ { "program.fm", text }, { "screamer.cir", libraryText("screamer.cir") } });
+            const auto signatureOf = [&](std::string_view name) {
+                for (const lg::Symbol& x : ss.symbols())
+                    if (x.name == name && x.kind == lg::Kind::constant)
+                        return x.signature;
+                return std::string("-");
+            };
+            std::printf("newer: by scope: %s; %s; %s\n", signatureOf("SIZE").c_str(), signatureOf("HALF").c_str(),
+                        signatureOf("ONE").c_str());
+            P.eq("newer.fold_scoped", signatureOf("SIZE") == "SIZE = 16" && signatureOf("HALF") == "HALF = 2"
+                                          && signatureOf("ONE") == "ONE = 1" ? 1 : 0, 1);
+            const lg::CircuitDials dials = lg::circuitDials(ss, pg::product::kIsInstrument);
+            P.eq("newer.circuit_extent_scoped", dials.bindings.size() == 1 && dials.bindings[0].dims == std::vector<int>{ 2 } ? 1 : 0, 1);
         }
 
         // An enumeration constant nested 2,000 parentheses deep, which FMinus folds: on a thread of the default stack

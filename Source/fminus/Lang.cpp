@@ -1536,32 +1536,95 @@ namespace playground::lang
         }
 
         bool isEnumerator(const Symbol& s) { return s.kind == Kind::constant && s.type == "int"; }
+        bool isScoped(const Symbol& s) { return !(s.scope.from == s.scope.to); }
+
+        // The enumeration constant a name at `at` in files[file] means, as C's scopes choose it: the innermost block's
+        // seen there (declared before it), else `module`'s own, else the top level's; a module's and the top level's
+        // first in the files files[file] reads (`reads`), then in any. Never `self`, the constant whose expression the
+        // name is in; nothing when no constant has that name.
+        const Symbol* constantAt(const std::vector<FileData*>& files, std::size_t file, Pos at, const std::string& module,
+                                 const std::vector<bool>& reads, const Symbol* self, std::string_view name)
+        {
+            const Symbol* best = nullptr;
+            for (const Symbol& s : files[file]->decls)
+                if (&s != self && isEnumerator(s) && isScoped(s) && s.name == name && s.scope.from <= at && at <= s.scope.to
+                    && (best == nullptr || best->at < s.at))
+                    best = &s;
+            if (best != nullptr)
+                return best;
+            for (const bool own : { true, false })
+            {
+                if (own && module.empty())
+                    continue;
+                for (const bool read : { true, false })
+                    for (std::size_t fi = 0; fi < files.size(); ++fi)
+                        if (reads[fi] == read)
+                            for (const Symbol& s : files[fi]->decls)
+                                if (&s != self && isEnumerator(s) && !isScoped(s) && s.name == name
+                                    && s.container == (own ? module : std::string()))
+                                    return &s;
+            }
+            return nullptr;
+        }
 
         // The enumeration constants' values (FileData::pending), folded over every file once all are indexed: a pass
         // folds what it can (an expression whose names have values, the constant before one plus 1), and passes go on
-        // while one adds a value, so a constant may name one of another file, or of a list after it. Each signature
-        // then says its value, `SQUARE = 4`, or keeps its expression as written when it does not fold.
+        // while one adds a value, so a constant may name one of another file, or of a list after it. A name is the
+        // constant its place sees (constantAt): a block's, its module's (its own, or that of the method it is in), the
+        // top level's, from the files its file reads (as Impl::visible: its #includes, in turn theirs, and for a
+        // program's file what the program's first file reads). Each signature then says its value, `SQUARE = 4`, or
+        // keeps its expression as written when it does not fold.
         void foldValues(const std::vector<FileData*>& files)
         {
-            const Folder::Lookup lookup = [&files](std::string_view name) -> std::optional<int64_t> {
-                for (const FileData* f : files)
-                    for (const Symbol& s : f->decls)
-                        if (isEnumerator(s) && s.name == name && s.value)
-                            return s.value;
-                return std::nullopt;
+            const auto indexOf = [&files](std::string_view name) {
+                for (std::size_t i = 0; i < files.size(); ++i)
+                    if (files[i]->name == name)
+                        return static_cast<int>(i);
+                return -1;
             };
+            std::vector<std::vector<bool>> reads(files.size(), std::vector<bool>(files.size(), false));
+            for (std::size_t i = 0; i < files.size(); ++i)
+            {
+                std::vector<int> todo{ static_cast<int>(i) };
+                if (files[i]->program && files[0]->program)
+                    todo.push_back(0);
+                while (!todo.empty())
+                {
+                    const int f = todo.back();
+                    todo.pop_back();
+                    if (f < 0 || reads[i][static_cast<std::size_t>(f)])
+                        continue;
+                    reads[i][static_cast<std::size_t>(f)] = true;
+                    for (const auto& inc : files[static_cast<std::size_t>(f)]->includes)
+                        todo.push_back(indexOf(inc.first));
+                }
+            }
             for (bool more = true; more;)
             {
                 more = false;
-                for (FileData* f : files)
-                    for (const FileData::Pending& p : f->pending)
+                for (std::size_t fi = 0; fi < files.size(); ++fi)
+                    for (const FileData::Pending& p : files[fi]->pending)
                     {
+                        FileData* f = files[fi];
                         Symbol& c = f->decls[static_cast<std::size_t>(p.decl)];
                         if (c.value)
                             continue;
                         std::optional<int64_t> v;
                         if (p.from >= 0)
+                        {
+                            const Pos at = startOf(f->code[static_cast<std::size_t>(p.from)]);
+                            std::string module = c.container;
+                            if (module.empty() && isScoped(c))
+                                for (const Body& b : f->bodies)
+                                    if (startOf(f->code[static_cast<std::size_t>(b.open)]) < at
+                                        && at <= startOf(f->code[static_cast<std::size_t>(b.close)]))
+                                        module = b.module;     // a block's in a method sees its module's
+                            const Folder::Lookup lookup = [&](std::string_view name) -> std::optional<int64_t> {
+                                const Symbol* s = constantAt(files, fi, at, module, reads[fi], &c, name);
+                                return s != nullptr ? s->value : std::nullopt;
+                            };
                             v = Folder(f->code, p.from, p.to, lookup).run();
+                        }
                         else if (p.before < 0)
                             v = 0;
                         else if (const std::optional<int64_t> b = f->decls[static_cast<std::size_t>(p.before)].value;
@@ -3176,13 +3239,16 @@ namespace playground::lang
                 for (std::size_t k = at + 1; k < close && close != std::string::npos; ++k)
                     if (x->type[k] != ' ')
                         extent += x->type[k];
-                // A number, or an expression of enumeration constants as FMinus folds it (`amp[CHANNELS]`); what does not
-                // fold to 1 to 2^30 is 0 (unknown), and Patch then gives the binding no dials.
+                // A number, or an expression of enumeration constants as FMinus folds it (`amp[CHANNELS]`): a name is the
+                // main module's own constant, else the top level's, of a file the program compiles. What does not fold
+                // to 1 to 2^30 is 0 (unknown), and Patch then gives the binding no dials.
                 const std::vector<Token> toks = lex(extent);
-                const Folder::Lookup lookup = [&m](std::string_view name) -> std::optional<int64_t> {
-                    for (const Symbol& c : m.symbols)
-                        if (isEnumerator(c) && c.name == name && c.value)
-                            return c.value;
+                const Folder::Lookup lookup = [&](std::string_view name) -> std::optional<int64_t> {
+                    for (const bool own : { true, false })
+                        for (const Symbol& c : m.symbols)
+                            if (isEnumerator(c) && c.name == name && !isScoped(c) && compiled(c.file)
+                                && c.container == (own ? main : std::string()))
+                                return c.value;
                     return std::nullopt;
                 };
                 const std::optional<int64_t> v = Folder(toks, 0, static_cast<int>(toks.size()), lookup).run();
