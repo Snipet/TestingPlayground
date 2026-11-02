@@ -18,7 +18,8 @@
 //   PEDAL     (an instrument) a key let go while the sustain pedal is down keeps its voice; the pedal up stops it
 //   RACING    (an instrument) a racing wheel's control changes (wheelcc): the steering's MSB and LSB (-1 to 1), the
 //             pedals' (0 to 1), the gear (127 reverse), the buttons' four parts; an MSB alone resets its LSB; the
-//             values stay until changed; restart() puts them at rest
+//             values stay until changed; Engine::wheelCcs off rest, carried into a fresh Engine, the same Host block;
+//             restart() puts them at rest
 //   EFFECT    (an effect) the wheels stay at rest, a racing wheel's too, whatever events come
 //   EXAMPLES  the examples that read it: an instrument's Sine bent 2 semitones by the pitch wheel; an effect's Tremolo
 //             at SYNC 1/4 taking its phase from the song's position (from beat 0.5: at full level, a quarter
@@ -301,6 +302,23 @@ PROBE(dsp, host)
         P.eq("racing.gear", static_cast<int64_t>(tap(wheel, tGear)), 3);
         P.eq("racing.buttons_part", static_cast<int64_t>(tap(wheel, tButtons)), 1);
         P.near("racing.throttle_stays", static_cast<double>(tap(wheel, tThrottle)), 1.0, 1e-6);
+        // What a recording's replay starts from (CaptureReplay.cpp): the state's control changes that are off rest, sent
+        // to a fresh Engine at its first sample, give it the same Host block (a steering LSB of its own too).
+        wheel.run(in, 256, { cc(10, 48, 21) });
+        const std::array<uint8_t, pg::wheelcc::kStateCcs> held = wheel.engine().wheelCcs();
+        std::vector<probe::Note> carry;
+        for (int i = 0; i < pg::wheelcc::kStateCcs; ++i)
+            if (held[static_cast<std::size_t>(i)] != pg::wheelcc::restOf(i))
+                carry.push_back(cc(0, pg::wheelcc::stateCc(i), held[static_cast<std::size_t>(i)]));
+        probe::Rig fresh(kFs, 256);
+        fresh.load(program());
+        fresh.run(in, 256, carry);
+        const pg::HostBlock& was = wheel.engine().host();
+        const pg::HostBlock& got = fresh.engine().host();
+        P.eq("racing.carried_off_rest", carry.size() == 7 && was.steering != 0.0f && was.gear == 3 ? 1 : 0, 1);
+        P.eq("racing.carried_same", got.steering == was.steering && got.throttle == was.throttle && got.brake == was.brake
+                                        && got.clutch == was.clutch && got.gear == was.gear && got.buttons == was.buttons ? 1 : 0, 1);
+        P.eq("racing.carried_ccs", fresh.engine().wheelCcs() == held ? 1 : 0, 1);
         wheel.engine().restart();
         P.eq("racing.restart_at_rest", wheel.engine().host().steering == 0.0f && wheel.engine().host().throttle == 0.0f
                                            && wheel.engine().host().gear == 0 && wheel.engine().host().buttons == 0 ? 1 : 0, 1);

@@ -1232,6 +1232,41 @@ namespace playground::measure
             recordingParts(tl, req, controls, base, rate);
         }
 
+        // A control change's mark (the sustain pedal's apart), "" for none: the mod wheel, a racing wheel's controls by
+        // name (wheelcc: an axis's MSB, as Engine::controller reads its 7 bits; its LSB none, the MSB's says it), any
+        // other by number. At the start a value at rest is no moment.
+        constexpr const char* kPedalNames[] = { "the throttle", "the brake", "the clutch" };
+
+        [[maybe_unused]] std::string controllerMark(std::size_t at, const Event& e)
+        {
+            using namespace wheelcc;
+            const int cc = e.note, v = std::clamp(static_cast<int>(e.velocity * 127.0f + 0.5f), 0, 127);
+            if (cc >= kSteering + kLsb && cc < kSteering + kLsb + kAxes)
+                return {};
+            if (cc == kSteering)
+                return at > 0 || v != restOf(0) ? "steering to " + fmt("%+.2f", static_cast<double>(steeringOf(v << 7))) : std::string();
+            if (cc > kSteering && cc < kSteering + kAxes)
+                return at > 0 || v != 0 ? std::string(kPedalNames[cc - kThrottle]) + " to " + fmt("%.2f", static_cast<double>(pedalOf(v << 7)))
+                                        : std::string();
+            if (cc == kGear)
+            {
+                const int g = gearOf(v);
+                return at > 0 || g != 0 ? "the gear to " + (g < 0 ? std::string("reverse") : g == 0 ? std::string("neutral") : std::to_string(g))
+                                        : std::string();
+            }
+            if (cc >= kButtons && cc < kButtons + kButtonCcs)
+            {
+                const int lo = (cc - kButtons) * kButtonBits;
+                char b[64];
+                std::snprintf(b, sizeof b, "the buttons' bits %d-%d to 0x%02x", lo, lo + kButtonBits - 1, v);
+                return at > 0 || v != 0 ? std::string(b) : std::string();
+            }
+            if (at > 0 || e.velocity != 0.0f)
+                return (cc == 1 ? std::string("the mod wheel") : "controller " + std::to_string(cc)) + " to "
+                     + fmt("%.2f", static_cast<double>(e.velocity));
+            return {};
+        }
+
         // An instrument's MIDI: `keys` held from the start until offAt (the wheels where the request puts them, at the
         // start, before the notes), or (keys null) the request's scenario: its phrase (else its notes held for holdN), the
         // wheels after those, a recording's events in place of the notes; with their marks.
@@ -1339,12 +1374,8 @@ namespace playground::measure
                             if (at > 0 || e.velocity >= 0.5f)        // (up at the start: at rest, no moment)
                                 tl.marks.push_back({ at, e.velocity >= 0.5f ? "the pedal down" : "the pedal up", -1, false });
                         }
-                        else if (e.note >= wheelcc::kSteering + wheelcc::kLsb && e.note < wheelcc::kSteering + wheelcc::kLsb + wheelcc::kAxes)
-                            break;                                   // a racing wheel's fine part: its MSB's mark says it
-                        else if (at > 0 || e.velocity != 0.0f)
-                            tl.marks.push_back({ at, (e.note == 1 ? std::string("the mod wheel") : "controller " + std::to_string(e.note))
-                                                         + " to " + fmt("%.2f", static_cast<double>(e.velocity)),
-                                                 -1, false });
+                        else if (std::string what = controllerMark(at, e); !what.empty())
+                            tl.marks.push_back({ at, std::move(what), -1, false });
                         break;
                     case EventKind::pitchBend:
                         if (at > 0 || e.velocity != 0.0f)

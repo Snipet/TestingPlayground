@@ -74,7 +74,8 @@ namespace playground
         }
 
         // The controls that say a wheel's whole state, in the order to send them (Engine::wheelCcs): each axis's MSB
-        // and LSB, the gear, the buttons' four.
+        // and LSB, the gear, the buttons' four; and each one's value at rest (the steering's MSB 64, the rest 0), which
+        // a fresh Engine holds, so only those that differ need sending.
         inline constexpr int kStateCcs = 2 * kAxes + 1 + kButtonCcs;
         constexpr uint8_t stateCc(int i) noexcept
         {
@@ -84,6 +85,7 @@ namespace playground
                 return kGear;
             return static_cast<uint8_t>(kButtons + i - 2 * kAxes - 1);
         }
+        constexpr uint8_t restOf(int i) noexcept { return i == 0 ? static_cast<uint8_t>(kCentre >> 7) : 0; }
     }
 
     // What a program's Host block holds (Patch::setHost; host.fm, Patch.h): the transport at a call's first sample and
