@@ -18,7 +18,9 @@
 //           held (four steals, each voice's stop() at its steal; the stolen first key let go inside its 2 ms fade);
 //           the quietest cut with all 32 instances taken (a voice that had no stop() yet, its instance the new
 //           note's); a voice dropped for going non-finite; then every key up. Every start has exactly one stop before
-//           its instance's next start, none twice, and the stack ends empty
+//           its instance's next start, none twice, and the stack ends empty. And four keys held while a dial glides,
+//           then prepare() again (the block size it had, and a larger one): a stop() each, before anything goes, so it
+//           reads the gliding dial as the last block left it
 //   RELEASE a voice whose process returns false (here: once its key is up) is free again
 // Both:
 //   GLIDE   a real dial moved from 0 to 1 reaches the program as a stream that glides there in 20 ms, linearly,
@@ -73,10 +75,12 @@ namespace
     int stack[128];                            // the keys whose voices have had a start and no stop since
     int open[32];                              // per instance: 1 between its start and its stop
     int depth, starts, stops, unstopped, twice, next;
+    float dial;                                // the dial as the last stop() read it
 };
 
 module Voice
 {
+    param float level [[fminus::range(0, 1)]] [[fminus::default(0)]];
     Shared* shared;
     int me, key;
     bool held;
@@ -121,6 +125,7 @@ module Voice
             shared->depth -= 1;
         }
         held = false;
+        shared->dial = level[0];
     }
 
     bool process(float* restrict left, float* restrict right, int n)
@@ -313,6 +318,30 @@ PROBE(dsp, swap)
                                        { { 0, pg::EventKind::noteOn, 99, 1.0f }, { 512, pg::EventKind::noteOff, 99, 0.0f } },
                                        4 * 256, 1);
             P.eq("stops.dropped.dropped", static_cast<int64_t>(m.dropped), 1);
+        }
+        for (const int block : { 512, 2048 })
+        {
+            // Four keys held while the dial glides from 0 to 1 (from two blocks before the end), then the host prepares
+            // again, at the block size it had and at a larger one (the dials' streams move): each voice gets its stop()
+            // first, which reads the dial as the last block left it, between 0.27 and 0.53 of the way.
+            const std::string key = "stops.prepare" + std::to_string(block);
+            probe::Rig r(kFs, 512);
+            P.eq(key + ".compiles", r.load(kKeyStack) ? 1 : 0, 1);
+            std::vector<probe::Note> keys;
+            for (int k = 0; k < 4; ++k)
+                keys.push_back({ static_cast<std::size_t>(k), pg::EventKind::noteOn, 60 + k, 1.0f });
+            const std::size_t move = 6 * 256;
+            r.run(probe::Stereo(8 * 256), 256, keys, {}, [&](std::size_t pos, std::array<float, pg::kMaxControls>& norm) {
+                norm[0] = pos >= move ? 1.0f : 0.0f;
+            });
+            P.eq(key + ".none_stopped_before", static_cast<int64_t>(sharedField(r.engine().playingPatch(), "shared->stops")), 0);
+            r.engine().prepare(kFs, block);
+            const pg::Patch* p = r.engine().playingPatch();
+            P.eq(key + ".a_stop_each", static_cast<int64_t>(sharedField(p, "shared->stops")), 4);
+            P.eq(key + ".no_stop_twice", static_cast<int64_t>(sharedField(p, "shared->twice")), 0);
+            P.eq(key + ".stack_empty", static_cast<int64_t>(sharedField(p, "shared->depth")), 0);
+            P.eq(key + ".voices_free", r.engine().activeVoices(), 0);
+            P.near(key + ".stop_reads_the_dial", sharedField(p, "shared->dial"), 0.4, 0.135);
         }
 
         // RELEASE

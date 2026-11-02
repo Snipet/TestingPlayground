@@ -63,6 +63,15 @@ namespace playground
     void Engine::prepare(double sampleRate, int maxBlockSize)
     {
         const std::lock_guard<std::mutex> lock(mutex_);
+        // The voices that sound go, each with its stop() (Engine.h, "Voices"), unless a waiting program replaces theirs:
+        // first, while what that stop() reads is as their last block left it (a gliding dial's stream points into
+        // streamBuf_, which the block size below may move).
+        if (current_ != nullptr && pending_.load(std::memory_order_acquire) == nullptr)
+        {
+            const fsdsp::ScopedFtz ftz;
+            for (Voice& v : voices_)
+                stopVoice(v);
+        }
         fs_ = sampleRate > 0.0 ? static_cast<float>(sampleRate) : 48000.0f;
         rate_.store(fs_, std::memory_order_relaxed);
         maxBlock_ = std::max(1, maxBlockSize);
@@ -117,13 +126,7 @@ namespace playground
         xfading_ = false;
         xfade_.lin.cur = 1.0f;
         xfade_.setTarget(1.0f);
-        if (!fresh && current_ != nullptr)           // the voices that sound go: each its stop() (Engine.h, "Voices")
-        {
-            const fsdsp::ScopedFtz ftz;
-            for (Voice& v : voices_)
-                stopVoice(v);
-        }
-        voices_ = {};
+        voices_ = {};                                // (their stop() came first, above)
         clock_ = 0;
         if (current_ != nullptr && current_->rate() != fs_)
         {
