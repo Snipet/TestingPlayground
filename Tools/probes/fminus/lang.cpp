@@ -42,7 +42,9 @@
 //             copies of each (no indent; tokens single-spaced, braces K&R; no space at all where none is needed) format
 //             back to it (comment gaps aside), each result formatted again unchanged; a messy program formats to the
 //             house style, a messy switch and enumeration too (a label typed without its `:` ending with its
-//             statement), a table on one long line broken after its commas within kWidth columns and stable; text with a character FMinus does not read is left as it is, with why
+//             statement), a table on one long line broken after its commas within kWidth columns and stable (with a
+//             comment after it, the comment after the last line's code); text with a character FMinus does not read
+//             is left as it is, with why
 //   RENDER    each example of this product (with the library files it includes), formatted, renders what it rendered
 //             before, bit for bit (measure::Session:
 //             an effect over noise, an instrument's chord); RANDOM programs with every file formatted (the program and
@@ -1036,6 +1038,15 @@ PROBE(fminus, lang)
         P.eq("format.table_wrapped", tw.ok && tw.changed && lines >= 3 && longest <= lg::kWidth ? 1 : 0, 1);
         P.eq("format.table_continuation", tw.text.find("\n    ") != std::string::npos ? 1 : 0, 1);
         P.eq("format.table_stable", lg::format(tw.text, {}).changed ? 0 : 1, 1);
+        // With a comment after it: the comment follows the last line's code, with its gap, every line within kWidth.
+        const std::string commented = table.substr(0, table.size() - 1) + "  // one cycle\n";
+        const lg::Formatted tc = lg::format(commented, {});
+        int widest = 0;
+        for (const std::string_view l : lg::splitLines(tc.text))
+            widest = std::max(widest, static_cast<int>(l.size()));
+        std::printf("the table with a comment: the longest line %d\n", widest);
+        P.eq("format.table_comment", tc.ok && widest <= lg::kWidth && tc.text.find(" };  // one cycle\n") != std::string::npos
+                                         && !lg::format(tc.text, {}).changed ? 1 : 0, 1);
     }
 
     // ---- RENDER -----------------------------------------------------------------------------------------------------

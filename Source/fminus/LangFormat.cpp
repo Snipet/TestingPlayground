@@ -429,13 +429,14 @@ namespace playground::lang
                                 wrap(l);
                                 wrapped = true;
                             }
-                            // A comment after the code: at its column, moved with the line's indent, where it fits (on
-                            // the last line a long list was broken into).
+                            // A comment after the code: at its column, moved with the line's indent, where it fits. On
+                            // a long list's line that was broken, the column was the unbroken line's: the comment
+                            // follows the code of the last line, with its gap.
                             const std::size_t nl = l.rfind('\n');
                             const int want = t.col + (indent - origIndent);
                             const int end = static_cast<int>(nl == std::string::npos ? l.size() : l.size() - nl - 1);
                             const int gap = lastEnd >= 0 ? std::max(1, t.col - lastEnd) : 1;
-                            const int col = want >= end + 1 ? want : end + gap;
+                            const int col = nl == std::string::npos && want >= end + 1 ? want : end + gap;
                             l.append(static_cast<std::size_t>(col - end), ' ');
                         }
                         else if (onLine)
