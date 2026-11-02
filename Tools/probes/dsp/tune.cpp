@@ -15,7 +15,9 @@
 //   GOALS    met and penalty: bounds and targets, a relative tolerance and its floor, infinity ("never") and a value
 //            not measured; a goal that cannot be is refused, saying why
 //   CHECKS   evaluate: passing and failing checks, a check whose metric needs one note not measured, a program that
-//            does not compile measured not at all
+//            does not compile measured not at all; a check that passes at the defaults fails with the plugin's level
+//            (gain) turned up and names that dial alone (not one at its default, nor one it fixes itself); the same
+//            check from its snapshot or the defaults passes, and from a snapshot it fails names the dial moved since
 //   TUNE     tune_dials finds a level for an RMS, a release for a release time (an instrument), a gain for a gain and
 //            a drive for a THD+N (an effect), each goal met within its budget; two dials at once; goals met already
 //            take one render; an int, a name the program has not and an empty request are refused; progress can stop
@@ -495,7 +497,7 @@ PROBE(dsp, tune)
     {
         std::vector<ms::Check> checks;
         const auto add = [&](const char* label, ms::Goal g, ms::Request r) {
-            checks.push_back({ label, std::move(g), std::move(r) });
+            checks.push_back({ label, std::move(g), std::move(r), ms::DialsFrom::current, {} });
         };
         if constexpr (kInstrument)
         {
@@ -540,6 +542,35 @@ PROBE(dsp, tune)
         const std::vector<ms::CheckResult> broken = ms::evaluate(pg::singleFile("module Nothing {};\n"), checks, {}, &errors);
         P.eq("checks.no_compile", std::none_of(broken.begin(), broken.end(), [](const ms::CheckResult& r) { return r.measured; })
                                       && !errors.empty() ? 1 : 0, 1);
+
+        // The dials a check does not fix: the plugin's now (a level turned up fails it, and the check names that dial,
+        // not one at its default), as they were when it was set (its snapshot), or the defaults.
+        const char* dial = kInstrument ? "level" : "gain";
+        const float up = kInstrument ? 0.0f : 12.0f, fine = kInstrument ? -20.0f : 0.0f;
+        const ms::Check quiet{ "Not too loud", atMost(kInstrument ? "rms_db" : "sine_gain_db", kInstrument ? -10.0 : 3.0), base,
+                               ms::DialsFrom::current, {} };
+        const std::map<std::string, float> moved{ { dial, up }, { kInstrument ? "cutoff" : "tone", kInstrument ? 1000.0f : 20000.0f } };
+        const std::vector<ms::CheckResult> atDefaults = ms::evaluate(files(), { quiet }, {});
+        const std::vector<ms::CheckResult> now = ms::evaluate(files(), { quiet }, moved);
+        P.eq("checks.passes_at_defaults", atDefaults.size() == 1 && atDefaults[0].pass && atDefaults[0].away.empty() ? 1 : 0, 1);
+        P.eq("checks.names_the_moved_dial", now.size() == 1 && now[0].measured && !now[0].pass && now[0].away.size() == 1
+                                                && now[0].away[0].name == dial && now[0].away[0].now == up
+                                                && now[0].away[0].reference == fine ? 1 : 0, 1);
+        ms::Check named = quiet;
+        named.request.dials = { { dial, up } };
+        const std::vector<ms::CheckResult> own = ms::evaluate(files(), { named }, moved);
+        P.eq("checks.own_dial_not_named", own.size() == 1 && !own[0].pass && own[0].away.empty() ? 1 : 0, 1);
+        ms::Check shot = quiet;
+        shot.dialsFrom = ms::DialsFrom::snapshot;
+        shot.snapshot = { { dial, fine } };
+        ms::Check defaults = quiet;
+        defaults.dialsFrom = ms::DialsFrom::defaults;
+        const std::vector<ms::CheckResult> kept = ms::evaluate(files(), { shot, defaults }, moved);
+        P.eq("checks.snapshot_and_defaults", kept.size() == 2 && kept[0].pass && kept[1].pass ? 1 : 0, 1);
+        shot.snapshot = { { dial, up } };
+        const std::vector<ms::CheckResult> since = ms::evaluate(files(), { shot }, { { dial, fine } });
+        P.eq("checks.snapshot_names_moved_since", since.size() == 1 && !since[0].pass && since[0].away.size() == 1
+                                                      && since[0].away[0].now == fine && since[0].away[0].reference == up ? 1 : 0, 1);
     }
 
     // ---- TUNE ----------------------------------------------------------------------------------------------------------

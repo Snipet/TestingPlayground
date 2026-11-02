@@ -522,6 +522,30 @@ namespace playground
             return why.empty();
         }
 
+        // set_checks' dials_from (Goals.h's DialsFrom): its words in the schema and the session, and back (absent:
+        // current); false for a word it is not.
+        constexpr const char* kDialsFrom[] = { "current", "snapshot", "defaults" };   // DialsFrom's order
+
+        bool dialsFromOf(const juce::var& v, measure::DialsFrom& out)
+        {
+            out = measure::DialsFrom::current;
+            if (v.isVoid() || v.isUndefined())
+                return true;
+            for (int k = 0; k < 3; ++k)
+                if (v.isString() && v.toString() == kDialsFrom[k])
+                {
+                    out = static_cast<measure::DialsFrom>(k);
+                    return true;
+                }
+            return false;
+        }
+
+        // How a check list shows a check's dials_from ("" for current, the default).
+        std::string dialsFromWords(measure::DialsFrom f)
+        {
+            return f == measure::DialsFrom::snapshot ? "dials as set" : f == measure::DialsFrom::defaults ? "dials at defaults" : "";
+        }
+
         // The history as another model may read it (the planner's view, ChatAgent.h): no thinking (bound to the model,
         // the prompt and the conversation that made it), a compaction block as its summary in words, no server tools'
         // blocks (their results go back only to their own requests), text without citations (which point at them). A
@@ -1314,6 +1338,15 @@ namespace playground
                 juce::var v = claude::object({ { "label", juce::String::fromUTF8(c.label.c_str()) },
                                                { "metric", juce::String(c.goal.metric) } });
                 auto* o = v.getDynamicObject();
+                if (c.dialsFrom != measure::DialsFrom::current)
+                    o->setProperty("dials_from", kDialsFrom[static_cast<int>(c.dialsFrom)]);
+                if (c.dialsFrom == measure::DialsFrom::snapshot)
+                {
+                    juce::var shot = claude::object({});
+                    for (const auto& [k, x] : c.snapshot)
+                        shot.getDynamicObject()->setProperty(juce::Identifier(juce::String::fromUTF8(k.c_str())), x);
+                    o->setProperty("snapshot", shot);
+                }
                 if (c.goal.hasMin)
                     o->setProperty("min", c.goal.min);
                 if (c.goal.hasMax)
@@ -1385,6 +1418,12 @@ namespace playground
                     continue;
                 k.label = str(c, "label");
                 k.request = renderOf(c);
+                if (!dialsFromOf(c.getProperty("dials_from", juce::var()), k.dialsFrom))
+                    k.dialsFrom = measure::DialsFrom::current;
+                if (const auto* shot = c.getProperty("snapshot", juce::var()).getDynamicObject())
+                    for (const auto& kv : shot->getProperties())
+                        if (isNumber(kv.value) || kv.value.isBool())
+                            k.snapshot[kv.name.toString().toStdString()] = static_cast<float>(static_cast<double>(kv.value));
                 checks_.push_back(std::move(k));
             }
         const juce::var messages = v.getProperty("messages", juce::var()), entries = v.getProperty("entries", juce::var());
@@ -1917,8 +1956,16 @@ namespace playground
                            "Set the checks this work must pass: what the user asked for, as numbers the plugin "
                            "measures (the metrics in CHECKING YOUR WORK), each with min, max or a target. The list "
                            "replaces the checks set before; an empty one clears them. The plugin measures them now, "
-                           "then as CHECKING YOUR WORK says; its results give the count and each check that fails.",
-                           claude::object({ { "checks", checks } }), { "checks" }));
+                           "then as CHECKING YOUR WORK says; its results give the count and each check that fails, "
+                           "naming the dials it took that are off their defaults.",
+                           claude::object({ { "checks", checks },
+                                            { "dials_from", claude::object({ { "type", "string" },
+                                                                             { "enum", juce::Array<juce::var>{ kDialsFrom[0], kDialsFrom[1], kDialsFrom[2] } },
+                                                                             { "description", "The dials a check does not name: current "
+                                                                                              "(the default: as they are when "
+                                                                                              "measured), snapshot (as they are "
+                                                                                              "now) or defaults" } }) } }),
+                           { "checks" }));
         }
         {
             juce::var props = claude::object({});
@@ -2896,16 +2943,43 @@ namespace playground
         setActivity("Checking");
         std::string errors;
         const std::vector<measure::CheckResult> results = scenario::evaluate(host_.chatDraft().files, checks, currentDials(), host_, &errors);
+        // A failing check's dials off their reference, as the panel says them (the options of the program that plays).
+        const Controls playing = host_.chatDials();
+        const std::array<std::vector<std::string>, kMaxControls> options = host_.chatDialOptions();
+        const auto said = [&](const measure::DialAway& a, float v) {
+            for (int c = 0; c < kMaxControls; ++c)
+                if (playing[static_cast<std::size_t>(c)].used && a.name == playing[static_cast<std::size_t>(c)].name)
+                    return dialText(a.control, v, options[static_cast<std::size_t>(c)]);
+            return dialText(a.control, v);
+        };
+        const auto awayText = [&](const measure::Check& k, const measure::CheckResult& r) {
+            if (r.away.empty())
+                return std::string();
+            constexpr std::size_t most = 6;
+            const bool snapshot = k.dialsFrom == measure::DialsFrom::snapshot;
+            std::string list;
+            for (std::size_t i = 0; i < r.away.size() && i < most; ++i)
+                list += (i == 0 ? "" : ", ") + r.away[i].name + " " + said(r.away[i], r.away[i].now) + " ("
+                      + (snapshot ? "then " : "default ") + said(r.away[i], r.away[i].reference) + ")";
+            if (r.away.size() > most)
+                list += " and " + std::to_string(r.away.size() - most) + " more";
+            return std::string(k.dialsFrom == measure::DialsFrom::current ? "; it takes the dials as they are now, these off their defaults: "
+                               : snapshot ? "; it takes the dials as they were when set, and these moved since: "
+                                          : "; it takes the dials at their defaults, and these are moved now: ")
+                 + list;
+        };
         std::vector<ChatCheck> rows;
         int pass = 0;
         std::string lines, failing;                      // every check's line (the card's text), and those that fail
         for (std::size_t i = 0; i < results.size() && i < checks.size(); ++i)
         {
             const measure::CheckResult& r = results[i];
-            rows.push_back({ checks[i].label, r.text, r.measured, r.pass });
+            const std::string from = dialsFromWords(checks[i].dialsFrom);
+            rows.push_back({ checks[i].label, r.text + (from.empty() ? "" : "; " + from), r.measured, r.pass });
             pass += r.measured && r.pass ? 1 : 0;
             const std::string line = std::string(!r.measured ? "- NOT MEASURED " : r.pass ? "- pass " : "- FAIL ") + checks[i].label
-                                   + " (" + checks[i].goal.metric + "): " + r.text + "\n";
+                                   + " (" + checks[i].goal.metric + (from.empty() ? "" : "; " + from) + "): " + r.text
+                                   + (r.measured && !r.pass ? awayText(checks[i], r) : std::string()) + "\n";
             lines += line;
             if (!(r.measured && r.pass))
                 failing += line;
@@ -3856,11 +3930,18 @@ namespace playground
                 return fail("set_checks needs checks: a list of them (empty to clear them)");
             if (arr->size() > kMaxChecks)
                 return fail("At most " + std::to_string(kMaxChecks) + " checks");
+            measure::DialsFrom from = measure::DialsFrom::current;
+            if (!dialsFromOf(input.getProperty("dials_from", juce::var()), from))
+                return fail("dials_from is current, snapshot or defaults. Nothing was set.");
+            const std::map<std::string, float> snapshot = from == measure::DialsFrom::snapshot ? currentDials()
+                                                                                               : std::map<std::string, float>{};
             std::vector<measure::Check> checks;
             for (int i = 0; i < arr->size(); ++i)
             {
                 const juce::var& c = (*arr)[i];
                 measure::Check k;
+                k.dialsFrom = from;
+                k.snapshot = snapshot;
                 std::string why;
                 if (!goalOf(c, k.goal, why))
                     return fail("Check " + std::to_string(i + 1) + ": " + why + " Nothing was set.");
@@ -3890,6 +3971,8 @@ namespace playground
             }
             note("set " + std::to_string(checks.size()) + " check" + (checks.size() == 1 ? "" : "s"));
             return "Set " + std::to_string(checks.size()) + " check" + (checks.size() == 1 ? "" : "s")
+                 + (from == measure::DialsFrom::snapshot ? ", the dials they do not name as they are now"
+                    : from == measure::DialsFrom::defaults ? ", the dials they do not name at their defaults" : "")
                  + ". The plugin measures them after every run_program and when you end your turn.\n" + evaluateChecks();
         }
         if (name == "tune_dials")

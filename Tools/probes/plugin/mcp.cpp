@@ -6,7 +6,8 @@
 //            ask_planner, each MCP description its first sentence or paragraph (tools.json's size printed, with the
 //            full descriptions for comparison, and compact), a setting's description given once (view_sound's render
 //            settings, set_checks' goals: not again in a check's or tune_dials'); tune_dials' metric a plain string,
-//            set_checks' the metrics' names; an instrument's notes, velocity and wheels in the synth's measure_output and
+//            set_checks' the metrics' names, and its dials_from (current, snapshot, defaults); an instrument's notes,
+//            velocity and wheels in the synth's measure_output and
 //            in none of the effect's tools; edit_circuit's description its first sentence, its face "Edit a circuit", its `name`
 //            undescribed (edit_file's words), view_panel's naming the schematic, its `name` too; the guide's start says it is driven
 //            from outside; a guide request naming no part (a 0.2.0 server's) gets the whole guide
@@ -539,6 +540,11 @@ PROBE(plugin, mcp)
         const juce::var checkedMetric = setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["metric"];
         P.eq("link.tune_metric_string", tunedMetric["type"].toString() == "string" && !tunedMetric.hasProperty("enum")
                                             && checkedMetric["enum"].size() == static_cast<int>(pg::measure::metrics().size()) ? 1 : 0, 1);
+        // set_checks' dials_from: where a check takes the dials it does not name (its three words, described).
+        const juce::var dialsFrom = setChecks["inputSchema"]["properties"]["dials_from"];
+        P.eq("link.checks_dials_from", dialsFrom["enum"].size() == 3 && dialsFrom["enum"][1].toString() == "snapshot"
+                                           && dialsFrom.hasProperty("description")
+                                           && setChecks["inputSchema"]["required"].size() == 1 ? 1 : 0, 1);
         // An instrument's render settings (its notes, velocity and wheels) in an instrument's tools only: measure_output
         // has them in the synth, and no tool of the effect's lists them.
         {

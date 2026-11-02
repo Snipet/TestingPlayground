@@ -18,6 +18,39 @@ namespace playground::measure
             const double a = std::fabs(e);
             return std::min(a <= 20.0 ? a * a : 400.0 + 40.0 * (a - 20.0), kUnmeasured * 0.5);
         }
+
+        // A dial's value as a render takes it (Measure.cpp's dialsFor: in its range, an int's or a bool's whole).
+        float taken(const Control& k, float v)
+        {
+            v = std::clamp(v, std::min(k.min, k.max), std::max(k.min, k.max));
+            return k.type == ControlType::real ? v : std::round(v);
+        }
+
+        // The dials a failing check took from outside itself (not in its `dials`, not moved by its scenario) whose value
+        // in the plugin now (`current`) is off its reference: the default, or the check's snapshot.
+        std::vector<DialAway> awayOf(const Check& check, const Controls& controls, const std::map<std::string, float>& current)
+        {
+            std::vector<DialAway> out;
+            for (const Control& k : controls)
+            {
+                if (!k.used || check.request.dials.count(k.name) != 0)
+                    continue;
+                if (std::any_of(check.request.automate.begin(), check.request.automate.end(),
+                                [&](const DialMove& m) { return m.dial == k.name; }))
+                    continue;
+                const auto now = current.find(k.name);
+                if (now == current.end())
+                    continue;
+                float reference = k.def;
+                if (check.dialsFrom == DialsFrom::snapshot)
+                    if (const auto s = check.snapshot.find(k.name); s != check.snapshot.end())
+                        reference = s->second;
+                const float a = taken(k, now->second), b = taken(k, reference);
+                if (std::fabs(normOf(k, a) - normOf(k, b)) > 1e-4f)
+                    out.push_back({ k.name, k, a, b });
+            }
+            return out;
+        }
     }
 
     std::string invalid(const Goal& g)
@@ -120,6 +153,11 @@ namespace playground::measure
                 *errors = first.errors();
             return out;
         }
+        // The dials a check does not fix, as its dialsFrom says.
+        const std::map<std::string, float> none;
+        const auto from = [&](const Check& c) -> const std::map<std::string, float>& {
+            return c.dialsFrom == DialsFrom::current ? current : c.dialsFrom == DialsFrom::snapshot ? c.snapshot : none;
+        };
         // The checks that share a render, measured together, each group once with the metrics its checks want.
         std::vector<bool> done(checks.size(), false);
         for (std::size_t i = 0; i < checks.size(); ++i)
@@ -127,13 +165,13 @@ namespace playground::measure
             if (done[i])
                 continue;
             Request r = checks[i].request;
-            r.current = current;
+            r.current = from(checks[i]);
             r.want.clear();
             std::vector<std::size_t> group;
             for (std::size_t j = i; j < checks.size(); ++j)
             {
                 Request o = checks[j].request;
-                o.current = current;
+                o.current = from(checks[j]);
                 if (!done[j] && o.sameRender(r))
                 {
                     group.push_back(j);
@@ -141,7 +179,8 @@ namespace playground::measure
                     done[j] = true;
                 }
             }
-            const Result m = sessionFor(r.rate).measure(r);
+            Session& session = sessionFor(r.rate);
+            const Result m = session.measure(r);
             for (const std::size_t j : group)
             {
                 const Goal& g = checks[j].goal;
@@ -157,6 +196,8 @@ namespace playground::measure
                 c.value = it->second;
                 c.pass = met(g, c.value);
                 c.text = valueText(g.metric, c.value) + "; " + goalText(g);
+                if (!c.pass)
+                    c.away = awayOf(checks[j], session.controls(), current);
             }
         }
         return out;

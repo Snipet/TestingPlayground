@@ -494,8 +494,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
   count and each check that fails; the card shows every one) and
   when a reply ends a turn in which a tool changed something (`kChangingTools`, a result that is no error); a failure
   there adds the results as a user text message and the turn goes on, at most `kMaxCheckNudges` (2) times a turn. One
-  `ChatEntry::Kind::checks` card a turn, brought up to date in place; its Clear calls `ChatPort::clearChecks`. The
-  session keeps `checks_` in set_checks's own shape. Never let a check nudge without a cap: each nudge is a billed
+  `ChatEntry::Kind::checks` card a turn, brought up to date in place; its Clear calls `ChatPort::clearChecks`. A check
+  takes the dials it does not name from the plugin as they are when measured (the default: tune_dials' and set_dial's
+  results show in the checks), from its snapshot (set_checks' `dials_from`: the dials when it was set) or the
+  defaults (`measure::DialsFrom`); a FAIL line names the dials it took that are off their defaults (or the snapshot).
+  The session keeps `checks_` in set_checks's own shape (`dials_from` and the snapshot with each check). Never let a check nudge without a cap: each nudge is a billed
   request.
 - **The planner** (`setPlanner`, chat.json "planner"; ChatAgent.h "A planner"): `planTurn` sends a message's
   history to the planning model through `forAnotherModel` (no thinking blocks, which are bound to the builder's model

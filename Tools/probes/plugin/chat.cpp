@@ -82,6 +82,10 @@
 //            metric that is none refused; a turn that only talks is not sent on; the session keeps them (and loads
 //            them); clearChecks forgets them (a note),
 //            and a turn after it goes on no more
+//   CHECKDIALS a check that passes at the defaults fails once the user turns the level (gain) up, and its FAIL line
+//            names that dial with its value and default; dials_from snapshot measures the dials as they were when set
+//            (the user's move aside), shows so in the card, is saved with its snapshot and loads; defaults measures at
+//            the defaults; a word it does not take is refused
 //   TUNE     tune_dials: a level for an RMS (an instrument) or a gain for a gain (an effect): the goal met, the dial
 //            set (measured afterwards, it gives the goal); an unknown dial an error result
 //   TRIAL    try_edits (ChatScenario.h): measure_output with a passage edited and a file added on a copy says so in
@@ -1758,6 +1762,61 @@ PROBE(plugin, chat)
             ss->add(fake::Response::ok(fake::Sse().start().text("Done.").end()));
             const int b4 = turn("thanks", 1);
             P.eq("checks.cleared_no_nudge", ss->postCount() - b4, 1);
+        }
+
+        // ---- CHECKS' DIALS: a failing check names the dials it took; dials_from ---------------------------------------------
+        {
+            const pg::Control k = sp.control(dialSlot);
+            const float was = pg::plainOf(k, sp.getParameters()[dialSlot]->getValue());
+            const auto setDial = [&](float plain) {                  // the user's move (as the host's: no gesture)
+                sp.getParameters()[dialSlot]->setValueNotifyingHost(pg::normOf(k, plain));
+                sp.poll();
+            };
+            const float up = pg::product::kIsInstrument ? 0.0f : 12.0f;
+            juce::var quiet = input({ { "label", "Not too loud" }, { "metric", pg::product::kIsInstrument ? "rms_db" : "sine_gain_db" },
+                                      { "max", pg::product::kIsInstrument ? -10.0 : 3.0 } });
+            if constexpr (pg::product::kIsInstrument)
+                quiet.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+            const juce::Array<juce::var> list{ quiet };
+            const auto cardText = [&] {
+                const pg::ChatState st = sa.chatState();
+                for (auto it = st.entries.rbegin(); it != st.entries.rend(); ++it)
+                    if (it->kind == pg::ChatEntry::Kind::checks && !it->checks.empty())
+                        return it->checks[0].detail;
+                return std::string();
+            };
+            // From the plugin's dials as they are (the default): it passes at the defaults, and fails, naming the dial, once
+            // the user turns it up.
+            setDial(k.def);
+            const std::string set = allText(sa.mcpCall("set_checks", input({ { "checks", juce::var(list) } })));
+            setDial(up);
+            const std::string moved = allText(sa.mcpCall("run_program", input({})));
+            std::printf("set_checks at the defaults:\n%s\nrun_program after the user turned %s up:\n%s\n", set.c_str(), levelDial, moved.c_str());
+            P.eq("checkdials.passes_at_defaults", has(set, "Checks: 1 of 1 pass.") ? 1 : 0, 1);
+            P.eq("checkdials.fail_names_the_dial", has(moved, "Checks: 0 of 1 pass.\n- FAIL Not too loud (")
+                                                       && has(moved, "; it takes the dials as they are now, these off their defaults: "
+                                                                         + std::string(levelDial) + " ") ? 1 : 0, 1);
+            // From a snapshot: the dials as they were when set, whatever the user does after; kept by the session.
+            setDial(k.def);
+            const std::string shot = allText(sa.mcpCall("set_checks", input({ { "checks", juce::var(list) }, { "dials_from", "snapshot" } })));
+            setDial(up);
+            const std::string kept = allText(sa.mcpCall("run_program", input({})));
+            P.eq("checkdials.snapshot", has(shot, "Set 1 check, the dials they do not name as they are now.") && has(shot, "Checks: 1 of 1 pass.")
+                                            && has(kept, "Checks: 1 of 1 pass.") && has(cardText(), "dials as set") ? 1 : 0, 1);
+            const std::string saved = sa.saveState();
+            const juce::var savedCheck = arr(claude::parseJson(saved).getProperty("checks", {}))[0];
+            P.eq("checkdials.snapshot_saved", str(savedCheck, "dials_from") == "snapshot"
+                                                  && std::fabs(static_cast<double>(savedCheck["snapshot"][levelDial]) - k.def) < 1e-4 ? 1 : 0, 1);
+            sa.loadState(saved);
+            const std::string loaded = allText(sa.mcpCall("run_program", input({})));
+            P.eq("checkdials.snapshot_loads", has(loaded, "Checks: 1 of 1 pass.") ? 1 : 0, 1);
+            // From the defaults, the user's move aside; a word dials_from does not take is refused.
+            const std::string defaults = allText(sa.mcpCall("set_checks", input({ { "checks", juce::var(list) }, { "dials_from", "defaults" } })));
+            P.eq("checkdials.defaults", has(defaults, "the dials they do not name at their defaults") && has(defaults, "Checks: 1 of 1 pass.") ? 1 : 0, 1);
+            const pg::ChatAgent::McpResult bad = sa.mcpCall("set_checks", input({ { "checks", juce::var(list) }, { "dials_from", "sometimes" } }));
+            P.eq("checkdials.bad_refused", bad.isError && has(allText(bad), "dials_from is current, snapshot or defaults") ? 1 : 0, 1);
+            sa.clearChecks();
+            setDial(was);
         }
 
         // ---- TUNE ----------------------------------------------------------------------------------------------------------
