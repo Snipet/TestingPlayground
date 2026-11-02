@@ -41,8 +41,8 @@
 //             switch with a block after a label and a statement on a label's line, the bits); three scrambled
 //             copies of each (no indent; tokens single-spaced, braces K&R; no space at all where none is needed) format
 //             back to it (comment gaps aside), each result formatted again unchanged; a messy program formats to the
-//             house style, a messy switch and enumeration too, a table on one long line broken after its commas within
-//             kWidth columns and stable; text with a character FMinus does not read is left as it is, with why
+//             house style, a messy switch and enumeration too (a label typed without its `:` ending with its
+//             statement), a table on one long line broken after its commas within kWidth columns and stable; text with a character FMinus does not read is left as it is, with why
 //   RENDER    each example of this product (with the library files it includes), formatted, renders what it rendered
 //             before, bit for bit (measure::Session:
 //             an effect over noise, an instrument's chord); RANDOM programs with every file formatted (the program and
@@ -1011,6 +1011,9 @@ PROBE(fminus, lang)
             std::printf("messy switch formatted:\n%s", ms.text.c_str());
         P.eq("format.messy_switch_enum", ms.ok && ms.text == wantSwitch ? 1 : 0, 1);
         P.eq("format.messy_switch_stable", lg::format(ms.text, {}).changed ? 0 : 1, 1);
+        // A label typed without its `:` ends with its statement: a later `:` (an error too) is no label's, spaced.
+        const lg::Formatted half = lg::format("int f(int x)\n{\n    switch (x)\n    {\n        case 1 x = 2;\n        x = 1:2;\n    }\n}\n", {});
+        P.eq("format.label_without_colon", half.ok && half.text.find("        x = 1 : 2;\n") != std::string::npos ? 1 : 0, 1);
 
         // A table on one long line: broken after its commas, every line within kWidth, its tokens the same, stable.
         std::string table = "const float kTable[48] = {";

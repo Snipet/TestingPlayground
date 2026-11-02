@@ -528,6 +528,8 @@ namespace playground::lang
                     labelDepth_ = frames_.size();
                     labelLineIndent_ = indent;
                 }
+                else if (labelOpen_ && (x == ";" || x == "{" || x == "}"))
+                    labelOpen_ = false;                      // no label's value holds one: a label without its `:`
                 else if (labelOpen_ && frames_.size() == labelDepth_ && x == "?")
                     ++labelQuestions_;
                 else if (labelOpen_ && frames_.size() == labelDepth_ && x == ":")
