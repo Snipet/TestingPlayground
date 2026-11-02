@@ -7,7 +7,7 @@
 //   METRICS  the named numbers: an instrument's pitch (the fundamental within 1 Hz, within 5 cents), its attack and
 //            release as the dials set them, when its voice ends, a brighter low-pass a higher centroid, a high naive
 //            saw's aliasing seen (inharmonic_db), the alerts and the CPU there (sixteen voices, measured, at least twice
-//            the one note's; its line says the dials were held still); an effect's gain as its dial, its
+//            the one note's; the metric's line says the dials were held still); an effect's gain as its dial, its
 //            THD+N rising with the drive, a darker tone a lower centroid, the impulse's peak and delay, silence silent.
 //            Every metric of metrics() comes, with its unit and its words; valueText says "never" for infinity
 //   SESSION  one compile measured again gives the same numbers; a render after another (Engine::restart) the same as a
@@ -32,7 +32,8 @@
 //            full level) or the dial that steps at a block's start (an effect's mute), and the retrigger and the steal
 //            in its words; a RenderHooks that cuts every call to 16 samples sees every sample once, on its host
 //            blocks, and leaves the bits as they were; one that stops leaves the rest silent; a move after the held
-//            part is rendered (and an effect's report says it came after the test signals)
+//            part is rendered (and an effect's report says it came after the test signals; the CPU line that the
+//            scenario's dials moved)
 //   COMPARE  compare (Compare.h): a program against itself gives identical bits, and a recording of it against it
 //            too; a gain dial shows as that gain (no delay, nothing left; every octave band and the level metric
 //            moved), a delay dial as that lag (the gain 1), also of a note still sounding past the correlation's 2^17
@@ -370,8 +371,9 @@ PROBE(dsp, tune)
         P.ge("metrics.cpu", at(m.values, "cpu_percent"), 0.0);
         // Sixteen voices measured at once cost more than the one note held (about sixteen times; twice is the floor).
         P.ge("metrics.cpu16_sixteen_voices", at(m.values, "cpu16_percent"), 2.0 * at(m.values, "cpu_percent"));
-        // The CPU line says what it timed: the dials held still (every call flat), not a dial moving.
-        P.eq("metrics.cpu_says_dials_still", m.report.find("with its dials held still") != std::string::npos ? 1 : 0, 1);
+        // The CPU line gives the numbers; what they time (the dials held still, every call flat) is the metric's line.
+        P.eq("metrics.cpu_numbers_only", m.report.find("of one core") != std::string::npos && m.report.find("held still") == std::string::npos
+                                             && std::string(ms::metricInfo("cpu_percent")->what).find("dials still") != std::string::npos ? 1 : 0, 1);
         ms::Request dark = base, bright = base;
         dark.dials = { { "cutoff", 300.0f } };
         bright.dials = { { "cutoff", 6000.0f } };
@@ -417,7 +419,8 @@ PROBE(dsp, tune)
         P.eq("metrics.darker_lower_centroid",
              at(d.values, "centroid_out_hz") < 0.5 * at(d.values, "centroid_in_hz") ? 1 : 0, 1);
         P.eq("metrics.alerts", static_cast<int64_t>(at(m.values, "alerts")), 0);
-        P.eq("metrics.cpu_says_dials_still", m.report.find("with its dials held still") != std::string::npos ? 1 : 0, 1);
+        P.eq("metrics.cpu_numbers_only", m.report.find("of one core") != std::string::npos && m.report.find("held still") == std::string::npos
+                                             && std::string(ms::metricInfo("cpu_percent")->what).find("dials still") != std::string::npos ? 1 : 0, 1);
     }
     {
         const ms::Result all = session.measure(base);
@@ -766,9 +769,11 @@ PROBE(dsp, tune)
         late.render.tailSeconds = 0.5f;
         late.render.automate = { { kInstrument ? "cutoff" : "gain", 3.0, kInstrument ? 6000.0f : -12.0f, 0.0 } };
         P.eq("scenario.late_move_rendered", static_cast<int64_t>(ms::renderSound(files(), late).l.size()), 168000);
+        const std::string lateReport = played.measure(late.render).report;
         if constexpr (!kInstrument)
-            P.eq("scenario.late_move_noted", played.measure(late.render).report.find("comes after the sine and the noise end")
-                                                     != std::string::npos ? 1 : 0, 1);
+            P.eq("scenario.late_move_noted", lateReport.find("comes after the sine and the noise end") != std::string::npos ? 1 : 0, 1);
+        // A dial the scenario moves costs more than one held still: the CPU line says so.
+        P.eq("scenario.cpu_says_moving", lateReport.find("(the scenario's dials moving).") != std::string::npos ? 1 : 0, 1);
         if constexpr (kInstrument)
         {
             // The click locator: the voice that starts at its peak clicks at its note-on, again when the key comes back.

@@ -50,7 +50,8 @@
 //   LAYOUT   a netlist's drawing (its *@ lines) is invisible to the chat: a .cir goes without them, with a line saying
 //            how many it left out; a change to them alone sends no state; with a dial moved too, the state says these
 //            files play and sends no file again; get_status says these files; compare's source line says the same program
-//   MEASURE  measure_output through the agent: its result is the render's report, with the dials asked for
+//   MEASURE  measure_output through the agent: its result is the render's report, with the dials asked for, its CPU
+//            line the numbers alone
 //   VIEW     view_panel through the agent: its result a PNG of the panel (and one of the whole editor) and a line of
 //            what it shows, drawn on the message thread by the GPU on this Mac (the text says so); the user's view
 //            stays; with the GPU forced off (editor/Picture.h's test hook), a picture still, the text saying each
@@ -71,9 +72,12 @@
 //   SOUND    view_sound through the agent (a program that sounds): its result a PNG of 1120 x 800 and what it shows,
 //            the tool's entry with the picture's thumbnail (480 px), the session without the PNG but with the thumbnail;
 //            a program that does not compile draws nothing and says why
-//   CHECKS   set_checks: its result measures them at once (one passes, one fails); "Done." while one fails: the next
+//   CHECKS   set_checks: its result measures them at once (one passes, one fails), saying the count and the one that
+//            fails alone (the card has both); "Done." while one fails: the next
 //            request carries the results as the user's line and the turn goes on, the history valid; a dial set and a
-//            run: the run's result ends with the checks, all passing, and the turn ends; one card a turn with its rows,
+//            run: the run's result ends with the checks, all passing, its dials one line (their declarations as the
+//            program's that played), and the turn ends; run_program after a default changed lists the dials, and
+//            again says them unchanged in a line; one card a turn with its rows,
 //            a note that Claude went on; checks that cannot pass: twice, then the turn ends ("will not ask again"); a
 //            metric that is none refused; a turn that only talks is not sent on; the session keeps them (and loads
 //            them); clearChecks forgets them (a note),
@@ -377,6 +381,16 @@ namespace
     }
 
     juce::var input(std::initializer_list<std::pair<const char*, juce::var>> fields) { return claude::object(fields); }
+
+    // An MCP result's text blocks, joined (a hint of what the user changed comes first, a block of its own).
+    std::string allText(const pg::ChatAgent::McpResult& r)
+    {
+        std::string out;
+        for (const juce::var& b : arr(r.content))
+            if (str(b, "type") == "text")
+                out += (out.empty() ? "" : "\n") + str(b, "text");
+        return out;
+    }
 }
 
 PROBE(plugin, chat)
@@ -1032,6 +1046,9 @@ PROBE(plugin, chat)
         std::printf("measure_output, through the agent:\n%s", report.c_str());
         P.eq("measure.report", has(report, "Rendered offline") && has(report, "level 0.5") ? 1 : 0, 1);
         P.eq("measure.kind", has(report, pg::product::kIsInstrument ? "Note 60" : "Sine 220 Hz") ? 1 : 0, 1);
+        // The CPU line keeps its numbers; what they time is the guide's (the metrics' lines).
+        P.eq("measure.cpu_numbers_only", has(report, "\nCPU: ") && has(report, "of one core") && !has(report, "wall clock")
+                                             && !has(report, "held still") && !has(report, "frozen copy") ? 1 : 0, 1);
         P.eq("measure.entry", lastText(agent.chatState(), pg::ChatEntry::Kind::tool) == "measured the sound" ? 1 : 0, 1);
     }
 
@@ -1650,14 +1667,18 @@ PROBE(plugin, chat)
             const int before = turn("make it right", 5);
             const std::string setResult = resultText(before + 1);
             std::printf("set_checks: %s\n", setResult.c_str());
+            // Claude reads the count and what fails (the card shows every check).
             P.eq("checks.set_result", has(setResult, "Set 2 checks") && has(setResult, "Checks: 1 of 2 pass")
-                                          && has(setResult, "- FAIL ") ? 1 : 0, 1);
+                                          && has(setResult, "- FAIL ") && !has(setResult, "- pass ") ? 1 : 0, 1);
             // "Done." ended the turn while one failed: the next request carries the results as the user's line.
             const juce::var nudge = lastUser(before + 2);
             P.eq("checks.nudged", str(nudge, "role") == "user" && says(nudge, "(From the plugin: your checks") && says(nudge, "- FAIL ") ? 1 : 0, 1);
             P.eq("checks.history_valid", alternates(messagesOf(ss->body(before + 4))) ? 1 : 0, 1);
             const std::string runResult = resultText(before + 4);
-            P.eq("checks.after_run", has(runResult, "Compiled in") && has(runResult, "Checks: 2 of 2 pass") ? 1 : 0, 1);
+            P.eq("checks.after_run", has(runResult, "Compiled in") && has(runResult, "Checks: 2 of 2 pass") && !has(runResult, "- pass ") ? 1 : 0, 1);
+            // The same declarations as the program that played: one line, not the dials again.
+            P.eq("run.dials_unchanged_one_line", has(runResult, pg::product::kIsInstrument ? "Its dials: unchanged (2).\n" : "Its dials: unchanged (1).\n")
+                                                     && !has(runResult, "Its dials:\n") ? 1 : 0, 1);
             P.eq("checks.turn_ended", ss->postCount() == before + 5 && !sa.chatState().busy ? 1 : 0, 1);
             const pg::ChatState st = sa.chatState();
             int cards = 0;
@@ -1670,12 +1691,32 @@ PROBE(plugin, chat)
                 }
             P.eq("checks.one_card_a_turn", cards, 1);
             P.eq("checks.card_rows", card != nullptr && card->checks.size() == 2 && card->checks[0].pass && card->checks[1].pass
+                                         && has(card->text, "- pass ")
                                          && card->checks[1].label == (pg::product::kIsInstrument ? "Dies away quickly" : "Quieter by 6 dB") ? 1 : 0, 1);
             int notes = 0;
             for (const pg::ChatEntry& e : st.entries)
                 notes += e.kind == pg::ChatEntry::Kind::note && has(e.text, "Claude goes on") ? 1 : 0;
             P.eq("checks.note", notes, 1);
             P.eq("checks.state", st.checks ? 1 : 0, 1);
+
+            // run_program lists the dials again when their declarations change (a default here), and only then.
+            {
+                const pg::Draft was = sp.editorPort().draft();
+                pg::Draft changed = was;
+                std::string& t = changed.files[0].text;
+                const std::string from = pg::product::kIsInstrument ? "[[fminus::default(0.5)]]" : "[[fminus::default(0)]]";
+                t.replace(t.find(from), from.size(), pg::product::kIsInstrument ? "[[fminus::default(0.6)]]" : "[[fminus::default(1)]]");
+                sp.editorPort().setDraft(changed);
+                const std::string first = allText(sa.mcpCall("run_program", input({})));
+                const std::string second = allText(sa.mcpCall("run_program", input({})));
+                std::printf("run_program, a default changed:\n%s\nand again:\n%s\n", first.c_str(), second.c_str());
+                const std::string count = pg::product::kIsInstrument ? "(2)" : "(1)";
+                P.eq("run.dials_listed_when_declared_anew", has(first, "Its dials:\n1 ") && !has(first, "Its dials: unchanged") ? 1 : 0, 1);
+                P.eq("run.dials_then_one_line", has(second, "Its dials: unchanged " + count + ".\n") && !has(second, "Its dials:\n") ? 1 : 0, 1);
+                sp.editorPort().setDraft(was);
+                sp.editorPort().run(was.files);
+                sp.settle();
+            }
 
             // Checks that cannot pass: the turn goes on twice, then ends.
             juce::Array<juce::var> impossible;

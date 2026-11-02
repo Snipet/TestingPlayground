@@ -289,6 +289,28 @@ namespace playground
             return out.empty() ? "none\n" : out;
         }
 
+        // The dials' declarations (each used one's name, type, range, taper, default, unit, scale and options' names),
+        // without their values: run_program lists the dials again only when these changed.
+        std::string dialDeclarations(const Controls& controls, const std::array<std::vector<std::string>, kMaxControls>& options)
+        {
+            std::string out;
+            for (int c = 0; c < kMaxControls; ++c)
+            {
+                const Control& k = controls[static_cast<std::size_t>(c)];
+                if (!k.used)
+                    continue;
+                char buf[160];
+                std::snprintf(buf, sizeof buf, "%d %s %d %.9g %.9g %.9g %d %s %d %.9g", c, k.name, static_cast<int>(k.type),
+                              static_cast<double>(k.min), static_cast<double>(k.max), static_cast<double>(k.def),
+                              static_cast<int>(k.taper), k.unit, static_cast<int>(k.decimals), static_cast<double>(k.scale));
+                out += buf;
+                for (const std::string& o : options[static_cast<std::size_t>(c)])
+                    out += '\x1f' + o;
+                out += '\n';
+            }
+            return out;
+        }
+
         // The panel a program's #pragma panel lines made, in a line: its sections in order ("/" where a row starts),
         // their items (a display as its source and kind), then the labels, small dials, styles, options and colours;
         // none without a panel line.
@@ -1769,8 +1791,8 @@ namespace playground
         }
         tools.add(tool("run_program",
                        "Compile the files as they are now and, when they compile, play them (as the editor's RUN "
-                       "does). Returns the compiler's messages, or the dials of the new program. Call it after every "
-                       "set of changes, and fix any error it reports before you finish.",
+                       "does). Returns the compiler's messages, or the new program's dials when their declarations "
+                       "changed. Call it after every set of changes, and fix any error it reports before you finish.",
                        claude::object({}), {}));
         tools.add(tool("set_dial",
                        "Set one of the running program's dials (its parameters) to a value in its range, in the "
@@ -1804,9 +1826,8 @@ namespace playground
                            "chord's summed level. An effect: a sine, noise, an impulse and silence through it, "
                            "reporting the gain, the partials it adds, the brightness in and out, the impulse "
                            "response's delay and decay, and any sound it makes from silence. Both: the output "
-                           "guard's alerts and the CPU cost. You cannot hear the plugin: measure every new sound once "
-                           "it compiles, and measure when debugging what the user hears. It compiles the files as "
-                           "they are now (they need not be running) and changes nothing that plays.",
+                           "guard's alerts and the CPU cost. It compiles the files as they are now (they need not be "
+                           "running) and changes nothing that plays.",
                            props, {}));
         }
         tools.add(tool("view_panel",
@@ -1865,9 +1886,8 @@ namespace playground
                                  "sound's shape matters, as an envelope's attack and release, a filter's sweep, "
                                  "aliasing (lines that fold back down in the spectrogram), a click (a spike in the "
                                  "waveform, a thin vertical line in the spectrogram), a wave's shape, noise, a "
-                                 "modulation's motion. A picture costs about 1,200 input tokens: measure_output gives "
-                                 "numbers, this shows the shape. It compiles the files as they are now and changes "
-                                 "nothing that plays; the user sees the picture too."
+                                 "modulation's motion. It compiles the files as they are now and changes nothing that "
+                                 "plays; the user sees the picture too."
                                : "See the sound: a picture (PNG) of the program rendered offline with an input (a sweep "
                                  "by default), drawn: the waveform and the level over time, a spectrogram (frequency "
                                  "against time, 20 Hz to 20 kHz on a log scale), the average spectrum while the input "
@@ -1875,9 +1895,8 @@ namespace playground
                                  "hear the plugin: look when the sound's shape matters, as a filter's response (a "
                                  "sweep: where it is cut), what a drive adds (a sweep's or a sine's harmonics, aliasing "
                                  "that folds back down), a reverb's or a delay's tail (an impulse), a modulation's "
-                                 "motion, a click. A picture costs about 1,200 input tokens: measure_output gives "
-                                 "numbers, this shows the shape. It compiles the files as they are now and changes "
-                                 "nothing that plays; the user sees the picture too.",
+                                 "motion, a click. It compiles the files as they are now and changes nothing that "
+                                 "plays; the user sees the picture too.",
                            props, {}));
         }
         {
@@ -1898,13 +1917,7 @@ namespace playground
                            "Set the checks this work must pass: what the user asked for, as numbers the plugin "
                            "measures (the metrics in CHECKING YOUR WORK), each with min, max or a target. The list "
                            "replaces the checks set before; an empty one clears them. The plugin measures them now, "
-                           "again after every run_program (the results follow its own), and when you end a turn in "
-                           "which you changed something: while any fails, that turn goes on with the results (twice "
-                           "at most), so fix the program, "
-                           "change a check that asks for the wrong thing, or say why it cannot pass. The user sees them "
-                           "as a checklist. Set them early in a large piece of work, from the request (\"a pluck that "
-                           "dies away in a second\": decay_s at most 1; \"no aliasing\": inharmonic_db at most -70 "
-                           "at note 96), not afterwards to describe what was built.",
+                           "then as CHECKING YOUR WORK says; its results give the count and each check that fails.",
                            claude::object({ { "checks", checks } }), { "checks" }));
         }
         {
@@ -2885,14 +2898,17 @@ namespace playground
         const std::vector<measure::CheckResult> results = scenario::evaluate(host_.chatDraft().files, checks, currentDials(), host_, &errors);
         std::vector<ChatCheck> rows;
         int pass = 0;
-        std::string lines;
+        std::string lines, failing;                      // every check's line (the card's text), and those that fail
         for (std::size_t i = 0; i < results.size() && i < checks.size(); ++i)
         {
             const measure::CheckResult& r = results[i];
             rows.push_back({ checks[i].label, r.text, r.measured, r.pass });
             pass += r.measured && r.pass ? 1 : 0;
-            lines += std::string(!r.measured ? "- NOT MEASURED " : r.pass ? "- pass " : "- FAIL ") + checks[i].label + " ("
-                   + checks[i].goal.metric + "): " + r.text + "\n";
+            const std::string line = std::string(!r.measured ? "- NOT MEASURED " : r.pass ? "- pass " : "- FAIL ") + checks[i].label
+                                   + " (" + checks[i].goal.metric + "): " + r.text + "\n";
+            lines += line;
+            if (!(r.measured && r.pass))
+                failing += line;
         }
         const std::string head = "Checks: " + std::to_string(pass) + " of " + std::to_string(results.size()) + " pass.";
         {
@@ -2920,7 +2936,8 @@ namespace playground
             entries_[at].checks = std::move(rows);
             touch();
         }
-        return head + "\n" + lines + (errors.empty() ? "" : "The program does not compile:\n" + capped(errors));
+        // Claude gets the count and what fails: the user's card shows every check.
+        return head + "\n" + failing + (errors.empty() ? "" : "The program does not compile:\n" + capped(errors));
     }
 
     void ChatAgent::clearChecks()
@@ -3765,6 +3782,8 @@ namespace playground
         {
             setActivity("Compiling");
             const Draft d = host_.chatDraft();
+            // The dials as the program that played declared them: listed again only when the new one's differ.
+            const std::string declared = dialDeclarations(host_.chatDials(), host_.chatDialOptions());
             const CompileStatus s = host_.chatRun(d.files);
             if (s.ok)
             {
@@ -3774,9 +3793,11 @@ namespace playground
                 note("ran it: compiled in " + number(std::round(s.ms)) + " ms, " + std::to_string(dials) + " dial"
                      + (dials == 1 ? "" : "s"));
                 const std::string checks = evaluateChecks();
-                return "Compiled in " + number(std::round(s.ms)) + " ms; it plays now.\nIts dials:\n"
-                     + dialLines(s.controls, host_) + panelLine(s.panel, s.controls)
-                     + (s.notes.empty() ? "" : "Notes:\n" + capped(s.notes)) + (checks.empty() ? "" : "\n" + checks);
+                const bool same = dialDeclarations(s.controls, s.panel.options) == declared;
+                return "Compiled in " + number(std::round(s.ms)) + " ms; it plays now.\n"
+                     + (same ? "Its dials: unchanged (" + std::to_string(dials) + ").\n" : "Its dials:\n" + dialLines(s.controls, host_))
+                     + panelLine(s.panel, s.controls) + (s.notes.empty() ? "" : "Notes:\n" + capped(s.notes))
+                     + (checks.empty() ? "" : "\n" + checks);
             }
             int errors = 0;
             for (std::size_t p = s.errors.find(": error:"); p != std::string::npos; p = s.errors.find(": error:", p + 1))

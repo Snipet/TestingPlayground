@@ -290,14 +290,6 @@ namespace playground::measure
 
         std::string percent(double share) { return fmt(share < 0.1 ? "%.3f%%" : "%.2f%%", share); }
 
-        constexpr const char* kCpuWhat = "the rendering thread's own time (not a wall clock's) in the plugin's engine, "
-                                         "running the program's own code with its dials held still (what it computes "
-                                         "from a dial is lifted out of its loop; while a dial moves it is computed per "
-                                         "sample, which costs more; once the dials have held still a while the plugin "
-                                         "plays a frozen copy, usually cheaper)";
-        constexpr const char* kCpuMovingWhat = "the rendering thread's own time (not a wall clock's) in the plugin's engine, "
-                                               "running the program's own code while the scenario moves its dials (a dial that "
-                                               "moves is computed per sample, which costs more than one held still)";
 
         // The peak of each window of w samples over [from, to), of either channel.
         [[maybe_unused]] std::vector<double> windowPeaks(const Stereo& s, std::size_t from, std::size_t to, std::size_t w)
@@ -375,8 +367,10 @@ namespace playground::measure
             { "alerts", "", "the output guard's alerts: 0 none, 1 NaN or infinite samples, 2 samples clipped, 3 both", 0.5,
               false, 0.0 },
             { "cpu_percent", "%",
-              "the notes' share of one core in real time while held, the program's own code, dials still", 0.1, true,
-              0.01 },
+              "the notes' share of one core in real time while held: the rendering thread's own time, of the program's own "
+              "code with its dials still (a moving dial costs more; the frozen copy the plugin plays once they rest, usually "
+              "less)",
+              0.1, true, 0.01 },
             { "cpu16_percent", "%", "the share of sixteen voices at once, measured with sixteen notes held", 0.1, true,
               0.01 },
         };
@@ -404,8 +398,10 @@ namespace playground::measure
             { "step", "", "the largest step between two samples, of any of the signals", 0.01, false, 0.0 },
             { "alerts", "", "the output guard's alerts: 0 none, 1 NaN or infinite samples, 2 samples clipped, 3 both", 0.5,
               false, 0.0 },
-            { "cpu_percent", "%", "the renders' share of one core in real time, the program's own code, dials still", 0.1,
-              true, 0.01 },
+            { "cpu_percent", "%",
+              "the renders' share of one core in real time: the rendering thread's own time, of the program's own code with "
+              "its dials still (a moving dial costs more; the frozen copy the plugin plays once they rest, usually less)",
+              0.1, true, 0.01 },
         };
     }
 
@@ -1421,7 +1417,9 @@ namespace playground::measure
         const std::size_t holdN = static_cast<std::size_t>(hold * rate);
         const std::size_t tailN = static_cast<std::size_t>(tail * rate);
         std::vector<std::string> warnings;
-        const char* const cpuWhat = request.automate.empty() ? kCpuWhat : kCpuMovingWhat;
+        // What the CPU figures are is the metrics' (cpu_percent's line in the guide): the report gives the numbers, and
+        // says when the scenario moved a dial (which costs more than one held still).
+        const std::string cpuMoving = request.automate.empty() ? "" : " (the scenario's dials moving)";
 
         if constexpr (kInstrument)
         {
@@ -1578,11 +1576,8 @@ namespace playground::measure
                 out += " The last voice ended " + seconds(static_cast<double>(r.endedAt - static_cast<long>(heldEnd)) / rate)
                      + " after it (process returned false).\n";
             else
-            {
-                out += " No voice ended within " + seconds(tail) + " of the note-off: process kept returning true.\n";
-                warnings.push_back("A voice that never returns false holds its slot forever: let the release end (or "
-                                   "render with a longer tail_seconds if the release is meant to be that long).");
-            }
+                out += " No voice ended within " + seconds(tail) + ": process kept returning true (end the release, or give "
+                       "a longer tail_seconds).\n";
 
             // A plain request without a scenario's moves: the chord's and the sixteen voices' renders.
             Request plainReq = request;
@@ -1653,9 +1648,9 @@ namespace playground::measure
                     best = std::min(best, cpuShare(sixteen.cpuMs, static_cast<double>(sixteen.cpuSamples) / rate));
                 }
                 v["cpu16_percent"] = best;
-                out += "; sixteen voices at once take " + percent(best) + " (measured, sixteen notes held)";
+                out += "; sixteen voices at once take " + percent(best);
             }
-            out += "; " + std::string(cpuWhat) + ".\n";
+            out += cpuMoving + ".\n";
         }
         else
         {
@@ -1843,7 +1838,7 @@ namespace playground::measure
                      + (steps.empty() ? std::string("none (silent)") : steps) + ".\n";
                 out += "Alerts: " + alertsText(alerts) + ".\n";
                 out += "CPU: " + percent(cpuShare(cpu, audio)) + " of one core (" + fmt("%.2f ms", cpu) + " to render "
-                     + seconds(audio) + "); " + cpuWhat + ".\n";
+                     + seconds(audio) + ")" + cpuMoving + ".\n";
             }
         }
         for (const std::string& w : warnings)

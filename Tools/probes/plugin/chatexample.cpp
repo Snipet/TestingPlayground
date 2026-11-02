@@ -574,7 +574,7 @@ PROBE(plugin, chatexample)
         std::string forever = voice;
         forever.replace(forever.find("return held || env > 0.0001f;"), 29, "return true;");
         const std::string f = pg::measure::run(pg::singleFile(forever), {});
-        P.eq("measure.never_ends_flagged", has(f, "No voice ended") && has(f, "Note: A voice that never returns false") ? 1 : 0,
+        P.eq("measure.never_ends_flagged", has(f, "No voice ended within 1.50 s: process kept returning true") && !has(f, "Note: A voice") ? 1 : 0,
              1);
     }
     else

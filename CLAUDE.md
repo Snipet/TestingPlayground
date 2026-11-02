@@ -443,7 +443,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `cpu16_percent` measured with sixteen notes held (the least of two short renders), not extrapolated; of the
   program's own code with its dials held still, every call flat (a dial that moves costs more: the Filter example
   about 2.7x while its cutoff glides; the frozen copy that plays once they have held still a while usually costs
-  less), and the CPU line says so. A `Session` compiles once and renders as often as asked, each render after
+  less), which the metric's line in the guide says (the result's CPU line gives the numbers, and says when a scenario
+  moved a dial). A `Session` compiles once and renders as often as asked, each render after
   `Engine::restart` (offline only: prepare() and `Patch::reset`), so it gives what a fresh compile gives; `dsp.tune`
   checks that, and the numbers.
 - **view_sound** (`dsp/SoundView.h`, `plugin/SoundPicture.h`): the render (the effect's with an input: a sweep, noise,
@@ -489,7 +490,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   plays now when the take no longer knows it), read once for the files and the render (`scenario::resolve` with the recording).
 - **set_checks** (`dsp/Goals.h`): checks are goals (a metric with min, max or a target and a tolerance) with a label
   and a render; `ChatAgent::evaluateChecks` measures them all (one compile, one render for checks that share one) on
-  the editor's files and the plugin's dials after every run_program that compiles (the results end its result) and
+  the editor's files and the plugin's dials after every run_program that compiles (the results end its result: the
+  count and each check that fails; the card shows every one) and
   when a reply ends a turn in which a tool changed something (`kChangingTools`, a result that is no error); a failure
   there adds the results as a user text message and the turn goes on, at most `kMaxCheckNudges` (2) times a turn. One
   `ChatEntry::Kind::checks` card a turn, brought up to date in place; its Clear calls `ChatPort::clearChecks`. The
