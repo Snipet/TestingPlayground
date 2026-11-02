@@ -78,7 +78,8 @@
 //            occurs four times names its lines; a list with one bad edit changes nothing and names it; a good one is
 //            one write the editor undoes in one step, its result the line count and version; `expected` refuses a write
 //            after the user's edit, keeps it and shows its line (the result's first line naming the edit), and with the
-//            version it gives the write goes; given the oldest of the versions kept, it still shows the lines changed
+//            version it gives the write goes; given the oldest of the versions kept, it still shows the lines changed;
+//            edit_circuit's result gives its version, and an `expected` from before it is refused as Claude's own change
 //   SOUND    view_sound through the agent (a program that sounds): its result a PNG of 1120 x 800 and what it shows,
 //            the tool's entry with the picture's thumbnail (480 px), the session without the PNG but with the thumbnail;
 //            a program that does not compile draws nothing and says why
@@ -1287,7 +1288,7 @@ PROBE(plugin, chat)
         P.eq("circuit.ops_exact", exact, static_cast<int64_t>(steps.size()));
         P.eq("circuit.one_undo_step", undone, static_cast<int64_t>(steps.size()));
         P.eq("circuit.parts_flash", flashed, static_cast<int64_t>(steps.size()));
-        P.eq("circuit.result_says", has(firstResult, "Edited pedal.cir: 1 command, one step the user can undo.")
+        P.eq("circuit.result_says", has(firstResult, "Edited pedal.cir: 1 command, one step the user can undo; version ")
                                         && has(firstResult, "- added R12 at 64,8 r90 on o2, 0") && has(firstResult, "+ R12 o2 0 100k")
                                         && has(firstResult, "The circuit compiler on the new text") ? 1 : 0, 1);
         P.eq("circuit.entry", lastText(agent.chatState(), pg::ChatEntry::Kind::tool) == "drew pedal.cir (1 change)" ? 1 : 0, 1);
@@ -1785,6 +1786,28 @@ PROBE(plugin, chat)
         std::printf("edit_file with the oldest version kept:\n%s\n", toolText(oldest).c_str());
         P.eq("files.expected_oldest_kept", oldest.isError && has(toolText(oldest), "Its lines changed since (+1 -0):\n")
                                                && has(toolText(oldest), "\n+// the user's last line\n") && !has(fileText("notes.fm"), "float u1(") ? 1 : 0, 1);
+        // edit_circuit's result gives the version it wrote; an `expected` from before it is refused as Claude's own
+        // change, never the user's.
+        {
+            pg::Draft cd = processor.editorPort().draft();
+            cd.files.push_back({ "tone.cir", cir::written(pg::findLibraryFile("diodetone.cir")->source) });
+            processor.editorPort().setDraft(cd);
+            const std::string before = versionIn(toolText(call("read_file", input({ { "name", "tone.cir" } }))));
+            juce::Array<juce::var> ops;
+            ops.add("set R2 680");
+            const pg::ChatAgent::McpResult drew = call("edit_circuit", input({ { "name", "tone.cir" }, { "ops", juce::var(ops) } }));
+            const std::string drawn = versionIn(toolText(drew));
+            juce::Array<juce::var> retune;
+            retune.add(input({ { "old_text", "C2     b  0  22n" }, { "new_text", "C2     b  0  33n" } }));
+            const pg::ChatAgent::McpResult stale = call("edit_file", input({ { "name", "tone.cir" }, { "edits", juce::var(retune) },
+                                                                             { "expected", juce::String(before) } }));
+            std::printf("edit_file with the version from before edit_circuit:\n%s\n", toolText(stale).c_str());
+            P.eq("files.circuit_version", !drew.isError && drawn.size() == 8 && drawn != before ? 1 : 0, 1);
+            P.eq("files.expected_after_circuit", stale.isError
+                                                     && has(toolText(stale), "tone.cir changed since version " + before + " (now version " + drawn
+                                                                                 + ", which one of your own calls gave): nothing was written.")
+                                                     && !has(toolText(stale), "the user's edit") && has(fileText("tone.cir"), "22n") ? 1 : 0, 1);
+        }
         processor.editorPort().setDraft(saved);
         host.tick(2);
     }

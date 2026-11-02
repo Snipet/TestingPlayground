@@ -443,18 +443,26 @@ namespace playground
             return edits.size() == 1 ? std::string() : "Edit " + std::to_string(i + 1) + " of " + std::to_string(edits.size()) + ": ";
         };
 
-        // The text the user changed since `version` (the file's lines that changed, against the kept text), refused.
+        // The text changed since `version` (the file's lines that changed, against the kept text), refused: the
+        // user's edit, unless the text now is a version one of Claude's calls gave (a read, a write, edit_circuit).
         const auto changedSince = [&](const std::string& version, const std::string& now) {
             std::shared_ptr<const std::string> then;
             std::string nowVersion;
+            bool known = false;
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
+                const std::string current = versionOf(now);
                 for (const FileVersion& v : fileVersions_)
+                {
                     if (v.name == file && v.version == version)
                         then = v.text;
+                    known = known || (v.name == file && v.version == current);
+                }
                 nowVersion = keepVersion(file, now);
             }
-            std::string out = file + " changed since version " + version + " (the user's edit, which is kept): nothing was written. ";
+            std::string out = file + " changed since version " + version
+                            + (known ? " (now version " + nowVersion + ", which one of your own calls gave)" : " (the user's edit, which is kept)")
+                            + ": nothing was written. ";
             if (!then)
                 return fail(out + "That version's text is no longer kept, so read_file shows the file now (version " + nowVersion + ").");
             const textdiff::Unified u = textdiff::unified(*then, now, 2, kChangedLines);

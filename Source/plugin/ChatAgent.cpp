@@ -3650,9 +3650,15 @@ namespace playground
                 if (!host_.chatSetDraftIf(d, file, before))
                     continue;
                 // What changed, in words: each command's line, the netlist's lines (its drawing aside), what the
-                // circuit compiler says of the new text, and the text itself when it is short.
+                // circuit compiler says of the new text, and the text itself when it is short. Its version, as a write's:
+                // edit_file's `expected` takes it, and one from before this edit is told the change was Claude's own.
+                std::string version;
+                {
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    version = keepVersion(file, a.text);
+                }
                 std::string out = "Edited " + file + ": " + std::to_string(ops.size()) + (ops.size() == 1 ? " command" : " commands")
-                                + ", one step the user can undo.\n";
+                                + ", one step the user can undo; version " + version + ".\n";
                 for (const std::string& said : a.said)
                     out += "- " + said + "\n";
                 const std::string was = cir::stripLayout(before), now = cir::stripLayout(a.text);
