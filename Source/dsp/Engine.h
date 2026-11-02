@@ -10,8 +10,14 @@
 // absolute multiple of kGrid samples (and at each event), and a voice that has returned false, or faded to silence, is
 // freed at the next such multiple: so which instance a later note gets, and the output, do not depend on how the
 // host splits its blocks. At most Patch::kVoices sound at once:
-// one more steals the oldest released voice, else the oldest, fading it out over 2 ms (fsdsp::kStealFadeMs) on its own
-// instance while the new note starts on another. A key pressed again while it still sounds stops its voice first.
+// one more steals the oldest released voice, else the oldest: the Engine calls its stop() at once (a released voice had
+// it), then fades it out over 2 ms (fsdsp::kStealFadeMs: the whole fade, whatever its process returns after that
+// stop) on its own instance while the new note starts on another, so a key-up for it later finds no voice. A key pressed again while it still sounds stops its voice first. When every
+// instance is still taken (fading voices too), the quietest voice is cut at once, its stop() first when it had none,
+// and the new note starts on its instance. Each start() so gets exactly one stop() before that instance's next start():
+// also a voice whose process returns false while its key is held (its stop() as it is freed), one dropped for going
+// non-finite, and one still sounding when prepare() is called. A program swap is apart: the old program's voices fade
+// out without a stop() (that program, its Shared with it, is going).
 //
 // The host (host.fm, Patch.h). setTransport() takes the host's transport once a block; the Engine keeps the song's
 // position from there, sample by sample (its own clock at 120 BPM when the host says nothing), and fills the program's
@@ -269,7 +275,8 @@ namespace playground
             uint64_t age = 0;           // when it started (a count of note-ons)
             bool released = false;
             bool ending = false;        // its process returned false: free at the next multiple of kGrid
-            bool fading = false;        // stolen, or its program swapped out: gain falls to 0, then the voice is free
+            bool fading = false;        // stolen (released: its stop() came first), or its program swapped out: gain falls
+                                    // to 0, then the voice is free
             bool pedal = false;         // its key let go while the sustain pedal was down: stopped when it comes up
             float gain = 1.0f, fall = 0.0f;   // per sample, while fading
             uint64_t fed = 0;           // the feedGen_ its instance's dials were last written at
@@ -294,6 +301,9 @@ namespace playground
         void playEffect(float* left, float* right, int n) noexcept;
         // A voice of current_ let go at the absolute sample `at`: its instance missed calls if a window was open.
         void freeVoice(Voice& v, uint64_t at) noexcept;
+        // A voice of current_ that has had no stop() since its start gets it now, and is released (so its key-up, the
+        // pedal's going up or a second steal calls none): a steal, a cut, a drop, its end while held, prepare().
+        void stopVoice(Voice& v) noexcept;
         static uint64_t gridCeil(uint64_t t) noexcept { return (t + kGrid - 1) / kGrid * kGrid; }
         void processEffect(float* const* channels, int numChannels, int n) noexcept;
         void syncHost(int offset) noexcept;           // the Host block at the call's sample `offset`, into the programs

@@ -11,7 +11,14 @@
 // An instrument:
 //   SWAP    a held note's voice fades out over 20 ms when another program arrives, which starts the key again: from
 //           20 ms after the offer the output is the new program's alone
-//   STEAL   seventeen held notes: sixteen sound, the seventeenth steals the oldest, which fades out over 2 ms
+//   STEAL   seventeen held notes: sixteen sound, the seventeenth steals the oldest, which fades out over 2 ms (the
+//           whole fade, though its process returns false from the stop() its steal gave it)
+//   STOPS   a program whose voices keep a key stack in Shared (start pushes the key, stop pops it) and count, per
+//           instance, a start before the last start's stop and a stop with no start since the last stop: twenty keys
+//           held (four steals, each voice's stop() at its steal; the stolen first key let go inside its 2 ms fade);
+//           the quietest cut with all 32 instances taken (a voice that had no stop() yet, its instance the new
+//           note's); a voice dropped for going non-finite; then every key up. Every start has exactly one stop before
+//           its instance's next start, none twice, and the stack ends empty
 //   RELEASE a voice whose process returns false (here: once its key is up) is free again
 // Both:
 //   GLIDE   a real dial moved from 0 to 1 reaches the program as a stream that glides there in 20 ms, linearly,
@@ -58,6 +65,90 @@ namespace
         if (!r.errors.empty())
             std::printf("%s", r.errors.c_str());
         return std::move(r.patch);
+    }
+
+    // A program whose voices keep the keys held in a stack in Shared and count what start and stop see (STOPS).
+    const char* const kKeyStack = R"(module Shared
+{
+    int stack[128];                            // the keys whose voices have had a start and no stop since
+    int open[32];                              // per instance: 1 between its start and its stop
+    int depth, starts, stops, unstopped, twice, next;
+};
+
+module Voice
+{
+    Shared* shared;
+    int me, key;
+    bool held;
+    float env;
+
+    void init(float rate)
+    {
+        me = shared->next;
+        shared->next += 1;
+    }
+
+    void start(float note, float velocity)
+    {
+        shared->starts += 1;
+        if (shared->open[me] != 0)
+            shared->unstopped += 1;            // a start before the last start's stop
+        shared->open[me] = 1;
+        key = (int)note;
+        if (shared->depth < 128)
+        {
+            shared->stack[shared->depth] = key;
+            shared->depth += 1;
+        }
+        held = true;
+        env = 1;
+    }
+
+    void stop()
+    {
+        shared->stops += 1;
+        if (shared->open[me] == 0)
+            shared->twice += 1;                // a stop with no start since the last stop
+        shared->open[me] = 0;
+        int at = -1;
+        for (int k = 0; k < shared->depth; ++k)
+            if (shared->stack[k] == key)
+                at = k;
+        if (at >= 0)
+        {
+            for (int k = at; k + 1 < shared->depth; ++k)
+                shared->stack[k] = shared->stack[k + 1];
+            shared->depth -= 1;
+        }
+        held = false;
+    }
+
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            if (!held)
+                env *= 0.99f;
+            float out = 0.01f * env;
+            if (key == 99)
+                out = env / (env - env);       // key 99 goes non-finite: the plugin drops its voice
+            left[i] += out;
+            right[i] += out;
+        }
+        return held || env > 0.001f;
+    }
+};
+)";
+
+    // A field of the program's Shared, read through its field map (Patch::fieldMap: "shared->depth"); -1 when none.
+    double sharedField(const pg::Patch* p, const std::string& path)
+    {
+        if (p == nullptr)
+            return -1.0;
+        for (const pg::Patch::Field& f : p->fieldMap())
+            if (f.path == path)
+                return p->read(f, 0);
+        return -1.0;
     }
 
     probe::Stereo sineInput(std::size_t n)
@@ -144,7 +235,85 @@ PROBE(dsp, swap)
             notes.push_back({ static_cast<std::size_t>(k) * 256, pg::EventKind::noteOn, 40 + k, 1.0f });
         const probe::Stereo s = steal.run(probe::Stereo(32 * 256), 256, notes);
         P.near("steal.sixteen_sound_db", static_cast<double>(s.l.back()), 1.0, 1e-6);
+        // Half way through the 2 ms (96 samples) the stolen voice is at half, though its process returns false from
+        // the stop() its steal gave it: the fade runs whole.
+        P.near("steal.fades_whole", static_cast<double>(s.l[16 * 256 + 47]), 1.0 + 0.5 * 0.0625, 1e-4);
         P.eq("steal.voices", steal.engine().activeVoices(), 16);
+
+        // STOPS: twenty keys, the quietest cut and a dropped voice, on a program that keeps a key stack in Shared.
+        const auto stops = [&](const std::string& key, const std::vector<probe::Note>& played, std::size_t length,
+                               int starts) {
+            probe::Rig r(kFs, 512);
+            std::string errors;
+            P.eq(key + ".compiles", r.load(kKeyStack, &errors) ? 1 : 0, 1);
+            if (!errors.empty())
+                std::printf("%s", errors.c_str());
+            r.run(probe::Stereo(length), 256, played);
+            const pg::Patch* p = r.engine().playingPatch();
+            P.eq(key + ".starts", static_cast<int64_t>(sharedField(p, "shared->starts")), starts);
+            P.eq(key + ".a_stop_each", static_cast<int64_t>(sharedField(p, "shared->stops")), starts);
+            P.eq(key + ".no_start_unstopped", static_cast<int64_t>(sharedField(p, "shared->unstopped")), 0);
+            P.eq(key + ".no_stop_twice", static_cast<int64_t>(sharedField(p, "shared->twice")), 0);
+            P.eq(key + ".stack_empty", static_cast<int64_t>(sharedField(p, "shared->depth")), 0);
+            P.eq(key + ".voices_free", r.engine().activeVoices(), 0);
+            pg::Meters m;
+            r.engine().meters(m);
+            return m;
+        };
+        {
+            // Twenty keys a block apart: the 17th to 20th steal the oldest (keys 40 to 43, each its stop() then); key
+            // 40, stolen at block 16, is let go 32 samples into its 2 ms fade; the rest come up at block 24.
+            std::vector<probe::Note> keys;
+            for (int k = 0; k < 20; ++k)
+            {
+                keys.push_back({ static_cast<std::size_t>(k) * 256, pg::EventKind::noteOn, 40 + k, 1.0f });
+                if (k == 16)
+                    keys.push_back({ 16 * 256 + 32, pg::EventKind::noteOff, 40, 0.0f });
+            }
+            for (int k = 1; k < 20; ++k)
+                keys.push_back({ 24 * 256 + static_cast<std::size_t>(k), pg::EventKind::noteOff, 40 + k, 0.0f });
+            const pg::Meters m = stops("stops.twenty", keys, 40 * 256, 20);
+            P.eq("stops.twenty.steals", static_cast<int64_t>(m.steals), 4);
+        }
+        {
+            // The quietest cut: at 0, key 30 and sixteen more (the last steals key 30, whose voice is free from its fade
+            // on: slot and instance 0). At 1024, all at one sample: key 60 (instance 0) steals the oldest, key 61 (let
+            // go at once) the next, keys 62 to 75 the rest, so sixteen fade, none rendered yet, and sixteen sound. Key
+            // 76 steals key 61 (the oldest released), finds no instance free, and cuts the quietest: of equal gains the
+            // first voice, key 60's, which has had no stop() yet; key 76 starts on its instance.
+            std::vector<probe::Note> keys;
+            for (int k = 0; k < 17; ++k)
+                keys.push_back({ 0, pg::EventKind::noteOn, 30 + k, 1.0f });
+            for (int k = 0; k < 17; ++k)
+            {
+                keys.push_back({ 1024, pg::EventKind::noteOn, 60 + k, 1.0f });
+                if (k == 1)
+                    keys.push_back({ 1024, pg::EventKind::noteOff, 61, 0.0f });
+            }
+            probe::Rig r(kFs, 512);
+            r.load(kKeyStack);
+            r.run(probe::Stereo(1280), 256, keys);
+            std::vector<pg::Engine::VoiceInfo> voices;
+            r.engine().voices(voices);
+            int cutTo = -1;
+            for (const pg::Engine::VoiceInfo& v : voices)
+                if (v.key == 76)
+                    cutTo = v.instance;
+            P.eq("stops.cut.on_the_cut_instance", cutTo, 0);
+            for (int k = 0; k < 17; ++k)
+                keys.push_back({ 2048 + static_cast<std::size_t>(k), pg::EventKind::noteOff, 30 + k, 0.0f });
+            for (int k = 0; k < 17; ++k)
+                keys.push_back({ 2560 + static_cast<std::size_t>(k), pg::EventKind::noteOff, 60 + k, 0.0f });
+            const pg::Meters m = stops("stops.cut", keys, 16 * 256, 34);
+            P.eq("stops.cut.steals", static_cast<int64_t>(m.steals), 19);   // 1 + 16 + 1 stolen, 1 cut
+        }
+        {
+            // Key 99's voice goes non-finite at once: dropped, its stop() then; its key-up later finds no voice.
+            const pg::Meters m = stops("stops.dropped",
+                                       { { 0, pg::EventKind::noteOn, 99, 1.0f }, { 512, pg::EventKind::noteOff, 99, 0.0f } },
+                                       4 * 256, 1);
+            P.eq("stops.dropped.dropped", static_cast<int64_t>(m.dropped), 1);
+        }
 
         // RELEASE
         probe::Rig rel(kFs, 512);

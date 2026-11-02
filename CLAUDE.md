@@ -156,6 +156,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
   bypass crossfades over 20 ms. The output does not depend on how the host splits its blocks (the examples are checked
   at 64 and 333, the synth's with a release mid-block), except where a dial moves (once a block): the synth's voices
   run in calls cut on the absolute 16-sample grid and are freed only on it (Engine::kGrid), so keep both.
+- One stop a start (Engine.h, "Voices"): each start() a program's voice gets has exactly one stop() before its
+  instance's next start(), whatever ends the voice (a note-off, the pedal, a retrigger, a steal, the quietest cut with
+  every instance taken, process returning false while held, a drop for going non-finite, prepare()); only a program
+  swap fades the old program's voices with none. A new path that frees a voice of `current_` calls `stopVoice` first,
+  so a program's Shared (a key stack) stays right; `dsp.swap` STOPS checks it.
 - The circuit dials (Patch.h's "Circuits", Engine.h's "Circuit dials"): a circuit's pot or switch that is a dial reaches
   its module through `set()`, which the Engine calls through the program's shim (`Patch::setCircuits`: no allocation,
   the values into a buffer the compile sized) on the absolute 16-sample grid, with the glided values at that sample,

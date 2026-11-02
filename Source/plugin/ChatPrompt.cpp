@@ -131,7 +131,7 @@ module Voice
 };
 
 - start begins a note on a voice that may have played another before: set everything the note needs (fields keep their values between notes). stop releases it. process adds the voice's next n samples into both channels (they arrive at 0, so writing works too) and returns false once the voice is silent for good, which frees it. A voice that never returns false holds its slot forever: always let the release end.
-- The signatures must be exactly these. Sixteen voices sound at once; a seventeenth note steals the oldest released voice (else the oldest), with a 2 ms fade. A key pressed again while its note sounds stops that voice first. The sustain pedal is the plugin's: a key let go while it is down gets its stop when the pedal comes up. The pitch and mod wheels, aftertouch and the host's tempo and position reach a program through host.fm (THE HOST, below).
+- The signatures must be exactly these. Sixteen voices sound at once; a seventeenth note steals the oldest released voice (else the oldest): stop() at once, then a 2 ms fade. A key pressed again while its note sounds stops that voice first. Each start() gets one stop() (BUILDING A LARGE PROGRAM says when). The sustain pedal is the plugin's: a key let go while it is down gets its stop when the pedal comes up. The pitch and mod wheels, aftertouch and the host's tempo and position reach a program through host.fm (THE HOST, below).
 - The module's fields are its state: they start at 0 when the program runs; init sets the rate-dependent ones. Keep state per sample, so the output does not depend on the host's block size (the plugin calls voices in parts that end on multiples of 16 samples).
 - Dials: the module's first 32 parameters, in declaration order, are the dials and the host's P1 to P32, the same values in every voice. A float parameter is read sample by sample, cutoff[i], and glides over 20 ms when its dial turns (cutoff[0] reads it once a call). An int or bool parameter is read once a call. fminus::range sets the dial's span and fminus::default its starting value.
 - The audio thread: start, stop and process may not allocate (FMinus refuses a program whose methods could reach calloc, malloc or free from them). Allocate in init (each voice's own, calloc: zeroed) and free in end, or use a fixed array field.
@@ -154,7 +154,7 @@ module Voice
     ...
 };
 
-  A table a voice built in its own init would be built for every voice instance, many times over: build it in Shared. The voices only read it (the audio thread), and never free it.
+  A table a voice built in its own init would be built for every voice instance, many times over: build it in Shared (the voices never free it).
 - Aliasing: you cannot hear it, so measure it. measure_output with one note reports an Inharmonic line, the strongest component that is no harmonic of the note; test an oscillator at a high note (96 and up) with its detune and noise at 0. Under about -80 dB is clean (wavetable.fm reaches the measurement's floor, -90 dB); a naive saw's aliases are near -20 dB.
 )";
 
@@ -260,6 +260,9 @@ A full synthesizer or a rich effect is a few hundred lines in several files. Wor
 - An instrument's main module is one voice: sixteen can sound at once and their sum must not clip, so a voice peaks near 0.2 to 0.3. Reset a voice's state in start only when it was silent, so a note played again while it sounds does not click.
 - Later changes: edit_file for a passage (exactly as it is now), write_file for a rewrite. A file marked unchanged in <plugin_state> is as you last saw it.
 - A long conversation may be summarized to make room: the plugin then sends the current files again, and read_file always shows a file as it is now.
+)";
+
+        const char* const kLargeInstrument = R"(- Voices and stop(): each start() gets exactly one stop() before its instance starts again, so a program may keep what the notes do in Shared (a key stack for a mono or legato voice, a count of the keys held), pushing in start and popping in stop. The plugin calls stop() at the key's note-off (or when the sustain pedal comes up), when the key is pressed again while its note sounds, at a steal (the oldest released voice, else the oldest: its stop() at once, then a 2 ms fade; the key's note-off then finds no voice), when all 32 instances are taken (fading ones too: the quietest is cut at once, and the new note starts on its instance), when process returns false while the key is held (as the voice is freed), when a voice goes non-finite and is dropped, and when the host prepares the plugin again. A program swap is apart: the old program's voices fade out over 20 ms with no stop(), its Shared goes with it, and the keys still held start again on the new program (its own Shared).
 )";
 
         const char* const kPanel = R"(
@@ -757,6 +760,7 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
             s += kThreads;
             s += instrument ? kThreadsInstrument : kThreadsEffect;
             s += kLarge;
+            s += instrument ? kLargeInstrument : "";
             s += kPanel;
             s += kLibraryIntro;
             for (const LibraryFile& f : kLibrary)
