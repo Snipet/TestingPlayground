@@ -87,8 +87,9 @@ function(fp_add_probes key)
   fp_warn_sources(${_fp_probe_own})
   target_include_directories(${FP_PROBES} PRIVATE ${FP_SOURCE_ROOT} ${FP_GENERATED_DIR} ${FP_PROBE_ROOT}/common)
   if(FP_WINDOWS)
-    # <unistd.h>'s few calls over the C runtime: FunkGui's harness includes it, and Windows has none.
-    target_include_directories(${FP_PROBES} PRIVATE ${FP_PROBE_ROOT}/common/win)
+    # <unistd.h>'s few calls over the C runtime: FunkGui's harness includes it, and Windows has none
+    # (cmake/FunkGuiWindows.cmake's FP_POSIX_SHIM_DIR).
+    target_include_directories(${FP_PROBES} PRIVATE ${FP_POSIX_SHIM_DIR})
   endif()
   target_compile_definitions(${FP_PROBES} PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0
                                                  PROBE_DEFAULT_OUT_DIR="${CMAKE_BINARY_DIR}/probe-out/${key}")
