@@ -457,12 +457,19 @@ namespace playground::projectstore
         const std::string sandbox = std::string(product::kEnvPrefix) + "PREFS_DIR";
         if (const char* dir = std::getenv(sandbox.c_str()); dir != nullptr && *dir != '\0')
             return juce::File(juce::String::fromUTF8(dir)).getChildFile("presets");
+#if defined(_WIN32)
+        // Windows: Documents\Funk\<name> (a user's own files, where a DAW's are).
+        return juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
+            .getChildFile(product::kCompany)
+            .getChildFile(product::kName);
+#else
         return juce::File::getSpecialLocation(juce::File::userHomeDirectory)
             .getChildFile("Library")
             .getChildFile("Audio")
             .getChildFile("Presets")
             .getChildFile(product::kCompany)
             .getChildFile(product::kName);
+#endif
     }
 
     void setDirectoryForTests(const juce::File& dir)

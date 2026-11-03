@@ -24,9 +24,9 @@
 #include <map>
 #include <sstream>
 
-#include <dirent.h>
-#include <sys/stat.h>
-#include <unistd.h>
+#if !defined(_WIN32)
+#include <unistd.h>                                  // access (shaderc's place)
+#endif
 
 namespace playground::sandbox
 {
@@ -173,6 +173,13 @@ namespace playground::sandbox
         // plugin's bundle (Contents/Resources/shaderc: the AU, the VST3 or the app, the user's or the system's).
         std::string findShaderc()
         {
+#if defined(_WIN32)
+            // Windows: no GPU renderer yet, so no plugin there bundles shaderc; <ENV_PREFIX>SHADERC alone.
+            const std::string var = std::string(product::kEnvPrefix) + "SHADERC";
+            if (const char* e = std::getenv(var.c_str()); e != nullptr && *e != '\0' && juce::File(juce::String::fromUTF8(e)).existsAsFile())
+                return e;
+            return {};
+#else
             const std::string var = std::string(product::kEnvPrefix) + "SHADERC";
             if (const char* e = std::getenv(var.c_str()); e != nullptr && *e != '\0' && access(e, X_OK) == 0)
                 return e;
@@ -197,6 +204,7 @@ namespace playground::sandbox
                 if (access(p.c_str(), X_OK) == 0)
                     return p;
             return {};
+#endif
         }
 
         // `img` scaled down to tw x th, each pixel the mean of those it covers.
@@ -240,6 +248,9 @@ namespace playground::sandbox
 #if defined(__APPLE__)
         tools_.platform = "osx";
         tools_.profile = "metal";
+#elif defined(_WIN32)
+        tools_.platform = "windows";
+        tools_.profile = "s_5_0";
 #else
         tools_.platform = "linux";
         tools_.profile = "spirv";
@@ -293,31 +304,38 @@ namespace playground::sandbox
     {
         std::string path = juce::String(str(given)).trim().toStdString();
         if (path.rfind("~/", 0) == 0 || path == "~")
-            if (const char* home = std::getenv("HOME"))
-                path = std::string(home) + path.substr(1);
-        if (path.empty() || path[0] != '/')
         {
+            const juce::String home = juce::File::getSpecialLocation(juce::File::userHomeDirectory).getFullPathName();
+            if (home.isNotEmpty())
+                path = home.toStdString() + path.substr(1);
+        }
+        if (path.empty() || !juce::File::isAbsolutePath(str(path)))
+        {
+#if defined(_WIN32)
+            why = "path names a file the user named, whole (C:\\Users\\... or ~/...): '" + given + "' is not";
+#else
             why = "path names a file the user named, whole (/Users/... or ~/...): '" + given + "' is not";
+#endif
             return false;
         }
-        struct stat st{};
-        if (stat(path.c_str(), &st) != 0)
+        const juce::File named(str(path));
+        if (!named.exists())
         {
             why = "there is no file or folder " + given;
             return false;
         }
-        const auto readOne = [&](const std::string& file, const std::string& name) {
-            struct stat fs{};
-            if (stat(file.c_str(), &fs) != 0 || !S_ISREG(fs.st_mode))
+        const auto readOne = [&](const juce::File& file, const std::string& name) {
+            if (!file.existsAsFile())
                 return false;
-            if (static_cast<std::size_t>(fs.st_size) > kMaxFileBytes)
+            const juce::int64 bytes = file.getSize();
+            if (static_cast<std::size_t>(bytes) > kMaxFileBytes)
             {
-                why = name + " is " + std::to_string(fs.st_size / 1024) + " KB: the sandbox reads files of " + std::to_string(kMaxFileBytes / 1024)
+                why = name + " is " + std::to_string(bytes / 1024) + " KB: the sandbox reads files of " + std::to_string(kMaxFileBytes / 1024)
                     + " KB at most";
                 return false;
             }
             juce::MemoryBlock mb;
-            if (!juce::File(str(file)).loadFileAsData(mb))
+            if (!file.loadFileAsData(mb))
             {
                 why = "could not read " + name;
                 return false;
@@ -325,30 +343,26 @@ namespace playground::sandbox
             out.push_back({ name, std::string(static_cast<const char*>(mb.getData()), mb.getSize()) });
             return true;
         };
-        if (S_ISREG(st.st_mode))
+        if (named.existsAsFile())
         {
             if (!endsWith(path, ".gui"))
             {
                 why = given + " is not a .gui file: name a .gui file or a program's folder (its .fm, .gui and .sc files)";
                 return false;
             }
-            return readOne(path, juce::File(str(path)).getFileName().toStdString());
+            return readOne(named, named.getFileName().toStdString());
         }
-        if (!S_ISDIR(st.st_mode))
+        if (!named.isDirectory())
         {
             why = given + " is neither a file nor a folder";
             return false;
         }
         std::vector<std::string> names;
-        if (DIR* d = opendir(path.c_str()))
+        for (const juce::DirectoryEntry& e : juce::RangedDirectoryIterator(named, false, "*", juce::File::findFiles))
         {
-            while (const dirent* e = readdir(d))
-            {
-                const std::string n = e->d_name;
-                if (!n.empty() && n[0] != '.' && (endsWith(n, ".fm") || endsWith(n, ".gui") || endsWith(n, ".sc")))
-                    names.push_back(n);
-            }
-            closedir(d);
+            const std::string n = e.getFile().getFileName().toStdString();
+            if (!n.empty() && n[0] != '.' && (endsWith(n, ".fm") || endsWith(n, ".gui") || endsWith(n, ".sc")))
+                names.push_back(n);
         }
         std::sort(names.begin(), names.end());
         if (names.empty())
@@ -365,7 +379,7 @@ namespace playground::sandbox
         std::size_t total = 0;
         for (const std::string& n : names)
         {
-            if (!readOne(path + "/" + n, n))
+            if (!readOne(named.getChildFile(str(n)), n))
                 return false;
             total += out.back().text.size();
             if (total > kMaxTotalBytes)

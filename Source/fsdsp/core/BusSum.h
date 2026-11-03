@@ -33,9 +33,8 @@ inline int64_t toBusUnits(float x) noexcept FSDSP_NONBLOCKING;
 // (exact), FCVT double -> float (nearest). Plain conversions and one multiply: the compiler may vectorise the loop,
 // the values cannot change.
 
-#if !defined(FSDSP_SIMD_NEON)
-  #error "fsdsp::busAdd has a NEON body only; v1 is arm64 (Q4)"
-#endif
+// x86-64 (the playgrounds' Windows build): the same per lane, as scalars: CVTSS2SD (exact), the exact multiply, and
+// CVTSD2SI under MXCSR's rounding, which fsdsp never moves from nearest-even; integer adds, so the same bits.
 
 namespace detail {
 // a + b modulo 2^64. Within busAdd's contract the sum never leaves the int64, so this is the plain sum; outside it
@@ -46,6 +45,7 @@ inline int64_t busWrapAdd(int64_t a, int64_t b) noexcept FSDSP_NONBLOCKING
 }
 } // namespace detail
 
+#if defined(FSDSP_SIMD_NEON)
 inline void busAdd(int64_t* accL, int64_t* accR, const simd::f32x4* l, const simd::f32x4* r, simd::m32x4 mask, int n)
     noexcept FSDSP_NONBLOCKING
 {
@@ -62,6 +62,34 @@ inline void busAdd(int64_t* accL, int64_t* accR, const simd::f32x4* l, const sim
         accR[i] = detail::busWrapAdd(accR[i], vaddvq_s64(vaddq_s64(r01, r23)));
     }
 }
+#else
+namespace detail {
+inline int64_t busUnits(float x) noexcept FSDSP_NONBLOCKING
+{
+    return _mm_cvtsd_si64(_mm_set_sd(static_cast<double>(x) * kBusScale));
+}
+inline int64_t busLanes(simd::f32x4 v) noexcept FSDSP_NONBLOCKING
+{
+    alignas(16) float f[4];
+    simd::store(f, v);
+    int64_t s = 0;
+    for (const float x : f)
+        s = busWrapAdd(s, busUnits(x));
+    return s;
+}
+} // namespace detail
+
+inline void busAdd(int64_t* accL, int64_t* accR, const simd::f32x4* l, const simd::f32x4* r, simd::m32x4 mask, int n)
+    noexcept FSDSP_NONBLOCKING
+{
+    const simd::f32x4 zero = simd::set1(0.0f);
+    for (int i = 0; i < n; ++i)
+    {
+        accL[i] = detail::busWrapAdd(accL[i], detail::busLanes(simd::sel(mask, l[i], zero)));
+        accR[i] = detail::busWrapAdd(accR[i], detail::busLanes(simd::sel(mask, r[i], zero)));
+    }
+}
+#endif
 
 inline void busRead(const int64_t* acc, float* out, int n) noexcept FSDSP_NONBLOCKING
 {
@@ -71,7 +99,11 @@ inline void busRead(const int64_t* acc, float* out, int n) noexcept FSDSP_NONBLO
 
 inline int64_t toBusUnits(float x) noexcept FSDSP_NONBLOCKING
 {
+#if defined(FSDSP_SIMD_NEON)
     return vcvtnd_s64_f64(static_cast<double>(x) * kBusScale);
+#else
+    return detail::busUnits(x);
+#endif
 }
 
 } // namespace fsdsp

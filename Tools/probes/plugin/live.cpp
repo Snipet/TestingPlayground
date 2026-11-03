@@ -273,7 +273,15 @@ PROBE(plugin, live)
     const funkgui::HeadlessGuiScope gui;
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     // Folders of the probe's own: the sockets (a path short enough for one), the projects.
+#if defined(_WIN32)
+    const std::string dir = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                .getChildFile(juce::String(pg::product::kEnvPrefix) + "live-" + juce::String(getpid()))
+                                .getFullPathName()
+                                .replaceCharacter('\\', '/')
+                                .toStdString();
+#else
     const std::string dir = "/tmp/" + std::string(pg::product::kEnvPrefix) + "live-" + std::to_string(getpid());
+#endif
     setenv((std::string(pg::product::kEnvPrefix) + "MCP_DIR").c_str(), dir.c_str(), 1);
     const juce::File projects = juce::File::getSpecialLocation(juce::File::tempDirectory)
                                     .getChildFile(juce::String(pg::product::kEnvPrefix) + "live-projects-" + juce::String(getpid()));

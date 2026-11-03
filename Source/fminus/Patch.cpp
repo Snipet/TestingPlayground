@@ -26,6 +26,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#if defined(_WIN32)
+#include <malloc.h>                                  // _aligned_malloc
+#endif
 #include <cstring>
 #include <map>
 #include <optional>
@@ -36,6 +39,26 @@ namespace playground
 {
     namespace
     {
+        // Aligned memory for a program's instances: C++17's aligned_alloc, which Windows' C runtime lacks (its
+        // _aligned_malloc, freed with _aligned_free). The size is always a multiple of the alignment here.
+        void* alignedAlloc(std::size_t alignment, std::size_t size) noexcept
+        {
+#if defined(_WIN32)
+            return _aligned_malloc(size, alignment);
+#else
+            return std::aligned_alloc(alignment, size);
+#endif
+        }
+
+        void alignedFree(void* p) noexcept
+        {
+#if defined(_WIN32)
+            _aligned_free(p);
+#else
+            std::free(p);
+#endif
+        }
+
         constexpr bool kInstrument = product::kIsInstrument;
         constexpr const char* kModule = kInstrument ? "Voice" : "Effect";
 
@@ -431,12 +454,12 @@ namespace playground
     {
         endInstances();
         for (void* p : instances_)
-            std::free(p);
+            alignedFree(p);
         instances_.clear();
         initialised_.clear();
-        std::free(shared_);
+        alignedFree(shared_);
         shared_ = nullptr;
-        std::free(host_);
+        alignedFree(host_);
         host_ = nullptr;
     }
 
@@ -705,7 +728,7 @@ namespace playground
         const int count = kInstrument ? kInstances : 1;
         for (int i = 0; i < count; ++i)
         {
-            void* p = std::aligned_alloc(patch->instanceAlign_, patch->instanceSize_);
+            void* p = alignedAlloc(patch->instanceAlign_, patch->instanceSize_);
             if (p == nullptr)
             {
                 r.errors = file + ": error: no memory for " + std::to_string(count) + " instances of " + kModule + "\n";
@@ -721,7 +744,7 @@ namespace playground
             patch->sharedAlign_ = std::max<std::size_t>(m->alignment, alignof(std::max_align_t));
             patch->sharedSize_ = (std::max<std::size_t>(m->size, 1) + patch->sharedAlign_ - 1) / patch->sharedAlign_
                                * patch->sharedAlign_;
-            patch->shared_ = std::aligned_alloc(patch->sharedAlign_, patch->sharedSize_);
+            patch->shared_ = alignedAlloc(patch->sharedAlign_, patch->sharedSize_);
             if (patch->shared_ == nullptr)
             {
                 r.errors = file + ": error: no memory for the module Shared\n";
@@ -742,7 +765,7 @@ namespace playground
         {
             patch->hostAlign_ = std::max<std::size_t>(m->alignment, alignof(std::max_align_t));
             patch->hostSize_ = (std::max<std::size_t>(m->size, 1) + patch->hostAlign_ - 1) / patch->hostAlign_ * patch->hostAlign_;
-            patch->host_ = std::aligned_alloc(patch->hostAlign_, patch->hostSize_);
+            patch->host_ = alignedAlloc(patch->hostAlign_, patch->hostSize_);
             if (patch->host_ == nullptr)
             {
                 r.errors = file + ": error: no memory for the module Host\n";

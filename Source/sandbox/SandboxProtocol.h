@@ -52,5 +52,12 @@ namespace playground::sandbox
     inline constexpr std::size_t kMaxTotalBytes = 1024u * 1024u;
 
     // The helper's file name, beside the server's.
-    inline std::string helperName() { return std::string(product::kName) + "GuiSandbox"; }
+    inline std::string helperName()
+    {
+#if defined(_WIN32)
+        return std::string(product::kName) + "GuiSandbox.exe";
+#else
+        return std::string(product::kName) + "GuiSandbox";
+#endif
+    }
 }

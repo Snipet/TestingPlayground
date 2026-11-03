@@ -56,18 +56,74 @@
 #include <string>
 #include <vector>
 
+#if defined(_WIN32)
+#include <filesystem>
+#else
 #include <dirent.h>
 #include <fcntl.h>
 #include <spawn.h>
 #include <sys/wait.h>
 
 extern char** environ;
+#endif
 
 namespace pg = playground;
 
 namespace
 {
     using Clock = std::chrono::steady_clock;
+
+    // ---- child processes (the sandbox's helper): POSIX's pid_t, or on Windows the process id with its handle -------
+#if defined(_WIN32)
+    using ChildId = int;
+
+    std::map<int, HANDLE>& children()
+    {
+        static std::map<int, HANDLE> handles;
+        return handles;
+    }
+
+    // 1: the child has ended (and is reaped: `exitCode` is its status), 0: it runs.
+    int childEnded(ChildId pid, int& exitCode)
+    {
+        exitCode = -1;
+        const auto it = children().find(pid);
+        if (it == children().end())
+            return 1;
+        if (WaitForSingleObject(it->second, 0) != WAIT_OBJECT_0)
+            return 0;
+        DWORD code = 0;
+        if (GetExitCodeProcess(it->second, &code))
+            exitCode = static_cast<int>(code);
+        CloseHandle(it->second);
+        children().erase(it);
+        return 1;
+    }
+
+    void killChild(ChildId pid)
+    {
+        if (const auto it = children().find(pid); it != children().end())
+            TerminateProcess(it->second, 1);
+    }
+#else
+    using ChildId = pid_t;
+
+    int childEnded(ChildId pid, int& exitCode)
+    {
+        exitCode = -1;
+        int status = 0;
+        const pid_t r = waitpid(pid, &status, WNOHANG);
+        if (r == pid)
+        {
+            if (WIFEXITED(status))
+                exitCode = WEXITSTATUS(status);
+            return 1;
+        }
+        return r < 0 && errno == ECHILD ? 1 : 0;
+    }
+
+    void killChild(ChildId pid) { ::kill(pid, SIGKILL); }
+#endif
 
     constexpr int kQuickMs = 5000;                      // info, tools, guide, a prompt's state: answered beside a call
     constexpr int kCallMs = 200000;                     // a tool call: under Claude Desktop's 240 s (its docs), above
@@ -116,20 +172,7 @@ namespace
     std::string key(const juce::var& id) { return juce::JSON::toString(id, true).toStdString(); }
 
     // Whether the other end of `fd` is still there (a peer gone reads as end of file).
-    bool alive(int fd)
-    {
-        pollfd p{ fd, POLLIN, 0 };
-        if (poll(&p, 1, 0) < 0)
-            return false;
-        if ((p.revents & (POLLHUP | POLLERR | POLLNVAL)) != 0)
-            return false;
-        if ((p.revents & POLLIN) != 0)
-        {
-            char c = 0;
-            return recv(fd, &c, 1, MSG_PEEK | MSG_DONTWAIT) != 0;
-        }
-        return true;
-    }
+    bool alive(int fd) { return pg::mcp::peerAlive(fd); }
 
     // `line` and a line feed on stdout, all of it (the one writer).
     void writeOut(const std::string& line)
@@ -138,7 +181,7 @@ namespace
         std::size_t sent = 0;
         while (sent < out.size())
         {
-            const ssize_t n = write(1, out.data() + sent, out.size() - sent);
+            const long long n = pg::mcp::writeFd(1, out.data() + sent, out.size() - sent);
             if (n < 0 && errno == EINTR)
                 continue;
             if (n <= 0)
@@ -183,15 +226,15 @@ namespace
         bool open = true;
         while (sent < pending.size())
         {
-            const ssize_t n = write(fd, pending.data() + sent, pending.size() - sent);
+            const long long n = pg::mcp::pairWrite(fd, pending.data() + sent, pending.size() - sent);   // Windows: a socket
             if (n > 0)
             {
                 sent += static_cast<std::size_t>(n);
                 continue;
             }
-            if (n < 0 && errno == EINTR)
+            if (n < 0 && pg::mcp::interrupted())
                 continue;
-            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+            if (n < 0 && pg::mcp::wouldBlock())
                 break;
             open = false;
             sent = pending.size();
@@ -341,12 +384,15 @@ namespace
     public:
         int run()
         {
-            pg::mcp::LineReader in(0);
+            const int stdinFd = pg::mcp::stdinFd();
+            if (stdinFd < 0)
+                return 1;
+            pg::mcp::LineReader in(stdinFd);
             for (;;)
             {
-                std::vector<pollfd> fds;
+                std::vector<pg::mcp::PollFd> fds;
                 std::vector<std::pair<std::string, uint64_t>> order;   // each instance polled: its id and connection
-                fds.push_back({ 0, POLLIN, 0 });
+                fds.push_back({ stdinFd, POLLIN, 0 });
                 for (const auto& entry : instances_)
                 {
                     const short events = static_cast<short>(POLLIN | (entry.second.out.empty() ? 0 : POLLOUT));
@@ -366,10 +412,10 @@ namespace
                     sbWrite = fds.size() - 1;
                 }
                 const uint64_t helper = sbSerial_;
-                const int r = poll(fds.data(), static_cast<nfds_t>(fds.size()), msToNextDeadline());
+                const int r = pg::mcp::pollFds(fds.data(), fds.size(), msToNextDeadline());
                 if (r < 0)
                 {
-                    if (errno == EINTR)
+                    if (pg::mcp::interrupted())
                         continue;
                     break;
                 }
@@ -396,15 +442,15 @@ namespace
                 if (a.call)
                     stop(a.instance, a.number);
             for (auto& entry : instances_)
-                close(entry.second.fd);
+                pg::mcp::closeFd(entry.second.fd);
             // The sandbox's helper reads the end of its stdin and quits by itself, unless it is busy (a request hung, or
             // still at work): that one would outlive us, holding its GPU context, so it is stopped.
             if (sbPid_ > 0 && sbBusy_)
-                ::kill(sbPid_, SIGKILL);
+                killChild(sbPid_);
             if (sbIn_ >= 0)
-                close(sbIn_);
+                pg::mcp::closeFd(sbIn_);
             if (sbOut_ >= 0)
-                close(sbOut_);
+                pg::mcp::closeFd(sbOut_);
             return 0;
         }
 
@@ -551,16 +597,22 @@ namespace
                 return;
             // The sockets, by readdir: a socket is no regular file to JUCE's listing.
             std::vector<std::string> socks;
+            const auto take = [&socks](const std::string& n) {
+                if (n.size() > 5 && n.compare(n.size() - 5, 5, ".sock") == 0)
+                    socks.push_back(n.substr(0, n.size() - 5));
+            };
+#if defined(_WIN32)
+            std::error_code ec;
+            for (std::filesystem::directory_iterator it(pg::mcp::wide(dir), ec), end; !ec && it != end; it.increment(ec))
+                take(pg::mcp::utf8(it->path().filename().wstring()));
+#else
             if (DIR* d = opendir(dir.c_str()))
             {
                 while (const dirent* e = readdir(d))
-                {
-                    const std::string n = e->d_name;
-                    if (n.size() > 5 && n.compare(n.size() - 5, 5, ".sock") == 0)
-                        socks.push_back(n.substr(0, n.size() - 5));
-                }
+                    take(e->d_name);
                 closedir(d);
             }
+#endif
             // A connection whose instance went away goes (its number may already be another's). Dropping one runs what
             // waited for it, which may ask, and so drop, another first.
             for (const std::string& id : ids())
@@ -576,13 +628,13 @@ namespace
                 const int fd = pg::mcp::connectTo(path);
                 if (fd < 0)
                 {
-                    if (errno == ECONNREFUSED)
-                        unlink(path.c_str());            // nothing listens: its instance is gone (a crash, a host killed)
+                    if (pg::mcp::refused())
+                        pg::mcp::removePath(path);       // nothing listens: its instance is gone (a crash, a host killed)
                     continue;
                 }
                 if (!pg::mcp::nonBlocking(fd))
                 {
-                    close(fd);
+                    pg::mcp::closeFd(fd);
                     continue;
                 }
                 Instance in;
@@ -613,7 +665,7 @@ namespace
             const auto it = instances_.find(id);
             if (it == instances_.end())
                 return;
-            close(it->second.fd);
+            pg::mcp::closeFd(it->second.fd);
             instances_.erase(it);
             std::vector<Ask> lost;
             for (auto a = asks_.begin(); a != asks_.end();)
@@ -1232,6 +1284,94 @@ namespace
         bool startHelper(std::string& why)
         {
             const std::string path = helperPath();
+#if defined(_WIN32)
+            if (!pg::mcp::pathExists(path))
+            {
+                why = "its helper is not there (" + path + ")";
+                return false;
+            }
+            // Its stdin and stdout on two pipes, bridged to sockets the loop polls (McpProtocol.h); its stderr ours.
+            // Only those three handles are inherited (the handle list): it holds none of our sockets.
+            SECURITY_ATTRIBUTES sa{ sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE };
+            HANDLE inRead = nullptr, inWrite = nullptr, outRead = nullptr, outWrite = nullptr;
+            if (!CreatePipe(&inRead, &inWrite, &sa, 0))
+            {
+                why = "no pipe";
+                return false;
+            }
+            if (!CreatePipe(&outRead, &outWrite, &sa, 0))
+            {
+                CloseHandle(inRead);
+                CloseHandle(inWrite);
+                why = "no pipe";
+                return false;
+            }
+            SetHandleInformation(inWrite, HANDLE_FLAG_INHERIT, 0);
+            SetHandleInformation(outRead, HANDLE_FLAG_INHERIT, 0);
+            HANDLE err = nullptr;
+            const HANDLE ourErr = GetStdHandle(STD_ERROR_HANDLE);
+            if (ourErr != nullptr && ourErr != INVALID_HANDLE_VALUE)
+                DuplicateHandle(GetCurrentProcess(), ourErr, GetCurrentProcess(), &err, 0, TRUE, DUPLICATE_SAME_ACCESS);
+            std::vector<HANDLE> inherit{ inRead, outWrite };
+            if (err != nullptr)
+                inherit.push_back(err);
+            SIZE_T attrBytes = 0;
+            InitializeProcThreadAttributeList(nullptr, 1, 0, &attrBytes);
+            std::vector<char> attrs(attrBytes);
+            auto* list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attrs.data());
+            bool started = false;
+            PROCESS_INFORMATION pi{};
+            if (InitializeProcThreadAttributeList(list, 1, 0, &attrBytes))
+            {
+                if (UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherit.data(),
+                                              inherit.size() * sizeof(HANDLE), nullptr, nullptr))
+                {
+                    STARTUPINFOEXW si{};
+                    si.StartupInfo.cb = sizeof si;
+                    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+                    si.StartupInfo.hStdInput = inRead;
+                    si.StartupInfo.hStdOutput = outWrite;
+                    si.StartupInfo.hStdError = err;
+                    si.lpAttributeList = list;
+                    const std::wstring exe = pg::mcp::wide(path);
+                    std::wstring line = L"\"" + exe + L"\"";
+                    started = CreateProcessW(exe.c_str(), line.data(), nullptr, nullptr, TRUE,
+                                             EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW, nullptr, nullptr,
+                                             &si.StartupInfo, &pi) != 0;
+                }
+                DeleteProcThreadAttributeList(list);
+            }
+            const DWORD failure = GetLastError();
+            CloseHandle(inRead);
+            CloseHandle(outWrite);
+            if (err != nullptr)
+                CloseHandle(err);
+            if (!started)
+            {
+                CloseHandle(inWrite);
+                CloseHandle(outRead);
+                why = "its helper did not start (Windows error " + std::to_string(failure) + ")";
+                return false;
+            }
+            CloseHandle(pi.hThread);
+            const ChildId pid = static_cast<ChildId>(pi.dwProcessId);
+            children()[pid] = pi.hProcess;
+            const int toChild[2] = { -1, pg::mcp::bridgeTo(inWrite) };
+            const int fromChild[2] = { pg::mcp::bridgeFrom(outRead, true), -1 };
+            if (toChild[1] < 0 || fromChild[0] < 0)
+            {
+                if (toChild[1] >= 0)
+                    pg::mcp::closeFd(toChild[1]);
+                if (fromChild[0] >= 0)
+                    pg::mcp::closeFd(fromChild[0]);
+                killChild(pid);
+                sbReap_.push_back(pid);
+                why = "its helper could not be reached (no socket)";
+                return false;
+            }
+            for (const int fd : { toChild[1], fromChild[0] })
+                pg::mcp::nonBlocking(fd);
+#else
             if (access(path.c_str(), X_OK) != 0)
             {
                 why = "its helper is not there (" + path + ")";
@@ -1279,6 +1419,7 @@ namespace
                 pg::mcp::nonBlocking(fd);
                 fcntl(fd, F_SETFD, FD_CLOEXEC);
             }
+#endif
             sbPid_ = pid;
             sbIn_ = toChild[1];
             sbOut_ = fromChild[0];
@@ -1294,9 +1435,9 @@ namespace
         void dropHelper()
         {
             if (sbIn_ >= 0)
-                close(sbIn_);
+                pg::mcp::closeFd(sbIn_);
             if (sbOut_ >= 0)
-                close(sbOut_);
+                pg::mcp::closeFd(sbOut_);
             if (sbPid_ > 0)
                 sbReap_.push_back(sbPid_);
             sbPid_ = -1;
@@ -1318,10 +1459,9 @@ namespace
         void reapHelpers()
         {
             sbReap_.erase(std::remove_if(sbReap_.begin(), sbReap_.end(),
-                                         [](pid_t p) {
-                                             int status = 0;
-                                             const pid_t r = waitpid(p, &status, WNOHANG);
-                                             return r == p || (r < 0 && errno == ECHILD);
+                                         [](ChildId p) {
+                                             int code = 0;
+                                             return childEnded(p, code) == 1;
                                          }),
                           sbReap_.end());
         }
@@ -1332,13 +1472,13 @@ namespace
         {
             if (sbPid_ > 0)
             {
-                int status = 0;
-                const pid_t r = kill ? 0 : waitpid(sbPid_, &status, WNOHANG);
-                if (r == 0)
-                    ::kill(sbPid_, SIGKILL);     // hung, or closed its end and lingers: of no use either way (reaped later)
-                const bool quit = r == sbPid_ && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+                int code = -1;
+                const int ended = kill ? 0 : childEnded(sbPid_, code);
+                if (ended == 0)
+                    killChild(sbPid_);           // hung, or closed its end and lingers: of no use either way (reaped later)
+                const bool quit = ended == 1 && code == 0;
                 std::cerr << "sandbox: its helper ended (" << why << (quit ? ", exit 0" : "") << ")" << std::endl;
-                if (r == sbPid_)
+                if (ended == 1)
                     sbPid_ = -1;                 // reaped already
                 if (!quit && !sbState_.isVoid())
                     sbNote_ = "(The sandbox's helper had stopped; it started again, with the panel as it was.)";
@@ -1850,7 +1990,7 @@ namespace
         // The GUI sandbox's helper (above): its process and pipes (non-blocking), its connection's number (a helper
         // started again is another), the requests waiting and the one it works on, the sandbox in it as it last said it
         // is and the newest kept, when it was last used, and the helpers ended but not yet reaped.
-        pid_t sbPid_ = -1;
+        ChildId sbPid_ = -1;
         int sbIn_ = -1, sbOut_ = -1;
         uint64_t sbSerial_ = 0;
         std::unique_ptr<pg::mcp::LineReader> sbReader_;
@@ -1863,7 +2003,7 @@ namespace
         juce::var sbState_;
         std::deque<juce::var> sbKept_;                   // newest first, sbState_ among them (the same object)
         Clock::time_point sbUsed_;
-        std::vector<pid_t> sbReap_;
+        std::vector<ChildId> sbReap_;
         std::string sbNote_;                             // said first in the next answer: the helper was started again
         const int sbMs_ = sandboxDeadlineMs();
         const int sbIdleMs_ = sandboxIdleMs();
@@ -1872,7 +2012,11 @@ namespace
 
 int main()
 {
+#if defined(_WIN32)
+    _setmode(1, _O_BINARY);                      // stdout is the protocol's: no CR before a line feed
+#else
     std::signal(SIGPIPE, SIG_IGN);
+#endif
     Server server;
     return server.run();
 }

@@ -12,6 +12,8 @@
 #if defined(__APPLE__)
 #include <pthread.h>
 #include <sys/qos.h>
+#elif defined(_WIN32)
+#include <windows.h>
 #endif
 
 namespace playground
@@ -23,6 +25,8 @@ namespace playground
         {
 #if defined(__APPLE__)
             pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+#elif defined(_WIN32)
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
 #endif
         }
 

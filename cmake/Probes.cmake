@@ -26,6 +26,20 @@ set(FP_PROBE_ROOT ${PROJECT_SOURCE_DIR}/Tools/probes)
 file(GLOB_RECURSE FP_PROBE_SOURCES CONFIGURE_DEPENDS ${FP_PROBE_ROOT}/*.cpp)
 # Tools/probes/installer/ is the installer's (cmake/Installer.cmake: one executable, no product's): never a product's.
 list(FILTER FP_PROBE_SOURCES EXCLUDE REGEX "/Tools/probes/installer/")
+# Windows: the probes that need FunkGui's GPU
+# layer (its shaders and GPU pictures) are left out, and so are the ones that run the MCP server and the sandbox's
+# helper as POSIX child processes. FP_PROBES_SKIPPED names them (the summary prints it).
+set(FP_PROBES_SKIPPED "")
+if(FP_WINDOWS)
+  foreach(_p gui/shaders plugin/mcp plugin/sandbox)
+    list(FIND FP_PROBE_SOURCES "${FP_PROBE_ROOT}/${_p}.cpp" _i)
+    if(_i GREATER_EQUAL 0)
+      list(REMOVE_AT FP_PROBE_SOURCES ${_i})
+      string(REPLACE "/" "." _n "${_p}")
+      list(APPEND FP_PROBES_SKIPPED ${_n})
+    endif()
+  endforeach()
+endif()
 
 # fp_read_probes(<names-var> <file>...): the probes registered by these files' first `// PROBE` lines: <names-var> gets
 # their <layer>.<name>s, in file order, and FP_PROBE_TIMEOUT_<name> each one's timeout (in the caller's scope).
@@ -59,23 +73,36 @@ endmacro()
 fp_read_probes(FP_PROBE_NAMES ${FP_PROBE_SOURCES})
 list(LENGTH FP_PROBE_NAMES _fp_n)
 message(STATUS "${PROJECT_NAME}: ${_fp_n} probes, each run for every product: ${FP_PROBE_NAMES}")
+if(FP_PROBES_SKIPPED)
+  message(STATUS "${PROJECT_NAME}: on this platform without: ${FP_PROBES_SKIPPED}")
+endif()
 
 # fp_add_probes(<key>): the product's probe executable and its tests (from the caller's PRODUCT_* and FP_* variables).
 function(fp_add_probes key)
   set(FP_PROBES ${PRODUCT_NAME}_probes)
   juce_add_console_app(${FP_PROBES} PRODUCT_NAME "${FP_PROBES}" VERSION ${PRODUCT_VERSION})
-  set(_fp_probe_own ${FP_PLUGIN_SOURCES} ${FP_EDITOR_SOURCES} ${FP_CREATE_EDITOR_GENERIC} ${FP_PROBE_SOURCES})
+  set(_fp_probe_own ${FP_PLUGIN_SOURCES} ${FP_EDITOR_SOURCES} ${FP_CREATE_EDITOR_GENERIC} ${FP_PROBE_SOURCES}
+                    ${FP_NOGPU_SHARED})
   target_sources(${FP_PROBES} PRIVATE ${_fp_probe_own})
   fp_warn_sources(${_fp_probe_own})
   target_include_directories(${FP_PROBES} PRIVATE ${FP_SOURCE_ROOT} ${FP_GENERATED_DIR} ${FP_PROBE_ROOT}/common)
+  if(FP_WINDOWS)
+    # <unistd.h>'s few calls over the C runtime: FunkGui's harness includes it, and Windows has none.
+    target_include_directories(${FP_PROBES} PRIVATE ${FP_PROBE_ROOT}/common/win)
+  endif()
   target_compile_definitions(${FP_PROBES} PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0
                                                  PROBE_DEFAULT_OUT_DIR="${CMAKE_BINARY_DIR}/probe-out/${key}")
   target_link_libraries(${FP_PROBES} PRIVATE
-      ${PRODUCT_NAME}_dsp fp_flags FunkGui::core FunkGui::gpu FunkGui::harness
+      ${PRODUCT_NAME}_dsp fp_flags FunkGui::core FunkGui::harness
       juce::juce_audio_processors juce::juce_recommended_config_flags)
+  if(FP_WITH_GPU)
+    target_link_libraries(${FP_PROBES} PRIVATE FunkGui::gpu)
+  endif()
   if(APPLE)
     target_link_libraries(${FP_PROBES} PRIVATE "-framework ImageIO" "-framework CoreGraphics")   # ChatImages.cpp
     target_link_libraries(${FP_PROBES} PRIVATE compression)   # ProjectExport.cpp
+  elseif(FP_WINDOWS)
+    target_link_libraries(${FP_PROBES} PRIVATE ${FP_WINDOWS_LIBS})
   endif()
   if(FP_LTO)
     target_link_options(${FP_PROBES} PRIVATE $<$<CONFIG:Release>:-flto>)  # the DSP library holds bitcode there
@@ -96,7 +123,7 @@ function(fp_add_probes key)
     set(_sb ${CMAKE_BINARY_DIR}/sandbox/${key}/${_name})
     add_test(NAME ${_test}
              COMMAND $<TARGET_FILE:${FP_PROBES}> ${_name}
-                     --golden-root ${PROJECT_SOURCE_DIR}/tests/golden --arch arm64
+                     --golden-root ${PROJECT_SOURCE_DIR}/tests/golden --arch ${FP_ARCH}
                      --bless-to ${CMAKE_BINARY_DIR}/golden-candidates/${key}
                      --results ${CMAKE_BINARY_DIR}/probe-results/${key})
     set_tests_properties(${_test} PROPERTIES
@@ -108,6 +135,7 @@ endfunction()
 
 # fp_add_lints(): the lints, once, over what every product built.
 function(fp_add_lints)
+  if(APPLE)
   # ---- the export lint: each built bundle exports its entry points only (CMakeLists.txt says why) ------------------
   get_property(_fp_bundles GLOBAL PROPERTY FP_EXPORT_BUNDLES)
   add_test(NAME lint.exports COMMAND ${CMAKE_COMMAND} "-DFP_BUNDLES=${_fp_bundles}"
@@ -119,6 +147,7 @@ function(fp_add_lints)
   add_test(NAME lint.signature COMMAND ${CMAKE_COMMAND} "-DFP_BUNDLES=${_fp_signed}"
                                        -P ${PROJECT_SOURCE_DIR}/cmake/LintSignature.cmake)
   set_tests_properties(lint.signature PROPERTIES LABELS "lint" TIMEOUT 120)
+  endif()   # APPLE: a Windows DLL exports only what is marked, and nothing there is signed
 
   # ---- the layer lint: Source/dsp and Source/fsdsp are JUCE-free and FunkGui-free ------------------------------------
   add_test(NAME lint.layers COMMAND ${CMAKE_COMMAND} -DFP_SOURCE_DIR=${PROJECT_SOURCE_DIR}

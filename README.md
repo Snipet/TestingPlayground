@@ -6,7 +6,8 @@
 
 # TestingPlayground
 
-Two plugins (AU, VST3 and Standalone, macOS on Apple silicon) whose DSP you write while they run, built from one
+Two plugins (AU, VST3 and Standalone on macOS on Apple silicon; VST3 and Standalone on Windows x64, newer: "Windows"
+below) whose DSP you write while they run, built from one
 source tree: **TestingPlayground**, an effect, and **TestingPlaygroundSynth**, an instrument. The editor of each is a
 text field holding an [FMinus](https://github.com/Snipet/FMinus) program; the plugin compiles it when you press RUN
 (or Cmd-Return), and the next block plays it: the effect's crossfaded from the last, the synth's with the keys you
@@ -1094,6 +1095,49 @@ input muted (JUCE's guard against a feedback loop through the speakers, which th
 inputs (a Logitech G29 racing wheel among them: "A racing wheel"). The settings, the plugin's state and the window's
 place are kept where JUCE's Standalone kept them (`~/Library/Application Support/<name>.settings`, its keys
 `audioSetup` and `shouldMuteInput` for the devices, and `racingWheel` for the wheel).
+
+### Windows
+
+The same two products build on Windows 10 (1803 or later) and 11, x64: each one's VST3 and Standalone, its Claude
+Desktop extension (`<Name>.mcpb`, with the GUI sandbox's helper) and its probes. What differs from macOS:
+
+- **The editor draws on the CPU.** FunkGui has no Windows GPU layer yet, so the editor runs in
+  `Source/editor/nogpu/SoftEditorHost` (FunkGui's SoftRaster, the rasteriser every probe PNG comes from, into a JUCE
+  window: the same pixels as `gui.dump.png`), and a `.gui` file's shaders draw as their striped placeholder. A frame
+  is drawn only when something in it changed, at most 30 times a second; a big window at 200 % with meters moving
+  costs a core more than on macOS. There is no screen-reader mirror of the panel (announcements still speak).
+- **No AU, no installer, no signing**: copy the VST3 yourself (below). The Standalone keeps Windows' own title bar
+  and has a menu bar in the window: File (Settings…, Load State…, Save State As…, Reset to Default State, Exit), Edit,
+  Help. There is no racing wheel in the Standalone (a wheel's MIDI from any MIDI input still reaches the synth).
+- **Where things live**: the projects in `Documents\Funk\<name>\`; the chat's key and choices in
+  `%APPDATA%\Funk\Playground\` (the key encrypted as on macOS, with Windows' own CNG); the Standalone's settings in
+  `%APPDATA%\<name>.settings`; the MCP sockets in `%TEMP%\Funk-<name>-mcp\` (Windows' AF_UNIX sockets).
+- **Pictures the chat reads**: PNG, JPEG and GIF (macOS's ImageIO also reads WebP and HEIC); a project's `.fmpack` is
+  written with zlib (and an xz one from macOS is refused).
+- **measure_output's CPU figures** come from the thread's cycle count (`QueryThreadCycleTime`) over the processor's
+  measured clock rate.
+
+Requirements: Visual Studio 2022 with "Desktop development with C++" and its **C++ Clang tools for Windows** (clang-cl,
+FMinus's compiler there), CMake 3.30 or later, Ninja (Visual Studio's, in its developer prompt), Git and Python 3.
+FMinus first, once, as on macOS: clone it to `%USERPROFILE%\audio\libraries\FMinus` and build it from an **x64
+Native Tools Command Prompt for VS** (`cmake --workflow --preset dev`), which leaves its LLVM and WinFlexBison in its
+`.deps` folder; this build reads them from there (`FP_FMINUS_DEPS_DIR` names another). JUCE and FunkGui come from
+GitHub unless `%USERPROFILE%\audio\.deps` and `%USERPROFILE%\audio\libraries\FunkGui` have them. Then, from the
+same kind of prompt:
+
+```bat
+cmake --workflow --preset windows-verify
+build-windows-dev\TestingPlayground_artefacts\RelWithDebInfo\Standalone\TestingPlayground.exe
+```
+
+`windows-effect-verify` and `windows-synth-verify` build and test one product; `windows-release-build` makes the
+Release build in `build-windows-release`. The VST3 is the folder
+`build-windows-release\<Name>_artefacts\Release\VST3\<Name>.vst3`: copy it whole into
+`C:\Program Files\Common Files\VST3\`. The extension is `build-windows-release\<Name>.mcpb`: open it with Claude
+Desktop. `-Werror` and LTO start off there (`-DFP_WERROR=ON`, `-DFP_LTO=ON` turn them on). Run the probes with
+`ctest --preset windows-dev` (`-R`, `-L`, `-V` as below); `gui.shaders`, `plugin.mcp` and `plugin.sandbox` are left
+out of the Windows build (FunkGui's GPU, and POSIX child processes the probes drive), and the permission rows of
+`plugin.chatstore` (Windows has no POSIX modes).
 
 ### Install
 

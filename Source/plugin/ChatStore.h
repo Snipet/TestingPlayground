@@ -1,7 +1,8 @@
 // Source/plugin/ChatStore.h: what the chat keeps on this Mac, shared by both playground plugins (the effect and the
 // synth, in any host and in their Standalones): the Anthropic API key, encrypted, and the choices (the model, thinking
 // level, fast mode, web search and planner chosen last). They live in ~/Library/Application Support/Funk/Playground/
-// (0700): anthropic-key.bin (0600) and chat.json.
+// (0700): anthropic-key.bin (0600) and chat.json. On Windows: %APPDATA%\Funk\Playground\, the user's profile's own,
+// and the same file through Windows' CNG (bcrypt) in place of CommonCrypto.
 //
 // The key's file is "FPK1", a 16-byte salt, a 16-byte IV, the key encrypted with AES-256-CBC, and an HMAC-SHA256 of
 // all that before it (CommonCrypto). The two keys come from PBKDF2-HMAC-SHA256 (100,000 rounds, the salt) over this

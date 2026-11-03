@@ -9,6 +9,10 @@
 // is the editor's, which the session keeps; the editor stays resizable within its limits; and an effect starts with its
 // input muted (JUCE's guard against a feedback loop).
 //
+// Windows (NativeWindowWin.cpp): the window keeps Windows' title bar, the editor keeps no room for buttons, and the
+// menu bar (File, Edit, Help) is a JUCE one inside the window; the editor runs on the CPU there (FP_SOFT_EDITOR:
+// editor/nogpu/SoftEditorHost.h).
+//
 // What is new: the window is macOS's own (NativeWindow.mm) without a title bar of its own: its buttons sit over the
 // editor's top bar, which keeps them room (EditorPort::windowButtons, through Processor::setWindowHooks), and the top
 // bar's empty parts drag it. JUCE's Options moved to the menu bar (StandaloneMenu.h): Settings... (Cmd-,) in the app
@@ -24,7 +28,11 @@
 
 #include "Product.h"
 
+#if defined(FP_SOFT_EDITOR) && FP_SOFT_EDITOR
+#include "editor/nogpu/SoftEditorHost.h"
+#else
 #include <funkgui/gpu/EditorHost.h>
+#endif
 
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
@@ -52,8 +60,13 @@ namespace playground::standalone
         // The editor's zoom (FunkGui's UI zoom: 1 at 100 %), by which its logical px become the window's points.
         float zoomOf(const juce::AudioProcessorEditor* editor)
         {
+#if defined(FP_SOFT_EDITOR) && FP_SOFT_EDITOR
+            if (const auto* host = dynamic_cast<const ui::SoftEditorHost*>(editor))
+                return static_cast<float>(host->appliedZoomPercent()) * 0.01f;
+#else
             if (const auto* host = dynamic_cast<const funkgui::EditorHost*>(editor))
                 return static_cast<float>(host->diagnostics().zoomPercent) * 0.01f;
+#endif
             return 1.0f;
         }
 
@@ -179,6 +192,9 @@ namespace playground::standalone
         {
             constrainer_.setWindow(this);
             setUsingNativeTitleBar(true);                // macOS's window (styled in parentHierarchyChanged)
+#if !JUCE_MAC
+            setMenuBar(native::menuBarModel());          // Windows: the menu bar is the window's own
+#endif
             setConstrainer(&constrainer_);
             updateContent();
             restorePlace();
@@ -196,6 +212,9 @@ namespace playground::standalone
             unhook();
             holder_.stopPlaying();
             constrainer_.setContent(nullptr);
+#if !JUCE_MAC
+            setMenuBar(nullptr);
+#endif
             clearContentComponent();
         }
 
@@ -364,7 +383,9 @@ namespace playground::standalone
             // JUCE's (initialiseMacMainMenu), and making it is what puts it in NSApp.mainMenu: made then, it would
             // replace ours with an app menu alone. Made now, it stays out of sight, and so does the Edit menu a native
             // file chooser adds to it while it is open.
+#if JUCE_MAC
             juce::MenuBarModel::setMacMainMenu(nullptr);
+#endif
             native::installMenuBar(menuBar(product::kName), [this](Command c) { return run(c); });
             if (juce::Desktop::getInstance().getDisplays().displays.isEmpty())
                 return;                                  // no display: it plays without a window, as JUCE's did

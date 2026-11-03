@@ -51,6 +51,7 @@ namespace playground
         {
             ShaderTools t;
             const juce::File exe = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+            // macOS: Contents/Resources/shaderc. Windows has no GPU renderer yet, so no shaderc is bundled there.
             const juce::File bundled = exe.getParentDirectory().getSiblingFile("Resources").getChildFile("shaderc");
             const char* env = std::getenv((std::string(product::kEnvPrefix) + "SHADERC").c_str());
             if (bundled.existsAsFile())
@@ -63,6 +64,9 @@ namespace playground
 #if defined(__APPLE__)
             t.platform = "osx";
             t.profile = "metal";
+#elif defined(_WIN32)
+            t.platform = "windows";
+            t.profile = "s_5_0";
 #else
             t.platform = "linux";
             t.profile = "spirv";
@@ -1225,7 +1229,8 @@ namespace playground
     {
         const juce::String path = projectstore::directory().getFullPathName();
         const juce::String home = juce::File::getSpecialLocation(juce::File::userHomeDirectory).getFullPathName();
-        return (path.startsWith(home + "/") ? "~" + path.substring(home.length()) : path).toStdString();
+        return (path.startsWith(home + juce::File::getSeparatorString()) ? "~" + path.substring(home.length()) : path)
+            .toStdString();
     }
 
     ProjectState Processor::project() const

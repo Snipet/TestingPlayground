@@ -32,7 +32,12 @@
 #include <string>
 #include <thread>
 
+#if defined(_WIN32)
+#include <fcntl.h>
+#include <io.h>
+#else
 #include <unistd.h>
+#endif
 
 namespace pg = playground;
 
@@ -45,7 +50,7 @@ namespace
         std::size_t sent = 0;
         while (sent < out.size())
         {
-            const ssize_t n = write(fd, out.data() + sent, out.size() - sent);
+            const long long n = pg::mcp::writeFd(fd, out.data() + sent, out.size() - sent);
             if (n < 0 && errno == EINTR)
                 continue;
             if (n <= 0)
@@ -66,12 +71,18 @@ namespace
 int main()
 {
     // The replies' descriptor is stdout's own; stdout itself then points at stderr, for whatever else would print.
+#if defined(_WIN32)
+    const int replies = _dup(1);
+    _dup2(2, 1);
+    _setmode(replies, _O_BINARY);                 // no CR before a reply's line feed
+#else
     const int replies = dup(1);
     dup2(2, 1);
     std::signal(SIGPIPE, SIG_IGN);
+#endif
     const funkgui::HeadlessGuiScope gui;          // JUCE's GUI side; this thread is its message thread
     pg::sandbox::Sandbox sandbox(pg::product::kIsInstrument);
-    pg::mcp::LineReader in(0);
+    pg::mcp::LineReader in(pg::mcp::stdinFd());
     for (;;)
     {
         std::string line;
@@ -111,6 +122,10 @@ int main()
             o->setProperty("id", id);
         reply(replies, out);
     }
+#if defined(_WIN32)
+    _close(replies);
+#else
     close(replies);
+#endif
     return 0;
 }

@@ -21,7 +21,11 @@ namespace playground
         {
             const std::time_t t = static_cast<std::time_t>(ms / 1000);
             std::tm tm{};
+#if defined(_WIN32)
+            localtime_s(&tm, &t);
+#else
             localtime_r(&t, &tm);
+#endif
             return tm;
         }
 

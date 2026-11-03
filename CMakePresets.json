@@ -20,6 +20,26 @@
       "displayName": "release: Release, LTO; both products' Standalone, AU, VST3 (scripts/install.sh copies these)",
       "inherits": [ "base" ],
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "FP_LTO": "ON" }
+    },
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-${presetName}",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": { "CMAKE_C_COMPILER": "clang-cl", "CMAKE_CXX_COMPILER": "clang-cl", "FP_PRODUCTS": "" }
+    },
+    {
+      "name": "windows-dev",
+      "displayName": "windows-dev: RelWithDebInfo, x64, clang-cl; both products' Standalone, VST3 and probes",
+      "inherits": [ "windows-base" ],
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "windows-release",
+      "displayName": "windows-release: Release, x64, clang-cl; both products' Standalone and VST3",
+      "inherits": [ "windows-base" ],
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     }
   ],
   "buildPresets": [
@@ -29,7 +49,11 @@
       "displayName": "the effect alone: its plugin, its extension and its probes" },
     { "name": "dev-synth",     "configurePreset": "dev",     "targets": [ "synth" ],         "jobs": 6,
       "displayName": "the synth alone: its plugin, its extension and its probes" },
-    { "name": "release",       "configurePreset": "release", "targets": [ "all" ],           "jobs": 6 }
+    { "name": "release",       "configurePreset": "release", "targets": [ "all" ],           "jobs": 6 },
+    { "name": "windows-dev",        "configurePreset": "windows-dev",     "targets": [ "all", "probes" ], "jobs": 6 },
+    { "name": "windows-dev-effect", "configurePreset": "windows-dev",     "targets": [ "effect" ],        "jobs": 6 },
+    { "name": "windows-dev-synth",  "configurePreset": "windows-dev",     "targets": [ "synth" ],         "jobs": 6 },
+    { "name": "windows-release",    "configurePreset": "windows-release", "targets": [ "all" ],           "jobs": 6 }
   ],
   "testPresets": [
     {
@@ -57,6 +81,26 @@
       "name": "dev-synth",
       "displayName": "the synth's probes (the lints need both products built)",
       "configurePreset": "dev",
+      "filter": { "include": { "label": "^synth$" } },
+      "execution": { "jobs": 6, "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "windows-dev",
+      "configurePreset": "windows-dev",
+      "execution": { "jobs": 6, "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "windows-dev-effect",
+      "configurePreset": "windows-dev",
+      "filter": { "include": { "label": "^effect$" } },
+      "execution": { "jobs": 6, "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "windows-dev-synth",
+      "configurePreset": "windows-dev",
       "filter": { "include": { "label": "^synth$" } },
       "execution": { "jobs": 6, "noTestsAction": "error" },
       "output": { "outputOnFailure": true }
@@ -94,6 +138,41 @@
       "steps": [
         { "type": "configure", "name": "release" },
         { "type": "build", "name": "release" }
+      ]
+    },
+    {
+      "name": "windows-verify",
+      "displayName": "Windows: configure, build (both products) and run every test",
+      "steps": [
+        { "type": "configure", "name": "windows-dev" },
+        { "type": "build", "name": "windows-dev" },
+        { "type": "test", "name": "windows-dev" }
+      ]
+    },
+    {
+      "name": "windows-effect-verify",
+      "displayName": "Windows: the effect alone",
+      "steps": [
+        { "type": "configure", "name": "windows-dev" },
+        { "type": "build", "name": "windows-dev-effect" },
+        { "type": "test", "name": "windows-dev-effect" }
+      ]
+    },
+    {
+      "name": "windows-synth-verify",
+      "displayName": "Windows: the synth alone",
+      "steps": [
+        { "type": "configure", "name": "windows-dev" },
+        { "type": "build", "name": "windows-dev-synth" },
+        { "type": "test", "name": "windows-dev-synth" }
+      ]
+    },
+    {
+      "name": "windows-release-build",
+      "displayName": "Windows: Release build of both products",
+      "steps": [
+        { "type": "configure", "name": "windows-release" },
+        { "type": "build", "name": "windows-release" }
       ]
     }
   ]
