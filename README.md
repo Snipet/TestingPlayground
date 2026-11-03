@@ -1119,11 +1119,13 @@ Desktop extension (`<Name>.mcpb`, with the GUI sandbox's helper) and its probes.
 
 Requirements: Visual Studio 2022 with "Desktop development with C++" and its **C++ Clang tools for Windows** (clang-cl,
 FMinus's compiler there), CMake 3.30 or later, Ninja (Visual Studio's, in its developer prompt), Git and Python 3.
-FMinus first, once, as on macOS: clone it to `%USERPROFILE%\audio\libraries\FMinus` and build it from an **x64
-Native Tools Command Prompt for VS** (`cmake --workflow --preset dev`), which leaves its LLVM and WinFlexBison in its
-`.deps` folder; this build reads them from there (`FP_FMINUS_DEPS_DIR` names another). JUCE and FunkGui come from
-GitHub unless `%USERPROFILE%\audio\.deps` and `%USERPROFILE%\audio\libraries\FunkGui` have them. Then, from the
-same kind of prompt:
+FMinus first, once: clone it to `%USERPROFILE%\audio\libraries\FMinus` or `%USERPROFILE%\audio\FMinus` and
+configure it from an **x64 Native Tools Command Prompt for VS** (`cmake --preset dev` in its folder). Its configure
+builds its LLVM and WinFlexBison into its `.deps` folder (the long step), which is all this build reads from it
+(`FP_FMINUS_DEPS_DIR` names another folder); this build compiles FMinus's library itself and never its tests (at the
+pinned commit one of them, `tests/unit/CircuitEmitTest.cpp`, does not compile on Windows, so FMinus's own full
+build stops there). JUCE and FunkGui come from GitHub unless `%USERPROFILE%\audio\.deps` and a FunkGui checkout
+(`audio\libraries\FunkGui` or `audio\FunkGui`) have them. Then, from the same kind of prompt:
 
 ```bat
 cmake --workflow --preset windows-verify

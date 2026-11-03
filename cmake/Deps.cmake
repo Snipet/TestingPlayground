@@ -226,7 +226,15 @@ endif()
 # one with them (its dev preset's), and FP_FMINUS_LLVM_DIR names one by hand. FMinus's default "cache" mode would build
 # LLVM here (half an hour) whenever this tree's settings differ from the ones it was built with, as
 # CMAKE_OSX_ARCHITECTURES does.
-set(FP_FMINUS_DEPS_DIR "${FP_HOME}/audio/libraries/FMinus/.deps" CACHE PATH
+# FMinus's checkout on this machine (~/audio/libraries/FMinus, else ~/audio/FMinus: fp_local_checkout), whose .deps its
+# own builds filled.
+fp_local_checkout(_fp_fminus_local FMinus)
+if(_fp_fminus_local)
+  set(_fp_fminus_deps_default "${_fp_fminus_local}/.deps")
+else()
+  set(_fp_fminus_deps_default "${FP_HOME}/audio/libraries/FMinus/.deps")
+endif()
+set(FP_FMINUS_DEPS_DIR "${_fp_fminus_deps_default}" CACHE PATH
     "FMinus's deps cache, where its LLVM, Bison and Flex are installed (read only here)")
 set(FP_FMINUS_LLVM_DIR "" CACHE PATH "The LLVM install FMinus uses (empty: chosen from FP_FMINUS_DEPS_DIR)")
 set(_fp_llvm "${FP_FMINUS_LLVM_DIR}")
@@ -265,8 +273,8 @@ if(FP_WINDOWS)
   endforeach()
   if(NOT _fp_parser_tools)
     message(FATAL_ERROR "${PROJECT_NAME}: FMinus's WinFlexBison is not in ${FP_FMINUS_DEPS_DIR}/install: build FMinus "
-                        "once (cd %USERPROFILE%\\audio\\libraries\\FMinus, then cmake --workflow --preset dev from an "
-                        "x64 Native Tools Command Prompt)")
+                        "once (its configure is enough: cmake --preset dev in FMinus's folder, from an x64 Native Tools "
+                        "Command Prompt), or set FP_FMINUS_DEPS_DIR to its .deps folder")
   endif()
 else()
   set(_fp_parser_tools bison-3.8.2 flex-2.6.4)
@@ -278,8 +286,8 @@ foreach(_tool IN LISTS _fp_parser_tools)
   endif()
 endforeach()
 
-if(EXISTS "${FP_HOME}/audio/libraries/FMinus/.git")
-  set(_fp_fminus_repo "${FP_HOME}/audio/libraries/FMinus")
+if(_fp_fminus_local)
+  set(_fp_fminus_repo "${_fp_fminus_local}")
 else()
   set(_fp_fminus_repo "https://github.com/Snipet/FMinus.git")
 endif()
