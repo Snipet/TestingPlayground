@@ -49,9 +49,9 @@ set(FP_BGFX_API          153)
 set(FP_BGFX_SUB_SHAS     bgfx=c7684e20da1e385edc439ef39cdb42b8c661016f
                          bx=0b001f5f36579e8aea07efa5af139ca18dad9505
                          bimg=3b4baab0128ac499c5c3bc37202781bf54084049)
-# FunkGui's main at its v0.24.0 merge (Snipet/FunkGui#31), by commit until v0.24.0 is tagged: then the tag.
-set(FP_FUNKGUI_TAG       e65fb47e7b4ed48dfb9b7a95c1984e96bd5c5e9c)
-set(FP_FUNKGUI_SHA       e65fb47e7b4ed48dfb9b7a95c1984e96bd5c5e9c)
+# FunkGui's main with v0.24.0 (Snipet/FunkGui#31 and #32), by commit until v0.24.0 is tagged: then the tag.
+set(FP_FUNKGUI_TAG       935a6672f653d50ae4271b7827eadd2b982c32bb)
+set(FP_FUNKGUI_SHA       935a6672f653d50ae4271b7827eadd2b982c32bb)
 set(FP_FUNKGUI_VERSION   0.24.0)
 set(FP_FMINUS_SHA        11edb8a0c939fb87e6899a0845daca5579e3cc78)   # no tags: a commit (the language: bits, switch, enum)
 set(FP_FMINUS_LLVM       23.1.3)                                     # the LLVM that commit pins (cmake/FMinusPins.cmake)
