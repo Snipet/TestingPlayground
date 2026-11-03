@@ -4120,8 +4120,8 @@ namespace playground::ui
                          : "Describe an effect and Claude writes it in FMinus, runs it, measures it and sets the dials. "
                            "Ask it about FMinus, DSP or the code, too.";
             if (!s.hasKey)
-                e.body += " First add your Anthropic API key: it is stored encrypted on this Mac, for both playground "
-                          "plugins, and the chat's requests are billed to it.";
+                e.body += std::string(" First add your Anthropic API key: it is stored encrypted on ") + kThisMachine
+                          + ", for both playground plugins, and the chat's requests are billed to it.";
             if (!s.keyProblem.empty())
                 e.body += " The stored key cannot be used: " + s.keyProblem;
             e.body = asciiText(e.body);
@@ -4453,7 +4453,7 @@ namespace playground::ui
             typed.erase(typed.begin());
         if (typed.empty())
         {
-            keyWhy_ = "Paste a key first (Cmd-V).";
+            keyWhy_ = shortcutText("Paste a key first (Cmd-V).");
             dirty_ = true;
             return;
         }
@@ -4554,7 +4554,8 @@ namespace playground::ui
 
         // The lines under the title: what the key is, and whether one is stored.
         const std::string lines[] = { "Claude runs on your own key, from console.anthropic.com (API keys).",
-                                      "It is stored encrypted on this Mac, for both playground plugins,",
+                                      std::string("It is stored encrypted on ") + kThisMachine
+                                          + ", for both playground plugins,",
                                       "and sent only to api.anthropic.com. Requests are billed to it.",
                                       chat_.hasKey ? std::string("A key is stored, and the chat uses it.") : std::string() };
         float y = d.box.y + 66.0f;
@@ -4573,7 +4574,7 @@ namespace playground::ui
         const std::string shown = keyEdit_.buffer.empty() ? std::string() : maskedKey();
         const float maxW = f.w - 28.0f;
         if (shown.empty())
-            c.text("sk-ant-...   (Cmd-V pastes it)", f.x + 14.0f, textTop, chat::kBody, p.faint);
+            c.text(shortcutText("sk-ant-...   (Cmd-V pastes it)").c_str(), f.x + 14.0f, textTop, chat::kBody, p.faint);
         else
         {
             const float w = std::min(c.textWidth(shown.c_str(), chat::kBody), maxW);
@@ -5813,7 +5814,7 @@ namespace playground::ui
             box.role = funkgui::a11yrole::group;
             box.bounds = d.box;
             box.title = "Anthropic API key";
-            box.description = "Stored encrypted on this Mac, for both playground plugins";
+            box.description = std::string("Stored encrypted on ") + kThisMachine + ", for both playground plugins";
             out.push_back(box);
             funkgui::A11yItem field;
             field.id = kKeyFieldId;

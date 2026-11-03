@@ -1105,7 +1105,10 @@ PROBE(plugin, chat)
         const auto pictureOf = [&](int post, std::string& data, std::string& about) {
             const juce::Array<juce::var> m = messagesOf(script->body(post));
             const juce::Array<juce::var> results = arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {}));
-            const juce::Array<juce::var> content = arr(results.isEmpty() ? juce::var() : results[0].getProperty("content", {}));
+            const juce::var result = results.isEmpty() ? juce::var() : results[0].getProperty("content", {});
+            if (result.isString())                       // no picture: the tool's error says why
+                about = result.toString().toStdString();
+            const juce::Array<juce::var> content = arr(result);
             for (const juce::var& b : content)
             {
                 if (str(b, "type") == "image" && str(b.getProperty("source", {}), "media_type") == "image/png")
@@ -1133,8 +1136,14 @@ PROBE(plugin, chat)
         P.eq("view.answer", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "It looks tidy." ? 1 : 0, 1);
         P.eq("view.entry", lastText(agent.chatState(), pg::ChatEntry::Kind::tool) == "Looked at the editor" ? 1 : 0, 1);
         P.eq("view.user_view_kept", processor.editorPort().panelView() == viewBefore ? 1 : 0, 1);
+#if defined(FUNKGUI_HAS_BGFX) && FUNKGUI_HAS_BGFX
         P.eq("view.gpu", has(panelAbout, "Drawn by the GPU as the user's screen draws it, shaders included")
                              && has(windowAbout, "Drawn by the GPU") ? 1 : 0, 1);
+#else
+        // A build with no GPU layer (Windows: FP_WITH_GPU off) draws with SoftRaster, and says so.
+        P.eq("view.gpu", has(panelAbout, "Drawn without the GPU (this build has no GPU)")
+                             && has(windowAbout, "Drawn without the GPU (this build has no GPU)") ? 1 : 0, 1);
+#endif
 
         // The fallback (SoftRaster), forced: a picture still, and the note.
         script->add(fake::Response::ok(fake::Sse().start().tool("toolu_v3", "view_panel", input({})).end("tool_use")));

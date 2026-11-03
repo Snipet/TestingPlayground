@@ -875,7 +875,8 @@ namespace playground
             key_ = trimmed;
             keyProblem_.clear();
             modelsFetched_ = false;
-            addEntry(ChatEntry::Kind::note, "API key saved, encrypted, for both playground plugins on this Mac.");
+            addEntry(ChatEntry::Kind::note,
+                     std::string("API key saved, encrypted, for both playground plugins on ") + kThisMachine + ".");
         }
         return true;
     }
@@ -886,7 +887,7 @@ namespace playground
         const std::lock_guard<std::mutex> lock(mutex_);
         key_.clear();
         keyProblem_.clear();
-        addEntry(ChatEntry::Kind::note, "API key removed from this Mac.");
+        addEntry(ChatEntry::Kind::note, std::string("API key removed from ") + kThisMachine + ".");
     }
 
     void ChatAgent::setModel(const std::string& id)

@@ -79,6 +79,12 @@ elseif(WIN32)
   # windows.h without min/max macros and its rarely used parts, as JUCE's own headers define them (the same values, so
   # JUCE's definitions are no redefinitions).
   add_compile_definitions(NOMINMAX= WIN32_LEAN_AND_MEAN=1 _CRT_SECURE_NO_WARNINGS)
+  # RelWithDebInfo inlines fully, as clang's -O2 does on macOS: CMake's default for an MSVC-like compiler, /Ob1, inlines
+  # only what is marked inline (the Engine, SoftRaster and the probes' analyses ran several times slower). For every
+  # target below, FMinus's and FunkGui's included.
+  foreach(_lang C CXX)
+    string(REPLACE "/Ob1" "/Ob2" CMAKE_${_lang}_FLAGS_RELWITHDEBINFO "${CMAKE_${_lang}_FLAGS_RELWITHDEBINFO}")
+  endforeach()
 else()
   message(FATAL_ERROR "${PROJECT_NAME} builds on macOS (arm64) and Windows (x64).")
 endif()
@@ -338,6 +344,9 @@ function(fp_add_product key)
     endif()
     if(NOT _text MATCHES "^// ([^:\n]+):")
       message(FATAL_ERROR "${_f}: the first line must be '// <Title>: ...', the title the EXAMPLES menu shows")
+    endif()
+    if(FP_WINDOWS)                                         # "RUN (or Cmd-Return)": a Windows keyboard's Ctrl
+      string(REPLACE "Cmd-" "Ctrl-" _text "${_text}")
     endif()
     string(APPEND FP_FMINUS_EXAMPLE_ROWS "        Example{ \"${CMAKE_MATCH_1}\", R\"fminus(${_text})fminus\" },\n")
   endforeach()

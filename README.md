@@ -1139,7 +1139,8 @@ Release build in `build-windows-release`. The VST3 is the folder
 Desktop. `-Werror` and LTO start off there (`-DFP_WERROR=ON`, `-DFP_LTO=ON` turn them on). Run the probes with
 `ctest --preset windows-dev` (`-R`, `-L`, `-V` as below); `gui.shaders`, `plugin.mcp` and `plugin.sandbox` are left
 out of the Windows build (FunkGui's GPU, and POSIX child processes the probes drive), and the permission rows of
-`plugin.chatstore` (Windows has no POSIX modes).
+`plugin.chatstore` (Windows has no POSIX modes). Each probe's timeout is doubled there (`-DFP_PROBE_TIMEOUT_SCALE=<n>`
+sets another factor), and a probe that crashes prints its stack, named from its PDB, before it ends.
 
 ### Install
 

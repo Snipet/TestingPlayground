@@ -1494,7 +1494,7 @@ namespace playground
         }
         if (!projectstore::exists(project))
         {
-            why = "\"" + project + "\" is not on this Mac any more: save it again first";
+            why = "\"" + project + "\" is not on " + kThisMachine + " any more: save it again first";
             return false;
         }
         const std::vector<projectstore::Dial> dials = dialsNow();

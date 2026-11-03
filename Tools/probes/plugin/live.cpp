@@ -424,7 +424,7 @@ PROBE(plugin, live)
             P.le("link.stopped_quick_s", stopS, 1.0);
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             P.eq("link.readers_back", p.meterReaders(), 0);
-            close(fd);
+            pg::mcp::closeFd(fd);
         }
     }
 

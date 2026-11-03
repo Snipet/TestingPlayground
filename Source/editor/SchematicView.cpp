@@ -4,6 +4,7 @@
 #include "editor/ChatStyle.h"
 #include "editor/Items.h"
 #include "editor/Theme.h"
+#include "plugin/EditorPort.h"                      // shortcutText
 
 #include "Product.h"
 
@@ -2721,6 +2722,8 @@ namespace playground::ui
                     request.items.push_back({ 10, "Show " + n.name + " as wires" });
                 }
             }
+            for (funkgui::MenuItem& item : request.items)   // Ctrl- on Windows
+                item.label = shortcutText(item.label);
             host_->showMenu(request, [this, name, tagged](int chosen) {
                 if (!showing())
                     return;
@@ -2756,6 +2759,8 @@ namespace playground::ui
                               { 17, "Cut   Cmd-X", parts },   { 0, {}, true, false, true },      { 18, "Probe this net" },
                               { 19, pinned ? "Unpin probe   Alt-click" : "Pin probe   Alt-click", !ground },
                               { 0, {}, true, false, true },   { 13, "Show in netlist" } };
+            for (funkgui::MenuItem& item : request.items)   // Ctrl- on Windows
+                item.label = shortcutText(item.label);
             host_->showMenu(request, [this, net, at, r](int chosen) {
                 if (!showing())
                     return;
@@ -2803,6 +2808,8 @@ namespace playground::ui
         request.items = { { 21, "Select all   Cmd-A" }, { 27, "Paste   Cmd-V", clip }, { 22, "Fit   F" }, { 23, "Tidy" },
                           { 0, {}, true, false, true },   { 24, "Netlist view   Cmd-Shift-D" }, { 0, {}, true, false, true },
                           { 25, "Undo   Cmd-Z", ed_->canUndo() }, { 26, "Redo   Cmd-Shift-Z", ed_->canRedo() } };
+        for (funkgui::MenuItem& item : request.items)   // Ctrl- on Windows
+            item.label = shortcutText(item.label);
         host_->showMenu(request, [this, pasteAt](int chosen) {
             if (!showing())
                 return;
@@ -3127,7 +3134,8 @@ namespace playground::ui
         switch (tool_)
         {
             case Tool::place:
-                return std::string("Click to place a ") + cir::symbol(kind_).word + "   Cmd-R turns it   Escape ends";
+                return std::string("Click to place a ") + cir::symbol(kind_).word
+                     + shortcutText("   Cmd-R turns it   Escape ends");
             case Tool::ground:
                 return "Click a pin or a wire: its net goes to ground   Escape ends";
             case Tool::label:
@@ -4227,7 +4235,7 @@ namespace playground::ui
                 // the files play it and what plays does not (yet); or what plays reads it but holds none of its module
                 const bool runs = program != 0 && probe_.runs && probe_.runs(file_);
                 p.reason = runs ? std::string(product::kIsInstrument ? "Voice" : "Effect") + " has no field of " + file_ + "'s module"
-                                : std::string("not playing: Cmd-Return runs it");
+                                : shortcutText("not playing: Cmd-Return runs it");
             }
             else
             {

@@ -77,6 +77,18 @@ if(FP_PROBES_SKIPPED)
   message(STATUS "${PROJECT_NAME}: on this platform without: ${FP_PROBES_SKIPPED}")
 endif()
 
+# Each probe's timeout is its own line's, times FP_PROBE_TIMEOUT_SCALE: 2 on Windows, whose machines (and the LLVM a
+# dev build of FMinus makes there, with assertions) compile and draw slower than the Macs the timeouts were set on.
+if(FP_WINDOWS)
+  set(_fp_scale 2)
+else()
+  set(_fp_scale 1)
+endif()
+set(FP_PROBE_TIMEOUT_SCALE ${_fp_scale} CACHE STRING "Each probe's timeout is its line's times this")
+if(NOT FP_PROBE_TIMEOUT_SCALE MATCHES "^[1-9][0-9]*$")
+  message(FATAL_ERROR "FP_PROBE_TIMEOUT_SCALE is '${FP_PROBE_TIMEOUT_SCALE}': a whole number from 1")
+endif()
+
 # fp_add_probes(<key>): the product's probe executable and its tests (from the caller's PRODUCT_* and FP_* variables).
 function(fp_add_probes key)
   set(FP_PROBES ${PRODUCT_NAME}_probes)
@@ -103,7 +115,7 @@ function(fp_add_probes key)
     target_link_libraries(${FP_PROBES} PRIVATE "-framework ImageIO" "-framework CoreGraphics")   # ChatImages.cpp
     target_link_libraries(${FP_PROBES} PRIVATE compression)   # ProjectExport.cpp
   elseif(FP_WINDOWS)
-    target_link_libraries(${FP_PROBES} PRIVATE ${FP_WINDOWS_LIBS})
+    target_link_libraries(${FP_PROBES} PRIVATE ${FP_WINDOWS_LIBS} dbghelp)   # dbghelp: ProbeMain.cpp's crash report
   endif()
   if(FP_LTO)
     target_link_options(${FP_PROBES} PRIVATE $<$<CONFIG:Release>:-flto>)  # the DSP library holds bitcode there
@@ -127,9 +139,10 @@ function(fp_add_probes key)
                      --golden-root ${PROJECT_SOURCE_DIR}/tests/golden --arch ${FP_ARCH}
                      --bless-to ${CMAKE_BINARY_DIR}/golden-candidates/${key}
                      --results ${CMAKE_BINARY_DIR}/probe-results/${key})
+    math(EXPR _timeout "${FP_PROBE_TIMEOUT_${_name}} * ${FP_PROBE_TIMEOUT_SCALE}")
     set_tests_properties(${_test} PROPERTIES
         LABELS "probe;${_layer};${key}"
-        TIMEOUT ${FP_PROBE_TIMEOUT_${_name}}
+        TIMEOUT ${_timeout}
         ENVIRONMENT "PROBE_OUT_DIR=${CMAKE_BINARY_DIR}/probe-out/${key};${_p}PREFS_DIR=${_sb};${_p}SHADERC=${FP_SHADERC};${_p}MCP_DIR=${_sb}/mcp;${_p}MCP_SERVER=$<TARGET_FILE:${FP_MCP}>")
   endforeach()
 endfunction()

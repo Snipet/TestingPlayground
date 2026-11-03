@@ -290,7 +290,16 @@ place (its `products/<key>.cmake`, and its names in the docs).
   no signing, no export list (a DLL exports what is marked dllexport: JUCE's entry points); `lint.exports` and
   `lint.signature` are macOS's. `FP_WINDOWS` and `FP_WITH_GPU` (CMakeLists.txt) choose; `FP_WINDOWS_LIBS` (Winsock,
   CNG, the shell) are linked where the code calls them. `-Werror` and LTO start off there; turn them on once a
-  Windows build is clean.
+  Windows build is clean. RelWithDebInfo inlines fully there (`/Ob2`, not CMake's `/Ob1`), as `-O2` does on macOS.
+- **The words there.** What the panel, the chat and the prompt say of the machine and its keys comes from
+  `plugin/EditorPort.h`: `kThisMachine` ("this Mac", "this computer") and `shortcutText` (a text's "Cmd-" is "Ctrl-"
+  on Windows, whose editor host gives Ctrl the editor's Cmd); the examples' "Cmd-Return" is "Ctrl-Return" as CMake
+  writes Examples.h there. A new user-facing "this Mac" or "Cmd-" goes through them.
+- **The probes there** run with twice their timeouts (`FP_PROBE_TIMEOUT_SCALE`, cmake/Probes.cmake), and one that
+  crashes says where (`ProbeMain.cpp`: stdout and stderr unbuffered; heap corruption, an access violation, the C
+  runtime's invalid-parameter check, abort and terminate print the stack on stderr, named from the PDB). Windows' heap
+  finds what macOS's rounding hides: a probe writes only within the buffers it sized (the last block of a render is
+  what is left, never a whole block).
 - **No GPU layer.** FunkGui v0.23.1 has none on Windows, so bgfx and shaderc are neither fetched nor built
   (`FUNKGUI_WITH_BGFX` off): FunkGui::core and the harness only. The editor runs in `editor/nogpu/SoftEditorHost`, which
   keeps EditorHost's input, zoom, resizing, menus and chooser rules (change them together) and draws through SoftRaster
