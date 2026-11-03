@@ -3,13 +3,15 @@
 #   JUCE 8.0.4            from the machine cache ${FP_DEPS_DIR}/JUCE-8.0.4 when it is there, else GitHub
 #   bgfx.cmake            from ${FP_DEPS_DIR}/bgfx.cmake-<tag> when it is there, else GitHub (FunkGui's GPU layer);
 #                         its commit and those of its submodules bgfx, bx and bimg are asserted
-#   shaderc               the prebuilt ${FP_DEPS_DIR}/tools/shaderc-<tag>/shaderc when its stamp names the pinned
-#                         bgfx.cmake commit, else built from bgfx.cmake (slow: about 2,000 CPU-seconds)
-#   FunkGui v0.23.1       FetchContent at the pinned tag from FP_FUNKGUI_REPO: this machine's local repository
-#                         (~/audio/libraries/FunkGui) when it exists, else GitHub; the commit is asserted. v0.17.0
-#                         brought the TextEditor, v0.18.0 resizable Panels, v0.19.0 custom shaders, v0.20.0 images,
-#                         v0.22.0 the TextEditor's code-editor hooks, v0.23.0 GPU pictures (view_panel's), v0.23.1
-#                         their hold keeping no editor's slot
+#   shaderc               the prebuilt ${FP_DEPS_DIR}/tools/shaderc-<tag>/shaderc (shaderc.exe on Windows) when its
+#                         stamp names the pinned bgfx.cmake commit, else built from bgfx.cmake (slow: about 2,000
+#                         CPU-seconds)
+#   FunkGui v0.24.0       FetchContent at the pinned tag (or commit) from FP_FUNKGUI_REPO: this machine's local
+#                         repository (~/audio/libraries/FunkGui, or ~/audio/FunkGui) when it exists, else GitHub; the
+#                         commit is asserted. v0.17.0 brought the TextEditor, v0.18.0 resizable Panels, v0.19.0 custom
+#                         shaders, v0.20.0 images, v0.22.0 the TextEditor's code-editor hooks, v0.23.0 GPU pictures
+#                         (view_panel's), v0.23.1 their hold keeping no editor's slot, v0.24.0 Windows (the GPU layer
+#                         on Direct3D 11; the core and the harness without stand-ins)
 #   FMinus                FetchContent at the pinned commit from FP_FMINUS_REPO (~/audio/libraries/FMinus, else
 #                         GitHub): the JIT compiler, its library and runtime only. Its LLVM, Bison and Flex are the
 #                         ones FMinus's own builds put in its deps cache (FP_FMINUS_DEPS_DIR), read, never built here.
@@ -24,9 +26,10 @@
 #                         level, shared by the functions after them), switch with case and default, and enum, whose
 #                         constants size arrays: switch, case, default and enum are keywords from it on
 #
-# Windows (FP_WINDOWS, CMakeLists.txt): FunkGui has no GPU layer there yet, so neither bgfx nor shaderc is fetched or
-# built (FUNKGUI_WITH_BGFX OFF): FunkGui::core and the harness only, and the editor runs on the CPU
-# (Source/editor/nogpu/). FMinus's parser tools there are WinFlexBison, in the same deps cache.
+# Windows (FP_WINDOWS, CMakeLists.txt): FunkGui's GPU layer draws on Direct3D 11 there, its shaders and the plugin's
+# compiled by a shaderc.exe built from bgfx.cmake (it compiles HLSL with the system's d3dcompiler_47.dll); with
+# FP_WITH_GPU off neither bgfx nor shaderc is fetched or built, and the editor runs on the CPU (Source/editor/nogpu/).
+# FMinus's parser tools there are WinFlexBison, in the same deps cache.
 #
 # ~/audio/.deps is a read-only cache written by FCompressor's Scripts/deps.sh: this build reads it and never writes it.
 # FETCHCONTENT_SOURCE_DIR_<NAME> bypasses GIT_TAG, which is why every dependency's version and commit are checked after
@@ -46,9 +49,10 @@ set(FP_BGFX_API          153)
 set(FP_BGFX_SUB_SHAS     bgfx=c7684e20da1e385edc439ef39cdb42b8c661016f
                          bx=0b001f5f36579e8aea07efa5af139ca18dad9505
                          bimg=3b4baab0128ac499c5c3bc37202781bf54084049)
-set(FP_FUNKGUI_TAG       v0.23.1)
-set(FP_FUNKGUI_SHA       913dafae2df9047589f31cb1e7bf92af1c1f5f45)
-set(FP_FUNKGUI_VERSION   0.23.1)
+# FunkGui's main at its v0.24.0 merge (Snipet/FunkGui#31), by commit until v0.24.0 is tagged: then the tag.
+set(FP_FUNKGUI_TAG       e65fb47e7b4ed48dfb9b7a95c1984e96bd5c5e9c)
+set(FP_FUNKGUI_SHA       e65fb47e7b4ed48dfb9b7a95c1984e96bd5c5e9c)
+set(FP_FUNKGUI_VERSION   0.24.0)
 set(FP_FMINUS_SHA        11edb8a0c939fb87e6899a0845daca5579e3cc78)   # no tags: a commit (the language: bits, switch, enum)
 set(FP_FMINUS_LLVM       23.1.3)                                     # the LLVM that commit pins (cmake/FMinusPins.cmake)
 
@@ -128,11 +132,11 @@ if(FP_CXX_HAS_WNONTRIVIAL_MEMCALL)
                               PROPERTIES COMPILE_OPTIONS -Wno-nontrivial-memcall)
 endif()
 
-# ---- shaderc, then bgfx (where FunkGui has a GPU layer: macOS, Linux) ------------------------------------------------
+# ---- shaderc, then bgfx (FunkGui's GPU layer: Metal on macOS, Direct3D 11 on Windows) --------------------------------
 if(NOT FP_WITH_GPU)
   set(FUNKGUI_WITH_BGFX OFF)                              # a normal variable, before FunkGui is made available
   set(FP_SHADERC "")
-  set(_fp_shaderc "none (no GPU layer on this platform)")
+  set(_fp_shaderc "none (FP_WITH_GPU off)")
   string(APPEND _fp_deps_txt "bgfx.cmake\t-\t-\tnot used on this platform\n")
 else()
 set(_sc_dir "${FP_DEPS_DIR}/tools/shaderc-${FP_BGFX_TAG}")
@@ -140,9 +144,9 @@ set(_sc_stamp "")
 if(EXISTS "${_sc_dir}/shaderc.stamp")
   file(STRINGS "${_sc_dir}/shaderc.stamp" _sc_stamp LIMIT_COUNT 1)
 endif()
-if(IS_EXECUTABLE "${_sc_dir}/shaderc" AND _sc_stamp STREQUAL "bgfx.cmake ${FP_BGFX_SHA}")
+if(IS_EXECUTABLE "${_sc_dir}/shaderc${CMAKE_EXECUTABLE_SUFFIX}" AND _sc_stamp STREQUAL "bgfx.cmake ${FP_BGFX_SHA}")
   set(BGFX_BUILD_TOOLS OFF)                               # normal variables: CMP0077
-  set(FUNKGUI_SHADERC "${_sc_dir}/shaderc")
+  set(FUNKGUI_SHADERC "${_sc_dir}/shaderc${CMAKE_EXECUTABLE_SUFFIX}")
   set(_fp_shaderc "${FUNKGUI_SHADERC}")
   set(FP_SHADERC "${FUNKGUI_SHADERC}")                    # the one the plugin carries (CMakeLists.txt)
 else()
@@ -164,6 +168,10 @@ foreach(_t bgfx bx bimg bimg_decode bimg_encode)
   if(TARGET ${_t})
     # A plugin binary exports only its entry points.
     set_target_properties(${_t} PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+    # Windows: bgfx's own sources warn under clang-cl; third-party code, quiet as FunkGui keeps it (-w is cl's /w).
+    if(FP_WINDOWS)
+      target_compile_options(${_t} PRIVATE -w)
+    endif()
   endif()
 endforeach()
 # metal-cpp's implementation inside bgfx marks its symbols visibility("default") unless this is defined.
@@ -211,9 +219,6 @@ foreach(_t IN LISTS _fp_funkgui_targets)
   endif()
 endforeach()
 string(APPEND _fp_deps_txt "FunkGui\t${FP_FUNKGUI_TAG}\t${FP_FUNKGUI_SHA}\t${FP_FUNKGUI_REPO}\n")
-if(FP_WINDOWS)
-  include(FunkGuiWindows)                                  # FunkGui's sources that do not compile on Windows, swapped
-endif()
 
 # ---- FMinus ----------------------------------------------------------------------------------------------------------
 # A subproject (SYSTEM: its headers are system headers to our -Werror sources; EXCLUDE_FROM_ALL: only what

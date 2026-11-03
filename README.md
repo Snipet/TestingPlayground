@@ -1101,11 +1101,13 @@ place are kept where JUCE's Standalone kept them (`~/Library/Application Support
 The same two products build on Windows 10 (1803 or later) and 11, x64: each one's VST3 and Standalone, its Claude
 Desktop extension (`<Name>.mcpb`, with the GUI sandbox's helper) and its probes. What differs from macOS:
 
-- **The editor draws on the CPU.** FunkGui has no Windows GPU layer yet, so the editor runs in
-  `Source/editor/nogpu/SoftEditorHost` (FunkGui's SoftRaster, the rasteriser every probe PNG comes from, into a JUCE
-  window: the same pixels as `gui.dump.png`), and a `.gui` file's shaders draw as their striped placeholder. A frame
-  is drawn only when something in it changed, at most 30 times a second; a big window at 200 % with meters moving
-  costs a core more than on macOS. There is no screen-reader mirror of the panel (announcements still speak).
+- **The editor draws on the GPU** with Direct3D 11 (FunkGui v0.24.0), as it does on macOS with Metal: a `.gui` file's
+  shaders included, compiled by the `shaderc.exe` the build puts in the VST3 and beside the Standalone (it compiles
+  HLSL with Windows' own `d3dcompiler_47.dll`). A machine with no usable GPU gets Windows' software rasteriser (WARP)
+  under Direct3D 11. Configured with `-DFP_WITH_GPU=OFF`, the build needs neither bgfx nor shaderc and the editor
+  draws on the CPU instead (`Source/editor/nogpu/SoftEditorHost`: FunkGui's SoftRaster, the rasteriser every probe PNG
+  comes from, into a JUCE window), a `.gui` file's shaders as their striped placeholder, with no screen-reader mirror
+  of the panel (announcements still speak).
 - **No AU, no installer, no signing**: copy the VST3 yourself (below). The Standalone keeps Windows' own title bar
   and has a menu bar in the window: File (Settings…, Load State…, Save State As…, Reset to Default State, Exit), Edit,
   Help. There is no racing wheel in the Standalone (a wheel's MIDI from any MIDI input still reaches the synth).
@@ -1124,8 +1126,11 @@ configure it from an **x64 Native Tools Command Prompt for VS** (`cmake --preset
 builds its LLVM and WinFlexBison into its `.deps` folder (the long step), which is all this build reads from it
 (`FP_FMINUS_DEPS_DIR` names another folder); this build compiles FMinus's library itself and never its tests (at the
 pinned commit one of them, `tests/unit/CircuitEmitTest.cpp`, does not compile on Windows, so FMinus's own full
-build stops there). JUCE and FunkGui come from GitHub unless `%USERPROFILE%\audio\.deps` and a FunkGui checkout
-(`audio\libraries\FunkGui` or `audio\FunkGui`) have them. Then, from the same kind of prompt:
+build stops there). JUCE, bgfx.cmake (with its submodules) and FunkGui come from GitHub unless
+`%USERPROFILE%\audio\.deps` and a FunkGui checkout (`audio\libraries\FunkGui` or `audio\FunkGui`) have them; a FunkGui
+checkout must hold the pinned commit (`git pull` in it). shaderc is built from bgfx.cmake on the first configure of a
+build folder (about 2,000 CPU-seconds) unless `.deps\tools\shaderc-<bgfx tag>\shaderc.exe` and its stamp are there.
+Then, from the same kind of prompt:
 
 ```bat
 cmake --workflow --preset windows-verify
@@ -1137,10 +1142,11 @@ Release build in `build-windows-release`. The VST3 is the folder
 `build-windows-release\<Name>_artefacts\Release\VST3\<Name>.vst3`: copy it whole into
 `C:\Program Files\Common Files\VST3\`. The extension is `build-windows-release\<Name>.mcpb`: open it with Claude
 Desktop. `-Werror` and LTO start off there (`-DFP_WERROR=ON`, `-DFP_LTO=ON` turn them on). Run the probes with
-`ctest --preset windows-dev` (`-R`, `-L`, `-V` as below); `gui.shaders`, `plugin.mcp` and `plugin.sandbox` are left
-out of the Windows build (FunkGui's GPU, and POSIX child processes the probes drive), and the permission rows of
-`plugin.chatstore` (Windows has no POSIX modes). Each probe's timeout is doubled there (`-DFP_PROBE_TIMEOUT_SCALE=<n>`
-sets another factor), and a probe that crashes prints its stack, named from its PDB, before it ends.
+`ctest --preset windows-dev` (`-R`, `-L`, `-V` as below); `plugin.mcp` and `plugin.sandbox` are left out of the
+Windows build (POSIX child processes the probes drive), `gui.shaders` too in a build with `FP_WITH_GPU` off, and the
+permission rows of `plugin.chatstore` (Windows has no POSIX modes). Each probe's timeout is doubled there
+(`-DFP_PROBE_TIMEOUT_SCALE=<n>` sets another factor), and a probe that crashes prints its stack, named from its PDB,
+before it ends.
 
 ### Install
 

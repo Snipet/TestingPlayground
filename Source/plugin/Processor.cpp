@@ -45,14 +45,22 @@ namespace playground
         constexpr int kMaxEditorSide = 16384;
 
         // What building a .gui file's shaders needs (fminus/Shaders.h): shaderc, bundled in the plugin
-        // (Contents/Resources/shaderc: CMakeLists.txt copies the pinned bgfx's there), else where <prefix>SHADERC says
-        // (the probes'); FunkGui's prelude, varyings and bgfx_shader.sh; the renderer's target.
+        // (Contents/Resources/shaderc: CMakeLists.txt copies the pinned bgfx's there; on Windows shaderc.exe, there in
+        // the VST3 and beside the Standalone's .exe), else where <prefix>SHADERC says (the probes'); FunkGui's
+        // prelude, varyings and bgfx_shader.sh; the renderer's target.
         ShaderTools shaderTools()
         {
             ShaderTools t;
+            // The binary this code is in: the plug-in's (the VST3's Contents/x86_64-win/<Name>.vst3, the AU's), or the
+            // Standalone's.
             const juce::File exe = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
-            // macOS: Contents/Resources/shaderc. Windows has no GPU renderer yet, so no shaderc is bundled there.
+#if defined(_WIN32)
+            juce::File bundled = exe.getParentDirectory().getSiblingFile("Resources").getChildFile("shaderc.exe");
+            if (!bundled.existsAsFile())
+                bundled = exe.getSiblingFile("shaderc.exe");
+#else
             const juce::File bundled = exe.getParentDirectory().getSiblingFile("Resources").getChildFile("shaderc");
+#endif
             const char* env = std::getenv((std::string(product::kEnvPrefix) + "SHADERC").c_str());
             if (bundled.existsAsFile())
                 t.shaderc = bundled.getFullPathName().toStdString();

@@ -1140,7 +1140,7 @@ PROBE(plugin, chat)
         P.eq("view.gpu", has(panelAbout, "Drawn by the GPU as the user's screen draws it, shaders included")
                              && has(windowAbout, "Drawn by the GPU") ? 1 : 0, 1);
 #else
-        // A build with no GPU layer (Windows: FP_WITH_GPU off) draws with SoftRaster, and says so.
+        // A build without FunkGui's GPU layer (FP_WITH_GPU off) draws with SoftRaster, and says so.
         P.eq("view.gpu", has(panelAbout, "Drawn without the GPU (this build has no GPU)")
                              && has(windowAbout, "Drawn without the GPU (this build has no GPU)") ? 1 : 0, 1);
 #endif

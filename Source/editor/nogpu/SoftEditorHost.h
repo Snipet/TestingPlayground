@@ -1,4 +1,4 @@
-// Source/editor/nogpu/SoftEditorHost.h: the editor's host where FunkGui has no GPU layer (Windows, today): a
+// Source/editor/nogpu/SoftEditorHost.h: the editor's host in a build without FunkGui's GPU layer (FP_WITH_GPU off): a
 // juce::AudioProcessorEditor that runs the Panel as funkgui::EditorHost does (gpu/CreateEditorGpu.cpp) and draws its
 // frames on the CPU with FunkGui's SoftRaster, the rasteriser every probe PNG comes from, so the window shows exactly
 // what the probes' pictures show. CMakeLists.txt compiles Source/editor/nogpu/ in place of Source/editor/gpu/ when

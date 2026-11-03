@@ -27,9 +27,10 @@
 #   Tools/probes/installer/      the installer's probes                            -> Installer_probes, tests installer.*
 #
 # Windows (x64, clang-cl; the windows-* presets): the VST3, the Standalone, the MCP server and its extension, the GUI
-# sandbox's helper and the probes. FunkGui has no GPU layer there, so the editor runs on the CPU (Source/editor/nogpu/:
-# FunkGui's SoftRaster in a JUCE component); no AU, no installer, no signing. Platform files are named for it:
-# *Win.cpp and *None.cpp beside the macOS *.mm and IOKit sources (Source/plugin/standalone/).
+# sandbox's helper and the probes. The editor draws on the GPU there too (FunkGui v0.24.0: bgfx on Direct3D 11), or,
+# with FP_WITH_GPU off, on the CPU (Source/editor/nogpu/: FunkGui's SoftRaster in a JUCE component); no AU, no
+# signing. Platform files are named for it: *Win.cpp and *None.cpp beside the macOS *.mm and IOKit sources
+# (Source/plugin/standalone/).
 # Every list is a CONFIGURE_DEPENDS glob: a new source file needs no CMake edit. Nothing outside products/ (and the
 # docs) names a product: the C++ namespace is `playground` in both, and every product-specific value comes from the
 # product's file, through Product.h or the variables below.
@@ -88,12 +89,9 @@ elseif(WIN32)
 else()
   message(FATAL_ERROR "${PROJECT_NAME} builds on macOS (arm64) and Windows (x64).")
 endif()
-# FunkGui's GPU layer (bgfx: Metal on macOS) and the editor host on it; elsewhere the CPU host (Source/editor/nogpu/).
-if(APPLE)
-  set(FP_WITH_GPU ON)
-else()
-  set(FP_WITH_GPU OFF)
-endif()
+# FunkGui's GPU layer (bgfx: Metal on macOS, Direct3D 11 on Windows) and the editor host on it; OFF: the CPU host
+# (Source/editor/nogpu/: SoftRaster, custom shaders as placeholders), which needs neither bgfx nor shaderc.
+option(FP_WITH_GPU "FunkGui's GPU layer (bgfx) and FunkGui's EditorHost; OFF: the editor on the CPU" ON)
 # The user's home: the machine caches (~/audio/...) are found under it.
 if(DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
   file(TO_CMAKE_PATH "$ENV{HOME}" FP_HOME)
@@ -188,7 +186,7 @@ list(FILTER FP_PLUGIN_SOURCES EXCLUDE REGEX "/CreateEditor[^/]*\\.cpp$")
 set(FP_CREATE_EDITOR_GENERIC ${FP_SOURCE_ROOT}/plugin/CreateEditorGeneric.cpp)        # the probes' editor factory
 file(GLOB_RECURSE FP_EDITOR_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/editor/*.cpp)
 list(FILTER FP_EDITOR_SOURCES EXCLUDE REGEX "/Source/editor/(gpu|nogpu)/")
-# The editor's host: FunkGui's EditorHost on the GPU (gpu/), or, where FunkGui has no GPU layer, the CPU host
+# The editor's host: FunkGui's EditorHost on the GPU (gpu/), or, with FP_WITH_GPU off, the CPU host
 # (nogpu/: SoftEditorHost, its factory, and FP_NOGPU_SHARED: what FunkGui::gpu would define that the shared code
 # calls, which the probes and the sandbox's helper take too).
 set(FP_NOGPU_SHARED "")
@@ -580,6 +578,33 @@ namespace @FP_NAMESPACE@
     endif()
   endforeach()
   endif()   # APPLE: exports, shaderc, signatures
+
+  # Windows with the GPU layer: shaderc.exe, the pinned bgfx's, where the plugin looks for it (Processor.cpp's
+  # shaderTools): the VST3's Contents/Resources, beside its Contents/x86_64-win, as on macOS, and the Standalone's own
+  # folder, beside its .exe. Copied before the link, once it is built or found.
+  if(FP_WINDOWS AND FP_WITH_GPU)
+    if(FUNKGUI_SHADERC)
+      set(_fp_sc "${FUNKGUI_SHADERC}")
+    else()
+      set(_fp_sc "$<TARGET_FILE:shaderc>")
+    endif()
+    foreach(_fmt VST3 Standalone)
+      if(TARGET ${PRODUCT_NAME}_${_fmt})
+        if(_fmt STREQUAL "VST3")
+          set(_fp_sc_dir "$<TARGET_FILE_DIR:${PRODUCT_NAME}_${_fmt}>/../Resources")
+        else()
+          set(_fp_sc_dir "$<TARGET_FILE_DIR:${PRODUCT_NAME}_${_fmt}>")
+        endif()
+        if(NOT FUNKGUI_SHADERC)
+          add_dependencies(${PRODUCT_NAME}_${_fmt} shaderc)
+        endif()
+        add_custom_command(TARGET ${PRODUCT_NAME}_${_fmt} PRE_LINK
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${_fp_sc_dir}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_fp_sc}" "${_fp_sc_dir}/shaderc.exe"
+            VERBATIM)
+      endif()
+    endforeach()
+  endif()
 
   # ---- the MCP server (Source/mcp): Claude Desktop starts it; it reaches the plugin's instances (plugin/McpLink.h) --
   # <Name>MCP at the top of the build tree, and <Name>.mcpb beside it: a Claude Desktop extension (manifest.json, the

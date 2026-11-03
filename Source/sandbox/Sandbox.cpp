@@ -174,10 +174,32 @@ namespace playground::sandbox
         std::string findShaderc()
         {
 #if defined(_WIN32)
-            // Windows: no GPU renderer yet, so no plugin there bundles shaderc; <ENV_PREFIX>SHADERC alone.
+            // Windows: <ENV_PREFIX>SHADERC, beside this helper, else an installed plugin's shaderc.exe: the VST3's
+            // Contents/Resources (the user's or the system's VST3 folder), or beside the Standalone's .exe where the
+            // installer puts it (the user's or the system's programs, <Company>/<Name>/).
             const std::string var = std::string(product::kEnvPrefix) + "SHADERC";
             if (const char* e = std::getenv(var.c_str()); e != nullptr && *e != '\0' && juce::File(juce::String::fromUTF8(e)).existsAsFile())
                 return e;
+            const juce::String name = juce::String::fromUTF8(product::kName);
+            const juce::String company = juce::String::fromUTF8(product::kCompany);
+            const juce::File local = juce::File::getSpecialLocation(juce::File::windowsLocalAppData);
+            const juce::File programs = juce::File::getSpecialLocation(juce::File::globalApplicationsDirectory);
+            juce::File common = programs.getChildFile("Common Files");
+            if (const char* c = std::getenv("CommonProgramFiles"); c != nullptr && *c != '\0')
+                common = juce::File(juce::String::fromUTF8(c));
+            const auto inVst3 = [&](const juce::File& folder) {
+                return folder.getChildFile(name + ".vst3").getChildFile("Contents/Resources/shaderc.exe");
+            };
+            const juce::File places[] = {
+                juce::File::getSpecialLocation(juce::File::currentExecutableFile).getSiblingFile("shaderc.exe"),
+                inVst3(local.getChildFile("Programs/Common/VST3")),
+                inVst3(common.getChildFile("VST3")),
+                local.getChildFile("Programs").getChildFile(company).getChildFile(name).getChildFile("shaderc.exe"),
+                programs.getChildFile(company).getChildFile(name).getChildFile("shaderc.exe"),
+            };
+            for (const juce::File& f : places)
+                if (f.existsAsFile())
+                    return f.getFullPathName().toStdString();
             return {};
 #else
             const std::string var = std::string(product::kEnvPrefix) + "SHADERC";

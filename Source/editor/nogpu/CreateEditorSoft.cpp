@@ -1,6 +1,6 @@
-// Source/editor/nogpu/CreateEditorSoft.cpp: the plugin's editor factory where FunkGui has no GPU layer (Windows): the
-// Panel in a SoftEditorHost (SoftEditorHost.h), configured as Source/editor/gpu/CreateEditorGpu.cpp configures
-// FunkGui's EditorHost. CMakeLists.txt compiles one of the two.
+// Source/editor/nogpu/CreateEditorSoft.cpp: the plugin's editor factory in a build without FunkGui's GPU layer
+// (FP_WITH_GPU off): the Panel in a SoftEditorHost (SoftEditorHost.h), configured as
+// Source/editor/gpu/CreateEditorGpu.cpp configures FunkGui's EditorHost. CMakeLists.txt compiles one of the two.
 #include "editor/Panel.h"
 #include "editor/nogpu/SoftEditorHost.h"
 #include "plugin/Processor.h"

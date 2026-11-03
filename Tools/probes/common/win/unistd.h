@@ -1,8 +1,7 @@
-// Source/editor/nogpu/funkgui/posix/unistd.h: the few POSIX calls FunkGui's test harness (funkgui/test/Harness.h,
-// which includes <unistd.h>) and the probes make, over the Windows C runtime, which has no <unistd.h>. Windows only, and
-// only where something includes the harness: cmake/FunkGuiWindows.cmake puts this folder on the include path of each
-// FunkGui source that does (src/canvas/Fingerprint.cpp), and cmake/Probes.cmake on the probes'. Never on a plugin
-// target's whole path: a library that tests for <unistd.h> would take it for POSIX.
+// Tools/probes/common/win/unistd.h: the few POSIX calls the probes make (getpid, setenv, unsetenv), over the Windows
+// C runtime, which has no <unistd.h>. Windows only, on the probes' include path alone (cmake/Probes.cmake): never on a
+// plugin target's, where a library that tests for <unistd.h> would take it for POSIX. (FunkGui's harness needs none
+// since FunkGui v0.24.0.)
 #pragma once
 
 #include <direct.h>

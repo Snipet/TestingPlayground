@@ -26,12 +26,19 @@ set(FP_PROBE_ROOT ${PROJECT_SOURCE_DIR}/Tools/probes)
 file(GLOB_RECURSE FP_PROBE_SOURCES CONFIGURE_DEPENDS ${FP_PROBE_ROOT}/*.cpp)
 # Tools/probes/installer/ is the installer's (cmake/Installer.cmake: one executable, no product's): never a product's.
 list(FILTER FP_PROBE_SOURCES EXCLUDE REGEX "/Tools/probes/installer/")
-# Windows: the probes that need FunkGui's GPU
-# layer (its shaders and GPU pictures) are left out, and so are the ones that run the MCP server and the sandbox's
-# helper as POSIX child processes. FP_PROBES_SKIPPED names them (the summary prints it).
+# Windows: the probes that run the MCP server and the sandbox's helper as POSIX child processes are left out, and,
+# with FP_WITH_GPU off, the one that needs FunkGui's GPU layer (its shaders and GPU pictures). FP_PROBES_SKIPPED names
+# them (the summary prints it).
 set(FP_PROBES_SKIPPED "")
+set(_fp_skip "")
 if(FP_WINDOWS)
-  foreach(_p gui/shaders plugin/mcp plugin/sandbox)
+  list(APPEND _fp_skip plugin/mcp plugin/sandbox)
+endif()
+if(NOT FP_WITH_GPU)
+  list(APPEND _fp_skip gui/shaders)
+endif()
+if(_fp_skip)
+  foreach(_p IN LISTS _fp_skip)
     list(FIND FP_PROBE_SOURCES "${FP_PROBE_ROOT}/${_p}.cpp" _i)
     if(_i GREATER_EQUAL 0)
       list(REMOVE_AT FP_PROBE_SOURCES ${_i})
@@ -99,9 +106,9 @@ function(fp_add_probes key)
   fp_warn_sources(${_fp_probe_own})
   target_include_directories(${FP_PROBES} PRIVATE ${FP_SOURCE_ROOT} ${FP_GENERATED_DIR} ${FP_PROBE_ROOT}/common)
   if(FP_WINDOWS)
-    # <unistd.h>'s few calls over the C runtime: FunkGui's harness includes it, and Windows has none
-    # (cmake/FunkGuiWindows.cmake's FP_POSIX_SHIM_DIR).
-    target_include_directories(${FP_PROBES} PRIVATE ${FP_POSIX_SHIM_DIR})
+    # <unistd.h>'s few calls over the C runtime (Tools/probes/common/win/): a probe that calls getpid or setenv, as on
+    # macOS, includes it, and Windows has none.
+    target_include_directories(${FP_PROBES} PRIVATE ${FP_PROBE_ROOT}/common/win)
   endif()
   target_compile_definitions(${FP_PROBES} PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0
                                                  PROBE_DEFAULT_OUT_DIR="${CMAKE_BINARY_DIR}/probe-out/${key}")
