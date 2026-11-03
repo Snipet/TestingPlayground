@@ -718,11 +718,10 @@ foreach(_k IN LISTS _fp_products)
   fp_add_product(${_k})
 endforeach()
 
-# ---- the installer: one app for every product, the products inside it (cmake/Installer.cmake); macOS's alone --------
-if(APPLE)
-  include(Installer)
-  fp_add_installer()
-endif()
+# ---- the installer: one app for every product, the products inside it (cmake/Installer.cmake) -----------------------
+# macOS: "<Project> Installer.app" with its payload inside; Windows: "<Project> Installer.exe" with payload\ beside it.
+include(Installer)
+fp_add_installer()
 
 # ---- the lints, once for every product's bundles (cmake/Probes.cmake) -----------------------------------------------
 fp_add_lints()

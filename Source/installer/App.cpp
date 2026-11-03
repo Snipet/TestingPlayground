@@ -5,21 +5,39 @@
 // theme follows the system's appearance (GRAPHITE when dark, PAPER when light) and is kept in memory only: the
 // installer writes no preferences. The payload is this app's Contents/Resources/payload/ (Engine.h).
 //
-// The Panel reaches the system only through the Engine (MacSystem) and AppPort below: `open` for an app it installed,
-// `open -a Claude` for an extension, each only when its button is clicked. Quitting during a run waits for it: Stop
-// first (between steps), or the administrator's script to end.
+// On Windows the window is JUCE's with Windows' own title bar (no menu bar; the Panel's sidebar keeps no room for
+// buttons), its content the same EditorHost where FunkGui has its GPU layer, else editor/nogpu/SoftEditorHost (the
+// Panel drawn by SoftRaster); the payload is payload\ beside the installer's exe; and the Panel's actions open the
+// installed app's exe and the extension (its file type's app: Claude Desktop) through the shell.
+//
+// The Panel reaches the system only through the Engine (MacSystem, WinSystem) and AppPort below: `open` for an app it
+// installed, `open -a Claude` for an extension, each only when its button is clicked. Quitting during a run waits for
+// it: Stop first (between steps), or the administrator's script to end.
 #include "installer/Engine.h"
 #include "installer/Panel.h"
+#if JUCE_MAC
 #include "plugin/StandaloneMenu.h"
 #include "plugin/standalone/NativeWindow.h"
+#endif
 
 #include "Installer.h"
 
+#if defined(FUNKGUI_HAS_BGFX) && FUNKGUI_HAS_BGFX
 #include <funkgui/gpu/EditorHost.h>
+#else
+#include "editor/nogpu/SoftEditorHost.h"
+#endif
 #include <funkgui/prefs/UiPreferences.h>
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_basics/juce_gui_basics.h>
+
+#if JUCE_WINDOWS
+#include <windows.h>
+#include <shellapi.h>
+#undef near
+#undef far
+#endif
 
 #include <memory>
 #include <string>
@@ -29,8 +47,15 @@ namespace playground::installer
 {
     namespace
     {
+#if JUCE_MAC
         namespace native = standalone::native;
         using standalone::Command;
+#endif
+#if defined(FUNKGUI_HAS_BGFX) && FUNKGUI_HAS_BGFX
+        using Host = funkgui::EditorHost;
+#else
+        using Host = ui::SoftEditorHost;
+#endif
 
         // An AudioProcessor that processes nothing: EditorHost is an AudioProcessorEditor, which belongs to one.
         class NoProcessor final : public juce::AudioProcessor
@@ -64,11 +89,26 @@ namespace playground::installer
 
         fs::path payloadFolder()
         {
+#if JUCE_WINDOWS
+            const juce::File exe = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+            return fs::path(exe.getParentDirectory().getChildFile("payload").getFullPathName().toWideCharPointer());
+#else
             const juce::File app = juce::File::getSpecialLocation(juce::File::currentApplicationFile);
             return fs::path(app.getChildFile("Contents").getChildFile("Resources").getChildFile("payload")
                                 .getFullPathName().toStdString());
+#endif
         }
 
+#if JUCE_WINDOWS
+        // The shell's "open" (an exe started, a file opened by its type's app), as a double-click does.
+        bool shellOpen(const fs::path& what)
+        {
+            const HINSTANCE r = ShellExecuteW(nullptr, L"open", what.c_str(), nullptr, what.parent_path().c_str(), SW_SHOWNORMAL);
+            return reinterpret_cast<INT_PTR>(r) > 32;
+        }
+#endif
+
+#if JUCE_MAC
         std::vector<standalone::Menu> menus(const std::string& name)
         {
             const standalone::MenuItem line{};
@@ -89,6 +129,7 @@ namespace playground::installer
                     { Command::bringAllToFront, "Bring All to Front", {} } } },
             };
         }
+#endif
     }
 
     class Window;
@@ -100,13 +141,30 @@ namespace playground::installer
         void setWindow(Window* w) { window_ = w; }
 
         void quit() override;
+#if JUCE_WINDOWS
+        // The app's folder: its <Name>.exe started.
+        bool openApp(const fs::path& app) override
+        {
+            return shellOpen(app / (app.filename().wstring() + L".exe"));
+        }
+        fs::path claudeDesktop() const override
+        {
+            const fs::path p = Places::thisMachine().home / "AnthropicClaude" / "claude.exe";
+            std::error_code ec;
+            return fs::is_regular_file(p, ec) ? p : fs::path();
+        }
+        bool addToClaude(const fs::path& mcpb) override
+        {
+            return shellOpen(mcpb);                      // the .mcpb's own app: Claude Desktop, which asks to add it
+        }
+#else
         bool openApp(const fs::path& app) override
         {
             return runProgram({ "/usr/bin/open", app.string() }, nullptr, nullptr) == 0;
         }
         fs::path claudeDesktop() const override
         {
-            const fs::path home = Places::thisMac().home;
+            const fs::path home = Places::thisMachine().home;
             for (const fs::path& p : { fs::path("/Applications/Claude.app"), home / "Applications" / "Claude.app" })
             {
                 std::error_code ec;
@@ -119,6 +177,7 @@ namespace playground::installer
         {
             return runProgram({ "/usr/bin/open", "-a", "Claude", mcpb.string() }, nullptr, nullptr) == 0;
         }
+#endif
         Buttons windowButtons() const override;
         void placeWindowButtons(float x, float middle) override;
         void dragWindow(int clicks) override;
@@ -144,8 +203,12 @@ namespace playground::installer
             setUsingNativeTitleBar(true);
             auto panel = std::make_unique<Panel>(engine, port, info::kName);
             panel_ = panel.get();
+#if defined(FUNKGUI_HAS_BGFX) && FUNKGUI_HAS_BGFX
             funkgui::EditorConfig config;                // the Panel's own size; no zoom, nothing saved
-            editor_ = std::make_unique<funkgui::EditorHost>(processor, std::move(config), std::move(panel));
+#else
+            ui::SoftEditorConfig config;
+#endif
+            editor_ = std::make_unique<Host>(processor, std::move(config), std::move(panel));
             setContentNonOwned(editor_.get(), true);
             setResizable(false, false);
             centreWithSize(getWidth(), getHeight());
@@ -164,6 +227,7 @@ namespace playground::installer
             port_.quit();
         }
 
+#if JUCE_MAC
         // A new peer: macOS's window gets its look, and the buttons their place.
         void parentHierarchyChanged() override
         {
@@ -175,7 +239,7 @@ namespace playground::installer
             place();
         }
 
-        native::ButtonsSize buttons() const { return buttons_; }
+        AppPort::Buttons buttons() const { return { buttons_.width, buttons_.height }; }
 
         void placeButtons(float x, float middle)
         {
@@ -189,8 +253,15 @@ namespace playground::installer
             if (auto* peer = getPeer())
                 native::dragWindow(peer->getNativeHandle(), clicks);
         }
+#else
+        // Windows' own title bar holds the buttons and drags the window: nothing to place, nothing to drag.
+        AppPort::Buttons buttons() const { return {}; }
+        void placeButtons(float, float) {}
+        void drag(int) {}
+#endif
 
     private:
+#if JUCE_MAC
         void place()
         {
             auto* peer = getPeer();
@@ -199,13 +270,16 @@ namespace playground::installer
             const auto p = getLocalPoint(editor_.get(), at_);
             native::placeButtons(peer->getNativeHandle(), p.x, p.y);
         }
+#endif
 
         Port& port_;
         Panel* panel_ = nullptr;
-        std::unique_ptr<funkgui::EditorHost> editor_;
+        std::unique_ptr<Host> editor_;
+#if JUCE_MAC
         native::ButtonsSize buttons_;
         juce::Point<float> at_;
         bool placed_ = false;
+#endif
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(Window)
     };
@@ -214,8 +288,7 @@ namespace playground::installer
     {
         if (window_ == nullptr)
             return {};
-        const native::ButtonsSize b = window_->buttons();
-        return { b.width, b.height };
+        return window_->buttons();
     }
 
     void Port::placeWindowButtons(float x, float middle)
@@ -245,11 +318,13 @@ namespace playground::installer
             followAppearance();
             juce::Desktop::getInstance().addDarkModeSettingListener(this);
 
+#if JUCE_MAC
             // JUCE's own menu bar first, then ours over it (App.cpp of the Standalone says why).
             juce::MenuBarModel::setMacMainMenu(nullptr);
             native::installMenuBar(menus(info::kName), [this](Command c) { return run(c); });
+#endif
 
-            engine_ = std::make_unique<Engine>(Payload::read(payloadFolder()), Places::thisMac(info::kName), system_);
+            engine_ = std::make_unique<Engine>(Payload::read(payloadFolder()), Places::thisMachine(info::kName), system_);
             window_ = std::make_unique<Window>(processor_, *engine_, port_);
             port_.setWindow(window_.get());
             window_->setVisible(true);
@@ -297,6 +372,7 @@ namespace playground::installer
             funkgui::UiPreferences::get().setTheme(juce::Desktop::getInstance().isDarkModeActive() ? 0 : 1);
         }
 
+#if JUCE_MAC
         bool run(Command c)
         {
             if (c == Command::about)
@@ -308,9 +384,14 @@ namespace playground::installer
             }
             return true;
         }
+#endif
 
         NoProcessor processor_;
+#if JUCE_WINDOWS
+        WinSystem system_;
+#else
         MacSystem system_;
+#endif
         Port port_;
         std::unique_ptr<Engine> engine_;
         std::unique_ptr<Window> window_;

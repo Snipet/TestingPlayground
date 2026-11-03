@@ -18,6 +18,11 @@
 # all of them and the app are built; then the app is signed again, ad hoc, so its seal covers the payload (package.sh
 # --installer signs it with a Developer ID instead). Every build that builds the app builds its payload: the release
 # build's is what scripts/package.sh --installer ships (build-release/dist/<Installer>-<version>.dmg).
+#
+# Windows: "<project> Installer.exe" with its payload in payload\ beside it (each product's VST3 bundle, its
+# Standalone's folder <Name>\ (the exe, shaderc.exe and licences\: not the build's .pdb, .ilk, .exp or .lib) and its
+# .mcpb), copied after every part is built: the folder that holds the exe and payload\ is what ships. No AU, no
+# signing. The app and its probes run with UTF-8 as their code page (Source/installer/Utf8.manifest).
 include_guard(GLOBAL)
 
 function(fp_add_installer)
@@ -49,11 +54,20 @@ function(fp_add_installer)
     string(APPEND _products_json "    { \"key\": \"${_k}\", \"name\": \"${PRODUCT_NAME}\", \"kind\": \"${PRODUCT_KIND}\", "
                                  "\"company\": \"${PRODUCT_COMPANY}\", \"bundleId\": \"${PRODUCT_BUNDLE_ID}\", "
                                  "\"version\": \"${PRODUCT_VERSION}\" }")
-    foreach(_fmt AU VST3 Standalone)
-      list(APPEND _items "$<TARGET_BUNDLE_DIR:${PRODUCT_NAME}_${_fmt}>")
-      list(APPEND _item_targets ${PRODUCT_NAME}_${_fmt})
-    endforeach()
-    list(APPEND _items "${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb")
+    if(APPLE)
+      foreach(_fmt AU VST3 Standalone)
+        list(APPEND _items "$<TARGET_BUNDLE_DIR:${PRODUCT_NAME}_${_fmt}>")
+        list(APPEND _item_targets ${PRODUCT_NAME}_${_fmt})
+      endforeach()
+      list(APPEND _items "${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb")
+    else()
+      # Windows (InstallerPayload.cmake): dir: a bundle whole (the VST3: <Name>.vst3/Contents/x86_64-win/<Name>.vst3
+      # is its binary), app: the Standalone's folder as <Name>, file: the extension.
+      list(APPEND _items "dir:$<TARGET_FILE_DIR:${PRODUCT_NAME}_VST3>/../.."
+                         "app:${PRODUCT_NAME}=$<TARGET_FILE_DIR:${PRODUCT_NAME}_Standalone>"
+                         "file:${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb")
+      list(APPEND _item_targets ${PRODUCT_NAME}_VST3 ${PRODUCT_NAME}_Standalone)
+    endif()
     list(APPEND _mcpbs "${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb")
     list(APPEND _item_targets ${PRODUCT_NAME}MCP_mcpb)
   endforeach()
@@ -106,7 +120,13 @@ namespace @FP_NAMESPACE@::installer::info
 ]=])
 
   # ---- the app -----------------------------------------------------------------------------------------------------
+  # Each platform's own (Engine.h): macOS EngineMac.cpp and System.cpp, Windows EngineWin.cpp and SystemWin.cpp.
   file(GLOB _src CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/installer/*.cpp ${FP_SOURCE_ROOT}/installer/*.mm)
+  if(APPLE)
+    list(FILTER _src EXCLUDE REGEX "Win\\.cpp$")
+  else()
+    list(FILTER _src EXCLUDE REGEX "(\\.mm|/EngineMac\\.cpp|/System\\.cpp)$")
+  endif()
   set(_engine_src ${_src})
   list(FILTER _engine_src EXCLUDE REGEX "/App\\.(cpp|mm)$")      # the probes take everything but the app's main
   fp_warn_sources(${_src})
@@ -117,16 +137,30 @@ namespace @FP_NAMESPACE@::installer::info
       BUNDLE_ID      ${_bundle_id}
       COMPANY_NAME   "${_company}"
       ICON_BIG       ${_logo}/installer-1024.png)
-  get_target_property(_icns Installer JUCE_ICON_FILE)
-  configure_file(${_logo}/icon.icns ${_icns} COPYONLY)            # every size drawn for itself, as the products'
-  # The window: the Standalone's (Source/plugin/standalone/NativeWindow.mm: its transparent title bar over the content,
-  # the buttons kept where the Panel wants them), compiled here too; CMakeLists.txt gives it its warnings and ARC.
-  target_sources(Installer PRIVATE ${_src} ${FP_SOURCE_ROOT}/plugin/standalone/NativeWindow.mm)
+  target_sources(Installer PRIVATE ${_src})
+  if(APPLE)
+    get_target_property(_icns Installer JUCE_ICON_FILE)
+    configure_file(${_logo}/icon.icns ${_icns} COPYONLY)          # every size drawn for itself, as the products'
+    # The window: the Standalone's (Source/plugin/standalone/NativeWindow.mm: its transparent title bar over the
+    # content, the buttons kept where the Panel wants them), compiled here too; CMakeLists.txt gives it its warnings
+    # and ARC.
+    target_sources(Installer PRIVATE ${FP_SOURCE_ROOT}/plugin/standalone/NativeWindow.mm)
+    target_link_libraries(Installer PRIVATE "-framework Security" "-framework CoreFoundation")
+  else()
+    # Windows' own window and title bar (App.cpp); the Panel in EditorHost on FunkGui's GPU layer, else in the CPU host.
+    target_sources(Installer PRIVATE ${FP_SOURCE_ROOT}/installer/Utf8.manifest)
+    if(NOT FP_WITH_GPU)
+      target_sources(Installer PRIVATE ${FP_SOURCE_ROOT}/editor/nogpu/SoftEditorHost.cpp)
+    endif()
+    target_link_libraries(Installer PRIVATE ${FP_WINDOWS_LIBS} version)
+  endif()
   target_include_directories(Installer PRIVATE ${FP_SOURCE_ROOT} ${_gen})
   target_compile_definitions(Installer PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
-  target_link_libraries(Installer PRIVATE fp_flags juce::juce_gui_basics juce::juce_audio_processors FunkGui::core FunkGui::gpu
-                                          "-framework Security" "-framework CoreFoundation"
+  target_link_libraries(Installer PRIVATE fp_flags juce::juce_gui_basics juce::juce_audio_processors FunkGui::core
                                   PUBLIC juce::juce_recommended_config_flags)
+  if(FP_WITH_GPU)
+    target_link_libraries(Installer PRIVATE FunkGui::gpu)
+  endif()
   if(FP_LTO)
     target_link_libraries(Installer PUBLIC juce::juce_recommended_lto_flags)
   endif()
@@ -134,19 +168,35 @@ namespace @FP_NAMESPACE@::installer::info
                             PREFS_FOLDER "${FP_INSTALLER_NAME}")
   funkgui_compile_shaders(Installer)
   funkgui_add_font(Installer)
+  if(FP_WINDOWS AND NOT FP_WITH_GPU)
+    # Without FunkGui's GPU layer funkgui_add_font copies nothing: the bundled face's licence (OFL) beside the exe.
+    get_property(_fg_root GLOBAL PROPERTY FUNKGUI_SOURCE_DIR)
+    add_custom_command(TARGET Installer PRE_LINK
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Installer>/licences"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_fg_root}/fonts/JetBrainsMono-LICENSE.txt"
+                "$<TARGET_FILE_DIR:Installer>/licences"
+        VERBATIM)
+  endif()
 
   # ---- its payload: the products' bundles and extensions, then the app's signature over them -----------------------
   list(JOIN _items "|" _items_arg)
   set(_stamp ${CMAKE_BINARY_DIR}/installer/payload.stamp)
+  if(APPLE)
+    set(_where "-DAPP=$<TARGET_BUNDLE_DIR:Installer>")
+  else()
+    set(_where "-DPAYLOAD=$<TARGET_FILE_DIR:Installer>/payload")
+  endif()
   add_custom_command(OUTPUT ${_stamp}
-      COMMAND ${CMAKE_COMMAND} "-DAPP=$<TARGET_BUNDLE_DIR:Installer>" "-DMANIFEST=${_manifest}" "-DITEMS=${_items_arg}"
+      COMMAND ${CMAKE_COMMAND} "${_where}" "-DMANIFEST=${_manifest}" "-DITEMS=${_items_arg}"
               -P ${PROJECT_SOURCE_DIR}/cmake/InstallerPayload.cmake
       COMMAND ${CMAKE_COMMAND} -E touch ${_stamp}
       DEPENDS Installer ${_item_targets} ${_mcpbs} ${_manifest} ${PROJECT_SOURCE_DIR}/cmake/InstallerPayload.cmake
       COMMENT "The installer's payload: ${_names}"
       VERBATIM)
   add_custom_target(installer_payload ALL DEPENDS ${_stamp})
-  set_property(GLOBAL APPEND PROPERTY FP_SIGNED_BUNDLES "$<TARGET_BUNDLE_DIR:Installer>")
+  if(APPLE)
+    set_property(GLOBAL APPEND PROPERTY FP_SIGNED_BUNDLES "$<TARGET_BUNDLE_DIR:Installer>")
+  endif()
 
   # ---- the probes: Tools/probes/installer/, one executable, each test once ------------------------------------------
   file(GLOB _probe_src CONFIGURE_DEPENDS ${FP_PROBE_ROOT}/installer/*.cpp)
@@ -159,21 +209,33 @@ namespace @FP_NAMESPACE@::installer::info
   target_compile_definitions(${_probes} PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
                                                 PROBE_DEFAULT_OUT_DIR="${CMAKE_BINARY_DIR}/probe-out/installer")
   target_link_libraries(${_probes} PRIVATE fp_flags juce::juce_gui_basics FunkGui::core FunkGui::harness
-                                           "-framework Security" "-framework CoreFoundation"
                                    PUBLIC juce::juce_recommended_config_flags)
+  if(APPLE)
+    target_link_libraries(${_probes} PRIVATE "-framework Security" "-framework CoreFoundation")
+  else()
+    target_sources(${_probes} PRIVATE ${FP_SOURCE_ROOT}/installer/Utf8.manifest)
+    target_link_libraries(${_probes} PRIVATE ${FP_WINDOWS_LIBS} version dbghelp)   # dbghelp: ProbeMain's crash report
+    if(DEFINED FP_POSIX_SHIM_DIR)
+      target_include_directories(${_probes} PRIVATE ${FP_POSIX_SHIM_DIR})       # <unistd.h> for FunkGui's harness
+    endif()
+  endif()
   funkgui_configure_product(${_probes} PRODUCT "${FP_INSTALLER_NAME}" OBJC_PREFIX ${_objc}Probes ENV_PREFIX ${_env}
                             PREFS_FOLDER "${FP_INSTALLER_NAME}")
   set_target_properties(${_probes} PROPERTIES EXCLUDE_FROM_ALL TRUE RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
   add_dependencies(probes ${_probes})
+  if(NOT DEFINED FP_PROBE_TIMEOUT_SCALE)
+    set(FP_PROBE_TIMEOUT_SCALE 1)
+  endif()
   foreach(_name IN LISTS _probe_names)
     add_test(NAME ${_name}
              COMMAND $<TARGET_FILE:${_probes}> ${_name}
-                     --golden-root ${PROJECT_SOURCE_DIR}/tests/golden --arch arm64
+                     --golden-root ${PROJECT_SOURCE_DIR}/tests/golden --arch ${FP_ARCH}
                      --bless-to ${CMAKE_BINARY_DIR}/golden-candidates/installer
                      --results ${CMAKE_BINARY_DIR}/probe-results/installer)
+    math(EXPR _timeout "${FP_PROBE_TIMEOUT_${_name}} * ${FP_PROBE_TIMEOUT_SCALE}")
     set_tests_properties(${_name} PROPERTIES
         LABELS "probe;installer"
-        TIMEOUT ${FP_PROBE_TIMEOUT_${_name}}
+        TIMEOUT ${_timeout}
         ENVIRONMENT "PROBE_OUT_DIR=${CMAKE_BINARY_DIR}/probe-out/installer;${_env}PREFS_DIR=${CMAKE_BINARY_DIR}/sandbox/installer/${_name}")
   endforeach()
 

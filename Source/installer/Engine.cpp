@@ -1,136 +1,35 @@
-// Source/installer/Engine.cpp: see Engine.h.
+// Source/installer/Engine.cpp: see Engine.h. What is the same on both platforms (the payload, the plan, the runs, the
+// notes); each platform's own ways are EnginePlatform.h's functions and the members EngineMac.cpp and EngineWin.cpp
+// define (the places, the folders, versions, and "All users").
 #include "installer/Engine.h"
+#include "installer/EnginePlatform.h"
 
 #include <juce_core/juce_core.h>
 
-#include <CoreFoundation/CoreFoundation.h>
-#include <Security/Security.h>
-
 #include <algorithm>
-#include <cerrno>
-#include <chrono>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <ctime>
 #include <fstream>
 #include <iterator>
-#include <mutex>
-#include <set>
+#include <memory>
 #include <sstream>
-#include <thread>
-
-#include <pwd.h>
-#include <stdio.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 namespace playground::installer
 {
+    namespace pf = platform;
+
     namespace
     {
-        bool lstatOf(const fs::path& p, struct stat& st)
+        // A path as JUCE takes it.
+        juce::File juceFileOf(const fs::path& p)
         {
-            return ::lstat(p.c_str(), &st) == 0;
-        }
-
-        bool isLink(const fs::path& p)
-        {
-            struct stat st{};
-            return lstatOf(p, st) && S_ISLNK(st.st_mode);
-        }
-
-        bool writable(const fs::path& p)
-        {
-            return ::access(p.c_str(), W_OK) == 0;
-        }
-
-        std::string linkTarget(const fs::path& p)
-        {
-            std::error_code ec;
-            const fs::path t = fs::read_symlink(p, ec);
-            return ec ? std::string("somewhere it cannot read") : t.string();
-        }
-
-        std::string ownerOf(const struct stat& st)
-        {
-            if (const passwd* pw = ::getpwuid(st.st_uid); pw != nullptr && pw->pw_name != nullptr)
-                return pw->pw_name;
-            return "user " + std::to_string(st.st_uid);
-        }
-
-        std::string trimmed(std::string s)
-        {
-            while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' '))
-                s.pop_back();
-            std::size_t a = 0;
-            while (a < s.size() && (s[a] == '\n' || s[a] == ' '))
-                ++a;
-            return s.substr(a);
-        }
-
-        // A name the payload gives that becomes part of a path: one plain component, never "..", no slash.
-        bool plainName(const std::string& s)
-        {
-            if (s.empty() || s == "." || s == ".." || s.size() > 128)
-                return false;
-            return std::all_of(s.begin(), s.end(), [](char c) {
-                const auto u = static_cast<unsigned char>(c);
-                return std::isalnum(u) != 0 || c == ' ' || c == '-' || c == '_' || c == '.';
-            });
-        }
-
-        std::string fileText(const fs::path& p)
-        {
-            std::ifstream in(p, std::ios::binary);
-            return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-        }
-
-        std::string cfString(CFStringRef s)
-        {
-            if (s == nullptr)
-                return {};
-            char buf[256];
-            if (CFStringGetCString(s, buf, sizeof buf, kCFStringEncodingUTF8))
-                return buf;
-            return {};
-        }
-
-        // The CDHash of a signed bundle or binary (its code directory's hash: the main executable's code and, through
-        // the resource seal's hash, every sealed file), in hex; "" when it has no signature.
-        std::string cdhash(const fs::path& p)
-        {
-            const std::string s = p.string();
-            CFURLRef url = CFURLCreateFromFileSystemRepresentation(nullptr, reinterpret_cast<const UInt8*>(s.data()),
-                                                                   static_cast<CFIndex>(s.size()), fs::is_directory(p));
-            if (url == nullptr)
-                return {};
-            std::string out;
-            SecStaticCodeRef code = nullptr;
-            if (SecStaticCodeCreateWithPath(url, kSecCSDefaultFlags, &code) == errSecSuccess && code != nullptr)
-            {
-                CFDictionaryRef info = nullptr;
-                if (SecCodeCopySigningInformation(code, kSecCSDefaultFlags, &info) == errSecSuccess && info != nullptr)
-                {
-                    const void* v = CFDictionaryGetValue(info, kSecCodeInfoUnique);
-                    if (v != nullptr && CFGetTypeID(v) == CFDataGetTypeID())
-                    {
-                        const auto data = static_cast<CFDataRef>(v);
-                        const UInt8* bytes = CFDataGetBytePtr(data);
-                        const CFIndex n = CFDataGetLength(data);
-                        char hex[3];
-                        for (CFIndex i = 0; i < n; ++i)
-                        {
-                            std::snprintf(hex, sizeof hex, "%02x", static_cast<unsigned>(bytes[i]));
-                            out += hex;
-                        }
-                    }
-                    CFRelease(info);
-                }
-                CFRelease(code);
-            }
-            CFRelease(url);
-            return out;
+#if defined(_WIN32)
+            return juce::File(juce::String(p.wstring().c_str()));
+#else
+            return juce::File(juce::String::fromUTF8(p.c_str()));
+#endif
         }
 
         bool sameFile(const fs::path& a, const fs::path& b)
@@ -159,42 +58,14 @@ namespace playground::installer
             for (fs::recursive_directory_iterator it(dir, fs::directory_options::none, ec), end; !ec && it != end;
                  it.increment(ec))
             {
-                const fs::file_status st = it->symlink_status(ec);
-                const char kind = fs::is_symlink(st) ? 'l' : fs::is_directory(st) ? 'd' : 'f';
+                const pf::Node n = pf::nodeOf(it->path());
+                const char kind = n.link ? 'l' : n.dir ? 'd' : 'f';
+                if (n.link)
+                    it.disable_recursion_pending();      // a junction too: listed, not looked into
                 out.emplace_back(fs::relative(it->path(), dir, ec).string(), kind);
             }
             std::sort(out.begin(), out.end());
             return out;
-        }
-
-        std::string now()
-        {
-            const std::time_t t = std::time(nullptr);
-            std::tm tm{};
-            ::localtime_r(&t, &tm);
-            char b[32];
-            std::strftime(b, sizeof b, "%Y-%m-%d %H:%M:%S", &tm);
-            return b;
-        }
-
-        // The known hosts, by their app bundle's name (its start): a running one is told to restart.
-        constexpr const char* kHosts[] = {
-            "Logic Pro", "MainStage", "GarageBand", "Ableton Live", "Live", "REAPER", "Bitwig Studio", "Cubase", "Nuendo",
-            "Studio One", "FL Studio", "Reason", "Digital Performer", "Ardour", "Waveform", "Renoise", "Mixbus",
-            "Audacity", "Final Cut Pro", "AudioPluginHost", "Audio Plugin Host", "Luna", "Tracktion",
-        };
-
-        bool isHost(const std::string& bundleName)
-        {
-            for (const char* h : kHosts)
-            {
-                const std::string_view host(h);
-                if (bundleName.size() >= host.size() && bundleName.compare(0, host.size(), host) == 0
-                    && (bundleName.size() == host.size() || bundleName[host.size()] == ' '
-                        || bundleName[host.size()] == '.'))
-                    return true;
-            }
-            return false;
         }
 
         std::string joined(const std::vector<std::string>& v)
@@ -213,21 +84,50 @@ namespace playground::installer
         {
             return item.stem().string();
         }
+    }
 
-        const char* actionWords(Action a)
+    // ---- shared helpers (EnginePlatform.h) ---------------------------------------------------------------------------
+
+    std::string pf::trimmed(std::string s)
+    {
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' '))
+            s.pop_back();
+        std::size_t a = 0;
+        while (a < s.size() && (s[a] == '\n' || s[a] == ' '))
+            ++a;
+        return s.substr(a);
+    }
+
+    // A name the payload gives that becomes part of a path: one plain component, never "..", no slash.
+    bool pf::plainName(const std::string& s)
+    {
+        if (s.empty() || s == "." || s == ".." || s.size() > 128)
+            return false;
+        return std::all_of(s.begin(), s.end(), [](char c) {
+            const auto u = static_cast<unsigned char>(c);
+            return std::isalnum(u) != 0 || c == ' ' || c == '-' || c == '_' || c == '.';
+        });
+    }
+
+    std::string pf::fileText(const fs::path& p)
+    {
+        std::ifstream in(p, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+
+    const char* pf::actionWords(Action a)
+    {
+        switch (a)
         {
-            switch (a)
-            {
-                case Action::install:   return "install";
-                case Action::upgrade:   return "upgrade";
-                case Action::downgrade: return "downgrade";
-                case Action::rebuild:   return "replace (another build)";
-                case Action::replace:   return "replace";
-                case Action::same:      return "already installed";
-                case Action::blocked:   return "blocked";
-            }
-            return "";
+            case Action::install:   return "install";
+            case Action::upgrade:   return "upgrade";
+            case Action::downgrade: return "downgrade";
+            case Action::rebuild:   return "replace (another build)";
+            case Action::replace:   return "replace";
+            case Action::same:      return "already installed";
+            case Action::blocked:   return "blocked";
         }
+        return "";
     }
 
     // ---- names -------------------------------------------------------------------------------------------------------
@@ -250,10 +150,23 @@ namespace playground::installer
         {
             case Part::au:        return ".component";
             case Part::vst3:      return ".vst3";
+#if defined(_WIN32)
+            case Part::app:       return "";             // the Standalone's folder: <Name>\<Name>.exe and its licences
+#else
             case Part::app:       return ".app";
+#endif
             case Part::extension: return ".mcpb";
         }
         return "";
+    }
+
+    const char* trashWords()
+    {
+#if defined(_WIN32)
+        return "the Recycle Bin";
+#else
+        return "the Trash";
+#endif
     }
 
     std::string shellQuote(const std::string& s)
@@ -269,27 +182,30 @@ namespace playground::installer
         return q + "'";
     }
 
+    std::string psQuote(const std::string& s)
+    {
+        // PowerShell ends a single-quoted string at ' and at its typographic kin (U+2018, U+2019, U+201A, U+201B), each
+        // written twice to stand for itself.
+        std::string q = "'";
+        for (std::size_t i = 0; i < s.size(); ++i)
+        {
+            const auto c = static_cast<unsigned char>(s[i]);
+            if (c == '\'')
+                q += "''";
+            else if (c == 0xE2 && i + 2 < s.size() && static_cast<unsigned char>(s[i + 1]) == 0x80
+                     && static_cast<unsigned char>(s[i + 2]) >= 0x98 && static_cast<unsigned char>(s[i + 2]) <= 0x9B)
+            {
+                q += s.substr(i, 3);
+                q += s.substr(i, 3);
+                i += 2;
+            }
+            else
+                q += s[i];
+        }
+        return q + "'";
+    }
+
     // ---- places ------------------------------------------------------------------------------------------------------
-
-    Places Places::thisMac()
-    {
-        Places p;
-        if (const char* home = std::getenv("HOME"); home != nullptr && *home == '/')
-            p.home = home;
-        else if (const passwd* pw = ::getpwuid(::getuid()); pw != nullptr && pw->pw_dir != nullptr)
-            p.home = pw->pw_dir;
-        p.root = "/";
-        p.scratch = "/private/tmp";
-        return p;
-    }
-
-    Places Places::thisMac(const std::string& logName)
-    {
-        Places p = thisMac();
-        if (!p.home.empty() && plainName(logName))
-            p.log = p.home / "Library" / "Logs" / (logName + ".log");
-        return p;
-    }
 
     Places Places::under(const fs::path& testRoot)
     {
@@ -315,7 +231,7 @@ namespace playground::installer
             p.error = "This installer holds nothing to install: its payload (" + manifest.string() + ") is missing.";
             return p;
         }
-        const juce::var v = juce::JSON::parse(juce::String::fromUTF8(fileText(manifest).c_str()));
+        const juce::var v = juce::JSON::parse(juce::String::fromUTF8(pf::fileText(manifest).c_str()));
         const juce::var list = v.getProperty("products", {});
         p.project = v.getProperty("project", {}).toString().toStdString();
         if (!list.isArray() || list.size() == 0)
@@ -332,19 +248,20 @@ namespace playground::installer
             pr.kind = o.getProperty("kind", {}).toString().toStdString();
             pr.company = o.getProperty("company", {}).toString().toStdString();
             pr.bundleId = o.getProperty("bundleId", {}).toString().toStdString();
-            if (!plainName(pr.key) || !plainName(pr.name) || !plainName(pr.company))
+            if (!pf::plainName(pr.key) || !pf::plainName(pr.name) || !pf::plainName(pr.company))
             {
                 p.error = "This installer's payload names a product it cannot use (" + manifest.string() + ").";
                 p.products.clear();
                 return p;
             }
-            for (const Part part : kParts)
+            for (const Part part : kAllParts)
             {
                 Offer off;
                 off.part = part;
                 off.source = folder / (pr.name + partExtension(part));
-                struct stat st{};
-                off.present = lstatOf(off.source, st) && (part == Part::extension ? S_ISREG(st.st_mode) : S_ISDIR(st.st_mode));
+                const pf::Node n = pf::nodeOf(off.source);
+                off.present = (part == Part::extension ? n.file : n.dir)
+                              && std::find(std::begin(kParts), std::end(kParts), part) != std::end(kParts);
                 if (off.present)
                     off.version = part == Part::extension ? Engine::extensionVersion(off.source) : Engine::bundleVersion(off.source);
                 pr.offers.push_back(std::move(off));
@@ -412,41 +329,9 @@ namespace playground::installer
         return 0;
     }
 
-    std::string Engine::bundleVersion(const fs::path& bundle)
-    {
-        const std::string text = fileText(bundle / "Contents" / "Info.plist");
-        if (text.empty())
-            return {};
-        CFDataRef data = CFDataCreate(nullptr, reinterpret_cast<const UInt8*>(text.data()), static_cast<CFIndex>(text.size()));
-        if (data == nullptr)
-            return {};
-        std::string version;
-        CFPropertyListRef plist = CFPropertyListCreateWithData(nullptr, data, kCFPropertyListImmutable, nullptr, nullptr);
-        if (plist != nullptr)
-        {
-            if (CFGetTypeID(plist) == CFDictionaryGetTypeID())
-            {
-                const auto dict = static_cast<CFDictionaryRef>(plist);
-                for (CFStringRef key : { CFSTR("CFBundleShortVersionString"), CFSTR("CFBundleVersion") })
-                {
-                    const void* v = CFDictionaryGetValue(dict, key);
-                    if (v != nullptr && CFGetTypeID(v) == CFStringGetTypeID())
-                    {
-                        version = cfString(static_cast<CFStringRef>(v));
-                        if (!version.empty())
-                            break;
-                    }
-                }
-            }
-            CFRelease(plist);
-        }
-        CFRelease(data);
-        return version;
-    }
-
     std::string Engine::extensionVersion(const fs::path& mcpb)
     {
-        juce::ZipFile zip(juce::File(juce::String::fromUTF8(mcpb.c_str())));
+        juce::ZipFile zip(juceFileOf(mcpb));
         const int index = zip.getIndexOfFileName("manifest.json");
         if (index < 0)
             return {};
@@ -459,14 +344,14 @@ namespace playground::installer
 
     bool Engine::sameContents(const fs::path& a, const fs::path& b)
     {
-        struct stat sa{}, sb{};
-        if (!lstatOf(a, sa) || !lstatOf(b, sb) || S_ISLNK(sa.st_mode) || S_ISLNK(sb.st_mode))
+        const pf::Node na = pf::nodeOf(a), nb = pf::nodeOf(b);
+        if (!na.exists || !nb.exists || na.link || nb.link)
             return false;
-        if (S_ISREG(sa.st_mode) && S_ISREG(sb.st_mode))
+        if (na.file && nb.file)
             return sameFile(a, b);
-        if (!S_ISDIR(sa.st_mode) || !S_ISDIR(sb.st_mode))
+        if (!na.dir || !nb.dir)
             return false;
-        if (const std::string ha = cdhash(a), hb = cdhash(b); !ha.empty() && !hb.empty())
+        if (const std::string ha = pf::cdhash(a), hb = pf::cdhash(b); !ha.empty() && !hb.empty())
             return ha == hb;
         const auto la = listing(a), lb = listing(b);
         if (la != lb)
@@ -504,44 +389,6 @@ namespace playground::installer
         return product.name + partExtension(part);
     }
 
-    fs::path Engine::folder(const Product& product, Part part, Scope scope) const
-    {
-        const fs::path& base = scope == Scope::user ? places_.home : places_.root;
-        switch (part)
-        {
-            case Part::au:   return base / "Library" / "Audio" / "Plug-Ins" / "Components";
-            case Part::vst3: return base / "Library" / "Audio" / "Plug-Ins" / "VST3";
-            case Part::app:
-                if (scope == Scope::system || writable(places_.root / "Applications"))
-                    return places_.root / "Applications";
-                return places_.home / "Applications";
-            case Part::extension: return base / "Library" / "Application Support" / product.company / product.name;
-        }
-        return base;
-    }
-
-    std::vector<std::pair<fs::path, Scope>> Engine::knownFolders(const Product& product, Part part) const
-    {
-        if (part == Part::app)
-            return { { places_.home / "Applications", Scope::user }, { places_.root / "Applications", Scope::system } };
-        return { { folder(product, part, Scope::user), Scope::user }, { folder(product, part, Scope::system), Scope::system } };
-    }
-
-    std::string Engine::shown(const fs::path& p) const
-    {
-        const fs::path n = p.lexically_normal();
-        const auto below = [&](const fs::path& base, fs::path& rel) {
-            rel = n.lexically_relative(base.lexically_normal());
-            return !rel.empty() && *rel.begin() != "..";
-        };
-        fs::path rel;
-        if (!places_.home.empty() && below(places_.home, rel))
-            return rel == "." ? std::string("~") : "~/" + rel.string();
-        if (!places_.root.empty() && places_.root != "/" && below(places_.root, rel))
-            return rel == "." ? std::string("/") : "/" + rel.string();
-        return n.string();
-    }
-
     std::string Engine::unsafe(const fs::path& folder) const
     {
         const fs::path n = folder.lexically_normal();
@@ -570,17 +417,17 @@ namespace playground::installer
                 return shown(folder) + " is outside the folders this installer writes to";
             real /= part;
             said /= part;
-            struct stat st{};
-            if (!lstatOf(real, st))
+            const pf::Node node = pf::nodeOf(real);
+            if (!node.exists)
             {
-                if (errno == ENOENT)
+                if (node.missing)
                     return {};                           // the rest is made when it is installed
-                return "it cannot look into " + shown(said) + " (" + std::strerror(errno) + ")";
+                return "it cannot look into " + shown(said) + " (" + pf::errorText(node.error) + ")";
             }
-            if (S_ISLNK(st.st_mode))
-                return shown(said) + " is a link to " + linkTarget(real)
+            if (node.link)
+                return shown(said) + " is a link to " + pf::linkTarget(real)
                        + ": this installer writes only into real folders, and left it as it is";
-            if (!S_ISDIR(st.st_mode))
+            if (!node.dir)
                 return shown(said) + " is a file where a folder should be";
         }
         return {};
@@ -588,12 +435,7 @@ namespace playground::installer
 
     bool Engine::mayMove(const fs::path& path) const
     {
-        struct stat st{};
-        if (!lstatOf(path, st))
-            return false;
-        if (!writable(path.parent_path()))
-            return false;
-        return !S_ISDIR(st.st_mode) || (st.st_uid == ::getuid() && writable(path));
+        return pf::mayMove(path);
     }
 
     std::vector<Copy> Engine::installed(const Product& product, Part part) const
@@ -604,16 +446,16 @@ namespace playground::installer
             if (!unsafe(dir).empty())
                 continue;                                // a linked folder is never looked into
             const fs::path p = dir / itemName(product, part);
-            struct stat st{};
-            if (!lstatOf(p, st))
+            const pf::Node node = pf::nodeOf(p);
+            if (!node.exists)
                 continue;
             Copy c;
             c.key = product.key;
             c.part = part;
             c.scope = scope;
             c.path = p;
-            c.link = S_ISLNK(st.st_mode);
-            c.mine = st.st_uid == ::getuid();
+            c.link = node.link;
+            c.mine = node.mine;
             if (!c.link)
                 c.version = part == Part::extension ? extensionVersion(p) : bundleVersion(p);
             c.trashable = !c.link && mayMove(p);
@@ -651,7 +493,7 @@ namespace playground::installer
                 s.to = o.version;
                 s.folder = folder(pr, part, scope);
                 s.target = s.folder / itemName(pr, part);
-                struct stat st{};
+                const pf::Node target = pf::nodeOf(s.target);
                 if (!o.present)
                 {
                     s.action = Action::blocked;
@@ -662,31 +504,31 @@ namespace playground::installer
                     s.action = Action::blocked;
                     s.why = why;
                 }
-                else if (scope == Scope::user && ::access(s.folder.c_str(), F_OK) == 0 && !writable(s.folder))
+                else if (scope == Scope::user && pf::nodeOf(s.folder).exists && !pf::writable(s.folder))
                 {
                     s.action = Action::blocked;
                     s.why = shown(s.folder) + " may not be written to (its permissions): choose All users, or change them";
                 }
-                else if (lstatOf(s.target, st))
+                else if (target.exists)
                 {
-                    const bool kindOk = part == Part::extension ? S_ISREG(st.st_mode) : S_ISDIR(st.st_mode);
-                    if (S_ISLNK(st.st_mode))
+                    const bool kindOk = part == Part::extension ? target.file : target.dir;
+                    if (target.link)
                     {
                         s.action = Action::blocked;
-                        s.why = shown(s.target) + " is a link to " + linkTarget(s.target) + ": left as it is";
+                        s.why = shown(s.target) + " is a link to " + pf::linkTarget(s.target) + ": left as it is";
                     }
                     else if (!kindOk)
                     {
                         s.action = Action::blocked;
-                        s.why = shown(s.target) + " is not " + (part == Part::extension ? "a file" : "a bundle")
+                        s.why = shown(s.target) + " is not " + (part == Part::extension ? "a file" : pf::kFolderKind)
                                 + ": left as it is";
                     }
                     else if (scope == Scope::user && !mayMove(s.target))
                     {
                         s.action = Action::blocked;
                         s.from = part == Part::extension ? extensionVersion(s.target) : bundleVersion(s.target);
-                        s.why = st.st_uid != ::getuid()
-                                    ? shown(s.target) + " belongs to " + ownerOf(st)
+                        s.why = !target.mine
+                                    ? shown(s.target) + " belongs to " + target.owner
                                           + " (installed for all users): choose All users to replace it"
                                     : shown(s.target) + " may not be moved (its permissions): choose All users, or change them";
                     }
@@ -750,9 +592,9 @@ namespace playground::installer
         const std::vector<fs::path> running = system_.runningApps();
         for (const std::string& app : apps)
             for (const fs::path& a : running)
-                if (a.filename() == app + ".app")
+                if (pf::sameName(a.filename(), pf::appFile(app)))
                 {
-                    notes.push_back(app + (removing ? " is open: it runs until you quit it, from the Trash."
+                    notes.push_back(app + (removing ? pf::kOpenWhileRemoved
                                                     : " is open: quit it first, or it plays the old version until it "
                                                       "opens again."));
                     break;
@@ -760,8 +602,8 @@ namespace playground::installer
         std::vector<std::string> hosts;
         for (const fs::path& a : running)
         {
-            const std::string name = a.stem().string();
-            if (isHost(name) && std::find(hosts.begin(), hosts.end(), name) == hosts.end())
+            const std::string name = pf::hostName(a);
+            if (!name.empty() && std::find(hosts.begin(), hosts.end(), name) == hosts.end())
                 hosts.push_back(name);
         }
         if (plugins && !hosts.empty())
@@ -789,17 +631,12 @@ namespace playground::installer
 
     // ---- the trash and the log ---------------------------------------------------------------------------------------
 
-    fs::path Engine::trashFolder() const
-    {
-        return places_.trash.empty() ? places_.home / ".Trash" : places_.trash;
-    }
-
     fs::path Engine::trashName(const fs::path& item) const
     {
-        const fs::path dir = trashFolder();
+        const fs::path dir = places_.trash;
         const std::string stem = stemOf(item), ext = item.extension().string();
         fs::path p = dir / item.filename();
-        for (int n = 2; ::access(p.c_str(), F_OK) == 0 || isLink(p); ++n)
+        for (int n = 2; pf::nodeOf(p).exists; ++n)
             p = dir / (stem + " " + std::to_string(n) + ext);
         return p;
     }
@@ -808,15 +645,16 @@ namespace playground::installer
     {
         if (places_.trash.empty())
         {
-            where = "the Trash";
+            where = trashWords();
             return system_.moveToTrash(path, error);
         }
         std::error_code ec;
         fs::create_directories(places_.trash, ec);
         const fs::path dest = trashName(path);
-        if (::rename(path.c_str(), dest.c_str()) != 0)
+        int err = 0;
+        if (!pf::renameItem(path, dest, err))
         {
-            error = std::strerror(errno);
+            error = pf::errorText(err);
             return false;
         }
         where = shown(dest);
@@ -831,15 +669,16 @@ namespace playground::installer
         std::error_code ec;
         fs::create_directories(places_.log.parent_path(), ec);
         std::ofstream out(places_.log, std::ios::app);
-        out << now() << "  " << line << "\n";
+        out << pf::now() << "  " << line << "\n";
     }
 
     // ---- installing --------------------------------------------------------------------------------------------------
 
     std::string Engine::sweep(const fs::path& folder, const std::string& name)
     {
-        // A staging folder is .installing-XXXXXX (mkdtemp's six); it is an earlier run's only when it holds nothing but
-        // this part (the copy being made) and `old` (the copy it replaced), neither a link, and it is this user's.
+        // A staging folder is .installing-XXXXXX (six letters and digits); it is an earlier run's only when it holds
+        // nothing but this part (the copy being made) and `old` (the copy it replaced), neither a link, and it is this
+        // user's.
         constexpr std::size_t kStageName = std::char_traits<char>::length(".installing-XXXXXX");
         std::vector<std::pair<fs::path, std::vector<fs::path>>> stale;
         std::error_code ec;
@@ -847,9 +686,10 @@ namespace playground::installer
         {
             const fs::path stage = it->path();
             const std::string n = stage.filename().string();
-            struct stat st{};
-            if (n.size() != kStageName || n.rfind(".installing-", 0) != 0 || !lstatOf(stage, st) || !S_ISDIR(st.st_mode)
-                || st.st_uid != ::getuid())
+            if (n.size() != kStageName || n.rfind(".installing-", 0) != 0)
+                continue;
+            const pf::Node node = pf::nodeOf(stage);
+            if (!node.dir || !node.mine)
                 continue;
             std::vector<fs::path> inside;
             bool ours = true;
@@ -857,7 +697,7 @@ namespace playground::installer
             for (fs::directory_iterator jt(stage, ei), jend; !ei && jt != jend; jt.increment(ei))
             {
                 const std::string e = jt->path().filename().string();
-                ours = ours && (e == name || e == "old") && !isLink(jt->path());
+                ours = ours && (e == name || e == "old") && !pf::nodeOf(jt->path()).link;
                 inside.push_back(jt->path());
             }
             if (ours && !ei)
@@ -872,18 +712,19 @@ namespace playground::installer
                 {
                     // Named as what it is, in the Trash: "<name> (old)".
                     const fs::path named = stage / (fs::path(name).stem().string() + " (old)" + fs::path(name).extension().string());
-                    if (::renamex_np(item.c_str(), named.c_str(), RENAME_EXCL) == 0)
+                    int err = 0;
+                    if (pf::renameNew(item, named, err))
                         item = named;
                 }
                 std::string where, error;
                 moved += trash(item, where, error) ? 1 : 0;
             }
-            ::rmdir(stage.c_str());
+            pf::removeEmptyFolder(stage);
         }
         if (moved == 0)
             return {};
         return std::string(moved == 1 ? "a copy" : "copies") + " an earlier run left in " + shown(folder)
-               + (moved == 1 ? " is" : " are") + " in the Trash";
+               + (moved == 1 ? " is" : " are") + " in " + trashWords();
     }
 
     bool Engine::installStep(const Step& step, std::string& line, std::string& error)
@@ -901,33 +742,31 @@ namespace playground::installer
             error = why;
             return false;
         }
-        struct stat st{};
-        const bool replacing = lstatOf(step.target, st);
-        if (replacing && S_ISLNK(st.st_mode))
+        const pf::Node target = pf::nodeOf(step.target);
+        const bool replacing = target.exists;
+        if (replacing && target.link)
         {
-            error = shown(step.target) + " is a link to " + linkTarget(step.target) + ": left as it is";
+            error = shown(step.target) + " is a link to " + pf::linkTarget(step.target) + ": left as it is";
             return false;
         }
         const std::string swept = sweep(step.folder, name);
 
         // The staging folder beside the target: the copy is made there, then renamed into place.
-        std::string tmpl = (step.folder / ".installing-XXXXXX").string();
-        std::vector<char> buf(tmpl.begin(), tmpl.end());
-        buf.push_back('\0');
-        if (::mkdtemp(buf.data()) == nullptr)
+        int err = 0;
+        const fs::path stage = pf::makeStage(step.folder, err);
+        if (stage.empty())
         {
-            error = "it may not write in " + shown(step.folder) + " (" + std::strerror(errno) + ")";
+            error = "it may not write in " + shown(step.folder) + " (" + pf::errorText(err) + ")";
             return false;
         }
-        const fs::path stage(buf.data());
         const fs::path staged = stage / name;
         // A copy that will not be used: to the Trash (never deleted), then the staging folder, empty, removed. What
         // could not go is said.
         const auto discardStage = [&]() -> std::string {
             std::string where, terr;
-            if (::access(staged.c_str(), F_OK) == 0 || isLink(staged))
+            if (pf::nodeOf(staged).exists)
                 trash(staged, where, terr);
-            if (::rmdir(stage.c_str()) == 0 || errno == ENOENT)
+            if (pf::removeEmptyFolder(stage) || !pf::nodeOf(stage).exists)
                 return {};
             return "; the copy it made stays in " + shown(stage);
         };
@@ -940,9 +779,11 @@ namespace playground::installer
         }
         if (replacing)
         {
-            if (::renamex_np(staged.c_str(), step.target.c_str(), RENAME_SWAP) != 0)
+            // macOS: one atomic exchange; Windows: three renames, the old copy put back if the new one cannot go in
+            // (EnginePlatform.h). Either way a failure leaves the old copy whole where it was.
+            if (!pf::swapItems(staged, step.target, err))
             {
-                error = "it could not put the new copy in place of " + shown(step.target) + " (" + std::strerror(errno) + ")";
+                error = "it could not put the new copy in place of " + shown(step.target) + " (" + pf::errorText(err) + ")";
                 error += discardStage();
                 return false;
             }
@@ -954,13 +795,13 @@ namespace playground::installer
                 line = "the old copy" + (step.from.empty() ? std::string() : " (" + step.from + ")") + " stays at "
                        + shown(staged) + " (" + terr + ")";
         }
-        else if (::renamex_np(staged.c_str(), step.target.c_str(), RENAME_EXCL) != 0)
+        else if (!pf::renameNew(staged, step.target, err))
         {
-            error = "it could not put it in " + shown(step.folder) + " (" + std::strerror(errno) + ")";
+            error = "it could not put it in " + shown(step.folder) + " (" + pf::errorText(err) + ")";
             error += discardStage();
             return false;
         }
-        ::rmdir(stage.c_str());                          // empty unless the old copy could not go to the Trash
+        pf::removeEmptyFolder(stage);                    // empty unless the old copy could not go to the Trash
         if (!swept.empty())
             line += (line.empty() ? "" : "; ") + swept;
         return true;
@@ -1002,8 +843,11 @@ namespace playground::installer
 
         if (plan.admin())
         {
+            std::vector<fs::path> targets;
+            for (const Step& s : plan.steps)
+                targets.push_back(s.target);
             r = runAdmin([&](const fs::path& status) { return adminScript(plan, status); }, n, todo, progress,
-                         std::move(r), "install");
+                         std::move(r), "install", targets);
             for (const int i : todo)
                 if (r.states[static_cast<std::size_t>(i)] == State::failed && r.error.empty())
                 {
@@ -1030,7 +874,7 @@ namespace playground::installer
                     if (!note.empty())
                         line += "; " + note;
                     set(i, State::done, line);
-                    log(r, s.product + " " + partName(s.part) + " (" + actionWords(s.action) + "): " + line);
+                    log(r, s.product + " " + partName(s.part) + " (" + pf::actionWords(s.action) + "): " + line);
                 }
                 else
                 {
@@ -1059,7 +903,7 @@ namespace playground::installer
         if (!r.error.empty() || r.cancelled)
         {
             if (r.error.empty() && plan.admin() && done.empty())
-                r.error = "Nothing was installed: the administrator's password was not given, so nothing was changed.";
+                r.error = std::string("Nothing was installed: ") + pf::kNoAdmin + ", so nothing was changed.";
             else
             {
                 if (r.error.empty())
@@ -1115,13 +959,13 @@ namespace playground::installer
                 for (const auto& [dir, scope] : knownFolders(*pr, c.part))
                     known = known || c.path.parent_path().lexically_normal() == dir.lexically_normal();
             const std::string why = known ? unsafe(c.path.parent_path()) : shown(c.path) + " is not a part this installer knows";
-            struct stat st{};
+            const pf::Node node = pf::nodeOf(c.path);
             if (!why.empty())
                 set(i, State::skipped, "left as it was: " + why);
-            else if (!lstatOf(c.path, st))
+            else if (!node.exists)
                 set(i, State::skipped, "already gone");
-            else if (S_ISLNK(st.st_mode))
-                set(i, State::skipped, "left as it was: " + shown(c.path) + " is a link to " + linkTarget(c.path));
+            else if (node.link)
+                set(i, State::skipped, "left as it was: " + shown(c.path) + " is a link to " + pf::linkTarget(c.path));
             else if (mayMove(c.path))
                 mine.push_back(i);
             else
@@ -1135,7 +979,7 @@ namespace playground::installer
                 r.cancelled = true;
                 break;
             }
-            set(i, State::working, "moving to the Trash");
+            set(i, State::working, std::string("moving to ") + trashWords());
             std::string where, error;
             if (trash(c.path, where, error))
             {
@@ -1146,8 +990,8 @@ namespace playground::installer
             }
             else
             {
-                set(i, State::failed, "it could not move " + shown(c.path) + " to the Trash (" + error + ")");
-                r.error = "It could not move " + shown(c.path) + " to the Trash (" + error + ").";
+                set(i, State::failed, "it could not move " + shown(c.path) + " to " + trashWords() + " (" + error + ")");
+                r.error = "It could not move " + shown(c.path) + " to " + trashWords() + " (" + error + ").";
                 log(r, r.error);
                 break;
             }
@@ -1155,18 +999,22 @@ namespace playground::installer
         if (r.error.empty() && !r.cancelled && !admin.empty())
         {
             // The script numbers its steps by the copies' indices, and holds the copies this user may not move.
+            std::vector<fs::path> targets;
+            for (const Copy& c : copies)
+                targets.push_back(c.path);
             r = runAdmin([&](const fs::path& status) { return adminUninstallScript(copies, status, admin); }, n, admin,
-                         progress, std::move(r), "uninstall");
+                         progress, std::move(r), "uninstall", targets);
             for (const int i : admin)
                 if (r.states[static_cast<std::size_t>(i)] == State::failed && r.error.empty())
-                    r.error = shown(copies[static_cast<std::size_t>(i)].path) + " was not moved to the Trash: "
+                    r.error = shown(copies[static_cast<std::size_t>(i)].path) + " was not moved to " + trashWords() + ": "
                               + r.lines[static_cast<std::size_t>(i)] + ".";
         }
         for (int i = 0; i < n; ++i)
             if (r.states[static_cast<std::size_t>(i)] == State::waiting)
                 set(i, State::notRun, "not moved");
         if (r.cancelled && r.error.empty())
-            r.error = r.count(State::done) == 0 ? "Nothing was moved to the Trash." : "Stopped before the next copy.";
+            r.error = r.count(State::done) == 0 ? std::string("Nothing was moved to ") + trashWords() + "."
+                                                : std::string("Stopped before the next copy.");
         bool auGone = false;
         for (int i = 0; i < n; ++i)
             auGone = auGone || (copies[static_cast<std::size_t>(i)].part == Part::au
@@ -1174,298 +1022,6 @@ namespace playground::installer
         if (auGone)
             r.registrarRestarted = system_.restartAuRegistrar();
         log(r, r.ok() ? "done" : "stopped: " + r.error);
-        return r;
-    }
-
-    // ---- "All users": the script, run as root ------------------------------------------------------------------------
-
-    namespace
-    {
-        // ASCII letters lowered: `pwd -P` gives a folder's name as the disk has it, and the disks are mostly
-        // case-insensitive, so a pinned folder is compared with its expected path in lower case (LC_ALL=C tr).
-        std::string lowered(std::string s)
-        {
-            for (char& c : s)
-                if (c >= 'A' && c <= 'Z')
-                    c = static_cast<char>(c - 'A' + 'a');
-            return s;
-        }
-    }
-
-    fs::path Engine::realOf(const fs::path& p) const
-    {
-        const fs::path n = p.lexically_normal();
-        for (const auto& [base, real] : { std::pair<const fs::path&, const fs::path&>{ places_.root, realRoot_ },
-                                          std::pair<const fs::path&, const fs::path&>{ places_.home, realHome_ } })
-        {
-            if (base.empty())
-                continue;
-            const fs::path rel = n.lexically_relative(base.lexically_normal());
-            if (!rel.empty() && *rel.begin() != "..")
-                return rel == "." ? real : (real / rel).lexically_normal();
-        }
-        std::error_code ec;
-        const fs::path parent = fs::weakly_canonical(n.parent_path(), ec);
-        return ec ? n : parent / n.filename();
-    }
-
-    std::string Engine::scriptHead(const std::string& what, const fs::path& statusDir) const
-    {
-        const fs::path trash = trashFolder();
-        std::string s;
-        s += "#!/bin/sh\n";
-        s += "# " + what + " for all users: generated for this one run, then run once as root through macOS's\n";
-        s += "# administrator prompt, its text passed to it (never a file). Every path is quoted. Each step reports to\n";
-        s += "# the status file, in a folder the script makes itself; the first failure ends the script. Nothing is\n";
-        s += "# deleted: what is replaced or removed goes to the Trash.\n";
-        s += "umask 022\n";
-        s += "if [ \"$(id -u)\" -eq 0 ]; then ROOT=1; else ROOT=0; fi\n";
-        // The status folder: new (mkdir fails on anything there, a link too), in a folder only root may change, and
-        // given back to the user as the script ends, whatever ends it.
-        s += "SDIR=" + shellQuote(statusDir.string()) + "\n";
-        s += "mkdir -m 755 \"$SDIR\" || exit 1\n";
-        s += "if [ \"$ROOT\" -eq 1 ]; then trap 'chown -R " + std::to_string(::getuid()) + " \"$SDIR\"' EXIT; fi\n";
-        s += "STATUS=\"$SDIR\"/" + std::string(kStatusFile) + "\n";
-        s += "say() { printf '%s\\n' \"$*\" >> \"$STATUS\"; }\n";
-        s += "fail() { say \"STEP $1 fail $2\"; exit 1; }\n";
-        // here <folder> <its real path, lower case>: in the folder, which is the real one (no link on the way to it).
-        s += "here() { cd -P \"$1\" 2>/dev/null && [ \"$(pwd -P | LC_ALL=C tr 'A-Z' 'a-z')\" = \"$2\" ]; }\n";
-        // discard <item, from here> <stem> <extension>: to the user's real Trash under a name not taken there; a link
-        // there is never followed (mv -h).
-        s += "TRASH=" + shellQuote(trash.string()) + "\n";
-        s += "TRASHREAL=" + shellQuote(lowered(realOf(trash).string())) + "\n";
-        s += "discard() {\n";
-        s += "  S=\"$(pwd -P)/$1\"\n";
-        s += "  ( here \"$TRASH\" \"$TRASHREAL\" || exit 1\n";
-        s += "    D=\"./$2$3\"; n=2\n";
-        s += "    while [ -e \"$D\" ] || [ -L \"$D\" ]; do D=\"./$2 $n$3\"; n=$((n + 1)); done\n";
-        s += "    mv -h \"$S\" \"$D\" )\n";
-        s += "}\n";
-        return s;
-    }
-
-    std::string Engine::walkChecks(const fs::path& folder, const std::string& k) const
-    {
-        const auto fail = [&](const std::string& why) { return "fail " + k + " " + shellQuote(why); };
-        std::string s;
-        // Every folder from the root (or home) down to this one is a real folder...
-        const fs::path base = folder.lexically_normal();
-        fs::path anchor = places_.root, rel = base.lexically_relative(places_.root.lexically_normal());
-        if (rel.empty() || *rel.begin() == "..")
-        {
-            anchor = places_.home;
-            rel = base.lexically_relative(places_.home.lexically_normal());
-        }
-        if (!rel.empty() && *rel.begin() != "..")
-        {
-            fs::path walk = anchor;
-            for (const fs::path& part : rel)
-            {
-                if (part == ".")
-                    continue;
-                walk /= part;
-                s += "if [ -L " + shellQuote(walk.string()) + " ]; then "
-                     + fail(shown(walk) + " is a link: this installer writes only into real folders") + "; fi\n";
-            }
-        }
-        // ... and the step works in it, from here on, by names relative to it: whatever is renamed on the way later.
-        s += "here " + shellQuote(folder.string()) + " " + shellQuote(lowered(realOf(folder).string())) + " || "
-             + fail(shown(folder) + " is not a real folder (a link on the way to it): left as it is") + "\n";
-        return s;
-    }
-
-    std::string Engine::adminScript(const Plan& plan, const fs::path& statusDir) const
-    {
-        std::string s = scriptHead("Installing", statusDir);
-        for (std::size_t i = 0; i < plan.steps.size(); ++i)
-        {
-            const Step& st = plan.steps[i];
-            if (!st.changes())
-                continue;
-            const std::string k = std::to_string(i);
-            const std::string name = shellQuote(st.target.filename().string());
-            const std::string here = shellQuote("./" + st.target.filename().string());   // the target, from its folder
-            const std::string stem = shellQuote(st.target.stem().string()), ext = shellQuote(st.target.extension().string());
-            const std::string folder = shellQuote(st.folder.string());
-            const auto fail = [&](const std::string& why) { return "fail " + k + " " + shellQuote(why); };
-            const std::string drop = "discard \"$T\"/" + name + " " + stem + " " + ext;
-            s += "\n# " + k + ": " + st.product + ", " + partName(st.part) + " (" + actionWords(st.action) + ")\n";
-            s += "say \"STEP " + k + " start\"\n";
-            s += "mkdir -p " + folder + " || " + fail("it could not make the folder " + shown(st.folder)) + "\n";
-            s += walkChecks(st.folder, k);
-            s += "if [ -L " + here + " ]; then " + fail(shown(st.target) + " is a link: left as it is") + "; fi\n";
-            s += "T=$(mktemp -d ./.installing-XXXXXX) || " + fail("it may not write in " + shown(st.folder)) + "\n";
-            s += "if ! ditto --noqtn " + shellQuote(st.source.string()) + " \"$T\"/" + name + "; then\n";
-            s += "  if [ -e \"$T\"/" + name + " ]; then " + drop + "; fi\n";
-            s += "  rmdir \"$T\"; " + fail("it could not copy it into " + shown(st.folder)) + "\n";
-            s += "fi\n";
-            s += "if [ \"$ROOT\" -eq 1 ] && ! chown -R root:wheel \"$T\"/" + name + "; then\n";
-            s += "  " + drop + "; rmdir \"$T\"; " + fail("it could not give the copy to root") + "\n";
-            s += "fi\n";
-            s += "if [ -e " + here + " ]; then\n";
-            s += "  if ! mv -h " + here + " \"$T/old\"; then\n";
-            s += "    " + drop + "; rmdir \"$T\"; " + fail("it could not move the old copy aside") + "\n";
-            s += "  fi\n";
-            s += "  if ! mv -h \"$T\"/" + name + " " + here + "; then\n";
-            s += "    mv -h \"$T/old\" " + here + "; " + drop + "; rmdir \"$T\"; "
-                 + fail("it could not put the new copy in place") + "\n";
-            s += "  fi\n";
-            s += "  if discard \"$T/old\" " + stem + " " + ext + "; then say \"STEP " + k
-                 + " note the old copy is in the Trash\"; else say \"STEP " + k + " note the old copy stays in \""
-                 + shellQuote(shown(st.folder)) + "\"/${T#./}\"; fi\n";
-            s += "elif ! mv -h \"$T\"/" + name + " " + here + "; then\n";
-            s += "  " + drop + "; rmdir \"$T\"; " + fail("it could not put it in " + shown(st.folder)) + "\n";
-            s += "fi\n";
-            s += "rmdir \"$T\" 2>/dev/null\n";
-            s += "cd /\n";
-            s += "say \"STEP " + k + " done\"\n";
-        }
-        return s;
-    }
-
-    std::string Engine::adminUninstallScript(const std::vector<Copy>& copies, const fs::path& statusDir,
-                                             const std::vector<int>& only) const
-    {
-        std::string s = scriptHead("Uninstalling", statusDir);
-        for (std::size_t i = 0; i < copies.size(); ++i)
-        {
-            const Copy& c = copies[i];
-            if (c.link || (!only.empty() && std::find(only.begin(), only.end(), static_cast<int>(i)) == only.end()))
-                continue;                                // links stay; the copies not asked for are not its
-            const std::string k = std::to_string(i), here = shellQuote("./" + c.path.filename().string());
-            const auto fail = [&](const std::string& why) { return "fail " + k + " " + shellQuote(why); };
-            s += "\n# " + k + ": " + c.path.filename().string() + "\n";
-            s += "say \"STEP " + k + " start\"\n";
-            s += walkChecks(c.path.parent_path(), k);
-            s += "if [ -L " + here + " ]; then " + fail(shown(c.path) + " is a link: left as it is") + "; fi\n";
-            s += "if [ -e " + here + " ]; then\n";
-            s += "  discard " + here + " " + shellQuote(c.path.stem().string()) + " "
-                 + shellQuote(c.path.extension().string()) + " || " + fail("it could not move it to the Trash") + "\n";
-            s += "fi\n";
-            s += "cd /\n";
-            s += "say \"STEP " + k + " done\"\n";
-        }
-        return s;
-    }
-
-    Report Engine::runAdmin(const std::function<std::string(const fs::path&)>& makeScript, int steps,
-                            const std::vector<int>& indices, const ProgressFn& progress, Report report,
-                            const std::string& what)
-    {
-        Report r = std::move(report);
-        const auto setState = [&](int i, State s, const std::string& line) {
-            if (i < 0 || i >= steps)
-                return;
-            r.states[static_cast<std::size_t>(i)] = s;
-            r.lines[static_cast<std::size_t>(i)] = line;
-            if (progress)
-                progress(i, s, line);
-        };
-
-        // The status folder, which the script makes as root (it must not be there yet), in a folder only root may
-        // change; its name is new each run. The script itself goes to the prompt as text: no file of it is run.
-        std::error_code ec;
-        const fs::path scratch = places_.scratch.empty() ? fs::path("/private/tmp") : places_.scratch;
-        fs::create_directories(scratch, ec);             // /private/tmp is there already; a probe's is made
-        unsigned char rnd[8];
-        ::arc4random_buf(rnd, sizeof rnd);
-        std::string id;
-        char hex[3];
-        for (const unsigned char b : rnd)
-        {
-            std::snprintf(hex, sizeof hex, "%02x", static_cast<unsigned>(b));
-            id += hex;
-        }
-        const fs::path statusDir = scratch / ("installer-" + id);
-        const fs::path status = statusDir / kStatusFile;
-        const std::string script = makeScript(statusDir);
-        fs::create_directories(trashFolder(), ec);       // as this user: the script only moves into it
-        for (const int i : indices)
-            setState(i, State::waiting, "waiting for the administrator's password");
-
-        // The status file, read as the script writes it.
-        std::size_t seen = 0;
-        std::vector<std::string> failures;
-        const auto poll = [&]() {
-            const std::string all = fileText(status);
-            while (seen < all.size())
-            {
-                const std::size_t end = all.find('\n', seen);
-                if (end == std::string::npos)
-                    break;
-                const std::string line = all.substr(seen, end - seen);
-                seen = end + 1;
-                std::istringstream in(line);
-                std::string word, verb;
-                int i = -1;
-                in >> word >> i >> verb;
-                std::string rest;
-                std::getline(in, rest);
-                rest = trimmed(rest);
-                if (word != "STEP" || i < 0 || i >= steps)
-                    continue;
-                if (verb == "start")
-                    setState(i, State::working, what == "install" ? "copying" : "moving to the Trash");
-                else if (verb == "done")
-                {
-                    std::string l = r.lines[static_cast<std::size_t>(i)];
-                    setState(i, State::done, l.rfind("note:", 0) == 0 ? l.substr(5) : std::string());
-                }
-                else if (verb == "note")
-                    r.lines[static_cast<std::size_t>(i)] = "note:" + rest;
-                else if (verb == "fail")
-                {
-                    setState(i, State::failed, rest);
-                    failures.push_back(rest);
-                }
-            }
-        };
-        std::mutex m;
-        std::atomic<bool> running{ true };
-        std::thread poller([&]() {
-            while (running.load())
-            {
-                {
-                    const std::lock_guard<std::mutex> lock(m);
-                    poll();
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
-        });
-        std::string error;
-        const System::Admin result = system_.runAsAdministrator(
-            script, payload_.project + " Installer wants to " + (what == "install" ? "install" : "uninstall")
-                        + " plugins for all users.",
-            error);
-        running.store(false);
-        poller.join();
-        poll();
-        // The script gave its folder back to this user as it ended: the status file and the folder go (they are the
-        // installer's own, never the user's: a folder that is not this user's, or a link, is left).
-        if (struct stat st{}; lstatOf(statusDir, st) && S_ISDIR(st.st_mode) && st.st_uid == ::getuid())
-        {
-            ::unlink(status.c_str());
-            ::rmdir(statusDir.c_str());
-        }
-
-        if (result == System::Admin::cancelled)
-        {
-            r.cancelled = true;
-            for (const int i : indices)
-                setState(i, State::notRun, "not changed: the administrator's password was not given");
-            log(r, "the administrator prompt was cancelled: nothing ran");
-            return r;
-        }
-        if (failures.empty() && result == System::Admin::failed)
-            r.error = "macOS could not run the " + what + " as an administrator (" + trimmed(error) + ").";
-        for (const int i : indices)
-            if (r.states[static_cast<std::size_t>(i)] == State::waiting
-                || r.states[static_cast<std::size_t>(i)] == State::working)
-                setState(i, State::notRun, "not changed");
-        for (const int i : indices)
-            log(r, "step " + std::to_string(i) + ": "
-                   + (r.states[static_cast<std::size_t>(i)] == State::done ? "done" : "not done") + " "
-                   + r.lines[static_cast<std::size_t>(i)]);
         return r;
     }
 }
