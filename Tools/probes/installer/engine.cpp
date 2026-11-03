@@ -36,6 +36,13 @@
 //   NOTES     a running Standalone of a product whose app changes, and a running host, are named in the plan's notes;
 //             a product installed in both scopes is one note naming its parts; an uninstall's notes name the open app
 //             and the host
+// On Windows (its own body, below): the same sections over its three parts (no Audio Unit) and folders (Engine.h),
+// each app a folder whose exe's version resource is its version and each VST3's in its moduleinfo.json; no code
+// signature (rebuilds are told by their bytes) and no AU registrar; links are junctions (cmd's mklink /J), a folder this
+// user may not write in is an icacls deny; and "All users" is the PowerShell script, its exit code its report: every
+// path a quoted literal, no cmdlet, nothing deleted but an empty staging folder, the user's SID named for the grant, a
+// parent folder swapped for a junction refused (1000 + 100 * step + 2), a target that is a junction refused (+ 4), and
+// the old copy reaching the Trash folder after the run, as this user.
 #include "Probe.h"
 
 #include "Fixture.h"
@@ -46,10 +53,13 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <iterator>
 #include <string>
 #include <vector>
 
+#if !defined(_WIN32)
 #include <sys/stat.h>
+#endif
 
 namespace
 {
@@ -89,6 +99,7 @@ namespace
         return s.find(what) != std::string::npos;
     }
 
+#if !defined(_WIN32)
     // The script with every quoted occurrence of `p` taken out: what is left must not name `p` (it is never unquoted).
     bool quotedOnly(const std::string& script, const std::string& p, bool mayBeAbsent = false)
     {
@@ -105,7 +116,471 @@ namespace
     {
         return pi::runProgram({ "/bin/sh", "-c", script }, nullptr, nullptr);
     }
+#endif
 }
+
+#if defined(_WIN32)
+namespace
+{
+    // A path as the engine writes it into a script and shows it: Windows' separators.
+    std::string win(fs::path p)
+    {
+        return p.make_preferred().string();
+    }
+
+    // The script with every PowerShell-quoted occurrence of `p` taken out: what is left must not name `p`.
+    bool psQuotedOnly(const std::string& script, const std::string& p, bool mayBeAbsent = false)
+    {
+        const std::string q = pi::psQuote(p);
+        if (!contains(script, q))
+            return mayBeAbsent && !contains(script, p);
+        std::string rest = script;
+        for (std::size_t at = rest.find(q); at != std::string::npos; at = rest.find(q))
+            rest.erase(at, q.size());
+        return !contains(rest, p);
+    }
+
+    int countOf(const std::string& s, const std::string& what)
+    {
+        int n = 0;
+        for (std::size_t at = s.find(what); at != std::string::npos; at = s.find(what, at + 1))
+            ++n;
+        return n;
+    }
+
+    // A script run as this user, as the stand-in prompt runs it: its exit code.
+    int ps(const std::string& script)
+    {
+        return pi::runProgram({ pi::powershellExe().string(), "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+                                "Bypass", "-EncodedCommand", pi::psEncoded(script) },
+                              nullptr, nullptr);
+    }
+
+    std::string dataOf(const fs::path& bundle)
+    {
+        return fixture::readText(bundle / "Contents" / "Resources" / "data.txt");
+    }
+
+    int64_t entries(const fs::path& dir)
+    {
+        std::error_code ec;
+        int64_t n = 0;
+        for (fs::recursive_directory_iterator it(dir, fs::directory_options::none, ec), end; !ec && it != end; it.increment(ec))
+            ++n;
+        return n;
+    }
+}
+
+// Windows: the same sections over Windows' parts (VST3, app, extension: no Audio Unit) and folders (Engine.h), with
+// junctions for links, icacls for a folder this user may not add to, and the PowerShell script (its exit code its
+// report) in place of the shell script and its status folder.
+PROBE(installer, engine)
+{
+    const funkgui::HeadlessGuiScope gui;               // juce's message thread, for the zip reader
+    const fs::path root = fixture::root("installer.engine");
+    const fs::path payloadDir = root / "payload";
+    fixture::writePayload(payloadDir);
+    const pi::Places places = pi::Places::under(root);
+    std::error_code ec;
+    fs::create_directories(places.home, ec);
+    fs::create_directories(places.root, ec);
+    fixture::FakeSystem sys;
+    constexpr int kAll = 2 * static_cast<int>(std::size(pi::kParts));   // two products, three parts each
+    const fs::path vst3Home = places.home / "Programs" / "Common" / "VST3";
+    const fs::path vst3Root = places.root / "Common Files" / "VST3";
+    const fs::path appsHome = places.home / "Programs" / fixture::kCompany;
+    const fs::path appsRoot = places.root / fixture::kCompany;
+
+    // ---- PAYLOAD -----------------------------------------------------------------------------------------------------
+    {
+        const pi::Payload pay = pi::Payload::read(payloadDir);
+        P.eq("payload.read", pay.error.empty() ? 1 : 0, 1);
+        if (!pay.error.empty())
+            std::printf("payload: %s\n", pay.error.c_str());
+        P.eq("payload.products", static_cast<int64_t>(pay.products.size()), 2);
+        P.eq("payload.project", pay.project == "Tone" ? 1 : 0, 1);
+        int present = 0, versions = 0;
+        for (const pi::Product& pr : pay.products)
+            for (const pi::Part part : pi::kParts)
+            {
+                const std::string want = part == pi::Part::extension ? "0.3.1" : "1.2.0";
+                present += pr.offer(part).present ? 1 : 0;
+                versions += pr.offer(part).version == want ? 1 : 0;
+                if (pr.offer(part).version != want)
+                    std::printf("payload: %s's %s has version '%s'\n", pr.name.c_str(), pi::partName(part),
+                                pr.offer(part).version.c_str());
+            }
+        P.eq("payload.parts_present", present, kAll);
+        P.eq("payload.versions_read", versions, kAll);
+        P.eq("payload.no_audio_unit", !pay.products.empty() && !pay.products[0].offer(pi::Part::au).present ? 1 : 0, 1);
+        P.eq("payload.kinds", pay.products.size() == 2 && !pay.products[0].instrument() && pay.products[1].instrument() ? 1 : 0, 1);
+        const pi::Payload none = pi::Payload::read(root / "no payload here");
+        P.eq("payload.missing_is_an_error", !none.error.empty() && none.products.empty() ? 1 : 0, 1);
+        std::printf("missing payload: %s\n", none.error.c_str());
+    }
+
+    // ---- CLEAN -------------------------------------------------------------------------------------------------------
+    pi::Engine engine(pi::Payload::read(payloadDir), places, sys);
+    {
+        const pi::Plan plan = engine.plan(everything(engine.payload()), pi::Scope::user);
+        P.eq("clean.steps", static_cast<int64_t>(plan.steps.size()), kAll);
+        P.eq("clean.all_install", countAction(plan, pi::Action::install), kAll);
+        P.eq("clean.no_admin", plan.admin() ? 1 : 0, 0);
+        int inside = 0;
+        for (const pi::Step& s : plan.steps)
+            inside += under(s.target, root) ? 1 : 0;
+        P.eq("clean.targets_inside_the_root", inside, kAll);
+        const pi::Step* vst = stepOf(plan, "effect", pi::Part::vst3);
+        const pi::Step* app = stepOf(plan, "effect", pi::Part::app);
+        const pi::Step* ext = stepOf(plan, "synth", pi::Part::extension);
+        P.eq("clean.vst3_in_home_vst3", vst != nullptr && vst->target == vst3Home / "Tone.vst3" ? 1 : 0, 1);
+        P.eq("clean.app_in_home_programs", app != nullptr && app->target == appsHome / "Tone" ? 1 : 0, 1);
+        P.eq("clean.extension_beside_the_apps", ext != nullptr && ext->target == appsHome / "ToneSynth.mcpb" ? 1 : 0, 1);
+        std::printf("where: %s; %s\n", engine.shown(vst3Home).c_str(), engine.shown(appsRoot).c_str());
+        P.eq("clean.shown_as_windows_names_them", engine.shown(vst3Home) == "%LOCALAPPDATA%\\Programs\\Common\\VST3"
+                                                  && engine.shown(appsRoot) == "%ProgramFiles%\\Funk Test" ? 1 : 0, 1);
+
+        const pi::Report r = engine.install(plan, {});
+        P.eq("clean.ok", r.ok() ? 1 : 0, 1);
+        if (!r.ok())
+            std::printf("clean: %s\n", r.error.c_str());
+        P.eq("clean.done", r.count(pi::State::done), kAll);
+        int whole = 0, versions = 0;
+        for (const pi::Step& s : plan.steps)
+        {
+            whole += pi::Engine::sameContents(s.target, s.source) ? 1 : 0;
+            const std::string v = s.part == pi::Part::extension ? pi::Engine::extensionVersion(s.target)
+                                                                : pi::Engine::bundleVersion(s.target);
+            versions += v == s.to ? 1 : 0;
+        }
+        P.eq("clean.bundles_whole", whole, kAll);
+        P.eq("clean.versions", versions, kAll);
+        P.eq("clean.no_staging_left", static_cast<int64_t>(fixture::named(places.home, ".installing").size()
+                                                           + fixture::named(places.root, ".installing").size()), 0);
+        P.eq("clean.registrar_untouched", sys.registrarRestarts, 0);
+        P.eq("clean.log_written", contains(fixture::readText(places.log), "Tone.vst3") ? 1 : 0, 1);
+        P.eq("clean.installed_found", static_cast<int64_t>(engine.installed().size()), kAll);
+    }
+
+    // ---- AGAIN -------------------------------------------------------------------------------------------------------
+    {
+        const pi::Plan plan = engine.plan(everything(engine.payload()), pi::Scope::user);
+        P.eq("again.all_already_installed", countAction(plan, pi::Action::same), kAll);
+        P.eq("again.nothing_changes", plan.changing(), 0);
+        const int copies = sys.copiesStarted.load();
+        const pi::Report r = engine.install(plan, {});
+        P.eq("again.skipped", r.count(pi::State::skipped), kAll);
+        P.eq("again.nothing_copied", sys.copiesStarted.load() - copies, 0);
+        P.eq("again.says_already_installed", !r.lines.empty() && contains(r.lines[0], "already installed") ? 1 : 0, 1);
+
+        // Another build of the same version: the effect's VST3 and app (their bytes).
+        fixture::writeText(payloadDir / "Tone.vst3" / "Contents" / "Resources" / "data.txt", "build 2");
+        fixture::writeText(payloadDir / "Tone" / "Contents" / "Resources" / "data.txt", "build 2");
+        pi::Engine again(pi::Payload::read(payloadDir), places, sys);
+        const pi::Plan plan2 = again.plan(everything(again.payload()), pi::Scope::user);
+        P.eq("again.rebuilds", countAction(plan2, pi::Action::rebuild), 2);
+        P.eq("again.rebuild_is_the_vst3", stepOf(plan2, "effect", pi::Part::vst3)->action == pi::Action::rebuild ? 1 : 0, 1);
+        P.eq("again.rebuild_is_the_app", stepOf(plan2, "effect", pi::Part::app)->action == pi::Action::rebuild ? 1 : 0, 1);
+        P.eq("again.the_rest_same", countAction(plan2, pi::Action::same), kAll - 2);
+        const int before = sys.copiesStarted.load();
+        const pi::Report r2 = again.install(plan2, {});
+        P.eq("again.replaced_two", r2.count(pi::State::done), 2);
+        P.eq("again.copied_two", sys.copiesStarted.load() - before, 2);
+        P.eq("again.new_build_in_place", dataOf(vst3Home / "Tone.vst3") == "build 2" ? 1 : 0, 1);
+        P.eq("again.old_copies_in_trash", fs::exists(places.trash / "Tone.vst3") && fs::exists(places.trash / "Tone") ? 1 : 0, 1);
+        P.eq("again.old_copy_whole", dataOf(places.trash / "Tone.vst3") == "build 1" ? 1 : 0, 1);
+        P.eq("again.registrar_untouched", sys.registrarRestarts, 0);
+    }
+
+    // ---- VERSIONS ----------------------------------------------------------------------------------------------------
+    {
+        fixture::setVersion(vst3Home / "ToneSynth.vst3", "1.1.0");
+        fixture::setVersion(appsHome / "ToneSynth", "2.0.0");
+        const pi::Plan plan = engine.plan(everything(engine.payload()), pi::Scope::user);
+        const pi::Step* older = stepOf(plan, "synth", pi::Part::vst3);
+        const pi::Step* newer = stepOf(plan, "synth", pi::Part::app);
+        std::printf("versions: the VST3 %s to %s, the app %s to %s\n", older->from.c_str(), older->to.c_str(), newer->from.c_str(),
+                    newer->to.c_str());
+        P.eq("versions.older_is_upgrade", older->action == pi::Action::upgrade && older->from == "1.1.0" && older->to == "1.2.0" ? 1 : 0, 1);
+        P.eq("versions.newer_is_downgrade", newer->action == pi::Action::downgrade && newer->from == "2.0.0" && newer->to == "1.2.0" ? 1 : 0, 1);
+        P.eq("versions.cmp_numbers", pi::Engine::compareVersions("0.10.0", "0.9.1"), 1);
+        P.eq("versions.cmp_equal_padded", pi::Engine::compareVersions("1.2", "1.2.0"), 0);
+        P.eq("versions.cmp_less", pi::Engine::compareVersions("1.1.9", "1.2.0"), -1);
+        P.eq("versions.cmp_text", pi::Engine::compareVersions("1.2.0b", "1.2.0a"), 1);
+    }
+
+    // ---- FAILURE -----------------------------------------------------------------------------------------------------
+    {
+        // The synth's VST3 (older) and app (newer) are to be replaced; the apps' folder turns unwritable after the plan.
+        const pi::Plan plan = engine.plan({ { "synth", pi::Part::vst3 }, { "synth", pi::Part::app }, { "synth", pi::Part::extension } },
+                                          pi::Scope::user);
+        P.eq("failure.plan_changes", plan.changing(), 2);       // the extension is the same
+        const fs::path old = appsHome / "ToneSynth";
+        const std::string oldExe = fixture::readText(old / "ToneSynth.exe");
+        P.eq("failure.folder_denied", fixture::denyWrite(appsHome) ? 1 : 0, 1);
+        const pi::Report r = engine.install(plan, {});
+        fixture::allowWrite(appsHome);
+        const std::size_t vstAt = static_cast<std::size_t>(stepOf(plan, "synth", pi::Part::vst3) - plan.steps.data());
+        const std::size_t appAt = static_cast<std::size_t>(stepOf(plan, "synth", pi::Part::app) - plan.steps.data());
+        P.eq("failure.not_ok", r.ok() ? 1 : 0, 0);
+        P.eq("failure.vst3_before_it_done", r.states[vstAt] == pi::State::done ? 1 : 0, 1);
+        P.eq("failure.app_failed", r.states[appAt] == pi::State::failed ? 1 : 0, 1);
+        P.eq("failure.says_why", contains(r.lines[appAt], "may not write in %LOCALAPPDATA%\\Programs\\Funk Test") ? 1 : 0, 1);
+        P.eq("failure.old_copy_whole", fixture::readText(old / "ToneSynth.exe") == oldExe && dataOf(old) == "build 1" ? 1 : 0, 1);
+        P.eq("failure.old_version_kept", pi::Engine::bundleVersion(old) == "2.0.0" ? 1 : 0, 1);
+        P.eq("failure.folder_holds_only_them",               // the apps and the extensions, no staging folder
+             static_cast<int64_t>(std::distance(fs::directory_iterator(appsHome), fs::directory_iterator{})), 4);
+        P.eq("failure.error_names_what_changed", contains(r.error, "ToneSynth's App was not installed")
+                                                 && contains(r.error, "Installed: ToneSynth's VST3") ? 1 : 0, 1);
+        std::printf("failure: %s\n", r.error.c_str());
+    }
+
+    // ---- LINKS -------------------------------------------------------------------------------------------------------
+    {
+        const fs::path outside = root / "outside";
+        fs::create_directories(outside / "VST3", ec);
+        fs::create_directories(outside / "Apps", ec);
+        // The VST3 folder: a junction to a folder outside (the copies there are moved aside first, to the probe's spare).
+        fs::rename(vst3Home, root / "spare-vst3", ec);
+        P.eq("links.folder_junction_made", fixture::junction(vst3Home, outside / "VST3") ? 1 : 0, 1);
+        // The effect's app: a junction to a folder outside (that is not there).
+        const fs::path app = appsHome / "Tone";
+        fs::rename(app, root / "spare-app", ec);
+        P.eq("links.target_junction_made", fixture::junction(app, outside / "Apps" / "Tone") ? 1 : 0, 1);
+        const pi::Plan plan = engine.plan(everything(engine.payload()), pi::Scope::user);
+        const pi::Step* v = stepOf(plan, "effect", pi::Part::vst3);
+        const pi::Step* a = stepOf(plan, "effect", pi::Part::app);
+        P.eq("links.folder_link_refused", v->action == pi::Action::blocked && contains(v->why, "is a link") ? 1 : 0, 1);
+        P.eq("links.target_link_refused", a->action == pi::Action::blocked && contains(a->why, "is a link") ? 1 : 0, 1);
+        std::printf("links: %s\nlinks: %s\n", v->why.c_str(), a->why.c_str());
+        const pi::Report r = engine.install(plan, {});
+        P.eq("links.nothing_written_outside", entries(outside), 2);
+        P.eq("links.link_left_as_it_was", fixture::isLink(app) && fixture::isLink(vst3Home) ? 1 : 0, 1);
+        P.eq("links.blocked_skipped", r.count(pi::State::failed), 0);
+        int seenInside = 0;
+        for (const pi::Copy& c : engine.installed())
+            seenInside += under(c.path, outside) ? 1 : 0;
+        P.eq("links.scan_does_not_follow", seenInside, 0);
+        // An uninstall of a path the engine does not know: refused.
+        pi::Copy stranger;
+        stranger.key = "effect";
+        stranger.part = pi::Part::vst3;
+        stranger.path = outside / "VST3" / "Tone.vst3";
+        const pi::Report u = engine.uninstall({ stranger }, {});
+        P.eq("links.unknown_path_refused", u.states[0] == pi::State::skipped && contains(u.lines[0], "left as it was") ? 1 : 0, 1);
+        // Back as they were (removing a junction removes the link, never what it leads to).
+        fs::remove(app, ec);
+        fs::rename(root / "spare-app", app, ec);
+        fs::remove(vst3Home, ec);
+        fs::rename(root / "spare-vst3", vst3Home, ec);
+    }
+
+    // ---- STALE -------------------------------------------------------------------------------------------------------
+    {
+        fixture::writeBundle(vst3Home / ".installing-Ab12Cd" / "ToneSynth.vst3", "1.2.0", "half", false);   // ours
+        fixture::writeText(vst3Home / ".installing-Ef34Gh" / "notes.txt", "not ours");                        // another's
+        fixture::setVersion(vst3Home / "ToneSynth.vst3", "1.1.0");                                              // upgrades
+        const pi::Plan plan = engine.plan({ { "synth", pi::Part::vst3 } }, pi::Scope::user);
+        const pi::Report r = engine.install(plan, {});
+        P.eq("stale.ok", r.ok() ? 1 : 0, 1);
+        if (!r.ok())
+            std::printf("stale: %s\n", r.error.c_str());
+        P.eq("stale.ours_gone", fs::exists(vst3Home / ".installing-Ab12Cd") ? 1 : 0, 0);
+        int half = 0;
+        for (const auto& e : fs::directory_iterator(places.trash))
+            half += e.path().extension() == ".vst3" && dataOf(e.path()) == "half" ? 1 : 0;
+        P.eq("stale.in_the_trash", half, 1);
+        P.eq("stale.others_left", fs::exists(vst3Home / ".installing-Ef34Gh" / "notes.txt") ? 1 : 0, 1);
+        P.eq("stale.said", !r.lines.empty() && contains(r.lines[0], "an earlier run left") ? 1 : 0, 1);
+        std::printf("stale: %s\n", r.lines.empty() ? "" : r.lines[0].c_str());
+        fs::remove_all(vst3Home / ".installing-Ef34Gh", ec);
+    }
+
+    // ---- UNINSTALL ---------------------------------------------------------------------------------------------------
+    {
+        const std::vector<pi::Copy> copies = engine.installed();
+        P.eq("uninstall.found", static_cast<int64_t>(copies.size()), kAll);
+        fs::remove_all(places.trash, ec);                // the probe's own stand-in Trash, emptied for the count
+        const pi::Report r = engine.uninstall(copies, {});
+        P.eq("uninstall.ok", r.ok() ? 1 : 0, 1);
+        if (!r.ok())
+            std::printf("uninstall: %s\n", r.error.c_str());
+        P.eq("uninstall.done", r.count(pi::State::done), kAll);
+        int gone = 0, inTrash = 0;
+        for (const pi::Copy& c : copies)
+        {
+            gone += fs::exists(fs::symlink_status(c.path)) ? 0 : 1;
+            inTrash += fs::exists(places.trash / c.path.filename()) ? 1 : 0;
+        }
+        P.eq("uninstall.gone", gone, kAll);
+        P.eq("uninstall.in_trash", inTrash, kAll);
+        P.eq("uninstall.registrar_untouched", sys.registrarRestarts, 0);
+        P.eq("uninstall.none_left", static_cast<int64_t>(engine.installed().size()), 0);
+    }
+
+    // ---- ADMIN -------------------------------------------------------------------------------------------------------
+    {
+        // An older copy for all users already, to be replaced.
+        const fs::path sysVst = vst3Root / "Tone.vst3";
+        fixture::writeBundle(sysVst, "1.0.0", "old", false);
+        const pi::Plan plan = engine.plan(everything(engine.payload()), pi::Scope::system);
+        P.eq("admin.wants_the_administrator", plan.admin() ? 1 : 0, 1);
+        P.eq("admin.older_upgrades", stepOf(plan, "effect", pi::Part::vst3)->action == pi::Action::upgrade ? 1 : 0, 1);
+        int systemPlaces = 0;
+        for (const pi::Step& s : plan.steps)
+            systemPlaces += under(s.target, places.root) ? 1 : 0;
+        P.eq("admin.targets_in_the_system", systemPlaces, kAll);
+        const std::string script = engine.adminScript(plan, places.scratch / "status dir");
+        int quoted = 0;
+        for (const pi::Step& s : plan.steps)
+            quoted += (psQuotedOnly(script, win(s.source)) ? 1 : 0) + (psQuotedOnly(script, s.target.filename().string()) ? 1 : 0);
+        P.eq("admin.every_path_quoted", quoted, 2 * kAll);
+        P.eq("admin.base_quoted", psQuotedOnly(script, win(places.root)) ? 1 : 0, 1);
+        P.eq("admin.root_has_a_quote", contains(root.string(), "'") && contains(root.string(), " ") ? 1 : 0, 1);
+        P.eq("admin.no_delete", !contains(script, "Remove-Item") && !contains(script, " del ") && !contains(script, "rmdir")
+                                    && !contains(script, " rd ") ? 1 : 0, 1);
+        P.eq("admin.deletes_empty_folders_only",
+             countOf(script, "::Delete(") > 0 && countOf(script, "::Delete(") == countOf(script, "::Delete($st, $false)") ? 1 : 0, 1);
+        P.eq("admin.no_cmdlet", !contains(script, "-Item") && !contains(script, "Get-") && !contains(script, "New-Object") ? 1 : 0, 1);
+        P.eq("admin.user_named", contains(script, pi::psQuote(fixture::userSid())) ? 1 : 0, 1);
+
+        // The prompt cancelled: nothing changes.
+        sys.cancelPrompt = true;
+        const pi::Report cancelled = engine.install(plan, {});
+        sys.cancelPrompt = false;
+        P.eq("admin.cancel_reported", cancelled.cancelled ? 1 : 0, 1);
+        P.eq("admin.cancel_changes_nothing", cancelled.count(pi::State::done), 0);
+        P.eq("admin.cancel_old_copy_kept", pi::Engine::bundleVersion(sysVst) == "1.0.0" ? 1 : 0, 1);
+        P.eq("admin.cancel_says_so", contains(cancelled.error, "no administrator approved it") ? 1 : 0, 1);
+        std::printf("cancelled: %s\n", cancelled.error.c_str());
+
+        // Run (as this user, by the stand-in: the root is the probe's).
+        const int runs = sys.adminRuns;
+        std::vector<pi::State> seen;
+        const pi::Report r = engine.install(plan, [&](int, pi::State s, const std::string&) { seen.push_back(s); });
+        P.eq("admin.one_prompt", sys.adminRuns - runs, 1);
+        P.eq("admin.prompt_names_the_installer", contains(sys.lastPrompt, "Tone Installer") ? 1 : 0, 1);
+        P.eq("admin.script_as_text", sys.lastScript.rfind("# Installing", 0) == 0 ? 1 : 0, 1);
+        P.eq("admin.ok", r.ok() ? 1 : 0, 1);
+        if (!r.ok())
+            std::printf("admin: %s\n", r.error.c_str());
+        P.eq("admin.done", r.count(pi::State::done), kAll);
+        P.eq("admin.progress_reported", std::count(seen.begin(), seen.end(), pi::State::waiting) >= 1
+                                        && std::count(seen.begin(), seen.end(), pi::State::done) >= kAll ? 1 : 0, 1);
+        int whole = 0;
+        for (const pi::Step& s : plan.steps)
+            whole += pi::Engine::sameContents(s.target, s.source) ? 1 : 0;
+        P.eq("admin.bundles_whole", whole, kAll);
+        int oldInTrash = 0;                              // by a free name: the Trash may have a Tone.vst3 already
+        for (const auto& e : fs::directory_iterator(places.trash))
+            oldInTrash += e.path().extension() == ".vst3" && dataOf(e.path()) == "old" ? 1 : 0;
+        P.eq("admin.old_copy_in_trash", oldInTrash, 1);
+        P.eq("admin.no_staging_left", static_cast<int64_t>(fixture::named(places.root, ".installing").size()), 0);
+
+        // A step of the script that fails (a folder it may not write in, as this user): said in words, the step after
+        // it not run, the old copy whole.
+        fixture::setVersion(sysVst, "1.0.0");
+        fixture::setVersion(appsRoot / "Tone", "1.0.0");
+        const pi::Plan again = engine.plan({ { "effect", pi::Part::vst3 }, { "effect", pi::Part::app } }, pi::Scope::system);
+        P.eq("admin.failure_folder_denied", fixture::denyWrite(vst3Root) ? 1 : 0, 1);
+        const pi::Report failed = engine.install(again, {});
+        fixture::allowWrite(vst3Root);
+        std::printf("admin failure: %s\n", failed.error.c_str());
+        P.eq("admin.failure_reported", failed.ok() ? 1 : 0, 0);
+        P.eq("admin.failure_in_words", contains(failed.error, "Tone's VST3 was not installed: it may not write in "
+                                                              "%ProgramFiles%\\Common Files\\VST3") ? 1 : 0, 1);
+        P.eq("admin.failure_next_not_run", failed.states.size() == 2 && failed.states[1] == pi::State::notRun ? 1 : 0, 1);
+        P.eq("admin.failure_old_copy_kept", pi::Engine::bundleVersion(sysVst) == "1.0.0" ? 1 : 0, 1);
+
+        // The uninstall's script: every path quoted, nothing deleted.
+        const std::vector<pi::Copy> copies = engine.installed();
+        const std::string un = engine.adminUninstallScript(copies, places.scratch / "status");
+        int q = 0;
+        for (const pi::Copy& c : copies)
+            q += psQuotedOnly(un, c.path.filename().string()) ? 1 : 0;
+        P.eq("admin.uninstall_paths_quoted", q, static_cast<int64_t>(copies.size()));
+        P.eq("admin.uninstall_no_delete", !contains(un, "Remove-Item") && !contains(un, "rmdir")
+                                          && countOf(un, "::Delete(") == countOf(un, "::Delete($st, $false)") ? 1 : 0, 1);
+
+        // Run directly (as this user, in the root). The uninstall's script for the system's VST3, whose folder is then
+        // swapped for a junction to a folder outside holding a copy of the same name: refused, and that copy stays.
+        {
+            const std::vector<pi::Copy> all = engine.installed();
+            int vst = -1;
+            for (std::size_t i = 0; i < all.size(); ++i)
+                if (all[i].key == "effect" && all[i].part == pi::Part::vst3 && all[i].scope == pi::Scope::system)
+                    vst = static_cast<int>(i);
+            P.ge("admin.system_vst3_found", vst, 0);
+            if (vst >= 0)
+            {
+                const std::string text = engine.adminUninstallScript(all, places.scratch / "un1", { vst });
+                const fs::path decoy = root / "outside-vst3";
+                fixture::writeBundle(decoy / "Tone.vst3", "9.9.9", "decoy", false);
+                fs::rename(vst3Root, root / "spare-system-vst3", ec);
+                fixture::junction(vst3Root, decoy);
+                const int status = ps(text);
+                std::printf("uninstall through a junction: exit %d\n", status);
+                P.eq("admin.uninstall_link_parent_refused", status, 1000 + 100 * vst + 2);
+                P.eq("admin.uninstall_link_target_kept", pi::Engine::bundleVersion(decoy / "Tone.vst3") == "9.9.9"
+                                                         && fixture::named(decoy, ".installing").empty() ? 1 : 0, 1);
+                fs::remove(vst3Root, ec);
+                fs::rename(root / "spare-system-vst3", vst3Root, ec);
+            }
+        }
+        // The install's script, whose target is then swapped for a junction to a folder outside: refused, and nothing
+        // is written where it leads.
+        {
+            fixture::setVersion(sysVst, "1.0.0");
+            const pi::Plan one = engine.plan({ { "effect", pi::Part::vst3 } }, pi::Scope::system);
+            const std::string text = engine.adminScript(one, places.scratch / "in1");
+            const fs::path outside = root / "outside-target";
+            fs::create_directories(outside, ec);
+            fs::rename(sysVst, root / "spare-system-tone", ec);
+            fixture::junction(sysVst, outside);
+            const int status = ps(text);
+            std::printf("install over a junction: exit %d\n", status);
+            P.eq("admin.target_link_refused", status == 1000 + 4 && fs::is_empty(outside, ec) ? 1 : 0, 1);
+            fs::remove(sysVst, ec);
+            fs::rename(root / "spare-system-tone", sysVst, ec);
+        }
+        std::printf("script (its first step):\n");
+        const std::size_t from = script.find("\n# 0: ");
+        if (from != std::string::npos)
+            std::printf("%s\n", script.substr(from, std::min<std::size_t>(2000, script.find("\n# ", from + 1) - from)).c_str());
+    }
+
+    // ---- NOTES -------------------------------------------------------------------------------------------------------
+    {
+        sys.apps = { fs::path("C:/Program Files/REAPER (x64)/reaper.exe"), appsRoot / "Tone" / "Tone.exe",
+                     fs::path("C:/Program Files/Mozilla Firefox/firefox.exe") };
+        fixture::setVersion(appsRoot / "Tone", "1.0.0");
+        fixture::setVersion(vst3Root / "ToneSynth.vst3", "1.0.0");
+        const pi::Plan plan = engine.plan(everything(engine.payload()), pi::Scope::system);
+        std::string notes;
+        for (const std::string& n : plan.notes)
+            notes += n + "\n";
+        std::printf("notes:\n%s", notes.c_str());
+        P.eq("notes.standalone_named", contains(notes, "Tone is open") ? 1 : 0, 1);
+        P.eq("notes.host_named", contains(notes, "REAPER is open: restart your DAW") ? 1 : 0, 1);
+        P.eq("notes.other_apps_not_named", contains(notes, "firefox") || contains(notes, "Firefox") ? 1 : 0, 0);
+        // Installing just for me what is installed for all users: one note a product, its parts named.
+        const pi::Plan mine = engine.plan(everything(engine.payload()), pi::Scope::user);
+        std::string other;
+        for (const std::string& n : mine.notes)
+            other += n + "\n";
+        std::printf("notes, just for me:\n%s", other.c_str());
+        P.eq("notes.other_scope_one_a_product", contains(other, "Tone is also installed for all users")
+                                                && contains(other, "ToneSynth is also installed for all users") ? 1 : 0, 1);
+        const std::vector<pi::Copy> copies = engine.installed();
+        std::string un;
+        for (const std::string& n : engine.uninstallNotes(copies))
+            un += n + "\n";
+        P.eq("notes.uninstall_names_the_app_and_host", contains(un, "Tone is open") && contains(un, "REAPER is open") ? 1 : 0, 1);
+        sys.apps.clear();
+    }
+    return P.finish();
+}
+#else
 
 PROBE(installer, engine)
 {
@@ -528,3 +1003,4 @@ PROBE(installer, engine)
     }
     return P.finish();
 }
+#endif

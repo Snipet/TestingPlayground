@@ -1,14 +1,16 @@
 // Source/installer/Engine.h: the installer's engine, without a GUI: what the payload offers, what is installed now, the
 // plan, the install, the uninstall and their log. The installer app (Panel.h, App.cpp) drives it; the probes
 // (Tools/probes/installer/) drive it against a folder of their own. It knows no product: the payload names them
-// (payload.json, written by the build: cmake/Installer.cmake).
+// (payload.json, written by the build: cmake/Installer.cmake). Engine.cpp holds what is the same on both platforms
+// (the plan, the runs, the notes); EngineMac.cpp and EngineWin.cpp what each does its own way (EnginePlatform.h: what
+// a path is, renames, versions, the places and the hosts; and "All users").
 //
 // The payload (<Installer>.app/Contents/Resources/payload/): payload.json (the project, and each product's key, name,
 // kind, company and bundle id) and, per product, <Name>.component, <Name>.vst3, <Name>.app and <Name>.mcpb. A part's
 // version is read from the bundle's Info.plist (CFBundleShortVersionString), an extension's from its manifest.json
 // (the extension's own version, FP_MCP_VERSION).
 //
-// Where a part goes (Places: this Mac's folders, or a probe's root standing in for them):
+// Where a part goes (Places: this machine's folders, or a probe's root standing in for them), on macOS:
 //
 //   part        "Just for me" (Scope::user)                     "All users" (Scope::system)
 //   Audio Unit  ~/Library/Audio/Plug-Ins/Components             /Library/Audio/Plug-Ins/Components
@@ -49,6 +51,29 @@
 // with `mv -h` (a link planted where a copy goes is replaced, never followed). The AU registrar is restarted by the
 // app afterwards, never by the script.
 //
+// On Windows (EngineWin.cpp; no Audio Unit) the payload is the folder payload\ beside "<Project> Installer.exe": per
+// product <Name>.vst3 (the bundle), <Name> (the Standalone's folder: <Name>.exe and its licences) and <Name>.mcpb. A
+// VST3's version is its Contents\Resources\moduleinfo.json's "Version" (else its binary's version resource), the app's
+// its <Name>.exe's version resource (ProductVersion). Places::home is %LOCALAPPDATA%, Places::root %ProgramFiles%:
+//
+//   part        "Just for me" (Scope::user)                     "All users" (Scope::system)
+//   VST3        %LOCALAPPDATA%\Programs\Common\VST3             %ProgramFiles%\Common Files\VST3
+//   App         %LOCALAPPDATA%\Programs\<Company>\<Name>          %ProgramFiles%\<Company>\<Name>
+//   extension   %LOCALAPPDATA%\Programs\<Company>\<Name>.mcpb     %ProgramFiles%\<Company>\<Name>.mcpb
+//
+// There a link is any symbolic link or junction (a reparse point of either kind); "mine" is a copy this user may move;
+// contents are compared byte for byte (no code signature); the copy is robocopy's (no link followed: /SL /XJ); the
+// swap into place is two renames (the old copy aside into the staging folder, the new one in; a failure puts the old
+// one back), so a part is missing for a moment, never broken; the Trash is the Recycle Bin (SHFileOperation, which asks
+// before it deletes anything it cannot recycle); and "All users" is one PowerShell script, its text passed to
+// %SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe as -EncodedCommand (never a file), run through Windows'
+// own administrator prompt (UAC: ShellExecuteEx "runas"). The script calls .NET alone (no cmdlet: no module is loaded
+// from a folder this user could change), robocopy and icacls by their full paths, and quotes every path as a literal;
+// it checks every folder on the way (a link refuses the step), copies into a staging folder beside the target, renames,
+// and leaves what is replaced or removed in that staging folder, given to this user (icacls), for the engine to move to
+// the user's Recycle Bin after it: the script deletes nothing and writes no status file (Program Files is the
+// administrators' alone). Its exit code is its report: 0, or 1000 + 100 * step + reason at the first failure.
+//
 // Safety: the engine writes only into the folders above. A path is followed only below Places::home and Places::root
 // (each resolved first: /var is /private/var), and every folder on the way to a target must be a real folder, not a
 // link: a target, or a folder above it, that is a symbolic link is refused, whatever it points at. A copy another user
@@ -73,27 +98,37 @@ namespace playground::installer
     namespace fs = std::filesystem;
 
     enum class Part : uint8_t { au, vst3, app, extension };
+    // Every part, in order: a Product's offers are indexed by Part (an AU absent where there is none).
+    inline constexpr Part kAllParts[] = { Part::au, Part::vst3, Part::app, Part::extension };
+    // The parts this platform installs: Windows has no Audio Unit.
+#if defined(_WIN32)
+    inline constexpr Part kParts[] = { Part::vst3, Part::app, Part::extension };
+#else
     inline constexpr Part kParts[] = { Part::au, Part::vst3, Part::app, Part::extension };
+#endif
 
     const char* partName(Part part);                 // "Audio Unit", "VST3", "App", "Claude Desktop extension"
-    const char* partExtension(Part part);            // ".component", ".vst3", ".app", ".mcpb"
+    const char* partExtension(Part part);            // ".component", ".vst3", ".app" ("" on Windows: a folder), ".mcpb"
+    const char* trashWords();                        // "the Trash"; "the Recycle Bin" on Windows
 
     enum class Scope : uint8_t { user, system };     // "Just for me", "All users"
 
-    // The folders: this Mac's, or a probe's stand-ins.
+    // The folders: this machine's, or a probe's stand-ins.
     struct Places
     {
-        fs::path home;                               // the user's home: ~/Library/..., ~/Applications
-        fs::path root;                               // the system's root: /Library/..., /Applications
-        fs::path trash;                              // where old copies go; empty: the user's own Trash, through
-                                                     // System::moveToTrash (NSFileManager)
+        fs::path home;                               // the user's: ~ (~/Library/..., ~/Applications); %LOCALAPPDATA%
+        fs::path root;                               // the system's: / (/Library/..., /Applications); %ProgramFiles%
+        fs::path trash;                              // where old copies go; empty: the user's own Trash (Recycle
+                                                     // Bin), through System::moveToTrash
         fs::path log;                                // the log appended to (what went where); empty: none
         fs::path scratch;                            // where "All users" makes its status folder, as root: a folder
-                                                     // only root may change (/private/tmp, root's and sticky)
+                                                     // only root may change (/private/tmp, root's and sticky); unused
+                                                     // on Windows, whose script writes no status
 
-        static Places thisMac();                     // $HOME (else the password database's), "/", the Trash,
-                                                     // /private/tmp; and ~/Library/Logs/<logName>.log
-        static Places thisMac(const std::string& logName);
+        // macOS: $HOME (else the password database's), "/", the Trash, /private/tmp, ~/Library/Logs/<logName>.log.
+        // Windows: %LOCALAPPDATA%, %ProgramFiles%, the Recycle Bin, %LOCALAPPDATA%\<logName>\<logName>.log.
+        static Places thisMachine();
+        static Places thisMachine(const std::string& logName);
         static Places under(const fs::path& testRoot);   // <root>/home, <root>/system, <root>/Trash, <root>/install.log,
                                                          // <root>/tmp
     };
@@ -112,7 +147,7 @@ namespace playground::installer
     {
         std::string key, name, kind, company, bundleId;
         std::string version;                         // its app's (else its first bundle's) version
-        std::vector<Offer> offers;                   // one a part, in kParts' order
+        std::vector<Offer> offers;                   // one a part, by its Part (kAllParts' order)
 
         bool instrument() const { return kind == "instrument"; }
         const Offer& offer(Part part) const { return offers[static_cast<std::size_t>(part)]; }
@@ -138,7 +173,8 @@ namespace playground::installer
         Scope scope = Scope::user;                   // the folder's: the user's (home) or the system's (root)
         fs::path path;
         std::string version;                         // empty when it could not be read
-        bool link = false;                           // a symbolic link: never followed, never replaced or moved
+        bool link = false;                           // a symbolic link (a junction too): never followed, never
+                                                     // replaced or moved
         bool mine = true;                            // this user owns it
         bool trashable = true;                       // this user may move it (no administrator needed)
     };
@@ -195,26 +231,43 @@ namespace playground::installer
     using ProgressFn = std::function<void(int step, State state, const std::string& line)>;
 
     // The system's tools, behind an interface so that a probe replaces each one it must not use for real (the AU
-    // registrar, the administrator prompt, the Trash, the processes) and keeps ditto (dittoCopy).
+    // registrar, the administrator prompt, the Trash, the processes) and keeps the copy (copyItem).
     class System
     {
     public:
         virtual ~System() = default;
 
-        // ditto --noqtn <from> <to>; false with the reason (its own words) in `error`.
+        // ditto --noqtn <from> <to> (Windows: robocopy; copyItem); false with the reason (its own words) in `error`.
         virtual bool copy(const fs::path& from, const fs::path& to, std::string& error) = 0;
-        // The bundles of the apps running now (pgrep -lf: each process's executable inside <bundle>/Contents/MacOS).
+        // The apps running now: macOS their bundles (pgrep -lf: each process's executable inside
+        // <bundle>/Contents/MacOS); Windows each process's executable.
         virtual std::vector<fs::path> runningApps() = 0;
-        // killall -9 AudioComponentRegistrar: hosts see the Audio Units as they are now.
+        // killall -9 AudioComponentRegistrar: hosts see the Audio Units as they are now (Windows: none, nothing to do).
         virtual bool restartAuRegistrar() = 0;
-        // The user's Trash. False with the reason in `error`.
+        // The user's Trash (Recycle Bin). False with the reason in `error`.
         virtual bool moveToTrash(const fs::path& path, std::string& error) = 0;
-        // `/bin/sh -c <script>` (the script's text, never a file), as root, through macOS's administrator prompt showing
-        // `prompt`; blocks until it is over.
+        // The engine's script (its text, never a file) as an administrator, through the system's own prompt; blocks
+        // until it is over. macOS: `/bin/sh -c <script>` as root through osascript's prompt showing `prompt`. Windows:
+        // PowerShell (-EncodedCommand) through UAC, which shows no text of ours. `status`: the script's exit status
+        // (Windows' report; -1 when it did not run).
         enum class Admin : uint8_t { ran, failed, cancelled };
-        virtual Admin runAsAdministrator(const std::string& script, const std::string& prompt, std::string& error) = 0;
+        virtual Admin runAsAdministrator(const std::string& script, const std::string& prompt, std::string& error,
+                                         int& status) = 0;
     };
 
+#if defined(_WIN32)
+    // The tools of this computer (SystemWin.cpp): robocopy, the process list, SHFileOperation's Recycle Bin, UAC.
+    class WinSystem final : public System
+    {
+    public:
+        bool copy(const fs::path& from, const fs::path& to, std::string& error) override;
+        std::vector<fs::path> runningApps() override;
+        bool restartAuRegistrar() override;
+        bool moveToTrash(const fs::path& path, std::string& error) override;
+        Admin runAsAdministrator(const std::string& script, const std::string& prompt, std::string& error,
+                                 int& status) override;
+    };
+#else
     // The tools of this Mac (System.cpp): ditto, pgrep, killall, NSFileManager's trash, osascript.
     class MacSystem final : public System
     {
@@ -223,17 +276,33 @@ namespace playground::installer
         std::vector<fs::path> runningApps() override;
         bool restartAuRegistrar() override;
         bool moveToTrash(const fs::path& path, std::string& error) override;
-        Admin runAsAdministrator(const std::string& script, const std::string& prompt, std::string& error) override;
+        Admin runAsAdministrator(const std::string& script, const std::string& prompt, std::string& error,
+                                 int& status) override;
     };
 
-    // ditto --noqtn <from> <to>, as MacSystem::copy runs it (a probe's System copies with it too).
+    // ditto --noqtn <from> <to>, as MacSystem::copy runs it.
     bool dittoCopy(const fs::path& from, const fs::path& to, std::string& error);
+#endif
+
+    // The copy as this machine's System makes it (a probe's System copies with it too): macOS ditto --noqtn <from>
+    // <to>; Windows robocopy from System32, no link followed (/SL /XJ: a link copied as one, a junction left out), a
+    // folder whole as <to>, a file as <to>.
+    bool copyItem(const fs::path& from, const fs::path& to, std::string& error);
 
     // Runs a program (no shell) and waits: its exit status (-1 when it could not start), its output and its errors.
     int runProgram(const std::vector<std::string>& argv, std::string* out, std::string* err);
 
     // A path quoted for /bin/sh: between single quotes, each ' written '\''.
     std::string shellQuote(const std::string& s);
+    // A path quoted for PowerShell: a literal between single quotes, each ' (and its typographic kin) doubled.
+    std::string psQuote(const std::string& s);
+
+#if defined(_WIN32)
+    // Windows PowerShell's program (System32's, never a copy this user could change), and a script as its
+    // -EncodedCommand takes it (the text as UTF-16LE, in base64): WinSystem's administrator prompt and a probe's stand-in.
+    fs::path powershellExe();
+    std::string psEncoded(const std::string& script);
+#endif
 
     class Engine
     {
@@ -272,19 +341,23 @@ namespace playground::installer
         // `status` ("STEP <i> start", "STEP <i> done", "STEP <i> fail <why>"); the first failure ends the script, and
         // as it ends, the folder is given to this user (who removes it).
         // The uninstall's script holds the copies `only` names (indices; empty: every copy that is not a link).
+        // Windows: PowerShell, whose report is its exit code (no status folder: `statusDir`'s name only names the
+        // run's staging folders), each step's staging folder given to this user, for the engine to empty afterwards.
         std::string adminScript(const Plan& plan, const fs::path& statusDir) const;
         std::string adminUninstallScript(const std::vector<Copy>& copies, const fs::path& statusDir,
                                          const std::vector<int>& only = {}) const;
         static constexpr const char* kStatusFile = "status";
 
-        // A path as the user reads it: ~ for the home.
+        // A path as the user reads it: ~ for the home (Windows: %LOCALAPPDATA% and %ProgramFiles%).
         std::string shown(const fs::path& p) const;
 
         // -1, 0 or 1: dotted numbers compared number by number ("0.10.0" after "0.9.1"); text by text.
         static int compareVersions(const std::string& a, const std::string& b);
-        static std::string bundleVersion(const fs::path& bundle);           // CFBundleShortVersionString; "" if none
+        static std::string bundleVersion(const fs::path& bundle);           // CFBundleShortVersionString (Windows:
+                                                                            // a VST3's moduleinfo.json, an app
+                                                                            // folder's exe's version); "" if none
         static std::string extensionVersion(const fs::path& mcpb);          // its manifest.json's "version"; "" if none
-        // Whether two copies of a part hold the same contents (the CDHash, else every file's bytes).
+        // Whether two copies of a part hold the same contents (the CDHash, else every file's bytes: Windows').
         static bool sameContents(const fs::path& a, const fs::path& b);
 
     private:
@@ -304,14 +377,24 @@ namespace playground::installer
         std::string walkChecks(const fs::path& folder, const std::string& k) const;
         std::string scriptHead(const std::string& what, const fs::path& statusDir) const;
         // Writes the script `makeScript` makes for its status folder, runs it through the administrator prompt, and
-        // reports its steps (`indices` of `steps`) as the status file tells them.
+        // reports its steps (`indices` of `steps`) as the status file tells them (Windows: as its exit code tells
+        // them, then each step's staging folder emptied into the Recycle Bin). `targets`: each step's target (by
+        // index).
         Report runAdmin(const std::function<std::string(const fs::path&)>& makeScript, int steps,
-                        const std::vector<int>& indices, const ProgressFn& progress, Report report, const std::string& what);
+                        const std::vector<int>& indices, const ProgressFn& progress, Report report, const std::string& what,
+                        const std::vector<fs::path>& targets);
+#if defined(_WIN32)
+        // What a run as an administrator left in `stage`, a staging folder beside `target`: the old copy (`replaced`:
+        // an install step done; its own name, or `old` when the script could not rename it), or the copy moved aside
+        // or half made (the target's own name), to the Recycle Bin, then the folder removed (empty). What went where,
+        // in words; "" when nothing was there.
+        std::string collectStage(const fs::path& stage, const fs::path& target, bool replaced);
+#endif
 
         Payload payload_;
         Places places_;
         System& system_;
-        fs::path realHome_, realRoot_;               // home and root, resolved
+        fs::path realHome_, realRoot_;               // home and root, resolved (links and junctions followed)
         // A path below home or root with the base resolved (realHome_, realRoot_): the folder as `pwd -P` says it.
         fs::path realOf(const fs::path& p) const;
         std::vector<std::string> runningNotes(const std::vector<std::string>& apps, bool plugins, bool removing) const;

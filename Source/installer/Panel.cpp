@@ -35,6 +35,21 @@ namespace playground::installer
         constexpr uint32_t kProgressId = 0x8F00u;
         constexpr double kRefreshSeconds = 3.0;          // Choose and Uninstall look again this often
 
+        constexpr float kPartRows = static_cast<float>(std::size(kParts));   // a product's switches: 4, or 3 (Windows)
+
+        // The words the platforms say differently (the Trash's are Engine.h's trashWords()).
+#if defined(_WIN32)
+        constexpr const char* kMachine = "this computer";
+        constexpr const char* kTrashTitle = "Recycle Bin";          // "Move to Recycle Bin"
+        constexpr const char* kAsksAdmin = "Windows asks an administrator to approve";
+        constexpr const char* kAsksAdminShort = "asks an administrator to approve";
+#else
+        constexpr const char* kMachine = "this Mac";
+        constexpr const char* kTrashTitle = "Trash";
+        constexpr const char* kAsksAdmin = "macOS asks for an administrator's password";
+        constexpr const char* kAsksAdminShort = "asks for an administrator's password";
+#endif
+
         constexpr funkgui::TextStyle kHero{ 20.0f, 0.0f, 0.07f, false };
         constexpr funkgui::TextStyle kTitle{ 17.0f, 0.0f, 0.075f, false };
 
@@ -551,9 +566,9 @@ namespace playground::installer
             y += 76.0f;
         }
         y += 14.0f;
-        const std::string about = "Each is a plugin whose sound is a program you write, or ask Claude to write, while it "
-                                  "plays. Next, choose the parts to install and for whom: just for you, or for every "
-                                  "user of this Mac.";
+        const std::string about = std::string("Each is a plugin whose sound is a program you write, or ask Claude to write, "
+                                              "while it plays. Next, choose the parts to install and for whom: just for "
+                                              "you, or for every user of ") + kMachine + ".";
         for (const std::string& l : wrapped(about, chat::kBody, kInnerW))
         {
             L.lines.push_back({ Line::Kind::body, l, { kX0, y, kInnerW, chat::kBodyLine } });
@@ -571,6 +586,13 @@ namespace playground::installer
                             { kX0, 60.0f, kInnerW, 16.0f } });
         constexpr float kHead = 30.0f, kStatusX = 220.0f, kNotesY = 84.0f;
         const float products = static_cast<float>(pay.products.size());
+#if defined(_WIN32)
+        const Product first = pay.products.empty() ? Product{} : pay.products.front();
+        const std::string where = "Plugins in " + engine_.shown(engine_.folder(first, Part::vst3, scope_)) + ", apps in "
+                                  + engine_.shown(engine_.folder(first, Part::app, scope_))
+                                  + (scope_ == Scope::user ? std::string(": no administrator needed.")
+                                                           : ": " + std::string(kAsksAdmin) + ".");
+#else
         const std::string where = scope_ == Scope::user
                                       ? "Plugins in ~/Library/Audio/Plug-Ins, apps in "
                                             + engine_.shown(engine_.folder(pay.products.empty() ? Product{} : pay.products.front(),
@@ -578,23 +600,24 @@ namespace playground::installer
                                             + ": no password."
                                       : "Plugins in /Library/Audio/Plug-Ins, apps in /Applications: macOS asks for an "
                                         "administrator's password.";
+#endif
         const std::vector<std::string> whereLines = wrapped(where, chat::kSmall, kInnerW);
 
         // The notes first, under the subtitle: what is open that uses what changes, a product installed in the other
         // scope too. The part rows close up (24 px down to 18) to make room for them: below the notes come the cards
-        // (each its head, four rows, its padding and a gap), the scope's row and its sentence.
+        // (each its head, a row a part, its padding and a gap), the scope's row and its sentence.
         const float bottom = kFooterY - 10.0f;
         const float below = 2.0f + 38.0f + 15.0f * static_cast<float>(whereLines.size());
-        const auto cardsH = [&](float row) { return products * (kHead + 4.0f * row + 8.0f + 12.0f); };
+        const auto cardsH = [&](float row) { return products * (kHead + kPartRows * row + 8.0f + 12.0f); };
         const int room = static_cast<int>(std::floor((bottom - kNotesY - 14.0f - below - cardsH(18.0f)) / 15.0f));
         const int placed = noteLines(L, choices_.notes, kNotesY, room);
         float y = placed == 0 ? 92.0f : kNotesY + 15.0f * static_cast<float>(placed) + 14.0f;
-        const float kRow = std::clamp(std::floor((bottom - y - below - cardsH(0.0f)) / std::max(1.0f, 4.0f * products)),
+        const float kRow = std::clamp(std::floor((bottom - y - below - cardsH(0.0f)) / std::max(1.0f, kPartRows * products)),
                                       18.0f, 24.0f);
         for (std::size_t p = 0; p < pay.products.size(); ++p)
         {
             const Product& pr = pay.products[p];
-            const float blockH = kHead + 4.0f * kRow + 8.0f;
+            const float blockH = kHead + kPartRows * kRow + 8.0f;
             L.cards.push_back({ kX0 - 14.0f, y - 6.0f, kInnerW + 28.0f, blockH });
             L.marks.push_back({ { kX0, y, logo::kTile, logo::kTile }, pr.instrument(), 1.0f });
             L.lines.push_back({ Line::Kind::strong, pr.name, { kX0 + 36.0f, y + 4.0f, 260.0f, 18.0f } });
@@ -644,11 +667,17 @@ namespace playground::installer
         const std::string me = "Just for me", all = "All users";
         const float w0 = pillW(me, chat::kSmall), w1 = pillW(all, chat::kSmall);
         L.rules.push_back({ sx - 3.0f, y - 3.0f, w0 + w1 + 6.0f, 34.0f });   // the switch's track
-        L.controls.push_back({ Act::scope, 0, Control::Kind::radio, { sx, y, w0, 28.0f }, me, "Install just for me",
-                               "Into your own Library folders: no password", scope_ == Scope::user, true, idOf(Act::scope, 0) });
+#if defined(_WIN32)
+        const std::string mine = "Into your own folders: no administrator needed";
+        const std::string everyone = std::string("Into Program Files: ") + kAsksAdmin;
+#else
+        const std::string mine = "Into your own Library folders: no password";
+        const std::string everyone = std::string("Into the system's Library folders: ") + kAsksAdmin;
+#endif
+        L.controls.push_back({ Act::scope, 0, Control::Kind::radio, { sx, y, w0, 28.0f }, me, "Install just for me", mine,
+                               scope_ == Scope::user, true, idOf(Act::scope, 0) });
         L.controls.push_back({ Act::scope, 1, Control::Kind::radio, { sx + w0, y, w1, 28.0f }, all, "Install for all users",
-                               "Into the system's Library folders: macOS asks for an administrator's password",
-                               scope_ == Scope::system, true, idOf(Act::scope, 1) });
+                               everyone, scope_ == Scope::system, true, idOf(Act::scope, 1) });
         y += 38.0f;
         for (const std::string& l : whereLines)
         {
@@ -661,10 +690,10 @@ namespace playground::installer
             if (chosen(s.key, s.part) && s.changes())
                 ++changing;
         footer(L, { { Act::toUninstall, 0, Control::Kind::secondary, {}, "Uninstall...",
-                      "Uninstall: move installed copies to the Trash", {}, false, true, 0 } },
+                      std::string("Uninstall: move installed copies to ") + trashWords(), {}, false, true, 0 } },
                { { Act::back, 0, Control::Kind::secondary, {}, "Back", "Back to the welcome", {}, false, true, 0 },
                  { Act::install, 0, Control::Kind::primary, {}, scope_ == Scope::system ? "Install..." : "Install",
-                   scope_ == Scope::system ? "Install for all users (asks for an administrator's password)" : "Install",
+                   scope_ == Scope::system ? std::string("Install for all users (") + kAsksAdminShort + ")" : std::string("Install"),
                    changing == 0 ? "Nothing chosen needs installing" : std::to_string(changing) + " parts to install",
                    false, changing > 0, 0 } });
     }
@@ -679,15 +708,21 @@ namespace playground::installer
             lines = runLines_;
         }
         const bool admin = !uninstalling_ ? runPlan_.admin() : false;
-        L.lines.push_back({ Line::Kind::title, uninstalling_ ? "Moving to the Trash" : "Installing", { kX0, 34.0f, kInnerW, 22.0f } });
+        L.lines.push_back({ Line::Kind::title, uninstalling_ ? std::string("Moving to ") + trashWords() : std::string("Installing"),
+                            { kX0, 34.0f, kInnerW, 22.0f } });
         const bool waiting = std::any_of(lines.begin(), lines.end(), [](const std::string& l) {
             return l.find("administrator") != std::string::npos;
         });
-        const std::string sub = waiting ? "macOS asks for an administrator's password: the installer never sees it."
-                              : uninstalling_ ? "Each copy goes to the Trash: nothing is deleted."
-                                              : admin ? "Installing for all users, as an administrator."
-                                                      : "Each part is copied beside its place, then put in place; old "
-                                                        "copies go to the Trash.";
+#if defined(_WIN32)
+        const std::string asked = std::string(kAsksAdmin) + ": the installer never sees a password.";
+#else
+        const std::string asked = std::string(kAsksAdmin) + ": the installer never sees it.";
+#endif
+        const std::string sub = waiting ? asked
+                              : uninstalling_ ? std::string("Each copy goes to ") + trashWords() + ": nothing is deleted."
+                                              : admin ? std::string("Installing for all users, as an administrator.")
+                                                      : std::string("Each part is copied beside its place, then put in "
+                                                                    "place; old copies go to ") + trashWords() + ".";
         L.lines.push_back({ Line::Kind::subtitle, fit(sub, chat::kSmall, kInnerW), { kX0, 60.0f, kInnerW, 16.0f } });
 
         int finished = 0, todo = 0;
@@ -721,7 +756,7 @@ namespace playground::installer
             // Where a part went (or a copy came from), once it is done; else what is happening to it.
             std::string said = lines[i].empty() ? stateWords(states[i]) : lines[i];
             if (states[i] == State::done && uninstalling_ && i < runCopies_.size())
-                said = "moved to the Trash from " + engine_.shown(runCopies_[i].path.parent_path());
+                said = std::string("moved to ") + trashWords() + " from " + engine_.shown(runCopies_[i].path.parent_path());
             else if (states[i] == State::done && !uninstalling_ && i < runPlan_.steps.size())
                 said = engine_.shown(runPlan_.steps[i].folder);
             else if (states[i] == State::skipped && !uninstalling_ && i < runPlan_.steps.size() && said.rfind("already", 0) == 0)
@@ -747,7 +782,7 @@ namespace playground::installer
         const Payload& pay = engine_.payload();
         std::string title;
         if (uninstalling_)
-            title = r.ok() ? "Moved to the Trash" : r.count(State::done) > 0 ? "Some copies were moved" : "Nothing was moved";
+            title = r.ok() ? std::string("Moved to ") + trashWords() : r.count(State::done) > 0 ? "Some copies were moved" : "Nothing was moved";
         else
             title = r.ok() ? (r.count(State::done) > 0 ? "Installed" : "Nothing needed installing")
                            : r.count(State::done) > 0 ? "Installed, but not everything" : "Nothing was installed";
@@ -766,7 +801,12 @@ namespace playground::installer
             const bool left = std::any_of(r.lines.begin(), r.lines.end(), [](const std::string& l) {
                 return l.rfind("left as it was", 0) == 0;
             });
-            const std::string sub = uninstalling_ ? "Each copy is in the Trash: to undo, drag it back to its folder (above)."
+#if defined(_WIN32)
+            const std::string undo = "Each copy is in the Recycle Bin: to undo, restore it from there.";
+#else
+            const std::string undo = "Each copy is in the Trash: to undo, drag it back to its folder (above).";
+#endif
+            const std::string sub = uninstalling_ ? undo
                                     : left        ? "Here is what went where; a part that could not go is left as it was."
                                                   : "Here is what went where.";
             L.lines.push_back({ Line::Kind::subtitle, fit(sub, chat::kSmall, kInnerW), { kX0, y, kInnerW, 16.0f } });
@@ -937,8 +977,8 @@ namespace playground::installer
     {
         const Payload& pay = engine_.payload();
         L.lines.push_back({ Line::Kind::title, "Uninstall", { kX0, 34.0f, kInnerW, 22.0f } });
-        L.lines.push_back({ Line::Kind::subtitle, "Every copy found on this Mac; the ones switched on go to the Trash.",
-                            { kX0, 60.0f, kInnerW, 16.0f } });
+        L.lines.push_back({ Line::Kind::subtitle, std::string("Every copy found on ") + kMachine + "; the ones switched on go to "
+                                                      + trashWords() + ".", { kX0, 60.0f, kInnerW, 16.0f } });
         int n = 0, heads = 0;
         for (const Product& pr : pay.products)
         {
@@ -960,7 +1000,7 @@ namespace playground::installer
             std::string list;
             for (std::size_t i = 0; i < names.size(); ++i)
                 list += (i == 0 ? "" : i + 1 == names.size() ? " or " : ", ") + names[i];
-            for (const std::string& l : wrapped("No part of " + list + " is installed on this Mac.", chat::kBody, kInnerW))
+            for (const std::string& l : wrapped("No part of " + list + " is installed on " + kMachine + ".", chat::kBody, kInnerW))
             {
                 L.lines.push_back({ Line::Kind::body, l, { kX0, y, kInnerW, chat::kBodyLine } });
                 y += chat::kBodyLine;
@@ -992,12 +1032,16 @@ namespace playground::installer
                 k.r = { kX0, ry, 208.0f, row - 4.0f };
                 k.label = partName(c.part);
                 k.title = "Move " + pr.name + "'s " + partName(c.part) + " in " + engine_.shown(c.path.parent_path())
-                          + " to the Trash";
+                          + " to " + trashWords();
                 k.on = copyOn_[i] && !c.link;
                 k.enabled = !c.link;
                 k.id = idOf(Act::copy, k.index);
                 const std::string where = engine_.shown(c.path.parent_path()) + (c.version.empty() ? "" : " (" + c.version + ")")
+#if defined(_WIN32)
+                                          + (c.link ? ": a link, left as it is" : c.trashable ? "" : ": asks an administrator");
+#else
                                           + (c.link ? ": a link, left as it is" : c.trashable ? "" : ": asks for a password");
+#endif
                 k.help = where;
                 L.controls.push_back(k);
                 on += k.on ? 1 : 0;
@@ -1008,8 +1052,8 @@ namespace playground::installer
             y += blockH + 12.0f;
         }
         footer(L, {}, { { Act::back, 0, Control::Kind::secondary, {}, "Back", "Back to the choice of parts", {}, false, true, 0 },
-                        { Act::trash, 0, Control::Kind::primary, {}, "Move to Trash", "Move the copies switched on to the Trash",
-                          {}, false, on > 0, 0 } });
+                        { Act::trash, 0, Control::Kind::primary, {}, std::string("Move to ") + kTrashTitle,
+                          std::string("Move the copies switched on to ") + trashWords(), {}, false, on > 0, 0 } });
     }
 
     std::vector<Panel::Control> Panel::controls() const

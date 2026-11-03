@@ -22,15 +22,15 @@
 #                                code and no plugin code (FP_SANDBOX_SHARED)
 #   Assets/logo/<kind>/          the app icon (Tools/logo/logo.swift writes it)   -> each bundle's Icon.icns
 #   Source/installer/            the installer, one for every product (its payload: their bundles and extensions)
-#                                                                                  -> "<Project> Installer.app"
+#                                                                                  -> "<Project> Installer.app" (.exe)
 #   Tools/probes/**/*.cpp        probes on FunkGui's Harness, self-registered      -> <Name>_probes, tests <key>:<probe>
 #   Tools/probes/installer/      the installer's probes                            -> Installer_probes, tests installer.*
 #
 # Windows (x64, clang-cl; the windows-* presets): the VST3, the Standalone, the MCP server and its extension, the GUI
-# sandbox's helper and the probes. The editor draws on the GPU there too (FunkGui v0.24.0: bgfx on Direct3D 11), or,
-# with FP_WITH_GPU off, on the CPU (Source/editor/nogpu/: FunkGui's SoftRaster in a JUCE component); no AU, no
-# signing. Platform files are named for it: *Win.cpp and *None.cpp beside the macOS *.mm and IOKit sources
-# (Source/plugin/standalone/).
+# sandbox's helper, the installer (its payload\ beside its exe) and the probes. The editor draws on the GPU there too
+# (FunkGui v0.24.0: bgfx on Direct3D 11), or, with FP_WITH_GPU off, on the CPU (Source/editor/nogpu/: FunkGui's
+# SoftRaster in a JUCE component); no AU, no signing. Platform files are named for it: *Win.cpp and *None.cpp beside
+# the macOS *.mm and IOKit sources (Source/plugin/standalone/, Source/installer/: EngineWin.cpp, SystemWin.cpp).
 # Every list is a CONFIGURE_DEPENDS glob: a new source file needs no CMake edit. Nothing outside products/ (and the
 # docs) names a product: the C++ namespace is `playground` in both, and every product-specific value comes from the
 # product's file, through Product.h or the variables below.
@@ -743,11 +743,10 @@ foreach(_k IN LISTS _fp_products)
   fp_add_product(${_k})
 endforeach()
 
-# ---- the installer: one app for every product, the products inside it (cmake/Installer.cmake); macOS's alone --------
-if(APPLE)
-  include(Installer)
-  fp_add_installer()
-endif()
+# ---- the installer: one app for every product, the products inside it (cmake/Installer.cmake) -----------------------
+# macOS: "<Project> Installer.app" with its payload inside; Windows: "<Project> Installer.exe" with payload\ beside it.
+include(Installer)
+fp_add_installer()
 
 # ---- the lints, once for every product's bundles (cmake/Probes.cmake) -----------------------------------------------
 fp_add_lints()

@@ -109,6 +109,11 @@ namespace playground::installer
         return false;
     }
 
+    bool copyItem(const fs::path& from, const fs::path& to, std::string& error)
+    {
+        return dittoCopy(from, to, error);
+    }
+
     bool MacSystem::copy(const fs::path& from, const fs::path& to, std::string& error)
     {
         return dittoCopy(from, to, error);
@@ -152,19 +157,20 @@ namespace playground::installer
         return false;
     }
 
-    System::Admin MacSystem::runAsAdministrator(const std::string& script, const std::string& prompt, std::string& error)
+    System::Admin MacSystem::runAsAdministrator(const std::string& script, const std::string& prompt, std::string& error,
+                                                int& status)
     {
         // The script's text and the prompt reach AppleScript as arguments (argv), so nothing is quoted into its text,
         // and `do shell script` hands the text to /bin/sh -c as root: no file holds it that this user could change
         // while the prompt waits for the password.
         std::string out, err;
-        const int status = runProgram({ "/usr/bin/osascript",
-                                        "-e", "on run argv",
-                                        "-e", "do shell script (item 1 of argv) with prompt (item 2 of argv) "
-                                              "with administrator privileges",
-                                        "-e", "end run",
-                                        script, prompt },
-                                      &out, &err);
+        status = runProgram({ "/usr/bin/osascript",
+                              "-e", "on run argv",
+                              "-e", "do shell script (item 1 of argv) with prompt (item 2 of argv) "
+                                    "with administrator privileges",
+                              "-e", "end run",
+                              script, prompt },
+                            &out, &err);
         if (status == 0)
             return Admin::ran;
         if (err.find("-128") != std::string::npos)        // "User canceled. (-128)"

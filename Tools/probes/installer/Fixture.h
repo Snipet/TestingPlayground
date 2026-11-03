@@ -2,17 +2,24 @@
 // two made-up products in a folder of the probe's own, and a System that never touches what a probe must not.
 //
 //   root()        the probe's root, inside its CTest sandbox (<build>/sandbox/installer/<probe>/), emptied first; its
-//                 name has spaces and both quotes, so every path the engine writes or quotes has them too
+//                 name has spaces and both quotes (Windows: spaces and a single quote, the one its names may hold), so
+//                 every path the engine writes or quotes has them too
 //   writePayload  "Tone" (an effect) and "ToneSynth" (an instrument), company "Funk Test": each a .component (signed ad
 //                 hoc around a copy of /usr/bin/true, so the CDHash path is the one compared), a .vst3 and a .app
-//                 (unsigned: compared byte for byte) and a .mcpb (a zip with its manifest.json)
-//   FakeSystem    ditto is real (it copies inside the root only); the Trash is Places::trash (a folder of the root);
-//                 the AU registrar, the running apps and the administrator prompt are stand-ins: the prompt runs the
-//                 engine's script's text with /bin/sh -c as this user (as `do shell script` does, but inside the root,
-//                 no administrator, no prompt), or answers "cancelled". A gate holds copies from a given one on, for a
-//                 picture of a run half done.
+//                 (unsigned: compared byte for byte) and a .mcpb (a zip with its manifest.json). Windows: a .vst3 (its
+//                 version in Contents/Resources/moduleinfo.json), the app's folder (its <Name>.exe a copy of System32's
+//                 whoami.exe whose resources are a version resource of the version asked: the engine reads it as it
+//                 reads a real build's) and a .mcpb
+//   FakeSystem    the copy is real (ditto, robocopy: inside the root only); the Trash is Places::trash (a folder of the
+//                 root); the AU registrar, the running apps and the administrator prompt are stand-ins: the prompt runs
+//                 the engine's script's text with /bin/sh -c (Windows: PowerShell, -EncodedCommand) as this user (as
+//                 `do shell script` does, but inside the root, no administrator, no prompt), or answers "cancelled". A
+//                 gate holds copies from a given one on, for a picture of a run half done.
+//   Windows'      junction() (cmd's mklink /J: no privilege needed, as a symbolic link needs), isLink(), denyWrite() and
+//                 allowWrite() (icacls: a folder this user may not add to, then may again), userSid()
 //
-// The probes use Places::under(root()) only: nothing reaches ~/Library, /Library or /Applications.
+// The probes use Places::under(root()) only: nothing reaches ~/Library, /Library, /Applications, %LOCALAPPDATA% or
+// Program Files.
 #pragma once
 
 #include "installer/Engine.h"
@@ -32,6 +39,14 @@
 
 #include <funkgui/core/Config.h>
 
+#if defined(_WIN32)
+#include <cstdint>
+#include <windows.h>
+#include <sddl.h>
+#undef near                                          // windows.h's 16-bit leftovers: the probes' P.near
+#undef far
+#endif
+
 namespace fixture
 {
     namespace fs = std::filesystem;
@@ -41,13 +56,186 @@ namespace fixture
     inline constexpr const char* kSynth = "ToneSynth";
     inline constexpr const char* kCompany = "Funk Test";
 
-    // The probe's root: <sandbox>/root with spaces 'and' "quotes", emptied.
+#if defined(_WIN32)
+    inline fs::path systemExe(const wchar_t* name)
+    {
+        wchar_t b[MAX_PATH];
+        const UINT n = GetSystemDirectoryW(b, MAX_PATH);
+        return fs::path(std::wstring(b, n)) / name;
+    }
+
+    inline std::string text(const fs::path& p)      // a path as UTF-8 (the probes' code page: Utf8.manifest)
+    {
+        return p.string();
+    }
+
+    // This user's SID, as icacls names it ("*S-1-5-21-...").
+    inline std::string userSid()
+    {
+        std::string out;
+        HANDLE token = nullptr;
+        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+            return out;
+        DWORD n = 0;
+        GetTokenInformation(token, TokenUser, nullptr, 0, &n);
+        std::vector<BYTE> buf(n);
+        LPSTR sid = nullptr;
+        if (n > 0 && GetTokenInformation(token, TokenUser, buf.data(), n, &n)
+            && ConvertSidToStringSidA(reinterpret_cast<TOKEN_USER*>(buf.data())->User.Sid, &sid))
+        {
+            out = std::string("*") + sid;
+            LocalFree(sid);
+        }
+        CloseHandle(token);
+        return out;
+    }
+
+    inline int icacls(const std::vector<std::string>& args)
+    {
+        std::vector<std::string> argv{ text(systemExe(L"icacls.exe")) };
+        argv.insert(argv.end(), args.begin(), args.end());
+        return pi::runProgram(argv, nullptr, nullptr);
+    }
+
+    // This user may no longer add a file or a folder to `dir` (a deny of its own, on that folder alone), then may again.
+    inline bool denyWrite(const fs::path& dir) { return icacls({ text(dir), "/deny", userSid() + ":(WD,AD)" }) == 0; }
+    inline bool allowWrite(const fs::path& dir) { return icacls({ text(dir), "/remove:d", userSid() }) == 0; }
+
+    // A junction at `link` to `target` (which need not be there).
+    inline bool junction(const fs::path& link, const fs::path& target)
+    {
+        return pi::runProgram({ text(systemExe(L"cmd.exe")), "/c", "mklink", "/J", text(link), text(target) }, nullptr, nullptr)
+               == 0;
+    }
+
+    inline bool isLink(const fs::path& p)
+    {
+        const DWORD a = GetFileAttributesW(p.c_str());
+        return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+    }
+
+    // A version resource (VS_VERSIONINFO) whose ProductVersion and FileVersion are `version`, in US English.
+    inline std::vector<unsigned char> versionResource(const std::string& version)
+    {
+        struct Node
+        {
+            std::vector<unsigned char> b;
+            void u16(unsigned v)
+            {
+                b.push_back(static_cast<unsigned char>(v & 0xFF));
+                b.push_back(static_cast<unsigned char>((v >> 8) & 0xFF));
+            }
+            void u32(uint32_t v)
+            {
+                u16(v & 0xFFFF);
+                u16(v >> 16);
+            }
+            void text(const std::string& s)
+            {
+                for (const char c : s)
+                    u16(static_cast<unsigned char>(c));
+                u16(0);
+            }
+            void pad()
+            {
+                while (b.size() % 4 != 0)
+                    b.push_back(0);
+            }
+        };
+        // wLength, wValueLength, wType, the key, its padding, the value, then each child at a 32-bit boundary.
+        const auto node = [](const std::string& key, unsigned type, unsigned valueLength, const std::vector<unsigned char>& value,
+                             const std::vector<std::vector<unsigned char>>& children) {
+            Node n;
+            n.u16(0);
+            n.u16(valueLength);
+            n.u16(type);
+            n.text(key);
+            n.pad();
+            n.b.insert(n.b.end(), value.begin(), value.end());
+            for (const auto& c : children)
+            {
+                n.pad();
+                n.b.insert(n.b.end(), c.begin(), c.end());
+            }
+            const std::size_t len = n.b.size();
+            n.b[0] = static_cast<unsigned char>(len & 0xFF);
+            n.b[1] = static_cast<unsigned char>((len >> 8) & 0xFF);
+            return n.b;
+        };
+        const auto string = [&](const std::string& key, const std::string& value) {
+            Node v;
+            v.text(value);
+            return node(key, 1, static_cast<unsigned>(value.size() + 1), v.b, {});
+        };
+        unsigned parts[4] = { 0, 0, 0, 0 };
+        std::size_t at = 0;
+        for (int i = 0; i < 4 && at <= version.size(); ++i)
+        {
+            const std::size_t dot = version.find('.', at);
+            parts[i] = static_cast<unsigned>(std::strtoul(version.substr(at, dot - at).c_str(), nullptr, 10));
+            if (dot == std::string::npos)
+                break;
+            at = dot + 1;
+        }
+        Node fixed;
+        fixed.u32(0xFEEF04BDu);                      // VS_FIXEDFILEINFO: the signature, the struct's version
+        fixed.u32(0x00010000u);
+        for (int k = 0; k < 2; ++k)                  // the file's version, then the product's
+        {
+            fixed.u32((parts[0] << 16) | parts[1]);
+            fixed.u32((parts[2] << 16) | parts[3]);
+        }
+        fixed.u32(0x3Fu);                            // the flags' mask, the flags
+        fixed.u32(0u);
+        fixed.u32(0x00040004u);                      // VOS_NT_WINDOWS32
+        fixed.u32(1u);                               // VFT_APP
+        fixed.u32(0u);
+        fixed.u32(0u);
+        fixed.u32(0u);
+        const auto table = node("040904b0", 1, 0, {}, { string("FileVersion", version), string("ProductVersion", version) });
+        const auto strings = node("StringFileInfo", 1, 0, {}, { table });
+        Node translation;
+        translation.u16(0x0409);
+        translation.u16(0x04b0);
+        const auto var = node("Translation", 0, 4, translation.b, {});
+        const auto vars = node("VarFileInfo", 1, 0, {}, { var });
+        return node("VS_VERSION_INFO", 0, static_cast<unsigned>(fixed.b.size()), fixed.b, { strings, vars });
+    }
+
+    // An executable whose version resource says `version`: a copy of System32's whoami.exe (never run), its resources
+    // all replaced by that one.
+    inline bool writeExe(const fs::path& exe, const std::string& version)
+    {
+        std::error_code ec;
+        fs::create_directories(exe.parent_path(), ec);
+        fs::copy_file(systemExe(L"whoami.exe"), exe, fs::copy_options::overwrite_existing, ec);
+        if (ec)
+            return false;
+        SetFileAttributesW(exe.c_str(), FILE_ATTRIBUTE_NORMAL);
+        const HANDLE h = BeginUpdateResourceW(exe.c_str(), TRUE);
+        if (h == nullptr)
+            return false;
+        std::vector<unsigned char> res = versionResource(version);
+        const bool put = UpdateResourceW(h, MAKEINTRESOURCEW(16), MAKEINTRESOURCEW(1), MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL),
+                                         res.data(), static_cast<DWORD>(res.size())) != FALSE;
+        return EndUpdateResourceW(h, put ? FALSE : TRUE) != FALSE && put;
+    }
+#endif
+
+    // The probe's root: <sandbox>/root with spaces 'and' "quotes" (Windows: 'and' quotes), emptied.
     inline fs::path root(const char* probe)
     {
         const std::string var = std::string(funkgui::config::kEnvPrefix) + "PREFS_DIR";
         const char* sb = std::getenv(var.c_str());
-        fs::path base = sb != nullptr && *sb == '/' ? fs::path(sb) : fs::temp_directory_path() / (std::string("installer-") + probe);
+        fs::path base = sb != nullptr && fs::path(sb).is_absolute() ? fs::path(sb)
+                                                                   : fs::temp_directory_path() / (std::string("installer-") + probe);
+#if defined(_WIN32)
+        const fs::path r = base / "root with spaces 'and' quotes";
+        if (fs::exists(r))
+            icacls({ text(r), "/reset", "/T", "/C", "/Q" });   // a deny a stopped run left, taken back
+#else
         const fs::path r = base / "root with spaces 'and' \"quotes\"";
+#endif
         std::error_code ec;
         // Folders a probe made read-only are made writable again, so that the next run can empty its own root.
         for (fs::recursive_directory_iterator it(r, fs::directory_options::none, ec), end; !ec && it != end; it.increment(ec))
@@ -75,6 +263,15 @@ namespace fixture
 
     inline void setVersion(const fs::path& bundle, const std::string& version)
     {
+#if defined(_WIN32)
+        // A VST3: its moduleinfo.json; an app's folder: its exe's version resource.
+        if (bundle.extension() == ".vst3")
+            writeText(bundle / "Contents" / "Resources" / "moduleinfo.json",
+                      "{ \"Name\": \"" + bundle.stem().string() + "\", \"Version\": \"" + version + "\" }\n");
+        else
+            writeExe(bundle / (bundle.filename().string() + ".exe"), version);
+        return;
+#endif
         const std::string name = bundle.stem().string();
         writeText(bundle / "Contents" / "Info.plist",
                   "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -90,12 +287,27 @@ namespace fixture
 
     inline bool sign(const fs::path& bundle)
     {
+#if defined(_WIN32)
+        static_cast<void>(bundle);
+        return true;                                     // nothing is signed on Windows
+#else
         return pi::runProgram({ "/usr/bin/codesign", "--force", "--sign", "-", bundle.string() }, nullptr, nullptr) == 0;
+#endif
     }
 
     // A bundle: its Info.plist, its executable (a copy of /usr/bin/true when `signed_`, then signed ad hoc), a resource.
+    // Windows: a VST3 (moduleinfo.json, its binary) or an app's folder (its exe with the version), and the resource,
+    // Contents/Resources/data.txt in both.
     inline void writeBundle(const fs::path& b, const std::string& version, const std::string& data, bool signed_)
     {
+#if defined(_WIN32)
+        static_cast<void>(signed_);
+        if (b.extension() == ".vst3")
+            writeText(b / "Contents" / "x86_64-win" / (b.stem().string() + ".vst3"), "a module: " + b.stem().string() + "\n");
+        setVersion(b, version);
+        writeText(b / "Contents" / "Resources" / "data.txt", data);
+        return;
+#endif
         const std::string name = b.stem().string();
         setVersion(b, version);
         const fs::path exe = b / "Contents" / "MacOS" / name;
@@ -123,7 +335,11 @@ namespace fixture
         std::error_code ec;
         fs::create_directories(file.parent_path(), ec);
         fs::remove(file, ec);
+#if defined(_WIN32)
+        juce::FileOutputStream out(juce::File(juce::String(file.wstring().c_str())));
+#else
         juce::FileOutputStream out(juce::File(juce::String::fromUTF8(file.c_str())));
+#endif
         zip.writeToStream(out, nullptr);
     }
 
@@ -141,9 +357,11 @@ namespace fixture
                       + kCompany + "\", \"bundleId\": \"com.funk.test.tonesynth\", \"version\": \"" + version + "\" } ] }\n");
         for (const char* name : { kEffect, kSynth })
         {
+#if !defined(_WIN32)
             writeBundle(folder / (std::string(name) + ".component"), version, data, true);
+#endif
             writeBundle(folder / (std::string(name) + ".vst3"), version, data, false);
-            writeBundle(folder / (std::string(name) + ".app"), version, data, false);
+            writeBundle(folder / (std::string(name) + pi::partExtension(pi::Part::app)), version, data, false);
             writeMcpb(folder / (std::string(name) + ".mcpb"), ext, data);
         }
     }
@@ -176,7 +394,7 @@ namespace fixture
                 std::unique_lock<std::mutex> lock(gateMutex_);
                 gateCv_.wait(lock, [&] { return gateAt_ <= 0 || n < gateAt_; });
             }
-            return pi::dittoCopy(from, to, error);
+            return pi::copyItem(from, to, error);
         }
         std::vector<fs::path> runningApps() override { return apps; }
         bool restartAuRegistrar() override
@@ -189,15 +407,23 @@ namespace fixture
             error = "a probe never uses the user's Trash (" + path.string() + ")";
             return false;
         }
-        Admin runAsAdministrator(const std::string& script, const std::string& prompt, std::string& error) override
+        Admin runAsAdministrator(const std::string& script, const std::string& prompt, std::string& error,
+                                 int& status) override
         {
             ++adminRuns;
             lastScript = script;
             lastPrompt = prompt;
+            status = -1;
             if (cancelPrompt)
                 return Admin::cancelled;
             std::string err;
-            const int status = pi::runProgram({ "/bin/sh", "-c", script }, nullptr, &err);
+#if defined(_WIN32)
+            status = pi::runProgram({ pi::powershellExe().string(), "-NoLogo", "-NoProfile", "-NonInteractive",
+                                      "-ExecutionPolicy", "Bypass", "-EncodedCommand", pi::psEncoded(script) },
+                                    nullptr, &err);
+#else
+            status = pi::runProgram({ "/bin/sh", "-c", script }, nullptr, &err);
+#endif
             if (status == 0)
                 return Admin::ran;
             error = err;

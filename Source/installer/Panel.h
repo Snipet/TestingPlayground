@@ -1,23 +1,24 @@
 // Source/installer/Panel.h: the installer's window, a FunkGui Panel drawn in the editor's look (editor/ChatStyle.h's
 // rounded cards, pills and switches; GRAPHITE or PAPER, as the system's appearance is), at a fixed size. App.cpp hosts
-// it in an EditorHost in a native window whose buttons sit over its sidebar; the probes draw it headless.
+// it in an EditorHost in a native window whose buttons sit over its sidebar (Windows: under Windows' own title bar,
+// and in SoftEditorHost where FunkGui has no GPU layer); the probes draw it headless.
 //
 //   sidebar    the project's name, and the pages as steps: Welcome, Choose, Install (or Uninstall), Done
 //   Welcome    both products' marks (editor/LogoMark.h, each in its kind's accent), a line on what they are, each
 //              product with the version this installer holds; Continue
 //   Choose     the notes first (an app or a host that is open, a product installed in the other scope too: one line
 //              each, whole in its accessibility title; the part rows close up, 24 px down to 18, to make room), then
-//              each product's four parts as switches, what is installed now beside each (its version, and what
-//              installing does: install, upgrade, replace a newer one, already installed, or why it cannot), the scope
-//              ("Just for me", "All users": macOS asks for an administrator's password); Uninstall..., Back, Install
-//              (the default)
+//              each product's parts as switches (four; three on Windows, which has no Audio Unit), what is installed
+//              now beside each (its version, and what installing does: install, upgrade, replace a newer one, already
+//              installed, or why it cannot), the scope ("Just for me", "All users": macOS asks for an administrator's
+//              password, Windows for an administrator's approval); Uninstall..., Back, Install (the default)
 //   Installing each step with its state and a progress bar, the notes under them; Stop (after the step running)
 //   Done       what went where, per product: "Open <app>" for an app installed, "Add to Claude Desktop" for an extension
 //              (open -a Claude <file>, only when clicked, and only when Claude Desktop is installed; else how), a note to
 //              rescan plugins in the DAW; an error in plain words, with what was and was not changed; Back (to Choose,
 //              or to Uninstall after one: try again, or another scope), Done (quits)
 //   Uninstall  the notes (an app or a host that is open), every copy found, each a switch (on), where it is and its
-//              version; Back, Move to Trash (the default)
+//              version; Back, Move to Trash (Windows: Move to Recycle Bin; the default)
 //
 // Keys: Return presses the page's default button, Escape goes back (Choose, Uninstall, Done) or stops (Installing), Tab
 // and Shift-Tab (or Down and Up) move the focus over the page's controls, Space presses the focused one, Left and Right
@@ -54,9 +55,9 @@ namespace playground::installer
     public:
         virtual ~AppPort() = default;
         virtual void quit() = 0;
-        virtual bool openApp(const fs::path& app) = 0;              // `open <app>`
+        virtual bool openApp(const fs::path& app) = 0;              // `open <app>` (Windows: its folder's exe)
         virtual fs::path claudeDesktop() const = 0;                 // Claude Desktop's app; empty when not installed
-        virtual bool addToClaude(const fs::path& mcpb) = 0;         // `open -a Claude <mcpb>`
+        virtual bool addToClaude(const fs::path& mcpb) = 0;         // `open -a Claude <mcpb>` (Windows: the shell's)
 
         // The native window's close, minimise and zoom buttons over the sidebar (0 x 0: none, as headless), where the
         // Panel keeps their room (logical px: their left edge and middle), and a press where nothing is (drags it).
@@ -90,7 +91,7 @@ namespace playground::installer
         {
             enum class Kind : uint8_t { primary, secondary, small, toggle, radio };
             Act act = Act::next;
-            int index = 0;                       // a part's (product * 4 + part), a scope's, a copy's, a product's
+            int index = 0;                       // a part's (product * 4 + its Part), a scope's, a copy's, a product's
             Kind kind = Kind::secondary;
             funkgui::Rect r;
             std::string label;                   // what it shows
