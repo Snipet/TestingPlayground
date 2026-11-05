@@ -32,6 +32,12 @@ namespace playground::chatstore
         constexpr char kMagic[4] = { 'F', 'P', 'K', '1' };
         constexpr std::size_t kSaltBytes = 16, kIvBytes = 16, kMacBytes = 32, kBlockBytes = 16;   // SHA-256, AES
         constexpr unsigned kRounds = 100000;
+        // Another machine, as the user's error names it ("made on another Mac or account").
+#if defined(_WIN32)
+        constexpr const char* kAnotherMachine = "another computer";
+#else
+        constexpr const char* kAnotherMachine = "another Mac";
+#endif
 
         // ---- the four primitives the file needs: CommonCrypto on macOS, CNG (bcrypt) on Windows ------------------
 #if defined(_WIN32)
@@ -320,7 +326,7 @@ namespace playground::chatstore
                 return fail("the key derivation failed");
             const auto tag = hmac(mac, bytes, n - kMacBytes);
             if (!sameBytes(tag.data(), bytes + n - kMacBytes, kMacBytes))
-                return fail("the saved " + what + " was made on another computer or account, or is damaged");
+                return fail("the saved " + what + " was made on " + kAnotherMachine + " or account, or is damaged");
             const uint8_t* cipher = bytes + head;
             const std::size_t cipherBytes = n - head - kMacBytes;
             std::vector<uint8_t> plain;
@@ -373,7 +379,7 @@ namespace playground::chatstore
                 *why = "the saved key is damaged";
             return std::nullopt;
         }
-        if (!key && why != nullptr && why->find("another computer") != std::string::npos)
+        if (!key && why != nullptr && why->find(kAnotherMachine) != std::string::npos)
             *why += ": add it again";
         if (!key && why != nullptr && *why == "no key saved")
             *why = "no API key saved";
