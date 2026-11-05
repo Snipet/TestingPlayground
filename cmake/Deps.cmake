@@ -6,7 +6,7 @@
 #   shaderc               the prebuilt ${FP_DEPS_DIR}/tools/shaderc-<tag>/shaderc (shaderc.exe on Windows) when its
 #                         stamp names the pinned bgfx.cmake commit, else built from bgfx.cmake (slow: about 2,000
 #                         CPU-seconds)
-#   FunkGui v0.24.0       FetchContent at the pinned tag (or commit) from FP_FUNKGUI_REPO: this machine's local
+#   FunkGui v0.24.0       FetchContent at the pinned tag from FP_FUNKGUI_REPO: this machine's local
 #                         repository (~/audio/libraries/FunkGui, or ~/audio/FunkGui) when it exists, else GitHub; the
 #                         commit is asserted. v0.17.0 brought the TextEditor, v0.18.0 resizable Panels, v0.19.0 custom
 #                         shaders, v0.20.0 images, v0.22.0 the TextEditor's code-editor hooks, v0.23.0 GPU pictures
@@ -49,8 +49,7 @@ set(FP_BGFX_API          153)
 set(FP_BGFX_SUB_SHAS     bgfx=c7684e20da1e385edc439ef39cdb42b8c661016f
                          bx=0b001f5f36579e8aea07efa5af139ca18dad9505
                          bimg=3b4baab0128ac499c5c3bc37202781bf54084049)
-# FunkGui's main with v0.24.0 (Snipet/FunkGui#31 and #32), by commit until v0.24.0 is tagged: then the tag.
-set(FP_FUNKGUI_TAG       935a6672f653d50ae4271b7827eadd2b982c32bb)
+set(FP_FUNKGUI_TAG       v0.24.0)
 set(FP_FUNKGUI_SHA       935a6672f653d50ae4271b7827eadd2b982c32bb)
 set(FP_FUNKGUI_VERSION   0.24.0)
 set(FP_FMINUS_SHA        11edb8a0c939fb87e6899a0845daca5579e3cc78)   # no tags: a commit (the language: bits, switch, enum)
