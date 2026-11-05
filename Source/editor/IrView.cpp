@@ -2,6 +2,7 @@
 #include "editor/IrView.h"
 
 #include "editor/CodeAssist.h"                       // the code's styles and palette
+#include "plugin/EditorPort.h"                       // shortcutText
 
 #include <algorithm>
 #include <array>
@@ -208,8 +209,8 @@ namespace playground::ui::irview
                                    "before it: there is no IR to show.");
         }
         else if (from.edited && playing)
-            comment(out, "The editor's files have changed since the program that plays was compiled: RUN (Cmd-Return) "
-                         "compiles them, and this view follows.");
+            comment(out, shortcutText("The editor's files have changed since the program that plays was compiled: RUN "
+                                      "(Cmd-Return) compiles them, and this view follows."));
         if (v == View::frozen)
         {
             if (!t)
@@ -244,7 +245,7 @@ namespace playground::ui::irview
             else if (!ir.why.empty())
                 comment(out, "Its IR could not be made: " + ir.why.substr(0, ir.why.find('\n')));
             else if (ir.program == 0 && st.ok)
-                comment(out, "RUN (Cmd-Return) compiles the program, and its IR shows here.");
+                comment(out, shortcutText("RUN (Cmd-Return) compiles the program, and its IR shows here."));
         }
         if (t && t->cut())
             comment(out, "Cut: the IR is " + counted(t->lines) + " lines (" + sizeOf(t->bytes) + "); this view holds the first "

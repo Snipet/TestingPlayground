@@ -6,7 +6,8 @@
 
 # TestingPlayground
 
-Two plugins (AU, VST3 and Standalone, macOS on Apple silicon) whose DSP you write while they run, built from one
+Two plugins (AU, VST3 and Standalone on macOS on Apple silicon; VST3 and Standalone on Windows x64, newer: "Windows"
+below) whose DSP you write while they run, built from one
 source tree: **TestingPlayground**, an effect, and **TestingPlaygroundSynth**, an instrument. The editor of each is a
 text field holding an [FMinus](https://github.com/Snipet/FMinus) program; the plugin compiles it when you press RUN
 (or Cmd-Return), and the next block plays it: the effect's crossfaded from the last, the synth's with the keys you
@@ -1095,6 +1096,69 @@ inputs (a Logitech G29 racing wheel among them: "A racing wheel"). The settings,
 place are kept where JUCE's Standalone kept them (`~/Library/Application Support/<name>.settings`, its keys
 `audioSetup` and `shouldMuteInput` for the devices, and `racingWheel` for the wheel).
 
+### Windows
+
+The same two products build on Windows 10 (1803 or later) and 11, x64: each one's VST3 and Standalone, its Claude
+Desktop extension (`<Name>.mcpb`, with the GUI sandbox's helper), the installer and its probes. What differs from
+macOS:
+
+- **The editor draws on the GPU** with Direct3D 11 (FunkGui v0.24.0), as it does on macOS with Metal: a `.gui` file's
+  shaders included, compiled by the `shaderc.exe` the build puts in the VST3 and beside the Standalone (it compiles
+  HLSL with Windows' own `d3dcompiler_47.dll`). A machine with no usable GPU gets Windows' software rasteriser (WARP)
+  under Direct3D 11. Configured with `-DFP_WITH_GPU=OFF`, the build needs neither bgfx nor shaderc and the editor
+  draws on the CPU instead (`Source/editor/nogpu/SoftEditorHost`: FunkGui's SoftRaster, the rasteriser every probe PNG
+  comes from, into a JUCE window), a `.gui` file's shaders as their striped placeholder, with no screen-reader mirror
+  of the panel (announcements still speak).
+- **The installer** is `<Project> Installer.exe` with its payload in the folder `payload\` beside it (no AU; nothing
+  signed). "Just for me" installs into `%LOCALAPPDATA%\Programs`: the VST3 into `Common\VST3`, the app (its folder:
+  `<Name>.exe`, `shaderc.exe`, its licences) and the extension into `<Company>`; "All users" into `%ProgramFiles%`
+  (`Common Files\VST3`, `<Company>`), through Windows' administrator prompt, which names Windows PowerShell: the
+  installer hands it one script and never sees a password. Old copies go to the Recycle Bin. It needs Windows 10 1903 or
+  later (UTF-8 as its code page), and, as the plugins themselves, the Microsoft Visual C++ Redistributable (x64), which
+  most Windows machines already have.
+- **No AU, no signing**: install with the installer (below), or copy the VST3 yourself. The Standalone keeps Windows'
+  own title bar and has a menu bar in the window: File (Settings…, Load State…, Save State As…, Reset to Default
+  State, Exit), Edit, Help. There is no racing wheel in the Standalone (a wheel's MIDI from any MIDI input still
+  reaches the synth).
+- **Where things live**: the projects in `Documents\Funk\<name>\`; the chat's key and choices in
+  `%APPDATA%\Funk\Playground\` (the key encrypted as on macOS, with Windows' own CNG); the Standalone's settings in
+  `%APPDATA%\<name>.settings`; the MCP sockets in `%TEMP%\Funk-<name>-mcp\` (Windows' AF_UNIX sockets).
+- **Pictures the chat reads**: PNG, JPEG and GIF (macOS's ImageIO also reads WebP and HEIC); a project's `.fmpack` is
+  written with zlib (and an xz one from macOS is refused).
+- **measure_output's CPU figures** come from the thread's cycle count (`QueryThreadCycleTime`) over the processor's
+  measured clock rate.
+
+Requirements: Visual Studio 2022 with "Desktop development with C++" and its **C++ Clang tools for Windows** (clang-cl,
+FMinus's compiler there), CMake 3.30 or later, Ninja (Visual Studio's, in its developer prompt), Git and Python 3.
+FMinus first, once: clone it to `%USERPROFILE%\audio\libraries\FMinus` or `%USERPROFILE%\audio\FMinus` and
+configure it from an **x64 Native Tools Command Prompt for VS** (`cmake --preset dev` in its folder). Its configure
+builds its LLVM and WinFlexBison into its `.deps` folder (the long step), which is all this build reads from it
+(`FP_FMINUS_DEPS_DIR` names another folder); this build compiles FMinus's library itself and never its tests (at the
+pinned commit one of them, `tests/unit/CircuitEmitTest.cpp`, does not compile on Windows, so FMinus's own full
+build stops there). JUCE, bgfx.cmake (with its submodules) and FunkGui come from GitHub unless
+`%USERPROFILE%\audio\.deps` and a FunkGui checkout (`audio\libraries\FunkGui` or `audio\FunkGui`) have them; a FunkGui
+checkout must hold the pinned commit (`git pull` in it). shaderc is built from bgfx.cmake on the first configure of a
+build folder (about 2,000 CPU-seconds) unless `.deps\tools\shaderc-<bgfx tag>\shaderc.exe` and its stamp are there.
+Then, from the same kind of prompt:
+
+```bat
+cmake --workflow --preset windows-verify
+build-windows-dev\TestingPlayground_artefacts\RelWithDebInfo\Standalone\TestingPlayground.exe
+```
+
+`windows-effect-verify` and `windows-synth-verify` build and test one product; `windows-release-build` makes the
+Release build in `build-windows-release`. Its installer is the folder
+`build-windows-release\Installer_artefacts\Release\`: `<Project> Installer.exe` and `payload\` (zip the two together
+to take them to another computer, and run the exe there). Or by hand: the VST3 is the folder
+`build-windows-release\<Name>_artefacts\Release\VST3\<Name>.vst3`: copy it whole into
+`C:\Program Files\Common Files\VST3\`. The extension is `build-windows-release\<Name>.mcpb`: open it with Claude
+Desktop. `-Werror` and LTO start off there (`-DFP_WERROR=ON`, `-DFP_LTO=ON` turn them on). Run the probes with
+`ctest --preset windows-dev` (`-R`, `-L`, `-V` as below); `plugin.mcp` and `plugin.sandbox` are left out of the
+Windows build (POSIX child processes the probes drive), `gui.shaders` too in a build with `FP_WITH_GPU` off, and the
+permission rows of `plugin.chatstore` (Windows has no POSIX modes). Each probe's timeout is doubled there
+(`-DFP_PROBE_TIMEOUT_SCALE=<n>` sets another factor), and a probe that crashes prints its stack, named from its PDB,
+before it ends.
+
 ### Install
 
 Three ways, for three cases: the installer app (another Mac, or yours, with a window), `scripts/install.sh` (your own
@@ -1254,8 +1318,8 @@ a probe would find the user's own folders.
 | `gui.styles` | what a `.gui` file can make an interface look like, in the PANEL view, to `gui.styles.png`, `.fx.png`, `.mixer.png` and `.narrow.png`: a defaults line and a class reaching their elements (an element's own property winning); the knobs' nine looks, a small knob's label under it and no value, a face in px; card, inset and plate sections side by side, a frame's own corners, fill and border; a bar of three pages (a click shows the third, the processor keeps its title, its state carries it to another processor whose panel opens on it, an edited interface keeps it), pills and a side list switching their pages; the synth's keyboard (a press plays its note at its pitch, a drag slides to the next key, letting go is silent) and its wheels (the pitch wheel up reaching the Host block and springing back when let go, the mod wheel staying where it is left); a knob's live= mark at its field's value; at the least size the knobs' row wrapping onto two lines |
 | `gui.settings` | the Standalone's Settings card (`editor/SettingsCard.h`) over a real processor whose window hooks hand it a made-up `DevicePort` (every call recorded), to `gui.settings.png`, `.paper.png`, `.small.png`, `.error.png` and `.muted.png`: in a host (no devices) no card and no notice, the app's request doing nothing; the effect's muted notice in the status bar, clear of the zoom, its button opening the card (the synth has none); the app's request opening it, modal; at the default size, the least and a large one every control inside the card and none over another or over a text, each with an accessibility title; the effect's Input section and no MIDI, the synth's MIDI and no Input; Tab over every control in order, Return on Test; a pair's switch, a MIDI input's, the mute's (the notice gone when unmuted) and Test calling the port; the output device, the rate and the buffer chosen through the host's menus (the current one ticked) calling it with those values and shown; a device plugged in while open listed; the synth's racing wheel among the MIDI inputs, its status under its name and in its title, its switch calling the port, gone when unplugged; an error under its section, spoken, and JUCE's error with line breaks in lines of its own; a Cmd key given back to the app's menu; at the least size with more than it holds, the scroll (Done in the card, Tab scrolling to its control, the wheel); Done, Escape and a click outside closing it, the click reaching nothing under it (nor a double-click's second press: a dial keeps its value); a second editor in PAPER; the hooks let go: no card, no notice |
 | `gui.window` | the Standalone's own window, as far as it is checked without opening one, to `gui.window.png` and `.host.png`: its menu bar as data (the app menu with About, Settings… Cmd-, , Services, Hide, Hide Others, Show All and Quit; File's Load State…, Save State As… and Reset to Default State; Edit's Undo Cmd-Z, Redo Cmd-Shift-Z, Cut, Copy, Paste and Select All; Window's Minimize Cmd-M, Zoom and Bring All to Front; every shortcut its own, none the editor's: Cmd-Return, Cmd-S); in a host's window no room and no drag; with the window's buttons (60 x 14 points) the top bar keeps them room (the product's mark after them, the project's pill clear), says once where they go (its left inner edge, its middle), keeps them their size in points at 200 % and none in full screen; a press on the top bar where nothing is drags the window and a double-click's second press asks for its double-click action (whose release and double-click, wherever a zoom then puts them, leave the panel alone: a dial keeps its value), a press on a button, a right-click, one under the top bar or with PROJECTS open drags nothing; each Edit item's shortcut, sent to the focused component as the app sends it, does its work in the editor's text field (Select All, Copy, Cut, Paste, Undo, Redo) and nothing with no text field focused |
-| `installer.engine` | the installer's engine (`Source/installer/Engine.h`) against a root of its own (its name has spaces and both quotes) with a made-up payload of two products, nothing outside it written (ditto copies inside it, its Trash is a folder there, the AU registrar and the administrator prompt are stand-ins): the payload read (each part's version from its Info.plist or manifest; a missing payload an error in words); a clean install of every part "Just for me", each where it belongs and whole (its signature holding), no staging folder left, the registrar restarted once, the log written; the same again: every part "already installed", nothing copied; another build of the same version (the bundle's bytes; a re-signed bundle's CDHash) replaces only those, the old copies in the Trash; an older and a newer copy told apart; a folder made unwritable mid-plan: the parts before it installed, its part failed with words that say why, the old copy whole, the rest not run; a folder that is a link and a target that is a link refused, nothing written where they point; a staging folder an earlier run left goes to the Trash with the next install (another's is left); uninstall to the Trash; "All users": the script quotes every path it names, reaches the prompt as text, renames only with `mv -h`, and run (as the user, by the stand-in) installs every part, replacing an older copy, its status folder gone after; a cancelled prompt changes nothing; run directly, a planted status folder stops it before it changes anything, and the uninstall's script refuses a parent folder swapped for a link and a Trash that is a link; a running Standalone and a running host named in the notes, a product in both scopes one note, an uninstall's notes |
-| `installer.gui` | the installer's window (`Source/installer/Panel.h`) headless at its size over that engine, to `gui.installer.welcome.png`, `.choose.png`, `.choose.allusers.png`, `.installing.png` (a run half done), `.done.png`, `.done.noclaude.png`, `.uninstall.png`, `.error.png`, `.uninstalled.png`, `.choose.notes.png` (a DAW and a Standalone open, copies in the other scope), `.choose.notes.allusers.png` and `.uninstall.notes.png`, each in PAPER too (`.paper.png`): on every page every control inside the window and none over another, every text inside it and clear of the controls, everything with an accessibility title, every glyph in the font; the window's buttons placed over the sidebar; a newer installed part's switch off at first; Return (once: its repeat, a held Return and a double-click on Continue press nothing more), Escape, Tab and Space; Install's progress, then Done with the report; Open <name> and Add to Claude Desktop open the installed app and extension (and nothing without Claude Desktop, whose absence a note explains); Done quits, Back and Escape return to Choose; a failed run's page names the log and how to get Claude Desktop; the notes on Choose in both scopes and on Uninstall, whole; an uninstall's switch kept across the page's refresh, and Move to Trash |
+| `installer.engine` | the installer's engine (`Source/installer/Engine.h`) against a root of its own (its name has spaces and both quotes) with a made-up payload of two products, nothing outside it written (ditto copies inside it, its Trash is a folder there, the AU registrar and the administrator prompt are stand-ins): the payload read (each part's version from its Info.plist or manifest; a missing payload an error in words); a clean install of every part "Just for me", each where it belongs and whole (its signature holding), no staging folder left, the registrar restarted once, the log written; the same again: every part "already installed", nothing copied; another build of the same version (the bundle's bytes; a re-signed bundle's CDHash) replaces only those, the old copies in the Trash; an older and a newer copy told apart; a folder made unwritable mid-plan: the parts before it installed, its part failed with words that say why, the old copy whole, the rest not run; a folder that is a link and a target that is a link refused, nothing written where they point; a staging folder an earlier run left goes to the Trash with the next install (another's is left); uninstall to the Trash; "All users": the script quotes every path it names, reaches the prompt as text, renames only with `mv -h`, and run (as the user, by the stand-in) installs every part, replacing an older copy, its status folder gone after; a cancelled prompt changes nothing; run directly, a planted status folder stops it before it changes anything, and the uninstall's script refuses a parent folder swapped for a link and a Trash that is a link; a running Standalone and a running host named in the notes, a product in both scopes one note, an uninstall's notes On Windows its own body: the same over Windows' parts and folders, links as junctions, a folder not to be written an icacls deny, and the PowerShell script, refused through a junction (its exit code its report). |
+| `installer.gui` | the installer's window (`Source/installer/Panel.h`) headless at its size over that engine, to `gui.installer.welcome.png`, `.choose.png`, `.choose.allusers.png`, `.installing.png` (a run half done), `.done.png`, `.done.noclaude.png`, `.uninstall.png`, `.error.png`, `.uninstalled.png`, `.choose.notes.png` (a DAW and a Standalone open, copies in the other scope), `.choose.notes.allusers.png` and `.uninstall.notes.png`, each in PAPER too (`.paper.png`): on every page every control inside the window and none over another, every text inside it and clear of the controls, everything with an accessibility title, every glyph in the font; the window's buttons placed over the sidebar; a newer installed part's switch off at first; Return (once: its repeat, a held Return and a double-click on Continue press nothing more), Escape, Tab and Space; Install's progress, then Done with the report; Open <name> and Add to Claude Desktop open the installed app and extension (and nothing without Claude Desktop, whose absence a note explains); Done quits, Back and Escape return to Choose; a failed run's page names the log and how to get Claude Desktop; the notes on Choose in both scopes and on Uninstall, whole; an uninstall's switch kept across the page's refresh, and Move to Trash On Windows its own body: the same pages over Windows' parts and folders (REAPER the host, the Recycle Bin the Trash). |
 | `lint.layers`, `lint.exports`, `lint.signature` | once, for both products: Source/dsp, Source/fsdsp and Source/fminus without JUCE or FunkGui, FMinus through its public header only, the schematic's model (`fminus/CirDoc`, `CirLayout`) without FMinus at all; every product's bundles export their entry points and nothing else, and their signatures hold (the installer app's too, over its payload) |
 
 A probe is one file in `Tools/probes/<layer>/` whose first line registers it (`// PROBE name=dsp.mytest timeout=60`)

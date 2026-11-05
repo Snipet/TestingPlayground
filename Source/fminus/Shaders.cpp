@@ -15,6 +15,10 @@
 #include <system_error>
 #include <thread>
 
+#if defined(_WIN32)
+#include <random>
+#include <windows.h>
+#else
 #include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
@@ -22,6 +26,7 @@
 #include <unistd.h>
 
 extern char** environ;
+#endif
 
 namespace playground
 {
@@ -60,6 +65,87 @@ namespace playground
 
         // Runs argv[0] with its output (both streams) into `log`; its exit status, or -1 when it could not run or took
         // longer than kTimeoutMs (it is killed).
+#if defined(_WIN32)
+        // One argument as CommandLineToArgvW reads it back: quoted, with backslashes before a quote doubled.
+        std::wstring quoted(const std::wstring& a)
+        {
+            std::wstring out = L"\"";
+            std::size_t slashes = 0;
+            for (const wchar_t c : a)
+            {
+                if (c == L'\\')
+                    ++slashes;
+                else
+                {
+                    if (c == L'"')
+                        out.append(slashes + 1, L'\\');
+                    slashes = 0;
+                }
+                out += c;
+            }
+            out.append(slashes, L'\\');
+            return out + L"\"";
+        }
+
+        int run(const std::vector<std::string>& args, const std::filesystem::path& log)
+        {
+            SECURITY_ATTRIBUTES inherit{ sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE };
+            HANDLE out = CreateFileW(log.wstring().c_str(), GENERIC_WRITE, FILE_SHARE_READ, &inherit, CREATE_ALWAYS,
+                                     FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (out == INVALID_HANDLE_VALUE)
+                return -1;
+            HANDLE in = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit, OPEN_EXISTING,
+                                    FILE_ATTRIBUTE_NORMAL, nullptr);
+            std::wstring line;
+            for (const std::string& a : args)
+                line += (line.empty() ? L"" : L" ") + quoted(std::filesystem::path(a).wstring());
+            STARTUPINFOW si{};
+            si.cb = sizeof si;
+            si.dwFlags = STARTF_USESTDHANDLES;
+            si.hStdInput = in;
+            si.hStdOutput = out;
+            si.hStdError = out;
+            PROCESS_INFORMATION pi{};
+            const std::wstring exe = std::filesystem::path(args[0]).wstring();
+            const BOOL ok = CreateProcessW(exe.c_str(), line.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr,
+                                           nullptr, &si, &pi);
+            CloseHandle(out);
+            if (in != INVALID_HANDLE_VALUE)
+                CloseHandle(in);
+            if (!ok)
+                return -1;
+            CloseHandle(pi.hThread);
+            int status = -1;
+            if (WaitForSingleObject(pi.hProcess, static_cast<DWORD>(kTimeoutMs)) == WAIT_OBJECT_0)
+            {
+                DWORD code = 0;
+                if (GetExitCodeProcess(pi.hProcess, &code))
+                    status = static_cast<int>(code);
+            }
+            else
+            {
+                TerminateProcess(pi.hProcess, 1);
+                WaitForSingleObject(pi.hProcess, INFINITE);
+            }
+            CloseHandle(pi.hProcess);
+            return status;
+        }
+
+        // A new private folder beside the others in `tmp` (mkdtemp's), its path; "" when none could be made.
+        std::string madeTempFolder(const std::filesystem::path& tmp)
+        {
+            std::random_device rd;
+            for (int attempt = 0; attempt < 32; ++attempt)
+            {
+                char name[32];
+                std::snprintf(name, sizeof name, "tp-shader-%08x", static_cast<unsigned>(rd()));
+                std::error_code ec;
+                if (std::filesystem::create_directory(tmp / name, ec) && !ec)
+                    return (tmp / name).string();
+            }
+            return {};
+        }
+#else
         int run(const std::vector<std::string>& args, const std::filesystem::path& log)
         {
             posix_spawn_file_actions_t actions;
@@ -94,6 +180,7 @@ namespace playground
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
         }
+#endif
 
         // shaderc's log as a note: its first ERROR's message, on the line of the file it is about. shaderc reports
         // lines of its own rewritten listing (bgfx's HLSL), so the line is found in the file instead: the first one
@@ -227,8 +314,13 @@ namespace playground
         }
         std::error_code ec;
         const std::filesystem::path tmp = std::filesystem::temp_directory_path(ec);
+#if defined(_WIN32)
+        const std::string pattern = ec ? std::string() : madeTempFolder(tmp);
+        if (pattern.empty())
+#else
         std::string pattern = (tmp / "tp-shader-XXXXXX").string();
         if (ec || mkdtemp(pattern.data()) == nullptr)
+#endif
         {
             out.error = file + ":1:1: note: the shader cannot be built: no temporary folder\n";
             return out;

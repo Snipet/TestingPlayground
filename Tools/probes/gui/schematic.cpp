@@ -2116,9 +2116,10 @@ PROBE(gui, schematic)
         host.click(a.x, a.y);
         host.tick(2);
         std::printf("probes: before RUN, slot 0 %s: \"%s\"; strip \"%s\"\n", v.probeNet(0).c_str(), v.probeReason(0).c_str(), v.stripRight().c_str());
-        P.eq("probes.reason_not_playing", v.probeNet(0) == "a" && v.probeReason(0) == "not playing: Cmd-Return runs it"
-                                              && v.stripRight() == "Probe: not playing: Cmd-Return runs it" ? 1 : 0, 1);
-        P.eq("probes.reason_not_playing_spoken", spoken("Probe: not playing: Cmd-Return runs it") ? 1 : 0, 1);
+        const std::string notPlaying = pg::shortcutText("not playing: Cmd-Return runs it");   // Ctrl- on Windows
+        P.eq("probes.reason_not_playing", v.probeNet(0) == "a" && v.probeReason(0) == notPlaying
+                                              && v.stripRight() == "Probe: " + notPlaying ? 1 : 0, 1);
+        P.eq("probes.reason_not_playing_spoken", spoken("Probe: " + notPlaying) ? 1 : 0, 1);
         const funkgui::Rect canvas1 = v.canvasRect();
         P.eq("probes.select_keeps_canvas", canvas1.x == canvas0.x && canvas1.y == canvas0.y && canvas1.w == canvas0.w && canvas1.h == canvas0.h ? 1 : 0, 1);
         P.eq("probes.select_keeps_rate", !rate0 && !panel.wantsFullRate() && v.settled() && !v.probesLive() && v.probeCard().h == 0.0f ? 1 : 0, 1);

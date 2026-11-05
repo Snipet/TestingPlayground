@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Source/installer/Utf8.manifest: the installer's code page on Windows, and its probes' (cmake/Installer.cmake). UTF-8
+     as the process's active code page (Windows 10 1903 and later), so that a path held as a std::string, as the engine
+     holds every path it shows, writes into a script or reads from payload.json, is UTF-8 there as on macOS: a user
+     folder whose name is not ASCII then round-trips through std::filesystem::path unchanged. -->
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <application>
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+</assembly>

@@ -17,7 +17,7 @@ namespace playground
         // Written beside, then renamed over: another instance or the server may be reading it.
         void writeAtomically(const juce::File& f, const juce::String& text)
         {
-            const juce::File temp = f.getSiblingFile("." + f.getFileName() + "." + juce::String(static_cast<int>(getpid())) + ".writing");
+            const juce::File temp = f.getSiblingFile("." + f.getFileName() + "." + juce::String(mcp::processId()) + ".writing");
             if (temp.replaceWithText(text, false, false, "\n"))
                 temp.moveFileTo(f);
         }
@@ -45,7 +45,7 @@ namespace playground
     struct McpLink::Client
     {
         explicit Client(int fd) : reader(fd) {}
-        ~Client() { close(reader.fd()); }
+        ~Client() { mcp::closeFd(reader.fd()); }
         Client(const Client&) = delete;
         Client& operator=(const Client&) = delete;
 
@@ -71,11 +71,11 @@ namespace playground
         }
         id_ = std::to_string(number);
         name_ = std::string(product::kIsInstrument ? "Synth " : "Effect ") + id_;
-        if (pipe(wake_) != 0 || !mcp::nonBlocking(wake_[0]) || !mcp::nonBlocking(wake_[1]))
+        if (!mcp::socketPair(wake_) || !mcp::nonBlocking(wake_[0]) || !mcp::nonBlocking(wake_[1]))
         {
-            close(listen_);
+            mcp::closeFd(listen_);
             listen_ = -1;
-            unlink(path_.c_str());
+            mcp::removePath(path_);
             path_.clear();
             return;
         }
@@ -116,12 +116,12 @@ namespace playground
             worker_.join();
         if (listen_ >= 0)
         {
-            close(listen_);
-            unlink(path_.c_str());
+            mcp::closeFd(listen_);
+            mcp::removePath(path_);
         }
         for (const int fd : wake_)
             if (fd >= 0)
-                close(fd);
+                mcp::closeFd(fd);
     }
 
     void McpLink::wake()
@@ -129,7 +129,7 @@ namespace playground
         if (wake_[1] < 0)
             return;
         const char x = 1;
-        [[maybe_unused]] const ssize_t n = write(wake_[1], &x, 1);   // a pipe full is a poll thread already woken
+        [[maybe_unused]] const long long n = mcp::pairWrite(wake_[1], &x, 1);   // full: a poll thread already woken
     }
 
     void McpLink::run()
@@ -137,7 +137,7 @@ namespace playground
         std::vector<std::shared_ptr<Client>> clients;
         while (!stop_.load())
         {
-            std::vector<pollfd> fds;
+            std::vector<mcp::PollFd> fds;
             fds.push_back({ wake_[0], POLLIN, 0 });
             fds.push_back({ listen_, POLLIN, 0 });
             {
@@ -145,17 +145,17 @@ namespace playground
                 for (const auto& c : clients)
                     fds.push_back({ c->reader.fd(), static_cast<short>(POLLIN | (c->out.empty() ? 0 : POLLOUT)), 0 });
             }
-            const int r = poll(fds.data(), static_cast<nfds_t>(fds.size()), -1);
+            const int r = mcp::pollFds(fds.data(), fds.size(), -1);
             if (r < 0)
             {
-                if (errno == EINTR)
+                if (mcp::interrupted())
                     continue;
                 break;
             }
             if (fds[0].revents != 0)
             {
                 char drain[256];
-                while (read(wake_[0], drain, sizeof drain) > 0)
+                while (mcp::recvSome(wake_[0], drain, sizeof drain) > 0)
                 {
                 }
             }
@@ -207,13 +207,13 @@ namespace playground
                     clients.erase(clients.begin() + static_cast<std::ptrdiff_t>(k));
                 }
             if ((fds[1].revents & POLLIN) != 0)
-                if (const int fd = accept(listen_, nullptr, nullptr); fd >= 0)
+                if (const int fd = mcp::acceptOn(listen_); fd >= 0)
                 {
                     mcp::noSigpipe(fd);
                     if (mcp::nonBlocking(fd))
                         clients.push_back(std::make_shared<Client>(fd));
                     else
-                        close(fd);
+                        mcp::closeFd(fd);
                 }
         }
         for (const auto& c : clients)

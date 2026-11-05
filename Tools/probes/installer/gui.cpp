@@ -31,6 +31,10 @@
 //             (its button is off), and Back returns to Choose to try again
 //   NOTES     a host and a Standalone open, and copies in the other scope, are named on Choose in both scopes (one line
 //             each, whole in its accessibility title) and on Uninstall
+// On Windows (its own body, below): the same pages and checks over its three parts and folders (Engine.h): installed
+// already the effect's VST3 (older) and app (the same) and the synth's VST3 (newer); the scope's line names Program
+// Files and an administrator's approval; the ERROR folder is the apps' and extensions' (an icacls deny); the host is
+// REAPER; the copies go to the Recycle Bin.
 #include "Probe.h"
 
 #include "Fixture.h"
@@ -43,8 +47,10 @@
 #include <funkgui/panel/HeadlessHost.h>
 #include <funkgui/prefs/UiPreferences.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <iterator>
 #include <string>
 #include <thread>
 #include <vector>
@@ -205,6 +211,286 @@ namespace
     }
 }
 
+#if defined(_WIN32)
+// Windows: the same pages and checks over Windows' parts (VST3, app, extension) and folders. Installed already: the
+// effect's VST3 (made older) and app (the same), and the synth's VST3 (made newer); a host is REAPER.
+PROBE(installer, gui)
+{
+    const funkgui::HeadlessGuiScope gui;
+    funkgui::UiPreferences::get().setBackend(funkgui::UiPreferences::memoryBackend());   // never the user's file
+    funkgui::UiPreferences::get().setTheme(0);
+
+    const fs::path root = fixture::root("installer.gui");
+    const fs::path payloadDir = root / "payload";
+    fixture::writePayload(payloadDir);
+    pi::Places places = pi::Places::under(root);
+    places.log = places.home / "Tone Installer" / "Tone Installer.log";   // where the app keeps it: the Done page names it
+    std::error_code ec;
+    fs::create_directories(places.home, ec);
+    fs::create_directories(places.root, ec);
+    fixture::FakeSystem sys;
+    pi::Engine engine(pi::Payload::read(payloadDir), places, sys);
+    const fs::path vst3Home = places.home / "Programs" / "Common" / "VST3";
+    const fs::path vst3Root = places.root / "Common Files" / "VST3";
+    const fs::path appsHome = places.home / "Programs" / fixture::kCompany;
+    const fs::path appsRoot = places.root / fixture::kCompany;
+    constexpr int kAll = 2 * static_cast<int>(std::size(pi::kParts));
+
+    {
+        const pi::Plan pre = engine.plan({ { "effect", pi::Part::vst3 }, { "effect", pi::Part::app }, { "synth", pi::Part::vst3 } },
+                                         pi::Scope::user);
+        P.eq("setup.installed", engine.install(pre, {}).count(pi::State::done), 3);
+        fixture::setVersion(vst3Home / "Tone.vst3", "1.1.0");
+        fixture::setVersion(vst3Home / "ToneSynth.vst3", "2.0.0");
+    }
+
+    FakePort port;
+    pi::Panel panel(engine, port, "Tone Installer");
+    funkgui::HeadlessHost host(panel, 0, 2.0f);
+    host.tick(2);
+    host.settle();
+
+    // ---- BUTTONS, WELCOME --------------------------------------------------------------------------------------------
+    P.eq("buttons.placed_once", port.places, 1);
+    P.near("buttons.x", static_cast<double>(port.placedX), static_cast<double>(pi::Panel::kButtonsX), 1e-6);
+    P.near("buttons.middle", static_cast<double>(port.placedMiddle), static_cast<double>(pi::Panel::kButtonsMiddle), 1e-6);
+    P.eq("welcome.page", panel.page() == Page::welcome ? 1 : 0, 1);
+    P.eq("welcome.versions_shown", anyLine(panel, "version 1.2.0") ? 1 : 0, 1);
+    P.eq("welcome.both_products", anyLine(panel, "ToneSynth") && anyLine(panel, "Tone") ? 1 : 0, 1);
+    shoot(P, panel, host, "gui.installer.welcome");
+
+    // ---- KEYS, CHOOSE ------------------------------------------------------------------------------------------------
+    host.keys("return");
+    host.settle();
+    P.eq("keys.return_continues", panel.page() == Page::choose ? 1 : 0, 1);
+    host.keys("return");                                 // its repeat, at once: not Install
+    P.eq("keys.repeat_presses_nothing", panel.page() == Page::choose && !panel.busy() ? 1 : 0, 1);
+    port.held = true;                                    // held for a second, repeating
+    host.tick(60);
+    host.keys("return");
+    P.eq("keys.held_presses_nothing", panel.page() == Page::choose && !panel.busy() ? 1 : 0, 1);
+    port.held = false;
+    host.keys("escape");
+    host.settle();
+    P.eq("keys.escape_goes_back", panel.page() == Page::welcome ? 1 : 0, 1);
+    host.tick(30);
+    {
+        const auto welcome = panel.controls();
+        const pi::Panel::Control* cont = findControl(welcome, Act::next, 0);
+        if (cont != nullptr)
+            host.doubleClick(cont->r.centreX(), cont->r.centreY());
+        P.eq("keys.double_click_continue_is_one", panel.page() == Page::choose && !panel.busy() ? 1 : 0, 1);
+        host.move(100.0f, 400.0f);
+        host.keys("escape");
+        host.tick(30);
+    }
+    host.keys("return");
+    host.settle();
+    P.eq("choose.newer_starts_off", panel.chosen("synth", pi::Part::vst3) ? 1 : 0, 0);
+    P.eq("choose.older_on", panel.chosen("effect", pi::Part::vst3) ? 1 : 0, 1);
+    P.eq("choose.new_on", panel.chosen("synth", pi::Part::extension) ? 1 : 0, 1);
+    P.eq("choose.says_upgrade", anyLine(panel, "1.1.0 installed: upgrades to 1.2.0") ? 1 : 0, 1);
+    P.eq("choose.says_newer", anyLine(panel, "2.0.0 installed, newer than 1.2.0") ? 1 : 0, 1);
+    P.eq("choose.says_same", anyLine(panel, "already up to date") ? 1 : 0, 1);
+    {
+        const auto cs = panel.controls();
+        P.eq("choose.three_parts_a_product",
+             static_cast<int64_t>(std::count_if(cs.begin(), cs.end(), [](const pi::Panel::Control& c) { return c.act == Act::part; })),
+             kAll);
+    }
+    shoot(P, panel, host, "gui.installer.choose");
+    {
+        host.keys("tab");
+        const bool before = panel.chosen("effect", pi::Part::vst3);
+        host.keys("space");
+        P.eq("keys.space_toggles", panel.chosen("effect", pi::Part::vst3) != before ? 1 : 0, 1);
+        host.keys("space");
+        P.eq("keys.space_toggles_back", panel.chosen("effect", pi::Part::vst3) == before ? 1 : 0, 1);
+        host.settle();
+    }
+    std::printf("choose's accessibility:\n%s", panel.a11yDump().c_str());
+    panel.press(Act::scope, 1);
+    host.settle();
+    P.eq("choose.all_users", panel.scope() == pi::Scope::system ? 1 : 0, 1);
+    P.eq("choose.all_users_says_approval", anyLine(panel, "administrator to approve") ? 1 : 0, 1);
+    P.eq("choose.all_users_names_program_files", anyLine(panel, "%ProgramFiles%") ? 1 : 0, 1);
+    shoot(P, panel, host, "gui.installer.choose.allusers", false);
+    panel.press(Act::scope, 0);
+    host.settle();
+
+    // ---- RUN: half done, then done -----------------------------------------------------------------------------------
+    port.claude = root / "Claude";
+    fs::create_directories(port.claude, ec);
+    const auto waitFor = [&](const auto& cond) {
+        for (int k = 0; k < 6000 && !cond(); ++k)
+        {
+            host.tick(1);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return cond();
+    };
+    const int copied = sys.copiesStarted.load();
+    sys.holdFrom(copied + 3);
+    host.tick(30);
+    host.keys("return");
+    P.eq("run.started", panel.page() == Page::installing ? 1 : 0, 1);
+    P.eq("run.third_copying", waitFor([&] { return sys.copiesStarted.load() - copied >= 3; }) ? 1 : 0, 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    host.tick(3);
+    P.eq("run.busy", panel.busy() ? 1 : 0, 1);
+    P.eq("run.progress_shown", panel.a11yDump().find("Progress") != std::string::npos ? 1 : 0, 1);
+    shoot(P, panel, host, "gui.installer.installing");
+    sys.release();
+    panel.waitForRun();
+    host.tick(2);
+    host.settle();
+    P.eq("run.done_page", panel.page() == Page::done ? 1 : 0, 1);
+    P.eq("run.report_ok", panel.report().ok() ? 1 : 0, 1);
+    if (!panel.report().ok())
+        std::printf("run: %s\n", panel.report().error.c_str());
+    P.eq("run.parts_done", panel.report().count(pi::State::done), 4);   // 6 of which: the effect's app the same, the
+                                                                         // synth's VST3 off
+
+    // ---- DONE --------------------------------------------------------------------------------------------------------
+    {
+        const auto cs = panel.controls();
+        P.eq("done.open_app_each", has(cs, Act::openApp, 0) && has(cs, Act::openApp, 1) ? 1 : 0, 1);
+        const pi::Panel::Control* open = findControl(cs, Act::openApp, 1);
+        P.eq("done.open_names_the_app", open != nullptr && open->label == "Open ToneSynth" ? 1 : 0, 1);
+        P.eq("done.add_to_claude_each", has(cs, Act::addToClaude, 0) && has(cs, Act::addToClaude, 1) ? 1 : 0, 1);
+        shoot(P, panel, host, "gui.installer.done");
+        panel.press(Act::addToClaude, 1);
+        P.eq("done.added_the_installed_extension", port.added.size() == 1 && port.added[0] == appsHome / "ToneSynth.mcpb" ? 1 : 0, 1);
+        panel.press(Act::openApp, 0);
+        P.eq("done.opened_the_installed_app", port.opened.size() == 1 && port.opened[0] == appsHome / "Tone" ? 1 : 0, 1);
+        port.claude.clear();
+        host.tick(1);
+        const auto off = panel.controls();
+        const pi::Panel::Control* add = findControl(off, Act::addToClaude, 0);
+        P.eq("done.no_claude_button_off", add != nullptr && !add->enabled ? 1 : 0, 1);
+        P.eq("done.no_claude_says_how", anyLine(panel, "claude.ai/download") ? 1 : 0, 1);
+        const std::size_t addedBefore = port.added.size();
+        panel.press(Act::addToClaude, 0);
+        P.eq("done.no_claude_opens_nothing", static_cast<int64_t>(port.added.size()), static_cast<int64_t>(addedBefore));
+        shoot(P, panel, host, "gui.installer.done.noclaude", false);
+        P.eq("done.back_shown", has(panel.controls(), Act::back) ? 1 : 0, 1);
+        host.tick(30);
+        host.keys("return");
+        P.eq("done.return_quits", port.quits, 1);
+        host.keys("escape");
+        P.eq("done.escape_back_to_choose", panel.page() == Page::choose ? 1 : 0, 1);
+    }
+
+    // ---- UNINSTALL ---------------------------------------------------------------------------------------------------
+    {
+        panel.show(Page::choose);
+        panel.press(Act::toUninstall);
+        host.settle();
+        P.eq("uninstall.page", panel.page() == Page::uninstall ? 1 : 0, 1);
+        int copies = 0;
+        for (const auto& c : panel.controls())
+            copies += c.act == Act::copy ? 1 : 0;
+        P.eq("uninstall.every_copy_listed", copies, kAll);
+        P.eq("uninstall.says_recycle_bin", anyLine(panel, "the Recycle Bin") ? 1 : 0, 1);
+        shoot(P, panel, host, "gui.installer.uninstall");
+        int first = -1;
+        for (const auto& c : panel.controls())
+            if (c.act == Act::copy && first < 0)
+                first = c.index;
+        panel.press(Act::copy, first);
+        host.tick(240);
+        const auto after = panel.controls();
+        const pi::Panel::Control* off = findControl(after, Act::copy, first);
+        P.eq("uninstall.switch_kept_across_a_refresh", off != nullptr && !off->on ? 1 : 0, 1);
+        panel.press(Act::copy, first);
+        host.keys("escape");
+        host.settle();
+        P.eq("uninstall.escape_back", panel.page() == Page::choose ? 1 : 0, 1);
+    }
+
+    // ---- ERROR: the extensions' folder made unwritable while one is copied (as a run may meet it) --------------------
+    {
+        fixture::setVersion(vst3Home / "ToneSynth.vst3", "1.0.0");                  // upgrades: the first copy
+        fixture::writeMcpb(appsHome / "ToneSynth.mcpb", "0.1.0", "old");            // upgrades: the second, held
+        panel.show(Page::choose);
+        host.settle();
+        const int base = sys.copiesStarted.load();
+        sys.holdFrom(base + 2);
+        host.tick(30);
+        host.keys("return");
+        P.eq("error.started", panel.page() == Page::installing ? 1 : 0, 1);
+        P.eq("error.extension_copying", waitFor([&] { return sys.copiesStarted.load() - base >= 2; }) ? 1 : 0, 1);
+        P.eq("error.folder_denied", fixture::denyWrite(appsHome) ? 1 : 0, 1);
+        sys.release();
+        panel.waitForRun();
+        host.tick(2);
+        host.settle();
+        fixture::allowWrite(appsHome);
+        P.eq("error.done_page", panel.page() == Page::done ? 1 : 0, 1);
+        P.eq("error.reported", panel.report().ok() ? 1 : 0, 0);
+        std::printf("error: %s\n", panel.report().error.c_str());
+        P.eq("error.says_what_was_installed", panel.report().error.find("Installed: ToneSynth's VST3") != std::string::npos ? 1 : 0, 1);
+        P.eq("error.shown", anyLine(panel, "ToneSynth's Claude Desktop extension was not installed") ? 1 : 0, 1);
+        P.eq("error.old_extension_kept", pi::Engine::extensionVersion(appsHome / "ToneSynth.mcpb") == "0.1.0" ? 1 : 0, 1);
+        P.eq("error.a11y_says_error", panel.a11yDump().find("Error: ") != std::string::npos ? 1 : 0, 1);
+        P.eq("error.says_how_to_get_claude", anyLine(panel, "claude.ai/download") ? 1 : 0, 1);
+        P.eq("error.names_the_log", anyLine(panel, "The log of what went where") ? 1 : 0, 1);
+        shoot(P, panel, host, "gui.installer.error");
+        host.tick(30);
+        panel.press(Act::back);
+        P.eq("error.back_to_choose", panel.page() == Page::choose ? 1 : 0, 1);
+    }
+
+    // ---- NOTES: a host and a Standalone open, copies in the other scope ----------------------------------------------
+    {
+        fixture::setVersion(appsHome / "ToneSynth", "1.0.0");                        // its app upgrades: open
+        fixture::setVersion(vst3Home / "Tone.vst3", "1.1.0");                        // a plugin changes: the host's note
+        fixture::writeBundle(vst3Root / "Tone.vst3", "1.2.0", "system", false);
+        fixture::writeBundle(appsRoot / "Tone", "1.2.0", "system", false);
+        fixture::writeBundle(vst3Root / "ToneSynth.vst3", "1.2.0", "system", false);
+        sys.apps = { fs::path("C:/Program Files/REAPER (x64)/reaper.exe"), appsHome / "ToneSynth" / "ToneSynth.exe" };
+        panel.show(Page::choose);
+        host.settle();
+        P.eq("notes.app_open", anyNote(panel, "ToneSynth is open") ? 1 : 0, 1);
+        P.eq("notes.host_open", anyNote(panel, "REAPER is open: restart your DAW") ? 1 : 0, 1);
+        P.eq("notes.other_scope", anyNote(panel, "Tone is also installed for all users (VST3 and App)")
+                                  && anyNote(panel, "ToneSynth is also installed for all users (VST3)") ? 1 : 0, 1);
+        P.eq("notes.each_shown", notes(panel), 4);
+        shoot(P, panel, host, "gui.installer.choose.notes");
+        panel.press(Act::scope, 1);
+        host.settle();
+        P.eq("notes.allusers_host_open", anyNote(panel, "REAPER is open") ? 1 : 0, 1);
+        P.eq("notes.allusers_other_scope", anyNote(panel, "Tone is also installed just for you") ? 1 : 0, 1);
+        P.eq("notes.allusers_each_shown", notes(panel), 4);
+        shoot(P, panel, host, "gui.installer.choose.notes.allusers", false);
+        panel.press(Act::scope, 0);
+        panel.press(Act::toUninstall);
+        host.settle();
+        P.eq("notes.uninstall", anyNote(panel, "ToneSynth is open") && anyNote(panel, "REAPER is open") ? 1 : 0, 1);
+        shoot(P, panel, host, "gui.installer.uninstall.notes", false);
+        sys.apps.clear();
+    }
+
+    // ---- UNINSTALL, run ----------------------------------------------------------------------------------------------
+    {
+        panel.show(Page::uninstall);
+        host.settle();
+        host.tick(30);
+        host.keys("return");
+        panel.waitForRun();
+        host.tick(2);
+        host.settle();
+        P.eq("uninstalled.done_page", panel.page() == Page::done ? 1 : 0, 1);
+        P.eq("uninstalled.ok", panel.report().ok() ? 1 : 0, 1);
+        if (!panel.report().ok())
+            std::printf("uninstalled: %s\n", panel.report().error.c_str());
+        P.eq("uninstalled.none_left", static_cast<int64_t>(engine.installed().size()), 0);
+        P.eq("uninstalled.says_recycle_bin", anyLine(panel, "Moved to the Recycle Bin") ? 1 : 0, 1);
+        shoot(P, panel, host, "gui.installer.uninstalled", false);
+    }
+    return P.finish();
+}
+#else
 PROBE(installer, gui)
 {
     const funkgui::HeadlessGuiScope gui;
@@ -469,3 +755,4 @@ PROBE(installer, gui)
     }
     return P.finish();
 }
+#endif

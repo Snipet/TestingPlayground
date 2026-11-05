@@ -1,7 +1,8 @@
-# Two plugins (AU, VST3, Standalone; macOS arm64) from one source tree, on JUCE 8.0.4 and FunkGui, with FSynth's DSP
-# core vendored in Source/fsdsp/core. The products are products/<key>.cmake: the effect (products/effect.cmake) and
-# the synth (products/synth.cmake). One configure builds every product: the shared sources are compiled once for
-# each, against that product's generated Product.h. Use the presets (CMakePresets.json):
+# Two plugins (AU, VST3, Standalone on macOS arm64; VST3 and Standalone on Windows x64) from one source tree, on
+# JUCE 8.0.4 and FunkGui, with FSynth's DSP core vendored in Source/fsdsp/core. The products are
+# products/<key>.cmake: the effect (products/effect.cmake) and the synth (products/synth.cmake). One configure builds
+# every product: the shared sources are compiled once for each, against that product's generated Product.h. Use the
+# presets (CMakePresets.json):
 #
 #   cmake --workflow --preset dev-verify     configure, build (both plugins + probes) and run every test, in build-dev
 #   scripts/test.sh [effect|synth]           build and run the probes only (both products, or the one named)
@@ -21,9 +22,15 @@
 #                                code and no plugin code (FP_SANDBOX_SHARED)
 #   Assets/logo/<kind>/          the app icon (Tools/logo/logo.swift writes it)   -> each bundle's Icon.icns
 #   Source/installer/            the installer, one for every product (its payload: their bundles and extensions)
-#                                                                                  -> "<Project> Installer.app"
+#                                                                                  -> "<Project> Installer.app" (.exe)
 #   Tools/probes/**/*.cpp        probes on FunkGui's Harness, self-registered      -> <Name>_probes, tests <key>:<probe>
 #   Tools/probes/installer/      the installer's probes                            -> Installer_probes, tests installer.*
+#
+# Windows (x64, clang-cl; the windows-* presets): the VST3, the Standalone, the MCP server and its extension, the GUI
+# sandbox's helper, the installer (its payload\ beside its exe) and the probes. The editor draws on the GPU there too
+# (FunkGui v0.24.0: bgfx on Direct3D 11), or, with FP_WITH_GPU off, on the CPU (Source/editor/nogpu/: FunkGui's
+# SoftRaster in a JUCE component); no AU, no signing. Platform files are named for it: *Win.cpp and *None.cpp beside
+# the macOS *.mm and IOKit sources (Source/plugin/standalone/, Source/installer/: EngineWin.cpp, SystemWin.cpp).
 # Every list is a CONFIGURE_DEPENDS glob: a new source file needs no CMake edit. Nothing outside products/ (and the
 # docs) names a product: the C++ namespace is `playground` in both, and every product-specific value comes from the
 # product's file, through Product.h or the variables below.
@@ -43,23 +50,79 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-if(NOT APPLE)
-  message(FATAL_ERROR "${PROJECT_NAME} builds on macOS only (arm64).")
+# The platforms: macOS (arm64, Apple clang) and Windows (x64, clang-cl: FMinus's compiler there).
+set(FP_WINDOWS OFF)
+if(APPLE)
+  if(NOT CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+    message(FATAL_ERROR "${PROJECT_NAME} builds for arm64 only on macOS: configure with a preset (CMakePresets.json), "
+                        "which sets CMAKE_OSX_ARCHITECTURES=arm64.")
+  endif()
+  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "^(Apple)?Clang$")
+    message(FATAL_ERROR "${PROJECT_NAME} needs Apple clang (Xcode or its command-line tools)")
+  endif()
+  set(FP_ARCH arm64)
+elseif(WIN32)
+  set(FP_WINDOWS ON)
+  if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    message(FATAL_ERROR "${PROJECT_NAME} builds on Windows with clang-cl (FMinus's compiler there): configure with a "
+                        "windows-* preset from an \"x64 Native Tools Command Prompt for VS\" (CMakePresets.json sets "
+                        "CMAKE_C_COMPILER and CMAKE_CXX_COMPILER to clang-cl), with Visual Studio's \"C++ Clang tools "
+                        "for Windows\" installed. This is ${CMAKE_CXX_COMPILER_ID} (${CMAKE_CXX_COMPILER}).")
+  endif()
+  if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8 OR CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM|arm|aarch)")
+    message(FATAL_ERROR "${PROJECT_NAME} builds for x64 on Windows: open \"x64 Native Tools Command Prompt for VS\"")
+  endif()
+  set(FP_ARCH x86_64)
+  # The C runtime of FMinus's LLVM (FMinus's own default there): every target links the same one.
+  set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreadedDLL)
+  # Large translation units (JUCE's modules, Panel.cpp) and UTF-8 sources.
+  add_compile_options($<$<COMPILE_LANGUAGE:CXX,C>:/bigobj> $<$<COMPILE_LANGUAGE:CXX,C>:/utf-8>)
+  # windows.h without min/max macros and its rarely used parts, as JUCE's own headers define them (the same values, so
+  # JUCE's definitions are no redefinitions).
+  add_compile_definitions(NOMINMAX= WIN32_LEAN_AND_MEAN=1 _CRT_SECURE_NO_WARNINGS)
+  # RelWithDebInfo inlines fully, as clang's -O2 does on macOS: CMake's default for an MSVC-like compiler, /Ob1, inlines
+  # only what is marked inline (the Engine, SoftRaster and the probes' analyses ran several times slower). For every
+  # target below, FMinus's and FunkGui's included.
+  foreach(_lang C CXX)
+    string(REPLACE "/Ob1" "/Ob2" CMAKE_${_lang}_FLAGS_RELWITHDEBINFO "${CMAKE_${_lang}_FLAGS_RELWITHDEBINFO}")
+  endforeach()
+else()
+  message(FATAL_ERROR "${PROJECT_NAME} builds on macOS (arm64) and Windows (x64).")
 endif()
-if(NOT CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
-  message(FATAL_ERROR "${PROJECT_NAME} builds for arm64 only: configure with a preset (CMakePresets.json), which sets "
-                      "CMAKE_OSX_ARCHITECTURES=arm64.")
-endif()
-if(NOT CMAKE_CXX_COMPILER_ID MATCHES "^(Apple)?Clang$")
-  message(FATAL_ERROR "${PROJECT_NAME} needs Apple clang (Xcode or its command-line tools)")
+# FunkGui's GPU layer (bgfx: Metal on macOS, Direct3D 11 on Windows) and the editor host on it; OFF: the CPU host
+# (Source/editor/nogpu/: SoftRaster, custom shaders as placeholders), which needs neither bgfx nor shaderc.
+option(FP_WITH_GPU "FunkGui's GPU layer (bgfx) and FunkGui's EditorHost; OFF: the editor on the CPU" ON)
+# The user's home: the machine caches (~/audio/...) are found under it.
+if(DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
+  file(TO_CMAKE_PATH "$ENV{HOME}" FP_HOME)
+else()
+  file(TO_CMAKE_PATH "$ENV{USERPROFILE}" FP_HOME)
 endif()
 
 # ---- options ---------------------------------------------------------------------------------------------------------
-option(FP_WERROR "-Werror on our own sources (never on JUCE's, FunkGui's or bgfx's)" ON)
-option(FP_LTO    "-flto in Release builds"                                         ON)
-set(FP_DEPS_DIR "$ENV{HOME}/audio/.deps" CACHE PATH "Read-only machine cache of JUCE, bgfx.cmake and shaderc")
-if(EXISTS "$ENV{HOME}/audio/libraries/FunkGui/.git")
-  set(_fp_funkgui_repo "$ENV{HOME}/audio/libraries/FunkGui")
+# Windows starts with -Werror and LTO off: its headers and its linker (lld-link for LTO) are newer ground.
+if(FP_WINDOWS)
+  set(_fp_strict OFF)
+else()
+  set(_fp_strict ON)
+endif()
+option(FP_WERROR "-Werror on our own sources (never on JUCE's, FunkGui's or bgfx's)" ${_fp_strict})
+option(FP_LTO    "-flto in Release builds"                                         ${_fp_strict})
+set(FP_DEPS_DIR "${FP_HOME}/audio/.deps" CACHE PATH "Read-only machine cache of JUCE, bgfx.cmake and shaderc")
+# fp_local_checkout(<var> <name>): this machine's git checkout of a library of ours, ~/audio/libraries/<name> or else
+# ~/audio/<name> (where a Windows machine may keep them), or "" when there is none.
+function(fp_local_checkout var name)
+  set(${var} "" PARENT_SCOPE)
+  foreach(_d "${FP_HOME}/audio/libraries/${name}" "${FP_HOME}/audio/${name}")
+    if(EXISTS "${_d}/.git")
+      set(${var} "${_d}" PARENT_SCOPE)
+      return()
+    endif()
+  endforeach()
+endfunction()
+fp_local_checkout(_fp_funkgui_local FunkGui)
+if(_fp_funkgui_local)
+  set(_fp_funkgui_repo "${_fp_funkgui_local}")
 else()
   set(_fp_funkgui_repo "https://github.com/Snipet/FunkGui.git")
 endif()
@@ -104,6 +167,14 @@ if(NOT _ns)
 endif()
 
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
+# Windows' system libraries the plugin, the server and the helper call: Winsock (the MCP sockets), CNG (the chat's key
+# file), the shell's folders.
+set(FP_WINDOWS_LIBS ws2_32 bcrypt shell32 ole32)
+if(FP_WITH_GPU)
+  set(_fp_editor_on "GPU")
+else()
+  set(_fp_editor_on "CPU (FunkGui's SoftRaster)")
+endif()
 include(Flags)
 include(Deps)
 
@@ -114,8 +185,18 @@ file(GLOB FP_PLUGIN_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/plugin/*.cpp)
 list(FILTER FP_PLUGIN_SOURCES EXCLUDE REGEX "/CreateEditor[^/]*\\.cpp$")
 set(FP_CREATE_EDITOR_GENERIC ${FP_SOURCE_ROOT}/plugin/CreateEditorGeneric.cpp)        # the probes' editor factory
 file(GLOB_RECURSE FP_EDITOR_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/editor/*.cpp)
-list(FILTER FP_EDITOR_SOURCES EXCLUDE REGEX "/Source/editor/gpu/")
-file(GLOB FP_EDITOR_GPU_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/editor/gpu/*.cpp ${FP_SOURCE_ROOT}/editor/gpu/*.mm)
+list(FILTER FP_EDITOR_SOURCES EXCLUDE REGEX "/Source/editor/(gpu|nogpu)/")
+# The editor's host: FunkGui's EditorHost on the GPU (gpu/), or, with FP_WITH_GPU off, the CPU host
+# (nogpu/: SoftEditorHost, its factory, and FP_NOGPU_SHARED: what FunkGui::gpu would define that the shared code
+# calls, which the probes and the sandbox's helper take too).
+set(FP_NOGPU_SHARED "")
+if(FP_WITH_GPU)
+  file(GLOB FP_EDITOR_GPU_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/editor/gpu/*.cpp ${FP_SOURCE_ROOT}/editor/gpu/*.mm)
+else()
+  file(GLOB FP_EDITOR_GPU_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/editor/nogpu/*.cpp)
+  set(FP_NOGPU_SHARED ${FP_SOURCE_ROOT}/editor/nogpu/ShaderLibraryNone.cpp)
+  list(FILTER FP_EDITOR_GPU_SOURCES EXCLUDE REGEX "/ShaderLibraryNone\\.cpp$")
+endif()
 file(GLOB FP_FMINUS_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/fminus/*.cpp)
 # The GUI sandbox's helper (Source/sandbox/): its own sources, and the editor's .gui code and the .gui and program
 # reading it shares with the plugin, by name: nothing that compiles a program (Patch.cpp, FMinus, LLVM), plays one
@@ -131,6 +212,13 @@ endforeach()
 # Objective-C++.
 file(GLOB FP_STANDALONE_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/plugin/standalone/*.cpp
                                                   ${FP_SOURCE_ROOT}/plugin/standalone/*.mm)
+# Each platform's own: macOS the window in Objective-C++ and the racing wheel over IOKit; Windows *Win.cpp (JUCE's
+# window with a menu bar) and *None.cpp (no racing wheel).
+if(APPLE)
+  list(FILTER FP_STANDALONE_SOURCES EXCLUDE REGEX "(Win|None)\\.cpp$")
+else()
+  list(FILTER FP_STANDALONE_SOURCES EXCLUDE REGEX "(\\.mm|/RacingWheel\\.cpp)$")
+endif()
 fp_warn_sources(${FP_STANDALONE_SOURCES})
 foreach(_f IN LISTS FP_STANDALONE_SOURCES)
   if(_f MATCHES "\\.mm$")
@@ -255,6 +343,9 @@ function(fp_add_product key)
     if(NOT _text MATCHES "^// ([^:\n]+):")
       message(FATAL_ERROR "${_f}: the first line must be '// <Title>: ...', the title the EXAMPLES menu shows")
     endif()
+    if(FP_WINDOWS)                                         # "RUN (or Cmd-Return)": a Windows keyboard's Ctrl
+      string(REPLACE "Cmd-" "Ctrl-" _text "${_text}")
+    endif()
     string(APPEND FP_FMINUS_EXAMPLE_ROWS "        Example{ \"${CMAKE_MATCH_1}\", R\"fminus(${_text})fminus\" },\n")
   endforeach()
   file(CONFIGURE OUTPUT ${FP_GENERATED_DIR}/Examples.h @ONLY CONTENT [=[// Generated by CMakeLists.txt from Source/fminus/examples/@key@/*.fm: the editor's EXAMPLES, as they were when the
@@ -335,12 +426,17 @@ namespace @FP_NAMESPACE@
   if(NOT EXISTS ${_fp_logo}/icon.icns OR NOT EXISTS ${_fp_logo}/installer-1024.png)
     message(FATAL_ERROR "Assets/logo/${PRODUCT_KIND}/ has no icon.icns: run `swift Tools/logo/logo.swift`")
   endif()
+  if(APPLE)
+    set(_fp_formats AU VST3 Standalone)
+  else()
+    set(_fp_formats VST3 Standalone)                     # Windows: no AU (JUCE makes the .ico from ICON_BIG)
+  endif()
   juce_add_plugin(${PRODUCT_NAME}
       ICON_BIG                 ${_fp_logo}/installer-1024.png
       COMPANY_NAME             "${PRODUCT_COMPANY}"
       PLUGIN_MANUFACTURER_CODE ${PRODUCT_MFR_CODE}
       PLUGIN_CODE              ${PRODUCT_CODE}
-      FORMATS                  AU VST3 Standalone
+      FORMATS                  ${_fp_formats}
       PRODUCT_NAME             "${PRODUCT_NAME}"
       VERSION                  ${PRODUCT_VERSION}
       BUNDLE_ID                ${PRODUCT_BUNDLE_ID}
@@ -348,10 +444,12 @@ namespace @FP_NAMESPACE@
       IS_MIDI_EFFECT           FALSE
       ${_fp_plugin_kind}
       COPY_PLUGIN_AFTER_BUILD  FALSE)                    # scripts/install.sh copies them, deliberately
-  get_target_property(_fp_icns ${PRODUCT_NAME} JUCE_ICON_FILE)
-  configure_file(${_fp_logo}/icon.icns ${_fp_icns} COPYONLY)
+  if(APPLE)
+    get_target_property(_fp_icns ${PRODUCT_NAME} JUCE_ICON_FILE)
+    configure_file(${_fp_logo}/icon.icns ${_fp_icns} COPYONLY)
+  endif()
 
-  set(_fp_plugin_own ${FP_PLUGIN_SOURCES} ${FP_EDITOR_SOURCES} ${FP_EDITOR_GPU_SOURCES})
+  set(_fp_plugin_own ${FP_PLUGIN_SOURCES} ${FP_EDITOR_SOURCES} ${FP_EDITOR_GPU_SOURCES} ${FP_NOGPU_SHARED})
   target_sources(${PRODUCT_NAME} PRIVATE ${_fp_plugin_own})
   fp_warn_sources(${_fp_plugin_own})
   target_include_directories(${PRODUCT_NAME} PRIVATE ${FP_SOURCE_ROOT} ${FP_GENERATED_DIR})
@@ -365,15 +463,40 @@ namespace @FP_NAMESPACE@
   endif()
 
   # FunkGui, PRIVATE (a PUBLIC link would compile FunkGui again into every format wrapper).
-  target_link_libraries(${PRODUCT_NAME} PRIVATE FunkGui::core FunkGui::gpu)
+  target_link_libraries(${PRODUCT_NAME} PRIVATE FunkGui::core)
+  if(FP_WITH_GPU)
+    target_link_libraries(${PRODUCT_NAME} PRIVATE FunkGui::gpu)
+  else()
+    target_compile_definitions(${PRODUCT_NAME} PRIVATE FP_SOFT_EDITOR=1)   # the Standalone's App.cpp asks the CPU host
+  endif()
   if(APPLE)
     target_link_libraries(${PRODUCT_NAME} PRIVATE "-framework ImageIO" "-framework CoreGraphics")   # ChatImages.cpp
     target_link_libraries(${PRODUCT_NAME} PRIVATE compression)  # ProjectExport.cpp: a package's xz (libcompression)
+  elseif(FP_WINDOWS)
+    target_link_libraries(${PRODUCT_NAME} PRIVATE ${FP_WINDOWS_LIBS})
   endif()
   funkgui_configure_product(${PRODUCT_NAME} PRODUCT ${PRODUCT_NAME} OBJC_PREFIX ${PRODUCT_OBJC_PREFIX}
                             ENV_PREFIX ${PRODUCT_ENV_PREFIX} PREFS_FOLDER ${PRODUCT_NAME})
   funkgui_compile_shaders(${PRODUCT_NAME})
   funkgui_add_font(${PRODUCT_NAME})                       # the font's and bgfx's licences into each bundle
+  if(NOT FP_WITH_GPU)
+    # Without FunkGui's GPU layer funkgui_add_font copies nothing; the bundled face's licence (OFL) still goes beside
+    # each binary that embeds the face: the VST3's Contents/Resources/licences, the Standalone's licences/.
+    get_property(_fp_fg_root GLOBAL PROPERTY FUNKGUI_SOURCE_DIR)
+    foreach(_fmt VST3 Standalone)
+      if(TARGET ${PRODUCT_NAME}_${_fmt})
+        if(_fmt STREQUAL "VST3")
+          set(_fp_lic_dir "$<TARGET_FILE_DIR:${PRODUCT_NAME}_${_fmt}>/../Resources/licences")
+        else()
+          set(_fp_lic_dir "$<TARGET_FILE_DIR:${PRODUCT_NAME}_${_fmt}>/licences")
+        endif()
+        add_custom_command(TARGET ${PRODUCT_NAME}_${_fmt} PRE_LINK
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${_fp_lic_dir}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_fp_fg_root}/fonts/JetBrainsMono-LICENSE.txt" "${_fp_lic_dir}"
+            VERBATIM)
+      endif()
+    endforeach()
+  endif()
 
   # The Standalone is our own app (Source/plugin/standalone/): JUCE's custom standalone hook leaves JUCE's out (its
   # drawn title bar and Options button) for macOS's window, the editor's top bar under its buttons, and a menu bar. The
@@ -382,8 +505,13 @@ namespace @FP_NAMESPACE@
     target_sources(${PRODUCT_NAME}_Standalone PRIVATE ${FP_STANDALONE_SOURCES})
     target_compile_definitions(${PRODUCT_NAME}_Standalone PRIVATE JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1)
     target_link_libraries(${PRODUCT_NAME}_Standalone PRIVATE fp_flags)
-    # The racing wheel (standalone/RacingWheel.cpp): IOKit's HID manager, the Standalone's alone.
-    target_link_libraries(${PRODUCT_NAME}_Standalone PRIVATE "-framework IOKit" "-framework CoreFoundation")
+    if(APPLE)
+      # The racing wheel (standalone/RacingWheel.cpp): IOKit's HID manager, the Standalone's alone.
+      target_link_libraries(${PRODUCT_NAME}_Standalone PRIVATE "-framework IOKit" "-framework CoreFoundation")
+    endif()
+    if(NOT FP_WITH_GPU)
+      target_compile_definitions(${PRODUCT_NAME}_Standalone PRIVATE FP_SOFT_EDITOR=1)
+    endif()
   endif()
 
   # Each bundle exports its entry points and nothing else: the AU its factories, the VST3 its three functions, what
@@ -391,6 +519,9 @@ namespace @FP_NAMESPACE@
   # symbols would be merged across every plugin in the host's process that exports them too (dyld coalesces weak
   # definitions process-wide), and two plugins would share LLVM's state; so would the two products, whose C++ is one
   # namespace. The test lint.exports checks the built bundles.
+  # Windows: a DLL exports what is marked dllexport and nothing else (LLVM's archives mark nothing), so there is no
+  # list there, and nothing is signed (a VST3 on Windows needs no signature).
+  if(APPLE)
   set(_exports ${CMAKE_BINARY_DIR}/exports/${key})
   file(CONFIGURE OUTPUT ${_exports}-au.txt CONTENT "_JuceAUFactory\n_${PRODUCT_NAME}AUFactory\n")
   file(CONFIGURE OUTPUT ${_exports}-vst3.txt CONTENT "_GetPluginFactory\n_bundleEntry\n_bundleExit\n")
@@ -446,6 +577,34 @@ namespace @FP_NAMESPACE@
           VERBATIM)
     endif()
   endforeach()
+  endif()   # APPLE: exports, shaderc, signatures
+
+  # Windows with the GPU layer: shaderc.exe, the pinned bgfx's, where the plugin looks for it (Processor.cpp's
+  # shaderTools): the VST3's Contents/Resources, beside its Contents/x86_64-win, as on macOS, and the Standalone's own
+  # folder, beside its .exe. Copied before the link, once it is built or found.
+  if(FP_WINDOWS AND FP_WITH_GPU)
+    if(FUNKGUI_SHADERC)
+      set(_fp_sc "${FUNKGUI_SHADERC}")
+    else()
+      set(_fp_sc "$<TARGET_FILE:shaderc>")
+    endif()
+    foreach(_fmt VST3 Standalone)
+      if(TARGET ${PRODUCT_NAME}_${_fmt})
+        if(_fmt STREQUAL "VST3")
+          set(_fp_sc_dir "$<TARGET_FILE_DIR:${PRODUCT_NAME}_${_fmt}>/../Resources")
+        else()
+          set(_fp_sc_dir "$<TARGET_FILE_DIR:${PRODUCT_NAME}_${_fmt}>")
+        endif()
+        if(NOT FUNKGUI_SHADERC)
+          add_dependencies(${PRODUCT_NAME}_${_fmt} shaderc)
+        endif()
+        add_custom_command(TARGET ${PRODUCT_NAME}_${_fmt} PRE_LINK
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${_fp_sc_dir}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_fp_sc}" "${_fp_sc_dir}/shaderc.exe"
+            VERBATIM)
+      endif()
+    endforeach()
+  endif()
 
   # ---- the MCP server (Source/mcp): Claude Desktop starts it; it reaches the plugin's instances (plugin/McpLink.h) --
   # <Name>MCP at the top of the build tree, and <Name>.mcpb beside it: a Claude Desktop extension (manifest.json, the
@@ -457,6 +616,9 @@ namespace @FP_NAMESPACE@
   target_include_directories(${FP_MCP} PRIVATE ${FP_SOURCE_ROOT} ${FP_GENERATED_DIR})
   target_compile_definitions(${FP_MCP} PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
   target_link_libraries(${FP_MCP} PRIVATE fp_flags juce::juce_core juce::juce_recommended_config_flags)
+  if(FP_WINDOWS)
+    target_link_libraries(${FP_MCP} PRIVATE ${FP_WINDOWS_LIBS})
+  endif()
   set_target_properties(${FP_MCP} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
   # ---- the GUI sandbox's helper (Source/sandbox): <Name>GuiSandbox, beside the server, which starts it ---------------
@@ -464,16 +626,23 @@ namespace @FP_NAMESPACE@
   # code (FP_SANDBOX_SHARED above). The .mcpb carries it beside the server.
   set(FP_SANDBOX ${PRODUCT_NAME}GuiSandbox)
   juce_add_console_app(${FP_SANDBOX} PRODUCT_NAME "${FP_SANDBOX}" VERSION ${PRODUCT_VERSION})
-  set(_fp_sandbox_own ${FP_SANDBOX_SOURCES} ${FP_SANDBOX_SHARED})
+  set(_fp_sandbox_own ${FP_SANDBOX_SOURCES} ${FP_SANDBOX_SHARED} ${FP_NOGPU_SHARED})
   target_sources(${FP_SANDBOX} PRIVATE ${_fp_sandbox_own})
   fp_warn_sources(${_fp_sandbox_own})
   target_include_directories(${FP_SANDBOX} PRIVATE ${FP_SOURCE_ROOT} ${FP_GENERATED_DIR})
   target_compile_definitions(${FP_SANDBOX} PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
-  target_link_libraries(${FP_SANDBOX} PRIVATE fp_flags fp_lto FunkGui::core FunkGui::gpu juce::juce_recommended_config_flags)
+  target_link_libraries(${FP_SANDBOX} PRIVATE fp_flags fp_lto FunkGui::core juce::juce_recommended_config_flags)
+  if(FP_WITH_GPU)
+    target_link_libraries(${FP_SANDBOX} PRIVATE FunkGui::gpu)
+  endif()
   if(FP_LTO)
     target_link_libraries(${FP_SANDBOX} PRIVATE juce::juce_recommended_lto_flags)
   endif()
-  target_link_options(${FP_SANDBOX} PRIVATE "LINKER:-dead_strip")
+  if(APPLE)
+    target_link_options(${FP_SANDBOX} PRIVATE "LINKER:-dead_strip")
+  else()
+    target_link_libraries(${FP_SANDBOX} PRIVATE ${FP_WINDOWS_LIBS})
+  endif()
   funkgui_configure_product(${FP_SANDBOX} PRODUCT ${PRODUCT_NAME} OBJC_PREFIX ${PRODUCT_OBJC_PREFIX}
                             ENV_PREFIX ${PRODUCT_ENV_PREFIX} PREFS_FOLDER ${PRODUCT_NAME})
   funkgui_compile_shaders(${FP_SANDBOX})                  # FunkGui::gpu's own shaders (the UI's, the pictures')
@@ -496,6 +665,16 @@ namespace @FP_NAMESPACE@
     set(FP_MCP_TRACK "an audio track")
     set(FP_MCP_EXAMPLES "“Make a tape delay with a little wow.” “Make the reverb darker and longer.” “Explain what this effect does to my sound.”")
   endif()
+  # The server and the helper as the extension holds them (server/<name>, .exe on Windows), and the platform.
+  set(FP_MCP_EXE ${FP_MCP}${CMAKE_EXECUTABLE_SUFFIX})
+  set(FP_SANDBOX_EXE ${FP_SANDBOX}${CMAKE_EXECUTABLE_SUFFIX})
+  if(FP_WINDOWS)
+    set(FP_MCP_PLATFORM "win32")
+    set(FP_MCP_MACHINE "computer")
+  else()
+    set(FP_MCP_PLATFORM "darwin")
+    set(FP_MCP_MACHINE "Mac")
+  endif()
   set(_mcpb ${CMAKE_BINARY_DIR}/mcpb/${key})
   file(CONFIGURE OUTPUT ${_mcpb}/manifest.json @ONLY CONTENT [=[{
   "manifest_version": "0.3",
@@ -503,13 +682,13 @@ namespace @FP_NAMESPACE@
   "display_name": "@PRODUCT_NAME@",
   "version": "@FP_MCP_VERSION@",
   "description": "Ask Claude for @FP_MCP_ASK@ in words: it builds it in @PRODUCT_NAME@, listens to it and sets its dials.",
-  "long_description": "Open @PRODUCT_NAME@ in your DAW (on @FP_MCP_TRACK@) or as its own app, then talk to Claude about the sound you want. Claude writes the @FP_MCP_WHAT@'s program, runs it, measures and looks at the result, fixes what is off and leaves the dials at good settings; you hear it right away, and the plugin's window shows what Claude did. Try: @FP_MCP_EXAMPLES@\n\nWith more than one open, say which you mean by its track or project (each also shows its name, such as \"@FP_MCP_NAME@ 2\", while Claude is connected). Claude Desktop's + menu also has ready-made requests: Make a sound, Improve the sound, Explain the sound, Fix what I hear.\n\nClaude can also design the plugin's panel with you, even with the plugin closed: it sketches the interface in a sandbox, sees it drawn exactly as the plugin draws it, and puts it into the plugin only when you ask. The extension carries a second program for that, @FP_SANDBOX@ (beside the server), which draws panels and nothing else.\n\nNothing leaves your Mac except your conversation with Claude: the extension talks to the plugin through a private local connection.",
+  "long_description": "Open @PRODUCT_NAME@ in your DAW (on @FP_MCP_TRACK@) or as its own app, then talk to Claude about the sound you want. Claude writes the @FP_MCP_WHAT@'s program, runs it, measures and looks at the result, fixes what is off and leaves the dials at good settings; you hear it right away, and the plugin's window shows what Claude did. Try: @FP_MCP_EXAMPLES@\n\nWith more than one open, say which you mean by its track or project (each also shows its name, such as \"@FP_MCP_NAME@ 2\", while Claude is connected). Claude Desktop's + menu also has ready-made requests: Make a sound, Improve the sound, Explain the sound, Fix what I hear.\n\nClaude can also design the plugin's panel with you, even with the plugin closed: it sketches the interface in a sandbox, sees it drawn exactly as the plugin draws it, and puts it into the plugin only when you ask. The extension carries a second program for that, @FP_SANDBOX@ (beside the server), which draws panels and nothing else.\n\nNothing leaves your @FP_MCP_MACHINE@ except your conversation with Claude: the extension talks to the plugin through a private local connection.",
   "author": { "name": "@PRODUCT_COMPANY@" },
   "icon": "icon.png",
   "server": {
     "type": "binary",
-    "entry_point": "server/@FP_MCP@",
-    "mcp_config": { "command": "${__dirname}/server/@FP_MCP@", "args": [], "env": {} }
+    "entry_point": "server/@FP_MCP_EXE@",
+    "mcp_config": { "command": "${__dirname}/server/@FP_MCP_EXE@", "args": [], "env": {} }
   },
   "tools": [
     { "name": "list_instances", "description": "Find the open @FP_MCP_WHAT@s" },
@@ -518,7 +697,7 @@ namespace @FP_NAMESPACE@
   ],
   "tools_generated": true,
   "prompts_generated": true,
-  "compatibility": { "platforms": ["darwin"] }
+  "compatibility": { "platforms": ["@FP_MCP_PLATFORM@"] }
 }
 ]=])
   # The licences of what the sandbox's helper holds, as each bundle carries them (funkgui_add_font): bgfx's, bx's,
@@ -538,13 +717,13 @@ namespace @FP_NAMESPACE@
   # the server finds the helper beside itself (server/<Name>GuiSandbox).
   add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb
       COMMAND ${CMAKE_COMMAND} -E make_directory ${_mcpb}/server ${_mcpb}/licences
-      COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${FP_MCP}> ${_mcpb}/server/${FP_MCP}
-      COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${FP_SANDBOX}> ${_mcpb}/server/${FP_SANDBOX}
+      COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${FP_MCP}> ${_mcpb}/server/${FP_MCP_EXE}
+      COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${FP_SANDBOX}> ${_mcpb}/server/${FP_SANDBOX_EXE}
       COMMAND ${CMAKE_COMMAND} -E copy ${_fp_licence_files} ${_mcpb}/licences/
       COMMAND ${CMAKE_COMMAND} -E copy ${_icon} ${_mcpb}/icon.png
       COMMAND ${CMAKE_COMMAND} -E rm -f ${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb
       COMMAND ${CMAKE_COMMAND} -E chdir ${_mcpb} ${CMAKE_COMMAND} -E tar cf ${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb
-              --format=zip manifest.json icon.png server/${FP_MCP} server/${FP_SANDBOX} ${_fp_licences}
+              --format=zip manifest.json icon.png server/${FP_MCP_EXE} server/${FP_SANDBOX_EXE} ${_fp_licences}
       DEPENDS ${FP_MCP} ${FP_SANDBOX} ${_mcpb}/manifest.json ${_icon} ${_fp_licence_files}
       VERBATIM)
   add_custom_target(${FP_MCP}_mcpb ALL DEPENDS ${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb)
@@ -564,7 +743,8 @@ foreach(_k IN LISTS _fp_products)
   fp_add_product(${_k})
 endforeach()
 
-# ---- the installer: one app for every product, the products inside it (cmake/Installer.cmake) ----------------------
+# ---- the installer: one app for every product, the products inside it (cmake/Installer.cmake) -----------------------
+# macOS: "<Project> Installer.app" with its payload inside; Windows: "<Project> Installer.exe" with payload\ beside it.
 include(Installer)
 fp_add_installer()
 
@@ -575,9 +755,12 @@ fp_add_lints()
 # Tools/wheel-dump/: a connected Logitech G29's HID elements and their live values, beside what plugin/WheelMap.h's
 # table makes of them (README, "A racing wheel"). `cmake --build build-dev --target wheel-dump`, then
 # build-dev/wheel-dump.
-add_executable(wheel-dump EXCLUDE_FROM_ALL ${PROJECT_SOURCE_DIR}/Tools/wheel-dump/main.cpp
-                                           ${FP_SOURCE_ROOT}/plugin/WheelMap.cpp)
-target_include_directories(wheel-dump PRIVATE ${FP_SOURCE_ROOT})
-target_link_libraries(wheel-dump PRIVATE fp_flags fp_warnings "-framework IOKit" "-framework CoreFoundation")
+if(APPLE)
+  add_executable(wheel-dump EXCLUDE_FROM_ALL ${PROJECT_SOURCE_DIR}/Tools/wheel-dump/main.cpp
+                                             ${FP_SOURCE_ROOT}/plugin/WheelMap.cpp)
+  target_include_directories(wheel-dump PRIVATE ${FP_SOURCE_ROOT})
+  target_link_libraries(wheel-dump PRIVATE fp_flags fp_warnings "-framework IOKit" "-framework CoreFoundation")
+endif()
 
-message(STATUS "${PROJECT_NAME}: ${_fp_products}; ${CMAKE_BUILD_TYPE}, LTO ${FP_LTO}, Werror ${FP_WERROR}")
+message(STATUS "${PROJECT_NAME}: ${_fp_products}; ${CMAKE_BUILD_TYPE}, LTO ${FP_LTO}, Werror ${FP_WERROR}, "
+               "${FP_ARCH}, editor on the ${_fp_editor_on}")

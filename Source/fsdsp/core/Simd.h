@@ -308,13 +308,13 @@ inline f32x4 rsqrts(f32x4 p, f32x4 q) noexcept FSDSP_NONBLOCKING { return detail
 } // namespace fsdsp::simd
 
 // ---- FSynth additions, 01 §7.2 (extracted; F0 makes them compile) ----
-// ---- FSynth additions (declared at FZ0; F1, S1, writes the NEON bodies), appended to core/Simd.h. NEON bodies
-// only: v1 is arm64 (Q4). ----
+// ---- FSynth additions (declared at FZ0; F1, S1, writes the NEON bodies), appended to core/Simd.h. The playgrounds'
+// Windows build (x86-64) added SSE4.1 bodies, after the NEON ones below. ----
 namespace fsdsp::simd {
 #if defined(FSDSP_SIMD_NEON)
 using u32x4 = uint32x4_t;
 #else
-#error "fsdsp::simd::u32x4 has NEON bodies only; v1 is arm64 (Q4)"
+using u32x4 = __m128i;                      // a mask (m32x4) is __m128 here: ltu and selu cast between them
 #endif
 inline u32x4 set1u(uint32_t s) noexcept FSDSP_NONBLOCKING;                  // vdupq_n_u32
 inline u32x4 addu(u32x4 a, u32x4 b) noexcept FSDSP_NONBLOCKING;             // wrapping (vaddq_u32)
@@ -337,8 +337,7 @@ template <int I> inline u32x4 withLaneu(u32x4 v, uint32_t s) noexcept FSDSP_NONB
 
 // ==== Bodies of the FSynth additions (F1, S1; 01 §7.2) ===============================================================
 //
-// NEON only (Q4): the declarations above stop an x86-64 build with #error, so nothing below needs a second backend.
-// Each op is one instruction, or two for the conversions that shift or reinterpret first. The integer ops are exact
+// NEON first; the SSE4.1 bodies (the playgrounds' Windows build) follow them, the same values bit for bit. Each op is one instruction, or two for the conversions that shift or reinterpret first. The integer ops are exact
 // and wrap modulo 2^32; none of them reads the FP mode. The three conversions:
 //   - cvtRound  FCVTNS: to the nearest int32, ties to even, whatever FPCR's rounding mode says; saturating at
 //               INT32_MIN and INT32_MAX (+-inf included); NaN gives 0. Under FPCR.FZ a denormal input is 0, as it
@@ -350,6 +349,8 @@ template <int I> inline u32x4 withLaneu(u32x4 v, uint32_t s) noexcept FSDSP_NONB
 // On NEON u32x4 and m32x4 are the same type, so ltu's result feeds selu, sel and the mask logic directly.
 
 namespace fsdsp::simd {
+
+#if defined(FSDSP_SIMD_NEON)
 
 inline u32x4 set1u(uint32_t s) noexcept FSDSP_NONBLOCKING         { return vdupq_n_u32(s); }
 inline u32x4 addu(u32x4 a, u32x4 b) noexcept FSDSP_NONBLOCKING    { return vaddq_u32(a, b); }
@@ -389,5 +390,62 @@ template <int I> inline u32x4 withLaneu(u32x4 v, uint32_t s) noexcept FSDSP_NONB
     static_assert(I >= 0 && I < 4, "lane index out of range");
     return vsetq_lane_u32(s, v, I);
 }
+
+#else // FSDSP_SIMD_SSE: the same ops on SSE4.1 (the Windows build). The integer ops are exact and wrap, as NEON's.
+
+inline u32x4 set1u(uint32_t s) noexcept FSDSP_NONBLOCKING         { return _mm_set1_epi32(static_cast<int>(s)); }
+inline u32x4 addu(u32x4 a, u32x4 b) noexcept FSDSP_NONBLOCKING    { return _mm_add_epi32(a, b); }
+inline u32x4 subu(u32x4 a, u32x4 b) noexcept FSDSP_NONBLOCKING    { return _mm_sub_epi32(a, b); }
+inline u32x4 mulu(u32x4 a, u32x4 b) noexcept FSDSP_NONBLOCKING    { return _mm_mullo_epi32(a, b); }
+inline u32x4 xoru(u32x4 a, u32x4 b) noexcept FSDSP_NONBLOCKING    { return _mm_xor_si128(a, b); }
+inline u32x4 oru (u32x4 a, u32x4 b) noexcept FSDSP_NONBLOCKING    { return _mm_or_si128(a, b); }
+
+template <int N> inline u32x4 shlu(u32x4 a) noexcept FSDSP_NONBLOCKING
+{
+    static_assert(N >= 0 && N < 32, "shift count out of range");
+    return _mm_slli_epi32(a, N);
+}
+template <int N> inline u32x4 shru(u32x4 a) noexcept FSDSP_NONBLOCKING
+{
+    static_assert(N >= 0 && N < 32, "shift count out of range");
+    return _mm_srli_epi32(a, N);
+}
+
+// Unsigned a < b: both sign bits flipped, then the signed compare.
+inline m32x4 ltu(u32x4 a, u32x4 b) noexcept FSDSP_NONBLOCKING
+{
+    const __m128i bias = _mm_set1_epi32(static_cast<int>(0x80000000u));
+    return _mm_castsi128_ps(_mm_cmplt_epi32(_mm_xor_si128(a, bias), _mm_xor_si128(b, bias)));
+}
+inline u32x4 selu(m32x4 mask, u32x4 t, u32x4 f) noexcept FSDSP_NONBLOCKING
+{
+    return _mm_castps_si128(_mm_blendv_ps(_mm_castsi128_ps(f), _mm_castsi128_ps(t), mask));
+}
+
+// FCVTNS: nearest, ties to even, whatever MXCSR's rounding mode; saturating (cvtps gives INT32_MIN for every value out
+// of range, right for the negative side), NaN 0.
+inline u32x4 cvtRound(f32x4 a) noexcept FSDSP_NONBLOCKING
+{
+    const __m128 r = _mm_round_ps(a, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+    __m128i i = _mm_cvtps_epi32(r);
+    const __m128 tooBig = _mm_cmpge_ps(r, _mm_set1_ps(2147483648.0f));
+    i = _mm_castps_si128(_mm_blendv_ps(_mm_castsi128_ps(i), _mm_castsi128_ps(_mm_set1_epi32(0x7fffffff)), tooBig));
+    return _mm_and_si128(i, _mm_castps_si128(_mm_cmpord_ps(a, a)));
+}
+inline f32x4 cvtHi24(u32x4 a) noexcept FSDSP_NONBLOCKING   { return _mm_cvtepi32_ps(_mm_srli_epi32(a, 8)); }
+inline f32x4 cvtSigned(u32x4 a) noexcept FSDSP_NONBLOCKING { return _mm_cvtepi32_ps(a); }
+
+template <int I> inline uint32_t laneu(u32x4 v) noexcept FSDSP_NONBLOCKING
+{
+    static_assert(I >= 0 && I < 4, "lane index out of range");
+    return static_cast<uint32_t>(_mm_extract_epi32(v, I));
+}
+template <int I> inline u32x4 withLaneu(u32x4 v, uint32_t s) noexcept FSDSP_NONBLOCKING
+{
+    static_assert(I >= 0 && I < 4, "lane index out of range");
+    return _mm_insert_epi32(v, static_cast<int>(s), I);
+}
+
+#endif
 
 } // namespace fsdsp::simd

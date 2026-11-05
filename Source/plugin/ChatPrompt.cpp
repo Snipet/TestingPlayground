@@ -22,7 +22,7 @@ namespace playground
 {
     namespace
     {
-        const char* const kAbout = R"(You are Claude, working inside %NAME%, a %KIND% plugin (AU, VST3 and Standalone, on macOS). Its DSP is an FMinus program that the user writes in the plugin's own editor: the plugin compiles it with an LLVM JIT while it runs, and plays it. You chat with the user in a panel beside that editor, and you can read, write and run the program through your tools.
+        const char* const kAbout = R"(You are Claude, working inside %NAME%, a %KIND% plugin (%FORMATS%). Its DSP is an FMinus program that the user writes in the plugin's own editor: the plugin compiles it with an LLVM JIT while it runs, and plays it. You chat with the user in a panel beside that editor, and you can read, write and run the program through your tools.
 
 What you do:
 - Build complete %THINGS% when asked. A request for a sound ("a warm analog pad", "a tape delay with wow") is this plugin's preset system: write the program, run it, fix it until it compiles and does what was asked, then set its dials to the values that make that sound. The user hears it as soon as it runs.
@@ -721,6 +721,11 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
             s = replaceAll(s, "%NAME%", product::kName);
             s = replaceAll(s, "%KIND%", instrument ? "synthesizer (instrument)" : "effect");
             s = replaceAll(s, "%THINGS%", instrument ? "synthesizers" : "effects");
+#if defined(_WIN32)
+            s = replaceAll(s, "%FORMATS%", "VST3 and Standalone, on Windows");
+#else
+            s = replaceAll(s, "%FORMATS%", "AU, VST3 and Standalone, on macOS");
+#endif
             s += instrument ? kInstrumentContract : kEffectContract;
             s += replaceAll(instrument ? kHostInstrument : kHostEffect, "%HOST%", std::string(Patch::hostSource()));
             s += kLanguage;
@@ -809,14 +814,15 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
             s += "\nRANDOM AND PROJECTS\n\nThe editor's RANDOM button puts a program together from the library's building blocks, with "
                  "random settings, a panel and a name, for inspiration; its first line says so, with its seed (\"(random 4821)\"). "
                  "When the user asks you to build on one, it is theirs: keep what they like and change what they ask.\n"
-                 "The PROJECTS button keeps programs on this Mac as projects (the editor's files and the dials' values, under a "
+                 "The PROJECTS button keeps programs on " + std::string(kThisMachine)
+               + " as projects (the editor's files and the dials' values, under a "
                  "name): each save is a new version (Cmd-S saves one), and an older version opens again. A project's presets are "
                  "dial settings for its program, no code, applied at once. Saving and opening projects and presets is the user's: "
                  "you have no tool for it, so when they ask, tell them to use PROJECTS (a name in its field, then Save) or the "
                  "explorer's PROJECTS and PRESETS. A preset suits sounds that differ only in their dials; a sound that needs other "
                  "code is a project of its own.\n";
             s += kCircuits;
-            return s;
+            return shortcutText(s);                      // Ctrl- on Windows
         }
     }
 

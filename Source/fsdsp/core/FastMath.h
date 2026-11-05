@@ -232,7 +232,7 @@ float       log2p1(float x) noexcept FSDSP_NONBLOCKING;
 
 // ==== Bodies of the FSynth additions (F1, S1; 01 §7.3, §7.9) =========================================================
 //
-// NEON only, as Simd.h's additions are (01 §7.2; Q4). Every vector form is a fixed sequence of fsdsp::simd ops; every
+// NEON, and SSE4.1 for the playgrounds' Windows build, as Simd.h's additions are. Every vector form is a fixed sequence of fsdsp::simd ops; every
 // scalar form is lane 0 of its vector form (scalar(x) = lane<0>(vector(set1(x)))), so the two cannot differ. The
 // vector trig forms, atan, atan2, exp2m1 and log2p1 are inline here (they run per sample or per tick per lane); the
 // seeded scalar tanPi, sinPi and cosPi stay out of line in FastMath.cpp and now return lane 0 of the vector forms,
@@ -305,7 +305,11 @@ inline PiFold piFold(simd::f32x4 x) noexcept FSDSP_NONBLOCKING
 // All-ones in every lane whose sign bit is set: negative values, -0 and negative NaNs.
 inline simd::m32x4 signMask(simd::f32x4 x) noexcept FSDSP_NONBLOCKING
 {
+#if defined(FSDSP_SIMD_NEON)
     return vcltzq_s32(vreinterpretq_s32_f32(x));
+#else
+    return _mm_castsi128_ps(_mm_srai_epi32(_mm_castps_si128(x), 31));
+#endif
 }
 
 // atan(z)/z for z in [0, 1], from u = z^2: 1 + u*S(u) with S of degree 7 (the odd polynomial of degree 17), fitted for

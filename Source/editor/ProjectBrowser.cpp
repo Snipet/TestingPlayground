@@ -440,7 +440,7 @@ namespace playground::ui
         if (ask_ != Ask::remove)
         {
             ask_ = Ask::remove;
-            why_ = "Delete " + what + " from this Mac? Delete it does.";
+            why_ = "Delete " + what + " from " + kThisMachine + "? Delete it does.";
             return;
         }
         ask_ = Ask::none;
@@ -643,7 +643,7 @@ namespace playground::ui
         const std::string howMany = std::to_string(projects_.size()) + (projects_.size() == 1 ? " project" : " projects");
         c.text(howMany.c_str(), box.right() - kPad, c.capCentreTop(box.y + 37.0f, chat::kSmall), chat::kSmall, p.faint,
                funkgui::Align::right);
-        const std::string folder = "Saved on this Mac in " + port_.projectFolder()
+        const std::string folder = std::string("Saved on ") + kThisMachine + " in " + port_.projectFolder()
                                  + "   Each save is a version; a project's presets are dial settings for it";
         c.text(fitText(c, folder, chat::kSmall, box.w - 2.0f * kPad).c_str(), x, c.capCentreTop(box.y + 62.0f, chat::kSmall),
                chat::kSmall, p.soft);
@@ -788,7 +788,7 @@ namespace playground::ui
         box.role = funkgui::a11yrole::group;
         box.bounds = at.box;
         box.title = "Projects";
-        box.description = "Saved on this Mac in " + port_.projectFolder();
+        box.description = std::string("Saved on ") + kThisMachine + " in " + port_.projectFolder();
         out.push_back(box);
         const std::string of = chosenProject().empty() ? std::string() : " of " + chosenProject();
         const auto list = [&](List l, const std::string& title, auto&& rowText) {

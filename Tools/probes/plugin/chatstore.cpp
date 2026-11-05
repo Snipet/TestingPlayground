@@ -48,7 +48,7 @@ namespace
         return hay.find(needle) != std::string::npos;
     }
 
-    int mode(const juce::File& f)
+    [[maybe_unused]] int mode(const juce::File& f)
     {
         struct stat st {};
         if (::stat(f.getFullPathName().toRawUTF8(), &st) != 0)
@@ -104,8 +104,10 @@ PROBE(plugin, chatstore)
     for (std::size_t p = 0; p + 12 <= key.size(); ++p)
         leaks += contains(first, key.substr(p, 12)) ? 1 : 0;
     P.eq("save.no_plaintext", leaks, 0);
+#if !defined(_WIN32)                                 // Windows: the user's profile is private; no POSIX modes
     P.eq("save.file_0600", mode(keyFile), 0600);
     P.eq("save.folder_0700", mode(dir), 0700);
+#endif
     const auto loaded = store::loadKey(&why);
     P.eq("save.round_trip", loaded.has_value() && *loaded == key ? 1 : 0, 1);
     P.eq("save.again", store::saveKey(key, &why) ? 1 : 0, 1);
@@ -172,7 +174,9 @@ PROBE(plugin, chatstore)
         const store::Choice kept = store::loadChoice();
         P.eq("old.choice_kept", kept.model == "claude-sonnet-5-5" && kept.effort == "high" && kept.fast ? 1 : 0, 1);
         P.eq("old.key_kept", store::loadKey().value_or("") == key ? 1 : 0, 1);
+#if !defined(_WIN32)
         P.eq("old.chat_json_0600", mode(chatJson), 0600);
+#endif
         const juce::String before = chatJson.loadFileAsString();
         store::forgetOldSignIn();
         P.eq("old.again_nothing", chatJson.loadFileAsString() == before ? 1 : 0, 1);

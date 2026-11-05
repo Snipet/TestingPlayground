@@ -104,6 +104,25 @@ namespace playground
 {
     class EditorPort;
 
+    // The machine, as the panel and the chat name it to the user ("stored encrypted on this Mac").
+#if defined(_WIN32)
+    inline constexpr const char* kThisMachine = "this computer";
+#else
+    inline constexpr const char* kThisMachine = "this Mac";
+#endif
+
+    // A shortcut as the user's keyboard names it: the text's "Cmd-" is "Ctrl-" on Windows, whose editor host gives
+    // Ctrl the editor's Cmd (editor/nogpu/SoftEditorHost.h).
+    inline std::string shortcutText(std::string_view macText)
+    {
+        std::string s(macText);
+#if defined(_WIN32)
+        for (std::size_t at = s.find("Cmd-"); at != std::string::npos; at = s.find("Cmd-", at + 5))
+            s.replace(at, 4, "Ctrl-");
+#endif
+        return s;
+    }
+
     // A picture of the editor, for the chat's view_panel tool: a Panel of its own over the processor's ports and its
     // EditorPort, laid out at the editor's size and drawn headless on the GPU, shaders as the screen draws them
     // (editor/Picture.h; where the GPU cannot, with SoftRaster, a shader as a striped placeholder, and `about` says so

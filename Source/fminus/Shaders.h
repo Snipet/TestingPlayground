@@ -27,8 +27,13 @@ namespace playground
     struct ShaderTools
     {
         std::string shaderc;                  // the executable's path ("" for none: shaders are left out, with a note)
+#if defined(_WIN32)
+        std::string platform = "windows";     // shaderc's --platform and -p for the renderer (ShaderLibrary's target():
+        std::string profile = "s_5_0";        // Direct3D 11 on Windows, Metal on macOS)
+#else
         std::string platform = "osx";         // shaderc's --platform and -p for the renderer (ShaderLibrary's target())
         std::string profile = "metal";
+#endif
         std::string prelude;                  // funkgui::shaders::fragmentPrelude()
         std::string varyingDef;               // funkgui::shaders::varyingDef()
         std::string bgfxShaderSh;             // funkgui::shaders::bgfxShaderSh()

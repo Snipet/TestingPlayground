@@ -202,8 +202,9 @@ PROBE(plugin, process)
         {
             if (pos <= n / 2 && n / 2 < pos + kBlock)           // NAN, half way
                 p.getParameters()[slot]->setValueNotifyingHost(std::numeric_limits<float>::quiet_NaN());
-            juce::AudioBuffer<float> buffer(2, kBlock);
-            for (int i = 0; i < kBlock; ++i)
+            const int len = static_cast<int>(std::min<std::size_t>(kBlock, n - pos));   // the last block: what is left
+            juce::AudioBuffer<float> buffer(2, len);
+            for (int i = 0; i < len; ++i)
             {
                 buffer.setSample(0, i, in.l[pos + static_cast<std::size_t>(i)]);
                 buffer.setSample(1, i, in.r[pos + static_cast<std::size_t>(i)]);
@@ -212,7 +213,7 @@ PROBE(plugin, process)
             if (kInstrument && pos == 0)
                 midi.addEvent(noteOn(69, 127), 0);
             p.processBlock(buffer, midi);
-            for (int i = 0; i < kBlock; ++i)
+            for (int i = 0; i < len; ++i)
             {
                 out.l[pos + static_cast<std::size_t>(i)] = buffer.getSample(0, i);
                 out.r[pos + static_cast<std::size_t>(i)] = buffer.getSample(1, i);

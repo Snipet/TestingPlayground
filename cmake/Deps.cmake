@@ -3,13 +3,15 @@
 #   JUCE 8.0.4            from the machine cache ${FP_DEPS_DIR}/JUCE-8.0.4 when it is there, else GitHub
 #   bgfx.cmake            from ${FP_DEPS_DIR}/bgfx.cmake-<tag> when it is there, else GitHub (FunkGui's GPU layer);
 #                         its commit and those of its submodules bgfx, bx and bimg are asserted
-#   shaderc               the prebuilt ${FP_DEPS_DIR}/tools/shaderc-<tag>/shaderc when its stamp names the pinned
-#                         bgfx.cmake commit, else built from bgfx.cmake (slow: about 2,000 CPU-seconds)
-#   FunkGui v0.23.1       FetchContent at the pinned tag from FP_FUNKGUI_REPO: this machine's local repository
-#                         (~/audio/libraries/FunkGui) when it exists, else GitHub; the commit is asserted. v0.17.0
-#                         brought the TextEditor, v0.18.0 resizable Panels, v0.19.0 custom shaders, v0.20.0 images,
-#                         v0.22.0 the TextEditor's code-editor hooks, v0.23.0 GPU pictures (view_panel's), v0.23.1
-#                         their hold keeping no editor's slot
+#   shaderc               the prebuilt ${FP_DEPS_DIR}/tools/shaderc-<tag>/shaderc (shaderc.exe on Windows) when its
+#                         stamp names the pinned bgfx.cmake commit, else built from bgfx.cmake (slow: about 2,000
+#                         CPU-seconds)
+#   FunkGui v0.24.0       FetchContent at the pinned tag from FP_FUNKGUI_REPO: this machine's local
+#                         repository (~/audio/libraries/FunkGui, or ~/audio/FunkGui) when it exists, else GitHub; the
+#                         commit is asserted. v0.17.0 brought the TextEditor, v0.18.0 resizable Panels, v0.19.0 custom
+#                         shaders, v0.20.0 images, v0.22.0 the TextEditor's code-editor hooks, v0.23.0 GPU pictures
+#                         (view_panel's), v0.23.1 their hold keeping no editor's slot, v0.24.0 Windows (the GPU layer
+#                         on Direct3D 11; the core and the harness without stand-ins)
 #   FMinus                FetchContent at the pinned commit from FP_FMINUS_REPO (~/audio/libraries/FMinus, else
 #                         GitHub): the JIT compiler, its library and runtime only. Its LLVM, Bison and Flex are the
 #                         ones FMinus's own builds put in its deps cache (FP_FMINUS_DEPS_DIR), read, never built here.
@@ -23,6 +25,11 @@
 #                         (white noise from a counter), const tables of constants stored once (local, and at the top
 #                         level, shared by the functions after them), switch with case and default, and enum, whose
 #                         constants size arrays: switch, case, default and enum are keywords from it on
+#
+# Windows (FP_WINDOWS, CMakeLists.txt): FunkGui's GPU layer draws on Direct3D 11 there, its shaders and the plugin's
+# compiled by a shaderc.exe built from bgfx.cmake (it compiles HLSL with the system's d3dcompiler_47.dll); with
+# FP_WITH_GPU off neither bgfx nor shaderc is fetched or built, and the editor runs on the CPU (Source/editor/nogpu/).
+# FMinus's parser tools there are WinFlexBison, in the same deps cache.
 #
 # ~/audio/.deps is a read-only cache written by FCompressor's Scripts/deps.sh: this build reads it and never writes it.
 # FETCHCONTENT_SOURCE_DIR_<NAME> bypasses GIT_TAG, which is why every dependency's version and commit are checked after
@@ -42,9 +49,9 @@ set(FP_BGFX_API          153)
 set(FP_BGFX_SUB_SHAS     bgfx=c7684e20da1e385edc439ef39cdb42b8c661016f
                          bx=0b001f5f36579e8aea07efa5af139ca18dad9505
                          bimg=3b4baab0128ac499c5c3bc37202781bf54084049)
-set(FP_FUNKGUI_TAG       v0.23.1)
-set(FP_FUNKGUI_SHA       913dafae2df9047589f31cb1e7bf92af1c1f5f45)
-set(FP_FUNKGUI_VERSION   0.23.1)
+set(FP_FUNKGUI_TAG       v0.24.0)
+set(FP_FUNKGUI_SHA       935a6672f653d50ae4271b7827eadd2b982c32bb)
+set(FP_FUNKGUI_VERSION   0.24.0)
 set(FP_FMINUS_SHA        11edb8a0c939fb87e6899a0845daca5579e3cc78)   # no tags: a commit (the language: bits, switch, enum)
 set(FP_FMINUS_LLVM       23.1.3)                                     # the LLVM that commit pins (cmake/FMinusPins.cmake)
 
@@ -124,15 +131,21 @@ if(FP_CXX_HAS_WNONTRIVIAL_MEMCALL)
                               PROPERTIES COMPILE_OPTIONS -Wno-nontrivial-memcall)
 endif()
 
-# ---- shaderc, then bgfx ----------------------------------------------------------------------------------------------
+# ---- shaderc, then bgfx (FunkGui's GPU layer: Metal on macOS, Direct3D 11 on Windows) --------------------------------
+if(NOT FP_WITH_GPU)
+  set(FUNKGUI_WITH_BGFX OFF)                              # a normal variable, before FunkGui is made available
+  set(FP_SHADERC "")
+  set(_fp_shaderc "none (FP_WITH_GPU off)")
+  string(APPEND _fp_deps_txt "bgfx.cmake\t-\t-\tnot used on this platform\n")
+else()
 set(_sc_dir "${FP_DEPS_DIR}/tools/shaderc-${FP_BGFX_TAG}")
 set(_sc_stamp "")
 if(EXISTS "${_sc_dir}/shaderc.stamp")
   file(STRINGS "${_sc_dir}/shaderc.stamp" _sc_stamp LIMIT_COUNT 1)
 endif()
-if(IS_EXECUTABLE "${_sc_dir}/shaderc" AND _sc_stamp STREQUAL "bgfx.cmake ${FP_BGFX_SHA}")
+if(IS_EXECUTABLE "${_sc_dir}/shaderc${CMAKE_EXECUTABLE_SUFFIX}" AND _sc_stamp STREQUAL "bgfx.cmake ${FP_BGFX_SHA}")
   set(BGFX_BUILD_TOOLS OFF)                               # normal variables: CMP0077
-  set(FUNKGUI_SHADERC "${_sc_dir}/shaderc")
+  set(FUNKGUI_SHADERC "${_sc_dir}/shaderc${CMAKE_EXECUTABLE_SUFFIX}")
   set(_fp_shaderc "${FUNKGUI_SHADERC}")
   set(FP_SHADERC "${FUNKGUI_SHADERC}")                    # the one the plugin carries (CMakeLists.txt)
 else()
@@ -154,6 +167,10 @@ foreach(_t bgfx bx bimg bimg_decode bimg_encode)
   if(TARGET ${_t})
     # A plugin binary exports only its entry points.
     set_target_properties(${_t} PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+    # Windows: bgfx's own sources warn under clang-cl; third-party code, quiet as FunkGui keeps it (-w is cl's /w).
+    if(FP_WINDOWS)
+      target_compile_options(${_t} PRIVATE -w)
+    endif()
   endif()
 endforeach()
 # metal-cpp's implementation inside bgfx marks its symbols visibility("default") unless this is defined.
@@ -173,11 +190,14 @@ foreach(_kv IN LISTS FP_BGFX_SUB_SHAS)
   string(APPEND _fp_deps_txt "bgfx.cmake/${_sub}\t${FP_BGFX_TAG}\t${_sha}\t${bgfx_SOURCE_DIR}/${_sub}\n")
 endforeach()
 string(APPEND _fp_deps_txt "shaderc\t${FP_BGFX_TAG}\t${FP_BGFX_SHA}\t${_fp_shaderc}\n")
+endif()
 
 # ---- FunkGui ---------------------------------------------------------------------------------------------------------
 # Its options, as normal variables before it is made available (CMP0077).
 set(FUNKGUI_WITH_JUCE ON)
-set(FUNKGUI_WITH_BGFX ON)
+if(FP_WITH_GPU)
+  set(FUNKGUI_WITH_BGFX ON)
+endif()
 set(FUNKGUI_WITH_PRESETS OFF)                             # no preset store here (it would link SQLite)
 set(FUNKGUI_BUILD_TOOLS OFF)
 set(FUNKGUI_BUILD_TESTS OFF)
@@ -188,7 +208,11 @@ if(NOT FUNKGUI_VERSION STREQUAL FP_FUNKGUI_VERSION)
   message(FATAL_ERROR "${PROJECT_NAME}: FunkGui ${FP_FUNKGUI_TAG} reports version '${FUNKGUI_VERSION}', the pin says "
                       "${FP_FUNKGUI_VERSION}")
 endif()
-foreach(_t FunkGui::harness FunkGui::core FunkGui::gpu)
+set(_fp_funkgui_targets FunkGui::harness FunkGui::core)
+if(FP_WITH_GPU)
+  list(APPEND _fp_funkgui_targets FunkGui::gpu)
+endif()
+foreach(_t IN LISTS _fp_funkgui_targets)
   if(NOT TARGET ${_t})
     message(FATAL_ERROR "${PROJECT_NAME}: FunkGui ${FUNKGUI_VERSION} at ${_fp_funkgui_dir} defines no ${_t}")
   endif()
@@ -206,7 +230,15 @@ string(APPEND _fp_deps_txt "FunkGui\t${FP_FUNKGUI_TAG}\t${FP_FUNKGUI_SHA}\t${FP_
 # one with them (its dev preset's), and FP_FMINUS_LLVM_DIR names one by hand. FMinus's default "cache" mode would build
 # LLVM here (half an hour) whenever this tree's settings differ from the ones it was built with, as
 # CMAKE_OSX_ARCHITECTURES does.
-set(FP_FMINUS_DEPS_DIR "$ENV{HOME}/audio/libraries/FMinus/.deps" CACHE PATH
+# FMinus's checkout on this machine (~/audio/libraries/FMinus, else ~/audio/FMinus: fp_local_checkout), whose .deps its
+# own builds filled.
+fp_local_checkout(_fp_fminus_local FMinus)
+if(_fp_fminus_local)
+  set(_fp_fminus_deps_default "${_fp_fminus_local}/.deps")
+else()
+  set(_fp_fminus_deps_default "${FP_HOME}/audio/libraries/FMinus/.deps")
+endif()
+set(FP_FMINUS_DEPS_DIR "${_fp_fminus_deps_default}" CACHE PATH
     "FMinus's deps cache, where its LLVM, Bison and Flex are installed (read only here)")
 set(FP_FMINUS_LLVM_DIR "" CACHE PATH "The LLVM install FMinus uses (empty: chosen from FP_FMINUS_DEPS_DIR)")
 set(_fp_llvm "${FP_FMINUS_LLVM_DIR}")
@@ -232,15 +264,34 @@ if(NOT EXISTS "${_fp_llvm}/lib/cmake/llvm/LLVMConfig.cmake")
                       "FMinus once (cd ~/audio/libraries/FMinus && cmake --workflow --preset dev), or set "
                       "FP_FMINUS_LLVM_DIR to an LLVM ${FP_FMINUS_LLVM} install.")
 endif()
-foreach(_tool bison-3.8.2 flex-2.6.4)
+if(FP_WINDOWS)
+  # WinFlexBison, in place of Bison and Flex (FMinus's cmake/FMinusParserTools.cmake), at the version FMinus pins.
+  file(GLOB _fp_wfb LIST_DIRECTORIES true "${FP_FMINUS_DEPS_DIR}/install/winflexbison-*")
+  list(FILTER _fp_wfb EXCLUDE REGEX "\\.lock$")
+  set(_fp_parser_tools "")
+  foreach(_d IN LISTS _fp_wfb)
+    if(EXISTS "${_d}/.fminus-installed")
+      get_filename_component(_n "${_d}" NAME)
+      list(APPEND _fp_parser_tools ${_n})
+    endif()
+  endforeach()
+  if(NOT _fp_parser_tools)
+    message(FATAL_ERROR "${PROJECT_NAME}: FMinus's WinFlexBison is not in ${FP_FMINUS_DEPS_DIR}/install: build FMinus "
+                        "once (its configure is enough: cmake --preset dev in FMinus's folder, from an x64 Native Tools "
+                        "Command Prompt), or set FP_FMINUS_DEPS_DIR to its .deps folder")
+  endif()
+else()
+  set(_fp_parser_tools bison-3.8.2 flex-2.6.4)
+endif()
+foreach(_tool IN LISTS _fp_parser_tools)
   if(NOT EXISTS "${FP_FMINUS_DEPS_DIR}/install/${_tool}/.fminus-installed")
     message(FATAL_ERROR "${PROJECT_NAME}: FMinus's ${_tool} is not in ${FP_FMINUS_DEPS_DIR}/install: build FMinus once "
                         "(cd ~/audio/libraries/FMinus && cmake --workflow --preset dev)")
   endif()
 endforeach()
 
-if(EXISTS "$ENV{HOME}/audio/libraries/FMinus/.git")
-  set(_fp_fminus_repo "$ENV{HOME}/audio/libraries/FMinus")
+if(_fp_fminus_local)
+  set(_fp_fminus_repo "${_fp_fminus_local}")
 else()
   set(_fp_fminus_repo "https://github.com/Snipet/FMinus.git")
 endif()
@@ -285,3 +336,24 @@ string(APPEND _fp_deps_txt "FMinus/LLVM\t${FP_FMINUS_LLVM}\t-\t${_fp_llvm}\n")
 file(WRITE "${CMAKE_BINARY_DIR}/deps.txt" "${_fp_deps_txt}")
 message(STATUS "${PROJECT_NAME}: JUCE ${FP_JUCE_TAG}, bgfx.cmake ${FP_BGFX_TAG} (shaderc: ${_fp_shaderc}), "
                "FunkGui ${FP_FUNKGUI_TAG} from ${FP_FUNKGUI_REPO}, FMinus ${_fp_fminus_commit} on ${_fp_llvm}")
+
+# ---- JUCE 8.0.4 under upstream Clang (Windows' clang-cl) -------------------------------------------------------------
+# JUCE 8.0.4's AudioPluginInstance layout constructor is refused by upstream Clang (FunkGui's cmake/FunkGuiPlatform.cmake
+# says why); AppleClang takes it. A consumer applies FunkGui's workaround in its own scope, before its targets: where the
+# compiler refuses the pattern, -fdelayed-template-parsing (clang-cl takes it as it is).
+if(NOT APPLE)
+  include(CheckCXXSourceCompiles)
+  check_cxx_source_compiles([=[
+#include <cstddef>
+#include <initializer_list>
+struct B { B(); B(const std::initializer_list<const short[2]>&); };
+struct D : B { template <std::size_t n> D(const short l[n][2]) : B(l) {} };
+int main() { return 0; }
+]=] FP_CXX_ACCEPTS_JUCE804_LAYOUT_CTOR)
+  if(NOT FP_CXX_ACCEPTS_JUCE804_LAYOUT_CTOR)
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fdelayed-template-parsing>
+                        $<$<COMPILE_LANGUAGE:CXX>:-Wno-delayed-template-parsing-in-cxx20>)
+    message(STATUS "${PROJECT_NAME}: ${CMAKE_CXX_COMPILER_ID} refuses JUCE 8.0.4's AudioPluginInstance layout "
+                   "constructor: -fdelayed-template-parsing")
+  endif()
+endif()

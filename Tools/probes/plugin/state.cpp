@@ -46,6 +46,7 @@
 
 #include <funkgui/panel/HeadlessGuiScope.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -68,8 +69,9 @@ namespace
         probe::Stereo in = kInstrument ? probe::Stereo(n) : probe::noise(n, 0.25);
         for (std::size_t pos = 0; pos < n; pos += 256)
         {
-            juce::AudioBuffer<float> buffer(2, 256);
-            for (int i = 0; i < 256; ++i)
+            const int len = static_cast<int>(std::min<std::size_t>(256, n - pos));   // the last block: what is left
+            juce::AudioBuffer<float> buffer(2, len);
+            for (int i = 0; i < len; ++i)
             {
                 buffer.setSample(0, i, in.l[pos + static_cast<std::size_t>(i)]);
                 buffer.setSample(1, i, in.r[pos + static_cast<std::size_t>(i)]);
@@ -78,7 +80,7 @@ namespace
             if (kInstrument && pos == 0)
                 midi.addEvent(juce::MidiMessage::noteOn(1, 60, static_cast<uint8_t>(100)), 0);
             p.processBlock(buffer, midi);
-            for (int i = 0; i < 256; ++i)
+            for (int i = 0; i < len; ++i)
             {
                 in.l[pos + static_cast<std::size_t>(i)] = buffer.getSample(0, i);
                 in.r[pos + static_cast<std::size_t>(i)] = buffer.getSample(1, i);

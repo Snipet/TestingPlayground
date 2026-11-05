@@ -45,13 +45,22 @@ namespace playground
         constexpr int kMaxEditorSide = 16384;
 
         // What building a .gui file's shaders needs (fminus/Shaders.h): shaderc, bundled in the plugin
-        // (Contents/Resources/shaderc: CMakeLists.txt copies the pinned bgfx's there), else where <prefix>SHADERC says
-        // (the probes'); FunkGui's prelude, varyings and bgfx_shader.sh; the renderer's target.
+        // (Contents/Resources/shaderc: CMakeLists.txt copies the pinned bgfx's there; on Windows shaderc.exe, there in
+        // the VST3 and beside the Standalone's .exe), else where <prefix>SHADERC says (the probes'); FunkGui's
+        // prelude, varyings and bgfx_shader.sh; the renderer's target.
         ShaderTools shaderTools()
         {
             ShaderTools t;
+            // The binary this code is in: the plug-in's (the VST3's Contents/x86_64-win/<Name>.vst3, the AU's), or the
+            // Standalone's.
             const juce::File exe = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+#if defined(_WIN32)
+            juce::File bundled = exe.getParentDirectory().getSiblingFile("Resources").getChildFile("shaderc.exe");
+            if (!bundled.existsAsFile())
+                bundled = exe.getSiblingFile("shaderc.exe");
+#else
             const juce::File bundled = exe.getParentDirectory().getSiblingFile("Resources").getChildFile("shaderc");
+#endif
             const char* env = std::getenv((std::string(product::kEnvPrefix) + "SHADERC").c_str());
             if (bundled.existsAsFile())
                 t.shaderc = bundled.getFullPathName().toStdString();
@@ -63,6 +72,9 @@ namespace playground
 #if defined(__APPLE__)
             t.platform = "osx";
             t.profile = "metal";
+#elif defined(_WIN32)
+            t.platform = "windows";
+            t.profile = "s_5_0";
 #else
             t.platform = "linux";
             t.profile = "spirv";
@@ -1225,7 +1237,8 @@ namespace playground
     {
         const juce::String path = projectstore::directory().getFullPathName();
         const juce::String home = juce::File::getSpecialLocation(juce::File::userHomeDirectory).getFullPathName();
-        return (path.startsWith(home + "/") ? "~" + path.substring(home.length()) : path).toStdString();
+        return (path.startsWith(home + juce::File::getSeparatorString()) ? "~" + path.substring(home.length()) : path)
+            .toStdString();
     }
 
     ProjectState Processor::project() const
@@ -1489,7 +1502,7 @@ namespace playground
         }
         if (!projectstore::exists(project))
         {
-            why = "\"" + project + "\" is not on this Mac any more: save it again first";
+            why = "\"" + project + "\" is not on " + kThisMachine + " any more: save it again first";
             return false;
         }
         const std::vector<projectstore::Dial> dials = dialsNow();
