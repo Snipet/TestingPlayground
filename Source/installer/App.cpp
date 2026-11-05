@@ -15,10 +15,6 @@
 // it: Stop first (between steps), or the administrator's script to end.
 #include "installer/Engine.h"
 #include "installer/Panel.h"
-#if JUCE_MAC
-#include "plugin/StandaloneMenu.h"
-#include "plugin/standalone/NativeWindow.h"
-#endif
 
 #include "Installer.h"
 
@@ -32,6 +28,11 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 
+// JUCE_MAC and JUCE_WINDOWS are defined by JUCE's headers: the platform's own includes come after them.
+#if JUCE_MAC
+#include "plugin/StandaloneMenu.h"
+#include "plugin/standalone/NativeWindow.h"
+#endif
 #if JUCE_WINDOWS
 #include <windows.h>
 #include <shellapi.h>
