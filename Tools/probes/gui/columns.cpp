@@ -3,7 +3,7 @@
 // gui.columns: the explorer's and the chat's widths (editor/Columns.h), headless over a real Processor, to
 // <build>/probe-out/:
 //   gui.columns.png            the default size, both edges dragged: the explorer wider, the chat wider
-//   gui.columns.hover.png      the chat's edge under the pointer, its hairline lit
+//   gui.columns.hover.png      the chat's edge under the pointer, its hairline lit (and .hover.paper.png in PAPER)
 //   gui.columns.paper.png      in PAPER, the explorer's edge focused from the keyboard (its ring)
 //   gui.columns.wide.png       1800 x 1000 with wider widths set (and .wide.paper.png in PAPER)
 //   gui.columns.narrow.png     1300 x 760: the explorer given way to its least, the chat after it
@@ -24,17 +24,23 @@
 //              kProgramMinW; the chat's at the explorer's least), past its least at the least
 //   RESET      a double-click on an edge: the share again, the session's and this Mac's width 0
 //   KEYS       Shift-Tab to the chat's edge: Left widens it by 8, Shift-Left by 32, Right narrows it, Home its least, End
-//              its most, Delete resets it; the explorer's edge: Right widens it
+//              its most, Delete resets it; the explorer's edge: Right widens it; the session has each step at once, this
+//              Mac's default once the steps pause, in one write
 //   A11Y       a screen reader's increment, decrement and value
 //   KEPT       the state carries the widths to another processor, whose Panel shows them over this Mac's default; a new
-//              instance with none takes this Mac's default; a second Panel on the processor follows the first's; a fresh
-//              start (EXAMPLES) keeps them
+//              instance with none takes this Mac's default, as the host's reload left it when it attached the Panel; a
+//              second Panel on the processor follows the first's; a fresh start (EXAMPLES) keeps them
 //   GIVE       narrowing the window: the explorer gives way first, to its least, then the chat, then the explorer folds;
-//              widened again, both come back to their widths
-//   VIEWS      the PANEL view: the explorer and its edge away, the chat's width kept; the chat folded: no chat edge, the
-//              explorer's reach the room the rail leaves; a netlist's Schematic view between the two
+//              a key or a screen reader's step that moves nothing there keeps the widths asked; an edge that hides gives
+//              up the focus and sets nothing; widened again, both come back to their widths
+//   OVER       the code editor's completion list over the chat's edge is the list's: its cursor, a press choosing a row
+//              and moving no edge
+//   VIEWS      the PANEL view: the explorer and its edge away, the chat's width kept; the chat folded: no chat edge (one
+//              focused gives up the focus), the explorer's reach the room the rail leaves; a netlist's Schematic view
+//              between the two
 #include "Probe.h"
 
+#include "editor/CodeAssist.h"
 #include "editor/Columns.h"
 #include "editor/Panel.h"
 #include "editor/SchematicView.h"
@@ -82,6 +88,21 @@ namespace
     }
 
     int pref(const char* key) { return funkgui::UiPreferences::get().getInt(key, -1, -1, 100000); }
+    uint32_t prefsRevision() { return funkgui::UiPreferences::get().revision(); }
+
+    // The steps' pause and a little more, on the host's clock: a step's width reaches this Mac's default.
+    void pause(funkgui::HeadlessHost& host) { host.tick(static_cast<int>(std::ceil(col::kDefaultPause * 60.0)) + 2); }
+
+    // The keyboard's way to an edge: the editor's caret, Escape (nothing focused), then Shift-Tab to the last stop, the
+    // chat's edge, and once more to the explorer's.
+    bool focusEdge(pg::ui::Panel& panel, funkgui::HeadlessHost& host, bool chat)
+    {
+        const funkgui::Rect a = panel.editor().textArea();
+        host.click(a.x + 30.0f, a.y + 4.0f);
+        host.keys("escape");
+        host.keys(chat ? "shift+tab" : "shift+tab, shift+tab");
+        return panel.edgeFocused(chat);
+    }
 
     // The program's card's width, as Panel lays it out: the window less the margins, the gaps and the two cards.
     float programOf(float window, const col::Fit& f, bool chat)
@@ -294,13 +315,21 @@ PROBE(gui, columns)
     {
         host.keys("escape, escape");                     // out of the editor: nothing focused
         host.keys("shift+tab");                          // the last stop: the chat's edge
+        P.eq("keys.chat_edge_focused", panel.edgeFocused(true) ? 1 : 0, 1);
+        const uint32_t rev0 = prefsRevision();
         host.keys("left");
         P.eq("keys.left_widens_chat", static_cast<int64_t>(panel.chatCard().w), 443);
-        P.eq("keys.kept_at_once", port.chatWidth() == 443 && pref(col::kChatWidthKey) == 443 ? 1 : 0, 1);
+        P.eq("keys.session_at_once", port.chatWidth(), 443);
         host.keys("shift+left");
         P.eq("keys.shift_32", static_cast<int64_t>(panel.chatCard().w), 475);
         host.keys("right");
         P.eq("keys.right_narrows", static_cast<int64_t>(panel.chatCard().w), 467);
+        // This Mac's default waits for the steps to pause, then takes the last of them in one write (a held arrow
+        // would otherwise write the preferences' file with every repeat).
+        P.eq("keys.default_waits", pref(col::kChatWidthKey) == 0 && prefsRevision() == rev0 && port.chatWidth() == 467 ? 1 : 0, 1);
+        pause(host);
+        P.eq("keys.default_after_pause", pref(col::kChatWidthKey), 467);
+        P.eq("keys.default_one_write", static_cast<int64_t>(prefsRevision() - rev0), 1);
         host.keys("home");
         P.eq("keys.home_least", static_cast<int64_t>(panel.chatCard().w), static_cast<int64_t>(col::kChatMinW));
         host.keys("end");
@@ -324,6 +353,13 @@ PROBE(gui, columns)
             P.eq("keys.paper_same_widths", paper.explorerCard().w == panel.explorerCard().w
                                                && paper.chatCard().w == panel.chatCard().w ? 1 : 0, 1);
             writePng(P, paperHost, "gui.columns.paper.png");
+            // ... and the chat's edge under the pointer, its hairline lit on PAPER's card edge (the ring put away).
+            paperHost.keys("escape");
+            const funkgui::Point c = paper.centreOfChatEdge();
+            paperHost.move(c.x - 3.0f, c.y);
+            paperHost.tick(1);
+            P.eq("keys.paper_hover_cursor", paperHost.cursor() == funkgui::Cursor::leftRight ? 1 : 0, 1);
+            writePng(P, paperHost, "gui.columns.hover.paper.png");
         }
         funkgui::UiPreferences::get().setTheme(0);
         host.keys("escape");
@@ -346,6 +382,14 @@ PROBE(gui, columns)
         P.eq("a11y.value_follows", now != nullptr && now->value == "480 px" && port.chatWidth() == 480 ? 1 : 0, 1);
         // The explorer gave way for it: it asks 226 still, and shows what the chat leaves.
         P.eq("a11y.explorer_gave_way", panel.explorerWant() == 226.0f && panel.explorerCard().w == 216.0f ? 1 : 0, 1);
+        // A step against the reach moves nothing, and keeps nothing: the explorer still asks 226.
+        const funkgui::A11yItem* es = slider(after, "Explorer width");
+        if (es != nullptr)
+            panel.a11yAction(es->id, funkgui::A11yAction::increment, 0.0);
+        P.eq("a11y.reach_keeps_asked", es != nullptr && panel.explorerWant() == 226.0f && port.explorerWidth() == 226
+                                           && panel.explorerCard().w == 216.0f ? 1 : 0, 1);
+        pause(host);
+        P.eq("a11y.default_after_pause", pref(col::kChatWidthKey) == 480 && pref(col::kExplorerWidthKey) == 226 ? 1 : 0, 1);
         host.settle();
         const funkgui::Point c = panel.centreOfChatEdge();
         host.move(c.x - 3.0f, c.y);
@@ -380,6 +424,19 @@ PROBE(gui, columns)
             h3.settle();
             P.eq("kept.new_takes_default", newPanel.explorerCard().w == 300.0f && newPanel.chatCard().w == 400.0f
                                                && fresh.editorPort().explorerWidth() == 0 ? 1 : 0, 1);
+        }
+        // The default as the host found it when it attached the Panel: EditorHost reloads the preferences between making
+        // the Panel and attaching it, so a width another process set meanwhile counts.
+        {
+            pg::Processor late;
+            pg::ui::Panel latePanel(late.ports(), late.editorPort());
+            funkgui::UiPreferences::get().setInt(col::kChatWidthKey, 410);
+            funkgui::HeadlessHost h5(latePanel, 0, 2.0f);
+            h5.resize(1800, 1000);
+            h5.settle();
+            P.eq("kept.default_at_attach", latePanel.chatWant() == 410.0f && latePanel.chatCard().w == 410.0f
+                                               && latePanel.explorerCard().w == 300.0f && late.editorPort().chatWidth() == 0
+                                               ? 1 : 0, 1);
         }
         // A second Panel on the processor follows a width the first sets.
         {
@@ -420,6 +477,7 @@ PROBE(gui, columns)
             writePng(P, paperHost, "gui.columns.wide.paper.png");
         }
         funkgui::UiPreferences::get().setTheme(0);
+        pause(host);                                     // the steps' widths in this Mac's default
         host.resize(1300, pg::ui::kDefaultHeight);
         host.settle();
         // room for 636 beside each other: the explorer at its least, the chat 456
@@ -428,9 +486,29 @@ PROBE(gui, columns)
         P.near("give.program_least", static_cast<double>(panel.programCard().w), static_cast<double>(col::kProgramMinW), 0.01);
         P.eq("give.asked_kept", port.explorerWidth() == 320 && port.chatWidth() == 600 ? 1 : 0, 1);
         writePng(P, host, "gui.columns.narrow.png");
+        // Both at their reach: a step that would widen either moves nothing, and so keeps nothing (the chat's Left and
+        // End, a screen reader's increment; the explorer's Right and End).
+        const bool chatFocused = focusEdge(panel, host, true);
+        host.keys("left, end");
+        panel.a11yAction(slider(host.accessibility(), "Chat width")->id, funkgui::A11yAction::increment, 0.0);
+        host.keys("shift+tab");                          // the explorer's edge
+        const bool explorerFocused = panel.edgeFocused(false);
+        host.keys("right, end");
+        pause(host);
+        P.eq("give.edges_focused", chatFocused && explorerFocused ? 1 : 0, 1);
+        P.eq("give.reach_keeps_asked", panel.chatWant() == 600.0f && panel.explorerWant() == 320.0f && port.chatWidth() == 600
+                                           && port.explorerWidth() == 320 && pref(col::kChatWidthKey) == 600
+                                           && pref(col::kExplorerWidthKey) == 320 && panel.chatCard().w == 456.0f
+                                           && panel.explorerCard().w == col::kExplorerMinW ? 1 : 0, 1);
         host.resize(pg::ui::kMinWidth, pg::ui::kMinHeight);
         host.settle();
         P.eq("give.explorer_folds", !panel.explorerShown() && panel.explorerOpen() && !panel.explorerEdgeShown() ? 1 : 0, 1);
+        // Its edge had the focus: it gives it up, and no key sets the explorer's width while it is away.
+        P.eq("give.hidden_edge_unfocused", panel.edgeFocused(false) ? 0 : 1, 1);
+        host.keys("left, right, end, delete");
+        pause(host);
+        P.eq("give.hidden_edge_sets_nothing", panel.explorerWant() == 320.0f && port.explorerWidth() == 320
+                                                  && pref(col::kExplorerWidthKey) == 320 ? 1 : 0, 1);
         P.eq("give.chat_room", static_cast<int64_t>(panel.chatCard().w),
              static_cast<int64_t>(pg::ui::kMinWidth - 2.0f * col::kMargin - col::kChatGap - col::kProgramMinW));
         P.ge("give.program_least_small", static_cast<double>(panel.programCard().w), static_cast<double>(col::kProgramMinW) - 0.01);
@@ -438,6 +516,49 @@ PROBE(gui, columns)
         host.resize(1800, 1000);
         host.settle();
         P.eq("give.back", panel.explorerCard().w == 320.0f && panel.chatCard().w == 600.0f ? 1 : 0, 1);
+    }
+
+    // ---- OVER ----------------------------------------------------------------------------------------------------------
+    {
+        // The completion list, which the window bounds and not the program's card, over the chat's edge: a long line's
+        // end, then Ctrl-Space.
+        pg::ui::Panel over(processor.ports(), port);
+        funkgui::HeadlessHost ho(over, 0, 2.0f);
+        ho.resize(1800, 1000);
+        ho.settle();
+        funkgui::TextEditor& ed = over.editor();
+        const funkgui::Rect a = ed.textArea();
+        ho.click(a.x + 30.0f, a.y + 4.0f);               // the editor has the keys
+        const int last = ed.lineCount() - 1;
+        ed.setCaret({ last, static_cast<int>(ed.line(last).size()) });
+        std::string spaces = "return";
+        for (int k = 0; k < 72; ++k)
+            spaces += ", space";
+        ho.keys(spaces.c_str());
+        ho.keys("ctrl+space");
+        ho.tick(2);
+        const bool open = over.codeAssist().completionOpen();
+        float x0 = 1.0e9f, y0 = 1.0e9f, x1 = -1.0e9f;
+        for (const funkgui::Prim& p : ho.draw().prims)
+            if (p.tag == pg::ui::kCodePopupTag)
+            {
+                x0 = std::min(x0, p.x0);
+                y0 = std::min(y0, p.y0);
+                x1 = std::max(x1, p.x1);
+            }
+        const float edgeX = over.chatCard().x;
+        const funkgui::Point at{ edgeX - 2.0f, y0 + 20.0f };   // the band's middle, the list's first row
+        P.eq("over.list_over_band", open && x0 + 16.0f < at.x && at.x < x1 - 16.0f ? 1 : 0, 1);
+        ho.move(at.x, at.y);
+        ho.tick(1);
+        P.eq("over.list_cursor", ho.cursor() == funkgui::Cursor::pointingHand ? 1 : 0, 1);
+        const std::string before = ed.text();
+        ho.press(at.x, at.y);
+        ho.moveTo(at.x - 40.0f, at.y, 4);
+        ho.release();
+        ho.settle();
+        P.eq("over.press_chooses", !over.codeAssist().completionOpen() && ed.text() != before ? 1 : 0, 1);
+        P.eq("over.no_edge_moved", over.chatCard().w == 600.0f && port.chatWidth() == 600 && over.chatWant() == 600.0f ? 1 : 0, 1);
     }
 
     // ---- VIEWS ---------------------------------------------------------------------------------------------------------
@@ -448,9 +569,15 @@ PROBE(gui, columns)
         P.eq("views.panel_chat_kept", static_cast<int64_t>(panel.chatCard().w), 600);
         writePng(P, host, "gui.columns.panel.png");
         panel.setPanelView(false);
+        host.settle();
+        const bool focused = focusEdge(panel, host, true);
         panel.setChatOpen(false);
         host.settle();
         P.eq("views.rail_no_edge", !panel.chatEdgeShown() && panel.explorerEdgeShown() ? 1 : 0, 1);
+        // Its edge had the focus: it gives it up, and no key sets the chat's width while it is folded.
+        P.eq("views.fold_unfocuses", focused && !panel.edgeFocused(true) ? 1 : 0, 1);
+        host.keys("left, delete");
+        P.eq("views.folded_sets_nothing", panel.chatWant() == 600.0f && port.chatWidth() == 600 ? 1 : 0, 1);
         P.eq("views.rail_reach", static_cast<int64_t>(panel.columnFit().explorerMost), static_cast<int64_t>(col::kExplorerMaxW));
         panel.setChatOpen(true);
         host.settle();
