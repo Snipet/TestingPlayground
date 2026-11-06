@@ -854,6 +854,7 @@ namespace playground::ui
             renaming_ = -1;
             why_.clear();
             tabs_.clear();
+            group_ = {};
             for (const SourceFile& f : d.files)
                 if (tabs_.size() < kMaxFiles)
                     tabs_.push_back(makeTab(f.name, f.text));
@@ -871,8 +872,10 @@ namespace playground::ui
         // tab whose file is gone closes. The tabs follow the draft's order and the tab it shows. Fresh (an example or
         // RANDOM's program: EditorPort::startAfresh): a tab is kept only for a file of its name, its text set anew (no
         // undo steps, the caret and the scroll at the top), as a new window has it; every other file gets a new tab.
+        // When it changes several tabs' texts (not fresh), their steps are one undo step across them (group_).
         void merge(const Draft& d, bool fresh = false)
         {
+            std::vector<UndoGroup::Member> changed;
             renaming_ = -1;
             why_.clear();
             editor().setFocused(false);
@@ -922,18 +925,77 @@ namespace playground::ui
                     if (const auto v = views_.find(f.name);
                         v != views_.end() && t.editor->text() != funkgui::TextEditor::sanitise(f.text))
                         v->second.merged = true;
+                    const uint32_t was = t.editor->revision();
                     replaceText(*t.editor, f.text);
+                    if (t.editor->revision() != was)
+                        changed.push_back({ t.serial, t.editor->revision(), 0 });
                 }
                 tabs_.push_back(std::move(t));
             }
             if (tabs_.empty())
                 tabs_.push_back(makeTab(kProgramName, ""));
+            if (fresh)
+                group_ = {};
+            else if (changed.size() > 1)
+                group_ = { std::move(changed), false };
             for (auto v = views_.begin(); v != views_.end();)   // a file gone takes its view (and its pins) with it
                 v = find(v->first) < 0 ? forgetView(v) : std::next(v);
             active_ = std::clamp(d.active, 0, count() - 1);
             show();
             structure_ += kStructureStep;
             syncSchematic();
+        }
+
+        // Cmd-Z, Cmd-Shift-Z or Cmd-Y (as TextEditor reads them) where the tab shown would undo or redo (its text, or its
+        // Schematic view, has the keys): the undo group's step, in every tab of it, when the tab shown is one of them as
+        // the step left it.
+        bool groupKey(const funkgui::KeyEvent& e)
+        {
+            if (e.key != funkgui::Key::character || !e.mods.cmd || irShown() || group_.members.empty())
+                return false;
+            const char32_t c = e.ch >= U'A' && e.ch <= U'Z' ? e.ch - U'A' + U'a' : e.ch;
+            if (c != U'z' && c != U'y')
+                return false;
+            if (schematicShown() ? schematic_.editing() : (assist_.takesKeys() || !editor().focused()))
+                return false;
+            return groupStep(c == U'y' || e.mods.shift);
+        }
+
+        // The undo group's step undone (or redone) in each of its tabs whose text is as the step left it (or its undo),
+        // starting from the tab shown, which must be one of them; a tab that is not leaves the group. False, and nothing
+        // done, when the tab shown is not.
+        bool groupStep(bool redo)
+        {
+            if (group_.undone != redo)
+                return false;
+            const auto at = [&](const UndoGroup::Member& m) {
+                for (int i = 0; i < count(); ++i)
+                    if (tabs_[static_cast<std::size_t>(i)].serial == m.tab)
+                        return i;
+                return -1;
+            };
+            const auto still = [&](const UndoGroup::Member& m, int i) {
+                return i >= 0 && editorOf(i).revision() == (redo ? m.undone : m.done);
+            };
+            if (std::none_of(group_.members.begin(), group_.members.end(),
+                             [&](const UndoGroup::Member& m) { return at(m) == active_ && still(m, active_); }))
+                return false;
+            std::vector<UndoGroup::Member> kept;
+            for (UndoGroup::Member m : group_.members)
+            {
+                const int i = at(m);
+                if (!still(m, i))
+                    continue;
+                if (i == active_ && schematicShown())    // the Schematic view draws it again
+                    redo ? schematic_.redo() : schematic_.undo();
+                else
+                    (void)(redo ? editorOf(i).redo() : editorOf(i).undo());
+                (redo ? m.done : m.undone) = editorOf(i).revision();
+                kept.push_back(m);
+            }
+            group_.members = std::move(kept);
+            group_.undone = !redo;
+            return true;
         }
 
         funkgui::Rect editorArea() const noexcept { return editorBounds_; }
@@ -1524,6 +1586,8 @@ namespace playground::ui
         }
         bool key(const funkgui::KeyEvent& e, funkgui::GestureController&) override
         {
+            if (renaming_ < 0 && groupKey(e))
+                return true;
             if (renaming_ < 0 && schematicShown())
                 return schematic_.key(e);
             if (renaming_ < 0)
@@ -1926,11 +1990,12 @@ namespace playground::ui
         {
             std::string name;
             std::unique_ptr<funkgui::TextEditor> editor;
+            uint64_t serial = 0;                         // this tab's, never another's (the undo group's names)
         };
 
         Tab makeTab(std::string_view n, std::string_view text)
         {
-            Tab t{ std::string(n), std::make_unique<funkgui::TextEditor>(id_) };
+            Tab t{ std::string(n), std::make_unique<funkgui::TextEditor>(id_), ++serials_ };
             funkgui::TextEditorOptions o;
             o.style = funkgui::editorFont(funkgui::EditorFont::code);
             o.softTabs = true;
@@ -2116,6 +2181,23 @@ namespace playground::ui
         std::vector<Tab> tabs_;
         int active_ = 0;
         uint64_t structure_ = 0;
+        // One undo step across tabs: what one merge of the draft changed in several tabs' texts at once (Claude's
+        // edit_file with files, a session loaded), each tab's part its own step in its editor. Cmd-Z in one of them,
+        // while its text is as the step left it, undoes the step in each tab that still is so (a tab typed in since
+        // keeps its own steps and leaves the group); Cmd-Shift-Z or Cmd-Y in one of them redoes it so. Its tabs are
+        // named by serial, never by address: a tab closed leaves it.
+        struct UndoGroup
+        {
+            struct Member
+            {
+                uint64_t tab = 0;                        // Tab::serial
+                uint32_t done = 0, undone = 0;           // its editor's revision after the step, and after its undo
+            };
+            std::vector<Member> members;
+            bool undone = false;
+        };
+        UndoGroup group_;
+        uint64_t serials_ = 0;
         bool focused_ = false;
         bool pressedEditor_ = false;
         funkgui::HostServices* host_ = nullptr;
