@@ -57,9 +57,11 @@ module Effect
             float pos = (float)at - d;
             if (pos < 0)
                 pos += (float)length;
-            const int i0 = (int)pos;
-            const int i1 = i0 + 1 == length ? 0 : i0 + 1;
+            int i0 = (int)pos;
             const float frac = pos - (float)i0;
+            if (i0 == length)       // a position just under the line's end rounds up to it: the line's first sample
+                i0 = 0;
+            const int i1 = i0 + 1 == length ? 0 : i0 + 1;
             const float dl = lineL[i0] + frac * (lineL[i1] - lineL[i0]);
             const float dr = lineR[i0] + frac * (lineR[i1] - lineR[i0]);
             const float xl = left[i];
