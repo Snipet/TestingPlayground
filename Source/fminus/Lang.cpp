@@ -857,37 +857,59 @@ namespace playground::lang
                 return limit;
             }
 
-            // An enumeration at i, C's: [const] enum [Tag] { NAME [= expr], ... [,] } ; its tag and its constants, a
-            // module's (seen by its methods) when `module` names one, a block's when `scope` is given (to the block's
-            // end), else the top level's. The index after it; i when i starts none.
-            int enumeration(int i, const std::string& module, std::optional<Pos> scopeEnd)
+            // An enumeration at i, C's: [const] enum [Tag] [: type] { NAME [= expr], ... [,] } [declarators] ; its tag
+            // and its constants, a module's (seen by its methods) when `module` names one, a block's when `scope` is
+            // given (to the block's end; `function` the block's), else the top level's. C23's fixed underlying type
+            // (`: int`, `: bool`) is the tag's type, and declares the tag ahead of its list too (`enum Mode : int;`, a
+            // tag without its list: no body). The names after its list (`enum Mode { SAW, SQUARE } mode;`) are what a
+            // declaration of its type declares there, as FMinus has them: a block's locals, a module's fields, the
+            // top level's constants (`const`, as every one there). The index after it; i when i starts none.
+            int enumeration(int i, const std::string& module, std::optional<Pos> scopeEnd, const std::string& function = {})
             {
-                int j = is(i, "const") ? i + 1 : i;
+                const bool constant = is(i, "const");
+                int j = constant ? i + 1 : i;
                 if (!is(j, "enum"))
                     return i;
                 const int keyword = j++;
                 int tag = -1;
                 if (ident(j))
                     tag = j++;
-                if (!is(j, "{") || partner(j) <= j)
-                    return i;
-                const int open = j, close = partner(j);
-                if (tag >= 0)
+                std::string underlying = "int";
+                const bool fixed = is(j, ":");
+                if (fixed)
                 {
+                    j = type(j + 1, underlying);
+                    if (j < 0)
+                        return i;
+                    if (underlying.rfind("const ", 0) == 0)
+                        underlying.erase(0, 6);
+                }
+                const auto addTag = [&](int end, bool list) {
                     Symbol t;
                     t.kind = Kind::enumeration;
                     t.name = std::string(tok(tag).text);
-                    t.type = "enum " + t.name;
+                    t.type = underlying;
                     t.at = startOf(tok(tag));
                     t.container = module;
                     if (scopeEnd)
                         t.scope = { t.at, *scopeEnd };
-                    t.signature = joinTokens(t_, keyword, close + 1);
+                    t.signature = joinTokens(t_, keyword, end);
                     if (t.signature.size() > 160)
                         t.signature = t.signature.substr(0, 156) + " ...";
                     t.doc = docFor(tok(i).line);
+                    t.body = list;
                     add(t);
+                };
+                if (fixed && tag >= 0 && is(j, ";"))
+                {
+                    addTag(j, false);
+                    return j + 1;
                 }
+                if (!is(j, "{") || partner(j) <= j)
+                    return i;
+                const int open = j, close = partner(j);
+                if (tag >= 0)
+                    addTag(close + 1, true);
                 int before = -1;
                 for (int k = open + 1; k < close;)
                 {
@@ -920,10 +942,25 @@ namespace playground::lang
                     before = index;
                     k = e + 1;
                 }
-                int after = close + 1;
+                const int after = close + 1;
                 if (is(after, ";"))
-                    ++after;
-                return after;
+                    return after + 1;
+                // The names of its type after its list, to the statement's ';'.
+                const int stop = std::min(statementEnd(after, n_) + 1, n_);
+                const std::string base = std::string(constant ? "const " : "")
+                                       + (tag >= 0 ? "enum " + std::string(tok(tag).text) : underlying);
+                int e = -1;
+                if (scopeEnd)
+                {
+                    e = localDeclarators(after, base, stop, *scopeEnd, function);
+                    if (is(e, ";"))
+                        ++e;
+                }
+                else if (!module.empty())
+                    e = fieldDeclarators(after, base, module, stop);
+                else if (constant)
+                    e = constantDeclarators(after, base, stop);
+                return e > after ? e : after;
             }
 
             // The top level's constants at i, C's file-scope const objects: const type declarator (, declarator)* ;
@@ -934,11 +971,19 @@ namespace playground::lang
                 if (!is(i, "const"))
                     return i;
                 std::string base;
-                int j = type(i, base);
+                const int j = type(i, base);
                 if (j < 0)
                     return i;
+                const int e = constantDeclarators(j, base, n_);
+                return e < 0 ? i : e;
+            }
+
+            // The top level's constants of type `base` declared from j on (before `limit`): declarator (, declarator)* ;
+            // The index after its ';', -1 when j starts none.
+            int constantDeclarators(int j, const std::string& base, int limit)
+            {
                 bool any = false;
-                while (j < n_)
+                while (j < limit)
                 {
                     std::string ty = base;
                     j = pointer(j, ty);
@@ -952,12 +997,12 @@ namespace playground::lang
                         j = partner(j) + 1;
                     }
                     if (!any && !(is(j, "=") || is(j, ";") || is(j, ",")))
-                        return i;
+                        return -1;
                     any = true;
                     int e = j, from = -1;
                     if (is(e, "="))
                         from = ++e;
-                    while (e < n_ && !is(e, ",") && !is(e, ";"))
+                    while (e < limit && !is(e, ",") && !is(e, ";"))
                         e = (is(e, "(") || is(e, "[") || is(e, "{")) && partner(e) > e ? partner(e) + 1 : e + 1;
                     Symbol c;
                     c.kind = Kind::constant;
@@ -979,7 +1024,7 @@ namespace playground::lang
                     break;
                 }
                 if (!any)
-                    return i;
+                    return -1;
                 return is(j, ";") ? j + 1 : j;
             }
 
@@ -1035,9 +1080,17 @@ namespace playground::lang
             int fields(int i, const std::string& module, int limit)
             {
                 std::string base;
-                int j = type(i, base);
+                const int j = type(i, base);
                 if (j < 0)
                     return i;
+                const int e = fieldDeclarators(j, base, module, limit);
+                return e < 0 ? i : e;
+            }
+
+            // A module's fields of type `base` declared from j on (before `limit`): [*] name ([N])? (, ...)* ; the index
+            // after its ';', -1 when j starts none.
+            int fieldDeclarators(int j, const std::string& base, const std::string& module, int limit)
+            {
                 bool any = false;
                 while (j < limit)
                 {
@@ -1052,7 +1105,7 @@ namespace playground::lang
                         j = partner(j) + 1;
                     }
                     if (!any && !(is(j, ";") || is(j, ",")))
-                        return i;
+                        return -1;
                     any = true;
                     Symbol s;
                     s.kind = Kind::field;
@@ -1071,7 +1124,7 @@ namespace playground::lang
                     break;
                 }
                 if (!any)
-                    return i;
+                    return -1;
                 return is(j, ";") ? j + 1 : j;
             }
 
@@ -1177,9 +1230,16 @@ namespace playground::lang
             int locals(int i, int limit, Pos scopeEnd, const std::string& function)
             {
                 std::string base;
-                int j = type(i, base);
+                const int j = type(i, base);
                 if (j < 0)
                     return -1;
+                return localDeclarators(j, base, limit, scopeEnd, function);
+            }
+
+            // A block's locals of type `base` declared from j on (before `limit`): [*] name ([N])? [= init] (, ...)* ;
+            // the index of its ';' (or where it stopped), -1 when j starts none.
+            int localDeclarators(int j, const std::string& base, int limit, Pos scopeEnd, const std::string& function)
+            {
                 bool any = false;
                 while (j < limit)
                 {
@@ -1263,7 +1323,7 @@ namespace playground::lang
                         if (is(k, "enum") || (is(k, "const") && is(k + 1, "enum")))
                         {
                             const int blockClose = partner(blocks.back()) > 0 ? partner(blocks.back()) : close;
-                            const int e = enumeration(k, {}, startOf(tok(blockClose)));
+                            const int e = enumeration(k, {}, startOf(tok(blockClose)), function);
                             if (e > k)
                             {
                                 k = e;
@@ -2419,20 +2479,24 @@ namespace playground::lang
             return best;
         }
 
-        // A module's own constant (an enumeration's, seen by its methods) named `name`, or with `tag` its enumeration.
+        // A module's own constant (an enumeration's, seen by its methods) named `name`, or with `tag` its enumeration
+        // (its list's, before a tag C23 declared ahead of it).
         const Symbol* moduleConstant(std::string_view module, std::string_view name, bool tag) const
         {
+            const Symbol* best = nullptr;
             for (const auto* set : { &files, &library })
                 for (const auto& f : *set)
                     for (const Symbol& s : f->decls)
-                        if (s.kind == (tag ? Kind::enumeration : Kind::constant) && s.container == module && !scoped(s) && s.name == name)
-                            return &s;
-            return nullptr;
+                        if (s.kind == (tag ? Kind::enumeration : Kind::constant) && s.container == module && !scoped(s)
+                            && s.name == name && (best == nullptr || (!best->body && s.body)))
+                            best = &s;
+            return best;
         }
 
         // What the file's scope holds, in the files a file sees: a function or a module named `name` (a definition
-        // before a prototype), a constant (an enumeration's, a const of the top level), or with `tag` an enumeration;
-        // else a module's enumeration or its constant, which C's file scope holds too (a struct's are the file's).
+        // before a prototype), a constant (an enumeration's, a const of the top level), or with `tag` an enumeration
+        // (its list's before a tag declared ahead of it); else a module's enumeration or its constant, which C's file
+        // scope holds too (a struct's are the file's).
         const Symbol* globalNamed(int file, std::string_view name, bool tag = false) const
         {
             const auto top = [tag](const Symbol& s) {
@@ -2918,16 +2982,18 @@ namespace playground::lang
         const Pos p = out.replace.from;
         const std::string module = m.moduleAt(*f, p);
         // After `enum`: the enumerations' tags (C's tags are a name space of their own): a block's in scope, the
-        // module's, the top level's and another module's (the file's, in C) of the files the program reads.
+        // module's, the top level's and another module's (the file's, in C) of the files the program reads; a tag's
+        // list before C23's declaration of it ahead of the list.
         if (const int b = Impl::lastBefore(*f, p); b >= 0 && Impl::isText(*f, b, "enum"))
         {
             for (const Symbol& s : f->decls)
                 if (s.kind == Kind::enumeration && Impl::scoped(s) && s.scope.from < p && p <= s.scope.to)
-                    offer(s.name, s.kind, s.signature, s.doc, {}, 0);
+                    offer(s.name, s.kind, s.signature, s.doc, {}, s.body ? 0 : 1);
             for (const int fi : m.visible(file))
                 for (const Symbol& s : m.files[static_cast<std::size_t>(fi)]->decls)
                     if (s.kind == Kind::enumeration && !Impl::scoped(s))
-                        offer(s.name, s.kind, s.signature, s.doc, {}, s.container == module && !module.empty() ? 1 : 2);
+                        offer(s.name, s.kind, s.signature, s.doc, {},
+                              (s.container == module && !module.empty() ? 1 : 2) + (s.body ? 0 : 2));
             return finish();
         }
 
@@ -3299,7 +3365,8 @@ namespace playground::lang
                 }
                 case Kind::enumeration:
                     h.code = s->signature;
-                    h.doc = "an enumeration: enum " + s->name + " is an int" + (s->doc.empty() ? "" : "\n" + s->doc);
+                    h.doc = "an enumeration: enum " + s->name + " is " + (s->type == "bool" ? "a bool" : "an int")
+                          + (s->doc.empty() ? "" : "\n" + s->doc);
                     break;
                 case Kind::module:
                 {

@@ -71,6 +71,16 @@
 //             compiled on a thread of the default stack (as the Compiler's), with no value, and one 63 deep folded; and
 //             Patch::check's messages as RUN's for a switch on a float and a write to a constant table, the program
 //             itself clean
+//   ENUMS     C's and C23's enumerations as FMinus 28b2e47 has them, after Init (Patch::check clean): `enum Shape :
+//             int;` declared ahead of its list and the list after it (the tag's signature with its type, its doc; the
+//             one ahead no body), a `: bool` one (its tag's type bool, its hover saying so), an anonymous `enum : int {
+//             N = 2 }` folded; the names after a list: the top level's constants (`const enum Gate { ... } kGate =
+//             OPEN, ...`), a module's fields (one an array sized by N), a block's locals with their scope; hover on a
+//             field, a local and the bool tag; a tag's use hovering and going to its list, not the declaration ahead; a
+//             field's occurrences; completion of the field, the local, the block's constant and the tags after `enum`
+//             (the list's signature); the highlighter's constants; a circuit field's extent of the top level's
+//             fixed-type constant, and of the module's own declared with a field after its list; the formatter
+//             (FORMAT's corpus)
 //   COND      FMinus's conditionals (lang::conditionals, on the plugin's DEBUG), over a program of two files (defs.fm
 //             #defines LEVEL after an #ifndef; program.fm includes it, then reads #ifdef DEBUG, #ifndef DEBUG, #if 0,
 //             an #elif chain on LEVEL and defined(), nested groups and a skipped group's inert conditional, prose and a
@@ -328,6 +338,37 @@ namespace
                       "    }\n"
                       "};\n";
     }
+
+    // C's and C23's enumerations as FMinus 28b2e47 reads them, in the house style, for after this product's Init: a tag
+    // with a fixed type declared ahead of its list, a bool one whose constants of its type follow its list, an anonymous
+    // one with a fixed type, and names after a list in a module (one an array sized by the top level's constant) and in
+    // a block.
+    const char* const kEnums =
+        "\n"
+        "// The shapes, declared ahead of their list.\n"
+        "enum Shape : int;\n"
+        "enum Shape : int\n"
+        "{\n"
+        "    SAW,\n"
+        "    SQUARE,\n"
+        "    NOISE = 4\n"
+        "};\n"
+        "// The gate's two states.\n"
+        "const enum Gate : bool { SHUT, OPEN } kGate = OPEN, kIdle = SHUT;\n"
+        "enum : int { N = 2 };\n"
+        "\n"
+        "module Osc\n"
+        "{\n"
+        "    enum Mode { UP, DOWN } mode, modes[N];\n"
+        "    enum Shape shape;\n"
+        "\n"
+        "    float tick()\n"
+        "    {\n"
+        "        enum Step : int { ONE = 1, TWO } step = TWO, other;\n"
+        "        other = ONE;\n"
+        "        return (float)(step + other + mode + modes[1] + shape + kGate);\n"
+        "    }\n"
+        "};\n";
 
     std::string libraryText(std::string_view name)
     {
@@ -921,6 +962,7 @@ PROBE(fminus, lang)
                 corpus.push_back({ f.name, f.source });
         corpus.push_back({ "the newer constructs' tools.fm", kNewTools });
         corpus.push_back({ "the newer constructs' program.fm", newProgram() });
+        corpus.push_back({ "Init with C23's enumerations", std::string(pg::kExamples[0].source) + kEnums });
         int house = 0, back = 0, again = 0, refused = 0;
         for (const auto& [name, text] : corpus)
         {
@@ -1490,6 +1532,122 @@ PROBE(fminus, lang)
             std::printf("newer: check a write to a constant table: %s", s2.errors.c_str());
             P.eq("newer.check_table_write", s2.errors.find("error: cannot assign to variable 'kTable' with const-qualified type 'const float[4]'")
                                                     != std::string::npos && s2.errors == f2.errors ? 1 : 0, 1);
+        }
+    }
+
+    // ---- ENUMS ------------------------------------------------------------------------------------------------------
+    {
+        const std::string text = std::string(pg::kExamples[0].source) + kEnums;
+        const char* kMain = pg::product::kIsInstrument ? "Voice" : "Effect";
+        lg::Options opts;
+        opts.instrument = pg::product::kIsInstrument;
+        lg::Service e;
+        e.setOptions(opts);
+        e.setFiles(pg::singleFile(text));
+        const auto sym = [&](std::string_view name, lg::Kind kind, bool body = true) -> const lg::Symbol* {
+            for (const lg::Symbol& x : e.symbols())
+                if (x.name == name && x.kind == kind && (kind != lg::Kind::enumeration || x.body == body))
+                    return &x;
+            return nullptr;
+        };
+        const pg::Patch::Result check = pg::Patch::check(pg::singleFile(text));
+        std::printf("enums: check %s\n", check.errors.empty() ? "clean" : check.errors.c_str());
+        P.eq("enums.check_clean", check.errors.empty() ? 1 : 0, 1);
+
+        // C23's fixed underlying type: the tag declared ahead of its list, then its list; the constants and their values
+        const lg::Symbol* shape = sym("Shape", lg::Kind::enumeration);
+        const lg::Symbol* ahead = sym("Shape", lg::Kind::enumeration, false);
+        const lg::Symbol* gate = sym("Gate", lg::Kind::enumeration);
+        const lg::Symbol* square = sym("SQUARE", lg::Kind::constant);
+        const lg::Symbol* noise = sym("NOISE", lg::Kind::constant);
+        const lg::Symbol* opened = sym("OPEN", lg::Kind::constant);
+        const lg::Symbol* n2 = sym("N", lg::Kind::constant);
+        const lg::Symbol* two = sym("TWO", lg::Kind::constant);
+        std::printf("enums: %s; %s; %s; N %s\n", shape ? shape->signature.c_str() : "-", ahead ? ahead->signature.c_str() : "-",
+                    gate ? gate->signature.c_str() : "-", n2 && n2->value ? std::to_string(*n2->value).c_str() : "-");
+        P.eq("enums.fixed_tag", shape != nullptr && shape->signature == "enum Shape : int { SAW, SQUARE, NOISE = 4 }" && shape->type == "int"
+                                    && shape->doc.empty() && ahead != nullptr && ahead->signature == "enum Shape : int"
+                                    && ahead->doc == "The shapes, declared ahead of their list." ? 1 : 0, 1);
+        P.eq("enums.fixed_constants", square != nullptr && square->value == 1 && square->enumeration == "Shape" && noise != nullptr
+                                          && noise->value == 4 && opened != nullptr && opened->value == 1 && opened->enumeration == "Gate"
+                                          && n2 != nullptr && n2->value == 2 && n2->enumeration.empty() && two != nullptr
+                                          && two->value == 2 && !(two->scope.from == two->scope.to) ? 1 : 0, 1);
+        P.eq("enums.bool_tag", gate != nullptr && gate->type == "bool" && gate->signature == "enum Gate : bool { SHUT, OPEN }" ? 1 : 0, 1);
+
+        // the names declared after a list: the top level's constants, a module's fields, a block's locals
+        const lg::Symbol* kGate = sym("kGate", lg::Kind::constant);
+        const lg::Symbol* kIdle = sym("kIdle", lg::Kind::constant);
+        const lg::Symbol* mode = sym("mode", lg::Kind::field);
+        const lg::Symbol* modes = sym("modes", lg::Kind::field);
+        const lg::Symbol* step = sym("step", lg::Kind::local);
+        const lg::Symbol* other = sym("other", lg::Kind::local);
+        std::printf("enums: after a list: %s; %s; %s %s; %s; %s\n", kGate ? kGate->signature.c_str() : "-",
+                    kIdle ? kIdle->signature.c_str() : "-", mode ? mode->signature.c_str() : "-", modes ? modes->type.c_str() : "-",
+                    step ? step->signature.c_str() : "-", other ? other->signature.c_str() : "-");
+        P.eq("enums.after_list_constants", kGate != nullptr && kGate->signature == "const enum Gate kGate = OPEN"
+                                               && kGate->doc == "The gate's two states." && kIdle != nullptr
+                                               && kIdle->signature == "const enum Gate kIdle = SHUT" ? 1 : 0, 1);
+        P.eq("enums.after_list_fields", mode != nullptr && mode->container == "Osc" && mode->type == "enum Mode" && modes != nullptr
+                                            && modes->type == "enum Mode[N]" && sym("shape", lg::Kind::field) != nullptr ? 1 : 0, 1);
+        P.eq("enums.after_list_locals", step != nullptr && step->container == "tick" && step->type == "enum Step" && other != nullptr
+                                            && !(other->scope.from == other->scope.to) ? 1 : 0, 1);
+
+        // the editor's services on them
+        std::optional<lg::Hover> h = e.hover(0, posOf(text, "mode + modes", 1));
+        const std::optional<lg::Hover> hs = e.hover(0, posOf(text, "step + other", 1));
+        const std::optional<lg::Hover> hg = e.hover(0, posOf(text, "Gate : bool", 1));
+        std::printf("enums: hover mode [%s], step [%s], Gate [%s] %s\n", h ? h->code.c_str() : "-", hs ? hs->code.c_str() : "-",
+                    hg ? hg->code.c_str() : "-", hg ? hg->doc.c_str() : "");
+        P.eq("enums.hover", h && h->code == "enum Mode mode" && hs && hs->code == "enum Step step" && hg
+                                && hg->doc.rfind("an enumeration: enum Gate is a bool", 0) == 0 ? 1 : 0, 1);
+        h = e.hover(0, posOf(text, "Shape shape", 1));
+        const std::optional<lg::Location> d = e.definition(0, posOf(text, "Shape shape", 1));
+        P.eq("enums.tag_its_list", h && h->code == "enum Shape : int { SAW, SQUARE, NOISE = 4 }" && d
+                                       && d->at == posOf(text, "Shape : int\n{") ? 1 : 0, 1);
+        P.eq("enums.occur_field", static_cast<int64_t>(e.occurrences(0, posOf(text, "mode, modes")).size()), 2);
+        const auto completeAt = [&](const std::string& from, const std::string& to) {
+            const std::string t = replaced(text, from, to);
+            e.setFiles(pg::singleFile(t));
+            return e.complete(0, posOf(t, to, static_cast<int>(to.find('\n'))));
+        };
+        const std::string line = "        other = ONE;\n";
+        lg::CompletionList c = completeAt(line, "        mo\n");
+        const bool field = item(c, "mode") != nullptr && item(c, "mode")->kind == lg::Kind::field;
+        c = completeAt(line, "        st\n");
+        const bool local = item(c, "step") != nullptr && item(c, "step")->kind == lg::Kind::local;
+        c = completeAt(line, "        TW\n");
+        const bool constant = item(c, "TWO") != nullptr && item(c, "TWO")->kind == lg::Kind::constant;
+        c = completeAt(line, "        enum \n");
+        const lg::Completion* tag = item(c, "Shape");
+        std::printf("enums: completion: field %d, local %d, constant %d; after enum: %s (%s)\n", field ? 1 : 0, local ? 1 : 0,
+                    constant ? 1 : 0, labels(c).c_str(), tag ? tag->detail.c_str() : "-");
+        P.eq("enums.complete", field && local && constant && tag != nullptr && tag->detail == "enum Shape : int { SAW, SQUARE, NOISE = 4 }"
+                                   && item(c, "Step") != nullptr ? 1 : 0, 1);
+        e.setFiles(pg::singleFile(text));
+        const std::vector<std::string>& names = e.constantNames();
+        const auto named = [&](const char* x) { return std::binary_search(names.begin(), names.end(), std::string(x)); };
+        P.eq("enums.constant_names", named("SQUARE") && named("OPEN") && named("N") && named("TWO") && named("kGate") && !named("mode")
+                                         ? 1 : 0, 1);
+
+        // a circuit field's extent: the top level's constant of a fixed type, and the module's own declared with a field
+        // after its list
+        for (const bool own : { false, true })
+        {
+            const std::string circuit = std::string("#include \"screamer.cir\"\n")
+                                      + (own ? std::string() : "enum : int { N = 2 };\n") + "module " + kMain + "\n{\n"
+                                      + (own ? "    enum : int { N = 2 } count;\n" : "") + "    Screamer amp[N];\n};\n";
+            lg::Service cs;
+            cs.setFiles({ { "program.fm", circuit }, { "screamer.cir", libraryText("screamer.cir") } });
+            const lg::CircuitDials dials = lg::circuitDials(cs, pg::product::kIsInstrument);
+            bool counted = false;
+            for (const lg::Symbol& x : cs.symbols())
+                counted = counted || (x.name == "count" && x.kind == lg::Kind::field && x.container == kMain);
+            std::printf("enums: a circuit's extent (%s): %d binding(s), dims %d\n", own ? "the module's own" : "the top level's",
+                        static_cast<int>(dials.bindings.size()),
+                        dials.bindings.empty() || dials.bindings[0].dims.empty() ? -1 : dials.bindings[0].dims[0]);
+            P.eq(own ? "enums.circuit_extent_own" : "enums.circuit_extent_fixed",
+                 dials.bindings.size() == 1 && dials.bindings[0].dims == std::vector<int>{ 2 } && dials.bindings[0].names.size() == 3
+                         && (counted || !own) ? 1 : 0, 1);
         }
     }
 

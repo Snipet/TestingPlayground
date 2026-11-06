@@ -228,7 +228,8 @@ namespace playground::lang
     {
         Kind kind = Kind::local;
         std::string name;
-        std::string type;                        // its type ("float", "Svf", "float*", "float[16]"); a function's result
+        std::string type;                        // its type ("float", "Svf", "float*", "float[16]"); a function's result;
+                                                 // an enumeration's, what `enum Wave` is ("int", or C23's fixed "bool")
         std::string signature;                   // its declaration as code: "float tick(float x)", "param float q [[...]]"
         std::vector<std::string> params;         // a function's or method's parameters, as declared ("float x")
         std::string container;                   // the module of a field, param or method
@@ -237,7 +238,8 @@ namespace playground::lang
         Pos at{};                                // its name
         Range scope{};                           // where a local, an argument or a block's constant is seen (its
                                                  // block, from its name); empty for the top level's and a module's
-        bool body = false;                       // a function or method with a body (not a prototype)
+        bool body = false;                       // a function or method with a body (not a prototype), an enumeration
+                                                 // with its list (not C23's tag ahead of it, `enum Wave : int;`)
         std::string enumeration;                 // an enumeration constant's tag ("Wave"; "" for an anonymous one)
         std::optional<int64_t> value;            // an enumeration constant's value, when it folds
     };

@@ -445,9 +445,12 @@ place (its `products/<key>.cmake`, and its names in the docs).
   FMinus at its pin and PanelSpec: a pin move that adds a keyword or a builtin adds it there, with `fminus.lang` rows.
   Its index has what C declares: an enumeration's tag and constants (the top level's, a module's, a block's in its
   scope; each constant's value folded as FMinus folds an integer constant expression, `Folder`, across the files, a
-  name as the constant its place sees, as C's scopes choose it, `constantAt`) and the top level's const tables and
-  scalars, which complete, hover, go to and highlight (`constantNames`, the editor's `csConstant`) as the other
-  symbols do; a circuit field's extent of enumeration constants folds so too. `Folder` recurses at most
+  name as the constant its place sees, as C's scopes choose it, `constantAt`; C23's fixed type, `: int` or `: bool`,
+  and its tag declared ahead of its list, a tag with no body; the names after a list as a declaration of its type
+  there declares them) and the top level's const tables and scalars, which complete, hover, go to and highlight
+  (`constantNames`, the editor's `csConstant`) as the other symbols do; a circuit field's extent of enumeration
+  constants folds so too. A pin move that changes what a declaration may be changes `Indexer` and the formatter with
+  it (`fminus.lang` rows over a program FMinus compiles). `Folder` recurses at most
   `kMaxDepth` levels (63 parentheses): Patch folds every program's constants on the compiler's thread, whose stack is
   a thread's default.
 - **The plugin's macros are every build's** (`lang::kDefines`: DEBUG; Patch.h, "Conditionals and warnings"): each of
