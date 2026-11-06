@@ -62,7 +62,8 @@
 //                one each, eight after it moved while they were free a ramp's worth each, all at 1; a NaN planted in a
 //                carried field is cleared by the circuit's guard and the switch stays at 1
 // and the plugin's self-test (dsp/SelfTester.h, Compiler.h's "The self-test"), a Compiler offering to an Engine played
-// in blocks of 256, on AutoClipper.h's netlists (no assertion is on time; every wait has a deadline):
+// in blocks of 256, on AutoClipper.h's netlists (no assertion is on time; every wait has a deadline, and a wait for a
+// self-test's work a deadline in its work: untilWorked):
 //   SELFTEST     with the tests off (setSelfTesting(false)) a RUN plays the provisional configuration and no test runs;
 //                selfTestNow() runs the test and the refine: the status's revision and program move on (refined, still
 //                the RUN's request), it compiled, the Engine's Meters::program names the refined program, and its note
@@ -115,6 +116,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <memory>
 #include <optional>
 #include <span>
@@ -347,6 +349,46 @@ namespace
         while (!done())
         {
             if (std::chrono::steady_clock::now() > end)
+                return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        return true;
+    }
+
+    // The process's CPU time so far, in seconds: every thread's (std::clock on macOS and Linux; on Windows it counts
+    // the wall clock, and untilWorked below is a wall deadline there).
+    double cpuSeconds()
+    {
+        return static_cast<double>(std::clock()) / CLOCKS_PER_SEC;
+    }
+
+    // Waits until `done` holds while the work it waits for gets done: whether it held. A self-test runs on threads of
+    // its own at the utility QoS class, which a loaded machine (other builds and suites at once) starves for as long as
+    // it likes, so a wall deadline either fails a test that is only slow or hides a hang behind minutes. What bounds a
+    // test is its work: the wait gives up once the process has spent `cpu` seconds of CPU since it began (the work, many
+    // times over: a test alone takes a few), or has spent under a tenth of a second in the last `idle` seconds (nothing
+    // runs: a hang, or a test that never started), or after `cap` seconds whatever happens. Nothing else runs in the
+    // process meanwhile (Live plays only when asked), so its CPU time is the compiler's and the tests'.
+    template <typename Done>
+    bool untilWorked(Done&& done, double cpu = 120.0, double idle = 60.0, double cap = 900.0)
+    {
+        using clock = std::chrono::steady_clock;
+        const clock::time_point start = clock::now();
+        const double cpu0 = cpuSeconds();
+        clock::time_point mark = start;
+        double cpuAtMark = cpu0;
+        while (!done())
+        {
+            const clock::time_point now = clock::now();
+            const double used = cpuSeconds();
+            if (used - cpu0 > cpu || std::chrono::duration<double>(now - start).count() > cap)
+                return false;
+            if (used - cpuAtMark >= 0.1)
+            {
+                mark = now;
+                cpuAtMark = used;
+            }
+            else if (std::chrono::duration<double>(now - mark).count() > idle)
                 return false;
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
@@ -1132,7 +1174,7 @@ namespace
             const bool running = store.inFlight(potKey);
             live.compiler->request(pg::singleFile(silentMain()));
             live.compiler->wait();
-            const bool ended = until([&] { return !store.inFlight(potKey); }, 60.0);
+            const bool ended = untilWorked([&] { return !store.inFlight(potKey); });
             std::printf("refresh: dropped while testing: started %d, running %d, ended %d, %d test(s), stored %d\n", started ? 1 : 0,
                         running ? 1 : 0, ended ? 1 : 0, live.compiler->selfTests(), store.find(potKey) ? 1 : 0);
             P.eq("refresh.drop_cancels", started && running && ended && live.compiler->selfTests() == 1 && !live.compiler->selfTesting()
@@ -1153,17 +1195,17 @@ namespace
             const pg::Sources edited = clipperFiles(true, "// edited while the self-test runs\n");
             const uint64_t run = live.compiler->request(edited);
             uint64_t landedAtRun = 0;
-            const bool answered = until([&] {
+            const bool answered = untilWorked([&] {
                 if (live.compiler->status().request < run)
                     return false;
                 landedAtRun = store.landed();
                 return true;
-            }, 60.0);
+            });
             const pg::CompileStatus b = live.compiler->status();
-            const bool refined = until([&] {
+            const bool refined = untilWorked([&] {
                 const pg::CompileStatus s = live.compiler->status();
                 return s.program > run && chose(s);
-            }, 60.0);
+            });
             const pg::CompileStatus s = live.compiler->status();
             std::printf("refresh: a RUN while the test runs: answered first %d (landed %llu then %llu); refined %d: %s", answered ? 1 : 0,
                         static_cast<unsigned long long>(landedAtRun - landed), static_cast<unsigned long long>(store.landed() - landed),
@@ -1182,7 +1224,7 @@ namespace
             const pg::CompileStatus b = y.compiler->compileNow(files);
             x.compiler->setSelfTesting(true);
             y.compiler->setSelfTesting(true);
-            const bool both = until([&] { return chose(x.compiler->status()) && chose(y.compiler->status()); }, 60.0);
+            const bool both = untilWorked([&] { return chose(x.compiler->status()) && chose(y.compiler->status()); });
             std::printf("dedup: tests %d and %d; both refined %d\n", x.compiler->selfTests(), y.compiler->selfTests(), both ? 1 : 0);
             P.eq("dedup.both_wanted", a.ok && b.ok && has(a.notes, "provisional: ") && has(b.notes, "provisional: ") ? 1 : 0, 1);
             P.eq("dedup.one_test", x.compiler->selfTests() + y.compiler->selfTests(), 1);
