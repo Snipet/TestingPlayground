@@ -985,10 +985,12 @@ PROBE(plugin, mcp)
                 for (const juce::var& tool : *t)
                 {
                     titled = titled && tool["title"].toString().isNotEmpty() && tool["title"].toString() != tool["name"].toString();
-                    // the annotations: no title (the tool's own), a read-only tool no destructiveHint, never openWorld
+                    // the annotations: no title (the tool's own), a read-only tool no destructiveHint, never openWorld,
+                    // a writing tool no readOnlyHint (false is MCP's default)
                     const juce::var hints = tool["annotations"];
                     lean = lean && !hints.hasProperty("title") && hints.hasProperty("openWorldHint") && !static_cast<bool>(hints["openWorldHint"])
-                        && (static_cast<bool>(hints["readOnlyHint"]) ? !hints.hasProperty("destructiveHint") : hints.hasProperty("destructiveHint"));
+                        && (static_cast<bool>(hints["readOnlyHint"]) ? !hints.hasProperty("destructiveHint") : hints.hasProperty("destructiveHint"))
+                        && (static_cast<bool>(hints["readOnlyHint"]) || !hints.hasProperty("readOnlyHint"));
                     if (tool["name"].toString() == "measure_output")
                         measure = tool;
                     if (tool["name"].toString() == "write_file")
