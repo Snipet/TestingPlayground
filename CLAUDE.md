@@ -205,9 +205,14 @@ place (its `products/<key>.cmake`, and its names in the docs).
   says it is measuring). A program that lands from anything else (a request past the newest known when it began, none
   of its own, refined or not) ends it, nothing restored, and so does a session loaded (`setStateInformation`: the A/B's
   waiting request taken back, `Compiler::withdraw`; its program untrimmed at once; poll() ends it); `endAb` puts back
-  what played before. Not in the session itself: a session saved while it is on keeps what played before it began
-  (and those dials while each side has its own: `abKept_`, under `programMutex_`). Claude reads it as one line
-  (`ChatHost::chatAb`, under its own mutex: get_status and plugin_state); keeping and switching are the user's.
+  what played before. A side that stops as it plays (`abStopped`, after its first blocks: the compiler's status keeps
+  the request before it, so it is told by `CompileStatus::stoppedProgram`) is said in `AbState::why`: the program the
+  compiler plays again is the other side's, which then plays under its new id at its own trim (and its own dials), or
+  another's, which ends it; one that stops in its first blocks "stopped as it began", the side before it playing on;
+  AbMatch never measures a render that stopped (`Render::stopCall`: unmatched, saying why). Not in the session
+  itself: a session saved while it is on keeps what played before it began (and those dials while each side has its
+  own: `abKept_`, under `programMutex_`). Claude reads it as one line (`ChatHost::chatAb`, under its own mutex:
+  get_status and plugin_state); keeping and switching are the user's.
 - Nothing steps: a program swap crossfades (the effect) or fades the old program's voices over 20 ms (the synth: the
   held keys start again on the new one), a steal fades over 2 ms, a real dial glides over 20 ms as a stream, the
   bypass crossfades over 20 ms. The output does not depend on how the host splits its blocks (the examples are checked

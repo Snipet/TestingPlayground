@@ -11,11 +11,13 @@
 //
 // A program that lands from anything else (Claude's run, the folder's run on save, a version or an example opened)
 // ends it, and so does a session loaded (setStateInformation, abSessionLoaded): that program plays on, nothing
-// restored (AbState::ended says so). Keeping a side makes its files the draft (an open editor merges them as one undo
-// step) and, a version's, the project open; endAb puts back what played before (and its dials, when each side had its
-// own). Until Keep's or Close's compile lands, the side that plays keeps its trim and that program plays untrimmed; a
-// session saved meanwhile, or while it is on, keeps what Close would put back (abKept_). Message thread, but chatAb
-// (any thread).
+// restored (AbState::ended says so). A side that stops as it plays (Compiler.h, "A program that stops") says so in
+// AbState::why: in its first blocks the side that played plays on; later, the program the compiler plays again is the
+// other side's, which then plays at its own trim, or another's, which ends it. Keeping a side makes its files the
+// draft (an open editor merges them as one undo step) and, a version's, the project open; endAb puts back what played
+// before (and its dials, when each side had its own). Until Keep's or Close's compile lands, the side that plays keeps
+// its trim and that program plays untrimmed; a session saved meanwhile, or while it is on, keeps what Close would put
+// back (abKept_). Message thread, but chatAb (any thread).
 #include "plugin/Processor.h"
 
 #include "fminus/CirDoc.h"
@@ -499,6 +501,15 @@ namespace playground
         }
         if (!ab_.st.on)
             return;
+        // A side that stopped as it played, after its first blocks (Compiler.h, "A program that stops"): told by the
+        // program that stopped, as its status keeps the request before it.
+        if (s.stopped && s.stoppedProgram != 0 && (!s.restored.empty() || s.program == s.stoppedProgram))
+            for (int k = 0; k < 2; ++k)
+                if (ab_.program[static_cast<std::size_t>(k)] == s.stoppedProgram)
+                {
+                    abStopped(s, k);
+                    return;
+                }
         bool changed = false;
         const bool ours = std::find(ab_.requests.begin(), ab_.requests.end(), s.request) != ab_.requests.end();
         const int playing = ab_.st.playing;
@@ -517,9 +528,11 @@ namespace playground
             }
             else
             {
+                // (one that stopped in its first blocks was gone back from: the side that played plays on)
                 ab_.program[i] = 0;
                 const std::string first = s.errors.substr(0, s.errors.find('\n'));
-                ab_.st.why = std::string(letter(k)) + " (" + ab_.st.sides[i].label + ") does not compile"
+                ab_.st.why = std::string(letter(k)) + " (" + ab_.st.sides[i].label + ")"
+                           + (s.stopped ? " stopped as it began" : " does not compile")
                            + (first.empty() ? std::string() : ": " + first);
                 if (s.refined && playing >= 0 && playing != k)   // the side that played plays on, refined since
                     ab_.program[static_cast<std::size_t>(playing)] = s.program;
@@ -566,6 +579,55 @@ namespace playground
             ++ab_.st.revision;
             abPublish();
         }
+    }
+
+    void Processor::abStopped(const CompileStatus& s, int k)
+    {
+        // Side k's program stopped (a dial, a note, the input set it off), and the compiler played the program before it
+        // again under a new id (`restored`, its files; apply() has made it what plays), or nothing (`program` the one
+        // that stopped). The other side's files: that side plays, its new id keyed to its own trim (and its own dials,
+        // when each side has its own); another program's: the A/B ends, as for a program from elsewhere. Side k keeps the
+        // dials it began with, so a switch back to it plays it as it was before the move that stopped it.
+        const auto i = static_cast<std::size_t>(k);
+        const std::string first = s.errors.substr(0, s.errors.find('\n'));
+        const std::string words = std::string(letter(k)) + " (" + ab_.st.sides[i].label + ") stopped"
+                                + (first.empty() ? std::string() : ": " + first);
+        ab_.program[i] = 0;
+        if (ab_.st.pending == k)                                 // its compile landed and stopped before poll() saw it
+        {
+            ab_.st.pending = -1;
+            ab_.pendingRequest = 0;
+        }
+        int back = -1;
+        for (int j = 0; j < 2 && back < 0 && !s.restored.empty(); ++j)
+            if (j != k && cir::sameProgram(ab_.st.sides[static_cast<std::size_t>(j)].files, s.restored))
+                back = j;
+        if (back < 0 && !s.restored.empty() && ab_.st.pending < 0)
+        {
+            abStop();
+            ab_.st.ended = words + ", and the program before it plays again: the A/B ended";
+            ++ab_.st.revision;
+            return;
+        }
+        ab_.st.playing = back;                                   // -1: nothing of it plays until a side is asked for
+        if (back >= 0)
+        {
+            ab_.program[static_cast<std::size_t>(back)] = s.program;
+            if (ab_.st.ownDials)
+            {
+                Controls cs;
+                std::array<std::vector<std::string>, kMaxControls> options;
+                {
+                    const std::lock_guard<std::mutex> lock(programMutex_);
+                    cs = controls_;
+                    options = panel_.options;
+                }
+                setDialsByName(cs, options, ab_.dials[static_cast<std::size_t>(back)]);
+            }
+        }
+        ab_.st.why = words;
+        ++ab_.st.revision;
+        abPublish();
     }
 
     void Processor::abSessionLoaded()

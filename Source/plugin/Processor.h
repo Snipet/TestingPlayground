@@ -421,6 +421,7 @@ namespace playground
         std::atomic<bool> abLoading_{ false };
         std::atomic<uint64_t> abQueued_{ 0 };
         void abLanded(const CompileStatus& s);                   // poll(): a compile landed
+        void abStopped(const CompileStatus& s, int side);        // abLanded: that side's program stopped as it played
         void abMatched();                                        // poll(): the loudness measured, when it is
         void abSessionLoaded();                                  // poll() and each A/B call: a session loaded ends it
         void abFollowDials();                                    // poll(): dials moved and at rest measured again

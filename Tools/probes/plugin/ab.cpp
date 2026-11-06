@@ -37,6 +37,12 @@
 //   SESSION  a session saved while B (each side its own dials) plays keeps what played before it began and those dials;
 //            a session loaded (setStateInformation) ends the A/B, saying so, its program playing untrimmed and its
 //            files the draft, and Close then does nothing; loaded again while B is on its way: B never plays over it
+//   STOP     B the editor's files, a program that indexes outside its array once its level passes 0.89, A version 1
+//            (12.04 dB louder): B playing when it began, the dial turned past it: B stops, the program before it (no
+//            side's) plays again, and the A/B ends, saying why; begun again, A played, then B, the dial turned: A's
+//            program plays again, and the A/B says so (A plays, B stopped, in get_status too), A at its own trim (12.04
+//            dB down, not B's 0 dB); measured again at that dial, B stops in its test: not matched, saying why; B asked
+//            for at that dial stops in its first blocks: A plays on, and B "stopped as it began", not "does not compile"
 #include "Probe.h"
 
 #include "plugin/EditorPort.h"
@@ -70,18 +76,21 @@ namespace
 
     // The program: a 1 kHz sine at level * K (gain.fm's), its input ignored; the synth's while a note is held. With
     // `circuit`, it also runs AutoClipper.h's netlist (whose configuration is the self-test's) on silence, adding
-    // nothing to the sine.
-    pg::Sources program(const std::string& k, bool circuit = false)
+    // nothing to the sine; with `stops`, it writes each sample into an array of 4 at level * 4.5, outside it (a bounds
+    // check that stops it) once the level passes 0.89.
+    pg::Sources program(const std::string& k, bool circuit = false, bool stops = false)
     {
         const std::string body = std::string(circuit ? "    Clipper clip;\n" : "")
                                  + "    param float level [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
                                    "    float phase;\n    float step;\n"
-                                   "    void init(float sampleRate) { step = 1000 / sampleRate;"
+                                 + (stops ? "    float slots[4];\n" : "")
+                                 + "    void init(float sampleRate) { step = 1000 / sampleRate;"
                                  + (circuit ? " clip.init(sampleRate);" : "") + " }\n";
         const std::string loop = "        for (int i = 0; i < n; ++i)\n        {\n"
                                  "            phase += step;\n            if (phase >= 1) phase -= 1;\n"
                                  "            const float y = gainK() * level[i] * sinf(6.28318531f * phase)"
-                                 + std::string(circuit ? " + 0.0f * clip.tick(0.0f)" : "") + ";\n";
+                                 + std::string(circuit ? " + 0.0f * clip.tick(0.0f)" : "") + ";\n"
+                                 + (stops ? "            slots[(int)(level[i] * 4.5f)] = y;\n" : "");
         const std::string head = "// AB: a sine\n#include \"gain.fm\"\n" + std::string(circuit ? "#include \"clipper.cir\"\n" : "");
         const std::string text = kInstrument
             ? head + "module Voice\n{\n" + body
@@ -550,6 +559,75 @@ PROBE(plugin, ab)
         P.eq("session.pending_ended", !s.on && s.pending < 0 && contains(s.ended, "saved state was loaded") ? 1 : 0, 1);
         P.eq("session.pending_plays", port.running() == current ? 1 : 0, 1);
         P.near("session.pending_level_db", overDb(host.loudest(20), matched), 0.0, 0.2);
+    }
+
+    // ---- STOP ----------------------------------------------------------------------------------------------------------
+    {
+        // The compiler's word that the program that plays stopped, and the program before it played again (no poll()).
+        const auto stopsAt = [&](float level) {
+            setDial(processor, 0, level);
+            (void)host.play(4);                          // the dial glides past 0.89: the program stops
+            pg::CompileStatus s;
+            for (int k = 0; k < 1000 && !(s.stopped && !s.restored.empty()); ++k)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                s = processor.compiler().status();
+            }
+            return s;
+        };
+        const pg::Sources stopper = program("0.25", false, true);
+        runDraft(stopper, 0.5f);                         // after Current's: the program before it
+        P.eq("stop.begun", port.startAb(project, 1, 0, why) && port.ab().playing == 1
+                               && pump(processor, 60.0, [&] { return !port.ab().measuring; }) ? 1 : 0, 1);
+        P.near("stop.a_trim_db", port.ab().trimDb[0], -20.0 * std::log10(4.0), 0.1);
+        (void)host.play(8);
+        // B (playing when it began) stops: what plays again is no side's, and the A/B ends.
+        pg::CompileStatus s = stopsAt(0.95f);
+        P.eq("stop.ended_restored", s.stopped && s.restored == current ? 1 : 0, 1);
+        processor.poll();
+        st = port.ab();
+        P.eq("stop.ended", !st.on && contains(st.ended, "B (Current) stopped: ") && contains(st.ended, "outside an array")
+                               && contains(st.ended, "the A/B ended") && port.running() == current ? 1 : 0, 1);
+        // Begun again, A played, then B: the program before B is A's (the dial back first: a run carries it).
+        setDial(processor, 0, 0.5f);
+        processor.poll();
+        runDraft(stopper, 0.5f);
+        P.eq("stop.begun_again", port.startAb(project, 1, 0, why) && pump(processor, 60.0, [&] { return !port.ab().measuring; }) ? 1 : 0, 1);
+        port.playAb(0);
+        processor.settle();
+        port.playAb(1);
+        processor.settle();
+        (void)host.play(8);
+        P.eq("stop.b_plays", port.ab().playing == 1 && port.running() == stopper ? 1 : 0, 1);
+        s = stopsAt(0.95f);
+        P.eq("stop.restored_a", s.stopped && s.restored == v1 ? 1 : 0, 1);
+        processor.poll();
+        st = port.ab();
+        P.eq("stop.a_plays", st.on && st.playing == 0 && st.pending < 0 && port.running() == v1 ? 1 : 0, 1);
+        P.eq("stop.label", contains(st.why, "B (Current) stopped: ") && contains(st.why, "outside an array") ? 1 : 0, 1);
+        {
+            const std::string text = statusText(processor);
+            P.eq("stop.get_status", contains(text, "; A plays") && !contains(text, "; B plays") && contains(text, "B (Current) stopped: ") ? 1 : 0, 1);
+        }
+        // A's program played again at A's trim: the dial carried (0.95) times K 1, 12.04 dB down (B's 0 dB: 12 dB over).
+        (void)host.play(8);
+        P.near("stop.a_trimmed_db", overDb(host.loudest(20), 0.95f * 0.25f), 0.0, 0.2);
+        // Measured again at the dial as it is: B stops in its test, and the loudness is not matched.
+        const bool remeasured = pump(processor, 60.0, [&] { return !port.ab().measuring; });
+        st = port.ab();
+        P.eq("stop.measure_unmatched", remeasured && contains(st.unmatched, "B stops in the test") && contains(st.unmatched, "outside an array")
+                                           && st.trimDb[0] == 0.0f && st.trimDb[1] == 0.0f ? 1 : 0, 1);
+        // B asked for at that dial: it stops in its first blocks and is gone back from, A playing on.
+        port.playAb(1);
+        (void)host.loudestWhileCompiling(4);
+        processor.settle();
+        st = port.ab();
+        P.eq("stop.first_blocks", st.on && st.playing == 0 && st.pending < 0 && port.running() == v1 && port.status().stopped ? 1 : 0, 1);
+        P.eq("stop.first_blocks_label", contains(st.why, "B (Current) stopped as it began: ") && !contains(st.why, "does not compile") ? 1 : 0, 1);
+        setDial(processor, 0, 0.5f);
+        processor.poll();
+        port.endAb();
+        processor.settle();
     }
 
     processor.releaseResources();

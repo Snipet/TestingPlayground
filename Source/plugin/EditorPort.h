@@ -371,10 +371,12 @@ namespace playground
                                                  // or the dials moved since and it is measured again once they rest
         std::array<double, 2> lufs{ 0.0, 0.0 };  // each side's loudness as measured (BS.1770, LUFS); NaN until then
         std::array<float, 2> trimDb{ 0.0f, 0.0f };   // the output's gain while that side plays (<= 0 dB; 0 unmatched)
-        std::string why;                         // one line: a side that does not compile
+        std::string why;                         // one line: a side that does not compile, or that stopped as it
+                                                 // played (a loop past its budget, an index outside its array)
         std::string unmatched;                   // why the loudness is not matched, once measured ("" when it is)
         std::string ended;                       // why it ended when it ended on its own (another program ran, a
-                                                 // session loaded), else ""
+                                                 // session loaded, a side stopped and another program plays again),
+                                                 // else ""
         uint64_t revision = 0;                   // bumps whenever any of the above changes
     };
 
