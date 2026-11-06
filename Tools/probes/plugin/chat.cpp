@@ -82,7 +82,8 @@
 //            edit_circuit's result gives its version, and an `expected` from before it is refused as Claude's own change
 //   SOUND    view_sound through the agent (a program that sounds): its result a PNG of 1120 x 800 and what it shows,
 //            the tool's entry with the picture's thumbnail (480 px), the session without the PNG but with the thumbnail;
-//            a program that does not compile draws nothing and says why
+//            a program that does not compile draws nothing and says why; with a window, a PNG that shades it and words
+//            that say the average spectrum and the RMS are over it
 //   CHECKS   set_checks: its result measures them at once (one passes, one fails), saying the count and the one that
 //            fails alone (the card has both); "Done." while one fails: the next
 //            request carries the results as the user's line and the turn goes on, the history valid; a dial set and a
@@ -102,6 +103,10 @@
 //            the first line saying so, and refuse snapshot; compare's dials defaults puts the dials no side sets at
 //            the defaults (the first line saying so; own lays a {dials} side over the user's), and refuses a word it
 //            does not take; view_sound's picture through MCP at least 800 px wide
+//   WINDOW   the render settings' window through MCP: measure_output's report over it; a window it cannot take refused
+//            (to before from, from below 0, to past 20 s, from left out, a key it has not, not an object); a check with
+//            one names it on its line and in the card, is saved with it and measures the same once loaded, and a
+//            failing one says so; tune_dials takes one
 //   TUNE     tune_dials: a level for an RMS (an instrument) or a gain for a gain (an effect): the goal met, the dial
 //            set (measured afterwards, it gives the goal); an unknown dial an error result
 //   TRIAL    try_edits (ChatScenario.h): measure_output with a passage edited and a file added on a copy says so in
@@ -1925,6 +1930,32 @@ PROBE(plugin, chat)
             const int at = turn("and now?", 2);
             P.eq("sound.no_compile", has(resultText(at + 1), "It did not compile, so nothing was drawn") ? 1 : 0, 1);
             sp.editorPort().setDraft(good);
+            // With a window: the picture shades it, and its words say what is over it.
+            juce::var windowed = pg::product::kIsInstrument ? input({ { "notes", juce::Array<juce::var>{ 57 } } }) : input({ { "input", "sine" } });
+            windowed.getDynamicObject()->setProperty("window", input({ { "from", 0.4 }, { "to", 0.9 } }));
+            ss->add(fake::Response::ok(fake::Sse().start().tool("toolu_s3", "view_sound", windowed).end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("The middle is steady.").end()));
+            const int w = turn("show me the middle", 2);
+            std::string wdata, wabout;
+            const juce::Array<juce::var> wresults = arr(lastUser(w + 1).getProperty("content", {}));
+            for (const juce::var& b : arr(wresults.isEmpty() ? juce::var() : wresults[0].getProperty("content", {})))
+            {
+                if (str(b, "type") == "image" && str(b.getProperty("source", {}), "media_type") == "image/png")
+                    wdata = str(b.getProperty("source", {}), "data");
+                if (str(b, "type") == "text")
+                    wabout = str(b, "text");
+            }
+            std::printf("view_sound with a window: %s\n", wabout.c_str());
+            P.eq("sound.window_about", has(wabout, "The cyan lines (shaded on the waveform) are the window, 0.40 to 0.90 s: the "
+                                                   "average spectrum and the RMS are over it.")
+                                           && has(wabout, "Bottom left: the average spectrum in the window") ? 1 : 0, 1);
+            {
+                juce::MemoryOutputStream png;
+                if (juce::Base64::convertFromBase64(png, juce::String(wdata)))
+                    juce::File(juce::String(probe::outPath("plugin.chat.view_sound.window.png"))).replaceWithData(png.getData(), png.getDataSize());
+                const juce::Image img = juce::ImageFileFormat::loadFrom(png.getData(), png.getDataSize());
+                P.eq("sound.window_png", img.getWidth() == 1120 && img.getHeight() == 800 ? 1 : 0, 1);
+            }
         }
 
         // ---- CHECKS --------------------------------------------------------------------------------------------------------
@@ -2173,6 +2204,66 @@ PROBE(plugin, chat)
                     }
                 std::printf("view_sound through MCP: %s of %d x %d\n", type.c_str(), width, height);
                 P.ge("renderdials.mcp_picture_width", static_cast<double>(width), 800.0);
+            }
+
+            // ---- WINDOW ----------------------------------------------------------------------------------------------------
+            {
+                const auto withWindow = [&](const juce::var& window) {
+                    juce::var in = input({ { "hold_seconds", 0.3 }, { "tail_seconds", 0.2 }, { "window", window } });
+                    if constexpr (pg::product::kIsInstrument)
+                        in.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+                    return in;
+                };
+                const juce::var window = input({ { "from", 0.1 }, { "to", 0.25 } });
+                const std::string over = toolText(sa.mcpCall("measure_output", withWindow(window)));
+                std::printf("measure_output with a window:\n%s\n", over.c_str());
+                P.eq("window.measure", has(over, "Window: 0.10 to 0.25 s of ")
+                                           && has(over, pg::product::kIsInstrument ? "In the window: peak " : "for 0.30 s, in the window: out peak ")
+                                           ? 1 : 0, 1);
+                int refused = 0;
+                const juce::var unfit[] = { input({ { "from", 0.3 }, { "to", 0.2 } }), input({ { "from", -1.0 }, { "to", 1.0 } }),
+                                          input({ { "from", 0.0 }, { "to", 30.0 } }), input({ { "to", 1.0 } }),
+                                          input({ { "from", 0.0 }, { "to", 1.0 }, { "at", 2.0 } }), juce::var("all") };
+                for (const juce::var& b : unfit)
+                {
+                    const pg::ChatAgent::McpResult r = sa.mcpCall("measure_output", withWindow(b));
+                    refused += r.isError && has(allText(r), "window: {from, to}, seconds of the render, 0 <= from < to <= 20") ? 1 : 0;
+                }
+                P.eq("window.bad_refused", refused, static_cast<int64_t>(std::size(unfit)));
+                // A check keeps its window: its line and the card name it, the session saves it and loads it back.
+                juce::var check = withWindow(window);
+                check.getDynamicObject()->setProperty("label", "Level over the window");
+                check.getDynamicObject()->setProperty("metric", pg::product::kIsInstrument ? "rms_db" : "sine_gain_db");
+                check.getDynamicObject()->setProperty("max", -100.0);
+                const std::string failing = allText(sa.mcpCall("set_checks", input({ { "checks", juce::Array<juce::var>{ check } } })));
+                std::printf("set_checks with a window:\n%s\n", failing.c_str());
+                P.eq("window.check_line", has(failing, std::string("- FAIL Level over the window (")
+                                                           + (pg::product::kIsInstrument ? "rms_db" : "sine_gain_db") + "; 0.10 to 0.25 s): ")
+                                              ? 1 : 0, 1);
+                check.getDynamicObject()->setProperty("max", 100.0);
+                const std::string passing = allText(sa.mcpCall("set_checks", input({ { "checks", juce::Array<juce::var>{ check } } })));
+                std::string card;
+                for (const pg::ChatEntry& e : sa.chatState().entries)
+                    if (e.kind == pg::ChatEntry::Kind::checks && !e.checks.empty())
+                        card = e.checks[0].detail;
+                const std::string keptState = sa.saveState();
+                const juce::var windowCheck = arr(claude::parseJson(keptState).getProperty("checks", {}))[0];
+                P.eq("window.check_saved", has(passing, "Checks: 1 of 1 pass.") && has(card, "0.10 to 0.25 s")
+                                               && std::fabs(static_cast<double>(windowCheck["window"]["from"]) - 0.1) < 1e-9
+                                               && std::fabs(static_cast<double>(windowCheck["window"]["to"]) - 0.25) < 1e-9 ? 1 : 0, 1);
+                sa.loadState(keptState);
+                P.eq("window.check_loads", sa.saveState() == keptState && has(allText(sa.mcpCall("run_program", input({}))), "Checks: 1 of 1 pass.")
+                                               ? 1 : 0, 1);
+                sa.clearChecks();
+                // tune_dials measures its goals over the window too (it takes the render settings).
+                juce::var tune = withWindow(window);
+                tune.getDynamicObject()->setProperty("tune", juce::Array<juce::var>{ juce::var(levelDial) });
+                tune.getDynamicObject()->setProperty(
+                    "goals", juce::Array<juce::var>{ input({ { "metric", pg::product::kIsInstrument ? "rms_db" : "sine_gain_db" },
+                                                             { "max", 100.0 } }) });
+                tune.getDynamicObject()->setProperty("apply", false);
+                const pg::ChatAgent::McpResult tuned = sa.mcpCall("tune_dials", tune);
+                P.eq("window.tune_takes_it", !tuned.isError && has(allText(tuned), "Every goal is met already") ? 1 : 0, 1);
             }
             setDial(was);
         }

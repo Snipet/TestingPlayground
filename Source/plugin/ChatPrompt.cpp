@@ -247,7 +247,7 @@ DSP PRACTICE IN THIS PLUGIN
 CHECKING YOUR WORK
 
 You cannot hear the plugin, but these tools check what you build against what was asked, so you need not trust it:
-- view_sound draws the sound: the waveform and the level over time, a spectrogram (frequency against time), the average spectrum and a close-up of a few cycles. Look when the shape matters: an envelope, a sweep, a filter's slope, aliasing (lines folding back down the spectrogram), a click (a spike, a thin vertical line), a wave's shape, a tail, a modulation's motion. The user sees the picture too. About 1,200 input tokens a picture: once for a new sound, and again after a change you need to see.
+- view_sound draws the sound: the waveform and the level over time, a spectrogram (frequency against time), the average spectrum (or a window's) and a close-up of a few cycles. Look when the shape matters: an envelope, a sweep, a filter's slope, aliasing (lines folding back down the spectrogram), a click (a spike, a thin vertical line), a wave's shape, a tail, a modulation's motion. The user sees the picture too. About 1,200 input tokens a picture: once for a new sound, and again after a change you need to see.
 - set_checks states what the work must pass, as numbers the plugin measures: a metric with min, max or a target, each in a render of its own (measure_output's settings: %RENDER%; the defaults when left out). Write them from the request, before you build, for what a number can show: %EXAMPLES%. A few checks that matter beat many. The plugin measures them after every run_program (the results follow its own) and when you end a turn in which you changed something (the files, the dials or the checks); while one fails, that turn goes on with the results (twice at most): fix the program, or change a check that asks for the wrong thing, or say why it cannot pass. The user sees them as a checklist, and can clear them.
 - tune_dials finds dial values for goals by rendering many times (tens to a few hundred renders, for up to its time limit: 120 s unless set), instead of guessing and measuring by hand: once the program does the right thing and only its settings are off (%TUNING%). Name the float dials it may move (up to eight) and the goals; it sets the best values on the dials, and says how close each goal came. It cannot make a program do what it cannot: a goal that stays unmet means the program needs changing, or another dial matters.
 - scenario: how the user plays it, in measure_output, view_sound, a check (which keeps it), tune_dials, compare and trace: {%SCENARIO% rate: Hz or "host", block: 1 to 8192 or "host"}; times up to 10 s, then the tail. A dial moves once a host block, as a host's automation does, so its sound depends on the block size.%SCENARIOUSE%
@@ -757,8 +757,9 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
                              + measure::toleranceText(m) + "): " + m.what + "\n";
                 std::string c = replaceAll(kChecking, "%METRICS%", metrics);
                 c = replaceAll(c, "%RENDER%",
-                               instrument ? "notes, velocity, hold_seconds, tail_seconds, dials, the host, the wheels and a scenario"
-                                          : "hold_seconds, tail_seconds, dials, the host and a scenario");
+                               instrument ? "notes, velocity, hold_seconds, tail_seconds, dials, the host, the wheels, a scenario "
+                                            "and a window"
+                                          : "hold_seconds, tail_seconds, dials, the host, a scenario and a window");
                 c = replaceAll(c, "%EXAMPLES%",
                                instrument ? "\"a short pluck\": decay_s at most 1; \"bright\": centroid_hz at least 300 (at C3 "
                                             "a raw saw's about 400, a sine's 131); \"no aliasing\": inharmonic_db at most -70 at "

@@ -210,8 +210,36 @@ namespace playground::scenario
             for (const auto& kv : o->getProperties())
                 if (isNumber(kv.value) || kv.value.isBool())
                     req.dials[kv.name.toString().toStdString()] = static_cast<float>(static_cast<double>(kv.value));
+        if (std::string bad; !readWindow(input, req.window, bad) && why != nullptr)
+            *why = bad;
         read(input, req, why);
         return req;
+    }
+
+    bool readWindow(const juce::var& input, measure::Window& window, std::string& why)
+    {
+        const juce::var w = input.getProperty("window", juce::var());
+        if (w.isVoid() || w.isUndefined())
+            return true;
+        const auto* o = w.getDynamicObject();
+        const juce::var from = o != nullptr ? o->getProperty("from") : juce::var();
+        const juce::var to = o != nullptr ? o->getProperty("to") : juce::var();
+        const bool only = o != nullptr && std::all_of(o->getProperties().begin(), o->getProperties().end(), [](const auto& kv) {
+            return kv.name.toString() == "from" || kv.name.toString() == "to";
+        });
+        const double a = isNumber(from) ? static_cast<double>(from) : -1.0, b = isNumber(to) ? static_cast<double>(to) : -1.0;
+        if (!only || !(a >= 0.0) || !(b > a) || !(b <= measure::kMaxWindowSeconds))
+        {
+            why = "window: {from, to}, seconds of the render, 0 <= from < to <= " + number(measure::kMaxWindowSeconds);
+            return false;
+        }
+        window = { a, b };
+        return true;
+    }
+
+    juce::var windowVar(const measure::Window& w)
+    {
+        return w.set() ? claude::object({ { "from", w.from }, { "to", w.to } }) : juce::var();
     }
 
     juce::var schema()

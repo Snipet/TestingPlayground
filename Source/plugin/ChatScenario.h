@@ -49,8 +49,9 @@
 namespace playground::scenario
 {
     // A render's settings from a tool's input (measure_output's, view_sound's, a check's, tune_dials', trace's): the
-    // notes, the velocity, the times, the host's tempo, the wheels at the start, the dials asked for and the scenario
-    // (read(): why, when it cannot be), over `request` (trace's source "capture" starts from the recording).
+    // notes, the velocity, the times, the host's tempo, the wheels at the start, the dials asked for, the window
+    // (readWindow) and the scenario (read(): why, when it cannot be), over `request` (trace's source "capture" starts
+    // from the recording).
     measure::Request renderOf(const juce::var& input, std::string* why = nullptr, measure::Request request = {});
     // The property's schema: one line, details in the guide.
     juce::var schema();
@@ -69,6 +70,14 @@ namespace playground::scenario
     std::vector<measure::CheckResult> evaluate(const Sources& files, const std::vector<measure::Check>& checks,
                                                const std::map<std::string, float>& current, ChatHost& host,
                                                std::string* errors);
+
+    // ---- window ------------------------------------------------------------------------------------------------------
+    // The render settings' `window` (measure::Window: {from, to}, seconds of the render, 0 <= from < to <=
+    // kMaxWindowSeconds), which renderOf reads too: absent, nothing; false with why for one it cannot take. measure_output,
+    // view_sound, each check (which keeps it) and tune_dials measure it in place of the held part (Measure.h).
+    bool readWindow(const juce::var& input, measure::Window& window, std::string& why);
+    // Back as the input has it (void: none), for the session.
+    juce::var windowVar(const measure::Window& window);
 
     // ---- dials_from (above) ------------------------------------------------------------------------------------------
     // Its schema, with its words when `described` (the first tool's: MCP's copy drops them again from the others,

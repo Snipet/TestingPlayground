@@ -457,6 +457,7 @@ namespace playground
                                                                       "values they have now." } }));
             o->setProperty("bpm", prop("number", "The host's tempo for a program that reads it (host.fm); default 120"));
             o->setProperty("scenario", scenario::schema());
+            o->setProperty("window", prop("object", "{from, to}: the seconds measured, not the held part"));
         }
 
         // The metrics' names, for a schema's enum (Measure.h).
@@ -1341,6 +1342,8 @@ namespace playground
                 o->setProperty("pitchbend", r.pitchbend);
                 if (const juce::var sc = scenario::toVar(r); !sc.isVoid())
                     o->setProperty("scenario", sc);
+                if (const juce::var w = scenario::windowVar(r.window); !w.isVoid())
+                    o->setProperty("window", w);
                 if (!r.dials.empty())
                 {
                     juce::var dials = claude::object({});
@@ -1842,8 +1845,6 @@ namespace playground
                 o->setProperty("tail_seconds", prop("number", "How long to go on after the impulse; default 1.5, "
                                                               "at most 10"));
             }
-            o->setProperty("bpm", prop("number", "The host's tempo for a program that reads it (host.fm: the host plays "
-                                                 "from the song's start); default 120"));
             o->setProperty("try_edits", scenario::trialSchema());
             o->setProperty("dials_from", scenario::dialsFromSchema(true));
             tools.add(tool("measure_output",
@@ -1904,15 +1905,13 @@ namespace playground
             tools.add(tool("view_sound",
                            kInstrument
                                ? "See the sound: a PNG of the program rendered offline as measure_output renders it, "
-                                 "drawn as the waveform and level over time, a spectrogram (log frequency, 20 Hz to 20 "
-                                 "kHz), the average spectrum while held (harmonics marked) and a close-up of a few "
-                                 "cycles. When to look: CHECKING YOUR WORK. It "
-                                 "compiles the files as they are now and changes nothing that plays; the user sees the "
-                                 "picture too."
+                                 "drawn as the waveform and level over time, a spectrogram, the average spectrum while "
+                                 "held (harmonics marked) and a close-up of a few cycles. When to look: CHECKING YOUR "
+                                 "WORK. It compiles the files as they are now and changes nothing that plays; the user sees "
+                                 "the picture too."
                                : "See the sound: a PNG of the program rendered offline with an input (a sweep by "
-                                 "default), drawn as the waveform and level over time, a spectrogram (log frequency, 20 Hz "
-                                 "to 20 kHz), the average spectrum while the input plays and a close-up of a few "
-                                 "cycles. You cannot "
+                                 "default), drawn as the waveform and level over time, a spectrogram, the average "
+                                 "spectrum while the input plays and a close-up of a few cycles. You cannot "
                                  "hear the plugin: look when the sound's shape matters, as a filter's response (a "
                                  "sweep: where it is cut), what a drive adds (a sweep's or a sine's harmonics, aliasing "
                                  "that folds back down), a reverb's or a delay's tail (an impulse), a modulation's "
@@ -2958,7 +2957,12 @@ namespace playground
         for (std::size_t i = 0; i < results.size() && i < checks.size(); ++i)
         {
             const measure::CheckResult& r = results[i];
-            const std::string from = dialsFromWords(checks[i].dialsFrom);
+            // Its window and where it takes its dials from, as its line and the card say them.
+            const measure::Window& w = checks[i].request.window;
+            const std::string dialsWords = dialsFromWords(checks[i].dialsFrom);
+            const std::string from = !w.set()             ? dialsWords
+                                   : dialsWords.empty()   ? measure::windowText(w)
+                                                          : measure::windowText(w) + "; " + dialsWords;
             rows.push_back({ checks[i].label, r.text + (from.empty() ? "" : "; " + from), r.measured, r.pass });
             pass += r.measured && r.pass ? 1 : 0;
             const std::string line = std::string(!r.measured ? "- NOT MEASURED " : r.pass ? "- pass " : "- FAIL ") + checks[i].label

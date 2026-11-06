@@ -7,7 +7,8 @@
 //            full descriptions for comparison, and compact), a setting's description given once (view_sound's render
 //            settings, set_checks' goals: not again in a check's or tune_dials'); tune_dials' metric a plain string,
 //            set_checks' the metrics' names, and its dials_from (current, snapshot, defaults); measure_output's,
-//            view_sound's and trace's (current, defaults), described once, in no check's nor tune_dials'; read_file's from, lines and
+//            view_sound's and trace's (current, defaults), described once, in no check's nor tune_dials'; the render
+//            settings' window described on measure_output alone (view_sound, a check, tune_dials), not trace's; read_file's from, lines and
 //            find, edit_file's edits and expected (only its name required), trace's render settings (its dials; the
 //            synth's notes); an instrument's notes,
 //            velocity and wheels in the synth's measure_output and
@@ -597,6 +598,27 @@ PROBE(plugin, mcp)
                                                && !trace.hasProperty("description")
                                                && !setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"].hasProperty("dials_from")
                                                && !tuneDials["inputSchema"]["properties"].hasProperty("dials_from") ? 1 : 0, 1);
+        }
+        // The render settings' window: described on measure_output, the first that has it, and in view_sound, a check's
+        // settings and tune_dials undescribed (dropRepeated: no number in its words); not trace's.
+        {
+            juce::var measureOutput, trace;
+            if (const juce::Array<juce::var>* t = tools.getArray())
+                for (const juce::var& tool : *t)
+                {
+                    if (tool["name"].toString() == "measure_output")
+                        measureOutput = tool["inputSchema"]["properties"]["window"];
+                    else if (tool["name"].toString() == "trace")
+                        trace = tool["inputSchema"];
+                }
+            const juce::var seen = viewSound["inputSchema"]["properties"]["window"];
+            const juce::var checked = setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["window"];
+            const juce::var tuned = tuneDials["inputSchema"]["properties"]["window"];
+            P.eq("link.render_window", measureOutput["type"].toString() == "object" && measureOutput.hasProperty("description")
+                                           && seen["type"].toString() == "object" && !seen.hasProperty("description")
+                                           && checked["type"].toString() == "object" && !checked.hasProperty("description")
+                                           && tuned["type"].toString() == "object" && !tuned.hasProperty("description")
+                                           && !trace["properties"].hasProperty("window") ? 1 : 0, 1);
         }
         // An instrument's render settings (its notes, velocity and wheels) in an instrument's tools only: measure_output
         // has them in the synth, and no tool of the effect's lists them.
