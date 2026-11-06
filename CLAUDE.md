@@ -459,9 +459,12 @@ place (its `products/<key>.cmake`, and its names in the docs).
   window's Panel with what describes it (the draft it was given, `syncedFiles_`, `seenDraft_`, the IR viewer's count,
   the probes' owner), and every hook it holds is bound again to the Panel that holds it (`bindFiles`: a new hook into
   the Panel goes there). Both Panels are made alike, so the item keeps its index and ids. The editor's window keeps a
-  hidden copy that reads and gives nothing while the editor is out (no check request; the status's edited mark is the
-  code window's); what it does that runs the code (Run, Cmd-Return) goes to the code window's Panel, and its Examples,
-  Library and Random hide. The window is made and let go after the event that asked (never inside the click: its own
+  hidden copy (the files as the code window's Panel loaded them) that takes and gives nothing while the editor is out:
+  it merges no draft, gives the processor no files (`refresh`, `pushFiles`, the sync hook), asks for no check, and never
+  has the focus or a key (no hidden item does: `setFocus`, `textItem`); the status's edited mark is the code window's.
+  What the editor's window does that reaches the files goes to the code window's Panel (Run, Cmd-Return, and Cmd-S's
+  and PROJECTS' save: `pushEditor`), and its Examples, Library and Random hide. view_panel's window picture shows the
+  code out only while an editor has it out (`EditorPort::codeWindowOpen`), not by the session's choice alone. The window is made and let go after the event that asked (never inside the click: its own
   window may be the one that goes), takes the editor back before it goes, and when the editor goes first the code
   window goes before it, the session left out. A Panel drawn headless has no window's owner and no window button.
 - **`fminus/Lang.h` is the language, as an editor sees it**: plain C++ over the files' text, no FMinus call. Its
