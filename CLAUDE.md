@@ -521,12 +521,14 @@ place (its `products/<key>.cmake`, and its names in the docs).
   partials, 0.4 s Hann for the pitch, 0.4 s Blackman-Harris for inharmonic_db and thd_db), the centroids
   power-weighted over 20 Hz to 20 kHz, the pitch the strongest partial within 600 cents of the expected note
   (`pitchOf`, a harmonic sum without one), and one click rule (`measure::clicks`) for the click metric, the step lines and trace (`dsp.metrics`
-  checks each at 48 and 192 kHz). The render settings' `window` ({from, to}, `Request::window`) takes the held part's
-  place: seconds of an instrument's render, which then lasts to its end, for the metrics "while held", peak_db and
-  cpu_percent (attack_s and release_s keep the notes'); seconds of the effect's sine's and noise's renders, cut at
-  hold_seconds. One that holds none of what a metric needs leaves it out of the values with why (`Result::unmeasured`,
-  a check's NOT MEASURED line); `sameRender` tells checks apart by it, and the session keeps a check's. Change a
-  definition and its line together. The report's pitch line is a judgement
+  checks each at 48 and 192 kHz). The render settings' `window` ({from, to}, `Request::window`, at least
+  `kMinWindowSeconds`) takes the held part's place: seconds of an instrument's render, which then lasts to its end,
+  for the metrics "while held", peak_db and cpu_percent (the calls that render it); attack_s and release_s keep the
+  notes', and the whole render's metrics the length it has without the window (`Timeline::plain`, where a call ends);
+  seconds of the effect's sine's and noise's renders, cut at hold_seconds. One that holds too little of what a metric
+  needs leaves it out of the values with why (`Result::unmeasured`, a check's NOT MEASURED line; tune_dials leaves
+  such a goal out of its search, and with none left does not search); `sameRender` tells checks apart by it, and the
+  session keeps a check's; trace and compare refuse one. Change a definition and its line together. The report's pitch line is a judgement
   on top, the metrics untouched: with the whole report asked, the lowest note and the note a whole tone up (not an
   octave: a fixed pitch's second harmonic sits there), each alone (0.6 s, none of the scenario's moves, a single note
   too), must measure within 50 cents of a whole tone apart, else the line says "Unpitched" with both pitches and the
@@ -544,8 +546,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - **view_sound** (`dsp/SoundView.h`, `plugin/SoundPicture.h`): the render (the effect's with an input: a sweep, noise,
   an impulse, a sine or silence; the synth's the notes held, then released) analysed (the waveform's extent and level
   per column, a Blackman-Harris spectrogram on a log axis, the held part's average spectrum, a close-up) and drawn as
-  a 1120 x 800 PNG on the worker thread with JUCE (with a `window`, the average spectrum and the RMS over it, the
-  close-up at its middle, its edges marked and the waveform shaded); it goes in the tool's result like view_panel's
+  a 1120 x 800 PNG on the worker thread with JUCE (with a `window`, seconds of the render it draws for both products,
+  the average spectrum and the RMS over it (a part shorter than a frame: one frame over it alone), the close-up at its
+  middle, its edges marked and the waveform shaded); it goes in the tool's result like view_panel's
   (the session keeps a line in its place) and its 480 px thumbnail on the tool's entry, which the chat draws under the row (the session
   keeps the thumbnail). Through MCP a picture over `kMcpPictureBytes` goes as `chatimages::fit` makes it: the largest
   that fits of a JPEG and a scaled PNG, each sized from its own bytes (a spectrogram's PNG is several times its
