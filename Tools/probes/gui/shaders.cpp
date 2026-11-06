@@ -10,6 +10,9 @@
 //                          the fallback (SoftRaster, forced by the test hook)
 // and checks:
 //   PROMPT    the system prompt's shader example is there, and it builds
+//   ANIMATES  shaderAnimates: u_time and u_viewSize as words of the code animate; in a // comment (one a backslash
+//             continues too) or a /* */ one, or part of a longer name, they do not; the probe's still shader names
+//             u_time in a comment only, its moving one reads it, and so does the prompt's example
 //   BUILD     a program whose panel.gui has a shader of its own file runs with no note; the shader's binary is in the
 //             status's panel, under its bytes' hash; run again, the same (the cache); the renderer checked it on the
 //             compiler's thread (shaders::check), so the Panel's shaders::set() runs Metal's compiler not once: the
@@ -19,8 +22,8 @@
 //             the file), and the program still plays; a shader of no file, and a fifth one, are notes of the .gui file
 //   PANEL     the Panel registers the built shader with FunkGui (shaders::has) and shows it over its cell; its inputs
 //             follow a parameter's 0..1 and the output's level; a shader that reads u_time moves every frame (never
-//             settled, the panel asking for every frame), one that does not settles; a shader that was not built says
-//             why (to a screen reader too)
+//             settled, the panel asking for every frame), one that names it only in a comment settles; a shader that
+//             was not built says why (to a screen reader too)
 //   PICTURE   the panel's frame drawn for a picture (picture::draw) on the GPU on this Mac, at SoftRaster's size; in the
 //             still shader's cell SoftRaster's image is FunkGui's striped placeholder and the GPU's is not, but the
 //             shader's colours (its gradient's ends, from in_cutoff); away from the shaders' cells the two images agree
@@ -96,8 +99,8 @@ namespace
                    "        env = 0.5f;\n    }\n};\n";
     }
 
-    // A still shader (no u_time) and a moving one, of the prompt's kind.
-    const char* const kStill = "// still.sc\n"
+    // A still shader (it names u_time only in a comment) and a moving one, of the prompt's kind.
+    const char* const kStill = "// still.sc: it reads no u_time, so it changes only with its input\n"
                                "void main()\n"
                                "{\n"
                                "    vec3 c = mix(vec3(0.1, 0.1, 0.2), vec3(1.0, 0.6, 0.2), in_cutoff * v_uv.x);\n"
@@ -265,6 +268,20 @@ PROBE(gui, shaders)
              kMetal ? 1 : 0);
         if (!why.empty())
             std::printf("FunkGui: %s\n", why.c_str());
+    }
+
+    // ---- ANIMATES ------------------------------------------------------------------------------------------------------
+    {
+        const auto animates = [](const std::string& body) { return pg::shaderAnimates(body) ? 1 : 0; };
+        P.eq("animates.time", animates("void main() { gl_FragColor = vec4(vec3(fract(u_time)), 1.0); }"), 1);
+        P.eq("animates.view_size", animates("void main() { float t = u_viewSize.w; gl_FragColor = vec4(t); }"), 1);
+        P.eq("animates.line_comment", animates("// u_time is not read\nvoid main() { gl_FragColor = vec4(1.0); }"), 0);
+        P.eq("animates.block_comment", animates("/* u_time,\n u_viewSize */ void main() { gl_FragColor = vec4(1.0); }"), 0);
+        P.eq("animates.comment_continued", animates("// a comment that goes on \\\n u_time\nvoid main() {}"), 0);
+        P.eq("animates.longer_names", animates("float my_u_time = 1.0; float u_timeScale = 2.0; float u_viewSize2;"), 0);
+        P.eq("animates.after_comment", animates("/* still? */ float t = 0.5 * u_time; // no"), 1);
+        P.eq("animates.probe_shaders", animates(kStill) == 0 && animates(kMoving) == 1 ? 1 : 0, 1);
+        P.eq("animates.prompt_example", animates(promptExample(pg::ChatAgent::systemPrompt())), 1);
     }
 
     pg::Processor processor;

@@ -83,4 +83,10 @@ namespace playground
 
     // A shader binary's id for FunkGui's ShaderLibrary: its bytes' hash, never 0 (the same shader, the same id).
     uint32_t shaderId(const std::vector<uint8_t>& binary);
+
+    // Whether a shader's file reads the editor's clock: u_time (or u_viewSize, whose w it is) as a word of its code,
+    // never in a comment (// to the line's end, a backslash at its end going on, and /* */), nor part of a longer
+    // name or a number. Such a shader changes every frame (the Panel draws it at full rate); any other only when an
+    // input does.
+    bool shaderAnimates(const std::string& body);
 }

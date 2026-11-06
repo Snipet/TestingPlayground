@@ -3,6 +3,8 @@
 
 #include "editor/DisplayItem.h"
 
+#include "fminus/Shaders.h"
+
 #include <funkgui/canvas/Tags.h>
 #include <funkgui/gpu/ShaderLibrary.h>
 #include <funkgui/text/FontService.h>
@@ -252,7 +254,7 @@ namespace playground::ui
             const PanelShader& sh = spec.shaders[k];
             const auto f = std::find_if(files.begin(), files.end(), [&](const SourceFile& x) { return x.name == sh.file; });
             if (f != files.end())
-                shaderMoves_[k] = f->text.find("u_time") != std::string::npos || f->text.find("u_viewSize") != std::string::npos;
+                shaderMoves_[k] = shaderAnimates(f->text);
             if (sh.binary.empty() || sh.id == 0)
             {
                 std::string why = f == files.end() ? "there is no file " + sh.file + " among the program's" : std::string("not built");

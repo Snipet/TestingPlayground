@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iterator>
 #include <sstream>
+#include <string_view>
 #include <system_error>
 #include <thread>
 
@@ -382,5 +383,51 @@ namespace playground
         for (const uint8_t b : binary)
             h = (h ^ b) * 16777619u;
         return h == 0 ? 1u : h;
+    }
+
+    bool shaderAnimates(const std::string& body)
+    {
+        const auto word = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_'; };
+        const std::size_t n = body.size();
+        std::size_t i = 0;
+        while (i < n)
+        {
+            const char c = body[i];
+            if (c == '/' && i + 1 < n && body[i + 1] == '/')
+            {
+                // To the line's end; a backslash just before it joins the next line to the comment.
+                for (i += 2; i < n && body[i] != '\n'; ++i)
+                    if (body[i] == '\\' && i + 1 < n && body[i + 1] == '\n')
+                        ++i;
+                    else if (body[i] == '\\' && i + 2 < n && body[i + 1] == '\r' && body[i + 2] == '\n')
+                        i += 2;
+                continue;
+            }
+            if (c == '/' && i + 1 < n && body[i + 1] == '*')
+            {
+                const std::size_t end = body.find("*/", i + 2);
+                i = end == std::string::npos ? n : end + 2;
+                continue;
+            }
+            const auto digit = [&](std::size_t k) { return k < n && std::isdigit(static_cast<unsigned char>(body[k])) != 0; };
+            if (digit(i) || (c == '.' && digit(i + 1)))
+            {
+                while (i < n && (word(body[i]) || body[i] == '.'))     // a number, its suffix and exponent
+                    ++i;
+                continue;
+            }
+            if (word(c))
+            {
+                const std::size_t from = i;
+                while (i < n && word(body[i]))
+                    ++i;
+                const std::string_view name(body.data() + from, i - from);
+                if (name == "u_time" || name == "u_viewSize")
+                    return true;
+                continue;
+            }
+            ++i;
+        }
+        return false;
     }
 }
