@@ -100,7 +100,8 @@ namespace playground::ui
         void accessibility(std::vector<funkgui::A11yItem>& out) const override;
         bool a11yAction(uint32_t id, funkgui::A11yAction a, double v, funkgui::GestureController& g) override;
         void specLine(char* out, std::size_t n) const override;
-        bool settled() const override { return !dragging_; }
+        // Moving while dragged, and while its value or its live= mark moves with no hand on it (Stirred).
+        bool settled() const override { return !dragging_ && (!shown() || !stir_.moving()); }
         funkgui::Point centre() const override { return { cell_.centreX(), cell_.centreY() }; }
         bool shown() const override { return shown_ && value_.control().used; }
 
@@ -132,6 +133,7 @@ namespace playground::ui
         int hoverButton_ = -1;
         float dragStart01_ = 0.0f;                   // the value the drag has reached
         float lastY_ = 0.0f;
+        Stirred stir_;
     };
 
     class GuiXyItem final : public Item
@@ -149,7 +151,11 @@ namespace playground::ui
                    const std::string& color);
         funkgui::Rect pad() const;               // its square, under its label
 
-        void tick(float, bool hovered, bool, funkgui::Point) override { hovered_ = hovered; }
+        void tick(float dt, bool hovered, bool, funkgui::Point) override
+        {
+            hovered_ = hovered;
+            stir_.tick(dt, { vx_ != nullptr ? vx_->value01() : -1.0f, vy_ != nullptr ? vy_->value01() : -1.0f });
+        }
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override;
         uint64_t drawKey() const override
         {
@@ -170,7 +176,7 @@ namespace playground::ui
         void accessibility(std::vector<funkgui::A11yItem>& out) const override;
         bool a11yAction(uint32_t id, funkgui::A11yAction a, double v, funkgui::GestureController& g) override;
         void specLine(char* out, std::size_t n) const override;
-        bool settled() const override { return !dragging_; }
+        bool settled() const override { return !dragging_ && (!shown() || !stir_.moving()); }   // as a control's
         funkgui::Point centre() const override { return { cell_.centreX(), cell_.centreY() }; }
         bool shown() const override { return shown_ && vx_ != nullptr && vy_ != nullptr; }
 
@@ -183,6 +189,7 @@ namespace playground::ui
         std::string label_, color_;
         funkgui::Rect cell_, area_;
         bool shown_ = false, hovered_ = false, dragging_ = false;
+        Stirred stir_;
     };
 
     class GuiEnvelopeItem final : public Item
@@ -196,7 +203,12 @@ namespace playground::ui
         // The shape's corners (x, y) across its cell, for the probes: start, peak, sustain's start, its end, the end.
         std::array<funkgui::Point, 5> corners() const;
 
-        void tick(float, bool hovered, bool, funkgui::Point) override { hovered_ = hovered; }
+        void tick(float dt, bool hovered, bool, funkgui::Point) override
+        {
+            hovered_ = hovered;
+            const auto at = [this](std::size_t k) { return adsr_[k] != nullptr ? adsr_[k]->value01() : -1.0f; };
+            stir_.tick(dt, { at(0), at(1), at(2), at(3) });
+        }
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override;
         uint64_t drawKey() const override                // the four parameters' values
         {
@@ -210,6 +222,7 @@ namespace playground::ui
         void accessibility(std::vector<funkgui::A11yItem>& out) const override;
         bool a11yAction(uint32_t, funkgui::A11yAction, double, funkgui::GestureController&) override { return false; }
         void specLine(char* out, std::size_t n) const override;
+        bool settled() const override { return !shown() || !stir_.moving(); }   // its parameters moving (Stirred)
         funkgui::Point centre() const override { return { cell_.centreX(), cell_.centreY() }; }
         bool shown() const override;
         bool focusable() const override { return false; }
@@ -220,6 +233,7 @@ namespace playground::ui
         std::string label_, color_;
         funkgui::Rect cell_, area_;
         bool shown_ = false, hovered_ = false;
+        Stirred stir_;
     };
 
     // A keyboard (an instrument's): its keys, from= for keys=, across its cell. A click plays a note (louder lower on
@@ -291,7 +305,9 @@ namespace playground::ui
 
     // A shader element (fminus/Shaders.h): its program, drawn over its cell by FunkGui (Canvas::shader) with its
     // inputs as u_params, once the Panel has registered it (funkgui/gpu/ShaderLibrary.h); until then, or when it was
-    // refused, a placeholder that says why. It moves every frame while its code reads u_time, else when an input does.
+    // refused, a placeholder that says why. It moves every frame while it animates (its code reads u_time:
+    // shaderAnimates), else while an input moves (Stirred: what place() and setInputs() see change, kept until the next
+    // tick reads it).
     class GuiShaderItem final : public Item
     {
     public:
@@ -307,7 +323,11 @@ namespace playground::ui
         const std::string& why() const noexcept { return why_; }
         const funkgui::Rect& cell() const noexcept { return cell_; }
 
-        void tick(float, bool, bool, funkgui::Point) override { changed_ = false; }
+        void tick(float dt, bool, bool, funkgui::Point) override
+        {
+            stir_.tick(dt, changed_);
+            changed_ = false;
+        }
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override;
         uint64_t drawKey() const override                // its inputs (u_params) and what it draws
         {
@@ -321,7 +341,7 @@ namespace playground::ui
         void accessibility(std::vector<funkgui::A11yItem>& out) const override;
         bool a11yAction(uint32_t, funkgui::A11yAction, double, funkgui::GestureController&) override { return false; }
         void specLine(char* out, std::size_t n) const override;
-        bool settled() const override { return !shown_ || (!(animated_ && program_ != 0) && !changed_); }
+        bool settled() const override { return !shown_ || (!(animated_ && program_ != 0) && !stir_.moving()); }
         funkgui::Point centre() const override { return { cell_.centreX(), cell_.centreY() }; }
         bool shown() const override { return shown_; }
         bool focusable() const override { return false; }
@@ -332,7 +352,9 @@ namespace playground::ui
         std::string file_, why_;
         std::array<float, 8> inputs_{};
         funkgui::Rect cell_, area_;
-        bool shown_ = false, animated_ = false, changed_ = false;
+        bool shown_ = false, animated_ = false;
+        bool changed_ = false;                           // since the last tick: an input, the program, shown
+        Stirred stir_;
     };
 
     class GuiTabsItem final : public Item

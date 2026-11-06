@@ -2856,6 +2856,17 @@ namespace playground::ui
             probeStill_ = f != probeFrame_ ? 0.0f : probeStill_ + dt;
             probeFrame_ = f;
         }
+        // The circuit knobs' values: a host's automation of a dial turns its knob with no input here (Stirred).
+        if (dials_.port)
+        {
+            DrawKey k;
+            for (const Knob& kn : knobs())
+                if (const funkgui::ParamPort* port = dials_.port(kn.slot))
+                    k.mix(kn.slot).mix(port->value01());
+            knobsStir_.tick(dt, knobsSeen_ && k.h != knobsKey_);
+            knobsKey_ = k.h;
+            knobsSeen_ = true;
+        }
         if (easing_)
         {
             st_->zoom = funkgui::ease::toward(st_->zoom, zoomTo_, dt, kEaseTau, 1e-4f);
@@ -2951,6 +2962,8 @@ namespace playground::ui
         // (a notice's 4 s count down at the idle rate: it asks for no frames of its own)
         if (easing_ || fitPending_ || !flash_.empty() || (probesLive() && probeStill_ < kProbeStill))
             return false;                                // a live readout: 60 Hz while it shows and its meters move
+        if (knobsStir_.moving())
+            return false;                                // a circuit knob the host moves
         if (drag_ == Drag::move || drag_ == Drag::wire || drag_ == Drag::marquee || drag_ == Drag::carry || drag_ == Drag::knob)
             return false;
         // a part carried near the edge pans

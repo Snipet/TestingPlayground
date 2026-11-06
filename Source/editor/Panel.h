@@ -72,15 +72,20 @@
 //   - dirty_, set wherever the Panel changes what it shows (input, a refresh of the processor's state, a layout, a
 //     menu's or a file chooser's answer: the host the items reach is HostProxy, which marks the Panel before the
 //     callback runs), which each tick hands on to undrawn_, kept until draw();
-//   - an item moving (settled() false: an ease, a drag, a display's new values, Claude working, a shader that
-//     animates), and the frame after it settles;
+//   - a shown item moving (settled() false: an ease, a drag, a display's new values, Claude working, a shader that
+//     animates, and what moves with no input to it: a .gui control's value or live= mark, a pad's, an envelope's, a
+//     shader's inputs, a circuit's knob, held a quarter second after the last move: Items.h Stirred), and the frame
+//     after it settles;
 //   - the mix of every shown item's drawKey() (Items.h; a hidden item's is left out, as draw() leaves the item out)
 //     and of the Panel's own words and states, taken each tick, which catches what changes with no input and no
 //     motion: a host's automation of a dial, a live= mark, a shader's inputs, a label read through a callback, a
 //     notice that ran out.
 // Once a second it records the frame anyway (kRedrawEvery), a safety net: EditorHost then submits it only if it
 // differs from the last frame drawn (canvas/FrameCompare.h), so an idle editor still sends the GPU nothing.
-// gui.dump DRAW checks the sources, gui.code TYPES the type names' colours, gui.styles PAGES a hidden page's knob.
+// wantsFullRate() (FunkGui's FramePump: 60 Hz, else about 12) is a shown item moving, a change not ticked yet, or a
+// compile running: what is hidden (a dial a .gui file's interface draws, a page not shown) never keeps the rate up.
+// gui.dump DRAW checks the sources, gui.code TYPES the type names' colours, gui.styles PAGES a hidden page's knob and
+// RATE what moves with no input, gui.shaders DRAW a shader's inputs, gui.panel SETTLE displays that stand still.
 //
 // Message thread only. The ports and the EditorPort belong to the processor and outlive the Panel.
 #pragma once
@@ -211,6 +216,9 @@ namespace playground::ui
         int dialRows() const noexcept { return dials_.rows; }             // the rows of dials, or of sections
         const DialsLayout& dialsLayout() const noexcept { return dials_; }
         const DisplayItem& displayItem(int d) const;                      // display d of the program's (shown or not)
+        // A shown item unsettled at the last tick: the motion part of needsDraw() and wantsFullRate(), without the
+        // Panel's own changes (dirty_: a refresh's, the top bar's CPU figure among them, which moves with real time).
+        bool moving() const noexcept { return moving_; }
         // A .gui file's interface: whether the program has one, the PANEL view, its layout, slot's control, a page
         // chosen, a scroll (the wheel's, by px).
         bool hasGui() const noexcept { return !panelSpec_.gui.empty(); }

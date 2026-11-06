@@ -174,10 +174,11 @@ namespace playground::ui
         live01_ = std::isfinite(plain) ? normOf(value_.control(), plain) : -1.0f;
     }
 
-    void GuiControlItem::tick(float, bool hovered, bool, funkgui::Point pointer)
+    void GuiControlItem::tick(float dt, bool hovered, bool, funkgui::Point pointer)
     {
         hovered_ = hovered;
         hoverButton_ = hovered && kind_ == GuiKind::buttons ? buttonAt(pointer) : -1;
+        stir_.tick(dt, { value_.value01(), live01_ });
     }
 
     Rect GuiControlItem::track() const

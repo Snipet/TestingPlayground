@@ -5611,7 +5611,7 @@ namespace playground::ui
     {
         if (dirty_ || compiling_)
             return true;
-        return std::any_of(items_.begin(), items_.end(), [](const auto& it) { return !it->settled(); });
+        return std::any_of(items_.begin(), items_.end(), [](const auto& it) { return it->shown() && !it->settled(); });
     }
 
     void Panel::draw(funkgui::Canvas& c, const funkgui::Theme& hostTheme)

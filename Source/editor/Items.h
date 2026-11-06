@@ -14,10 +14,14 @@
 #include <funkgui/params/GestureController.h>
 #include <funkgui/text/Highlighter.h>
 
+#include <algorithm>
+#include <array>
 #include <bit>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -95,6 +99,46 @@ namespace playground::ui
         DrawKey& mix(const funkgui::Rect& r) noexcept { return mix(r.x).mix(r.y).mix(r.w).mix(r.h); }
         DrawKey& mix(const funkgui::TextEditor& e) noexcept;   // its text's revision, caret, selection, scroll, focus,
                                                                // decorations and bounds (Items.cpp)
+    };
+
+    // Motion with no input to the item (Item::settled): what it shows that something else moves, a host's automation,
+    // Claude's or a preset's write, MIDI, a field the program writes (a live= mark, a shader's input). Each tick takes
+    // the values it shows (0..1, up to four) or whether it saw one move; it is moving() from the tick that saw a move
+    // until kFor seconds of none, so the Panel runs at full rate while it moves (FunkGui's FramePump runs a settled
+    // editor at about 12 Hz) and automation points a frame or two apart keep it there. A value's move is a change of
+    // more than kStep since the last one counted (smaller ones add up); the first values seen are none.
+    class Stirred
+    {
+    public:
+        static constexpr float kFor = 0.25f;             // seconds
+        static constexpr float kStep = 1.0e-4f;          // of a value's 0..1
+
+        void tick(float dt, bool moved) noexcept
+        {
+            quiet_ = moved ? 0.0f : std::min(quiet_ + std::max(dt, 0.0f), kFor);
+        }
+        void tick(float dt, std::initializer_list<float> values) noexcept
+        {
+            bool moved = false;
+            std::size_t k = 0;
+            for (const float v : values)
+            {
+                if (k == seen_.size())
+                    break;
+                moved = moved || std::fabs(v - seen_[k]) > kStep;
+                ++k;
+            }
+            if (moved || !primed_)
+                std::copy_n(values.begin(), k, seen_.begin());
+            tick(dt, moved && primed_);
+            primed_ = true;
+        }
+        bool moving() const noexcept { return quiet_ < kFor; }
+
+    private:
+        std::array<float, 4> seen_{};
+        bool primed_ = false;
+        float quiet_ = kFor;
     };
 
     inline constexpr funkgui::TextStyle kStatusStyle{ 10.0f, 1.4f, 0.03f, false };

@@ -33,9 +33,11 @@
 //             still, its text saying each shader shows as a striped placeholder, and why
 //   DRAW      a panel whose one shader is still asks for no frame while nothing changes, and for one when the parameter
 //             it reads moves with no input (Panel.h "Unchanged frames"): the shader's inputs ask, the parameter's knob
-//             being on a page not shown (a hidden item's key is not watched) and its dial hidden in the PANEL view
+//             being on a page not shown (a hidden item's key is not watched) and its dial hidden in the PANEL view; the
+//             move keeps the full rate (the shader unsettled) for a quarter second, then the panel is calm
 #include "Probe.h"
 
+#include "editor/CodeAssist.h"
 #include "editor/GuiItems.h"
 #include "editor/Panel.h"
 #include "editor/Picture.h"
@@ -61,6 +63,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace pg = playground;
@@ -363,7 +366,7 @@ PROBE(gui, shaders)
         {
             P.eq("panel.registered", still->program() == s.panel.shaders[0].id && funkgui::shaders::has(still->program()) ? 1 : 0, 1);
             P.eq("panel.broken_says_why", broken->program() == 0 && has(broken->why(), "does not compile") ? 1 : 0, 1);
-            host.tick(2);
+            host.tick(20);                               // past the quarter second a new program moves it for
             P.near("panel.input_param", static_cast<double>(still->inputs()[0]), 0.25, 1e-3);
             P.eq("panel.still_settles", still->settled() ? 1 : 0, 1);
             P.eq("panel.moving_moves", moving->settled() ? 0 : 1, 1);
@@ -527,6 +530,13 @@ PROBE(gui, shaders)
         processor.settle();
         host.tick(2);
         host.settle();
+        // The editor's check while typing landed (a change of its own, late on a loaded machine).
+        for (int k = 0; k < 600 && (panel.codeAssist().checking() || port.compiling()); ++k)
+        {
+            host.tick(1, 1.0f / 12.0f);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        host.settle();
         P.eq("draw.still_alone", shaderShowing(panel, "still.sc") != nullptr && !panel.guiControl(0).shown() ? 1 : 0, 1);
         host.draw();
         int asked = 0;
@@ -541,6 +551,14 @@ PROBE(gui, shaders)
         cutoff.setValueNotifyingHost(cutoff.getValue() < 0.5f ? 0.75f : 0.25f);
         host.tick(1, 1.0f / 12.0f);
         P.eq("draw.still_input", panel.needsDraw() ? 1 : 0, 1);
+        // The move keeps the full rate (the shader moving: what its inputs' change set is kept until the Panel reads
+        // it), a quarter second after it too, and then the panel is calm.
+        const pg::ui::GuiShaderItem* sh = shaderShowing(panel, "still.sc");
+        P.eq("draw.input_full_rate", sh != nullptr && !sh->settled() && panel.wantsFullRate() ? 1 : 0, 1);
+        host.tick(9);                                    // 0.15 s at 60 Hz
+        P.eq("draw.input_held", sh != nullptr && !sh->settled() && panel.wantsFullRate() ? 1 : 0, 1);
+        host.tick(9);
+        P.eq("draw.input_calm_after", sh != nullptr && sh->settled() && !panel.wantsFullRate() ? 1 : 0, 1);
     }
     return P.finish();
 }

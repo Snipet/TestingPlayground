@@ -61,7 +61,8 @@
 //             on the slots of their dials; a drag up on one turns its dial (the program card's) and leaves the text
 //             alone, the info strip saying its value; a double-click its default, closing the drag its second press
 //             began; the body still moves the part; a switch's chip steps its position; a program that calls the
-//             module's set() itself gets no knobs, and the info strip says why
+//             module's set() itself gets no knobs, and the info strip says why; the host's automation of a dial moves
+//             the view (the full rate) and it settles a quarter second after
 //   PLAY      a netlist no program #includes: the banner's Play this circuit writes program.fm (CirTemplates.h's host
 //             program, the library tabs it needs), runs it, the view staying on the netlist, and offers Undo, which
 //             gives program.fm's text back in one step; a probe's reason the strip draws (a node typed since RUN)
@@ -1939,6 +1940,17 @@ PROBE(gui, schematic)
         }
         P.eq("dials.checked", checkSettled(host, panel.codeAssist()) ? 1 : 0, 1);   // the picture the same each run
         writePng(P, host, "gui.schematic.dials.png", "dials");
+        {
+            // The host's automation of Ptone's dial turns its knob with no input here: the view moves (the full rate)
+            // while it does and a quarter second after (Items.h Stirred), then settles.
+            host.settle();
+            juce::AudioProcessorParameter& tone = *r.processor.getParameters()[1];
+            tone.setValueNotifyingHost(tone.getValue() + (tone.getValue() < 0.5f ? 0.05f : -0.05f));
+            host.tick(1);
+            P.eq("dials.automation_moves", !v.settled() && panel.wantsFullRate() ? 1 : 0, 1);
+            host.tick(20);
+            P.eq("dials.automation_settles", v.settled() ? 1 : 0, 1);
+        }
         frame(v, host);                           // 100 %, the drawing centred: room in the canvas's lower left
         host.settle();
         // dragging Pdrive's knob 60 px up turns the dial of its slot (the program card's): +0.4 of its range
