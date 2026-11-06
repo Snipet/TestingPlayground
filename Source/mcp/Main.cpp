@@ -6,7 +6,8 @@
 // projects, never ids or tools; each tool has a title in words; an instance is named as the user would name it.
 //   tools/list   list_instances ("Find the open synths"), playground_guide ("Read the guide", in parts: mcp/McpGuide.h),
 //                and the chat's own tools (ChatAgent::mcpTools, each with its title) from an instance running, else
-//                from the tools.json the last one left; each takes `instance`
+//                from the tools.json the last one left; each takes `instance` (described on the first alone:
+//                mcp/McpSchema.h's rule, as the plugin's own repeated words)
 //   tools/call   any of the chat's tools goes to the instance named: by its name ("Synth 2", or just "2"), its
 //                track's, or its project's (whole or in part, case aside); else to the one used last; else to the only
 //                one open. With several open and none named, the reply describes them so that Claude asks the user
@@ -30,6 +31,7 @@
 // its MCP logs).
 #include "mcp/McpGuide.h"
 #include "mcp/McpProtocol.h"
+#include "mcp/McpSchema.h"
 #include "sandbox/SandboxProtocol.h"
 
 #include "Library.h"
@@ -558,6 +560,7 @@ namespace
                       << juce::JSON::toString(params["capabilities"], true).toStdString() << std::endl;
             if (version != "2024-11-05" && version != "2025-03-26" && version != "2025-06-18" && version != "2025-11-25")
                 version = "2025-11-25";
+            oldTitles_ = version == "2024-11-05" || version == "2025-03-26";
             const std::string thing = kThing;
             const std::string instructions =
                 std::string(pg::product::kName) + " is " + (kInstrument ? "a synth" : "an effect")
@@ -965,7 +968,7 @@ namespace
                             { "title", str(title) },
                             { "description", str(description) },
                             { "inputSchema", object({ { "type", "object" }, { "properties", properties } }) },
-                            { "annotations", object({ { "title", str(title) }, { "readOnlyHint", true }, { "openWorldHint", false } }) } });
+                            { "annotations", pg::mcp::annotations(true, false) } });
         }
 
         juce::var toolList(const juce::var& tools)
@@ -1004,6 +1007,16 @@ namespace
                     }
                     out.add(tool);
                 }
+            // The plugin's rule for a property's words (mcp/McpSchema.h) over the whole list, now that `instance` is on
+            // the plugin's tools: its words on the first of them alone (the plugin's tools come with the rule run).
+            std::set<std::pair<juce::String, juce::String>> described;
+            for (const juce::var& tool : out)
+                pg::mcp::dropRepeated(tool["inputSchema"], described);
+            // A client from before 2025-06-18 knows no tool's own title: it reads annotations.title, as MCP had it.
+            if (oldTitles_)
+                for (const juce::var& tool : out)
+                    if (juce::DynamicObject* a = tool["annotations"].getDynamicObject())
+                        a->setProperty("title", tool["title"]);
             return out;
         }
 
@@ -1045,14 +1058,12 @@ namespace
             const std::string title = "Design a panel";
             return object({ { "name", "gui_sandbox" },
                             { "title", str(title) },
-                            { "description", "A sandbox to design a plugin's interface (its panel.gui) and see it drawn exactly as the plugin "
-                                             "draws it, with or without the plugin open, never touching what an open plugin plays or shows. "
-                                             "open, then edit and render as often as needed; apply only when the user asks for the design to "
-                                             "go into the plugin." },
+                            { "description", "Design the plugin's panel (panel.gui) in a sandbox and see it drawn exactly as the plugin draws "
+                                             "it, with or without the plugin open; nothing an open plugin plays or shows changes. open, then "
+                                             "edit and render as needed; apply only when the user asks for the design in their plugin." },
                             { "inputSchema", object({ { "type", "object" }, { "properties", properties },
                                                       { "required", juce::Array<juce::var>{ "action" } } }) },
-                            { "annotations", object({ { "title", str(title) }, { "readOnlyHint", false }, { "destructiveHint", false },
-                                                      { "openWorldHint", false } }) } });
+                            { "annotations", pg::mcp::annotations(false, false) } });
         }
 
         void call(const juce::var& id, const juce::var& params)
@@ -1986,6 +1997,7 @@ namespace
         std::set<std::string> open_;                     // the client's requests not answered yet (key(id))
         std::string chosen_;
         bool listedPlain_ = false;                       // the last tools/list had none of the plugin's tools
+        bool oldTitles_ = false;                         // a client of MCP before 2025-06-18: titles in the annotations
         const int callMs_ = callDeadlineMs();
         // The GUI sandbox's helper (above): its process and pipes (non-blocking), its connection's number (a helper
         // started again is another), the requests waiting and the one it works on, the sandbox in it as it last said it

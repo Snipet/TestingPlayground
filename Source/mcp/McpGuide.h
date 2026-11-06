@@ -1,18 +1,22 @@
 // Source/mcp/McpGuide.h: the guide in parts (playground_guide's `part`). The guide is what the plugin's own chat works
 // from, for an assistant driving the plugin from outside (ChatAgent::mcpGuide: a word on working from outside, the
-// chat's system prompt, then what the MCP tools' short descriptions leave out); it is cut at its headings here, the
-// same way in the plugin (McpLink, from the guide it makes) and in the server (mcp/Main.cpp, from the guide.md an
-// instance left, when none runs), so the parts stay in step with the prompt (plugin/ChatPrompt.cpp).
+// chat's system prompt but the lines only its chat needs, then what the MCP tools' short descriptions leave out, then
+// those lines); it is cut at its headings here, the same way in the plugin (McpLink, from the guide it makes) and in
+// the server (mcp/Main.cpp, from the guide.md an instance left, when none runs), so the parts stay in step with the
+// prompt (plugin/ChatPrompt.cpp).
 //
 //   start                 what to read before any work: from the top to THREADS (working from outside, the contract,
 //                         the host, FMINUS, DSP PRACTICE, CHECKING YOUR WORK), the tools' notes for it, and a line for
-//                         each other part saying when to read it
+//                         each other part saying when to read it; host.fm in short there (detail::hostInShort: how a
+//                         program reads it and its module's declarations on a line, in place of THE HOST's <host_file>)
 //   large-program         BUILDING A LARGE PROGRAM, THREADS (FMinus's parallel for and parallel { }), and A PROGRAM
 //                         BUILT FROM THE LIBRARY (the example and its panel.gui)
 //   interface             THE INTERFACE: panel.gui, and the notes of the tools it uses
 //   library               THE LIBRARY's introduction and an index, one line a file, and the notes of the tools it uses
 //   library:<file>        that file's header (how to use it), as THE LIBRARY quotes it
 //   library:<file>:code   the whole file (the caller's library gives it): nothing is added to the user's editor
+//   library:host.fm       host.fm whole, the file the plugin provides (THE HOST's <host_file>, taken from the guide, so
+//                         an older plugin's guide.md gives it too); library:host.fm:code the same
 //   debugging             the notes of the tools for a problem the user hears (listen, capture, trace, compare): no
 //                         heading of the prompt's, only a line of what they are for, since CHECKING YOUR WORK (in
 //                         start) says when to use each
@@ -21,9 +25,9 @@
 //   circuits              CIRCUITS: .cir NETLISTS (analog circuits as modules, and THE SCHEMATIC: the drawing's *@
 //                         lines and edit_circuit's grammar), and the notes of the tools it uses (edit_circuit's); a
 //                         guide from before it (an older plugin's guide.md) cuts as it did, without the part
-//   all                   all of it
-// The tools' notes are the guide's last section: one <tool name=".." part="..">..</tool> a tool, each in the part it
-// names. std only: the server includes it as well as the plugin.
+//   all                   all of it, ending with the lines of the prompt only the plugin's own chat needs (kChatOnly)
+// The tools' notes follow the prompt: one <tool name=".." part="..">..</tool> a tool, each in the part it names; then
+// kChatOnly's section, which no part but "all" gives. std only: the server includes it as well as the plugin.
 #pragma once
 
 #include <cstddef>
@@ -44,6 +48,13 @@ namespace playground::mcp::guide
     inline constexpr const char* kProjects = "RANDOM AND PROJECTS";
     inline constexpr const char* kCircuits = "CIRCUITS: .cir NETLISTS";
     inline constexpr const char* kNotes = "THE TOOLS: WHAT THEIR SHORT DESCRIPTIONS LEAVE OUT";
+    // The guide's last section, after the tools' notes (ChatAgent::mcpGuide): the lines of the prompt's How you work
+    // that only the plugin's own chat needs (its <plugin_state>, the planner, web search, ask_user, its panel's
+    // markdown), which no part but "all" gives.
+    inline constexpr const char* kChatOnly = "WHAT ONLY THE PLUGIN'S OWN CHAT HAS";
+    // host.fm, the one file the plugin provides: THE HOST quotes it whole in a <host_file> element, which part
+    // "library:host.fm" gives; start has it in short (detail::hostInShort).
+    inline constexpr const char* kHostFile = "host.fm";
 
     // The parts a caller may ask for (library:<file> and library:<file>:code aside).
     inline constexpr const char* kParts[] = { "start", "large-program", "interface", "library", "debugging", "examples", "projects",
@@ -162,6 +173,51 @@ namespace playground::mcp::guide
             const std::size_t colon = first.find(": ");
             return colon == std::string::npos ? trimmed(first) : trimmed(first.substr(colon + 2));
         }
+
+        // THE HOST's <host_file name="host.fm"> element in g[from, to): where it starts, and `end` just past its
+        // "</host_file>"; npos when there is none.
+        inline std::size_t hostFile(const std::string& g, std::size_t from, std::size_t to, std::size_t& end)
+        {
+            const std::string open = std::string("<host_file name=\"") + kHostFile + "\">";
+            const std::string close = "</host_file>";
+            const std::size_t p = g.find(open, from);
+            const std::size_t q = p == std::string::npos ? p : g.find(close, p);
+            if (q == std::string::npos || q + close.size() > to)
+                return std::string::npos;
+            end = q + close.size();
+            return p;
+        }
+
+        // host.fm in short, for start: where it is whole, how a program reads it, and its module's declarations on one
+        // line, taken from the element (so a field added to host.fm is listed at once).
+        inline std::string hostInShort(const std::string& element)
+        {
+            std::string fields;
+            const std::size_t m = element.find("\nmodule Host");
+            const std::size_t open = m == std::string::npos ? m : element.find('{', m);
+            const std::size_t close = open == std::string::npos ? open : element.find("};", open);
+            bool gap = false;
+            for (std::size_t k = open + 1; close != std::string::npos && k < close; ++k)
+            {
+                const char ch = element[k];
+                if (element.compare(k, 2, "//") == 0)            // a comment, to its line's end
+                {
+                    const std::size_t eol = element.find('\n', k);
+                    k = eol == std::string::npos || eol > close ? close : eol;
+                    gap = !fields.empty();
+                }
+                else if (ch == ' ' || ch == '\n' || ch == '\t' || ch == '\r')
+                    gap = !fields.empty();
+                else
+                {
+                    fields += gap ? std::string(" ") + ch : std::string(1, ch);
+                    gap = false;
+                }
+            }
+            return std::string("host.fm, in short (whole, with what each field means and its range: part \"library:") + kHostFile
+                 + "\"): #include \"" + kHostFile + "\" and declare `Host* host;` in the main module (Shared may have one "
+                   "too); the plugin fills it before every call. Read it; never write it.\nmodule Host { " + fields + " };\n";
+        }
     }
 
     // Part `name` of the whole guide `g`; found false (and the text says why) when there is no such part. `code` gives a
@@ -187,7 +243,12 @@ namespace playground::mcp::guide
             for (const Block& b : files)
                 if (categories.find(b.category) == std::string::npos)
                     categories += (categories.empty() ? "" : ", ") + b.category;
-            return g.substr(0, c.threads) + notes(g, c.notes, "start")
+            // host.fm in short: its whole text is part "library:host.fm".
+            std::string head = g.substr(0, c.threads);
+            std::size_t end = 0;
+            if (const std::size_t at = hostFile(head, 0, head.size(), end); at != std::string::npos)
+                head.replace(at, end - at + (end < head.size() && head[end] == '\n' ? 1 : 0), hostInShort(head.substr(at, end - at)));
+            return head + notes(g, c.notes, "start")
                  + "\nTHE OTHER PARTS OF THIS GUIDE\n\n"
                    "Read one with playground_guide's part when the work needs it:\n"
                    "- \"large-program\": how to build a large program (its files, modules and blocks, its modulation, its "
@@ -247,6 +308,13 @@ namespace playground::mcp::guide
             const bool whole = file.size() > 5 && file.compare(file.size() - 5, 5, ":code") == 0;
             if (whole)
                 file.resize(file.size() - 5);
+            if (file == kHostFile)
+            {
+                // The file the plugin provides, whole (its header is most of it), as THE HOST quotes it.
+                std::size_t end = 0;
+                if (const std::size_t at = hostFile(g, 0, c.threads, end); at != std::string::npos)
+                    return g.substr(at, end - at) + "\n";
+            }
             for (const Block& b : files)
                 if (b.name == file)
                 {
@@ -263,12 +331,14 @@ namespace playground::mcp::guide
             for (const Block& b : files)
                 have += (have.empty() ? "" : ", ") + b.name;
             found = false;
-            return "The library has no file " + file + ". Its files: " + have + ".";
+            return "The library has no file " + file + ". Its files: " + have + ". (" + kHostFile + ", the file the plugin "
+                   "provides, is part \"library:" + kHostFile + "\".)";
         }
         std::string have;
         for (const char* p : kParts)
             have += (have.empty() ? "" : ", ") + ("\"" + std::string(p) + "\"");
         found = false;
-        return "The guide has no part \"" + n + "\". Its parts: " + have + ", \"library:<file>\" and \"library:<file>:code\".";
+        return "The guide has no part \"" + n + "\". Its parts: " + have + ", \"library:<file>\" and \"library:<file>:code\"; "
+             + kHostFile + ", the file the plugin provides, is \"library:" + kHostFile + "\".";
     }
 }

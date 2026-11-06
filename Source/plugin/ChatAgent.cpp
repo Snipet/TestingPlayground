@@ -18,6 +18,7 @@
 #include "plugin/SoundPicture.h"
 
 #include "mcp/McpGuide.h"
+#include "mcp/McpSchema.h"
 
 #include "Library.h"
 #include "Product.h"
@@ -1810,9 +1811,9 @@ namespace playground
             juce::var name = prop("string", "The library file's name, as THE LIBRARY lists it");
             name.getDynamicObject()->setProperty("enum", names);
             tools.add(tool("add_library_file",
-                           "Add one of the plugin's ready-made building blocks (THE LIBRARY in your instructions: FMinus "
-                           "files, and .cir circuit netlists the plugin turns into modules) to the editor as a tab of its "
-                           "own, and get its whole text back. #include it in the program to use it. A file of that name "
+                           "Add a ready-made building block (THE LIBRARY in your instructions: FMinus files, and .cir "
+                           "netlists that become modules) to the editor as a tab, and get its whole text back; #include "
+                           "it in the program to use it. A file of that name "
                            "in the editor already is left as it is.",
                            claude::object({ { "name", name } }), { "name" }));
         }
@@ -1900,17 +1901,16 @@ namespace playground
             props.getDynamicObject()->setProperty("try_edits", scenario::trialSchema());
             tools.add(tool("view_sound",
                            kInstrument
-                               ? "See the sound: a picture (PNG) of the program rendered offline as measure_output "
-                                 "renders it (the notes held, then released), drawn: the waveform and the level over "
-                                 "time, a spectrogram (frequency against time, 20 Hz to 20 kHz on a log scale), the "
-                                 "average spectrum while held (a note's harmonics marked) and a close-up of a few "
-                                 "cycles (or of from_seconds to to_seconds). When to look: CHECKING YOUR WORK. It "
+                               ? "See the sound: a PNG of the program rendered offline as measure_output renders it, "
+                                 "drawn as the waveform and level over time, a spectrogram (log frequency, 20 Hz to 20 "
+                                 "kHz), the average spectrum while held (harmonics marked) and a close-up of a few "
+                                 "cycles. When to look: CHECKING YOUR WORK. It "
                                  "compiles the files as they are now and changes nothing that plays; the user sees the "
                                  "picture too."
-                               : "See the sound: a picture (PNG) of the program rendered offline with an input (a sweep "
-                                 "by default), drawn: the waveform and the level over time, a spectrogram (frequency "
-                                 "against time, 20 Hz to 20 kHz on a log scale), the average spectrum while the input "
-                                 "plays and a close-up of a few cycles (or of from_seconds to to_seconds). You cannot "
+                               : "See the sound: a PNG of the program rendered offline with an input (a sweep by "
+                                 "default), drawn as the waveform and level over time, a spectrogram (log frequency, 20 Hz "
+                                 "to 20 kHz), the average spectrum while the input plays and a close-up of a few "
+                                 "cycles. You cannot "
                                  "hear the plugin: look when the sound's shape matters, as a filter's response (a "
                                  "sweep: where it is cut), what a drive adds (a sweep's or a sine's harmonics, aliasing "
                                  "that folds back down), a reverb's or a delay's tail (an impulse), a modulation's "
@@ -1973,10 +1973,10 @@ namespace playground
                                                                              "120, at most 170): it stops there with the best "
                                                                              "so far"));
             tools.add(tool("tune_dials",
-                           "Find the values of up to eight float dials that bring measurements to goals, by rendering "
-                           "the program offline many times (as measure_output does, up to budget renders) and "
-                           "searching, instead of guessing: from the dials as they are, through points spread over "
-                           "their ranges, then a simplex search. Goals are metrics (CHECKING YOUR WORK) with min, max "
+                           "Find values of up to eight float dials that bring measurements to goals, by rendering "
+                           "offline (as measure_output does) and searching from the dials as they are, points spread "
+                           "over their ranges and a simplex, instead of guessing. Goals are "
+                           "metrics (CHECKING YOUR WORK) with min, max "
                            "or a target. The best values go on the dials, as set_dial "
                            "sets them, unless apply is false; the result gives the dials and the measurements before "
                            "and after. Dials not tuned keep their values (or those in dials). It changes no file.",
@@ -3066,31 +3066,6 @@ namespace playground
             return { d.substr(0, cut), d.substr(next) };
         }
 
-        // MCP's copy of the schemas leaves out a property's description that an earlier property of the same name has
-        // word for word (tools.json sits in every Desktop conversation; the guide says so): the render settings
-        // view_sound describes, again in a check's and in tune_dials'; a goal's, set_checks', again in tune_dials'.
-        // A description with a number in it (a range, a default, a cap) stays in every copy: Desktop may load or
-        // switch on one tool without the one that described it first, and a missing range is a wrong value.
-        void dropRepeated(const juce::var& node, std::set<std::pair<juce::String, juce::String>>& seen)
-        {
-            if (juce::DynamicObject* o = node.getDynamicObject())
-            {
-                if (juce::DynamicObject* props = o->getProperty("properties").getDynamicObject())
-                    for (const auto& kv : props->getProperties())
-                        if (juce::DynamicObject* p = kv.value.getDynamicObject(); p != nullptr && p->hasProperty("description"))
-                        {
-                            const juce::String text = p->getProperty("description").toString();
-                            if (!text.containsAnyOf("0123456789") && !seen.insert({ kv.name.toString(), text }).second)
-                                p->removeProperty("description");
-                        }
-                for (const auto& kv : o->getProperties())
-                    dropRepeated(kv.value, seen);
-            }
-            else if (const juce::Array<juce::var>* a = node.getArray())
-                for (const juce::var& v : *a)
-                    dropRepeated(v, seen);
-        }
-
         std::vector<uint8_t> fromBase64(const juce::String& b64)
         {
             juce::MemoryOutputStream out;
@@ -3148,6 +3123,9 @@ namespace playground
 
     juce::var ChatAgent::mcpTools()
     {
+        // MCP's copy of the schemas (mcp/McpSchema.h): a property's words given once unless they hold a number (the
+        // render settings view_sound describes, again in a check's and in tune_dials'; a goal's, set_checks', again in
+        // tune_dials'), and the annotations only what MCP's defaults do not say.
         juce::Array<juce::var> out;
         std::set<std::pair<juce::String, juce::String>> described;   // properties described so far (dropRepeated)
         const juce::var all = toolDefinitions();         // held: getArray() points into it
@@ -3167,15 +3145,12 @@ namespace playground
                                                                       { "description", "high: the picture at its full size, "
                                                                                        "which may not fit (by default it is "
                                                                                        "made smaller to fit)" } }));
-                dropRepeated(schema, described);
+                mcp::dropRepeated(schema, described);
                 out.add(claude::object({ { "name", name },
                                          { "title", title },
                                          { "description", juce::String::fromUTF8(leadOf(t["description"].toString().toStdString()).first.c_str()) },
                                          { "inputSchema", schema },
-                                         { "annotations", claude::object({ { "title", title },
-                                                                           { "readOnlyHint", f != nullptr && f->readOnly },
-                                                                           { "destructiveHint", f != nullptr && f->destructive },
-                                                                           { "openWorldHint", false } }) } }));
+                                         { "annotations", mcp::annotations(f != nullptr && f->readOnly, f != nullptr && f->destructive) } }));
             }
         return out;
     }
@@ -3200,8 +3175,8 @@ namespace playground
              + " plugin) through MCP, from Claude Desktop, as its own chat would: the tools are the chat's, but ask_user and "
                "ask_planner (ask the user here instead) and the web tools (use your own). The user hears the plugin in "
                "their DAW (or its Standalone app) and sees what you do in its editor; its chat's card notes each tool you "
-               "use. The plugin does not send you its state with each message as it does its chat (the <plugin_state> "
-               "below): call get_status for the files, the dials and the last run, and read_file before editing a file. "
+               "use. The plugin does not send you its state with each message, as it does its own chat (its "
+               "<plugin_state>): call get_status for the files, the dials and the last run, and read_file before editing a file. "
                "With more than one instance of the plugin open, every tool takes `instance`: the one meant, by its "
                "name (\"" + std::string(kInstrument ? "Synth" : "Effect") + " 2\"), its track or its project, in the "
                "user's words (list_instances names them). "
@@ -3211,8 +3186,13 @@ namespace playground
              + ", at the end of the part that needs it; and a setting described in one tool's schema without a number is "
                "not described again in a later one's (a check's and tune_dials' render settings are as measure_output's, "
                "their goals as set_checks', whose metric lists the names tune_dials' takes). "
-               "What follows is the guide the plugin's chat works from.\n\n"
-             + systemPrompt() + "\n" + mcp::guide::kNotes + "\n\n" + notes;
+               "What follows is the guide the plugin's chat works from, but for what only that chat has.\n\n"
+             + guidePrompt() + "\n" + mcp::guide::kNotes + "\n\n" + notes
+             // Last, in part "all" alone (every other part ends before it): the lines only the plugin's chat needs.
+             + "\n" + mcp::guide::kChatOnly + "\n\n"
+               "The plugin's own chat also works from these lines of How you work; they are not for you here (none of what "
+               "they name reaches you through MCP):\n"
+             + chatOnlyLines();
     }
 
     std::string ChatAgent::mcpGuidePart(const std::string& part, bool& found)
