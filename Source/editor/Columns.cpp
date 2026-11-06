@@ -28,18 +28,20 @@ namespace playground::ui::columns
                                          ? std::clamp(std::round(a.explorerWant), kExplorerMinW, kExplorerMaxW)
                                          : std::clamp(std::round(W * kExplorerShare), kExplorerMinW, kExplorerAutoMaxW);
         // What the chat and the explorer share: the window less its margins, the chat's gap and the program's least.
-        const float room = std::floor(W - 2.0f * kMargin - (a.chat ? kChatGap : kChatRailGap) - kProgramMinW);
-        float chat = a.chat ? std::max(kChatMinW, std::min(chatWanted, room)) : kChatRailW;
+        // The code window has no chat: the explorer and the program's card share the window.
+        const bool chatOn = a.chat && !a.noChat;
+        const float room = std::floor(W - 2.0f * kMargin - (a.noChat ? 0.0f : (a.chat ? kChatGap : kChatRailGap)) - kProgramMinW);
+        float chat = a.noChat ? 0.0f : (a.chat ? std::max(kChatMinW, std::min(chatWanted, room)) : kChatRailW);
         float explorer = 0.0f;
         if (a.explorer)
         {
             // Beside each other, with the explorer's gap: the explorer gives way first, then the chat, each down to its
             // least; when even that is too much, the explorer folds away and the chat has the room alone.
             const float shared = room - kExplorerGap;
-            float e = explorerWanted, c = a.chat ? chatWanted : kChatRailW;
+            float e = explorerWanted, c = a.noChat ? 0.0f : (a.chat ? chatWanted : kChatRailW);
             if (e + c > shared)
                 e = std::max(kExplorerMinW, shared - c);
-            if (a.chat && e + c > shared)
+            if (chatOn && e + c > shared)
                 c = std::max(kChatMinW, shared - e);
             if (e + c <= shared)
             {
@@ -53,7 +55,7 @@ namespace playground::ui::columns
         // chat's takes the explorer down to its least, never further.
         if (explorer > 0.0f)
             f.explorerMost = std::clamp(room - kExplorerGap - chat, kExplorerMinW, kExplorerMaxW);
-        if (a.chat)
+        if (chatOn)
             f.chatMost = std::clamp(explorer > 0.0f ? room - kExplorerGap - kExplorerMinW : room, kChatMinW, kChatMaxW);
         return f;
     }

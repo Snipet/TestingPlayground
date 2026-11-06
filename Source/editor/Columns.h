@@ -70,13 +70,14 @@ namespace playground::ui::columns
         float window = 0.0f;                             // the editor's width
         bool explorer = true;                            // the explorer open, in the CODE view
         bool chat = true;                                // the chat open (else its rail)
+        bool noChat = false;                             // no chat at all, nor its rail (the code window's)
         float explorerWant = 0.0f, chatWant = 0.0f;      // the widths the user set; 0: none (the share)
     };
 
     struct Fit
     {
         float explorer = 0.0f;                           // the explorer's card; 0: away (folded, no room, PANEL)
-        float chat = 0.0f;                               // the chat's card, or its rail
+        float chat = 0.0f;                               // the chat's card, or its rail (0: none, noChat)
         // The reach of each edge now, for a drag, the keys and a screen reader: the least and the most it can be made
         // (the most never takes the program's card under kProgramMinW, nor the chat's width from the explorer's edge).
         float explorerLeast = kExplorerMinW, explorerMost = kExplorerMinW;

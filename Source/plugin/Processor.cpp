@@ -48,6 +48,9 @@ namespace playground
         const juce::Identifier kChat{ "chat" };                                          // its chat: "closed"
         const juce::Identifier kExplorer{ "explorer" };                                  // its explorer: "closed"
         const juce::Identifier kExplorerW{ "explorerW" }, kChatW{ "chatW" };             // the widths its user set
+        // its code window: "out" while the editor is in it; its size (logical px) and its place (screen points)
+        const juce::Identifier kCodeWindow{ "codeWindow" }, kCodeW{ "codeW" }, kCodeH{ "codeH" }, kCodeX{ "codeX" },
+                               kCodeY{ "codeY" };
         const juce::Identifier kPageTag{ "PAGE" }, kTitle{ "title" };                    // its interface's pages
         // its netlists' views: <FILE name view="schematic" zoom x y><PROBE node/></FILE> (EditorPort::fileViews)
         const juce::Identifier kFileViewTag{ "FILE" }, kZoom{ "zoom" }, kX{ "x" }, kY{ "y" }, kProbeTag{ "PROBE" }, kNode{ "node" };
@@ -467,6 +470,27 @@ namespace playground
     {
         const std::lock_guard<std::mutex> lock(pagesMutex_);
         guiPages_ = titles;
+    }
+
+    CodeWindow Processor::codeWindow() const
+    {
+        const std::lock_guard<std::mutex> lock(pagesMutex_);
+        return codeWindow_;
+    }
+
+    void Processor::setCodeWindow(const CodeWindow& window)
+    {
+        // A size within the editor's sides (else none: the default), a place within a screen's reach.
+        CodeWindow w = window;
+        if (w.width <= 0 || w.height <= 0 || w.width > kMaxEditorSide || w.height > kMaxEditorSide)
+            w.width = w.height = 0;
+        if (!w.placed || std::abs(w.x) > 4 * kMaxEditorSide || std::abs(w.y) > 4 * kMaxEditorSide)
+        {
+            w.placed = false;
+            w.x = w.y = 0;
+        }
+        const std::lock_guard<std::mutex> lock(pagesMutex_);
+        codeWindow_ = w;
     }
 
     std::vector<FileView> Processor::fileViews() const
@@ -1049,9 +1073,10 @@ namespace playground
         }
         const std::vector<std::string> pages = guiPages();
         const std::vector<FileView> views = fileViews();
+        const CodeWindow code = codeWindow();
         if ((editorW_.load() > 0 && editorH_.load() > 0) || panelView_.load() || codePanelHidden_.load()
             || guiPanelHidden_.load() || !chatOpen_.load() || !explorerOpen_.load() || explorerW_.load() > 0
-            || chatW_.load() > 0 || !pages.empty() || !views.empty())
+            || chatW_.load() > 0 || !pages.empty() || !views.empty() || !(code == CodeWindow{}))
         {
             juce::ValueTree editor{ kEditorTag };
             if (editorW_.load() > 0 && editorH_.load() > 0)
@@ -1073,6 +1098,18 @@ namespace playground
                 editor.setProperty(kExplorerW, explorerW_.load(), nullptr);
             if (chatW_.load() > 0)
                 editor.setProperty(kChatW, chatW_.load(), nullptr);
+            if (code.out)
+                editor.setProperty(kCodeWindow, "out", nullptr);
+            if (code.width > 0 && code.height > 0)
+            {
+                editor.setProperty(kCodeW, code.width, nullptr);
+                editor.setProperty(kCodeH, code.height, nullptr);
+            }
+            if (code.placed)
+            {
+                editor.setProperty(kCodeX, code.x, nullptr);
+                editor.setProperty(kCodeY, code.y, nullptr);
+            }
             for (const std::string& title : pages)
             {
                 juce::ValueTree page{ kPageTag };
@@ -1164,6 +1201,20 @@ namespace playground
         // The widths its user set (a state from before them has none: the editor's default).
         explorerW_.store(editor.isValid() ? std::clamp(static_cast<int>(editor.getProperty(kExplorerW, 0)), 0, kMaxEditorSide) : 0);
         chatW_.store(editor.isValid() ? std::clamp(static_cast<int>(editor.getProperty(kChatW, 0)), 0, kMaxEditorSide) : 0);
+        // The code window (a state from before it has the editor in place, the window at its default size and place).
+        {
+            CodeWindow code;
+            if (editor.isValid())
+            {
+                code.out = editor.getProperty(kCodeWindow).toString() == "out";
+                code.width = static_cast<int>(editor.getProperty(kCodeW, 0));
+                code.height = static_cast<int>(editor.getProperty(kCodeH, 0));
+                code.placed = editor.hasProperty(kCodeX) && editor.hasProperty(kCodeY);
+                code.x = static_cast<int>(editor.getProperty(kCodeX, 0));
+                code.y = static_cast<int>(editor.getProperty(kCodeY, 0));
+            }
+            setCodeWindow(code);
+        }
         {
             std::vector<std::string> pages;
             for (int k = 0; editor.isValid() && k < editor.getNumChildren() && k < 64; ++k)

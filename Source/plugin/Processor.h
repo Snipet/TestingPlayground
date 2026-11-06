@@ -256,6 +256,8 @@ namespace playground
         void setExplorerWidth(int px) override { explorerW_.store(std::max(0, px)); }
         int chatWidth() const override { return chatW_.load(); }
         void setChatWidth(int px) override { chatW_.store(std::max(0, px)); }
+        CodeWindow codeWindow() const override;
+        void setCodeWindow(const CodeWindow& window) override;
         void playNote(int note, float velocity) override;
         void playWheel(bool pitch, float value) override;
         std::vector<std::string> guiPages() const override;
@@ -370,6 +372,8 @@ namespace playground
         std::atomic<bool> chatOpen_{ true };                         // its chat's column open, in the session
         std::atomic<bool> explorerOpen_{ true };                     // its explorer open, in the session
         std::atomic<int> explorerW_{ 0 }, chatW_{ 0 };               // the widths its user set (0: none), in the session
+        CodeWindow codeWindow_;                                  // its code window (codeWindow), in the session
+                                                                 // (under pagesMutex_)
         mutable std::mutex pagesMutex_;
         std::vector<std::string> guiPages_;                      // its interface's pages (guiPages), in the session
         std::vector<FileView> fileViews_;                        // its netlists' views (fileViews), in the session

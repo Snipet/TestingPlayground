@@ -73,7 +73,7 @@ namespace playground::ui::chat
     {
         none, plus, key, chevronDown, chevronRight, chevronUp, arrowUp, stop, copy, check, file, play, dial, wave, alert,
         pencil, bolt, chevronLeft, bubble, dice, blocks, list, sun, moon, code, book, question, globe, image, cross,
-        snowflake, gear, chip, circuit, probe
+        snowflake, gear, chip, circuit, probe, window
     };
 
     inline void drawIcon(funkgui::Canvas& c, Icon icon, float cx, float cy, float size, funkgui::Col ink)
@@ -378,6 +378,16 @@ namespace playground::ui::chat
                 c.polyline(xs, ys, 8, w, ink);
                 c.disc(cx - s * 0.85f, cy, w * 1.3f, ink);
                 c.disc(cx + s * 0.85f, cy, w * 1.3f, ink);
+                break;
+            }
+            case Icon::window:
+            {
+                // A window with an arrow leaving it at its top right: the code editor in a window of its own.
+                c.rrect(cx - s * 0.8f, cy - s * 0.45f, s * 1.25f, s * 1.25f, s * 0.18f, ink.withAlpha(0.0f), w, ink);
+                c.segment(cx - s * 0.1f, cy + s * 0.1f, cx + s * 0.75f, cy - s * 0.75f, w, ink);
+                const float xs[3] = { cx + s * 0.2f, cx + s * 0.78f, cx + s * 0.78f };
+                const float ys[3] = { cy - s * 0.78f, cy - s * 0.78f, cy - s * 0.2f };
+                c.polyline(xs, ys, 3, w, ink);
                 break;
             }
             case Icon::probe:

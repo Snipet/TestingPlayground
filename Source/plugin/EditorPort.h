@@ -36,6 +36,8 @@
 //                     kept in the session, set with setCodePanel()
 //   explorerWidth()   the explorer's and the chat's widths as the user set them (editor/Columns.h), kept in the session;
 //   chatWidth()       0: none set
+//   codeWindow()      the code editor and the explorer in a window of their own (editor/Panel.h, "the code window"):
+//                     whether it is out, its size and its place, kept in the session, set with setCodeWindow()
 //   program()         the compile it came from (CompileStatus::request): the meters' taps are its fields once
 //                     Meters::program says so (until the audio thread takes it, they are the last program's)
 //   meters()          the last block's levels and the program's taps, for the panel's displays (Engine::Meters); false
@@ -284,6 +286,19 @@ namespace playground
         std::string method;                      // "xz", "zlib" or "stored" (a package's), "zip"
     };
 
+    // The code window (EditorPort::codeWindow): the code editor and the explorer in a top-level window of their own, the
+    // main window showing the panel full size while it is out. Its size is the Panel's (logical px; 0 x 0: the default),
+    // its place the window's top-left on the screen (points; `placed` false: none yet, it opens beside the main window).
+    struct CodeWindow
+    {
+        bool out = false;
+        int width = 0, height = 0;
+        bool placed = false;
+        int x = 0, y = 0;
+
+        friend bool operator==(const CodeWindow&, const CodeWindow&) = default;
+    };
+
     // The Standalone window's close, minimise and zoom buttons, together (EditorPort::windowButtons).
     struct WindowButtons
     {
@@ -396,6 +411,11 @@ namespace playground
         virtual void setExplorerWidth(int px) = 0;
         virtual int chatWidth() const = 0;
         virtual void setChatWidth(int px) = 0;
+        // The code window (CodeWindow, above), kept in the session: the editor's window button and the window's close
+        // set `out`, the window its size and place as the user moves it. The plugin's editor follows `out` (it opens or
+        // closes the window); a Panel drawn headless has no window and shows the editor in place.
+        virtual CodeWindow codeWindow() const { return {}; }
+        virtual void setCodeWindow(const CodeWindow& window) { (void)window; }
 
         // The pages the panel's interface shows: each tabs element's chosen page (the tabs in the order the .gui has
         // them), by its title. Kept in the session, so a reopened editor and a reloaded session show them again.

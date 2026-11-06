@@ -116,12 +116,14 @@ namespace playground::ui
             std::function<void()> act;
             std::string a11yTitle;
             std::string spec;                         // the footer's line
+            std::function<std::string()> specNow;     // ... when it changes with the state (over `spec` when set)
         };
 
         ButtonItem(uint32_t id, Spec spec);
 
         void setBounds(funkgui::Rect r) { bounds_ = r; }
         funkgui::Rect bounds() const noexcept { return bounds_; }
+        void setSpecNow(std::function<std::string()> spec) { spec_.specNow = std::move(spec); }
         float preferredWidth() const;                 // a pill's, for its label now
 
         void tick(float, bool hovered, bool focused, funkgui::Point) override

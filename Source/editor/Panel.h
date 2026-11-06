@@ -51,6 +51,9 @@
 //             choice for the program's code and one for its interface's files (.gui, .sc), both shown at first
 //   view      the toolbar's CODE and PANEL cells: PANEL gives the interface the whole left column (the tabs, the editor
 //             and the problems go), CODE brings the editor back; the session keeps the choice (EditorPort::panelView)
+//   window    the button left of them (the plugin's editor only): the code editor and the explorer in a window of their
+//             own (Role::code, below), this window showing the panel full size meanwhile; the session keeps it
+//             (EditorPort::codeWindow)
 //   chat      at the right, a rounded card set apart from the square panel (ChatStyle.h): its header (the title, a new
 //             chat (asking first), the API key), the conversation (ChatView.h: bubbles, light markdown, thinking rows,
 //             cards of what Claude did, code blocks with Copy, an empty chat's suggestions), the message box that grows
@@ -102,6 +105,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -176,13 +180,50 @@ namespace playground::ui
     std::vector<std::string> guiPageTitles(const GuiTree& gui, const std::vector<int>& pages);
     std::vector<int> guiPagesOf(const GuiTree& gui, const std::vector<std::string>& titles);
 
+    // The code window's size (logical px): the default, the least. It has no chat and no panel, so it can be smaller.
+    inline constexpr int kCodeDefaultWidth = 1080, kCodeDefaultHeight = 760;
+    inline constexpr int kCodeMinWidth = 720, kCodeMinHeight = 480;
+
     class Panel final : public funkgui::Panel
     {
     public:
-        // `picture`: view_panel's headless Panel (Picture.cpp): it owns no probe and publishes no session pins, so what
-        // it lays out never becomes the user's.
-        Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& port, bool picture = false);
+        // What a Panel is for: the editor (the plugin's window; the probes'), a picture (view_panel's headless Panel,
+        // Picture.cpp: it owns no probe and publishes no session pins, so what it lays out never becomes the user's), or
+        // the code window (below: the code editor and the explorer in a top-level window of their own).
+        enum class Role : uint8_t { editor, picture, code };
+        Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& port, Role role);
+        Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& port, bool picture = false)
+            : Panel(ports, port, picture ? Role::picture : Role::editor)
+        {
+        }
         ~Panel() override;
+
+        // The code window (EditorPort::codeWindow; the plugin's editor makes it: editor/gpu/CodeWindow.h). The top bar's
+        // window button (or the session) takes the code editor out of the editor's window into a window of its own, with
+        // the explorer: the same editor, not a copy (its tabs, their texts, undo steps, carets and scrolls, the find bar,
+        // the IR tab, the netlists' views and probes), which lendEditor hands to the code window's Panel (Role::code) and
+        // takeEditorBack takes back. While it is out the editor's window shows the panel full size (as the PANEL view,
+        // which the session's choice keeps for when it comes back), its Run runs the code window's files, and its Code
+        // half brings that window to the front; the code window has the top bar, the explorer and the program's card
+        // (no chat, no panel under the code), its Panel half bringing the editor's window to the front. The button, or
+        // the code window's close, brings the editor back. The window's owner gives the editor's Panel its hooks; a
+        // Panel without them (headless, without the GPU) shows no button and keeps the editor in place.
+        struct WindowHooks
+        {
+            std::function<void(bool out)> out;           // the window to follow the session's choice (made or let go,
+                                                         // later on the message thread: never inside the click)
+            std::function<void()> raise;                 // the other window to the front
+        };
+        void setWindowHooks(WindowHooks hooks);
+        Role role() const noexcept { return role_; }
+        bool editorOut() const noexcept { return out_; } // the editor's Panel: the editor is in the code window (a
+                                                         // picture's: the session has it out)
+        bool windowButtonShown() const;
+        funkgui::Point centreOfWindowButton() const;
+        void setEditorOut(bool out);                     // the button: the session's choice, then the hooks' out
+        void lendEditor(Panel& code);                    // the editor's Panel: `code` takes the editor (then shows it)
+        void takeEditorBack();                           // ... and gives it back (before it goes)
+        Panel* peer() const noexcept { return peer_; }   // the other window's Panel while the editor is out
 
         Panel(const Panel&) = delete;
         Panel& operator=(const Panel&) = delete;
@@ -389,8 +430,8 @@ namespace playground::ui
         int   width() const override;
         int   height() const override;
         bool  resizable() const override { return true; }
-        int   minWidth() const override { return kMinWidth; }
-        int   minHeight() const override { return kMinHeight; }
+        int   minWidth() const override { return role_ == Role::code ? kCodeMinWidth : kMinWidth; }
+        int   minHeight() const override { return role_ == Role::code ? kCodeMinHeight : kMinHeight; }
         void  resize(int w, int h) override;
         void  tick(float dt) override;
         void  idle(double nowSec) override;
@@ -423,6 +464,19 @@ namespace playground::ui
         float windowButtonsRoom() const noexcept { return buttonsRoom_; }
 
     private:
+        // The code window (above).
+        Role role_ = Role::editor;
+        bool out_ = false;                               // editorOut()
+        Panel* peer_ = nullptr;
+        WindowHooks windowHooks_;
+        int windowItem_ = -1;                            // the top bar's window button
+        bool hasChat() const noexcept { return role_ != Role::code; }
+        bool full() const noexcept { return role_ != Role::code && (panelView_ || out_); }   // laid out as PANEL
+        void bindFiles();                                // the files' hooks to this Panel (made, lent, taken back)
+        void swapEditor(Panel& other);                   // the editor and what follows it, between two Panels
+        Panel& editorPanel() noexcept { return out_ && peer_ != nullptr ? *peer_ : *this; }   // whose files RUN runs
+        void pushEditor();                               // its files to the processor (a rename typed ended)
+
         float buttonsRoomNow() const;                    // the room for the port's buttons now (layout() keeps it)
         void syncWindowButtons();                        // each frame: a new room lays out again (layout() tells
                                                          // the port where they go)
