@@ -32,6 +32,16 @@
 // stream, and the value, while it holds still: FMinus's flat copy of the method); an integer or a toggle is set once a
 // block. A new program starts on the dials' values, without a glide.
 //
+// The dials' carry (Controls.h's DialCarry, Compiler.h). The host's values are normalised, and a new program's
+// declarations (a range, a taper, an int's options) would give an old value another meaning; the processor writes the
+// values the dials keep in their units only on the message thread, after the new program may already play. So
+// setControls() also says whose controls the values are in (`meaning`, a program id; 0: the program's that plays), and
+// a Patch carries how its dials come across: while the values are still in the controls the carry was made from
+// (meaning == DialCarry::from), a slot it holds whose value is still the one it was made from (fromNorm, bit for bit)
+// plays the carried plain value; a value that moved since (the processor's write, the host's automation, a hand on the
+// dial) plays as it says, for good (until the next program); and once the values are in the program's own controls
+// (meaning == its id) the carry is over. So no block plays an old normalised value through new declarations.
+//
 // Circuit dials (Patch.h, "Circuits"). A dial that drives a circuit's pot glides as a real dial does (20 ms), and a
 // circuit's switch is an int dial; neither is an FMinus parameter: the Engine hands their values to the program through
 // the shims compile() appended (Patch::setCircuits), each call every bound field's set() in one instance. It calls them
@@ -171,7 +181,8 @@ namespace playground
         void restart();
 
         // ---- the audio thread ------------------------------------------------------------------------------------
-        void setControls(const std::array<float, kMaxControls>& normalised) noexcept;
+        // `meaning`: the program whose controls the values are in (above, "The dials' carry"); 0 for the one that plays.
+        void setControls(const std::array<float, kMaxControls>& normalised, uint64_t meaning = 0) noexcept;
         // The host's transport at the next process call's first sample (once a host block, before its first call).
         void setTransport(const Transport& t) noexcept;
         // The Host block as the last call saw it (for the probes, while the audio thread is stopped).
@@ -364,6 +375,8 @@ namespace playground
 
         std::array<float, kMaxControls> norm_{};
         bool normSet_ = false;                        // setControls has run since prepare()
+        uint64_t meaning_ = 0;                        // setControls': whose controls norm_ is in (0: current_'s)
+        uint32_t carryOver_ = 0;                      // the slots whose carry ended (bit c), for current_
         std::array<Glide, kMaxControls> glide_{};
         std::array<bool, kMaxControls> streaming_{};
         const Patch* fedPatch_ = nullptr;             // the program the glides were last aimed for

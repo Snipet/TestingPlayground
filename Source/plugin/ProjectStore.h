@@ -8,7 +8,7 @@
 //     "name": "Glass Bloom",
 //     "versions": [ { "number": 1, "saved": 1761580000000, "note": "first save", "active": 0,
 //                     "files": [ { "name": "program.fm", "text": "..." }, ... ],
-//                     "dials": [ { "name": "cutoff", "value": 900 }, ... ],
+//                     "dials": [ { "name": "cutoff", "value": 900 }, { "name": "drive", "value": 2, "label": "PITCH" }, ... ],
 //                     "circuits": [ { "key": "0123456789abcdef", "text": "fminus-circuit-choice 1 ..." } ] },
 //                   ... ],                                                                     oldest first
 //     "presets":  [ { "name": "Bright", "saved": 1761580100000, "from": 1, "dials": [ ... ] }, ... ],  by name
@@ -20,10 +20,15 @@
 // run again; saving the same program again with answers its latest version lacks adds them to that version.
 //
 // The dials by parameter name, in the program's own units, so a version's or a preset's values land in whichever
-// slots its program's parameters take, and a preset saved with one version applies to the next. A version's note says
-// what changed since the one before ("program.fm +12 -3, lib.fm new, 2 dials"). A project keeps its last kMaxVersions
-// versions; the numbers go on counting. A project's name is its file's (a file renamed in the Finder is a project
-// renamed); names are told apart case aside, as the Mac's disks tell files apart.
+// slots its program's parameters take, and a preset saved with one version applies to the next. An int's or a bool's
+// value that has a name (its switch's, buttons' or menu's text) keeps it too ("label": optional, added later, read past
+// by an older build), and lands on that name wherever the program's options put it now (valueOf; Controls.h, "a dial's
+// value across a declaration change"), so a preset saved on PITCH applies PITCH after an option is inserted before
+// it; a name the options lack lands on the number. Saving a version from before labels again unchanged adds no version
+// (a label follows from its value and the files) but gives it its values' names. A version's note says what changed
+// since the one before ("program.fm +12 -3, lib.fm new, 2 dials"). A project keeps its last kMaxVersions versions; the
+// numbers go on counting. A project's name is its file's (a file renamed in the Finder is a project renamed); names
+// are told apart case aside, as the Mac's disks tell files apart.
 //
 // A project's info (Info) describes it to others: what an export (ProjectExport.h) carries besides the program, and
 // what a project imported brings.
@@ -36,6 +41,7 @@
 // (a file read again only when its size or its time changes).
 #pragma once
 
+#include "dsp/Controls.h"
 #include "dsp/Sources.h"
 
 #include <cstddef>
@@ -67,7 +73,16 @@ namespace playground::projectstore
     {
         std::string name;
         float value = 0.0f;
+        std::string label = {};                          // its value's option name, when it has one (above)
     };
+
+    // The plain value dial `d` gives a control `c` of those options: its option's name's value, else its value, within
+    // c's range (Controls.h's clampedPlain).
+    inline float valueOf(const Dial& d, const Control& c, const std::vector<std::string>& options)
+    {
+        const float v = optionValue(c, options, d.label);
+        return std::isfinite(v) ? v : clampedPlain(c, d.value);
+    }
 
     // A circuit self-test's answer kept with a version (above): its netlist's key (16 hex digits) and the answer's
     // line (Choice::text()).

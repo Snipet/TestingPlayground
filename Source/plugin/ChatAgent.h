@@ -19,9 +19,13 @@
 // up to date in place). A reply that ends a turn in which a tool changed something (the files, a run, a dial, the
 // checks) while a check fails gets the results back as the user's line and the turn goes on, kMaxCheckNudges times a
 // turn at most (a turn that only talks is never sent on); clearChecks (the card's Clear) and an empty set_checks stop
-// it. The session keeps the checks. tune_dials (dsp/Tune.h) searches up to eight float dials for goals by rendering
-// offline (up to 400 renders and `seconds`, 120 by default and 170 at most, the activity counting them, the stop button
-// or the time limit ending the search with the best so far) and sets the best values as set_dial does.
+// it. The session keeps the checks; set_checks without checks lists them as it takes them, and its mode merge or
+// remove changes some by label or index (remove refuses an index whose check has another label: the list moved). A
+// check that names a dial the program lacks fails, saying so, and run_program names the checks a declaration change
+// left so, and those from a snapshot that holds such a dial. tune_dials (dsp/Tune.h) searches up to eight float
+// dials for goals by rendering offline (up to 400 renders and `seconds`, 120 by default and 170 at most, the activity
+// counting them, the stop button or the time limit ending the search with the best so far) and sets the best values
+// as set_dial does.
 //
 // A planner (setPlanner, chat.json "planner"): a second model plans each of the user's requests before the chosen one
 // builds it (Claude Fable 5.1 planning the DSP and the architecture, Claude Sonnet 5.5 writing, running and testing).

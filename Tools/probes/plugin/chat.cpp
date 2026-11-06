@@ -90,14 +90,28 @@
 //            program's that played), and the turn ends; run_program after a default changed lists the dials, and
 //            again says them unchanged in a line; one card a turn with its rows,
 //            a note that Claude went on; checks that cannot pass: twice, then the turn ends ("will not ask again"); a
-//            metric that is none refused; a turn that only talks is not sent on; the session keeps them (and loads
+//            metric that is none refused; a turn that only talks is not sent on, nor one that only lists them; the
+//            session keeps them (and loads
 //            them); clearChecks forgets them (a note),
 //            and a turn after it goes on no more
 //   CHECKDIALS a check that passes at the defaults fails once the user turns the level (gain) up, and its FAIL line
 //            names that dial with its value and default; dials_from snapshot measures the dials as they were when set
 //            (the user's move aside), shows so in the card, is saved with its snapshot and loads; defaults measures at
 //            the defaults; a word it does not take is refused; a failing check at the defaults sends the turn on with
-//            words that say each check takes its own dials (not "the dials as they are now")
+//            words that say each check takes its own dials (not "the dials as they are now"), and its FAIL line, the
+//            user's dial turned up, says the dials as they are do not affect it (no dial named as moved)
+//   CHECKEDIT set_checks without checks lists them (none: says so), numbered, each as set_checks takes it (the
+//            label, metric, bound, notes, dials, scenario, dials_from, current too, and snapshot; an effect's without
+//            an instrument's settings; numbers as written); a listed check merged back reads the same (one from a
+//            snapshot, the user's dial moved since, keeps its own, and the result says so); merge by label (case aside:
+//            a new bound), a label added, by index (renamed: the result names the old label and the new), dials_from
+//            snapshot on the merged alone; an item's own dials_from standing for the call's, the result saying how
+//            each check takes its dials; refused, nothing changed: an index past the list, a mode it does not take,
+//            merge without checks, a label none has, a label two share, on remove an index whose check has another
+//            label; remove by label, by index (its label, case aside, that check's), the last one clearing them; a
+//            check whose dials name a dial the program has not FAILs saying so; a run that renames the dial two checks
+//            name (one in its dials, one moving it) names both checks and each FAILs for it, names apart a check from a
+//            snapshot that holds it (the new name at its default; it passes), and the program back, they pass
 //   TUNE     tune_dials: a level for an RMS (an instrument) or a gain for a gain (an effect): the goal met, the dial
 //            set (measured afterwards, it gives the goal); an unknown dial an error result
 //   TRIAL    try_edits (ChatScenario.h): measure_output with a passage edited and a file added on a copy says so in
@@ -2032,6 +2046,11 @@ PROBE(plugin, chat)
             ss->add(fake::Response::ok(fake::Sse().start().text("The level is set by the first dial.").end()));
             const int bq = turn("what does the first dial do?", 1);
             P.eq("checks.talk_no_nudge", ss->postCount() - bq, 1);
+            // Nor is one that only lists them (set_checks without checks), though one fails.
+            ss->add(fake::Response::ok(fake::Sse().start().tool("toolu_c6", "set_checks", input({})).end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("That is the one check.").end()));
+            const int bl = turn("which checks are set?", 2);
+            P.eq("checks.list_no_nudge", ss->postCount() - bl == 2 && has(resultText(bl + 1), "1 check is set") ? 1 : 0, 1);
 
             // The session keeps the checks; Clear forgets them.
             const std::string saved = sa.saveState();
@@ -2097,6 +2116,22 @@ PROBE(plugin, chat)
             P.eq("checkdials.defaults", has(defaults, "the dials they do not name at their defaults") && has(defaults, "Checks: 1 of 1 pass.") ? 1 : 0, 1);
             const pg::ChatAgent::McpResult bad = sa.mcpCall("set_checks", input({ { "checks", juce::var(list) }, { "dials_from", "sometimes" } }));
             P.eq("checkdials.bad_refused", bad.isError && has(allText(bad), "dials_from is current, snapshot or defaults") ? 1 : 0, 1);
+            // A check at the defaults that fails, the user's dial turned up: its line says the dials as they are do not
+            // affect it, and names no dial as moved.
+            {
+                juce::var never = input({ { "label", "Never this loud" }, { "metric", pg::product::kIsInstrument ? "rms_db" : "sine_gain_db" },
+                                          { "min", 30.0 } });
+                if constexpr (pg::product::kIsInstrument)
+                    never.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+                setDial(up);
+                const std::string fails = allText(sa.mcpCall("set_checks", input({ { "checks", juce::Array<juce::var>{ never } },
+                                                                                    { "dials_from", "defaults" } })));
+                std::printf("set_checks at the defaults, failing, %s turned up:\n%s\n", levelDial, fails.c_str());
+                P.eq("checkdials.defaults_fail_words", has(fails, "- FAIL Never this loud (") && has(fails, "; dials at defaults): ")
+                                                           && has(fails, "; the dials as they are now do not affect it\n")
+                                                           && !has(fails, "moved now") && !has(fails, std::string(levelDial) + " ") ? 1 : 0, 1);
+                setDial(k.def);
+            }
             // A failing check that takes the dials at their defaults: the turn goes on with words that do not say it
             // was measured on the dials as they are now.
             juce::Array<juce::var> loud;
@@ -2114,6 +2149,203 @@ PROBE(plugin, chat)
                                                && says(nudge, "dials at defaults") ? 1 : 0, 1);
             sa.clearChecks();
             setDial(was);
+        }
+
+        // ---- CHECKEDIT: the checks read back, changed one at a time, and a dial they name gone ---------------------------------
+        {
+            const pg::Control k = sp.control(dialSlot);
+            const float was = pg::plainOf(k, sp.getParameters()[dialSlot]->getValue());
+            sp.getParameters()[dialSlot]->setValueNotifyingHost(pg::normOf(k, k.def));
+            sp.poll();
+            const char* metric = pg::product::kIsInstrument ? "rms_db" : "sine_gain_db";
+            const double most = pg::product::kIsInstrument ? -10.0 : 3.0;
+            const auto check = [&](const char* label, double max) {
+                juce::var c = input({ { "label", label }, { "metric", metric }, { "max", max } });
+                if constexpr (pg::product::kIsInstrument)
+                    c.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+                return c;
+            };
+            const auto call = [&](juce::var in) { return sa.mcpCall("set_checks", in); };
+            // A listing's numbered line `n` ("2. {...}"), parsed.
+            const auto listed = [](const std::string& text, int n) {
+                const std::string head = "\n" + std::to_string(n) + ". ";
+                const std::size_t at = text.find(head);
+                if (at == std::string::npos)
+                    return juce::var();
+                const std::size_t from = at + head.size();
+                return claude::parseJson(text.substr(from, text.find('\n', from) - from));
+            };
+            sa.clearChecks();
+            const pg::ChatAgent::McpResult none = call(input({}));
+            P.eq("checkedit.list_none", !none.isError && toolText(none) == "No checks are set." ? 1 : 0, 1);
+
+            // Two checks: one with a dial of its own, one with a scenario that moves it.
+            juce::var held = check("Level held", most);
+            held.getDynamicObject()->setProperty("dials", input({ { levelDial, static_cast<double>(k.def) } }));
+            juce::var moved = check("Level moved", most);
+            moved.getDynamicObject()->setProperty(
+                "scenario", input({ { "automate", juce::Array<juce::var>{ input({ { "dial", levelDial }, { "at", 0.2 },
+                                                                                   { "to", static_cast<double>(k.def) } }) } } }));
+            const std::string set = allText(call(input({ { "checks", juce::Array<juce::var>{ held, moved } } })));
+            P.eq("checkedit.set", has(set, "Set 2 checks.") && has(set, "Checks: 2 of 2 pass.") ? 1 : 0, 1);
+            const std::string list = allText(call(input({})));
+            std::printf("set_checks, listed:\n%s\n", list.c_str());
+            const juce::var first = listed(list, 1), second = listed(list, 2);
+            P.eq("checkedit.list", has(list, "2 checks are set, each as set_checks takes it, numbered as merge and remove take index:\n1. {")
+                                       && str(first, "label") == "Level held" && str(first, "metric") == metric
+                                       && std::fabs(static_cast<double>(first["max"]) - most) < 1e-9
+                                       && std::fabs(static_cast<double>(first["dials"][levelDial]) - k.def) < 1e-6
+                                       && str(first, "dials_from") == "current" && first.hasProperty("hold_seconds")
+                                       && first.hasProperty("velocity") == pg::product::kIsInstrument
+                                       && (!pg::product::kIsInstrument || static_cast<int>(first["notes"][0]) == 57)
+                                       && str(second, "label") == "Level moved"
+                                       && str(second["scenario"]["automate"][0], "dial") == levelDial ? 1 : 0, 1);
+            P.eq("checkedit.list_numbers_tidy", !has(list, "0000000") && !has(list, "9999999")
+                                                    && (!pg::product::kIsInstrument || has(list, "\"velocity\":0.8,")) ? 1 : 0, 1);
+            // A listed check given back (merge) is the same check: the list reads the same after.
+            const std::string again = allText(call(input({ { "checks", juce::Array<juce::var>{ first } }, { "mode", "merge" } })));
+            P.eq("checkedit.round_trip", has(again, "Merged: check 1 (\"Level held\") replaced. 2 checks are set;")
+                                             && allText(call(input({}))) == list ? 1 : 0, 1);
+
+            // merge: by label (a new bound), a new label added, by index (renamed); dials_from snapshot on the merged.
+            const std::string byLabel = allText(call(input({ { "checks", juce::Array<juce::var>{ check("level held", most - 1.0) } },
+                                                             { "mode", "merge" } })));
+            const std::string after = allText(call(input({})));
+            P.eq("checkedit.merge_by_label", has(byLabel, "Merged: check 1 (\"level held\") replaced. 2 checks are set;")
+                                                 && std::fabs(static_cast<double>(listed(after, 1)["max"]) - (most - 1.0)) < 1e-9
+                                                 && !listed(after, 1).hasProperty("dials")
+                                                 && str(listed(after, 2), "label") == "Level moved" ? 1 : 0, 1);
+            juce::var renamed = check("Renamed", most);
+            renamed.getDynamicObject()->setProperty("index", 2);
+            const std::string merged = allText(call(input({ { "checks", juce::Array<juce::var>{ check("Brand new", most), renamed } },
+                                                            { "mode", "merge" }, { "dials_from", "snapshot" } })));
+            const std::string three = allText(call(input({})));
+            std::printf("merge, add and rename by index:\n%s\n", merged.c_str());
+            // The check an index replaced under another label is named with both (a stale index shows).
+            P.eq("checkedit.merge_add_index", has(merged, "Merged: check 3 (\"Brand new\") added, check 2 (\"Level moved\" -> \"Renamed\") "
+                                                          "replaced, the dials they do not name as they are now. 3 checks are set;")
+                                                  && has(merged, "Checks: 3 of 3 pass.") && str(listed(three, 2), "label") == "Renamed"
+                                                  && str(listed(three, 3), "label") == "Brand new"
+                                                  && str(listed(three, 2), "dials_from") == "snapshot"
+                                                  && listed(three, 2)["snapshot"].hasProperty(levelDial)
+                                                  && str(listed(three, 1), "dials_from") == "current" ? 1 : 0, 1);
+            // A listed check from a snapshot, given back after the user moved a dial, keeps its own dials_from and
+            // snapshot (not the dials now, not the call's current), and the result says so: the list reads the same.
+            sp.getParameters()[dialSlot]->setValueNotifyingHost(pg::normOf(k, pg::product::kIsInstrument ? -30.0f : 6.0f));
+            sp.poll();
+            const std::string shotBack = allText(call(input({ { "checks", juce::Array<juce::var>{ listed(three, 2) } }, { "mode", "merge" } })));
+            P.eq("checkedit.round_trip_snapshot", has(shotBack, "Merged: check 2 (\"Renamed\") replaced, the dials they do not name as "
+                                                                "their snapshot gives them. 3 checks are set;")
+                                                      && allText(call(input({}))) == three ? 1 : 0, 1);
+            sp.getParameters()[dialSlot]->setValueNotifyingHost(pg::normOf(k, k.def));
+            sp.poll();
+            // An item's own dials_from stands for one the call gives, and the result says how each takes its dials: a
+            // listed snapshot check under dials_from defaults keeps its snapshot; a listed current one beside another's
+            // snapshot, each its own. The list reads the same.
+            const std::string ownShot = allText(call(input({ { "checks", juce::Array<juce::var>{ listed(three, 2) } }, { "mode", "merge" },
+                                                             { "dials_from", "defaults" } })));
+            P.eq("checkedit.own_dials_from", has(ownShot, "Merged: check 2 (\"Renamed\") replaced, the dials they do not name as their "
+                                                          "snapshot gives them (an item's own dials_from stands for the call's). 3 checks are set;")
+                                                 && allText(call(input({}))) == three ? 1 : 0, 1);
+            const std::string ownMixed = allText(call(input({ { "checks", juce::Array<juce::var>{ listed(three, 1), listed(three, 3) } },
+                                                              { "mode", "merge" }, { "dials_from", "defaults" } })));
+            std::printf("merge, each check's own dials_from under the call's defaults:\n%s\n", ownMixed.c_str());
+            P.eq("checkedit.own_dials_from_mixed", has(ownMixed, "Merged: check 1 (\"level held\") replaced, check 3 (\"Brand new\") replaced, "
+                                                                 "the dials they do not name as they are when measured (check 1); as "
+                                                                 "their snapshot gives them (check 3) (an item's own dials_from stands "
+                                                                 "for the call's). 3 checks are set;")
+                                                       && allText(call(input({}))) == three ? 1 : 0, 1);
+            // One check merged twice in a call: the last item stands, and the result gives its way alone.
+            {
+                juce::var atDefaults = claude::parseJson(claude::toJson(listed(three, 2)));
+                atDefaults.getDynamicObject()->setProperty("dials_from", "defaults");
+                const std::string twice = allText(call(input({ { "checks", juce::Array<juce::var>{ atDefaults, listed(three, 2) } },
+                                                               { "mode", "merge" } })));
+                P.eq("checkedit.merge_twice", has(twice, "Merged: check 2 (\"Renamed\") replaced, check 2 (\"Renamed\") replaced, the dials "
+                                                         "they do not name as their snapshot gives them. 3 checks are set;")
+                                                  && !has(twice, "at their defaults") && allText(call(input({}))) == three ? 1 : 0, 1);
+            }
+            // Refused, nothing changed: an index past the list, a mode it does not take, merge without checks, a label
+            // none has.
+            const pg::ChatAgent::McpResult past = call(input({ { "checks", juce::Array<juce::var>{ [&] {
+                                                                   juce::var c = check("Far", most);
+                                                                   c.getDynamicObject()->setProperty("index", 9);
+                                                                   return c;
+                                                               }() } },
+                                                               { "mode", "merge" } }));
+            const pg::ChatAgent::McpResult badMode = call(input({ { "checks", juce::Array<juce::var>{ check("X", most) } }, { "mode", "append" } }));
+            const pg::ChatAgent::McpResult emptyMerge = call(input({ { "mode", "merge" } }));
+            const pg::ChatAgent::McpResult noLabel = call(input({ { "checks", juce::Array<juce::var>{ input({ { "label", "Nobody" } }) } },
+                                                                  { "mode", "remove" } }));
+            P.eq("checkedit.refused", past.isError && has(allText(past), "Check 1: there is no check 9 (3 are set). Nothing was changed.")
+                                          && badMode.isError && has(allText(badMode), "mode is replace, merge or remove")
+                                          && emptyMerge.isError && has(allText(emptyMerge), "merge needs checks")
+                                          && noLabel.isError && has(allText(noLabel), "no check is labelled \"Nobody\"")
+                                          && allText(call(input({}))) == three ? 1 : 0, 1);
+
+            // remove: by label, then by index (its label, case aside, that check's); an index whose check has another
+            // label refused, nothing changed (the list moved since it was read); the last one removed clears them.
+            const std::string byName = allText(call(input({ { "checks", juce::Array<juce::var>{ input({ { "label", "brand new" } }) } },
+                                                            { "mode", "remove" } })));
+            P.eq("checkedit.remove_by_label", has(byName, "Removed check 3 (\"Brand new\"). 2 checks left.\nChecks: 2 of 2 pass.")
+                                                  && str(listed(allText(call(input({}))), 2), "label") == "Renamed" ? 1 : 0, 1);
+            const std::string two = allText(call(input({})));
+            const pg::ChatAgent::McpResult stale = call(input({ { "checks", juce::Array<juce::var>{ input({ { "label", "Renamed" }, { "index", 1 } }) } },
+                                                                { "mode", "remove" } }));
+            P.eq("checkedit.remove_stale_index", stale.isError && has(allText(stale), "Check 1: check 1 is \"level held\", not \"Renamed\" "
+                                                                                     "(without checks, set_checks lists them). Nothing was changed.")
+                                                     && allText(call(input({}))) == two ? 1 : 0, 1);
+            const std::string byIndex = allText(call(input({ { "checks", juce::Array<juce::var>{ input({ { "label", "LEVEL HELD" }, { "index", 1 } }) } },
+                                                             { "mode", "remove" } })));
+            P.eq("checkedit.remove_by_index", has(byIndex, "Removed check 1 (\"level held\"). 1 check left.")
+                                                  && has(allText(call(input({}))), "1 check is set") ? 1 : 0, 1);
+            const std::string last = allText(call(input({ { "checks", juce::Array<juce::var>{ input({ { "label", "Renamed" } }) } },
+                                                          { "mode", "remove" } })));
+            P.eq("checkedit.remove_last", has(last, "Removed check 1 (\"Renamed\"). The checks are cleared") && !sa.chatState().checks ? 1 : 0, 1);
+            // Two of one label: merge by it is refused, by index is not.
+            call(input({ { "checks", juce::Array<juce::var>{ check("Twin", most), check("Twin", most) } } }));
+            const pg::ChatAgent::McpResult twin = call(input({ { "checks", juce::Array<juce::var>{ check("Twin", most - 2.0) } }, { "mode", "merge" } }));
+            P.eq("checkedit.twin_refused", twin.isError && has(allText(twin), "2 checks are labelled \"Twin\": give the one meant by its index") ? 1 : 0, 1);
+
+            // A check whose dials name a dial the program has not fails, saying so, whatever its metric gives.
+            juce::var ghost = check("Ghost dial", 100.0);
+            ghost.getDynamicObject()->setProperty("dials", input({ { "nosuch", 1.0 } }));
+            const std::string ghosted = allText(call(input({ { "checks", juce::Array<juce::var>{ ghost } } })));
+            std::printf("a check naming a dial the program has not:\n%s\n", ghosted.c_str());
+            P.eq("checkedit.unknown_dial_fails", has(ghosted, "Checks: 0 of 1 pass.\n- FAIL Ghost dial (" + std::string(metric)
+                                                                  + "): it names a dial 'nosuch' the program does not have: change "
+                                                                    "the check or remove it\n") ? 1 : 0, 1);
+
+            // A run whose declarations rename the dial the checks name: it says which checks it left naming it, and
+            // each fails for that; a check from a snapshot that holds it is named apart (measured without it, the new
+            // name at its default), and does not fail; the program back, they pass again.
+            juce::var shot = check("Level shot", most);
+            shot.getDynamicObject()->setProperty("dials_from", "snapshot");
+            call(input({ { "checks", juce::Array<juce::var>{ held, moved, shot } } }));
+            const pg::Draft before = sp.editorPort().draft();
+            pg::Draft renamedDial = before;
+            const juce::String newName = pg::product::kIsInstrument ? "volume" : "drive";
+            renamedDial.files[0].text = juce::String(renamedDial.files[0].text).replace(levelDial, newName).toStdString();
+            sp.editorPort().setDraft(renamedDial);
+            const std::string orphaned = allText(sa.mcpCall("run_program", input({})));
+            std::printf("run_program, the checks' dial renamed:\n%s\n", orphaned.c_str());
+            P.eq("checkedit.orphan_warned", has(orphaned, "Checks that name a dial the program no longer has (each fails until "
+                                                          "set_checks changes or removes it):\ncheck 1 (\"Level held\"): "
+                                                          + std::string(levelDial) + "\ncheck 2 (\"Level moved\"): " + levelDial + "\n")
+                                                && has(orphaned, "Checks: 1 of 3 pass.\n- FAIL Level held (")
+                                                && has(orphaned, "it names a dial '" + std::string(levelDial) + "' the program does not have") ? 1 : 0, 1);
+            P.eq("checkedit.orphan_snapshot", has(orphaned, "Checks from a snapshot that has a dial the program no longer has (measured "
+                                                            "without it; set_checks gives one a new snapshot):\ncheck 3 (\"Level shot\"): "
+                                                            "its snapshot's " + std::string(levelDial) + " is gone, "
+                                                            + newName.toStdString() + " measures at its default\n")
+                                                  && !has(orphaned, "- FAIL Level shot") ? 1 : 0, 1);
+            sp.editorPort().setDraft(before);
+            const std::string back = allText(sa.mcpCall("run_program", input({})));
+            P.eq("checkedit.orphan_back", has(back, "Checks: 3 of 3 pass.") && !has(back, "Checks that name a dial")
+                                              && !has(back, "Checks from a snapshot") ? 1 : 0, 1);
+            sa.clearChecks();
+            sp.getParameters()[dialSlot]->setValueNotifyingHost(pg::normOf(k, was));
+            sp.poll();
         }
 
         // ---- TUNE ----------------------------------------------------------------------------------------------------------

@@ -4,7 +4,9 @@
 //   - thirty-two host parameters, P1 to P32, normalised 0..1, which the running program's first 32 parameters take
 //     (Controls.h). Each is a ControlParameter: its name and its text are the program's ("2 cutoff", "1200.0"), and a
 //     host is told when they change (parameterInfoChanged). One FunkGui ParamPort each, what the editor's dials write
-//     through. A run that brings a parameter the program did not have in that slot moves it to its default;
+//     through. A run that brings a parameter the program did not have in that slot moves it to its default, and one
+//     of the name the slot had keeps its value in its units (Controls.h: clamped to a new range, an int's option by
+//     its name), from the new program's first block (the dials' carry: Compiler.h, Engine.h, apply());
 //   - the program: the files of the one that plays, and the editor's draft (its files, a tab each, and the tab it
 //     shows), both kept in the session (a <PROGRAM active=".."> beside the parameters, with a <RUN> and a <DRAFT> of
 //     <FILE name=".." text=".."/>s). A new instance plays the first of the EXAMPLES (Init); a session loads its program
@@ -163,8 +165,29 @@ namespace playground
         void bypassMix(float* const* channels, int numChannels, int numSamples) noexcept;
         void runUnprepared(juce::AudioBuffer<float>& buffer) noexcept;
 
-        // poll()'s work: a finished compile's dials (resetting the renamed ones to their defaults when `reset`).
-        void apply(const CompileStatus& s, bool reset);
+        // poll()'s work: a finished compile's program and dials. A run's (`run`): its carry written to the host's
+        // parameters (Controls.h's DialCarry: each dial in its units, a new one at its default), but for the slots in
+        // `given`, which take those plain values (a version's or a preset's dials, a fresh start's defaults); a host's
+        // state load's: none (its values come with it).
+        struct Given
+        {
+            uint32_t slots = 0;
+            std::array<float, kMaxControls> plain{};
+        };
+        void apply(const CompileStatus& s, bool run, const Given& given);
+        // The dials' carry (Compiler::setDialCarrier): how the host's values, in the controls of meaningProgram_, come
+        // across to a program of `controls`. On the thread that offers.
+        DialCarry carryFor(const Controls& controls, const PanelSpec& panel);
+        // The carry of `s` (or `given`) written as host gestures, a slot whose value the host or the user moved since
+        // left as it is; then the values' meaning is `s`'s program (unless a carry was made since: it writes instead).
+        // A carry writes once: `s` applied again (a new revision, the same program) writes only `given`.
+        void writeCarry(const CompileStatus& s, const Controls& controls,
+                        const std::array<std::vector<std::string>, kMaxControls>& options, const Given& given);
+        // The values' meaning set to a program whose values came with it (a state load), any carry made before stale.
+        void adoptMeaning(const CompileStatus& s);
+        // A version's or a preset's dials by name (each by its option's name first, ProjectStore.h's Dial), in units.
+        static Given givenByName(const Controls& cs, const std::array<std::vector<std::string>, kMaxControls>& options,
+                                 const std::vector<projectstore::Dial>& dials);
         void timerCallback() override;
 
         // EditorPort
@@ -288,12 +311,24 @@ namespace playground
         uint64_t defaultsRequest_ = 0;
         void setDialsToDefaults(const Controls& cs);
         std::vector<projectstore::Dial> dialsNow() const;        // the program's dials, by name, in its own units
-        void setDialsByName(const Controls& cs, const std::vector<projectstore::Dial>& dials);
+        void setDialsByName(const Controls& cs, const std::array<std::vector<std::string>, kMaxControls>& options,
+                            const std::vector<projectstore::Dial>& dials);
         bool openVersion(const projectstore::Project& p, const projectstore::Version& v, std::string& why);
 
         juce::AudioProcessorValueTreeState apvts_;
         std::array<std::atomic<float>*, kMaxControls> raw_{};   // the normalised values the audio thread reads
         std::array<juce::RangedAudioParameter*, kMaxControls> params_{};
+        // The values' meaning (the dials' carry, apply()): the program whose controls the host's values are in, its
+        // controls and options, the carries made (each a ticket) and the last one written. The audio thread and
+        // chatDialValue read meaningProgram_ before the values (release after apply's writes); the rest under
+        // meaningMutex_, which apply holds while it writes and the carrier while it reads (never calling the Compiler
+        // under it: a refine asks under the Compiler's mutex).
+        mutable std::mutex meaningMutex_;
+        Controls meaningControls_{};
+        std::array<std::vector<std::string>, kMaxControls> meaningOptions_{};
+        uint64_t carryTickets_ = 0;
+        uint64_t carryWritten_ = 0;
+        std::atomic<uint64_t> meaningProgram_{ 0 };
         // Declared after apvts_, so they are destroyed before the parameters they refer to.
         std::vector<std::unique_ptr<GesturePort>> portStore_;   // JuceParamPorts that say when the editor moved them
         std::vector<funkgui::ParamPort*> ports_;
@@ -315,7 +350,6 @@ namespace playground
 
         uint64_t seen_ = 0;                                      // the compiler's revision poll() last applied
         uint64_t journaled_ = 0;                                 // the editor's RUN poll() last journalled
-        std::atomic<uint64_t> editorRun_{ 0 };                   // the request of the last run (the editor's or Claude's)
         std::atomic<uint32_t> alerts_{ 0 };
         std::atomic<int> editorW_{ 0 }, editorH_{ 0 };
         std::atomic<bool> panelView_{ false };                       // the editor's PANEL view, in the session

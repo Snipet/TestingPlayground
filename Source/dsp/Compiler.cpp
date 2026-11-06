@@ -314,7 +314,7 @@ namespace playground
         return id;
     }
 
-    CompileStatus Compiler::compileNow(Sources files)
+    CompileStatus Compiler::compileNow(Sources files, bool carry)
     {
         uint64_t id = 0;
         ShaderTools tools;
@@ -330,7 +330,7 @@ namespace playground
         // Never the IR here (the calling thread may be the message thread): someone looking has it made on the
         // compiler's thread (tookProgram).
         const uint64_t landed = circuits::answers().landed();
-        CompileStatus s = land(build(engine_.rate(), std::move(files), id, tools, shaders_, false), landed);
+        CompileStatus s = land(build(engine_.rate(), std::move(files), id, tools, shaders_, false), landed, carry);
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             compiling_ = false;
@@ -340,10 +340,19 @@ namespace playground
         return s;
     }
 
-    CompileStatus Compiler::land(std::unique_ptr<Built> b, uint64_t landed)
+    CompileStatus Compiler::land(std::unique_ptr<Built> b, uint64_t landed, bool carry)
     {
         if (b->patch)
         {
+            if (carry)
+            {
+                DialCarrier carrier;
+                {
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    carrier = carrier_;
+                }
+                carryInto(*b, carrier);            // just before the offer: the dials as they are now
+            }
             engine_.offer(std::move(b->patch));
             played(std::move(b->recipe), std::move(b->jobs), landed);
             // Its IR before its status: a view that sees the status has the text.
@@ -372,6 +381,20 @@ namespace playground
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         tools_ = std::move(tools);
+    }
+
+    void Compiler::setDialCarrier(DialCarrier carrier)
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        carrier_ = std::move(carrier);
+    }
+
+    void Compiler::carryInto(Built& b, const DialCarrier& carrier)
+    {
+        if (!b.patch || !carrier)
+            return;
+        b.status.carry = carrier(b.status.controls, b.status.panel);
+        b.patch->setCarry(b.status.carry);
     }
 
     void Compiler::check(Sources files)
@@ -610,6 +633,7 @@ namespace playground
         for (const circuits::Job& j : playing_)
             if (const std::optional<std::string> answer = circuits::answers().find(j.key))
                 chosen += circuits::chosenNote(j.file, *answer, j.key);
+        carryInto(*b, carrier_);                   // the dials as they are now (a refine held since it compiled)
         engine_.offer(std::move(b->patch));        // under mutex_: no RUN is queued between the look and the offer
         compiling_ = true;                         // nothing else offers before its status is out
         lock.unlock();
@@ -637,6 +661,7 @@ namespace playground
         {
             out = status_;                         // a failed compile's outcome stays: its errors, its files
             out.program = s.program;
+            out.carry = s.carry;
             out.circuits = std::move(s.circuits);
             out.circuitDials = std::move(s.circuitDials);
             out.probes = std::move(s.probes);

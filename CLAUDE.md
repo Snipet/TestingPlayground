@@ -155,6 +155,21 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - The Engine's handovers are two atomic pointers (`pending_`, `retired_`): offer, take at a block's start once the last
   swap is over, hand back. The audio thread never deletes a Patch. `Engine::setControls` and `process` allocate, lock
   and log nothing; `prepare()` (audio stopped) is the only place that sizes buffers.
+- **The dials' carry** (Controls.h's `DialCarry` and `carryValue`, Compiler.h's and Engine.h's "The dials' carry",
+  `Processor::apply`): the host's values are normalised, so a run whose declarations change (a range, a taper, an int's
+  options) would give an old value another meaning. A dial of the name its slot had keeps its value in its units
+  (clamped; an int or a bool its value's name, `panel.options`), a new one starts at its default, and so from the new
+  program's first block: just before every offer the Compiler asks the processor's carrier (`carryFor`, under
+  `meaningMutex_`) and the carry travels in the Patch (for the audio thread) and the status (for `apply`). The Engine
+  plays a slot's carried value while `setControls`' meaning is the carry's `from` and the slot's value is still
+  `fromNorm`; `apply` writes the carried values (one gesture each; a slot the host or the user moved since left as it
+  is, one that plays its value already not written; only the newest carry writes, and only once), then stores
+  `meaningProgram_` (release; `readParameters` and `chatDialValue` read it before the values): keep that order. A state
+  load carries nothing (`compileNow(files, false)`, `adoptMeaning` after `replaceState`). The carrier never calls the
+  Compiler (a refine asks under its mutex). chatDialValue says the carried value until `apply` has run, so run_program
+  reports what plays. Projects and presets keep a value's name with its number (`projectstore::Dial::label`, an added
+  field; a version saved again unchanged gains the names it lacked). `plugin.state` CARRY and `plugin.projects` LABEL
+  check.
 - Nothing steps: a program swap crossfades (the effect) or fades the old program's voices over 20 ms (the synth: the
   held keys start again on the new one), a steal fades over 2 ms, a real dial glides over 20 ms as a stream, the
   bypass crossfades over 20 ms. The output does not depend on how the host splits its blocks (the examples are checked
@@ -587,9 +602,19 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `ChatEntry::Kind::checks` card a turn, brought up to date in place; its Clear calls `ChatPort::clearChecks`. A check
   takes the dials it does not name from the plugin as they are when measured (the default: tune_dials' and set_dial's
   results show in the checks), from its snapshot (set_checks' `dials_from`: the dials when it was set) or the
-  defaults (`measure::DialsFrom`); a FAIL line names the dials it took that are off their defaults (or the snapshot).
-  The session keeps `checks_` in set_checks's own shape (`dials_from` and the snapshot with each check). Never let a check nudge without a cap: each nudge is a billed
-  request.
+  defaults (`measure::DialsFrom`); a FAIL line names the dials it took that are off their defaults (or the snapshot),
+  and one at the defaults says the dials as they are do not affect it. A check whose dials or scenario moves name a
+  dial the program lacks FAILs for that, whatever its metric gives (`measure::Result::unknown` into `Goals::evaluate`),
+  and run_program names each check its new declarations left naming a dial the program before had (`orphanLines`),
+  and apart each from a snapshot that holds one (it does not fail: measured without it, a new dial at its default).
+  The session keeps `checks_` in set_checks's own shape (`checkVar`: `dials_from` and the snapshot with each check),
+  and set_checks without `checks` lists them so, numbered, `dials_from` on every one, current too (an item's own
+  `dials_from` and snapshot stand for the call's, so a listed check given back is the same check; the result says
+  how each check it set takes its dials, from the checks, not the call); `mode` merge (each item replaces the check
+  of its `index`, else of its label, case aside, else is added; one replaced under another label is named with both,
+  so a stale index shows) and remove (by index or label; an index whose check has another label than the item's is
+  refused) change them all or not at all, and a label two checks share needs the index. A listing changes nothing:
+  it never sends a turn on. Never let a check nudge without a cap: each nudge is a billed request.
 - **The planner** (`setPlanner`, chat.json "planner"; ChatAgent.h "A planner"): `planTurn` sends a message's
   history to the planning model through `forAnotherModel` (no thinking blocks, which are bound to the builder's model
   and prompt; no compaction or server-tool blocks; citations dropped) with `tool_choice` none and the tools defined

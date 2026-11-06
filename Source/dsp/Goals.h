@@ -3,7 +3,8 @@
 // (the chat's set_checks: ChatAgent.h) are goals with a label and the render they are measured in, measured together
 // on the editor's files (one compile; one render for those that share one), the dials they do not fix as the plugin
 // has them now, as it had them when they were set, or at their defaults (DialsFrom); a failing one names the dials it
-// took that are off their defaults (or its snapshot). tune_dials (Tune.h) works toward goals.
+// took that are off their defaults (or its snapshot), and one that names a dial the program lacks fails for that.
+// tune_dials (Tune.h) works toward goals.
 #pragma once
 
 #include "dsp/Measure.h"
@@ -53,8 +54,8 @@ namespace playground::measure
         std::map<std::string, float> snapshot;    // the plugin's dials when it was set, by name (dialsFrom snapshot)
     };
 
-    // A dial a failing check took from outside itself whose value now is off its reference: its default (dialsFrom
-    // current and defaults), or the check's snapshot (dialsFrom snapshot).
+    // A dial a failing check took from the plugin whose value now is off its reference: its default (dialsFrom
+    // current), or the check's snapshot (dialsFrom snapshot). A check at the defaults takes none from the plugin.
     struct DialAway
     {
         std::string name;
@@ -65,17 +66,20 @@ namespace playground::measure
 
     struct CheckResult
     {
-        bool measured = false;                    // the program compiled and the render gave the metric
+        bool measured = false;                    // the program compiled and the render gave the metric (or the
+                                                  // check names a dial the program lacks: it fails, `unknown`)
         bool pass = false;
         double value = 0.0;
-        std::string text;                         // "2.61 s; at most 2.00 s", or why it was not measured
+        std::string text;                         // "2.61 s; at most 2.00 s", or why it was not measured or fails
         std::vector<DialAway> away;               // a failing check's: the dials it does not fix (or move) that are off
                                                   // their reference, in the program's order
+        std::vector<std::string> unknown;         // the dials it sets or moves by a name the program has not
     };
 
     // Each check measured on `files`, the dials it does not fix at `current` (the plugin's, by name), at its snapshot
     // or at the defaults, as its dialsFrom says: one compile, one render for the checks that share one. A program that
-    // does not compile measures none (`errors`: its messages).
+    // does not compile measures none (`errors`: its messages). A check whose dials or moves name a dial the program
+    // has not fails, saying so, whatever the metric gives: rendered without that dial it measures another sound.
     std::vector<CheckResult> evaluate(const Sources& files, const std::vector<Check>& checks,
                                       const std::map<std::string, float>& current, std::string* errors = nullptr);
 }

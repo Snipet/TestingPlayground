@@ -6,7 +6,8 @@
 //            ask_planner, each MCP description its first sentence or paragraph (tools.json's size printed, with the
 //            full descriptions for comparison, and compact), a setting's description given once (view_sound's render
 //            settings, set_checks' goals: not again in a check's or tune_dials'); tune_dials' metric a plain string,
-//            set_checks' the metrics' names, and its dials_from (current, snapshot, defaults); read_file's from, lines and
+//            set_checks' the metrics' names, its dials_from (current, snapshot, defaults), its mode (replace, merge,
+//            remove) and a check's index, nothing required (without checks it lists them); read_file's from, lines and
 //            find, edit_file's edits and expected (only its name required), trace's render settings (its dials; the
 //            synth's notes); an instrument's notes,
 //            velocity and wheels in the synth's measure_output and
@@ -570,11 +571,15 @@ PROBE(plugin, mcp)
                                         && readFile["properties"].hasProperty("find") && editFile["properties"].hasProperty("edits")
                                         && editFile["properties"].hasProperty("expected") && editFile["required"].size() == 1 ? 1 : 0, 1);
         }
-        // set_checks' dials_from: where a check takes the dials it does not name (its three words, described).
+        // set_checks' dials_from: where a check takes the dials it does not name (its three words, described); its
+        // mode (replace, merge, remove); nothing required (without checks it lists them).
         const juce::var dialsFrom = setChecks["inputSchema"]["properties"]["dials_from"];
+        const juce::var checksMode = setChecks["inputSchema"]["properties"]["mode"];
         P.eq("link.checks_dials_from", dialsFrom["enum"].size() == 3 && dialsFrom["enum"][1].toString() == "snapshot"
                                            && dialsFrom.hasProperty("description")
-                                           && setChecks["inputSchema"]["required"].size() == 1 ? 1 : 0, 1);
+                                           && checksMode["enum"].size() == 3 && checksMode["enum"][1].toString() == "merge"
+                                           && setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"].hasProperty("index")
+                                           && !setChecks["inputSchema"].hasProperty("required") ? 1 : 0, 1);
         // An instrument's render settings (its notes, velocity and wheels) in an instrument's tools only: measure_output
         // has them in the synth, and no tool of the effect's lists them.
         {
