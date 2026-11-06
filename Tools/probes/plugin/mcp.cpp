@@ -38,8 +38,10 @@
 //   SERVER   the server program (<Name>MCP) over stdio, as Claude Desktop runs it: initialize (its protocol version,
 //            2025-11-25 too, tools with listChanged, prompts, instructions that keep tools and ids from the user),
 //            tools/list (list_instances, playground_guide, gui_sandbox and the chat's tools, each with `instance` (in a
-//            few words: the instructions say how to name one) and a title in words, the ones that only look marked
-//            read-only; the reply's line, what Claude Desktop receives,
+//            few words on the first of the chat's alone: the instructions say how to name one) and a title in words,
+//            the ones that only look marked read-only, the annotations without a title or a read-only tool's
+//            destructiveHint; a client of 2025-03-26 gets each title in the annotations; the reply's line, what
+//            Claude Desktop receives,
 //            at most kToolsBound bytes: its size and the slack printed), list_instances naming this processor by its name,
 //            get_status and write_file routed to it, playground_guide (its start, and a part); the processor then knows
 //            Claude Desktop is connected, and its port says so with its name; the prompts (Make a sound, Improve the
@@ -909,28 +911,40 @@ PROBE(plugin, mcp)
                 if (tool["name"].toString() != "list_instances" && tool["name"].toString() != "playground_guide"
                     && tool["name"].toString() != "gui_sandbox")   // the server's own (plugin.sandbox)
                 {
-                    // `instance` on each, its words short (the instructions say how to name one)
+                    // `instance` on each, its words short (the instructions say how to name one) and on the first
+                    // of the plugin's tools alone (dropRepeated's rule, as the server runs it over the whole list)
+                    const juce::var instance = tool["inputSchema"]["properties"]["instance"];
+                    instanceArg = instanceArg && instance["type"].toString() == "string"
+                               && (pluginTools == 0 ? instance["description"].toString()
+                                                          == juce::String(kInstrument ? "Which synth" : "Which effect") + ", when several are open"
+                                                    : !instance.hasProperty("description"));
                     ++pluginTools;
-                    instanceArg = instanceArg && tool["inputSchema"]["properties"]["instance"]["description"].toString()
-                                                     == juce::String(kInstrument ? "Which synth" : "Which effect") + ", when several are open";
                 }
         std::printf("tools/list: %d of the plugin's, %d bytes in all\n", pluginTools, juce::JSON::toString(list, false).length());
         P.eq("server.tools", hasTool(list, "list_instances") && hasTool(list, "playground_guide") && hasTool(list, "gui_sandbox") && hasTool(list, "write_file")
                                  && !hasTool(list, "ask_user") && pluginTools == tools.size() && instanceArg ? 1 : 0, 1);
         {
-            juce::var measure, write;
-            bool titled = true;
+            juce::var measure, write, del;
+            bool titled = true, lean = true;
             if (const juce::Array<juce::var>* t = list.getArray())
                 for (const juce::var& tool : *t)
                 {
                     titled = titled && tool["title"].toString().isNotEmpty() && tool["title"].toString() != tool["name"].toString();
+                    // the annotations: no title (the tool's own), a read-only tool no destructiveHint, never openWorld
+                    const juce::var hints = tool["annotations"];
+                    lean = lean && !hints.hasProperty("title") && hints.hasProperty("openWorldHint") && !static_cast<bool>(hints["openWorldHint"])
+                        && (static_cast<bool>(hints["readOnlyHint"]) ? !hints.hasProperty("destructiveHint") : hints.hasProperty("destructiveHint"));
                     if (tool["name"].toString() == "measure_output")
                         measure = tool;
                     if (tool["name"].toString() == "write_file")
                         write = tool;
+                    if (tool["name"].toString() == "delete_file")
+                        del = tool;
                 }
             P.eq("server.titles", titled && measure["title"].toString() == "Measure the sound"
                                       && static_cast<bool>(measure["annotations"]["readOnlyHint"]) && !static_cast<bool>(write["annotations"]["readOnlyHint"]) ? 1 : 0, 1);
+            P.eq("server.annotations", lean && !static_cast<bool>(write["annotations"]["destructiveHint"])
+                                           && static_cast<bool>(del["annotations"]["destructiveHint"]) ? 1 : 0, 1);
         }
         rep = s.request({ a.get() }, "tools/call", object({ { "name", "list_instances" }, { "arguments", juce::var(new juce::DynamicObject()) } }));
         std::printf("list_instances: %s", firstText(rep["result"]).c_str());
@@ -1088,10 +1102,17 @@ PROBE(plugin, mcp)
             Server fresh;
             if (serverPath != nullptr && fresh.start(serverPath))
             {
-                fresh.request({ a.get(), b.get() }, "initialize", object({ { "protocolVersion", "2025-06-18" } }));
+                // A client of 2025-03-26, which knows no tool's own title: each title in the annotations too.
+                fresh.request({ a.get(), b.get() }, "initialize", object({ { "protocolVersion", "2025-03-26" } }));
                 const juce::var r2 = fresh.request({ a.get(), b.get() }, "tools/call", object({ { "name", "get_status" }, { "arguments", juce::var(new juce::DynamicObject()) } }))["result"];
                 std::printf("several open: %s\n", firstText(r2).c_str());
                 P.eq("match.several_ask", static_cast<bool>(r2["isError"]) && firstText(r2).find("Ask the user which one") != std::string::npos ? 1 : 0, 1);
+                const juce::var older = fresh.request({ a.get(), b.get() }, "tools/list", {})["result"]["tools"];
+                bool titles = older.size() > 3;
+                if (const juce::Array<juce::var>* t = older.getArray())
+                    for (const juce::var& tool : *t)
+                        titles = titles && tool["annotations"]["title"].toString() == tool["title"].toString() && tool["title"].toString().isNotEmpty();
+                P.eq("server.older_client_titles", titles ? 1 : 0, 1);
                 fresh.stop();
             }
         }
