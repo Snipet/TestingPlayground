@@ -33,7 +33,8 @@
 //   PRIVACY   the processor's state holds nothing of a recording, nor the chat's session a picture of it (capture's,
 //             view_sound's or compare's of "capture")
 //   ANALYSIS  stop's report has the octave bands (in and out), the centroid, the correlation, the largest steps each
-//             named by its nearest recorded moment, and the replay's forecast; picture: true draws it, and is not live
+//             named by its nearest recorded moment, and the replay's forecast; picture: true draws it, and is not live;
+//             the bands in frames fixed in seconds (a 1 kHz sine's level in its band, the same at 48 and 192 kHz)
 //   REPLAY    mode next from the default program's fresh state: a take that starts off the voices' 16-sample grid, on a
 //             block over the announced (played in parts), with blocks of 0 and 1 samples, a dial written by the host, an
 //             instrument's sustain-pedal phrase (keys let go while it is down, then the pedal up), an effect's own input;
@@ -583,10 +584,30 @@ PROBE(plugin, capture)
                                     && has(stopText, kInstrument ? "Notes: " : "In: ") && has(stopText, "Dials moved: ")
                                     && lines(stopText) <= 25 && !st.isError ? 1 : 0, 1);
         std::printf("stop: %d lines\n", lines(stopText));
-        P.eq("analysis.lines", has(stopText, "Out: octave bands (Hz: dBFS) 32: ") && has(stopText, "; centroid ")
+        P.eq("analysis.lines", has(stopText, "Out: octave bands (Hz: dBFS) 31.5: ") && has(stopText, "; centroid ")
                                    && has(stopText, "left/right correlation") && has(stopText, "Largest step")
                                    && (kInstrument || has(stopText, "In: octave bands")) && has(stopText, "Replay: ") ? 1 : 0, 1);
         P.eq("analysis.forecast_mid_playing", has(stopText, "Replay: it started mid-playing (mode last)") ? 1 : 0, 1);
+        // The bands and the centroid in frames fixed in seconds: a 1 kHz sine of 0.5 (-9.03 dBFS RMS) for 2 s reads so in
+        // its band, and the same, at 48 and at 192 kHz.
+        {
+            std::array<double, 2> band{}, centroid{};
+            int k = 0;
+            for (const double rate : { 48000.0, 192000.0 })
+            {
+                std::vector<float> x(static_cast<std::size_t>(2.0 * rate));
+                for (std::size_t i = 0; i < x.size(); ++i)
+                    x[i] = 0.5f * static_cast<float>(std::sin(2.0 * 3.14159265358979 * 1000.0 * static_cast<double>(i) / rate));
+                const cap::Spectrum sp = cap::spectrumOf(x, x, rate);
+                band[static_cast<std::size_t>(k)] = sp.bandsDb[5];
+                centroid[static_cast<std::size_t>(k++)] = sp.centroidHz;
+                std::printf("a 1 kHz sine at %.0f Hz: its band %.3f dBFS, the 500 Hz and 2 kHz bands %.1f and %.1f, centroid %.1f Hz\n",
+                            rate, sp.bandsDb[5], sp.bandsDb[4], sp.bandsDb[6], sp.centroidHz);
+            }
+            P.near("analysis.band_level", band[0], -9.0309, 0.05);
+            P.near("analysis.band_rates", band[1] - band[0], 0.0, 0.02);
+            P.near("analysis.centroid_rates", centroid[1] / centroid[0], 1.0, 0.002);
+        }
 
         // NOTFRESH: replayed, LAST's take differs (it started mid-playing), and the line says why.
         if (taken.take != nullptr)

@@ -39,7 +39,7 @@
 //            scenario's dials moved)
 //   COMPARE  compare (Compare.h): a program against itself gives identical bits, and a recording of it against it
 //            too; a gain dial shows as that gain (no delay, nothing left; every octave band and the level metric
-//            moved), a delay dial as that lag (the gain 1), also of a note still sounding past the correlation's 2^17
+//            moved; the bands the same at 192 kHz), a delay dial as that lag (the gain 1), also of a note still sounding past the correlation's 2^17
 //            samples; the detail's 32 parts; a recording shorter than the render identical (rendered as long)
 #include "Probe.h"
 
@@ -906,6 +906,25 @@ PROBE(dsp, tune)
         for (const double d : gain.bandsDb)
             bands += std::isfinite(d) && std::fabs(d + 6.0206) < 0.5 ? 1 : 0;
         P.ge("compare.gain_bands", static_cast<double>(bands), kInstrument ? 1.0 : 9.0);
+        // The bands in frames fixed in seconds: at 192 kHz each reads as at 48 kHz.
+        {
+            ms::CompareSide a192 = a, quieter192 = quieter;
+            a192.request.rate = quieter192.request.rate = 192000.0;
+            ms::CompareOptions bare;
+            bare.metrics = false;
+            const ms::Comparison high = ms::compare(a192, quieter192, bare);
+            for (const std::string& line : high.lines)
+                std::printf("gain at 192 kHz: %s\n", line.c_str());
+            int same = 0, measured = 0;
+            for (std::size_t k = 0; k < gain.bandsDb.size(); ++k)
+                if (std::isfinite(gain.bandsDb[k]) && std::isfinite(high.bandsDb[k]) && std::fabs(gain.bandsDb[k] + 6.0206) < 0.5)
+                {
+                    ++measured;
+                    same += std::fabs(high.bandsDb[k] - gain.bandsDb[k]) < 0.15 ? 1 : 0;
+                }
+            P.eq("compare.gain_bands_rates", same, measured);
+            P.ge("compare.gain_bands_rates_some", static_cast<double>(measured), 1.0);
+        }
         bool level = false;
         for (const ms::Comparison::Differs& m : gain.metrics)
             level = level || m.metric == (kInstrument ? "rms_db" : "sine_rms_db");

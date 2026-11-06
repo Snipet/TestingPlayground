@@ -7,7 +7,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
-#include <numbers>
 
 namespace playground::measure
 {
@@ -96,37 +95,11 @@ namespace playground::measure
             return static_cast<int>(best);
         }
 
-        // Ten octave bands' energy of the mono sum (Welch: 8192-point Hann windows, half overlapped).
-        std::array<double, 10> bandEnergy(const Sound& s, std::size_t n, double rate)
+        // The octave bands' levels (Measure.h's bandLevels) of both channels over the first n samples, in kBandSeconds
+        // Hann frames: the same stretch of sound at every rate.
+        std::vector<double> bandsOver(const Sound& s, std::size_t n, double rate)
         {
-            std::array<double, 10> e{};
-            std::size_t size = 8192;
-            while (size > 256 && size > n)
-                size /= 2;
-            std::vector<std::complex<double>> f(size);
-            for (std::size_t a = 0; a == 0 || a + size <= n; a += size / 2)
-            {
-                for (std::size_t i = 0; i < size; ++i)
-                {
-                    const double w = 0.5 - 0.5 * std::cos(2.0 * std::numbers::pi * static_cast<double>(i) / static_cast<double>(size));
-                    const std::size_t t = a + i;
-                    f[i] = { t < n ? 0.5 * (static_cast<double>(s.l[t]) + s.r[t]) * w : 0.0, 0.0 };
-                }
-                fft(f);
-                for (std::size_t k = 1; k < size / 2; ++k)
-                {
-                    const double hz = static_cast<double>(k) * rate / static_cast<double>(size);
-                    for (std::size_t band = 0; band < e.size(); ++band)
-                    {
-                        const double c = Comparison::kBands[band];
-                        if (hz >= c / std::numbers::sqrt2 && hz < c * std::numbers::sqrt2)
-                            e[band] += std::norm(f[k]);
-                    }
-                }
-                if (a + size >= n)
-                    break;
-            }
-            return e;
+            return bandLevels(stereoSpectrum(s.l, s.r, rate, { { 0, n } }), Bands::octave);
         }
 
         // A side rendered: its Session (null for a recording) and its sound.
@@ -166,7 +139,6 @@ namespace playground::measure
             return out;
         }
 
-        std::string hzText(double hz) { return hz >= 1000.0 ? fmt("%.0fk", hz / 1000.0) : fmt("%.0f", hz); }
     }
 
     Comparison compare(const CompareSide& sa, const CompareSide& sb, const CompareOptions& options)
@@ -287,18 +259,18 @@ namespace playground::measure
 
         // The octave bands.
         {
-            const std::array<double, 10> ea = bandEnergy(a, n, rate), eb = bandEnergy(b, n, rate);
+            const std::vector<double> la = bandsOver(a, n, rate), lb = bandsOver(b, n, rate);
             std::string bands;
-            for (std::size_t k = 0; k < ea.size(); ++k)
+            for (std::size_t k = 0; k < c.bandsDb.size() && k < la.size() && k < lb.size(); ++k)
             {
-                if (Comparison::kBands[k] / std::numbers::sqrt2 >= 0.5 * rate)   // above the Nyquist frequency
+                if (std::isnan(la[k]))                       // above the Nyquist frequency
                 {
                     c.bandsDb[k] = std::nan("");
                     continue;
                 }
-                const bool silent = ea[k] < 1e-18 && eb[k] < 1e-18;
-                c.bandsDb[k] = silent ? std::nan("") : std::clamp(10.0 * std::log10(std::max(eb[k], 1e-30) / std::max(ea[k], 1e-30)), -120.0, 120.0);
-                bands += (bands.empty() ? "" : ", ") + hzText(Comparison::kBands[k]) + " "
+                const bool silent = la[k] < -220.0 && lb[k] < -220.0;
+                c.bandsDb[k] = silent ? std::nan("") : std::clamp(lb[k] - la[k], -120.0, 120.0);
+                bands += (bands.empty() ? "" : ", ") + bandName(Comparison::kBands[k]) + " "
                        + (silent ? std::string("silent") : fmt(std::fabs(c.bandsDb[k]) < 0.05 ? "%.1f" : "%+.1f", c.bandsDb[k]));
             }
             c.lines.push_back("Octave bands, B against A (dB, Hz): " + bands + ".");

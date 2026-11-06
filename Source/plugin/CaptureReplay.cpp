@@ -7,19 +7,17 @@
 
 #include <algorithm>
 #include <cmath>
-#include <complex>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
-#include <numbers>
 
 namespace playground::capture
 {
     namespace
     {
         constexpr bool kInstrument = product::kIsInstrument;
-        constexpr std::size_t kWindow = 4096;               // the spectrum's windows (Hann)
-        constexpr std::size_t kWindows = 48;                // at most, spread over the sound
+        constexpr std::size_t kFrames = 48;                 // the spectrum's frames at most (measure::kBandSeconds Hann),
+                                                            // spread over the sound
 
         __attribute__((format(printf, 1, 2))) std::string fmt(const char* f, ...)
         {
@@ -332,55 +330,39 @@ namespace playground::capture
         }
         s.silent = !(ll + rr > 1e-18);
         s.correlation = ll > 1e-18 && rr > 1e-18 ? lr / std::sqrt(ll * rr) : 1.0;
-        if (s.silent || total < kWindow || !(rate > 0.0))
+        if (s.silent || !(rate > 0.0))
             return s;
-        // Hann windows of the mono sum, spread evenly over it.
-        const std::size_t count = std::min(kWindows, (total - kWindow) / (kWindow / 2) + 1);
-        const std::size_t span = total - kWindow;
-        std::vector<double> win(kWindow);
-        double w2 = 0.0;
-        for (std::size_t i = 0; i < kWindow; ++i)
+        // Both channels' power (measure::stereoSpectrum, as their RMS), a sample that is no number as 0, in frames fixed in
+        // seconds spread evenly over it: the same stretch of sound at every rate.
+        const bool finite = std::all_of(l.begin(), l.begin() + static_cast<std::ptrdiff_t>(total), [](float x) { return std::isfinite(x); })
+                         && std::all_of(r.begin(), r.begin() + static_cast<std::ptrdiff_t>(total), [](float x) { return std::isfinite(x); });
+        std::vector<float> cl, cr;
+        if (!finite)
         {
-            win[i] = 0.5 - 0.5 * std::cos(2.0 * std::numbers::pi * static_cast<double>(i) / static_cast<double>(kWindow));
-            w2 += win[i] * win[i];
+            cl.assign(l.begin(), l.begin() + static_cast<std::ptrdiff_t>(total));
+            cr.assign(r.begin(), r.begin() + static_cast<std::ptrdiff_t>(total));
+            for (std::vector<float>* c : { &cl, &cr })
+                for (float& x : *c)
+                    x = std::isfinite(x) ? x : 0.0f;
         }
-        std::vector<double> power(kWindow / 2, 0.0);
-        std::vector<std::complex<double>> a(kWindow);
-        for (std::size_t w = 0; w < count; ++w)
+        const std::size_t frame = std::max<std::size_t>(16, static_cast<std::size_t>(std::llround(measure::kBandSeconds * rate)));
+        std::vector<measure::Span> spans;
+        if (total <= frame)
+            spans.push_back({ 0, total });
+        else
         {
-            const std::size_t at = count > 1 ? span * w / (count - 1) : 0;
-            for (std::size_t i = 0; i < kWindow; ++i)
+            const std::size_t count = std::min(kFrames, (total - frame + frame / 2 - 1) / (frame / 2) + 1);
+            for (std::size_t w = 0; w < count; ++w)
             {
-                const double x = 0.5 * (static_cast<double>(l[at + i]) + static_cast<double>(r[at + i]));
-                a[i] = { std::isfinite(x) ? x * win[i] : 0.0, 0.0 };
-            }
-            measure::fft(a);
-            for (std::size_t k = 1; k < kWindow / 2; ++k)
-                power[k] += std::norm(a[k]);
-        }
-        // Each bin's share of the mean square (Parseval, the window's power taken out), averaged over the windows.
-        const double scale = 2.0 / (static_cast<double>(kWindow) * w2 * static_cast<double>(count));
-        std::array<double, 10> bands{};
-        double weighted = 0.0, sum = 0.0;
-        for (std::size_t k = 1; k < kWindow / 2; ++k)
-        {
-            const double hz = static_cast<double>(k) * rate / static_cast<double>(kWindow);
-            const double ms = power[k] * scale;
-            if (hz >= measure::kBandLowHz && hz <= measure::kBandHighHz)   // the centroid metrics' weighting and band
-            {
-                weighted += hz * power[k];
-                sum += power[k];
-            }
-            for (std::size_t b = 0; b < bands.size(); ++b)
-            {
-                const double c = measure::Comparison::kBands[b];
-                if (hz >= c / std::numbers::sqrt2 && hz < c * std::numbers::sqrt2)
-                    bands[b] += ms;
+                const std::size_t at = count > 1 ? (total - frame) * w / (count - 1) : 0;
+                spans.push_back({ at, at + frame });
             }
         }
-        for (std::size_t b = 0; b < bands.size(); ++b)
-            s.bandsDb[b] = bands[b] > 1e-24 ? 10.0 * std::log10(bands[b]) : -240.0;
-        s.centroidHz = sum > 0.0 ? weighted / sum : 0.0;
+        const measure::Spectrum sp = measure::stereoSpectrum(finite ? l : cl, finite ? r : cr, rate, spans);
+        const std::vector<double> bands = measure::bandLevels(sp, measure::Bands::octave);
+        for (std::size_t b = 0; b < s.bandsDb.size() && b < bands.size(); ++b)
+            s.bandsDb[b] = std::isnan(bands[b]) ? -240.0 : bands[b];
+        s.centroidHz = sp.centroid();                       // power-weighted over the band (20 Hz to 20 kHz)
         return s;
     }
 

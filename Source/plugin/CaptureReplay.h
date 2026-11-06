@@ -70,9 +70,10 @@ namespace playground::capture
     // Before a replay was tested: what to expect of one (fresh state, own code), and how to make one exact.
     std::string forecast(const Take& take);
 
-    // What the tool reports of a sound: octave bands (measure's Comparison::kBands, 31.5 Hz to 16 kHz, dBFS; -240 for
-    // none), the spectral centroid (power-weighted over 20 Hz to 20 kHz, as the centroid metrics weigh it) and the
-    // stereo correlation, from spaced windows (live: a few milliseconds).
+    // What the tool reports of a sound: octave bands (measure's bandLevels, 31.5 Hz to 16 kHz, dBFS; -240 for none) and
+    // the spectral centroid (power-weighted over 20 Hz to 20 kHz, as the centroid metrics weigh it), of both channels'
+    // power in at most 48 frames of measure::kBandSeconds spread over it (the same at every rate), and the stereo
+    // correlation.
     struct Spectrum
     {
         std::array<double, 10> bandsDb{};

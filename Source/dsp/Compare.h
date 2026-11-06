@@ -8,9 +8,10 @@
 // they are (the RMS of A - B against A's, in dB), the peak difference and when, the first and the last sample that
 // differ by more than -120 dBFS; the gain and the lag that fit B to A best (b(t) ~ gain a(t - lag), from their
 // cross-correlation through fft(), Measure.h, over the first 2^17 samples, lags within 0.5 s, each lag's normalised by
-// the energies that overlap there) and what is left after them; B against A in ten octave bands (31.5 Hz to 16 kHz,
-// Welch power spectra); and the metrics (Measure.h) that differ by more than their tolerance (MetricInfo), side by
-// side (the CPU's aside, which no two renders share). `detail` adds the difference's level in 32 parts of the render.
+// the energies that overlap there) and what is left after them; B against A in ten octave bands (31.5 Hz to 16 kHz:
+// Measure.h's bandLevels, both channels in kBandSeconds Hann frames, the same at every rate); and the metrics
+// (Measure.h) that differ by more than their tolerance (MetricInfo), side by side (the CPU's aside, which no two renders
+// share). `detail` adds the difference's level in 32 parts of the render.
 //
 // Off the audio thread only (it compiles and renders). Deterministic: the same sides give the same result.
 #pragma once
@@ -48,7 +49,7 @@ namespace playground::measure
         int lag = 0;                              // B is A delayed by `lag` samples (negative: ahead)
         double gain = 1.0;                        // and scaled by it
         double residualDb = -240.0;               // what is left of B after gain and lag, against B (dB)
-        static constexpr std::array<double, 10> kBands{ 31.5, 63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0 };
+        static constexpr std::array<double, 10> kBands = kOctaveBands;   // Measure.h's (Bands::octave), by name
         std::array<double, 10> bandsDb{};         // B against A in each octave band, dB (NaN: silent in both, or above
                                                   // the Nyquist frequency)
         struct Differs
