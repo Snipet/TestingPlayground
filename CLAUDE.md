@@ -818,7 +818,17 @@ place (its `products/<key>.cmake`, and its names in the docs).
   line holds). It writes through `chatSetDraftIf` (the text it read, the others left as they are now: what the user
   typed meanwhile is never overwritten; the edits run once more on the new text), and with `expected` (a version) only
   while the file is still that version, else nothing, saying the user changed it and showing the lines changed since
-  (the version is compared, not kept, before that lookup, so the oldest kept is still found).
+  (the version is compared, not kept, before that lookup, so the oldest kept is still found). Its `files` does that for
+  several files at once (a property, not a tool: the tool budget), in place of `name`: a list of `{name, edits or
+  old_text and new_text, expected}`, or a unified diff (its `---`/`+++` headers name the files, git's a/ and b/ off; a
+  hunk is an edit whose old lines, context and `-`, are found where a line starts, the occurrence nearest its `@@` line
+  as the hunks before it moved it, its header's counts unread, a blank line in it a blank context line, and one that
+  creates, deletes or renames a file refused); all or none across the files (one bad edit, one `expected` that no
+  longer holds: nothing written to any), in one `chatSetDraftIf` of every file it read (one change of the draft, so one
+  journal entry and one merge). The editor makes a merge that changed several tabs' texts one undo step across them
+  (`FilesItem`'s undo group, by the tabs' serials: Cmd-Z, Cmd-Shift-Z or Cmd-Y in one of them, while its text is as
+  that step left it, undoes or redoes it in each tab still so; a tab typed in since keeps its own steps and leaves the
+  group; a fresh start or a load ends it), a session loaded over open tabs included.
 - **add_library_file** puts a library file in the editor as a tab (never over a file of that name) and returns its
   whole text, so Claude has seen it (`seen_`); the program's `#include` is Claude's to write.
 
