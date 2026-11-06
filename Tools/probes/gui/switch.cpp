@@ -12,6 +12,10 @@
 //            switch lays out no block of the conversation (ChatView::blockLayouts); the editors keep their place
 //            while the PANEL view hides them (no width set, no line measured again); idle, the chat's look once a
 //            second (the key's state) shows nothing of the conversation again (ChatView::shows)
+//   POLL     the explorer's poll does not land on the frame that shows it again (projectstore::listings), but
+//            kPollAfterShow after it; no switch's frame reads a project's file whole (projectstore::parses), after a
+//            save (the store kept what it wrote) or another process's write (the store's Reader reads it, on its own
+//            thread, and the explorer shows it after)
 // and prints, never checks (TIME), what a switch's frame costs on the message thread (the switch, the frame's tick and
 // its draw, wall clock) in both directions with the explorer's poll due, after a save and another process's write; the
 // conversation alone, shown again and laid out for another width; the store's listing and a project read whole.
@@ -363,6 +367,69 @@ PROBE(gui, switch)
         const int shows0 = panel.chatView().shows();
         host.tick(200);
         P.eq("switch.idle_shows_nothing", panel.chatView().shows() - shows0, 0);
+    }
+
+    // ---- POLL: never on the frame that shows the explorer again, never a project's file read whole on the frame --------
+    {
+        host.tick(200);
+        panel.setPanelView(true);
+        host.tick(200);                                  // hidden for 3.3 s: the poll is due
+        const int listed0 = ps::listings(), parsed0 = ps::parses();
+        panel.setPanelView(false);
+        host.tick(1);
+        P.eq("poll.not_on_the_switch", ps::listings() - listed0, 0);
+        host.tick(static_cast<int>(std::ceil(0.25 * 60.0)) + 2);   // kPollAfterShow (Panel.cpp) and two frames
+        P.eq("poll.after_the_switch", ps::listings() - listed0, 1);
+        P.eq("poll.switch_reads_no_file", ps::parses() - parsed0, 0);
+        // A save, then away and back: the store kept what it wrote, so no poll reads the file again.
+        pg::Draft d = port.draft();
+        d.files[0].text += "\n// a save\n";
+        port.setDraft(d);
+        host.tick(2);
+        pg::SavedVersion saved;
+        std::string why;
+        P.eq("poll.saved", port.saveVersion("Engine", saved, why) ? 1 : 0, 1);
+        const int parsed1 = ps::parses();
+        panel.setPanelView(true);
+        host.tick(200);
+        panel.setPanelView(false);
+        host.tick(200);
+        P.eq("poll.save_read_no_file", ps::parses() - parsed1, 0);
+        // Another process writes a project: no file read on the message thread; the Reader reads it, and the
+        // explorer's projects then show its new version.
+        const juce::File f = folder.getChildFile("Engine C.fmproject");
+        juce::var root = juce::JSON::parse(f.loadFileAsString());
+        int newest = 0;
+        if (juce::Array<juce::var>* vs = root["versions"].getArray(); vs != nullptr && !vs->isEmpty())
+        {
+            juce::var v = vs->getLast().clone();
+            newest = static_cast<int>(v["number"]) + 1;
+            v.getDynamicObject()->setProperty("number", newest);
+            vs->add(v);
+        }
+        f.replaceWithText(juce::JSON::toString(root));
+        const int parsed2 = ps::parses(), reader2 = ps::readerParses();
+        const auto latestOf = [&](const std::string& name) {
+            for (const pg::ProjectEntry& e : port.projectsPolled())
+                if (e.name == name)
+                    return e.latest;
+            return -1;
+        };
+        panel.setPanelView(true);
+        host.tick(200);
+        panel.setPanelView(false);
+        host.tick(1);
+        const int onFrame = ps::parses() - parsed2;
+        const std::shared_ptr<ps::Reader> reader = ps::reader();
+        for (int k = 0; k < 2000 && (ps::readerParses() == reader2 || !reader->idle()); ++k)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            host.tick(1);
+        }
+        host.tick(4);
+        P.eq("poll.other_not_read_on_the_frame", onFrame, 0);
+        P.eq("poll.other_read_by_the_reader", ps::readerParses() - reader2, 1);
+        P.eq("poll.other_listed", latestOf("Engine C") == newest ? 1 : 0, 1);
     }
 
     // ---- TIME: the switch's frame -------------------------------------------------------------------------------------

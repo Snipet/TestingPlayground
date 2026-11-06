@@ -123,9 +123,17 @@ place (its `products/<key>.cmake`, and its names in the docs).
   projects (`.fmpreset`) are migrated, never deleted. `ProjectStore` caches each file's listing entry and its presets by
   the file's time and size (one look a file: readdir and stat on the Mac; on Windows JUCE's listing, whose entries hold
   both; a name asked in another case than its file's finds the same file's entry by its device and inode, on Windows by
-  its path case aside), so the explorer's poll every 3 s (`presetsOf`, `Processor::presets`) reads a project's file
-  whole only when it changed (`projectstore::parses`, plugin.projects and gui.explorer POLL), and the explorer hashes
-  what its rows show each frame (the lists by a revision a poll bumps). `Source/plugin/ProjectExport` writes a project
+  its path case aside), and every write of the store (`write`: a version, a preset, the info, an import) and `load`
+  keep there what they wrote or read, so a save of this process's makes no listing read its file again; a damaged
+  file is read once while it stays as it is. The explorer's poll every 3 s (`Processor::projectsPolled`,
+  `presetsPolled`: `listCached`, `presetsCached`) never reads a project's file whole on the message thread: a file the
+  cache does not hold as it is now (another process wrote it, or none read it yet) is listed as it was and read by the
+  store's `Reader` (one a process, its own thread, a path asked once until read; a read kept only while the file is
+  still as a look before it found it, so it never replaces a write's entry), whose revision (`projectsRead`) makes the
+  explorer poll again (`projectstore::parses`, `readerParses`, `listings`: plugin.projects POLL and CACHED,
+  gui.explorer POLL, gui.switch POLL). The poll waits `kPollAfterShow` after the frame that shows the explorer again
+  (the Code view), and the explorer hashes what its rows show each frame (the lists by a revision a poll bumps).
+  `list()` and `presetsOf` (PROJECTS, EXPORT) still read what the cache lacks, outside its lock. `Source/plugin/ProjectExport` writes a project
   as a source .zip (`funk-playground-source`) or a .fmpack (a 20-byte header, then the project's JSON as xz through
   macOS's libcompression, zlib elsewhere) and reads both back; the same rule holds for both formats. plugin.export
   checks them.

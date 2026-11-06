@@ -209,6 +209,10 @@ namespace playground::ui
         // its idle calls (10 a second) and this long with no tick (Panel.h "The meters' reader").
         constexpr int kHiddenIdles = 5;
         constexpr double kHiddenAfter = 1.0;             // s
+        // The explorer's projects and presets are polled this often while it shows (s), and a poll that fell due while
+        // it was away comes this long after it shows again, not on that frame (Panel::syncExplorer).
+        constexpr double kProjectsPoll = 3.0;
+        constexpr double kPollAfterShow = 0.25;
         constexpr float kCardPad = 10.0f;                // inside the chat's card
         constexpr float kCardRadius = 14.0f;
         constexpr float kIconButton = 28.0f;             // the header's new chat and key
@@ -4030,17 +4034,32 @@ namespace playground::ui
     void Panel::syncExplorer()
     {
         if (!explorerShown_ || explorerItem_ < 0)
-            return;
-        const double now = host_ != nullptr ? host_->nowSeconds() : 0.0;
-        const ProjectState st = port_.project();
-        // The projects and the open one's presets, every 3 s (the presets' file is read only when it changed:
-        // ProjectStore's presetsOf): a revision when they differ from what the rows show.
-        if (projectsAt_ < 0.0 || now - projectsAt_ > 3.0 || presetsOf_ != st.name)
         {
-            std::vector<ProjectEntry> projects = port_.projects();
+            explorerAway_ = true;
+            return;
+        }
+        const double now = host_ != nullptr ? host_->nowSeconds() : 0.0;
+        if (explorerAway_)
+        {
+            // Shown again (the CODE view, the explorer opened, a wider window): its rows as they were on this frame,
+            // which lays the panel out already; a poll that fell due while it was away comes kPollAfterShow later.
+            explorerAway_ = false;
+            if (projectsAt_ >= 0.0)
+                projectsAt_ = std::max(projectsAt_, now + kPollAfterShow - kProjectsPoll);
+        }
+        const ProjectState st = port_.project();
+        // The projects and the open one's presets, every kProjectsPoll s, and at once when the store's Reader has read a
+        // file since (EditorPort::projectsPolled: no project's file is read whole here; one the store does not hold as
+        // it is now is read on its thread, listed as it was until then): a revision when they differ from what the rows
+        // show.
+        const uint64_t read = port_.projectsRead();
+        if (projectsAt_ < 0.0 || now - projectsAt_ > kProjectsPoll || presetsOf_ != st.name || read != projectsReadSeen_)
+        {
+            projectsReadSeen_ = read;
+            std::vector<ProjectEntry> projects = port_.projectsPolled();
             std::sort(projects.begin(), projects.end(),
                       [](const ProjectEntry& a, const ProjectEntry& b) { return a.when != b.when ? a.when > b.when : a.name < b.name; });
-            std::vector<PresetEntry> presets = st.name.empty() ? std::vector<PresetEntry>() : port_.presets(st.name);
+            std::vector<PresetEntry> presets = st.name.empty() ? std::vector<PresetEntry>() : port_.presetsPolled(st.name);
             if (projects != projectList_ || presets != presetList_ || presetsOf_ != st.name)
                 ++listsRevision_;
             projectList_ = std::move(projects);

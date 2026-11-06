@@ -665,6 +665,8 @@ namespace playground::ui
         uint64_t explorerKey_ = 0;
         bool explorerStale_ = true;                      // made again at the next frame, whatever the hash
         int explorerBuilds_ = 0;
+        uint64_t projectsReadSeen_ = 0;                  // EditorPort::projectsRead at the last poll
+        bool explorerAway_ = true;                       // hidden at the last frame (its poll then waits: syncExplorer)
         void syncExplorer();
         void layoutExplorer();
         void openFromExplorer(ExplorerItem::Section section, const ExplorerItem::Row& row);

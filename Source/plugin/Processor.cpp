@@ -1694,8 +1694,35 @@ namespace playground
 
     std::vector<ProjectEntry> Processor::projects() const
     {
+        return entriesOf(projectstore::list());
+    }
+
+    std::vector<ProjectEntry> Processor::projectsPolled() const
+    {
+        std::vector<std::string> unread;
+        std::vector<ProjectEntry> out = entriesOf(projectstore::listCached(unread));
+        if (!unread.empty())
+            reader_->request(unread);
+        return out;
+    }
+
+    std::vector<PresetEntry> Processor::presetsPolled(const std::string& project) const
+    {
+        std::vector<std::string> unread;
+        std::vector<PresetEntry> out;
+        if (const auto ps = projectstore::presetsCached(project, unread))
+            for (const projectstore::PresetSummary& pr : *ps)
+                out.push_back({ pr.name, whenOf(pr.savedMs), pr.from });
+        if (!unread.empty())
+            reader_->request(unread);
+        return out;
+    }
+
+    uint64_t Processor::projectsRead() const { return reader_->revision(); }
+
+    std::vector<ProjectEntry> Processor::entriesOf(const std::vector<projectstore::Entry>& list) const
+    {
         std::vector<ProjectEntry> out;
-        const std::vector<projectstore::Entry> list = projectstore::list();
         for (const projectstore::Entry& e : list)
             out.push_back({ e.name, whenOf(e.savedMs), e.latest, e.versions, static_cast<int>(e.presets.size()) });
         const std::lock_guard<std::mutex> lock(programMutex_);
