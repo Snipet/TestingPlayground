@@ -303,8 +303,9 @@ namespace playground
         juce::var traceTool(const juce::var& toolUse);             // trace's (ChatTrace.cpp)
         juce::var captureTool(const juce::var& toolUse);           // capture's (ChatCapture.cpp)
         // view_panel's values and at: the state its picture draws (at's render of the program that plays, offline, to
-        // its moment); "" or why it cannot be.
-        std::string panelState(const juce::var& input, PictureState& state);
+        // its moment, the dials not named the plugin's or, with dials_from, the defaults: `defaults`, which the result's
+        // first line says); "" or why it cannot be.
+        std::string panelState(const juce::var& input, PictureState& state, bool& defaults);
         std::string toolText(const std::string& name, const juce::var& input, bool& isError);
         // read_file and edit_file (ChatFiles.cpp): a file whole, a range of its lines or the lines that hold a text or
         // match a pattern (regex), in one file or in every file, numbered (a part read marks nothing seen); one passage or a list of them replaced, in one file or in several

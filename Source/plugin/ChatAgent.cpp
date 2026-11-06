@@ -3650,9 +3650,10 @@ namespace playground
     }
 
     // ---- view_panel's state ---------------------------------------------------------------------------------------------
-    std::string ChatAgent::panelState(const juce::var& input, PictureState& state)
+    std::string ChatAgent::panelState(const juce::var& input, PictureState& state, bool& defaults)
     {
         state = {};
+        defaults = false;
         // values: by name, a number (a dial's plain value, a field's, a level's dBFS) or a dial's option by name.
         const juce::var values = input.getProperty("values", juce::var());
         if (const juce::DynamicObject* o = values.getDynamicObject())
@@ -3682,8 +3683,10 @@ namespace playground
         // seconds is the one moment.
         if (at.hasProperty("try_edits"))
             return "at renders the program that plays: try a change with view_sound, or run it first.";
-        if (at.hasProperty("from_seconds") || at.hasProperty("to_seconds"))
-            return "at takes no from_seconds or to_seconds: seconds is the moment it draws.";
+        if (at.hasProperty("from_seconds") || at.hasProperty("to_seconds") || at.hasProperty("window"))
+            return "at takes no from_seconds, to_seconds or window: seconds is the moment it draws.";
+        if (at.hasProperty("base_hz"))
+            return "at takes no base_hz: it measures nothing.";
         // at: the program that plays, rendered offline with view_sound's settings to its moment.
         constexpr double kMaxAt = 20.0;
         const juce::var sec = at.getProperty("seconds", juce::var());
@@ -3696,12 +3699,14 @@ namespace playground
         measure::ViewRequest vr;
         std::string why;
         vr.render = scenario::renderOf(at, &why);
-        vr.render.current = currentDials();
+        if (why.empty() && scenario::dialsFrom(at, defaults, why) && !defaults)   // as view_sound reads it
+            vr.render.current = currentDials();
         soundInput(at, vr);
         if (why.empty())
             scenario::resolve(vr.render, host_, why);
         if (!why.empty())
             return "at: " + why;
+        defaults = defaults && !vr.render.fromCapture;   // a recording plays its own dials (view_sound's line)
         setActivity("Rendering the program to its moment");
         measure::Session session(files, vr.render.rate);
         if (!session.compiled())
@@ -3780,13 +3785,14 @@ namespace playground
                 setActivity("Looking at the panel");
             // A state of Claude's choosing (values), or the one the program reaches at a moment (at): the panel's.
             PictureState state;
+            bool defaults = false;                       // at's dials not named at their defaults: the first line says so
             std::string note;
             if (pv == PictureView::schematic)
             {
                 if (input.hasProperty("values") || input.hasProperty("at"))
                     note = " (values and at draw the panel's displays and dials: the schematic shows the netlist as it is.)";
             }
-            else if (const std::string why = panelState(input, state); !why.empty())
+            else if (const std::string why = panelState(input, state, defaults); !why.empty())
             {
                 block.getDynamicObject()->setProperty("content", juce::String::fromUTF8(("No picture: " + why).c_str()));
                 block.getDynamicObject()->setProperty("is_error", true);
@@ -3806,7 +3812,8 @@ namespace playground
                                          { "source", claude::object({ { "type", "base64" },
                                                                       { "media_type", "image/png" },
                                                                       { "data", juce::Base64::toBase64(pic.png.data(), pic.png.size()) } }) } }));
-            content.add(claude::object({ { "type", "text" }, { "text", juce::String::fromUTF8((pic.about + note).c_str()) } }));
+            content.add(claude::object({ { "type", "text" },
+                                         { "text", juce::String::fromUTF8((scenario::dialsLine(defaults) + pic.about + note).c_str()) } }));
             block.getDynamicObject()->setProperty("content", content);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);

@@ -608,7 +608,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   SoftRaster's image of the same frame) and `plugin.chat` VIEW check both paths (the fallback through
   `picture::forceSoftRasterForTests`). A state of Claude's choosing (`PictureState`, EditorPort.h; `values`, `at`):
   `ChatAgent::panelState` reads it on the worker, `at`'s render too (the program that plays, `chatRunning`, in a
-  Session of its own with view_sound's settings, offline, its `try_edits` refused: `MomentHooks` reads the meters
+  Session of its own with view_sound's settings (`dials_from` too, the result's first line saying defaults), offline,
+  its `try_edits`, close-up seconds, `window` and `base_hz` refused: `MomentHooks` reads the meters
   from the first sample (its reader added in `RenderHooks::started`, before the first call), cuts the last call at
   its moment and keeps the Session Engine's meters 60 times a second of the render, at most 150, then its scopes and
   `Engine::dials`), and picturePanel draws it, only on the panel of the files it rendered (`PictureState::sources`,
@@ -629,7 +630,7 @@ place (its `products/<key>.cmake`, and its names in the docs).
   each render; "capture": the user's recording, through `scenario::captured` alone). A render plays host blocks as the processor does (the dials
   and the transport once a block, the events at their samples), so a phrase and the wheels give the same bits at any
   block size, and a moving dial, as in a DAW, does not; `dsp.tune` and `plugin.chatexample` check both at 64 and 333.
-  measure_output, view_sound and trace also take `dials_from` (current or defaults: `scenario::dialsFrom`; not in a
+  measure_output, view_sound (and view_panel's `at`) and trace also take `dials_from` (current or defaults: `scenario::dialsFrom`; not in a
   check's render settings, which set_checks' own covers, nor tune_dials'), and compare its own `dials` (own, current or
   defaults), the result's first line saying defaults.
   `try_edits` apply to a copy of the editor's files with edit_file's rule (in measure_output, view_sound and compare's

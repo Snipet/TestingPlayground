@@ -63,7 +63,9 @@
 //            the gain on the way, and draws its fields (the seconds 0.500 in the instance and in Shared, the gain 0.80);
 //            values over at; a moment past the render's end; a moment in the first host block metered from the first
 //            sample (the effect's impulse at 0); at without seconds, past 20 s, with try_edits and values not an object
-//            refused with no picture (plugin.chat.view_panel.at.png)
+//            refused with no picture (plugin.chat.view_panel.at.png); at's dials_from as view_sound's: the gain moved
+//            (G 0.90), then the defaults (G 0.50, the text's first line saying so); a snapshot, a window and base_hz
+//            refused
 //   CIRCUIT  edit_circuit through the agent, on the Tube Screamer's netlist (screamer.cir, as pedal.cir) shown in an
 //            editor's Schematic view: each command (add with and without at, place, connect, disconnect, set, rename, delete,
 //            layout) gives apply's exact text, merged into the tab as one undo step, and the parts it changed flash; a
@@ -1386,6 +1388,23 @@ PROBE(plugin, chat)
                                                           { "new_text", "t += 2 * n * inv;" } }) };
         const std::string trial = look(input({ { "at", input({ { "seconds", 0.5 }, { "try_edits", edits } }) } }), png, error);
         P.eq("panelstate.at_no_trial_edits", error && png.empty() && has(trial, "try a change with view_sound") ? 1 : 0, 1);
+        // dials_from, as view_sound reads it: the dials as they are (the gain moved), else the defaults, said first; a
+        // snapshot, a window and base_hz refused.
+        sp.getParameters()[0]->setValueNotifyingHost(pg::normOf(sp.control(0), 0.9f));
+        sp.poll();
+        const std::string asTheyAre = look(input({ { "at", input({ { "seconds", 0.5 } }) } }), png, error);
+        P.eq("panelstate.at_current_dials", !error && has(asTheyAre, "G 0.90") && !has(asTheyAre, "at their defaults") ? 1 : 0, 1);
+        const std::string byDefault = look(input({ { "at", input({ { "seconds", 0.5 }, { "dials_from", "defaults" } }) } }), png, error);
+        std::printf("view_panel, at with dials_from defaults: %s\n", byDefault.c_str());
+        P.eq("panelstate.at_dials_from_defaults", !error && byDefault.rfind("The dials not named are at their defaults.\nThe program's panel", 0) == 0
+                                                      && has(byDefault, "G 0.50") ? 1 : 0, 1);
+        const std::string snapshot = look(input({ { "at", input({ { "seconds", 0.5 }, { "dials_from", "snapshot" } }) } }), png, error);
+        P.eq("panelstate.at_no_snapshot", error && png.empty() && has(snapshot, "at: dials_from is current") ? 1 : 0, 1);
+        const std::string windowed = look(input({ { "at", input({ { "seconds", 0.5 }, { "window", input({ { "from", 0.2 }, { "to", 0.4 } }) } }) } }),
+                                          png, error);
+        P.eq("panelstate.at_no_window", error && png.empty() && has(windowed, "at takes no from_seconds, to_seconds or window") ? 1 : 0, 1);
+        const std::string based = look(input({ { "at", input({ { "seconds", 0.5 }, { "base_hz", 110 } }) } }), png, error);
+        P.eq("panelstate.at_no_base_hz", error && png.empty() && has(based, "at takes no base_hz") ? 1 : 0, 1);
     }
 
     // ---- CIRCUIT ---------------------------------------------------------------------------------------------------------
