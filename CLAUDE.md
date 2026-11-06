@@ -813,7 +813,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `find` with `regex` is a pattern (`dsp/Regex.h`; refused in words when it is none it takes) and with no name searches
   every file, in the tabs' order (each file's line count, version (kept, for `expected`) and lines, at most 40 shown in
   all), in find's own case first, then in any; a pattern's steps are at most 20 million a call (`kSearchSteps`, about
-  0.1 s: the link runs its calls on one worker), past which the search stops and says where;
+  0.1 s: the link runs its calls on one worker), past which the search stops and says where and what it did not search,
+  and its compile is bounded too (`Regex::compile`: a count of what writes nothing writes nothing; too large refused);
   an edit marks the file seen only when the chat's Claude had seen the text it edited (`carrySeen`), so a file read in
   part, or changed by the user since, goes whole with the next state.
   edit_file replaces one passage or a list (`edits`), in order, each occurring once in what the ones before it left,

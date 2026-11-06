@@ -656,7 +656,10 @@ namespace playground
         {
             std::vector<FileHits> hits;                          // the files with a line that holds it
             bool anyCase = false;
+            std::size_t without = 0;                             // the files searched to their end with no line that does
             std::string stoppedAt;                               // where the steps ran out ("engine.fm's line 1200"), or ""
+            std::string unsearched;                              // then what it never searched ("engine.fm from line 1200, x.fm")
+            std::string unreached;                               // and the files after the one it stopped in ("x.fm"), or ""
         };
 
         Everywhere findInEvery(const Draft& d, Finder& finder)
@@ -665,15 +668,25 @@ namespace playground
             for (const bool c : { false, true })
             {
                 e.hits.clear();
-                for (const SourceFile& f : d.files)
+                e.without = 0;
+                for (std::size_t i = 0; i < d.files.size(); ++i)
                 {
+                    const SourceFile& f = d.files[i];
                     FileHits h{ &f, linesOf(f.text), {} };
-                    if (const int at = finder.scan(h.lines, 1, static_cast<int>(h.lines.size()), c, h.found); at > 0)
-                        e.stoppedAt = f.name + "'s line " + std::to_string(at);
+                    const int at = finder.scan(h.lines, 1, static_cast<int>(h.lines.size()), c, h.found);
+                    if (at == 0 && h.found.empty())
+                        ++e.without;
                     if (!h.found.empty())
                         e.hits.push_back(std::move(h));
-                    if (!e.stoppedAt.empty())
+                    if (at > 0)
+                    {
+                        // Its line `at` and the rest of the file unsearched, and every file after it.
+                        e.stoppedAt = f.name + "'s line " + std::to_string(at);
+                        for (std::size_t k = i + 1; k < d.files.size(); ++k)
+                            e.unreached += (e.unreached.empty() ? "" : ", ") + d.files[k].name;
+                        e.unsearched = f.name + " from line " + std::to_string(at) + (e.unreached.empty() ? "" : ", " + e.unreached);
                         break;
+                    }
                 }
                 if (!e.hits.empty() || !e.stoppedAt.empty())
                 {
@@ -684,16 +697,20 @@ namespace playground
             return e;
         }
 
-        // Its words: how many lines in each file, then each file's (its line count and version, `versions`, as a read
-        // says them) with kContext lines around each, at most kMaxFound lines shown in all.
+        // Its words: how many lines in each file and in how many others none (when the steps ran out: of the files it
+        // searched to their end, and what it never searched), then each file's (its line count and version, `versions`,
+        // as a read says them) with kContext lines around each, at most kMaxFound lines shown in all.
         std::string everywhereText(const Draft& d, const Finder& finder, const Everywhere& e, const std::vector<std::string>& versions)
         {
             const std::size_t fileCount = d.files.size();
-            const std::string stopped = e.stoppedAt.empty() ? std::string() : finder.stoppedNote(e.stoppedAt, false);
+            const bool cut = !e.stoppedAt.empty();
+            const std::string stopped = cut ? finder.stoppedNote(e.stoppedAt, false) : std::string();
             if (e.hits.empty())
-                return (stopped.empty() ? "No line of " + (fileCount == 1 ? d.files.front().name : "the " + std::to_string(fileCount) + " files")
-                                              + " " + finder.verb(1) + " " + finder.quoted()
-                                        : "No line found yet: " + stopped)
+                return (cut ? "No line found yet: "
+                                  + finder.stoppedNote(e.stoppedAt + (e.unreached.empty() ? "" : " (" + e.unreached + " not searched"
+                                                                      + (e.anyCase ? " in another case)" : ")")), false)
+                            : "No line of " + (fileCount == 1 ? d.files.front().name : "the " + std::to_string(fileCount) + " files")
+                                  + " " + finder.verb(1) + " " + finder.quoted())
                      + ".\n";
             std::size_t total = 0;
             std::string each;
@@ -702,8 +719,11 @@ namespace playground
                 total += h.found.size();
                 each += (each.empty() ? "" : ", ") + h.file->name + " " + std::to_string(h.found.size());
             }
-            if (const std::size_t none = fileCount - e.hits.size(); none > 0)
-                each += "; none in the other " + (none == 1 ? std::string("file") : std::to_string(none) + " files");
+            if (e.without > 0)
+                each += "; none in the other " + (e.without == 1 ? std::string("file") : std::to_string(e.without) + " files")
+                      + (cut ? " searched" : "");
+            if (cut)
+                each += std::string("; not searched") + (e.anyCase ? " in another case: " : ": ") + e.unsearched;
             std::string out = std::to_string(total) + (total == 1 ? " line " : " lines ") + finder.verb(total) + " " + finder.quoted()
                             + (e.anyCase ? " (in another case)" : "") + " (" + each + "), with " + std::to_string(kContext)
                             + " lines around each:\n";

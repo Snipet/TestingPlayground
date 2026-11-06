@@ -72,38 +72,42 @@
 //   FILES    read_file by lines (exactly those, numbered, after the line count and version; to the end; past it
 //            refused; numbers past an int's range clamped or refused), by a text (the lines that hold it with two
 //            around each, groups apart; none); SEARCH: a regex (dsp/Regex.h: RE2's syntax over a table of patterns and
-//            lines; backreferences, lookaround, a**, a bound past 1000, a pattern too large, \p and a range backwards
-//            refused in words; (a+)+$, (a|aa)+$ and (a*)*c over 100,000 a's and a b at most a few steps a character,
-//            in under a second, and a pattern of many states stopped at its steps), find with no name in every file
-//            (a pattern: the count in each file, then each one's line count, version and lines; a text found in another
-//            case; none), a pattern in one file, refused ones (a pattern it does not take, saying how to find the text
-//            itself; from with no name; no name and no find), and a pattern of many states over a 30,000-character
-//            line stopped at its 20 million steps, saying where, in one file and in every file; a part read is not the file seen, nor is an edit after it (the next
-//            state sends it, with the user's line and the edit, and names unchanged a file read whole), and an edit of
-//            a file seen is seen; edit_file's miss gives the closest passage, numbered, and what differs (the
-//            characters; only the whitespace; a fragment of a long line, a letter off, gets that line), a passage that
-//            occurs four times names its lines; a list with one bad edit changes nothing and names it; a good one is
-//            one write the editor undoes in one step, its result the line count and version; `expected` refuses a write
-//            after the user's edit, keeps it and shows its line (the result's first line naming the edit), and with the
-//            version it gives the write goes; given the oldest of the versions kept, it still shows the lines changed;
-//            edit_circuit's result gives its version, and an `expected` from before it is refused as Claude's own change;
-//            edit_file's files (MULTI): one bad edit in the second file changes neither; files beside name is refused;
-//            two files in one write, the result a line each and the tool's row naming both, merged as one undo step
-//            across their tabs (Cmd-Z in either tab undoes both, Cmd-Shift-Z in the other redoes both; a tab typed in
-//            since keeps its typing and its edit while the other's Cmd-Z undoes its own); the user's typing planted
-//            between the read and the write is kept and the edits run again on it, and with that file's expected
-//            nothing is written to either; a unified diff of two files (git's headers, a hunk whose lines occur twice
-//            placed by its @@ line, a blank context line whose space was lost, a last line without its line end) in one
-//            step Cmd-Z undoes; a hunk that misses gives the closest passage and changes nothing; a diff that makes a
-//            file is refused; hunks of new lines alone go at the start and after a last line with no line end; a hunk's
-//            lines occurring three times go to the occurrence nearest its @@ line, and in another file only as the hunk
-//            before moved it; a context line that lost its space or was indented with a tab, before -/+ lines, a bare
-//            @@ line and git's header-only blocks (a rename, an empty file made) are refused, nothing changed; the list
-//            sent as a JSON string is read as the list; 42 hunks for one file go in one call; undo through two
-//            multi-file changes and an edit of one file: Cmd-Z twice undoes both changes in both files, Cmd-Shift-Z and
-//            Cmd-Y redo them though the tab's history went back past them; in a netlist's Schematic view Cmd-Z undoes
-//            the change in both files and the drawing loses its part; a session loaded over two tabs is one step; a
-//            fresh start ends the groups
+//            lines, \Q...\E's last character the one a repetition repeats; backreferences, lookaround, a**, a bound
+//            past 1000, a pattern too large (its program, or the work of writing it out), \p and a range backwards
+//            refused in words; nested counts of what writes nothing compiled at once; (a+)+$, (a|aa)+$ and (a*)*c over
+//            100,000 a's and a b at most a few steps a character, in under a second, and a pattern of many states
+//            stopped at its steps), find with no name in every file (a pattern: the count in each file, then each one's
+//            line count, version and lines; a text and a pattern found in another case; none), a pattern in one file,
+//            refused ones (a pattern it does not take, saying how to find the text itself; from with no name; no name
+//            and no find), and a pattern of many states over a 30,000-character line stopped at its 20 million steps,
+//            saying where, in one file and in every file (a line found before it: none counted only in the files
+//            searched, and what was not searched named), the steps one budget across the lines and files of a call
+//            (stopped in a second file where neither alone spends it); a part read is not the file seen, nor is an edit
+//            after it (the next state sends it, with the user's line and the edit, and names unchanged a file read
+//            whole), and an edit of a file seen is seen; edit_file's miss gives the closest passage, numbered, and what
+//            differs (the characters; only the whitespace; a fragment of a long line, a letter off, gets that line), a
+//            passage that occurs four times names its lines; a list with one bad edit changes nothing and names it; a
+//            good one is one write the editor undoes in one step, its result the line count and version; `expected`
+//            refuses a write after the user's edit, keeps it and shows its line (the result's first line naming the
+//            edit), and with the version it gives the write goes; given the oldest of the versions kept, it still shows
+//            the lines changed; edit_circuit's result gives its version, and an `expected` from before it is refused as
+//            Claude's own change; edit_file's files (MULTI): one bad edit in the second file changes neither; files
+//            beside name is refused; two files in one write, the result a line each and the tool's row naming both,
+//            merged as one undo step across their tabs (Cmd-Z in either tab undoes both, Cmd-Shift-Z in the other
+//            redoes both; a tab typed in since keeps its typing and its edit while the other's Cmd-Z undoes its own);
+//            the user's typing planted between the read and the write is kept and the edits run again on it, and with
+//            that file's expected nothing is written to either; a unified diff of two files (git's headers, a hunk
+//            whose lines occur twice placed by its @@ line, a blank context line whose space was lost, a last line
+//            without its line end) in one step Cmd-Z undoes; a hunk that misses gives the closest passage and changes
+//            nothing; a diff that makes a file is refused; hunks of new lines alone go at the start and after a last
+//            line with no line end; a hunk's lines occurring three times go to the occurrence nearest its @@ line, and
+//            in another file only as the hunk before moved it; a context line that lost its space or was indented with
+//            a tab, before -/+ lines, a bare @@ line and git's header-only blocks (a rename, an empty file made) are
+//            refused, nothing changed; the list sent as a JSON string is read as the list; 42 hunks for one file go in
+//            one call; undo through two multi-file changes and an edit of one file: Cmd-Z twice undoes both changes in
+//            both files, Cmd-Shift-Z and Cmd-Y redo them though the tab's history went back past them; in a netlist's
+//            Schematic view Cmd-Z undoes the change in both files and the drawing loses its part; a session loaded over
+//            two tabs is one step; a fresh start ends the groups
 //   SOUND    view_sound through the agent (a program that sounds): its result a PNG of 1120 x 800 and what it shows,
 //            the tool's entry with the picture's thumbnail (480 px), the session without the PNG but with the thumbnail;
 //            a program that does not compile draws nothing and says why
@@ -1685,6 +1689,8 @@ PROBE(plugin, chat)
                 { "\\Qa.b(\\E", "a.b(", true },      { "\\x{3c0}", "\xcf\x80", true },  { "(?P<n>ab)c", "abc", true },
                 { "[]a]", "]", true },               { "[^\\d]", "5", false },          { "(?i)[^a]", "A", false },
                 { "^$", "", true },                  { "a|", "zzz", true },             { "(a*)*b", "aaab", true },
+                { "^\\Qab\\E*$", "a", true },        { "^\\Qab\\E*$", "abb", true },     { "^\\Qab\\E*$", "abab", false },
+                { "^\\Qa|b)\\E$", "a|b)", true },    { "^(a){0}b$", "b", true },        { "^(?:a{0}|b){3}$", "bb", true },
             };
             std::string wrong;
             for (const Case& c : cases)
@@ -1700,6 +1706,8 @@ PROBE(plugin, chat)
             P.eq("files.regex_refusals", has(refused("(a)\\1"), "backreferences are not supported") && has(refused("(?=a)"), "lookahead and lookbehind")
                                              && has(refused("a**"), "bad repetition operator: **") && has(refused("a{1001}"), "at most 1000")
                                              && has(refused("(a{100}){100}"), "too large") && has(refused("\\p{L}"), "\\p")
+                                             && has(refused("(?:(?:()()()()()()()()()()a){1000}){5}"), "too large")
+                                             && has(refused("\\Q\\E*"), "missing argument to repetition operator: *")
                                              && refused("[z-a]") == "invalid character class range: z-a (at character 2)" ? 1 : 0, 1);
             // (a+)+$ and (a|aa)+$ on 100,000 a's and a b: exponential for a backtracking engine, here a few steps a
             // character; a pattern whose states are many stops at its steps.
@@ -1720,6 +1728,24 @@ PROBE(plugin, chat)
             pg::regex::Regex many = pg::regex::Regex::compile("a{0,1000}b");
             std::uint64_t few = 1000000;
             P.eq("files.regex_linear", linear && many.search(aaa, few) == pg::regex::Found::spent && few == 0 ? 1 : 0, 1);
+            // Counts nested over what writes nothing (a{0}, (), \Q\E) write nothing, at once: written out, they would be
+            // 1000^4 copies of nothing (a link's single worker held for hours).
+            {
+                const auto t0 = std::chrono::steady_clock::now();
+                const auto msSince = [&] { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); };
+                bool empty = true;
+                for (const char* pattern : { "(((a{0}){1000}){1000}){1000}", "((((a{0}){1000}){1000}){1000}){1000}",
+                                             "((((){0,1000}){0,1000}){0,1000}){0,1000}", "((((\\Q\\E){2,}){1000}){1000}){1000}x" })
+                {
+                    const pg::regex::Regex re = pg::regex::Regex::compile(pattern);
+                    empty = empty && re.ok() && re.size() <= 2;
+                    if (msSince() > 100.0)
+                        break;                                  // too slow already (seconds, or hours, the next)
+                }
+                const double ms = msSince();
+                std::printf("regex: nested counts of nothing compiled in %.3f ms\n", ms);
+                P.eq("files.regex_compile_bounded", empty && ms < 100.0 ? 1 : 0, 1);
+            }
         }
         {
             const std::string otherVersion = versionIn(toolText(call("read_file", input({ { "name", "other.fm" }, { "from", 1 } }))));
@@ -1738,6 +1764,9 @@ PROBE(plugin, chat)
             const std::string cased = toolText(call("read_file", input({ { "name", "" }, { "find", "OTHER(" } })));
             P.eq("files.find_every_case", cased == "1 line holds \"OTHER(\" (in another case) (other.fm 1; none in the other 2 files), with 2 lines around "
                                                    "each:\nother.fm: 2 lines, version " + otherVersion + "; line 2:\n" + otherLines ? 1 : 0, 1);
+            const std::string casedPattern = toolText(call("read_file", input({ { "find", "OTHER\\(" }, { "regex", true } })));
+            P.eq("files.find_every_case_regex", casedPattern == "1 line matches \"OTHER\\(\" (in another case) (other.fm 1; none in the other 2 files), with "
+                                                               "2 lines around each:\nother.fm: 2 lines, version " + otherVersion + "; line 2:\n" + otherLines ? 1 : 0, 1);
             const std::string nowhere = toolText(call("read_file", input({ { "find", "nothing like it" } })));
             P.eq("files.find_every_none", nowhere == "No line of the 3 files holds \"nothing like it\".\n" ? 1 : 0, 1);
             // A pattern in one file, as a text's find.
@@ -2279,6 +2308,58 @@ PROBE(plugin, chat)
                                                && inAll == "No line found yet: the search stopped at long.fm's line 1: " + costly
                                                              + "a file's name with from and lines, searches the rest.\n"
                                                && ms < 4000.0 ? 1 : 0, 1);
+
+            // Stopped partway with a line found before: none is said only of the files searched to their end, and what
+            // was not searched is named (the rest of the file it stopped in, and the files after it).
+            pg::Draft zd;
+            zd.files = { saved.files.front(), { "z1.fm", "// zebra\n" }, ld.files.back(), { "z2.fm", "// zebra\n" } };
+            processor.editorPort().setDraft(zd);
+            const std::string cutShort = toolText(agent.mcpCall("read_file", input({ { "find", "zebra|a{1000}b" }, { "regex", true } })));
+            const std::string cutNone = toolText(agent.mcpCall("read_file", input({ { "find", "a{1000}b" }, { "regex", true } })));
+            std::printf("%s%s", cutShort.c_str(), cutNone.c_str());
+            P.eq("files.find_every_stopped", has(cutShort, "1 line matches \"zebra|a{1000}b\" (z1.fm 1; none in the other file searched; not searched: "
+                                                           "long.fm from line 1, z2.fm), with 2 lines around each:\nz1.fm: 1 line, version ")
+                                                 && has(cutShort, "; line 1:\n1\t// zebra\n(the search stopped at long.fm's line 1: " + costly)
+                                                 && !has(cutShort, "z2.fm: ")
+                                                 && cutNone == "No line found yet: the search stopped at long.fm's line 1 (z2.fm not searched): " + costly
+                                                                   + "a file's name with from and lines, searches the rest.\n"
+                                             ? 1 : 0, 1);
+
+            // The steps are one budget for the call, across lines and files: a{1000}b over lines of 2,000 a's, eight in
+            // each of two files (neither file alone spends 20 million), stops in the second, at the line where what the
+            // lines before it (and the program's) left runs out.
+            pg::regex::Regex costs = pg::regex::Regex::compile("a{1000}b");
+            const auto cost = [&](std::string_view l) {
+                std::uint64_t left = std::uint64_t(1) << 40;
+                (void)costs.search(l, left);
+                return (std::uint64_t(1) << 40) - left;
+            };
+            const std::string row(2000, 'a');
+            std::string eight;
+            for (int k = 0; k < 8; ++k)
+                eight += row + "\n";
+            std::uint64_t before = 0;                                  // the program's lines first
+            for (std::string_view t = saved.files.front().text; !t.empty();)
+            {
+                const std::size_t nl = std::min(t.find('\n'), t.size());
+                std::string_view l = t.substr(0, nl);
+                if (!l.empty() && l.back() == '\r')
+                    l.remove_suffix(1);
+                before += cost(l);
+                t.remove_prefix(std::min(nl + 1, t.size()));
+            }
+            const std::uint64_t each = cost(row), budget = 20'000'000;
+            const std::uint64_t at = before < budget ? (budget - before) / each + 1 - 8 : 0;   // b.fm's line
+            pg::Draft sd;
+            sd.files = { saved.files.front(), { "a.fm", eight }, { "b.fm", eight } };
+            processor.editorPort().setDraft(sd);
+            const std::string shared = toolText(agent.mcpCall("read_file", input({ { "find", "a{1000}b" }, { "regex", true } })));
+            std::printf("%llu steps a line, %llu before them: %s", static_cast<unsigned long long>(each), static_cast<unsigned long long>(before),
+                        shared.c_str());
+            P.eq("files.regex_steps_shared", 8 * each < budget && at > 1 && at <= 8
+                                                 && shared == "No line found yet: the search stopped at b.fm's line " + std::to_string(at) + ": " + costly
+                                                                  + "a file's name with from and lines, searches the rest.\n"
+                                             ? 1 : 0, 1);
         }
         processor.editorPort().setDraft(saved);
         host.tick(2);
