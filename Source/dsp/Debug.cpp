@@ -1797,10 +1797,13 @@ namespace playground::measure
                                 + "; what follows is about that part.)");
         if (sound.stopCall != Patch::Method::none)
         {
-            // A call that ran past its loop budget (Patch.h): the program played no more from there.
+            // A call that ran past its loop budget, or failed a bounds check (Patch.h): the program played no more from
+            // there.
             out.stopCall = sound.stopCall;
             out.stopAt = sound.stopAt;
-            const std::string words = session.stopWords(sound.stopCall, static_cast<double>(sound.stopAt) / rate);
+            out.stopBounds = sound.stopBounds;
+            const std::string words = session.stopWords(sound.stopCall, static_cast<double>(sound.stopAt) / rate,
+                                                        &sound.stopBounds);
             for (std::size_t from = 0; from < words.size();)
             {
                 const std::size_t end = std::min(words.find('\n', from), words.size());

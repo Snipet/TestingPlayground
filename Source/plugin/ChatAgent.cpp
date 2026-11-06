@@ -4281,7 +4281,8 @@ namespace playground
                      + (told.notes.empty() ? "" : "Notes:\n" + capped(told.notes)) + (checks.empty() ? "" : "\n" + checks);
             }
             isError = true;
-            if (s.stopped)                             // a call ran past its loop budget (Compiler.h, "A program that stops")
+            if (s.stopped)                             // a call ran past its loop budget or failed a bounds check
+                                                       // (Compiler.h, "A program that stops")
             {
                 note("ran it: it stopped");
                 return "It compiled but " + stopWords(s) + ":\n" + capped(s.errors);

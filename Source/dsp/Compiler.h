@@ -65,23 +65,24 @@
 // One compile offers at a time: compileNow waits for the compile the thread runs (a RUN's, a refine's), and the thread
 // starts none while compileNow compiles, so the program offered last is the one compiled last.
 //
-// A program that stops (Patch.h, "The loop budget"; Engine.h). A RUN's program is offered `revertible`, and the thread
-// waits for its first blocks before it says how the RUN went: until it has played a block with no swap under way, or
-// the audio thread has stopped (no block under way, and none for three of its own, 20 ms at least: a host that calls
-// none); a block under way, which a call past its budget makes long, is waited for (as long as the largest call's
-// budget takes at a loop of some 256 cycles an iteration, ten seconds at least: firstBlocks).
-// Should it stop meanwhile, the Engine has gone back to the program it replaced, and the RUN's outcome is that of a
-// compile that failed: `ok` false and `stopped`, `errors` the stop's message ("program.fm:14:10: error: process() ran
-// past its budget: a loop that never ends?"), and the program that played plays on, its status (`program`, the
-// recipe the freezer and a refine read) as it was. A program that stops later (a note, a dial, the input that
-// sets its loop going; one compileNow or a refine offered) is the Engine's to fade out; this thread, at its next pass,
-// says so in the status (a revision of its own: `ok` false, `stopped`, the stop's message, `sources` the stopped
-// program's files) and plays the program that played before it again: the files of the last program of other files
-// that played (compiled again with their configurations, CircuitPins, under a new id, with the dials' carry) as a
-// refine is offered; their dials in `controls` and `panel`, their files in `restored`, the new id in `program`. With
-// none (the first program, or one a state load brought: no run's, as the processor says), nothing plays until the next
-// RUN. A program that stopped is never gone back to again, nor refined, nor frozen: a refine built while the program it
-// refines stopped is let go before the offer, and the stop said.
+// A program that stops (Patch.h, "The loop budget", "Bounds checks"; Engine.h). A RUN's program is offered
+// `revertible`, and the thread waits for its first blocks before it says how the RUN went: until it has played a block
+// with no swap under way, or the audio thread has stopped (no block under way, and none for three of its own, 20 ms at
+// least: a host that calls none); a block under way, which a call past its budget makes long, is waited for (as long as
+// the largest call's budget takes at a loop of some 256 cycles an iteration, ten seconds at least: firstBlocks). Should
+// it stop meanwhile, the Engine has gone back to the program it replaced, and the RUN's outcome is that of a compile
+// that failed: `ok` false and `stopped`, `errors` the stop's message ("program.fm:14:10: error: process() ran past its
+// budget: a loop that never ends?"; a failed bounds check's at the access, `bounds` set: "program.fm:14:33: error:
+// process() went outside an array: index -188 out of bounds for 'line' of type 'float[512]'"), and the program that
+// played plays on, its status (`program`, the recipe the freezer and a refine read) as it was. A program that stops
+// later (a note, a dial, the input that sets its loop going; one compileNow or a refine offered) is the Engine's to
+// fade out; this thread, at its next pass, says so in the status (a revision of its own: `ok` false, `stopped`, the
+// stop's message, `sources` the stopped program's files) and plays the program that played before it again: the files
+// of the last program of other files that played (compiled again with their configurations, CircuitPins, under a new
+// id, with the dials' carry) as a refine is offered; their dials in `controls` and `panel`, their files in `restored`,
+// the new id in `program`. With none (the first program, or one a state load brought: no run's, as the processor says),
+// nothing plays until the next RUN. A program that stopped is never gone back to again, nor refined, nor frozen: a
+// refine built while the program it refines stopped is let go before the offer, and the stop said.
 //
 // The dials' carry (Controls.h's DialCarry). Just before it offers a program (a RUN's, compileNow's unless told not to,
 // a refine's), the compiler asks the carrier setDialCarrier gave (the processor's) how the dials come across: what each
@@ -135,7 +136,10 @@ namespace playground
         bool        refined = false;           // a refine brought it up to date (above): `program` is the refine's, and
                                                // when `ok`, all but `request`; else the failed compile's outcome stays
         bool        stopped = false;           // the program of `sources` compiled and stopped as it played (above, "A
-                                               // program that stops"): a call ran past its loop budget, `errors` say which
+                                               // program that stops"): a call ran past its loop budget, or failed a
+                                               // bounds check, `errors` say which
+        bool        bounds = false;            // then a bounds check failed (Patch.h, "Bounds checks"): an index
+                                               // outside its array, `errors` at the access
         uint64_t    stoppedProgram = 0;        // then its id: `request` when it stopped in its first blocks (or in init),
                                                // else the program that played (`program` too when nothing plays now)
         Sources     restored;                  // after such a stop, the files of `program` when this thread played the

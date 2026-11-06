@@ -689,6 +689,7 @@ namespace playground
         Stopped s;
         s.program = current_->program();
         s.call = current_->stopped();
+        s.bounds = current_->bounds();
         s.at = samples_ + static_cast<uint64_t>(std::max(at, 0));
         s.reverted = reverted;
         stopped_.publish(s);

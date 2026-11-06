@@ -27,8 +27,9 @@
 //   Culprits that go bad in one sample, or step alike, are named together; a step with a voice's note-on is the
 //   note-on's. A NaN that lives only in a local (computed and used within a call) leaves no field bad: the result says
 //   so, and names the state the map leaves out (a pointer's buffer, a large array: Patch::unmapped) when there is some.
-// A render whose program stopped (a call past its loop budget, Patch.h) says so after the "Rendered" line, the stop's
-// message and when (TraceResult::stopCall, stopAt); what comes after it is the program faded out.
+// A render whose program stopped (a call past its loop budget, or one that failed a bounds check, Patch.h) says so
+// after the "Rendered" line, the stop's message and when (TraceResult::stopCall, stopAt, stopBounds); what comes after
+// it is the program faded out.
 // watch (fields: paths or globs): each field over pass 1, as the voice chosen plays it (newest: the newest voice that
 //   sounds, as the panel's displays read; a note's newest voice; all: every voice pooled): min, max, mean, first, last,
 //   the first non-finite moment, the largest jump between two calls of one voice and a sparkline of 32 parts; `points`
@@ -106,6 +107,7 @@ namespace playground::measure
         std::vector<std::string> fromStart;       // fields already non-finite before the first call
         Patch::Method stopCall = Patch::Method::none; // pass 1's render stopped (Patch.h, "The loop budget"): the call, and
         std::size_t stopAt = 0;                   // the sample its call's block or part began at (the lines say so)
+        Patch::Bounds stopBounds;                 // the bounds check it failed, if one did (Patch.h, "Bounds checks")
         std::vector<float> l, r;                  // what pass 1 rendered (in its calls of 16 samples), for a probe to compare
     };
 

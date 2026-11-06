@@ -67,6 +67,7 @@ namespace playground
         s.request = id;
         s.ok = r.patch != nullptr;
         s.stopped = r.stopped != Patch::Method::none;     // an init that ran past its budget (Patch.h)
+        s.bounds = s.stopped && r.bounds.failed;          // or failed a bounds check
         s.stoppedProgram = s.stopped ? id : 0;
         s.errors = std::move(r.errors);
         s.notes = std::move(r.notes);
@@ -371,7 +372,9 @@ namespace playground
             s.ok = false;
             s.stopped = true;
             s.stoppedProgram = id;
-            s.errors = Patch::stopMessage(s.sources, read ? st.call : Patch::Method::process, engine_.rate());
+            s.bounds = read && st.bounds.failed;
+            s.errors = Patch::stopMessage(s.sources, read ? st.call : Patch::Method::process, engine_.rate(),
+                                          read ? &st.bounds : nullptr);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
                 stoppedProgram_ = id;
@@ -436,7 +439,8 @@ namespace playground
         s.stopped = true;
         s.stoppedProgram = st.program;
         s.refined = false;
-        s.errors = Patch::stopMessage(recipe_.files, st.call, rate);
+        s.bounds = st.bounds.failed;
+        s.errors = Patch::stopMessage(recipe_.files, st.call, rate, &st.bounds);
         s.sources = recipe_.files;
         s.restored.clear();
         s.program = st.program;                    // (silent) until the program before it plays again

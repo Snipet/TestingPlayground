@@ -93,19 +93,20 @@
 // read, at most 4 x kProbeRing ring copies and 12 stat reads and zeroes a call (an instrument's voices a look for the
 // newest a block).
 //
-// A program that stops (Patch.h, "The loop budget"). A call that runs past its budget stops its Patch, which the
-// Engine then calls no more, and it goes at once, fading, since nothing steps: an effect's output from the program's
-// last good samples, held, to its input over 20 ms (smootherstep; the block's input is kept for it), then its input as
-// it comes, as with no program; an instrument's voices of it, each from its last good samples, held, to silence over
-// 20 ms (no stop(): the program plays no more), and no note starts on it. While the program it replaced is still there
-// (an effect's 20 ms crossfade, an instrument's first block or its old voices fading) and the program was offered
-// `revertible` (the compiler's RUN, until settle()), the Engine goes back to the one it replaced instead, which so plays
-// on: an effect's crossfade turns back from where it is, the stopped side fading out under it; an instrument's held
-// keys start again on it (its voices that were fading go on fading), with its dials going on from where they were for
-// it: at a block's start as its glides were, mid-block from what its instances held since the swap (no snap, and no
-// glide advanced twice in a block). stops() counts the stops of the program that
-// plays, and lastStop() says the newest: the program, the call, the sample (from prepare()) and whether the Engine
-// went back. A stopped program plays no more, even across prepare() (restart() makes it as new: a render's).
+// A program that stops (Patch.h, "The loop budget", "Bounds checks"). A call that runs past its budget, or fails a
+// bounds check, stops its Patch, which the Engine then calls no more, and it goes at once, fading, since nothing steps:
+// an effect's output from the program's last good samples, held, to its input over 20 ms (smootherstep; the block's
+// input is kept for it), then its input as it comes, as with no program; an instrument's voices of it, each from its
+// last good samples, held, to silence over 20 ms (no stop(): the program plays no more), and no note starts on it.
+// While the program it replaced is still there (an effect's 20 ms crossfade, an instrument's first block or its old
+// voices fading) and the program was offered `revertible` (the compiler's RUN, until settle()), the Engine goes back to
+// the one it replaced instead, which so plays on: an effect's crossfade turns back from where it is, the stopped side
+// fading out under it; an instrument's held keys start again on it (its voices that were fading go on fading), with its
+// dials going on from where they were for it: at a block's start as its glides were, mid-block from what its instances
+// held since the swap (no snap, and no glide advanced twice in a block). stops() counts the stops of the program that
+// plays, and lastStop() says the newest: the program, the call, the bounds check that failed (if one did), the sample
+// (from prepare()) and whether the Engine went back. A stopped program plays no more, even across prepare() (restart()
+// makes it as new: a render's).
 //
 // Flush-to-zero. process() runs in it (fsdsp::ScopedFtz), the mode the programs are compiled for, whoever calls it:
 // the audio thread has it already; an offline render (Measure, the chat's tools) would otherwise make FMinus set and
@@ -224,9 +225,10 @@ namespace playground
         struct Stopped
         {
             uint64_t program = 0;                     // its id (Patch::program)
-            Patch::Method call = Patch::Method::none;     // the call that ran past its budget
+            Patch::Method call = Patch::Method::none;     // the call that ran past its budget, or failed a bounds check
             uint64_t at = 0;                          // the sample (from prepare()) its block or voice's part began at
             bool reverted = false;                    // the Engine went back to the program it replaced
+            Patch::Bounds bounds;                     // the bounds check that failed (Patch::bounds), or none
         };
         uint64_t stops() const noexcept { return stops_.load(std::memory_order_acquire); }
         bool lastStop(Stopped& out) const noexcept { return stopped_.read(out); }   // false while published: again

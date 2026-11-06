@@ -4168,6 +4168,7 @@ namespace playground::ui
                       : s.program == s.stoppedProgram    ? std::string("NOTHING PLAYS")
                       : !s.restored.empty()              ? std::string("THE PROGRAM BEFORE PLAYS AGAIN")
                                                          : std::string("THE PROGRAM BEFORE PLAYS ON");
+            lastStopWhy_ = s.bounds ? "AN INDEX OUTSIDE ITS ARRAY" : "A LOOP THAT NEVER ENDS?";   // Patch.h
             problems_ = parseProblems(s.errors + (s.stopped ? std::string() : s.notes));
             files().assist().setRunDiagnostics(diagnosticsOf(problems_), s.sources);
             // The dials and the source of the program that plays: this compile's when it compiled (the processor
@@ -4249,7 +4250,7 @@ namespace playground::ui
         else if (compiling_)
             status_ = "COMPILING";
         else if (!lastStop_.empty())
-            status_ = "STOPPED: A LOOP THAT NEVER ENDS?   " + lastStop_;
+            status_ = "STOPPED: " + lastStopWhy_ + "   " + lastStop_;
         else if (!lastOk_)
         {
             int errors = 0;
