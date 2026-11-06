@@ -5553,14 +5553,20 @@ namespace playground::ui
         watched_ = watchKey();
     }
 
-    // Everything draw() reads that may change with no input and no motion: each item's key (Item::drawKey) and whether
-    // it shows, and the Panel's own words, states and places (most of them mark dirty_ where they change already: this
-    // catches the rest).
+    // Everything draw() reads that may change with no input and no motion: whether each item shows and, for one that
+    // does, its key (Item::drawKey: draw() skips a hidden item, so what a hidden one would draw asks for no frame: a
+    // live= knob on a page not shown, a dial the .gui file's interface hides), and the Panel's own words, states and
+    // places (most of them mark dirty_ where they change already: this catches the rest).
     uint64_t Panel::watchKey() const
     {
         DrawKey k;
         for (const auto& it : items_)
-            k.mix(it->shown()).mix(it->drawKey());
+        {
+            const bool shown = it->shown();
+            k.mix(shown);
+            if (shown)
+                k.mix(it->drawKey());
+        }
         k.mix(status_).mix(meter_).mix(meterAlerts_).mix(meterLoad_).mix(port_.alerts() != 0).mix(projectText_).mix(title_)
             .mix(subtitle_).mix(activity_).mix(desktop_).mix(chat_.busy).mix(unread_).mix(frozenShown_).mix(mutedShown_)
             .mix(compiling_).mix(lastOk_).mix(edited_).mix(chatOpen_).mix(explorerShown_).mix(panelView_).mix(dropActive_)

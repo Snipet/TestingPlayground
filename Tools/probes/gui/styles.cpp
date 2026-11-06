@@ -16,7 +16,9 @@
 //   WRAP      at the least size the knobs' row is more than one line, and no knob leaves its section
 //   PAGES     a bar of three pages: the first shows; a click on the third shows it and hides the first's; the processor
 //             keeps the page by its title, its state carries it to another processor, whose Panel opens on it; the
-//             program run again with an edited interface keeps it; pills and a side list switch their pages too
+//             program run again with an edited interface keeps it; pills and a side list switch their pages too; the
+//             live= knob on a page not shown, moved by the host, asks for no frame, and on the page shown it does
+//             (Panel.h "Unchanged frames")
 //   KEYBOARD  (an instrument) a press on a key plays its note: the output sounds, at the key's pitch; letting go
 //             releases it (silent); a drag slides to the next key
 //   WHEELS    (an instrument) the keyboard's wheels: the pitch wheel dragged up bends +1 and reaches the Engine's Host
@@ -224,6 +226,21 @@ panel background=#1b1d24 gradient=#0e0f13 accent=teal {
         }
         return { std::sqrt(sum / std::max(1, samples)), crossings * 48000.0 / std::max(1, samples) };
     }
+
+    // Whether the host's move of slot's parameter (its automation: no input to the Panel) asks the Panel for a frame,
+    // the Panel drawn and calm before it (Panel.h "Unchanged frames"); false too when it was not calm.
+    bool hostMovesAsks(pg::Processor& p, pg::ui::Panel& panel, funkgui::HeadlessHost& host, int slot)
+    {
+        host.settle();
+        host.draw();
+        host.tick(1, 1.0f / 12.0f);
+        if (panel.needsDraw())
+            return false;
+        juce::AudioProcessorParameter& param = *p.getParameters()[slot];
+        param.setValueNotifyingHost(param.getValue() < 0.5f ? 0.8f : 0.2f);
+        host.tick(1, 1.0f / 12.0f);
+        return panel.needsDraw();
+    }
 }
 
 PROBE(gui, styles)
@@ -385,6 +402,9 @@ PROBE(gui, styles)
         P.eq("pages.third", panel.guiControl(busA).shown() && !panel.guiControl(drive).shown() ? 1 : 0, 1);
         if (keys != nullptr)
             P.eq("pages.keyboard_hidden", keys->shown() ? 0 : 1, 1);
+        // The live= knob on the page not shown, moved by the host: no frame (draw() leaves a hidden item out, and so
+        // does what the Panel watches: Panel.h "Unchanged frames").
+        P.eq("pages.hidden_knob_quiet", !panel.guiControl(cutoff).shown() && !hostMovesAsks(processor, panel, host, cutoff) ? 1 : 0, 1);
         const std::vector<std::string> pages = port.guiPages();
         P.eq("pages.kept", !pages.empty() && pages[0] == "MIXER" ? 1 : 0, 1);
         writePng(P, host, "gui.styles.mixer.png", "mixer");
@@ -460,6 +480,8 @@ PROBE(gui, styles)
             host.click(t.centreX(), t.centreY());
             host.settle();
         }
+        // Its page shown again, the same move draws.
+        P.eq("pages.shown_knob_draws", panel.guiControl(cutoff).shown() && hostMovesAsks(processor, panel, host, cutoff) ? 1 : 0, 1);
     }
 
     // ---- WRAP ----------------------------------------------------------------------------------------------------------

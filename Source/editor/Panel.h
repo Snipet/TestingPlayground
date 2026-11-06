@@ -74,12 +74,13 @@
 //     callback runs), which each tick hands on to undrawn_, kept until draw();
 //   - an item moving (settled() false: an ease, a drag, a display's new values, Claude working, a shader that
 //     animates), and the frame after it settles;
-//   - the mix of every item's drawKey() (Items.h) and of the Panel's own words and states, taken each tick, which
-//     catches what changes with no input and no motion: a host's automation of a dial, a live= mark, a shader's
-//     inputs, a label read through a callback, a notice that ran out.
+//   - the mix of every shown item's drawKey() (Items.h; a hidden item's is left out, as draw() leaves the item out)
+//     and of the Panel's own words and states, taken each tick, which catches what changes with no input and no
+//     motion: a host's automation of a dial, a live= mark, a shader's inputs, a label read through a callback, a
+//     notice that ran out.
 // Once a second it records the frame anyway (kRedrawEvery), a safety net: EditorHost then submits it only if it
 // differs from the last frame drawn (canvas/FrameCompare.h), so an idle editor still sends the GPU nothing.
-// gui.dump DRAW checks the sources, gui.code TYPES the type names' colours.
+// gui.dump DRAW checks the sources, gui.code TYPES the type names' colours, gui.styles PAGES a hidden page's knob.
 //
 // Message thread only. The ports and the EditorPort belong to the processor and outlive the Panel.
 #pragma once

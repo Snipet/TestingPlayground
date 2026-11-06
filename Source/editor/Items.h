@@ -53,9 +53,9 @@ namespace playground::ui
         virtual bool settled() const { return true; }
         // What draw() reads that may change with no input to the Panel, no motion of the item's own (settled()) and no
         // change the Panel makes and marks: a parameter's value (a host's automation, Claude, a preset), a field the
-        // program writes, a label or a state read through a callback. The Panel mixes every item's key each tick and
-        // draws again when the mix moves (Panel::needsDraw, FunkGui's unchanged frames). 0, the default, for an item
-        // whose picture changes only with those.
+        // program writes, a label or a state read through a callback. The Panel mixes every shown item's key each tick
+        // and draws again when the mix moves (Panel::needsDraw, FunkGui's unchanged frames). 0, the default, for an
+        // item whose picture changes only with those.
         virtual uint64_t drawKey() const { return 0; }
         virtual funkgui::Point centre() const = 0;
         virtual bool shown() const { return true; }      // false: not drawn, no input, no Tab stop
