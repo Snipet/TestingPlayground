@@ -198,6 +198,8 @@ namespace playground
         // The dials' carry (Compiler::setDialCarrier): how the host's values, in the controls of meaningProgram_, come
         // across to a program of `controls`. On the thread that offers.
         DialCarry carryFor(const Controls& controls, const PanelSpec& panel);
+        // Whether a RUN now may be a panel's edit (Compiler.h, "A panel's edit"): not while an A/B is on. Any thread.
+        bool panelEdits() const;
         // The carry of `s` (or `given`) written as host gestures, a slot whose value the host or the user moved since
         // left as it is; then the values' meaning is `s`'s program (unless a carry was made since: it writes instead).
         // A carry writes once: `s` applied again (a new revision, the same program) writes only `given`.
@@ -333,6 +335,7 @@ namespace playground
         int chatHostBlock() const override;
         std::string chatProject() const override;
         std::string chatAb() const override;
+        std::string chatPanelFit(const PanelSpec& panel, const Controls& controls) override;
 
         // The program: what plays, the editor's draft, the dials. Message thread, and a host's state calls. Declared
         // before the parameters, whose names and texts read controls_ (control()).
@@ -479,6 +482,11 @@ namespace playground
         std::atomic<uint64_t> chatStopJournaled_{ 0 };           // the program whose stop chatRun journalled
         std::atomic<uint32_t> alerts_{ 0 };
         std::atomic<int> editorW_{ 0 }, editorH_{ 0 };
+        // The panel's fit (chatPanelFit, EditorPort.h's panelFitReady): the font made (on the message thread, poll()'s
+        // once a program with a .gui file compiled, or a fit asked there), and this Mac's chat width as poll() read it.
+        std::atomic<bool> fitFonts_{ false };
+        std::atomic<int> fitChatWidth_{ 0 };
+        void readyFit();                                         // message thread
         std::atomic<bool> panelView_{ false };                       // the editor's PANEL view, in the session
         std::atomic<bool> codePanelHidden_{ false };                 // its CODE view's panel hidden under the code,
         std::atomic<bool> guiPanelHidden_{ false };                  // ... under the interface's files, in the session

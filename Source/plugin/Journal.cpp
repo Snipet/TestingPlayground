@@ -351,6 +351,8 @@ namespace playground
 
     std::string runWords(const CompileStatus& s)
     {
+        if (s.ok && s.panelOnly)                         // Compiler.h, "A panel's edit"
+            return "ran it: a panel edit, applied as the program plays (nothing restarted)";
         if (s.ok)
         {
             int dials = 0;

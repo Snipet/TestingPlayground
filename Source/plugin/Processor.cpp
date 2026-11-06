@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <thread>
 #include <utility>
 
 namespace playground
@@ -953,8 +954,8 @@ namespace playground
             // no run's: nothing played before it, though Init played until then.
             if (loaded)
                 previous_.clear();
-            else if (!running_.empty() && !cir::sameProgram(running_, s.sources))
-                previous_ = running_;
+            else if (!s.panelOnly && !running_.empty() && !cir::sameProgram(running_, s.sources))
+                previous_ = running_;                            // (a panel's edit plays the same program: no run's)
             running_ = s.sources;
         }
         if (run)
@@ -1052,6 +1053,35 @@ namespace playground
         return seen > 0 ? seen : getBlockSize();
     }
 
+    // The panel's fit (EditorPort.h's panelFitLine): laid out on this thread once the font is made, which is the message
+    // thread's to make (poll() makes it once a program with a .gui file compiled): another thread waits for that a
+    // little (a host polls 20 times a second), and says nothing when it is not made by then.
+    void Processor::readyFit()
+    {
+        const PanelFitReady r = panelFitReady();
+        fitChatWidth_.store(r.chatWidth);
+        fitFonts_.store(r.fonts, std::memory_order_release);
+    }
+
+    std::string Processor::chatPanelFit(const PanelSpec& panel, const Controls& controls)
+    {
+        if (panel.gui.empty())
+            return {};
+        if (!fitFonts_.load(std::memory_order_acquire))
+        {
+            if (juce::MessageManager::existsAndIsCurrentThread())
+                readyFit();
+            else
+                for (int k = 0; k < 50 && !fitFonts_.load(std::memory_order_acquire); ++k)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            if (!fitFonts_.load(std::memory_order_acquire))
+                return {};
+        }
+        const int chat = chatW_.load();
+        return panelFitLine(panel, controls, editorW_.load(), editorH_.load(), chatOpen_.load(),
+                            chat > 0 ? chat : fitChatWidth_.load());
+    }
+
     std::string Processor::chatProject() const
     {
         const std::lock_guard<std::mutex> lock(programMutex_);
@@ -1125,15 +1155,17 @@ namespace playground
                 given = givenByName(s.controls, s.panel.options, abDials_);   // an A/B side's own (ProcessorAb.cpp)
             apply(s, true, false, given);
             abLanded(s);
+            if (!s.panel.gui.empty() && !fitFonts_.load(std::memory_order_relaxed))
+                readyFit();                                      // the panel's fit may be asked now (chatPanelFit)
             if (s.request == userRun_.load() && s.request != journaled_)
             {
                 journaled_ = s.request;                          // a refine's status answers it again (Compiler.h)
                 if (s.stopped)
                     stopJournaled_ = s.stoppedProgram;           // said with the run (runWords)
-                if (s.ok)
+                if (s.ok && !s.panelOnly)
                     journal_.dialsNote(Journal::Who::user, runWords(s));   // a new dial at its default (apply)
                 else
-                    journal_.note(Journal::Who::user, runWords(s));
+                    journal_.note(Journal::Who::user, runWords(s));        // (a panel's edit sets no dial)
             }
             else if (s.stopped && (!s.restored.empty() || s.program == s.stoppedProgram) && s.stoppedProgram != stopJournaled_
                      && s.stoppedProgram != chatStopJournaled_.load())
@@ -1579,9 +1611,13 @@ namespace playground
 
     void Processor::run(const Sources& files)
     {
-        const uint64_t id = compiler_.request(files);
+        const uint64_t id = compiler_.request(files, panelEdits());
         userRun_.store(id);
     }
+
+    // A RUN may be a panel's edit (Compiler.h, "A panel's edit") unless an A/B is on, whose sides are compiles of their
+    // own (any thread: chatAb's line, "" while there is none).
+    bool Processor::panelEdits() const { return chatAb().empty(); }
 
     bool Processor::compiling() const { return compiler_.busy(); }
     CompileStatus Processor::status() const { return compiler_.status(); }
@@ -1868,7 +1904,7 @@ namespace playground
         projectDials_ = v.dials;
         for (const projectstore::Answer& a : v.circuits)            // its netlists' answers, before it compiles
             circuits::restore(a.key, a.text);
-        const uint64_t id = compiler_.request(d.files);
+        const uint64_t id = compiler_.request(d.files, panelEdits());
         dialsRequest_ = id;
         return true;
     }
@@ -1913,7 +1949,7 @@ namespace playground
         dialsRequest_ = 0;
         setGuiPages({});
         chat_.clearChecks();
-        const uint64_t id = compiler_.request(d.files);
+        const uint64_t id = compiler_.request(d.files, false);   // a fresh start: compiled, whatever changed
         defaultsRequest_ = id;
         userRun_.store(id);
         journal_.dialsNote(Journal::Who::user,
@@ -2175,14 +2211,14 @@ namespace playground
 
     CompileStatus Processor::chatRun(const Sources& files)
     {
-        const uint64_t id = compiler_.request(files);
+        const uint64_t id = compiler_.request(files, panelEdits());
         compiler_.wait();
         const CompileStatus s = compiler_.status();
         if (!chat_.mcpWorking() && s.request >= id)
         {
             if (s.stopped)
                 chatStopJournaled_.store(s.stoppedProgram);     // said with the run: poll() says it no more
-            if (s.ok)
+            if (s.ok && !s.panelOnly)
                 journal_.dialsNote(Journal::Who::chat, runWords(s));
             else
                 journal_.note(Journal::Who::chat, runWords(s));
@@ -2205,7 +2241,7 @@ namespace playground
     {
         const CompileStatus s = compiler_.status();
         const std::lock_guard<std::mutex> lock(programMutex_);
-        if (s.ok && !running_.empty() && !cir::sameProgram(running_, s.sources))
+        if (s.ok && !s.panelOnly && !running_.empty() && !cir::sameProgram(running_, s.sources))
             return running_;                                     // poll() has not taken the newest yet: it comes after this
         return previous_;
     }
@@ -2284,7 +2320,7 @@ namespace playground
                 return r;
             }
             capture::Options o = options;
-            o.freshFrom = compiler_.request(running);
+            o.freshFrom = compiler_.request(running, false);
             return capture_.act(action, o);
         }
         return capture_.act(action, options);

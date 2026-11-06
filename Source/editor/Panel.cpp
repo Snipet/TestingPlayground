@@ -3893,6 +3893,21 @@ namespace playground::ui
         dirty_ = true;
     }
 
+    funkgui::Rect panelViewArea(float W, float H, bool chatOpen, float chatWant)
+    {
+        // layout()'s arithmetic in the PANEL view (full()): no explorer, the chat (or its rail) at the right.
+        columns::Asked asked;
+        asked.window = W;
+        asked.explorer = false;
+        asked.chat = chatOpen;
+        asked.chatWant = chatWant;
+        const columns::Fit fit = columns::fit(asked);
+        const float leftX = kMargin;
+        const float leftW = W - kMargin - fit.chat - (chatOpen ? kChatGap : kChatRailGap) - leftX;
+        const float inBottom = H - kFooterH - kBottomGap - kInset;
+        return { leftX + kInset, kTabsY, leftW - 2.0f * kInset, inBottom - kTabsY };
+    }
+
     // ---- the columns' widths (Columns.h) ------------------------------------------------------------------------------
     float Panel::wantedWidth(int session, bool chat) const
     {
@@ -4748,6 +4763,7 @@ namespace playground::ui
             const CompileStatus s = port_.status();
             lastOk_ = s.ok;
             lastMs_ = s.ms;
+            lastPanelOnly_ = s.panelOnly;
             // A program that stopped as it played (Compiler.h, "A program that stops"): what plays now, in words.
             lastStop_ = !s.stopped                       ? std::string()
                       : s.program == s.stoppedProgram    ? std::string("NOTHING PLAYS")
@@ -4852,8 +4868,8 @@ namespace playground::ui
         else
         {
             char buf[96];
-            std::snprintf(buf, sizeof buf, "%s   COMPILED IN %.0f MS", edited_ ? "EDITED: CMD-RETURN RUNS IT" : "RUNNING",
-                          lastMs_);
+            std::snprintf(buf, sizeof buf, "%s   %s IN %.0f MS", edited_ ? "EDITED: CMD-RETURN RUNS IT" : "RUNNING",
+                          lastPanelOnly_ ? "PANEL UPDATED" : "COMPILED", lastMs_);
             status_ = buf;
         }
         if (status_ != statusBefore)

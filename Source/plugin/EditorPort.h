@@ -211,6 +211,20 @@ namespace playground
     // (message thread only); nothing to do while nothing is held. Defined in Source/editor/Picture.cpp.
     inline constexpr double kPictureHoldSeconds = 10.0;
     void picturesIdle(double seconds = kPictureHoldSeconds);
+    // The panel's fit (run_program's line; gui_sandbox's check, editor/GuiLayout.h's guiFitLine): a .gui file's
+    // interface laid out as the PANEL view lays it out in an editor `width` x `height` (logical px; 0: the default size)
+    // whose chat is open or not and `chatWidth` px wide (0: its share), its first pages shown: a line when its content is
+    // larger than that area, "" when it fits or there is no .gui file. Any thread once panelFitReady() has said the font
+    // is made: it makes it, on the message thread only (FunkGui's FontService is the message thread's), and reads this
+    // Mac's chat width there (the editor's for a session that set none). Defined in Source/editor/Picture.cpp.
+    struct PanelFitReady
+    {
+        bool fonts = false;                      // the font is made: panelFitLine may run on any thread
+        int chatWidth = 0;                       // this Mac's chat width (0: the share)
+    };
+    PanelFitReady panelFitReady();
+    std::string panelFitLine(const PanelSpec& spec, const Controls& controls, int width, int height, bool chatOpen,
+                             int chatWidth);
     // A netlist's view as the session keeps it (editor/SchematicView.h): its Netlist or Schematic view, the drawing's
     // zoom (1: 100 %) and the world point at its canvas's centre (grid units), and the nets its probes are pinned to.
     // Kept only for files whose view the user chose (a switch, a zoom, a pan), at most kMaxFileViews, each with at most

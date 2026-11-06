@@ -176,6 +176,11 @@ namespace playground::ui
     inline constexpr int kDefaultWidth = 1360, kDefaultHeight = 760;
     inline constexpr int kMinWidth = 1000, kMinHeight = 600;
 
+    // Where the PANEL view puts a .gui file's interface in an editor W x H (logical px) whose chat is open (else its
+    // rail) and `chatWant` px wide (0: its share), as layout() does: the program's card across the window but the chat's
+    // column, from the tabs' line to over the status bar. The panel's fit (EditorPort.h's panelFitLine) lays it out there.
+    funkgui::Rect panelViewArea(float W, float H, bool chatOpen, float chatWant);
+
     // The panel's own primitive tags, for probes that find what they check by tag.
     inline constexpr funkgui::Tag kHeaderTextTag = funkgui::tags::firstProduct;       // name, kind and version
     inline constexpr funkgui::Tag kStatusTag = funkgui::tags::firstProduct + 1;       // the toolbar's status
@@ -798,6 +803,7 @@ namespace playground::ui
         bool compiling_ = false;
         bool lastOk_ = true;
         double lastMs_ = 0.0;
+        bool lastPanelOnly_ = false;                     // the last RUN was a panel's edit (Compiler.h): no compile
         std::string lastStop_;                       // a program that stopped (Compiler.h): the status line's words,
         std::string lastStopWhy_;                    // and why (a loop past its budget, an index outside its array)
         uint32_t controlsRevision_ = 0;                  // bumps when the dials' program changes
