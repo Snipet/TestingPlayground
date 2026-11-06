@@ -104,8 +104,12 @@ namespace playground::measure
         brake,
         clutch,
         gear,                                     // -1 reverse, 0 neutral, 1..7 (rounded)
+        buttons,                                  // its buttons (host->buttons): the mask, a bit a button, 0..kMaxButtons,
+                                                  // sent as the wheel sends it (wheelcc 21 to 24: a part's control change
+                                                  // when its 7 bits change)
     };
-    inline constexpr int kWheelKinds = static_cast<int>(Wheel::gear) + 1;
+    inline constexpr int kWheelKinds = static_cast<int>(Wheel::buttons) + 1;
+    inline constexpr int kMaxButtons = (1 << 24) - 1;     // bits 0 to 23, each mask a float holds exactly
 
     struct WheelMove
     {

@@ -19,7 +19,7 @@ namespace playground::scenario
         constexpr double kMinRate = 8000.0, kMaxRate = 192000.0;
         constexpr const char* kInputs[] = { "sweep", "noise", "impulse", "sine", "silence" };   // ViewInput's order
         constexpr const char* kWheels[] = { "mod", "bend", "pressure", "sustain", "steering", "throttle", "brake", "clutch",
-                                            "gear" };                                       // measure::Wheel's
+                                            "gear", "buttons" };                            // measure::Wheel's
         static_assert(std::size(kWheels) == static_cast<std::size_t>(measure::kWheelKinds));
 
         bool isNumber(const juce::var& v) { return v.isDouble() || v.isInt() || v.isInt64(); }
@@ -155,14 +155,17 @@ namespace playground::scenario
                     if (name == kWheels[k])
                         kind = k;
                 if (kind < 0)
-                    return in.fail(where, "wheel is mod, bend, pressure, sustain, steering, throttle, brake, clutch or gear");
+                    return in.fail(where, "wheel is mod, bend, pressure, sustain, steering, throttle, brake, clutch, gear or buttons");
                 const auto wheel = static_cast<measure::Wheel>(kind);
                 const bool signedOne = wheel == measure::Wheel::bend || wheel == measure::Wheel::steering;
-                const bool gear = wheel == measure::Wheel::gear;
+                const bool gear = wheel == measure::Wheel::gear, buttons = wheel == measure::Wheel::buttons;
                 double at = 0.0, value = 0.0;
                 if (!in.num(w, "at", where, 0.0, measure::kMaxPlaySeconds, at)
-                    || !in.num(w, "value", where, gear || signedOne ? -1.0 : 0.0, gear ? 7.0 : 1.0, value, true))
+                    || !in.num(w, "value", where, gear || signedOne ? -1.0 : 0.0,
+                               gear ? 7.0 : buttons ? static_cast<double>(measure::kMaxButtons) : 1.0, value, true))
                     return false;
+                if (buttons && value != std::floor(value))
+                    return in.fail(where, "the buttons' value is a whole number, a bit a button (host->buttons)");
                 r.wheels.push_back({ static_cast<measure::Wheel>(kind), at, static_cast<float>(value) });
             }
             return true;

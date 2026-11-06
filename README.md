@@ -823,8 +823,9 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   **Reset to Default State** it sends its whole state again. The values stay until a control changes them, and a reset
   of the Engine puts them at rest. The same control changes work in the AU and the VST3 from any MIDI source that
   sends them (the effect gets no MIDI: its fields stay at rest). Claude moves them in a render's scenario (its wheels
-  `steering`, `throttle`, `brake`, `clutch` and `gear`), and hears them in listen and in a recording's report. Which
-  HID element is which is `Source/plugin/WheelMap.h`'s table, checked on no wheel yet: **wheel-dump**
+  `steering`, `throttle`, `brake`, `clutch`, `gear` and `buttons`, the mask, sent as the wheel sends it), and hears
+  them in listen and in a recording's report. Which HID element is which is `Source/plugin/WheelMap.h`'s table,
+  checked on no wheel yet: **wheel-dump**
   (`Tools/wheel-dump/`, never installed) shows what a connected G29 has. `cmake --build build-dev --target
   wheel-dump`, then `build-dev/wheel-dump` lists its elements (usage page and usage, logical minimum and maximum, the
   value macOS holds and its timestamp, 0 until a report came, the table's row for each) and prints, ten times a

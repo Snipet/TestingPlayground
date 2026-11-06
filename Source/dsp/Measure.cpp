@@ -950,7 +950,7 @@ namespace playground::measure
         for (const WheelMove& w : r.wheels)
             ++counts[static_cast<int>(w.wheel)];
         const char* wheelNames[kWheelKinds] = { "the mod wheel", "the pitch wheel", "pressure", "the pedal", "the steering",
-                                                "the throttle", "the brake", "the clutch", "the gear" };
+                                                "the throttle", "the brake", "the clutch", "the gear", "the buttons" };
         for (int k = 0; k < kWheelKinds; ++k)
             if (counts[k] > 0)
                 parts.push_back(std::string(wheelNames[k]) + " " + std::to_string(counts[k])
@@ -1286,8 +1286,23 @@ namespace playground::measure
             return std::string(kPedalNames[axis - 1]) + " to " + fmt("%.2f", static_cast<double>(wheelcc::pedalOf(v14)));
         }
 
-        // Another control change's mark (the sustain pedal's and the axes' apart), "" for none: the mod wheel, a racing
-        // wheel's gear and buttons by name, any other by number. At the start a value at rest is no moment.
+        // A racing wheel's buttons' mask (wheelcc's four parts) as a mark's words: "buttons 4 and 5 down".
+        [[maybe_unused]] std::string buttonsMark(uint32_t mask)
+        {
+            std::vector<int> down;
+            for (int b = 0; b < wheelcc::kButtonCcs * wheelcc::kButtonBits; ++b)
+                if (((mask >> b) & 1u) != 0)
+                    down.push_back(b);
+            if (down.empty())
+                return "every button up";
+            std::string list;
+            for (std::size_t i = 0; i < down.size(); ++i)
+                list += (i == 0 ? "" : i + 1 == down.size() ? " and " : ", ") + std::to_string(down[i]);
+            return (down.size() == 1 ? "button " : "buttons ") + list + " down";
+        }
+
+        // Another control change's mark (the sustain pedal's, the axes' and the buttons' apart), "" for none: the mod
+        // wheel, a racing wheel's gear by name, any other by number. At the start a value at rest is no moment.
         [[maybe_unused]] std::string controllerMark(std::size_t at, const Event& e)
         {
             using namespace wheelcc;
@@ -1297,13 +1312,6 @@ namespace playground::measure
                 const int g = gearOf(v);
                 return at > 0 || g != 0 ? "the gear to " + (g < 0 ? std::string("reverse") : g == 0 ? std::string("neutral") : std::to_string(g))
                                         : std::string();
-            }
-            if (cc >= kButtons && cc < kButtons + kButtonCcs)
-            {
-                const int lo = (cc - kButtons) * kButtonBits;
-                char b[64];
-                std::snprintf(b, sizeof b, "the buttons' bits %d-%d to 0x%02x", lo, lo + kButtonBits - 1, v);
-                return at > 0 || v != 0 ? std::string(b) : std::string();
             }
             if (at > 0 || e.velocity != 0.0f)
                 return (cc == 1 ? std::string("the mod wheel") : "controller " + std::to_string(cc)) + " to "
@@ -1345,6 +1353,26 @@ namespace playground::measure
                     evs.push_back({ off, 1, Event{ 0, EventKind::noteOff, key, 0.0f } });
                 }
             if (keys == nullptr)
+            {
+                // The buttons as the wheel sends them: in time order, a part's control change where its 7 bits change
+                // (from none down, the Engine's rest).
+                std::vector<const WheelMove*> pressed;
+                for (const WheelMove& w : req.wheels)
+                    if (w.wheel == Wheel::buttons)
+                        pressed.push_back(&w);
+                std::stable_sort(pressed.begin(), pressed.end(), [](const WheelMove* x, const WheelMove* y) { return x->at < y->at; });
+                uint32_t mask = 0;
+                for (const WheelMove* w : pressed)
+                {
+                    using namespace wheelcc;
+                    const std::size_t at = sampleOf(std::min(w->at, kMaxPlaySeconds), rate);
+                    const auto to = static_cast<uint32_t>(std::clamp(std::lround(w->value), 0L, static_cast<long>(kMaxButtons)));
+                    for (int b = 0; b < kButtonCcs; ++b)
+                        if (const uint32_t part = (to >> (b * kButtonBits)) & 0x7Fu; part != ((mask >> (b * kButtonBits)) & 0x7Fu))
+                            evs.push_back({ at, 0, Event{ 0, EventKind::controller, static_cast<uint8_t>(kButtons + b),
+                                                          static_cast<float>(part) / 127.0f } });
+                    mask = to;
+                }
                 for (const WheelMove& w : req.wheels)
                 {
                     const std::size_t at = sampleOf(std::min(w.at, kMaxPlaySeconds), rate);
@@ -1379,8 +1407,11 @@ namespace playground::measure
                             evs.push_back({ at, 0, Event{ 0, EventKind::controller, wheelcc::kGear, static_cast<float>(g & 0x7F) / 127.0f } });
                             break;
                         }
+                        case Wheel::buttons:                 // above, in time order
+                            break;
                     }
                 }
+            }
             std::stable_sort(evs.begin(), evs.end(), [](const Ev& x, const Ev& y) { return x.at != y.at ? x.at < y.at : x.rank < y.rank; });
             for (const Ev& e : evs)
                 tl.events.push_back({ e.at, e.e });
@@ -1401,6 +1432,9 @@ namespace playground::measure
             std::array<int, wheelcc::kAxes> v14{ { wheelcc::kCentre, 0, 0, 0 } };
             std::array<std::size_t, wheelcc::kAxes> axisMarkAt;
             axisMarkAt.fill(~std::size_t{ 0 });
+            // Its buttons' mask as the Engine holds it, and its last mark.
+            uint32_t buttons = 0;
+            std::size_t buttonsMarkAt = ~std::size_t{ 0 };
             for (const auto& [at, e] : tl.events)
             {
                 const std::size_t k = e.note;
@@ -1463,6 +1497,20 @@ namespace playground::measure
                             }
                             else if (!msb && axisMarkAt[ua] < tl.marks.size() && tl.marks[axisMarkAt[ua]].at == at)
                                 tl.marks[axisMarkAt[ua]].what = axisMark(a, v14[ua]);
+                        }
+                        else if (cc >= wheelcc::kButtons && cc < wheelcc::kButtons + wheelcc::kButtonCcs)
+                        {
+                            // A part of the buttons' mask: one moment a sample, however many parts change in it (none
+                            // at the start at rest).
+                            const int shift = (cc - wheelcc::kButtons) * wheelcc::kButtonBits;
+                            buttons = (buttons & ~(0x7Fu << shift)) | (static_cast<uint32_t>(sevenBits(e)) << shift);
+                            if (buttonsMarkAt < tl.marks.size() && tl.marks[buttonsMarkAt].at == at)
+                                tl.marks[buttonsMarkAt].what = buttonsMark(buttons);
+                            else if (at > 0 || buttons != 0)
+                            {
+                                buttonsMarkAt = tl.marks.size();
+                                tl.marks.push_back({ at, buttonsMark(buttons), -1, false });
+                            }
                         }
                         else if (std::string what = controllerMark(at, e); !what.empty())
                             tl.marks.push_back({ at, std::move(what), -1, false });

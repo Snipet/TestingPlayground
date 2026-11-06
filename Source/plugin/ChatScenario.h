@@ -8,8 +8,9 @@
 //   { phrase:   [{note, at, len, vel}] (at most 256; seconds; len 0.5 and vel 0.8 by default) or "capture",
 //     automate: [{dial, at, to, over}] (at most 32: a float glides from where it is to `to` over `over` seconds, as the
 //               Engine glides a host's automation; an int or a bool steps),
-//     wheels:   [{wheel: mod | bend | pressure | sustain | steering | throttle | brake | clutch | gear, at, value}]
-//               (at most 64; a racing wheel's as host.fm reads them: the steering -1 to 1, the gear -1 to 7),
+//     wheels:   [{wheel: mod | bend | pressure | sustain | steering | throttle | brake | clutch | gear | buttons, at,
+//               value}] (at most 64; a racing wheel's as host.fm reads them: the steering -1 to 1, the gear -1 to 7, the
+//               buttons a mask, a bit a button, as the wheel sends it: Measure.h's Wheel),
 //     host:     {bpm, stop_at, jump_to_beat, jump_at},
 //     rate:     a number (8000 to 192000) or "host",   block: 1 to 8192 or "host",
 //     input:    sweep | noise | impulse | sine | silence | "capture" (an effect's),
