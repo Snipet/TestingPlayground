@@ -13,7 +13,8 @@
 //                  integrated, and the RMS A-weighted), the spectrum's strongest partials and its centroid, what is off
 //                  the orders of a fixed base (base_hz, else the expected pitch: the share of the power, the strongest
 //                  lines off them, the half- and third-orders), how the spectrum's shape moves from frame to frame
-//                  (wobble), the pitch (the strongest partial near the expected note; the report names
+//                  (wobble), the pitch (the strongest partial near the expected note, stretch by stretch: stretches(),
+//                  each against the lowest key held there, bent by the pitch wheel then; the report names
 //                  the sound unpitched instead when the lowest note and a whole tone up, each alone for 0.6 s with none
 //                  of the scenario's moves, do not measure a whole tone apart, and then gives no Inharmonic words), the
 //                  largest step between two samples and the clicks (clicks(), trace's rule), the
@@ -21,7 +22,7 @@
 //                  60 dB below its held level after the release and when the last voice ended (process returned
 //                  false), the output guard's alerts, and the CPU time (the notes while held, and sixteen voices at
 //                  once: a render of sixteen notes held, the least of two; in words only when more than one voice
-//                  sounds there). With one note, the strongest component that is no harmonic of it
+//                  sounds there). With one note, the strongest component (a peak) that is no harmonic of it
 //                  (aliasing, or the sound's own: detuning, FM, noise), and a chord (the note, a third, a fifth and an
 //                  octave above) is rendered too, for the summed level.
 //   an effect      a sine of 220 Hz at -12 dBFS and noise at -18 dBFS RMS, each for holdSeconds, an impulse followed
@@ -36,7 +37,10 @@
 // The held part (heldSpans) is an instrument's notes from kSettleSeconds after each note-on (half the note when it is
 // shorter) to its note-off, a phrase's notes joined where they overlap; an effect's test signal from kSettleSeconds
 // after it starts to its end. Its levels are over all of it, and its spectra Welch's average over all of it (Spectrum:
-// frames fixed in seconds, so a frame holds the same stretch of sound at 48 and at 192 kHz).
+// frames fixed in seconds, so a frame holds the same stretch of sound at 48 and at 192 kHz; a span shorter than a frame
+// is one frame of it, so a note held under kSettleSeconds + kPitchSeconds reads its pitch in a shorter frame, and one
+// whose frame cannot part what a metric reads leaves it unmeasured, saying how long a note it takes: the pitch, and
+// inharmonic_db).
 //
 // A request's window (Window: the render settings' `window`, from and to in seconds) replaces the held part, for a
 // part of the sound that no note holds (a key that is a control, a sound that goes on after its note-off, the stretch
@@ -450,6 +454,19 @@ namespace playground::measure
     // ends at `heldEnd`), the spans joined where they overlap, by sample. Notes held together give one span.
     std::vector<Span> heldSpans(const Timeline& timeline, std::size_t heldEnd, double rate);
 
+    // The expected pitch's stretches: `held` (the held part, or a window) cut where the expected pitch changes: the lowest
+    // key held there (from its held span's start, as heldSpans; where none is, as in a window after the note-offs, `key`)
+    // bent by the pitch wheel at 2 semitones (host.fm's), as the timeline's events set them. `next`: the nearest key above
+    // it held anywhere in the stretch (-1: none). The metrics read the pitch of each stretch alone (Session::measure).
+    struct Stretch
+    {
+        Span span;
+        int key = 48, next = -1;
+        float bend = 0.0f;                        // the pitch wheel, -1..1
+        double hz() const;                        // its expected pitch
+    };
+    std::vector<Stretch> stretches(const Timeline& timeline, const std::vector<Span>& held, std::size_t heldEnd, double rate, int key);
+
     enum class Taper : uint8_t
     {
         hann,                                     // sidelobes -31 dB, a main lobe of 2 bins each side
@@ -531,7 +548,9 @@ namespace playground::measure
 
     // The strongest component of a spectrum between 20 Hz and maxHz (and the Nyquist frequency) that is no harmonic of
     // f0 (farther than six of its resolution bins from every multiple of it: 15 Hz with kPuritySeconds frames): an
-    // alias, or the sound's own. db relative to the strongest component, -200 when nothing is found. The second form
+    // alias, or the sound's own. A component is a peak (a local maximum over two bins each side): a level that moves
+    // within a frame (a slow attack, a decay) widens each harmonic's lobe past the six bins, and that skirt, falling away
+    // from its harmonic, has none. db relative to the strongest component, -200 when nothing is found. The second form
     // reads all of `x` through kPuritySeconds Blackman-Harris frames.
     Peak inharmonic(const Spectrum& spectrum, double f0, double maxHz);
     Peak inharmonic(const std::vector<float>& x, double rate, double f0, double maxHz);

@@ -518,8 +518,9 @@ namespace playground::measure
         constexpr const char* kInstrumentTerms =
             "Held: from 50 ms after each note-on (half the note if shorter) to its note-off, a phrase's notes together; a "
             "window {from, to} (seconds of the render) replaces it, except in attack_s and release_s. The spectrum: the "
-            "held part's power, Welch's average of 0.1 s Hann frames overlapped by half, the same at every rate. The band: "
-            "20 Hz to 20 kHz. After each unit, the tolerance a target takes unless its goal gives one.\n";
+            "held part's power, Welch's average of 0.1 s Hann frames overlapped by half (a shorter part: one frame), the same "
+            "at every rate. The band: 20 Hz to 20 kHz. After each unit, the tolerance a target takes unless its goal gives "
+            "one.\n";
         constexpr const char* kEffectTerms =
             "Held: a test signal from 50 ms after it starts to its end (hold_seconds); a window {from, to} (seconds of each "
             "signal's render) replaces it, cut at hold_seconds. The spectrum: the held part's power, Welch's average of "
@@ -537,13 +538,14 @@ namespace playground::measure
             { "balance_db", "dB", "left's energy over right's while held", 0.5, false, 0.0 },
             { "centroid_hz", "Hz", "the spectrum's power-weighted mean frequency in the band: how bright", 0.05, true, 1.0 },
             { "fundamental_hz", "Hz",
-              "in 0.4 s Hann frames while held, the strongest partial within 600 cents of the expected pitch (the lowest "
-              "note, bent by the pitch wheel's start at 2 semitones; nearer it than another note), else its harmonics' best "
-              "sum there (0: silent)",
+              "in 0.4 s Hann frames while held, over the lowest note's longest stretch of one expected pitch (the lowest "
+              "key held, bent by the pitch wheel at 2 semitones), the strongest partial within 600 cents of it (nearer it "
+              "than another key), else its harmonics' best sum there (0: silent)",
               0.005, true, 0.5 },
-            { "pitch_cents", "cents", "fundamental_hz against the expected pitch", 5.0, false, 0.0 },
+            { "pitch_cents", "cents", "each such stretch's (as fundamental_hz) against its expected pitch, averaged by length", 5.0,
+              false, 0.0 },
             { "inharmonic_db", "dB",
-              "one note only: in 0.4 s Blackman-Harris frames while held, the strongest component in the band farther than "
+              "one note only: in 0.4 s Blackman-Harris frames while held, the strongest peak in the band farther than "
               "15 Hz from every harmonic of the expected pitch, under the strongest (aliasing, or the sound's own detuning, "
               "FM or noise; under -90: none, the floor)",
               3.0, false, 0.0 },
@@ -713,50 +715,142 @@ namespace playground::measure
         }
     }
 
+    namespace
+    {
+        // Each note's held span (heldSpans, before they are joined) and its key.
+        struct KeySpan
+        {
+            std::size_t first = 0, second = 0;
+            int key = 0;
+        };
+
+        std::vector<KeySpan> keySpans(const Timeline& tl, std::size_t heldEnd, double rate)
+        {
+            std::vector<KeySpan> spans;
+            std::array<long, 128> on;
+            on.fill(-1);
+            const auto settle = static_cast<std::size_t>(kSettleSeconds * rate);
+            const auto close = [&](std::size_t key, std::size_t at) {
+                if (on[key] < 0)
+                    return;
+                const auto a = static_cast<std::size_t>(on[key]);
+                on[key] = -1;
+                if (at > a)
+                    spans.push_back({ a + std::min((at - a) / 2, settle), at, static_cast<int>(key) });
+            };
+            for (const auto& [at, e] : tl.events)
+            {
+                const std::size_t key = e.note;
+                if ((e.kind == EventKind::noteOn || e.kind == EventKind::noteOff) && key >= on.size())
+                    continue;                                // no MIDI note (a malformed message): the Engine plays none
+                if (e.kind == EventKind::noteOn)
+                {
+                    close(key, at);                          // pressed again while held: the next starts here
+                    on[key] = static_cast<long>(at);
+                }
+                else if (e.kind == EventKind::noteOff)
+                    close(key, at);
+                else if (e.kind == EventKind::allNotesOff)
+                    for (std::size_t k = 0; k < on.size(); ++k)
+                        close(k, at);
+            }
+            for (std::size_t k = 0; k < on.size(); ++k)
+                close(k, heldEnd);                           // still down at the end
+            std::erase_if(spans, [](const KeySpan& s) { return s.second <= s.first; });
+            return spans;
+        }
+    }
+
     std::vector<Span> heldSpans(const Timeline& tl, std::size_t heldEnd, double rate)
     {
         std::vector<Span> spans;
-        std::array<long, 128> on;
-        on.fill(-1);
-        const auto settle = static_cast<std::size_t>(kSettleSeconds * rate);
-        const auto close = [&](std::size_t key, std::size_t at) {
-            if (on[key] < 0)
-                return;
-            const auto a = static_cast<std::size_t>(on[key]);
-            on[key] = -1;
-            if (at > a)
-                spans.push_back({ a + std::min((at - a) / 2, settle), at });
-        };
-        for (const auto& [at, e] : tl.events)
-        {
-            const std::size_t key = e.note;
-            if ((e.kind == EventKind::noteOn || e.kind == EventKind::noteOff) && key >= on.size())
-                continue;                                    // no MIDI note (a malformed message): the Engine plays none
-            if (e.kind == EventKind::noteOn)
-            {
-                close(key, at);                              // pressed again while held: the next starts here
-                on[key] = static_cast<long>(at);
-            }
-            else if (e.kind == EventKind::noteOff)
-                close(key, at);
-            else if (e.kind == EventKind::allNotesOff)
-                for (std::size_t k = 0; k < on.size(); ++k)
-                    close(k, at);
-        }
-        for (std::size_t k = 0; k < on.size(); ++k)
-            close(k, heldEnd);                               // still down at the end
+        for (const KeySpan& k : keySpans(tl, heldEnd, rate))
+            spans.push_back({ k.first, k.second });
         std::sort(spans.begin(), spans.end());
         std::vector<Span> joined;
         for (const Span& s : spans)
         {
-            if (s.second <= s.first)
-                continue;
             if (!joined.empty() && s.first <= joined.back().second)
                 joined.back().second = std::max(joined.back().second, s.second);
             else
                 joined.push_back(s);
         }
         return joined;
+    }
+
+    double Stretch::hz() const
+    {
+        return 440.0 * std::exp2((static_cast<double>(key) - 69.0 + 2.0 * static_cast<double>(std::clamp(bend, -1.0f, 1.0f))) / 12.0);
+    }
+
+    std::vector<Stretch> stretches(const Timeline& tl, const std::vector<Span>& held, std::size_t heldEnd, double rate, int key)
+    {
+        const std::vector<KeySpan> keys = keySpans(tl, heldEnd, rate);
+        // The pitch wheel's moves (of several at one sample, the last), and every sample the expected pitch may change at.
+        std::vector<std::pair<std::size_t, float>> bends;
+        for (const auto& [at, e] : tl.events)
+            if (e.kind == EventKind::pitchBend)
+            {
+                if (!bends.empty() && bends.back().first == at)
+                    bends.back().second = e.velocity;
+                else
+                    bends.push_back({ at, e.velocity });
+            }
+        std::vector<std::size_t> cuts;
+        for (const KeySpan& k : keys)
+        {
+            cuts.push_back(k.first);
+            cuts.push_back(k.second);
+        }
+        for (const auto& [at, value] : bends)
+            cuts.push_back(at);
+        for (const Span& s : held)
+        {
+            cuts.push_back(s.first);
+            cuts.push_back(s.second);
+        }
+        std::sort(cuts.begin(), cuts.end());
+        cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
+        std::vector<Stretch> out;
+        std::size_t h = 0, b = 0;
+        float bend = 0.0f;
+        for (std::size_t c = 0; c + 1 < cuts.size(); ++c)
+        {
+            const std::size_t x = cuts[c], y = cuts[c + 1];
+            while (h < held.size() && held[h].second <= x)
+                ++h;
+            if (h >= held.size())
+                break;
+            for (; b < bends.size() && bends[b].first <= x; ++b)
+                bend = std::clamp(bends[b].second, -1.0f, 1.0f);
+            if (x < held[h].first)
+                continue;                                    // between the held part's spans
+            // The lowest key whose held span covers [x, y) and the nearest one above it (no cut falls inside a span).
+            int low = -1, next = -1;
+            for (const KeySpan& k : keys)
+                if (k.first <= x && y <= k.second && k.key != low)
+                {
+                    if (low < 0 || k.key < low)
+                    {
+                        if (low >= 0)
+                            next = next < 0 ? low : std::min(next, low);
+                        low = k.key;
+                    }
+                    else if (next < 0 || k.key < next)
+                        next = k.key;
+                }
+            if (low < 0)
+                low = key;                                   // no key held there (a window's): the lowest played
+            if (!out.empty() && out.back().span.second == x && out.back().key == low && out.back().bend == bend)
+            {
+                out.back().span.second = y;
+                if (next >= 0)
+                    out.back().next = out.back().next < 0 ? next : std::min(out.back().next, next);
+            }
+            else
+                out.push_back({ { x, y }, low, next, bend });
+        }
+        return out;
     }
 
     namespace
@@ -1084,8 +1178,8 @@ namespace playground::measure
         {
             const double hz = static_cast<double>(k) * s.hzPerBin;
             const double h = std::max(1.0, std::round(hz / f0));         // the nearest harmonic (below f0: f0)
-            if (std::fabs(hz - h * f0) <= away)
-                continue;                                                // within a harmonic's main lobe
+            if (std::fabs(hz - h * f0) <= away || !localMax(p, k))
+                continue;                                                // within a harmonic's main lobe, or its skirt
             if (at == 0 || p[k] > p[at])
                 at = k;
         }
@@ -2675,16 +2769,49 @@ namespace playground::measure
             plainReq.transport.clear();
             plainReq.blocks.clear();
 
-            // The expected pitch: the lowest note, bent by the pitch wheel where the request starts it, at the usual 2
-            // semitones (host.fm); the pitch looks within 600 cents of it, and nearer it than the next note up.
+            // The expected pitch, stretch by stretch (stretches(): the lowest key held, bent by the pitch wheel as it is
+            // then, at the usual 2 semitones of host.fm); the pitch looks within 600 cents of it, and nearer it than a key
+            // held with it. The reference, fundamental_hz's and the default base of off_order_db: the lowest key's longest
+            // stretch.
             const int lowest = *std::min_element(notes.begin(), notes.end());
-            const double lowestHz = noteHz(lowest);
-            const double bend = std::exp2(2.0 * static_cast<double>(std::clamp(request.pitchbend, -1.0f, 1.0f)) / 12.0);
-            const double expectedHz = lowestHz * bend;
-            double loHz = expectedHz * std::exp2(-kPitchCents / 1200.0), hiHz = expectedHz * std::exp2(kPitchCents / 1200.0);
-            for (const int n : notes)
-                if (n > lowest)
-                    hiHz = std::min(hiHz, std::sqrt(expectedHz * noteHz(n) * bend));
+            std::vector<Stretch> parts = stretches(plan, held, heldEnd, rate, lowest);
+            if (parts.empty())                               // (an empty window: no stretch)
+            {
+                float startBend = 0.0f;
+                for (const auto& [at, e] : plan.events)
+                    if (at <= from && e.kind == EventKind::pitchBend)
+                        startBend = std::clamp(e.velocity, -1.0f, 1.0f);
+                parts.push_back({ held.front(), lowest, -1, startBend });
+            }
+            const auto samplesOf = [](const Stretch& s) { return s.span.second - s.span.first; };
+            const Stretch* ref = &parts.front();
+            for (const Stretch& s : parts)
+                if (s.key < ref->key || (s.key == ref->key && samplesOf(s) > samplesOf(*ref)))
+                    ref = &s;
+            const double expectedHz = ref->hz();
+            // The seconds of frame that part a stretch's pitch from 0 Hz and from the key held with it: its frames' main
+            // lobe, 2 of their bins each side, between them (a lobe as wide as the pitch reads it biased, and two that
+            // touch read one); a stretch shorter (its frame its own length, under kPitchSeconds) is left out.
+            const auto nextHz = [](const Stretch& s) { return Stretch{ s.span, s.next, -1, s.bend }.hz(); };
+            const auto partedBy = [&](const Stretch& s) {
+                const double f = s.hz();
+                return 4.0 / std::min(f, s.next >= 0 ? nextHz(s) - f : f);
+            };
+            const auto frameOf = [&](const Stretch& s) { return std::min(static_cast<double>(samplesOf(s)) / rate, kPitchSeconds); };
+            // A note whose held stretch is `takes` seconds long: its first 50 ms are not held (half of it, when shorter).
+            const auto noteOf = [](double takes) { return std::min(2.0 * takes, takes + kSettleSeconds); };
+            const auto tooShortWhy = [&](const Stretch& s) {
+                const double takes = partedBy(s);
+                if (takes > kPitchSeconds)
+                    return s.next >= 0 ? "note " + std::to_string(s.next) + " held with note " + std::to_string(s.key) + " is too near it for "
+                                             + seconds(kPitchSeconds) + " frames to part them"
+                                       : "note " + std::to_string(s.key) + " (" + fmt("%.1f Hz", s.hz()) + ") is too low for "
+                                             + seconds(kPitchSeconds) + " frames to part it from 0 Hz";
+                return "note " + std::to_string(s.key) + "'s held stretch (" + seconds(static_cast<double>(samplesOf(s)) / rate)
+                     + ") is too short for frames that part its " + fmt("%.1f Hz", s.hz()) + " from "
+                     + (s.next >= 0 ? "note " + std::to_string(s.next) + " held with it" : std::string("0 Hz")) + ": they take "
+                     + seconds(takes) + ", a note of " + seconds(noteOf(takes));
+            };
             bool follows = true;                             // the pitch follows the note (below): no line says otherwise
             if (need({ "centroid_hz", "fundamental_hz", "pitch_cents" }))
             {
@@ -2694,12 +2821,55 @@ namespace playground::measure
                 out += std::string(windowed ? "Spectrum in the window" : "Spectrum while held") + ": centroid "
                      + fmt("%.0f Hz", centroid) + "; strongest partials "
                      + partials(sp.peaks(8)) + ".";
-                // The pitch from frames of its own, long enough to part a low chord's notes (Measure.h).
-                const Pitch pitch = pitchOf(spectrum(m, rate, held, Taper::hann, kPitchSeconds), expectedHz, loHz, hiHz);
-                v["fundamental_hz"] = pitch.hz;
-                if (pitch.hz > 0.0)
+                // The pitch of each stretch alone, from frames of its own, long enough to part a low chord's notes
+                // (Measure.h); pitch_cents their cents from their own expected pitches, weighted by their lengths.
+                struct Read
                 {
-                    v["pitch_cents"] = 1200.0 * std::log2(pitch.hz / expectedHz);
+                    const Stretch* s;
+                    Pitch pitch;
+                    double cents;
+                };
+                std::vector<Read> reads;
+                const Read* refRead = nullptr;
+                std::size_t left = 0;
+                for (const Stretch& s : parts)
+                {
+                    if (frameOf(s) < partedBy(s))
+                    {
+                        ++left;
+                        continue;
+                    }
+                    const double f = s.hz();
+                    const double lo = f * std::exp2(-kPitchCents / 1200.0);
+                    const double hi = std::min(f * std::exp2(kPitchCents / 1200.0), s.next >= 0 ? std::sqrt(f * nextHz(s)) : kInf);
+                    const Pitch p = pitchOf(spectrum(m, rate, { s.span }, Taper::hann, kPitchSeconds), f, lo, hi);
+                    reads.push_back({ &s, p, p.hz > 0.0 ? 1200.0 * std::log2(p.hz / f) : 0.0 });
+                }
+                double sum = 0.0, weight = 0.0;
+                const Read* lowRead = nullptr;
+                const Read* highRead = nullptr;
+                for (const Read& rd : reads)
+                {
+                    if (rd.s == ref)
+                        refRead = &rd;
+                    if (rd.pitch.hz > 0.0)
+                    {
+                        sum += static_cast<double>(samplesOf(*rd.s)) * rd.cents;
+                        weight += static_cast<double>(samplesOf(*rd.s));
+                        lowRead = lowRead == nullptr || rd.cents < lowRead->cents ? &rd : lowRead;
+                        highRead = highRead == nullptr || rd.cents > highRead->cents ? &rd : highRead;
+                    }
+                }
+                if (refRead != nullptr)
+                    v["fundamental_hz"] = refRead->pitch.hz;
+                else
+                    res.unmeasured["fundamental_hz"] = tooShortWhy(*ref);
+                if (weight > 0.0)
+                    v["pitch_cents"] = sum / weight;
+                else if (reads.empty())
+                    res.unmeasured["pitch_cents"] = "no stretch could be read (" + tooShortWhy(*ref) + ")";
+                if (weight > 0.0)
+                {
                     // Whether the pitch follows the note, for the report's words alone (the metrics keep their meaning,
                     // and a check or a tune, which asks for some, renders nothing more): the lowest note and the note a
                     // whole tone up (down from 126), each alone, held 0.6 s with none of the scenario's moves, measured
@@ -2715,7 +2885,7 @@ namespace playground::measure
                     if (all)
                     {
                         const auto alone = [&](int key) {
-                            const double hz = expectedHz * std::exp2(static_cast<double>(key - lowest) / 12.0);
+                            const double hz = Stretch{ ref->span, key, -1, ref->bend }.hz();
                             const std::vector<int> keys{ key };
                             const std::size_t n = static_cast<std::size_t>(0.6 * rate);
                             const Rendered o = impl_->render(dials, nullptr, impl_->plan(dials, plainReq, n, &keys, n), n);
@@ -2729,17 +2899,38 @@ namespace playground::measure
                         follows = baseAt > 0.0 && otherAt > 0.0
                                && std::fabs(1200.0 * std::log2(otherAt / baseAt) - 100.0 * static_cast<double>(other - lowest)) <= 50.0;
                     }
-                    if (follows)
-                        out += " Pitch: " + fmt("%.2f Hz", pitch.hz) + fmt(", %+.1f cents from the expected ", v["pitch_cents"])
-                             + fmt("%.2f Hz", expectedHz) + " (note " + std::to_string(lowest)
-                             + (bend != 1.0 ? ", bent" : "") + ")"
-                             + (pitch.partial ? std::string() : std::string(": no partial near it, its harmonics' sum")) + ".";
-                    else
+                    if (!follows)
                         out += " Unpitched: its pitch does not follow the note ("
                              + (baseAt > 0.0 ? fmt("%.2f Hz", baseAt) : std::string("none")) + " at note " + std::to_string(lowest) + ", "
                              + (otherAt > 0.0 ? fmt("%.2f Hz", otherAt) : std::string("none")) + " at note " + std::to_string(other)
                              + ", each alone).";
+                    else
+                    {
+                        if (refRead != nullptr && refRead->pitch.hz > 0.0)
+                            out += " Pitch: " + fmt("%.2f Hz", refRead->pitch.hz) + fmt(", %+.1f cents from the expected ", refRead->cents)
+                                 + fmt("%.2f Hz", expectedHz) + " (note " + std::to_string(ref->key) + (ref->bend != 0.0f ? ", bent" : "")
+                                 + (parts.size() > 1 ? ", its longest stretch" : "") + ")"
+                                 + (refRead->pitch.partial ? std::string() : std::string(": no partial near it, its harmonics' sum")) + ".";
+                        else
+                            out += " Pitch: not measured at note " + std::to_string(ref->key) + " ("
+                                 + (refRead != nullptr ? std::string("silent there") : tooShortWhy(*ref)) + ").";
+                        // Each stretch against its own expected pitch: the average (pitch_cents), the spread and the farthest.
+                        if (reads.size() > 1 || left > 0)
+                        {
+                            const Read& far = std::fabs(lowRead->cents) > std::fabs(highRead->cents) ? *lowRead : *highRead;
+                            out += " Each stretch (a key held and the pitch wheel's place) against its own expected pitch: "
+                                 + fmt("%+.1f cents on average", v["pitch_cents"]) + " over "
+                                 + std::to_string(reads.size()) + (reads.size() == 1 ? " stretch" : " stretches")
+                                 + (reads.size() > 1 ? fmt(", %+.1f", lowRead->cents) + fmt(" to %+.1f", highRead->cents)
+                                                           + " (the farthest note " + std::to_string(far.s->key) + " at "
+                                                           + seconds(static_cast<double>(far.s->span.first) / rate) + ")"
+                                                     : std::string())
+                                 + (left > 0 ? "; " + std::to_string(left) + " too short for its frames left out" : std::string()) + ".";
+                        }
+                    }
                 }
+                else if (reads.empty())
+                    out += " Pitch: not measured: " + res.unmeasured["pitch_cents"] + ".";
                 out += "\n";
             }
             // The band levels asked for (Request::spectrum), of both channels over the held part (or the window).
@@ -2817,7 +3008,7 @@ namespace playground::measure
             // (10 ms windows) from its loudest moment on.
             {
                 const std::size_t w = std::max<std::size_t>(static_cast<std::size_t>(0.001 * rate),
-                                                            static_cast<std::size_t>(rate / lowestHz));
+                                                            static_cast<std::size_t>(rate / noteHz(lowest)));
                 const std::vector<double> pk = windowPeaks(r.out, from, heldEnd, w);
                 double attack = kInf;
                 if (!pk.empty())
@@ -2878,10 +3069,38 @@ namespace playground::measure
                 const int n = notes.front();
                 if (need({ "inharmonic_db" }))
                 {
-                    // What is no harmonic of the note: aliasing, unless the sound means it.
-                    const Peak odd = inharmonic(spectrum(m, rate, held, Taper::blackmanHarris, kPuritySeconds), expectedHz, kBandHighHz);
-                    v["inharmonic_db"] = odd.db;
-                    if (heldRms >= 1e-5 && follows)          // an unpitched sound has no harmonics of the note to judge
+                    // What is no harmonic of the note: aliasing, unless the sound means it. Each stretch (the note at
+                    // one place of the pitch wheel) against its own harmonics, the strongest of them; one whose frames'
+                    // zones (six bins each side of each harmonic) leave nothing between the harmonics is left out.
+                    Peak odd{ 0.0, -240.0 };
+                    const Stretch* longest = nullptr;
+                    for (const Stretch& s : parts)
+                    {
+                        if (longest == nullptr || samplesOf(s) > samplesOf(*longest))
+                            longest = &s;
+                        const double frame = std::min(static_cast<double>(samplesOf(s)) / rate, kPuritySeconds);
+                        if (12.0 / frame >= s.hz())
+                            continue;
+                        const Peak p = inharmonic(spectrum(m, rate, { s.span }, Taper::blackmanHarris, kPuritySeconds), s.hz(), kBandHighHz);
+                        if (p.db > odd.db)
+                            odd = p;
+                    }
+                    if (odd.db < -200.0)
+                    {
+                        // A frame holds the zones apart over 12 of its bins a harmonic: 12 / f0 seconds.
+                        const double takes = 12.0 / longest->hz();
+                        const std::string why = "the note's held stretch (" + seconds(static_cast<double>(samplesOf(*longest)) / rate)
+                                              + ") is too short for frames that part what lies between its harmonics ("
+                                              + fmt("%.1f Hz", longest->hz()) + " apart) from them: they take " + seconds(takes)
+                                              + (takes > kPuritySeconds ? std::string(", longer than its ") + seconds(kPuritySeconds) + " frames"
+                                                                        : ", a note of " + seconds(noteOf(takes)));
+                        res.unmeasured["inharmonic_db"] = why;
+                        if (heldRms >= 1e-5 && follows)
+                            out += "Inharmonic: not measured, " + why + ".\n";
+                    }
+                    else
+                        v["inharmonic_db"] = odd.db;
+                    if (odd.db >= -200.0 && heldRms >= 1e-5 && follows)   // an unpitched sound has no harmonics of the note to judge
                     {
                         out += "Inharmonic: ";
                         if (odd.db < -90.0)
