@@ -34,6 +34,15 @@
 //            view_sound's RMS and spectrum over the window, its close-up inside it; a window shorter than its
 //            spectrum's frame, just before the sound changes (the voice's harmonics at 1 s, the fader's -6 dB at 0.5 s),
 //            reads nothing after it, at 48 and 192 kHz
+//   BANDS    a report's band levels at 48 and 192 kHz, each line naming its frames and the band below which a tone
+//            spreads: an instrument's sine at note 59 its RMS in its third, octave and semitone, at E1 (41.2 Hz) its RMS
+//            in its semitone held 0.95 s and 2 s, a phrase's notes held 0.2 and 0.55 s in frames as long as each
+//            note's part (the line saying so); a tone at the centre of each band from sharpFrom up its level within
+//            0.3 dB, the bands beside it 13 dB under, over 0.1, 0.95 and 3 s, sharpFrom where the docs say; eight
+//            harmonics' thirds their RMS, white noise's thirds 3 dB an octave; an effect's fader every band of the noise
+//            -6.02 dB over a window shorter than a frame, a gain of a half every band of its own input's replay, with a
+//            window and without, two low-passes the same at both rates up to 2 kHz
+//   LINE     the report's last line every metric measured, name=value, in the table's order
 //   TERMS    every metric's words name what metricTerms() defines or a span of its own; toleranceText is Goals'
 //            toleranceOf
 #include "Probe.h"
@@ -50,9 +59,12 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <complex>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <memory>
+#include <numbers>
 #include <string>
 #include <vector>
 
@@ -351,6 +363,20 @@ module Voice
             at += 1;
             left[i] *= g;
             right[i] *= g;
+        }
+    }
+};
+)";
+
+    // A gain of a half (-6.02 dB), from the first sample: each sample halved exactly.
+    [[maybe_unused]] const char* kHalfEffect = R"(module Effect
+{
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            left[i] *= 0.5f;
+            right[i] *= 0.5f;
         }
     }
 };
@@ -835,7 +861,8 @@ PROBE(dsp, metrics)
         if constexpr (kInstrument)
         {
             // A sine at note 59 (246.9 Hz, inside the 250 Hz third and octave): its band reads its RMS, the same at 48 and
-            // 192 kHz; its semitone point too, the notes beside it far under.
+            // 192 kHz; its semitone point too, the notes beside it far under. Each line names its frames (the semitones'
+            // as long as the held part, 0.95 s) and the band below which a tone spreads (Measure.h's kSharpBins).
             const pg::Sources sine = pg::singleFile(kTwoToneVoice);
             std::array<double, 2> third{}, semitone{};
             int k = 0;
@@ -853,9 +880,12 @@ PROBE(dsp, metrics)
                 r.spectrum = ms::Bands::semitone;
                 const ms::Result s = measured(sine, rate, r);
                 const double rms = at(t.values, "rms_db");
-                const auto thirds = bandsIn(t.report, "Third-octave bands while held (Hz: dBFS; 0.4 s Hann frames): ");
+                const auto thirds = bandsIn(t.report, "Third-octave bands while held (Hz: dBFS; 0.4 s Hann frames; below 25 Hz a "
+                                                      "tone spreads over the bands beside it): ");
                 const auto octaves = bandsIn(o.report, "Octave bands while held (Hz: dBFS; 0.4 s Hann frames): ");
-                const auto notes = bandsIn(s.report, "Semitone bands while held, a point a MIDI note");
+                const auto notes = bandsIn(s.report, "Semitone bands while held, a point a MIDI note, an octave a group after its "
+                                                     "first note (dBFS; 0.95 s Hann frames, as long as the part, up to 2 s; below "
+                                                     "E1 a tone spreads over the bands beside it): ");
                 std::printf("a sine at note 59 at %s: RMS %.2f dBFS; 250 Hz third %.2f, octave %.2f; semitone 58 %.1f, 59 %.2f, 60 "
                             "%.1f (%zu thirds, %zu octaves, %zu semitones)\n%s%s%s",
                             tag.c_str(), rms, named(thirds, "250"), named(octaves, "250"),
@@ -876,6 +906,107 @@ PROBE(dsp, metrics)
             }
             P.near("bands.rates_third", third[1] - third[0], 0.0, 0.05);
             P.near("bands.rates_semitone", semitone[1] - semitone[0], 0.0, 0.1);
+
+            // A sine at E1 (note 28, 41.2 Hz: its semitone 2.4 Hz wide, under a 0.4 s frame's main lobe): held 0.95 s, in
+            // frames as long as that, it reads its RMS within 0.3 dB (printed in whole dB) and the line names E1 the
+            // lowest note that does; held 2 s, in frames of 2 s, every note does (the line says nothing below), the notes
+            // beside it 30 dB under.
+            for (const double rate : { 48000.0, 192000.0 })
+                for (const float hold : { 1.0f, 2.05f })
+                {
+                    const bool part = hold < 1.5f;
+                    const std::string tag = std::string(part ? "095s_" : "2s_") + std::to_string(static_cast<int>(rate / 1000.0)) + "k";
+                    ms::Request r;
+                    r.notes = { 28 };
+                    r.holdSeconds = hold;
+                    r.tailSeconds = 0.2f;
+                    r.spectrum = ms::Bands::semitone;
+                    const ms::Result s = measured(sine, rate, r);
+                    const double rms = at(s.values, "rms_db");
+                    const auto notes = bandsIn(s.report, "Semitone bands while held, a point a MIDI note");
+                    // notes[0] is note 16: note 28 is the 13th.
+                    const double own = notes.size() == 120 ? notes[12].second : std::nan("");
+                    const double beside = notes.size() == 120 ? std::max(notes[11].second, notes[13].second) - own : 0.0;
+                    std::printf("a sine at E1 held %.2f s at %.0f Hz: RMS %.2f dBFS, its semitone %.0f, the notes beside it %+.0f dB\n",
+                                static_cast<double>(hold), rate, rms, own, beside);
+                    P.near("bands.low_note_reads_rms_" + tag, own, rms, part ? 0.8 : 0.55);   // printed in whole dB
+                    P.le("bands.low_note_beside_under_" + tag, beside, part ? -13.0 : -30.0);
+                    P.eq("bands.low_note_frames_" + tag,
+                         has(s.report, part ? "(dBFS; 0.95 s Hann frames, as long as the part, up to 2 s; below E1 a tone spreads "
+                                              "over the bands beside it): E0 20.6: "
+                                            : "(dBFS; 2 s Hann frames): E0 20.6: ")
+                             ? 1 : 0, 1);
+                }
+
+            // A phrase whose notes are held 0.2 and 0.55 s: the octaves' frames as long as each note's part, up to 0.4 s,
+            // the line saying so; its 250 Hz octave its RMS.
+            {
+                ms::Request r;
+                r.phrase = { { 59, 0.0, 0.25, 0.8f }, { 59, 0.5, 0.6, 0.8f } };
+                r.tailSeconds = 0.2f;
+                r.spectrum = ms::Bands::octave;
+                const ms::Result p2 = measured(sine, 48000.0, r);
+                const auto octaves = bandsIn(p2.report, "Octave bands while held (Hz: dBFS; Hann frames of 0.2 to 0.4 s, each as long "
+                                                        "as its part, up to 0.4 s): ");
+                std::printf("a phrase held 0.2 and 0.55 s: RMS %.2f dBFS, its 250 Hz octave %.2f (%zu octaves)\n",
+                            at(p2.values, "rms_db"), named(octaves, "250"), octaves.size());
+                P.eq("bands.phrase_frames_named", static_cast<int>(octaves.size()), 10);
+                P.near("bands.phrase_octave_reads_rms", named(octaves, "250"), at(p2.values, "rms_db"), 0.1);
+            }
+
+            // The rule those lines state (Measure.h's kSharpBins, sharpFrom), at 48 and 192 kHz over a part of 0.1, 0.95
+            // and 3 s: a tone at the centre of each band from sharpFrom up reads its level within 0.3 dB and the bands
+            // beside it 13 dB under it (tones three bands apart, a signal for each of the three), and sharpFrom is where
+            // the docs say (a semitone's E1 at 0.95 s and every note from 2 s; a third's 25 Hz at 0.4 s).
+            for (const double rate : { 48000.0, 192000.0 })
+                for (const double seconds : { 0.1, 0.95, 3.0 })
+                    for (const ms::Bands kind : { ms::Bands::octave, ms::Bands::third, ms::Bands::semitone })
+                    {
+                        const char* name = kind == ms::Bands::octave ? "octave" : kind == ms::Bands::third ? "third" : "semitone";
+                        const std::string tag = std::string(name) + "_" + std::to_string(static_cast<int>(seconds * 100.0 + 0.5))
+                                              + "cs_" + std::to_string(static_cast<int>(rate / 1000.0)) + "k";
+                        const auto n = static_cast<std::size_t>(std::llround(seconds * rate));
+                        const std::vector<ms::Band> bands = ms::bandsOf(kind);
+                        const std::vector<float> silence(n, 0.0f);
+                        const std::size_t from = ms::sharpFrom(kind, ms::bandSpectrum(kind, silence, silence, rate, { { 0, n } }));
+                        const std::size_t expected = kind == ms::Bands::octave     ? (seconds < 0.2 ? 1u : 0u)
+                                                   : kind == ms::Bands::third      ? (seconds < 0.2 ? 7u : 1u)
+                                                   : seconds < 0.2                 ? 51u           // G4, 392 Hz
+                                                   : seconds < 2.0                 ? 12u           // E1
+                                                                                   : 0u;
+                        P.eq("bands.sharp_from_" + tag, static_cast<int>(from), static_cast<int>(expected));
+                        double worst = 0.0, worstBeside = -300.0;
+                        int tones = 0;
+                        for (std::size_t offset = 0; offset < 3; ++offset)
+                        {
+                            std::vector<double> x(n, 0.0);
+                            const double amp = 0.05;
+                            for (std::size_t b = from + offset; b < bands.size(); b += 3)
+                            {
+                                const double hz = std::sqrt(bands[b].lo * bands[b].hi);
+                                const std::complex<double> turn = std::polar(1.0, 2.0 * std::numbers::pi * hz / rate);
+                                std::complex<double> z = std::polar(1.0, 0.7 * static_cast<double>(b));
+                                for (std::size_t i = 0; i < n; ++i, z *= turn)
+                                    x[i] += amp * z.imag();
+                            }
+                            const std::vector<float> xf(x.begin(), x.end());
+                            const std::vector<double> levels = ms::bandLevels(ms::bandSpectrum(kind, xf, xf, rate, { { 0, n } }), kind);
+                            const double level = 10.0 * std::log10(0.5 * amp * amp);
+                            for (std::size_t b = from + offset; b < bands.size(); b += 3)
+                            {
+                                worst = std::max(worst, std::fabs(levels[b] - level));
+                                if (b > 0)
+                                    worstBeside = std::max(worstBeside, levels[b - 1] - level);
+                                if (b + 1 < bands.size())
+                                    worstBeside = std::max(worstBeside, levels[b + 1] - level);
+                                ++tones;
+                            }
+                        }
+                        std::printf("%s bands over %.2f s at %.0f Hz: sharp from band %zu, %d tones, the worst %.3f dB off, the bands "
+                                    "beside them %+.1f dB\n", name, seconds, rate, from, tones, worst, worstBeside);
+                        P.le("bands.sharp_reads_level_" + tag, worst, 0.3);
+                        P.le("bands.sharp_beside_under_" + tag, worstBeside, -13.0);
+                    }
 
             // Eight harmonics: the thirds' power sums to the RMS's; white noise's bands grow with their width (3 dB an
             // octave: the 8 kHz third 9 dB over the 1 kHz one) at both rates.
@@ -903,8 +1034,9 @@ PROBE(dsp, metrics)
         else
         {
             // The fader at half (-6.02 dB) over 0.6 to 0.95 s, a window shorter than a frame: every band of the noise out
-            // against in reads it; the two low-passes at 1.5 kHz pass the low bands and read the same at 48 and 192 kHz up
-            // to 2 kHz (above, the program's one-poles differ: at 48 kHz they bend near the Nyquist frequency).
+            // against in reads it, each line naming its frames of 0.35 s; the two low-passes at 1.5 kHz pass the low bands
+            // and read the same at 48 and 192 kHz up to 2 kHz (above, the program's one-poles differ: at 48 kHz they bend
+            // near the Nyquist frequency).
             const pg::Sources fader = pg::singleFile(kFaderEffect), dark = pg::singleFile(kDarkEffect);
             std::array<std::vector<std::pair<std::string, double>>, 2> darkBands;
             int k = 0;
@@ -915,7 +1047,7 @@ PROBE(dsp, metrics)
                 r.holdSeconds = 1.0f;
                 r.tailSeconds = 0.2f;
                 r.window = { 0.6, 0.95 };
-                int at6 = 0, all = 0;
+                int at6 = 0, all = 0, framed = 0;
                 for (const ms::Bands kind : { ms::Bands::octave, ms::Bands::third, ms::Bands::semitone })
                 {
                     r.spectrum = kind;
@@ -928,10 +1060,66 @@ PROBE(dsp, metrics)
                         at6 += std::fabs(v + 6.0206) < 0.051 ? 1 : 0;   // printed to 0.1 dB
                         ++all;
                     }
+                    framed += has(f.report, kind == ms::Bands::octave ? "gain dB; 0.35 s Hann frames, as long as the part, up to 0.4 s): 31.5: "
+                                          : kind == ms::Bands::third
+                                              ? "gain dB; 0.35 s Hann frames, as long as the part, up to 0.4 s; below 31.5 Hz a tone "
+                                                "spreads over the bands beside it): 20: "
+                                              : "gain dB; 0.35 s Hann frames, as long as the part, up to 2 s; below A#2 a tone spreads "
+                                                "over the bands beside it): E0 20.6: ")
+                                  ? 1 : 0;
+                    if (rate == 48000.0 && kind == ms::Bands::third)
+                        std::printf("%s", f.report.c_str());
                 }
                 std::printf("the fader at half in the window at %s: %d of %d bands at -6.02 dB\n", tag.c_str(), at6, all);
                 P.eq("bands.fader_gain_" + tag, at6, 161);
                 P.eq("bands.fader_counted_" + tag, all, 161);
+                P.eq("bands.fader_frames_named_" + tag, framed, 3);
+
+                // A gain of a half replaying its own input (Request::input: a second of noise, the channels apart): every
+                // band of the line of its own input, out against in, reads -6.02 dB, over all of it (frames of 0.4 s and,
+                // the semitones', of 1 s) and over a window of 0.3 to 0.8 s (0.4 s and 0.5 s).
+                {
+                    auto own = std::make_shared<ms::Input>();
+                    uint32_t seed = 777;
+                    for (std::size_t i = 0; i < static_cast<std::size_t>(rate); ++i)
+                        for (std::vector<float>* ch : { &own->l, &own->r })
+                        {
+                            seed = seed * 1664525u + 1013904223u;
+                            ch->push_back(0.2f * (static_cast<float>(seed >> 8) / 8388608.0f - 1.0f));
+                        }
+                    int half = 0, counted = 0;
+                    for (const bool windowed : { false, true })
+                        for (const ms::Bands kind : { ms::Bands::octave, ms::Bands::semitone })
+                        {
+                            ms::Request q;
+                            q.holdSeconds = 1.0f;
+                            q.tailSeconds = 0.1f;
+                            q.input = own;
+                            q.spectrum = kind;
+                            if (windowed)
+                                q.window = { 0.3, 0.8 };
+                            const ms::Result f = measured(pg::singleFile(kHalfEffect), rate, q);
+                            const std::string start
+                                = kind == ms::Bands::octave
+                                    ? std::string("Octave bands of its own input") + (windowed ? " in the window" : "")
+                                          + ", out against in (Hz: gain dB; 0.4 s Hann frames): "
+                                    : std::string("Semitone bands of its own input") + (windowed ? " in the window" : "")
+                                          + ", out against in, a point a MIDI note, an octave a group after its first note (gain dB; "
+                                          + (windowed ? "0.5 s Hann frames, as long as the part, up to 2 s; below E2"
+                                                      : "1 s Hann frames, as long as the part, up to 2 s; below E1")
+                                          + " a tone spreads over the bands beside it): ";
+                            if (windowed && kind == ms::Bands::semitone && rate == 48000.0)
+                                std::printf("%s", f.report.c_str());
+                            for (const auto& [n, v] : bandsIn(f.report, start.c_str()))
+                            {
+                                half += std::fabs(v + 6.0206) < 0.051 ? 1 : 0;   // printed to 0.1 dB
+                                ++counted;
+                            }
+                        }
+                    std::printf("a half replaying its own input at %s: %d of %d bands at -6.02 dB\n", tag.c_str(), half, counted);
+                    P.eq("bands.replay_gain_" + tag, half, 260);
+                    P.eq("bands.replay_counted_" + tag, counted, 260);
+                }
                 ms::Request d;
                 d.holdSeconds = 1.0f;
                 d.tailSeconds = 0.2f;

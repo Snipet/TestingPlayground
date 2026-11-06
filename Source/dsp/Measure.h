@@ -48,8 +48,9 @@
 // The report ends with the values measured, name=value in the metrics' order ("Metrics: peak_db=-9.5 rms_db=-17.2 ..."),
 // in the names checks use. A request's `spectrum` adds band levels as data (bandsOf: an octave's ten, a third's
 // thirty-one or a semitone's 120, the averaged spectrum's points), of both channels' power over the held part (or the
-// window) in kBandSeconds Hann frames: an instrument's levels (dBFS), an effect's noise's (and its own input's) gain in
-// each, out against in.
+// window) in Hann frames (bandSpectrum: kBandSeconds, a semitone's kNoteBandSeconds, each at most the part's length):
+// an instrument's levels (dBFS), an effect's noise's (and its own input's) gain in each, out against in. The line names
+// its frames and the band below which a tone spreads over the bands beside it (sharpFrom).
 //
 // Off the audio thread only (it compiles and allocates). Deterministic: the same files and request give the same
 // report and numbers but for the CPU times, which are the rendering thread's own time (not the wall clock's) in the
@@ -201,7 +202,7 @@ namespace playground::measure
         int signal = -1;                          // an effect's input for view_sound and compare, numbered as SoundView's
                                                   // ViewInput (-1: the tool's own); measure() plays its test signals
         Window window;                            // the metrics' seconds in place of the held part (above)
-        // The report's band levels (analysis only, as `want`): an instrument's while held (bandLevels of both channels),
+        // The report's band levels (analysis only, as `want`): an instrument's while held (bandLevels of bandSpectrum),
         // an effect's noise's (and its own input's) out against in, a band's gain; none: no such line.
         Bands spectrum = Bands::none;
         // A recording replayed (the capture lane's: plugin/ChatScenario.h), merged with the above: the MIDI at absolute
@@ -421,7 +422,13 @@ namespace playground::measure
     inline constexpr double kPuritySeconds = 0.4;            // the Blackman-Harris frames: inharmonic_db, thd_db
     inline constexpr double kBandSeconds = 0.4;              // the Hann frames of the band levels (bandLevels): a
                                                              // main lobe of 5 Hz each side, under a third-octave band
-                                                             // from 25 Hz up
+                                                             // from 25 Hz up (kSharpBins)
+    inline constexpr double kNoteBandSeconds = 2.0;          // a semitone's in the report (bandSpectrum): its band is
+                                                             // 2.4 Hz wide at E1, 1.2 Hz at the lowest note, 16 (E0)
+    inline constexpr double kSharpBins = 2.25;               // a band at least this many of its frame's bins wide (5.6 Hz
+                                                             // for 0.4 s, 2.25 Hz for 1 s) holds a tone at its centre
+                                                             // within 0.3 dB, the bands beside it 13 dB under; a narrower
+                                                             // one holds less and the tone spreads over those beside it
     inline constexpr double kBandLowHz = 20.0, kBandHighHz = 20000.0;   // the band (the Nyquist frequency when lower)
     inline constexpr double kPitchCents = 600.0;             // how far from the expected note the pitch looks
 
@@ -446,6 +453,7 @@ namespace playground::measure
         double rate = 0.0;
         double hzPerBin = 0.0;                    // rate over the FFT's size
         double resolutionHz = 0.0;                // 1 / the shortest frame's length in seconds (a bin of the frame's own)
+        double frameSeconds = 0.0;                // the longest frame's length: `seconds`, or the longest span's
         std::vector<double> power;                // bins 0 to the Nyquist frequency's
         std::size_t frames = 0;                   // 0: no span long enough (16 samples)
 
@@ -458,8 +466,9 @@ namespace playground::measure
         double strongest() const;
         void refine(std::size_t bin, double& hz, double& logPower) const;
         // The mean square in [lo, hi), cut at the Nyquist frequency: each bin's power by the share of its width there (DC
-        // none), so a sine of amplitude a there reads a^2 / 2 and noise its power in the band, whatever the frame. NaN
-        // when lo is at or above the Nyquist frequency.
+        // none), so that noise reads its power in the band whatever the frame, and a sine of amplitude a at the band's
+        // centre a^2 / 2 when the band holds the frame's main lobe (within 0.3 dB from kSharpBins of the frame's bins
+        // wide). NaN when lo is at or above the Nyquist frequency.
         double bandPower(double lo, double hi) const;
     };
     Spectrum spectrum(const std::vector<float>& x, double rate, const std::vector<Span>& spans, Taper taper = Taper::hann,
@@ -482,8 +491,16 @@ namespace playground::measure
     inline constexpr std::array<double, 10> kOctaveBands{ 31.5, 63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0 };
     std::vector<Band> bandsOf(Bands kind);
     // Each band's level in a spectrum (Spectrum::bandPower), in dBFS (-240: none there; NaN: above the Nyquist frequency):
-    // an instrument's from stereoSpectrum over the held part, compare's and the capture's over what they analyse.
+    // an instrument's from bandSpectrum over the held part, compare's and the capture's from stereoSpectrum over what
+    // they analyse.
     std::vector<double> bandLevels(const Spectrum& spectrum, Bands kind);
+    // The spectrum a report's bands line reads (Request::spectrum): stereoSpectrum over `spans` in Hann frames of
+    // kBandSeconds (a semitone's kNoteBandSeconds; a shorter span's frame is the span).
+    Spectrum bandSpectrum(Bands kind, const std::vector<float>& l, const std::vector<float>& r, double rate,
+                          const std::vector<Span>& spans);
+    // The first of bandsOf(kind) from which each band is at least kSharpBins of the spectrum's shortest frame's bins
+    // wide (a band's width grows with its centre): 0 every band; bandsOf(kind).size() none.
+    std::size_t sharpFrom(Bands kind, const Spectrum& spectrum);
     // A band's centre in the bands' lines: "31.5", "250", "1k", "1.25k", "16k".
     std::string bandName(double hz);
 

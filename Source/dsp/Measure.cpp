@@ -233,20 +233,52 @@ namespace playground::measure
             return out;
         }
 
-        // The report's bands (Request::spectrum), `what` the part they are of ("while held", "of the noise"): each band's
-        // level after its centre up to the Nyquist frequency ("31.5: -62.1, 63: -48.0"), or with `in` (an effect's) its
-        // gain, out against in ("none" where nothing goes in); a semitone's an octave a group, after its first note
-        // ("C3 131: -20 -61 -48 ..."), a level in whole dB.
-        std::string bandsLine(Bands kind, const std::string& what, const std::vector<double>& out,
-                              const std::vector<double>* in = nullptr)
+        // A bands line's frames, as bandSpectrum took them ("0.4 s Hann frames"; "0.95 s Hann frames, as long as the
+        // part, up to 2 s"; "Hann frames of 0.15 to 0.4 s, each as long as its part, up to 0.4 s"), and the band below
+        // which a tone spreads over the bands beside it (sharpFrom: "; below E1 a tone spreads ..."), of the `printed`.
+        std::string framesText(Bands kind, const Spectrum& s, std::size_t printed)
+        {
+            if (s.frames == 0)
+                return "no frame: the part is under 16 samples";
+            const double asked = kind == Bands::semitone ? kNoteBandSeconds : kBandSeconds;
+            const std::string shortest = fmt("%.3g", 1.0 / s.resolutionHz), longest = fmt("%.3g", s.frameSeconds);
+            const bool one = shortest == longest;
+            std::string out = one ? longest + " s Hann frames" : "Hann frames of " + shortest + " to " + longest + " s";
+            if (shortest != fmt("%.3g", asked))
+                out += (one ? ", as long as the part" : ", each as long as its part") + fmt(", up to %g s", asked);
+            const std::vector<Band> bands = bandsOf(kind);
+            const std::size_t from = sharpFrom(kind, s);
+            if (from >= printed)
+                out += "; in every band a tone spreads over the bands beside it";
+            else if (from > 0)
+                out += "; below "
+                     + (kind == Bands::semitone ? noteName(bands[from].note)
+                                                : bands[from].hz >= 1000.0 ? fmt("%g kHz", bands[from].hz / 1000.0)
+                                                                           : fmt("%g Hz", bands[from].hz))
+                     + " a tone spreads over the bands beside it";
+            return out;
+        }
+
+        // The report's bands (Request::spectrum) from bandSpectrum, `what` the part they are of ("while held", "of the
+        // noise"): its frames (framesText), then each band's level after its centre up to the Nyquist frequency ("31.5:
+        // -62.1, 63: -48.0"), or with `inS` (an effect's input's, over the same part) its gain, out against in ("none"
+        // where nothing goes in); a semitone's an octave a group, after its first note ("C3 131: -20 -61 -48 ..."), a
+        // level in whole dB.
+        std::string bandsLine(Bands kind, const std::string& what, const Spectrum& outS, const Spectrum* inS = nullptr)
         {
             const std::vector<Band> bands = bandsOf(kind);
+            const std::vector<double> out = bandLevels(outS, kind);
+            const std::vector<double> inLevels = inS != nullptr ? bandLevels(*inS, kind) : std::vector<double>();
+            const std::vector<double>* in = inS != nullptr ? &inLevels : nullptr;
             const bool semitone = kind == Bands::semitone;
+            std::size_t printed = 0;
+            while (printed < out.size() && !std::isnan(out[printed]))
+                ++printed;
             const std::string text = std::string(kind == Bands::octave ? "Octave" : kind == Bands::third ? "Third-octave" : "Semitone")
                                    + " bands " + what + (in != nullptr ? ", out against in" : "")
                                    + (semitone ? ", a point a MIDI note, an octave a group after its first note" : "") + " ("
                                    + (semitone ? "" : "Hz: ") + (in != nullptr ? "gain dB" : "dBFS") + "; "
-                                   + fmt("%g s Hann frames): ", kBandSeconds);
+                                   + framesText(kind, outS, printed) + "): ";
             std::string list;
             for (std::size_t k = 0; k < bands.size() && k < out.size(); ++k)
             {
@@ -654,11 +686,15 @@ namespace playground::measure
             s.hzPerBin = rate / static_cast<double>(n);
             s.power.assign(n / 2 + 1, 0.0);
             const std::size_t size = y != nullptr ? std::min(x.size(), y->size()) : x.size();
-            std::size_t shortest = frame;
+            std::size_t shortest = frame, longest = 0;
             for (const auto& [from, to] : spans)
                 if (const std::size_t end = std::min(to, size); end >= from + kLeast)
+                {
                     shortest = std::min(shortest, end - from);
+                    longest = std::max(longest, std::min(end - from, frame));
+                }
             s.resolutionHz = rate / static_cast<double>(shortest);
+            s.frameSeconds = static_cast<double>(longest > 0 ? longest : frame) / rate;
             std::vector<std::complex<double>> a(n);
             std::vector<double> w;
             double w2 = 0.0, total = 0.0;
@@ -722,6 +758,24 @@ namespace playground::measure
                             Taper taper, double seconds)
     {
         return welch(l, &r, rate, spans, taper, seconds);
+    }
+
+    Spectrum bandSpectrum(Bands kind, const std::vector<float>& l, const std::vector<float>& r, double rate,
+                          const std::vector<Span>& spans)
+    {
+        // A shorter span's frame is zero-padded as a whole frame's: the finer bins share a band's edges more closely.
+        return stereoSpectrum(l, r, rate, spans, Taper::hann, kind == Bands::semitone ? kNoteBandSeconds : kBandSeconds);
+    }
+
+    std::size_t sharpFrom(Bands kind, const Spectrum& s)
+    {
+        const std::vector<Band> bands = bandsOf(kind);
+        std::size_t from = bands.size();
+        if (s.frames == 0)
+            return from;
+        while (from > 0 && bands[from - 1].hi - bands[from - 1].lo >= kSharpBins * s.resolutionHz)
+            --from;
+        return from;
     }
 
     double Spectrum::bandPower(double lo, double hi) const
@@ -2256,7 +2310,7 @@ namespace playground::measure
             // The band levels asked for (Request::spectrum), of both channels over the held part (or the window).
             if (request.spectrum != Bands::none)
                 out += bandsLine(request.spectrum, windowed ? "in the window" : "while held",
-                                 bandLevels(stereoSpectrum(r.out.l, r.out.r, rate, held), request.spectrum));
+                                 bandSpectrum(request.spectrum, r.out.l, r.out.r, rate, held));
 
             if (need({ "step", "click" }))
             {
@@ -2552,9 +2606,9 @@ namespace playground::measure
                     // Its band levels asked for (Request::spectrum): the effect's gain in each, out against in.
                     if (request.spectrum != Bands::none)
                     {
-                        const std::vector<double> bandsIn = bandLevels(stereoSpectrum(noise.l, noise.r, rate, held), request.spectrum);
+                        const Spectrum bandsIn = bandSpectrum(request.spectrum, noise.l, noise.r, rate, held);
                         out += bandsLine(request.spectrum, windowed ? "of the noise in the window" : "of the noise",
-                                         bandLevels(stereoSpectrum(o.l, o.r, rate, held), request.spectrum), &bandsIn);
+                                         bandSpectrum(request.spectrum, o.l, o.r, rate, held), &bandsIn);
                     }
                 }
             }
@@ -2636,9 +2690,9 @@ namespace playground::measure
                          + "; spectral centroid " + fmt("%.0f Hz", cin) + " in, " + fmt("%.0f Hz", cout) + " out.\n";
                 if (request.spectrum != Bands::none && a < b && !(windowed && tooShort(part, rate)))
                 {
-                    const std::vector<double> bandsIn = bandLevels(stereoSpectrum(own.l, own.r, rate, { part }), request.spectrum);
+                    const Spectrum bandsIn = bandSpectrum(request.spectrum, own.l, own.r, rate, { part });
                     out += bandsLine(request.spectrum, windowed ? "of its own input in the window" : "of its own input",
-                                     bandLevels(stereoSpectrum(o.l, o.r, rate, { part }), request.spectrum), &bandsIn);
+                                     bandSpectrum(request.spectrum, o.l, o.r, rate, { part }), &bandsIn);
                 }
             }
             if (everything)

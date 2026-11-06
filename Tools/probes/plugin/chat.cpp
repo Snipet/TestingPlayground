@@ -2295,10 +2295,16 @@ PROBE(plugin, chat)
                 const std::string octaves = toolText(sa.mcpCall("measure_output", withBands("octave")));
                 std::printf("measure_output with spectrum third:\n%s\n", thirds.c_str());
                 const std::string of = pg::product::kIsInstrument ? " while held (Hz: dBFS; " : " of the noise, out against in (Hz: gain dB; ";
-                P.eq("spectrum.third", has(thirds, "Third-octave bands" + of + "0.4 s Hann frames): 20: ") && has(thirds, ", 20k: ") ? 1 : 0, 1);
+                // Each line names its frames (the semitones' as long as the held part, 0.45 s) and the band below which a
+                // tone spreads over the bands beside it.
+                P.eq("spectrum.third", has(thirds, "Third-octave bands" + of + "0.4 s Hann frames; below 25 Hz a tone spreads over the "
+                                                   "bands beside it): 20: ") && has(thirds, ", 20k: ") ? 1 : 0, 1);
                 P.eq("spectrum.octave", has(octaves, "Octave bands" + of + "0.4 s Hann frames): 31.5: ") && has(octaves, ", 16k: ") ? 1 : 0, 1);
                 P.eq("spectrum.semitone", has(notes, "Semitone bands") && has(notes, "a point a MIDI note, an octave a group after its first note")
-                                              && has(notes, "): E0 20.6: ") && has(notes, "; C4 262: ") ? 1 : 0, 1);
+                                              && has(notes, std::string(pg::product::kIsInstrument ? "(dBFS; " : "(gain dB; ")
+                                                                + "0.45 s Hann frames, as long as the part, up to 2 s; below F2 a tone "
+                                                                  "spreads over the bands beside it): E0 20.6: ")
+                                              && has(notes, "; C4 262: ") ? 1 : 0, 1);
                 int widthsRefused = 0;
                 for (const juce::var& askedWidth : { juce::var("fifth"), juce::var(3), juce::var("Third") })
                 {
