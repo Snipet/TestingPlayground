@@ -21,11 +21,18 @@
 //   TUNE     tune_dials finds a level for an RMS, a release for a release time (an instrument), a gain for a gain and
 //            a drive for a THD+N (an effect), each goal met within its budget; two dials at once; goals met already
 //            take one render; an int, a name the program has not and an empty request are refused; progress can stop
-//            it; the same request gives the same dials
+//            it; the same request gives the same dials; an effect's window after its test signals leaves a goal on them
+//            out of the search, and with no other goal does not search, saying why
+//   SWEEP    tune_dials' sweep: the level dial over three values, a row each in their order, its metric 10 dB apart,
+//            one render each, nothing set, the same twice; a judged goal marks each cell and names the values that meet
+//            every goal, or the nearest; an int's A/B (the synth's saw brighter than its sine); an unknown dial (every
+//            dial listed, an int's too), two dials, 33 values, a value outside the range and an int's not whole refused; a bare goal a search refuses; the user's stop; the
+//            effect's window after its signals leaves the metric unmeasured at every value, saying why
 //   VIEW     view_sound's analysis: a 440 Hz tone (an instrument's note 69; an effect's sine) is the spectrogram's
 //            loudest row and the spectrum's loudest column, within a row; the close-up four of its cycles; the waveform
 //            and the level as rendered; an effect's sweep rises through the rows; the note-off where it was; analyse()
-//            of a render's samples gives the view's own
+//            of a render's samples gives the view's own; the tone at 96 and 192 kHz as at 48 (the spectrum's top within
+//            0.1 dB, its loudest column and the spectrogram's loudest row the same)
 //   SCENARIO a scenario's render (Measure.h): an instrument's phrase (a retrigger, fast notes, a 17th note that
 //            steals, legato) with the wheels, the pedal and a stop, an effect's host edits: the same bits in blocks of 64
 //            and 333, and again; with a dial moving (a float glide, an int step), the same bits again at each block size,
@@ -38,8 +45,14 @@
 //            scenario's dials moved)
 //   COMPARE  compare (Compare.h): a program against itself gives identical bits, and a recording of it against it
 //            too; a gain dial shows as that gain (no delay, nothing left; every octave band and the level metric
-//            moved), a delay dial as that lag (the gain 1), also of a note still sounding past the correlation's 2^17
+//            moved; the bands the same at 192 kHz), a delay dial as that lag (the gain 1), also of a note still sounding past the correlation's 2^17
 //            samples; the detail's 32 parts; a recording shorter than the render identical (rendered as long)
+//   RATES    compare at two rates (B at 96 kHz): a program that computes from its rate (the synth's sine through its
+//            low-pass, its envelope in seconds; the effect at its defaults) the same: no null test, every octave band
+//            within 0.2 dB (the synth's to 2 kHz), every metric within its tolerance but those the rate moves by
+//            definition, set aside and named, the detail's parts within 0.2 dB, the effect's input the sweep; one that
+//            counts in samples (compare's: an envelope a step a sample, a delay of 64 samples) not, the metrics that
+//            move named side by side; B at 22050 Hz refused (two rates are 40 kHz or more), both at it compared
 #include "Probe.h"
 
 #include "dsp/Compare.h"
@@ -309,7 +322,7 @@ namespace
         return g;
     }
 
-    // A report without its CPU line, which differs between renders.
+    // A report without its CPU line and the metrics line's CPU values, which differ between renders.
     std::string withoutCpu(const std::string& r)
     {
         std::string out;
@@ -320,7 +333,21 @@ namespace
             if (b == std::string::npos)
                 b = r.size();
             const std::string line = r.substr(a, b - a);
-            if (line.rfind("CPU:", 0) != 0)
+            if (line.rfind("Metrics: ", 0) == 0)             // the metrics line: its CPU's values left out too
+            {
+                std::string kept;
+                for (std::size_t p = 9; p < line.size();)
+                {
+                    std::size_t q = line.find(' ', p);
+                    if (q == std::string::npos)
+                        q = line.size();
+                    if (line.compare(p, 3, "cpu") != 0)
+                        kept += line.substr(p, q - p) + " ";
+                    p = q + 1;
+                }
+                out += "Metrics: " + kept + "\n";
+            }
+            else if (line.rfind("CPU:", 0) != 0)
                 out += line + "\n";
             a = b + 1;
         }
@@ -639,6 +666,25 @@ PROBE(dsp, tune)
             ms::TuneRequest intDial = q;
             intDial.dials = { "mode" };
             P.eq("tune.int_refused", ms::tune(files(), intDial).error.find("float dials only") != std::string::npos ? 1 : 0, 1);
+            // A window after the sine and the noise (they end at 1 s): no goal on them is measured, whatever the dials, so
+            // it does not search, and says why; beside a goal it can measure, that one alone is searched for.
+            ms::TuneRequest gone = q;
+            gone.render.window = { 1.2, 1.5 };
+            const ms::TuneResult g = ms::tune(files(), gone);
+            report("window after the signals", g);
+            P.eq("tune.window_unmeasured_stops", g.renders == 1 && g.error == "Nothing to tune for: sine_gain_db is not measured in this "
+                                                                              "render: the window starts after the sine and the noise end "
+                                                                              "(hold_seconds, 1.00 s)."
+                                                     ? 1 : 0, 1);
+            gone.goals.push_back(atMost("alerts", 0.5));
+            const ms::TuneResult h = ms::tune(files(), gone);
+            report("window after the signals, and the alerts", h);
+            P.eq("tune.window_unmeasured_left_out", h.error.empty() && h.renders == 1 && h.bestMet.size() == 2 && h.bestMet[1]
+                                                        && h.text.find("- sine_gain_db (") != std::string::npos
+                                                        && h.text.find("): not measured, the window starts after the sine and the noise end "
+                                                                       "(hold_seconds, 1.00 s): left out of the search.") != std::string::npos
+                                                        && h.text.find("Not every goal was met") == std::string::npos
+                                                        ? 1 : 0, 1);
         }
         ms::TuneRequest already = q;
         already.goals = { atMost("alerts", 0.5) };
@@ -656,6 +702,124 @@ PROBE(dsp, tune)
         stop.progress = [](int done, int) { return done < 5; };
         const ms::TuneResult s = ms::tune(files(), stop);
         P.eq("tune.progress_stops", s.stopped && s.renders == 5 ? 1 : 0, 1);
+    }
+
+    // ---- SWEEP ---------------------------------------------------------------------------------------------------------
+    {
+        const auto report = [](const char* what, const ms::TuneResult& t) {
+            std::printf("sweep %s: %s%s\n", what, t.error.c_str(), t.text.c_str());
+        };
+        const auto has = [](const std::string& s, const std::string& what) { return s.find(what) != std::string::npos; };
+        // The level dial (dB) over three values, its level metric alone (a bare goal: reported, not judged): a row a
+        // value, in their order, each 10 dB from the last; one render each, nothing set (best empty).
+        const std::string dial = kInstrument ? "level" : "gain";
+        const char* metric = kInstrument ? "rms_db" : "sine_gain_db";
+        ms::TuneRequest q;
+        q.render = base;
+        q.dials = { dial };
+        q.sweep = kInstrument ? std::vector<float>{ -40.0f, -30.0f, -20.0f } : std::vector<float>{ -10.0f, 0.0f, 10.0f };
+        ms::Goal bare;
+        bare.metric = metric;
+        q.goals = { bare };
+        const ms::TuneResult a = ms::tune(files(), q);
+        report("level", a);
+        P.eq("sweep.runs", a.error.empty() && a.sweep.size() == 3 && a.renders == 3 ? 1 : 0, 1);
+        P.eq("sweep.sets_nothing", a.best.empty() ? 1 : 0, 1);
+        if (a.sweep.size() == 3)
+        {
+            P.eq("sweep.values_in_order", a.sweep[0].value == q.sweep[0] && a.sweep[2].value == q.sweep[2] ? 1 : 0, 1);
+            P.near("sweep.step_one", at(a.sweep[1].values, metric) - at(a.sweep[0].values, metric), 10.0, 0.05);
+            P.near("sweep.step_two", at(a.sweep[2].values, metric) - at(a.sweep[1].values, metric), 10.0, 0.05);
+            if constexpr (!kInstrument)
+                P.near("sweep.gain_read", at(a.sweep[2].values, metric), 10.0, 0.05);
+        }
+        P.eq("sweep.table", has(a.text, "Swept " + dial + " over 3 values (") && has(a.text, "):\n" + dial + " | " + metric + "\n")
+                                && has(a.text, kInstrument ? "\n-30 | " : "\n0 | ") && !has(a.text, "met")
+                                ? 1 : 0, 1);
+        const ms::TuneResult again = ms::tune(files(), q);
+        P.eq("sweep.deterministic", again.sweep.size() == a.sweep.size() && !a.sweep.empty()
+                                        && again.sweep.back().values == a.sweep.back().values ? 1 : 0, 1);
+
+        // A judged goal marks each cell and names where every goal is met; with none met, the nearest value.
+        if (a.sweep.size() == 3)
+        {
+            ms::TuneRequest judged = q;
+            judged.goals = { bare, atMost(metric, at(a.sweep[1].values, metric) + 1.0) };
+            const ms::TuneResult j = ms::tune(files(), judged);
+            report("judged", j);
+            P.eq("sweep.judged_cells", has(j.text, ", met\n") && has(j.text, ", NOT met\n") ? 1 : 0, 1);
+            P.eq("sweep.every_met_at", has(j.text, "Every goal is met at " + dial + (kInstrument ? " -40 and -30." : " -10 and 0."))
+                                           ? 1 : 0, 1);
+            judged.goals = { atLeast(metric, at(a.sweep[2].values, metric) + 5.0) };
+            const ms::TuneResult n = ms::tune(files(), judged);
+            report("none met", n);
+            P.eq("sweep.nearest", has(n.text, "No value meets every goal; the nearest: " + dial + (kInstrument ? " -20" : " 10")
+                                                  + " (0 of 1 met).") ? 1 : 0, 1);
+        }
+
+        // An int dial (a sweep takes any type): an A/B of its two values (the instrument's saw against a sine: the sine
+        // darker; the effect's mode changes nothing).
+        ms::TuneRequest ab = q;
+        ab.dials = { kInstrument ? "wave" : "mode" };
+        ab.sweep = { 0.0f, 1.0f };
+        ms::Goal side;
+        side.metric = kInstrument ? "centroid_hz" : "sine_gain_db";
+        ab.goals = { side };
+        const ms::TuneResult b = ms::tune(files(), ab);
+        report("an int", b);
+        P.eq("sweep.int_runs", b.error.empty() && b.sweep.size() == 2 ? 1 : 0, 1);
+        if (b.sweep.size() == 2)
+        {
+            if constexpr (kInstrument)
+                P.ge("sweep.int_ab", at(b.sweep[0].values, "centroid_hz") - at(b.sweep[1].values, "centroid_hz"), 50.0);
+            else
+                P.near("sweep.int_ab", at(b.sweep[0].values, "sine_gain_db") - at(b.sweep[1].values, "sine_gain_db"), 0.0, 1e-9);
+        }
+
+        // What a sweep refuses: two dials, too many values, a value outside the range, an int's that is not whole.
+        ms::TuneRequest unknown = ab;
+        unknown.dials = { "nothing" };
+        P.eq("sweep.unknown_dial_lists_all", has(ms::tune(files(), unknown).error,
+                                                 kInstrument ? "no dial 'nothing'. Its dials: level, cutoff, attack, release, wave."
+                                                             : "no dial 'nothing'. Its dials: gain, drive, tone, mode.")
+                                                 ? 1 : 0, 1);
+        ms::TuneRequest two = q;
+        two.dials = { dial, kInstrument ? "cutoff" : "tone" };
+        P.eq("sweep.one_dial", ms::tune(files(), two).error == "A sweep takes one dial in tune (it names 2)." ? 1 : 0, 1);
+        ms::TuneRequest many = q;
+        many.sweep.assign(33, 0.0f);
+        P.eq("sweep.too_many", ms::tune(files(), many).error == "A sweep takes 1 to 32 values (it gives 33)." ? 1 : 0, 1);
+        ms::TuneRequest outside = q;
+        outside.sweep = { 0.0f, 99.0f };
+        const std::string outsideWhy = ms::tune(files(), outside).error;
+        std::printf("sweep outside: %s\n", outsideWhy.c_str());
+        P.eq("sweep.outside_range", outsideWhy == (kInstrument ? "sweep: 99 is outside level's range (-40 to 0)."
+                                                               : "sweep: 99 is outside gain's range (-24 to 24).")
+                                        ? 1 : 0, 1);
+        ms::TuneRequest half = ab;
+        half.sweep = { 0.5f };
+        P.eq("sweep.int_whole", has(ms::tune(files(), half).error, "is not a whole number, and ") ? 1 : 0, 1);
+        // A goal with neither bound nor target: a search refuses it, a sweep makes it a column.
+        ms::TuneRequest search = q;
+        search.sweep.clear();
+        P.eq("sweep.bare_goal_search_refused", has(ms::tune(files(), search).error, "needs min, max or target") ? 1 : 0, 1);
+        // The user's stop: the rows so far, and the table says so.
+        ms::TuneRequest stopped = q;
+        stopped.progress = [](int done, int) { return done < 2; };
+        const ms::TuneResult s = ms::tune(files(), stopped);
+        P.eq("sweep.progress_stops", s.stopped && s.sweep.size() == 2 && has(s.text, "stopped by the user after 2 of 3") ? 1 : 0, 1);
+        if constexpr (!kInstrument)
+        {
+            // A window after the test signals: the metric is not measured at any value, and the table says why.
+            ms::TuneRequest gone = q;
+            gone.render.window = { 1.2, 1.5 };
+            const ms::TuneResult g = ms::tune(files(), gone);
+            report("window after the signals", g);
+            P.eq("sweep.unmeasured", g.error.empty() && g.sweep.size() == 3 && has(g.text, "\n-10 | not measured\n")
+                                         && has(g.text, "sine_gain_db is not measured at any value (at -10: the window starts after "
+                                                        "the sine and the noise end (hold_seconds, 1.00 s)).")
+                                         ? 1 : 0, 1);
+        }
     }
 
     // ---- VIEW ----------------------------------------------------------------------------------------------------------
@@ -724,6 +888,29 @@ PROBE(dsp, tune)
         const ms::View again = ms::analyse(sound.l, sound.r, sound.rate, sound.heldUntil, vr, sound.cycleHz, sound.harmonics, sound.fromStart);
         P.eq("view.analyse_is_view", again.cells == v.cells && again.spectrum == v.spectrum && again.levelDb == v.levelDb
                                          && again.zoomFrom == v.zoomFrom && again.harmonics == v.harmonics ? 1 : 0, 1);
+        // The frames fixed in seconds (SoundView.h): the same tone at 96 and 192 kHz shows as at 48 (compare's picture
+        // at two rates draws both on one scale): the spectrum's top on the 48 kHz frame's scale, its loudest column and
+        // the spectrogram's loudest row the same.
+        for (const int k : { 96, 192 })
+        {
+            ms::ViewRequest at = vr;
+            at.render.rate = 1000.0 * k;
+            const ms::View w = ms::view(files(), at);
+            int row = 0;
+            for (int r = 0; r < w.rows; ++r)
+                if (w.cells[static_cast<std::size_t>(r * w.columns + mid)] > w.cells[static_cast<std::size_t>(row * w.columns + mid)])
+                    row = r;
+            std::size_t col = 0;
+            for (std::size_t c = 0; c < w.spectrum.size(); ++c)
+                if (w.spectrum[c] > w.spectrum[col])
+                    col = c;
+            std::printf("view at %d kHz: the spectrum's top %.2f dB (%.2f at 48), its loudest column %zu (%zu), row %d (%d)\n", k,
+                        static_cast<double>(w.spectrumTop), static_cast<double>(v.spectrumTop), col, loudCol, row, loudRow);
+            const std::string at48 = "view.rate" + std::to_string(k) + ".";
+            P.near(at48 + "spectrum_top_db", static_cast<double>(w.spectrumTop), static_cast<double>(v.spectrumTop), 0.1);
+            P.eq(at48 + "spectrum_column", static_cast<int64_t>(col), static_cast<int64_t>(loudCol));
+            P.eq(at48 + "spectrogram_row", row, loudRow);
+        }
     }
 
     // ---- SCENARIO ------------------------------------------------------------------------------------------------------
@@ -872,6 +1059,25 @@ PROBE(dsp, tune)
         for (const double d : gain.bandsDb)
             bands += std::isfinite(d) && std::fabs(d + 6.0206) < 0.5 ? 1 : 0;
         P.ge("compare.gain_bands", static_cast<double>(bands), kInstrument ? 1.0 : 9.0);
+        // The bands in frames fixed in seconds: at 192 kHz each reads as at 48 kHz.
+        {
+            ms::CompareSide a192 = a, quieter192 = quieter;
+            a192.request.rate = quieter192.request.rate = 192000.0;
+            ms::CompareOptions bare;
+            bare.metrics = false;
+            const ms::Comparison high = ms::compare(a192, quieter192, bare);
+            for (const std::string& line : high.lines)
+                std::printf("gain at 192 kHz: %s\n", line.c_str());
+            int same = 0, measured = 0;
+            for (std::size_t k = 0; k < gain.bandsDb.size(); ++k)
+                if (std::isfinite(gain.bandsDb[k]) && std::isfinite(high.bandsDb[k]) && std::fabs(gain.bandsDb[k] + 6.0206) < 0.5)
+                {
+                    ++measured;
+                    same += std::fabs(high.bandsDb[k] - gain.bandsDb[k]) < 0.15 ? 1 : 0;
+                }
+            P.eq("compare.gain_bands_rates", same, measured);
+            P.ge("compare.gain_bands_rates_some", static_cast<double>(measured), 1.0);
+        }
         bool level = false;
         for (const ms::Comparison::Differs& m : gain.metrics)
             level = level || m.metric == (kInstrument ? "rms_db" : "sine_rms_db");
@@ -905,6 +1111,117 @@ PROBE(dsp, tune)
         for (const std::string& line : longLag.lines)
             std::printf("long delay: %s\n", line.c_str());
         P.eq("compare.long_lag", static_cast<int64_t>(longLag.lag), 100);
+    }
+
+    // ---- RATES: compare at two rates (B at 96 kHz): the levels, the bands and the metrics, not the samples -------------
+    {
+        const auto has = [](const std::vector<std::string>& lines, const std::string& what) {
+            return std::any_of(lines.begin(), lines.end(), [&](const std::string& l) { return l.find(what) != std::string::npos; });
+        };
+        const auto show = [](const char* what, const ms::Comparison& c) {
+            for (const std::string& line : c.lines)
+                std::printf("%s: %s\n", what, line.c_str());
+        };
+        // A program that computes from its rate (the instrument's sine through its low-pass, its envelope in seconds; the
+        // effect at its defaults, a pass) sounds the same at both: every band within 0.2 dB (the instrument's up to 2 kHz:
+        // above them is only the note's edges, its attack's corner, which at 48 kHz folds back from above 24 kHz through a
+        // one-pole that passes more near the top there: up to 2.6 dB more in the 16 kHz octave, which the comparison
+        // rightly shows), every metric within its tolerance but those the rate moves by definition, set aside and named.
+        ms::Request r = base;
+        r.holdSeconds = 0.5f;
+        r.tailSeconds = kInstrument ? 0.4f : 1.0f;      // the voice still sounds at the end (no part where one has ended)
+        if constexpr (kInstrument)
+            r.dials = { { "wave", 1.0f } };
+        const ms::CompareSide a{ files(), r, nullptr, nullptr };
+        ms::CompareSide a96 = a;
+        a96.request.rate = 96000.0;
+        ms::CompareOptions detail;
+        detail.detail = true;
+        const ms::Comparison same = ms::compare(a, a96, detail);
+        show("rates, the same program", same);
+        P.eq("rates.compiles", same.error.empty() ? 1 : 0, 1);
+        P.eq("rates.two", same.twoRates() && same.rate == 48000.0 && same.rateB == 96000.0 && !same.identical ? 1 : 0, 1);
+        P.eq("rates.first_line", !same.lines.empty()
+                                     && same.lines[0].rfind("A renders at 48000 Hz and B at 96000 Hz: compared by what is the same at "
+                                                            "every rate (the levels, the octave bands, the metrics), not sample by sample.", 0) == 0
+                                     ? 1 : 0, 1);
+        P.eq("rates.no_null_test", !has(same.lines, "Best fit") && !has(same.lines, "They differ") && same.lag == 0 ? 1 : 0, 1);
+        int bands = 0, near = 0;
+        for (std::size_t k = 0; k < same.bandsDb.size(); ++k)
+            if (const double d = same.bandsDb[k]; std::isfinite(d) && (!kInstrument || ms::Comparison::kBands[k] <= 2000.0))
+            {
+                ++bands;
+                near += std::fabs(d) < 0.2 ? 1 : 0;
+            }
+        P.eq("rates.bands_same", near, bands);
+        P.ge("rates.bands_some", static_cast<double>(bands), kInstrument ? 7.0 : 10.0);
+        for (const ms::Comparison::Differs& m : same.metrics)
+            std::printf("rates, the same program, differs: %s %g | %g\n", m.metric.c_str(), m.a, m.b);
+        P.eq("rates.metrics_agree", same.metricsMeasured && same.metrics.empty() ? 1 : 0, 1);
+        P.eq("rates.aside_named", has(same.lines, kInstrument ? "The metrics agree within their tolerances (step is set aside: the rate moves it by "
+                                                                "definition)."
+                                                              : "The metrics agree within their tolerances (noise_gain_db, noise_lufs, "
+                                                                "impulse_peak_db and step are set aside: the rate moves them by definition).")
+                                      ? 1 : 0, 1);
+        P.eq("rates.detail", same.envelopeDb.size() == 32 && has(same.lines, "B's level against A's over time (32 parts of ") ? 1 : 0, 1);
+        float most = 0.0f;
+        for (std::size_t k = 1; k + 1 < same.envelopeDb.size(); ++k)   // the first and the last part hold an edge
+            most = std::max(most, std::fabs(same.envelopeDb[k]));
+        P.le("rates.detail_level", static_cast<double>(most), 0.2);
+        if constexpr (!kInstrument)
+            P.eq("rates.effect_sweep", same.a.title.rfind("A sweep from 20 Hz to 20000 Hz", 0) == 0
+                                           && same.b.title.rfind("A sweep from 20 Hz to 20000 Hz", 0) == 0 ? 1 : 0, 1);
+
+        // A program that counts in samples (compare's: an envelope a step a sample; a delay of 64 samples) does not: the
+        // metrics that move are named, side by side.
+        ms::Request rc;
+        rc.holdSeconds = 0.5f;
+        rc.tailSeconds = 0.5f;
+        if constexpr (kInstrument)
+            rc.notes = { 57 };
+        else
+            rc.dials = { { "delay", 64.0f } };
+        const ms::CompareSide c48{ pg::singleFile(kInstrument ? kCompareVoice : kCompareEffect), rc, nullptr, nullptr };
+        ms::CompareSide c96 = c48;
+        c96.request.rate = 96000.0;
+        const ms::Comparison differs = ms::compare(c48, c96);
+        show("rates, counted in samples", differs);
+        const auto find = [&](const char* name) {
+            const auto it = std::find_if(differs.metrics.begin(), differs.metrics.end(), [&](const auto& m) { return m.metric == name; });
+            return it == differs.metrics.end() ? nullptr : &*it;
+        };
+        if constexpr (kInstrument)
+        {
+            const auto* release = find("release_s");
+            P.eq("rates.samples_release", release != nullptr ? 1 : 0, 1);
+            if (release != nullptr)
+                P.near("rates.samples_release_half", release->b / release->a, 0.5, 0.05);
+            P.eq("rates.samples_attack", find("attack_s") != nullptr ? 1 : 0, 1);
+        }
+        else
+        {
+            const auto* delay = find("impulse_delay_ms");
+            P.eq("rates.samples_delay", delay != nullptr ? 1 : 0, 1);
+            if (delay != nullptr)
+            {
+                P.near("rates.samples_delay_a", delay->a, 64.0 / 48.0, 0.01);
+                P.near("rates.samples_delay_b", delay->b, 64.0 / 96.0, 0.01);
+            }
+        }
+        P.eq("rates.samples_line", has(differs.lines, "Metrics beyond their tolerance (A | B): ") ? 1 : 0, 1);
+
+        // Under 40 kHz a side lacks 20 Hz to 20 kHz (an effect's sweep would end lower, its centroids' band too, and the
+        // picture's axes differ): refused, nothing rendered; one rate under it is the ordinary comparison.
+        ms::CompareSide low = a;
+        low.request.rate = 22050.0;
+        const ms::Comparison under = ms::compare(a, low);
+        std::printf("rates, B at 22050 Hz: %s\n", under.error.c_str());
+        P.eq("rates.under_40k_refused", under.error == "At two rates both are 40000 Hz or more (20 Hz to 20 kHz on both sides): A is at "
+                                                       "48000 Hz and B at 22050 Hz."
+                                            && under.a.l.empty() && under.b.l.empty() ? 1 : 0, 1);
+        ms::CompareSide lowA = low;
+        const ms::Comparison oneLow = ms::compare(lowA, low, ms::CompareOptions{ false, false });
+        P.eq("rates.one_rate_under_40k", oneLow.error.empty() && oneLow.identical && !oneLow.twoRates() ? 1 : 0, 1);
     }
     return P.finish();
 }

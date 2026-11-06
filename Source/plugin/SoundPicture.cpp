@@ -30,7 +30,8 @@ namespace playground::soundpicture
         constexpr int kZoomLeft = 640, kZoomW = 424;
 
         const juce::Colour kBg(0xff0f1318), kPanel(0xff161b22), kGrid(0xff262d36), kText(0xffd0d7de), kDim(0xff8b949e),
-            kWaveL(0xff58a6ff), kWaveR(0xffff9e57), kLevel(0xff3fb950), kMarker(0xfff778ba), kHarmonic(0xffe3b341);
+            kWaveL(0xff58a6ff), kWaveR(0xffff9e57), kLevel(0xff3fb950), kMarker(0xfff778ba), kHarmonic(0xffe3b341),
+            kWindow(0xff56d4dd);
 
         std::string fmt(const char* f, double v)
         {
@@ -126,10 +127,32 @@ namespace playground::soundpicture
                 g.drawLine(x, y, x, std::min(y + 4.0f, static_cast<float>(top + h)), 1.5f);
         }
 
+        // The window (View::windowFrom, windowTo) over a plot: its edges, and when `shade`, a tint between them.
+        void windowBand(juce::Graphics& g, const measure::View& v, int top, int h, bool shade, bool edges)
+        {
+            if (v.windowFrom < 0.0 || v.windowTo <= v.windowFrom || v.length == 0)
+                return;
+            const double seconds = static_cast<double>(v.length) / v.rate;
+            const float x0 = static_cast<float>(kLeft) + static_cast<float>(std::clamp(v.windowFrom / seconds, 0.0, 1.0)) * kPlotW;
+            const float x1 = static_cast<float>(kLeft) + static_cast<float>(std::clamp(v.windowTo / seconds, 0.0, 1.0)) * kPlotW;
+            if (shade)
+            {
+                g.setColour(kWindow.withAlpha(0.10f));
+                g.fillRect(x0, static_cast<float>(top), std::max(1.0f, x1 - x0), static_cast<float>(h));
+            }
+            if (edges)
+            {
+                g.setColour(kWindow);
+                g.drawLine(x0, static_cast<float>(top), x0, static_cast<float>(top + h), 1.5f);
+                g.drawLine(x1, static_cast<float>(top), x1, static_cast<float>(top + h), 1.5f);
+            }
+        }
+
         void waveform(juce::Graphics& g, const measure::View& v)
         {
             g.setColour(kPanel);
             g.fillRect(kLeft, kWaveTop, kPlotW, kWaveH);
+            windowBand(g, v, kWaveTop, kWaveH, true, false);
             float peak = 0.0f;
             for (std::size_t c = 0; c < v.maxL.size(); ++c)
                 peak = std::max({ peak, std::fabs(v.maxL[c]), std::fabs(v.minL[c]), std::fabs(v.maxR[c]), std::fabs(v.minR[c]) });
@@ -182,6 +205,7 @@ namespace playground::soundpicture
                            juce::Justification::centredLeft);
             }
             marker(g, v, kWaveTop, kWaveH);
+            windowBand(g, v, kWaveTop, kWaveH, false, true);
             title(g, "Waveform" + juce::String(v.stereo ? " (left blue, right orange)" : "") + " and level (green)", kLeft + 6,
                   kWaveTop + 2);
         }
@@ -211,6 +235,7 @@ namespace playground::soundpicture
                            kLeft - 10, 14, juce::Justification::centredRight);
             }
             marker(g, v, kSpecTop, kSpecH);
+            windowBand(g, v, kSpecTop, kSpecH, false, true);
             // The colour scale.
             const int bx = kLeft + kPlotW + 6;
             for (int y = 0; y < kSpecH; ++y)
@@ -271,8 +296,9 @@ namespace playground::soundpicture
             }
             g.setColour(kWaveL);
             g.strokePath(p, juce::PathStrokeType(1.3f));
-            title(g, v.heldUntil > 0.0 ? (kInstrument ? "Spectrum while held (dB)" : "Spectrum while the input plays (dB)")
-                                       : "Spectrum (dB)",
+            title(g, v.windowFrom >= 0.0 ? js("Spectrum in the window, " + fmt("%.2f", v.windowFrom) + " to " + fmt("%.2f s (dB)", v.windowTo))
+                     : v.heldUntil > 0.0 ? (kInstrument ? "Spectrum while held (dB)" : "Spectrum while the input plays (dB)")
+                                         : "Spectrum (dB)",
                   kLeft + 6, top + 1);
         }
 
@@ -395,7 +421,8 @@ namespace playground::soundpicture
             g.setFont(juce::FontOptions(12.0f));
             g.drawText(js("Dials: " + v.dials), kLeft, 26, kPlotW, 16, juce::Justification::centredLeft);
             const std::string level = "peak " + (v.peakDb <= -150.0 ? std::string("silent") : fmt("%.1f dBFS", v.peakDb))
-                                    + ", RMS " + (v.rmsDb <= -150.0 ? std::string("silent") : fmt("%.1f dBFS", v.rmsDb))
+                                    + (v.windowFrom >= 0.0 ? ", RMS in the window " : ", RMS ")
+                                    + (v.rmsDb <= -150.0 ? std::string("silent") : fmt("%.1f dBFS", v.rmsDb))
                                     + (v.alerts != 0 ? "; ALERTS" : "");
             g.setColour(v.alerts != 0 ? kMarker : kText);
             g.setFont(juce::FontOptions(12.0f));
@@ -412,6 +439,8 @@ namespace playground::soundpicture
 
 
         const double seconds = static_cast<double>(v.length) / v.rate;
+        const bool window = v.windowFrom >= 0.0 && v.windowTo > v.windowFrom;
+        const std::string windowWords = fmt("%.2f", v.windowFrom) + " to " + fmt("%.2f s", v.windowTo);
         out.about = "A picture of the program's sound, rendered offline from the editor's files (nothing that plays "
                     "changed): "
                   + v.title + ", " + fmt("%.2f s", seconds) + " in all. Dials: " + v.dials + ".\n"
@@ -421,10 +450,14 @@ namespace playground::soundpicture
                   + (v.heldUntil > 0.0 ? std::string(kInstrument ? " The dashed pink line is the note-off."
                                                                  : " The dashed pink line is where the input stops.")
                                        : std::string())
+                  + (window ? " The cyan lines (shaded on the waveform) are the window, " + windowWords
+                                + ": the average spectrum and the RMS are over it."
+                            : std::string())
                   + "\nMiddle: a spectrogram, 20 Hz at the bottom to " + fmt("%.0f Hz", v.hiHz)
                   + " at the top on a log scale (the labels at the left), time across as in the waveform; its colour is dB "
                     "under the loudest moment: pale yellow 0, orange -30, purple -60, black -120 and below.\n"
-                  + "Bottom left: the average spectrum" + (v.heldUntil > 0.0 ? (kInstrument ? " while held" : " while the input plays") : "")
+                  + "Bottom left: the average spectrum"
+                  + (window ? " in the window" : v.heldUntil > 0.0 ? (kInstrument ? " while held" : " while the input plays") : "")
                   + ", in dB under its loudest (0 to -120)"
                   + (v.harmonics.empty() ? std::string() : ", with the harmonics of " + fmt("%.1f Hz", v.harmonics.front())
                                                                + " marked in yellow at its top")
@@ -433,7 +466,7 @@ namespace playground::soundpicture
                   + " samples).\n"
                   + "Peak " + (v.peakDb <= -150.0 ? std::string("silent") : fmt("%.1f dBFS", v.peakDb)) + ", RMS "
                   + (v.rmsDb <= -150.0 ? std::string("silent") : fmt("%.1f dBFS", v.rmsDb))
-                  + (kInstrument ? " while held" : "") + "; the output guard's alerts: "
+                  + (window ? " in the window" : kInstrument ? " while held" : "") + "; the output guard's alerts: "
                   + (v.alerts == 0 ? std::string("none") : "NaN, infinite or clipped samples (" + std::to_string(v.alerts) + ")")
                   + ".";
         return out;
@@ -504,7 +537,7 @@ namespace playground::soundpicture
             curve(b.levelDb, kB.withAlpha(0.85f), 1.5f);
             curve(difference, kDiff, 1.2f);
             title(g, "Level over time (dBFS, RMS over 10 ms)", kLeft + 6, kLevelTop + 2);
-            timeAxis(g, static_cast<double>(std::max(a.length, b.length)) / a.rate, kLevelTop + kLevelH + 2);
+            timeAxis(g, std::max(static_cast<double>(a.length) / a.rate, static_cast<double>(b.length) / b.rate), kLevelTop + kLevelH + 2);
 
             // The average spectra, on one scale: dB under the louder of the two.
             g.setColour(kPanel);
@@ -536,17 +569,23 @@ namespace playground::soundpicture
                 g.drawText(js(hz >= 1000.0 ? fmt("%.0fk", hz / 1000.0) : fmt("%.0f", hz)), static_cast<int>(x) - 20,
                            kSpecTop2 + kSpecH2 + 2, 40, 14, juce::Justification::centred);
             }
+            // Each column at its own frequency (its view's axis) on A's axis, which B's may not span alike.
             const auto spectrumCurve = [&](const measure::View& v, juce::Colour colour) {
                 juce::Path p;
                 const float shift = v.spectrumTop - top;
+                const double n = static_cast<double>(v.spectrum.size());
+                bool started = false;
                 for (std::size_t c = 0; c < v.spectrum.size(); ++c)
                 {
-                    const float x = static_cast<float>(kLeft) + (static_cast<float>(c) + 0.5f) * kPlotW / static_cast<float>(v.spectrum.size());
-                    const float y = ySpec(v.spectrum[c] + shift);
-                    if (c == 0)
+                    const double hz = v.loHz * std::pow(v.hiHz / v.loHz, (static_cast<double>(c) + 0.5) / n);
+                    if (hz < a.loHz || hz > a.hiHz)
+                        continue;
+                    const float x = xOf(hz), y = ySpec(v.spectrum[c] + shift);
+                    if (!started)
                         p.startNewSubPath(x, y);
                     else
                         p.lineTo(x, y);
+                    started = true;
                 }
                 g.setColour(colour);
                 g.strokePath(p, juce::PathStrokeType(1.3f));

@@ -7,6 +7,7 @@
 #include "Examples.h"
 #include "Product.h"
 
+#include "fminus/CirDoc.h"
 #include "fminus/Circuits.h"
 #include "fsdsp/core/Sanitize.h"
 
@@ -281,7 +282,7 @@ namespace playground
         const CompileStatus s = compiler_.compileNow(draft_.files);
         jassert(s.ok);
         seen_ = s.revision;
-        apply(s, true, Given{});
+        apply(s, true, true, Given{});
         syncDials();                                             // the journal's dials start here
         startTimerHz(20);
         mcp_ = std::make_unique<McpLink>(McpLink::Hooks{ [this] { return mcpInfo(); },
@@ -709,7 +710,7 @@ namespace playground
     bool Processor::meters(Meters& out) const { return engine_.meters(out); }
     void Processor::scope(bool input, float* out, int n) const { engine_.scope(input, out, n); }
 
-    void Processor::apply(const CompileStatus& s, bool run, const Given& given)
+    void Processor::apply(const CompileStatus& s, bool run, bool loaded, const Given& given)
     {
         Controls controls;
         std::array<std::vector<std::string>, kMaxControls> options;
@@ -740,6 +741,12 @@ namespace playground
             controls_ = s.controls;
             panel_ = s.panel;
             program_ = s.program;
+            // compare's previous_run: what a run replaced. A state's program (a host's recall, a project reopened) is
+            // no run's: nothing played before it, though Init played until then.
+            if (loaded)
+                previous_.clear();
+            else if (!running_.empty() && !cir::sameProgram(running_, s.sources))
+                previous_ = running_;
             running_ = s.sources;
         }
         if (run)
@@ -900,7 +907,7 @@ namespace playground
                         given.plain[static_cast<std::size_t>(c)] = k.def;
                         given.slots |= 1u << c;
                     }
-            apply(s, true, given);
+            apply(s, true, false, given);
             if (s.request == userRun_.load() && s.request != journaled_)
             {
                 journaled_ = s.request;                          // a refine's status answers it again (Compiler.h)
@@ -1144,7 +1151,7 @@ namespace playground
         // The session's program, compiled now, its dials as the session has them.
         const CompileStatus s = compiler_.compileNow(std::move(run), false);   // its dials come with it: no carry
         seen_ = s.revision;
-        apply(s, false, Given{});
+        apply(s, false, true, Given{});
         apvts_.replaceState(state);
         adoptMeaning(s);                                         // the values are the session's program's now
         journal_.note(Journal::Who::host, "loaded a saved state (the program, its files and its dials)");
@@ -1799,6 +1806,15 @@ namespace playground
             return s.sources;                                    // poll() may not have taken it yet
         const std::lock_guard<std::mutex> lock(programMutex_);
         return running_;
+    }
+
+    Sources Processor::chatPrevious() const
+    {
+        const CompileStatus s = compiler_.status();
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        if (s.ok && !running_.empty() && !cir::sameProgram(running_, s.sources))
+            return running_;                                     // poll() has not taken the newest yet: it comes after this
+        return previous_;
     }
 
     Controls Processor::chatDials() const

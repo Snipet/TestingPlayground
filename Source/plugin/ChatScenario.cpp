@@ -16,10 +16,9 @@ namespace playground::scenario
     {
         constexpr bool kInstrument = product::kIsInstrument;
         constexpr int kMaxTrialEdits = 32;
-        constexpr double kMinRate = 8000.0, kMaxRate = 192000.0;
         constexpr const char* kInputs[] = { "sweep", "noise", "impulse", "sine", "silence" };   // ViewInput's order
         constexpr const char* kWheels[] = { "mod", "bend", "pressure", "sustain", "steering", "throttle", "brake", "clutch",
-                                            "gear" };                                       // measure::Wheel's
+                                            "gear", "buttons" };                            // measure::Wheel's
         static_assert(std::size(kWheels) == static_cast<std::size_t>(measure::kWheelKinds));
 
         bool isNumber(const juce::var& v) { return v.isDouble() || v.isInt() || v.isInt64(); }
@@ -155,14 +154,17 @@ namespace playground::scenario
                     if (name == kWheels[k])
                         kind = k;
                 if (kind < 0)
-                    return in.fail(where, "wheel is mod, bend, pressure, sustain, steering, throttle, brake, clutch or gear");
+                    return in.fail(where, "wheel is mod, bend, pressure, sustain, steering, throttle, brake, clutch, gear or buttons");
                 const auto wheel = static_cast<measure::Wheel>(kind);
                 const bool signedOne = wheel == measure::Wheel::bend || wheel == measure::Wheel::steering;
-                const bool gear = wheel == measure::Wheel::gear;
+                const bool gear = wheel == measure::Wheel::gear, buttons = wheel == measure::Wheel::buttons;
                 double at = 0.0, value = 0.0;
                 if (!in.num(w, "at", where, 0.0, measure::kMaxPlaySeconds, at)
-                    || !in.num(w, "value", where, gear || signedOne ? -1.0 : 0.0, gear ? 7.0 : 1.0, value, true))
+                    || !in.num(w, "value", where, gear || signedOne ? -1.0 : 0.0,
+                               gear ? 7.0 : buttons ? static_cast<double>(measure::kMaxButtons) : 1.0, value, true))
                     return false;
+                if (buttons && value != std::floor(value))
+                    return in.fail(where, "the buttons' value is a whole number, a bit a button (host->buttons)");
                 r.wheels.push_back({ static_cast<measure::Wheel>(kind), at, static_cast<float>(value) });
             }
             return true;
@@ -207,8 +209,46 @@ namespace playground::scenario
             for (const auto& kv : o->getProperties())
                 if (isNumber(kv.value) || kv.value.isBool())
                     req.dials[kv.name.toString().toStdString()] = static_cast<float>(static_cast<double>(kv.value));
+        if (std::string bad; !readWindow(input, req.window, bad) && why != nullptr)
+            *why = bad;
+        // off_order_db's base, an instrument's (an effect's orders are its sine's, 220 Hz).
+        if (const juce::var base = input.getProperty("base_hz", juce::var()); kInstrument && !base.isVoid() && !base.isUndefined())
+        {
+            if (isNumber(base) && static_cast<double>(base) >= 1.0 && static_cast<double>(base) <= measure::kBandHighHz)
+                req.baseHz = static_cast<double>(base);
+            else if (why != nullptr)
+                *why = "base_hz: the orders' base, 1 to 20000 Hz";
+        }
         read(input, req, why);
         return req;
+    }
+
+    bool readWindow(const juce::var& input, measure::Window& window, std::string& why)
+    {
+        const juce::var w = input.getProperty("window", juce::var());
+        if (w.isVoid() || w.isUndefined())
+            return true;
+        const auto* o = w.getDynamicObject();
+        const juce::var from = o != nullptr ? o->getProperty("from") : juce::var();
+        const juce::var to = o != nullptr ? o->getProperty("to") : juce::var();
+        const bool only = o != nullptr && std::all_of(o->getProperties().begin(), o->getProperties().end(), [](const auto& kv) {
+            return kv.name.toString() == "from" || kv.name.toString() == "to";
+        });
+        const double a = isNumber(from) ? static_cast<double>(from) : -1.0, b = isNumber(to) ? static_cast<double>(to) : -1.0;
+        // At least kMinWindowSeconds long, a rounding's worth under it allowed (0.03 - 0.02 is 0.00999...).
+        if (!only || !(a >= 0.0) || !(b - a >= measure::kMinWindowSeconds - 1e-9) || !(b <= measure::kMaxWindowSeconds))
+        {
+            why = "window: {from, to}, seconds of the render, 0 <= from < to <= " + number(measure::kMaxWindowSeconds)
+                + ", at least " + number(measure::kMinWindowSeconds) + " s long";
+            return false;
+        }
+        window = { a, b };
+        return true;
+    }
+
+    juce::var windowVar(const measure::Window& w)
+    {
+        return w.set() ? claude::object({ { "from", w.from }, { "to", w.to } }) : juce::var();
     }
 
     juce::var schema()
@@ -429,6 +469,32 @@ namespace playground::scenario
                 out[i] = measured[static_cast<std::size_t>(at[i])];
         return out;
     }
+
+    // ---- dials_from ----------------------------------------------------------------------------------------------------
+    juce::var dialsFromSchema(bool described)
+    {
+        juce::var p = claude::object({ { "enum", juce::Array<juce::var>{ "current", "defaults" } } });
+        if (described)
+            p.getDynamicObject()->setProperty("description", "Dials not named: current (the default) or defaults");
+        return p;
+    }
+
+    bool dialsFrom(const juce::var& input, bool& defaults, std::string& why)
+    {
+        defaults = false;
+        const juce::var v = input.getProperty("dials_from", juce::var());
+        if (v.isVoid() || v.isUndefined() || (v.isString() && v.toString() == "current"))
+            return true;
+        if (v.isString() && v.toString() == "defaults")
+        {
+            defaults = true;
+            return true;
+        }
+        why = "dials_from is current (the dials not named as they are now) or defaults (at the program's defaults).";
+        return false;
+    }
+
+    std::string dialsLine(bool defaults) { return defaults ? "The dials not named are at their defaults.\n" : ""; }
 
     // ---- try_edits ------------------------------------------------------------------------------------------------------
     juce::var trialSchema()

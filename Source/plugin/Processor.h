@@ -168,13 +168,14 @@ namespace playground
         // poll()'s work: a finished compile's program and dials. A run's (`run`): its carry written to the host's
         // parameters (Controls.h's DialCarry: each dial in its units, a new one at its default), but for the slots in
         // `given`, which take those plain values (a version's or a preset's dials, a fresh start's defaults); a host's
-        // state load's: none (its values come with it).
+        // state load's: none (its values come with it). `loaded`: a program no run played (the constructor's Init, a
+        // state's), so nothing played before it (chatPrevious).
         struct Given
         {
             uint32_t slots = 0;
             std::array<float, kMaxControls> plain{};
         };
-        void apply(const CompileStatus& s, bool run, const Given& given);
+        void apply(const CompileStatus& s, bool run, bool loaded, const Given& given);
         // The dials' carry (Compiler::setDialCarrier): how the host's values, in the controls of meaningProgram_, come
         // across to a program of `controls`. On the thread that offers.
         DialCarry carryFor(const Controls& controls, const PanelSpec& panel);
@@ -269,6 +270,7 @@ namespace playground
         CompileStatus chatRun(const Sources& files) override;
         CompileStatus chatLastStatus() const override;
         Sources chatRunning() const override;
+        Sources chatPrevious() const override;
         Controls chatDials() const override;
         float chatDialValue(int slot) const override;
         void chatSetDial(int slot, float plain) override;
@@ -290,6 +292,7 @@ namespace playground
         // before the parameters, whose names and texts read controls_ (control()).
         mutable std::mutex programMutex_;
         Sources running_;
+        Sources previous_;                                       // what played before running_ (chatPrevious): a run's
         Draft draft_;
         uint64_t draftRevision_ = 1;
         Controls controls_{};

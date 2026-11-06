@@ -46,6 +46,7 @@ namespace playground
                                            { "source", typed("string") },
                                            { "scenario", scenario::schema() },
                                            { "try_edits", scenario::trialSchema() },
+                                           { "dials_from", scenario::dialsFromSchema(false) },
                                            { "points", typed("integer") },
                                            { "around", typed("number") },
                                            { "detail", typed("boolean") } });
@@ -76,8 +77,8 @@ namespace playground
                 "then of 1 sample before each problem, and says when the output depends on how the calls are split. detail: "
                 "more of each. The render as measure_output's: ")
                     + (product::kIsInstrument ? "notes, velocity, the wheels, " : "")
-                    + "hold_seconds, tail_seconds, bpm, dials, scenario and try_edits (an effect plays the scenario's input, "
-                      "else the sweep)." },
+                    + "hold_seconds, tail_seconds, bpm, dials, dials_from, scenario and try_edits (an effect plays the "
+                      "scenario's input, else the sweep)." },
               { "eager_input_streaming", true },
               { "input_schema", claude::object({ { "type", "object" }, { "properties", props } }) } });
     }
@@ -96,6 +97,10 @@ namespace playground
             return block;
         };
         setActivity("Tracing the program");
+        // Its render is the whole sound (renderOf would read a window and render on to its end).
+        if (input.hasProperty("window"))
+            return done("trace takes no window: it watches the whole render (measure_output, view_sound, a check and "
+                        "tune_dials measure one).", true);
 
         measure::TraceRequest q;
         if (const juce::var find = input.getProperty("find", juce::var()); !find.isVoid())
@@ -192,7 +197,11 @@ namespace playground
                     return done("Nothing plays yet, so there is no program to replay the recording through.", true);
             }
         }
-        q.render.current = currentDials();
+        bool defaults = false;
+        if (!scenario::dialsFrom(input, defaults, why))
+            return done(why, true);
+        if (!defaults)
+            q.render.current = currentDials();
         if (!scenario::resolve(q.render, host_, why, q.render.fromCapture ? &recording : nullptr))
             return done(why, true);
         int trials = 0;
@@ -203,7 +212,8 @@ namespace playground
         const measure::TraceResult r = measure::trace(files, q);
         if (!r.error.empty())
             return done(scenario::trialLine(trials) + r.error, true);
-        std::string out = scenario::trialLine(trials) + "Traced offline (nothing that plays changed): " + words
+        std::string out = scenario::trialLine(trials) + scenario::dialsLine(defaults && !q.render.fromCapture)
+                        + "Traced offline (nothing that plays changed): " + words
                         + (trials > 0 ? ", with the trial edits" : "") + ".\n";
         for (const std::string& line : r.lines)
             out += line + "\n";

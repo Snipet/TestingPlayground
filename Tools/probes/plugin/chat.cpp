@@ -82,7 +82,8 @@
 //            edit_circuit's result gives its version, and an `expected` from before it is refused as Claude's own change
 //   SOUND    view_sound through the agent (a program that sounds): its result a PNG of 1120 x 800 and what it shows,
 //            the tool's entry with the picture's thumbnail (480 px), the session without the PNG but with the thumbnail;
-//            a program that does not compile draws nothing and says why
+//            a program that does not compile draws nothing and says why; with a window, a PNG that shades it and words
+//            that say the average spectrum and the RMS are over it
 //   CHECKS   set_checks: its result measures them at once (one passes, one fails), saying the count and the one that
 //            fails alone (the card has both); "Done." while one fails: the next
 //            request carries the results as the user's line and the turn goes on, the history valid; a dial set and a
@@ -99,7 +100,11 @@
 //            (the user's move aside), shows so in the card, is saved with its snapshot and loads; defaults measures at
 //            the defaults; a word it does not take is refused; a failing check at the defaults sends the turn on with
 //            words that say each check takes its own dials (not "the dials as they are now"), and its FAIL line, the
-//            user's dial turned up, says the dials as they are do not affect it (no dial named as moved)
+//            user's dial turned up, says the dials as they are do not affect it (no dial named as moved); measure_output,
+//            view_sound and trace take the dials as the user has them, or with dials_from defaults at the defaults,
+//            the first line saying so, and refuse snapshot; compare's dials defaults puts the dials no side sets at
+//            the defaults (the first line saying so; own lays a {dials} side over the user's), and refuses a word it
+//            does not take; view_sound's picture through MCP at least 800 px wide
 //   CHECKEDIT set_checks without checks lists them (none: says so), numbered, each as set_checks takes it (the
 //            label, metric, bound, notes, dials, scenario, dials_from, current too, and snapshot; an effect's without
 //            an instrument's settings; numbers as written); a listed check merged back reads the same (one from a
@@ -112,14 +117,30 @@
 //            check whose dials name a dial the program has not FAILs saying so; a run that renames the dial two checks
 //            name (one in its dials, one moving it) names both checks and each FAILs for it, names apart a check from a
 //            snapshot that holds it (the new name at its default; it passes), and the program back, they pass
+//   WINDOW   the render settings' window through MCP: measure_output's report over it; a window it cannot take refused
+//            (to before from, from below 0, to past 20 s, from left out, a key it has not, not an object, under 0.01 s)
+//            and the least taken; trace and compare refusing one; a check with
+//            one names it on its line and in the card, is saved with it and measures the same once loaded, and a
+//            failing one says so; tune_dials takes one
+//   SPECTRUM measure_output's spectrum through MCP: an octave's, a third's and a semitone's bands in the report (an
+//            instrument's levels while held, an effect's noise's gain), a width it does not take refused; every report
+//            ending with the metrics, name=value
+//   BASE     an instrument's base_hz (off_order_db's base) through MCP: the report's orders line names it, one under 1
+//            Hz, over 20 kHz or not a number refused; a check with one names it on its line, is saved with it and loads
 //   TUNE     tune_dials: a level for an RMS (an instrument) or a gain for a gain (an effect): the goal met, the dial
-//            set (measured afterwards, it gives the goal); an unknown dial an error result
+//            set (measured afterwards, it gives the goal); an unknown dial an error result; a sweep of two values, its
+//            table, the dial left as it was; a sweep that is no list refused
 //   TRIAL    try_edits (ChatScenario.h): measure_output with a passage edited and a file added on a copy says so in
 //            its first line and renders it, the editor's files untouched; an edit whose text is not there is an error
 //            that names it; a scenario through the agent is in the report, and one that cannot be is refused naming
 //            its part; a check that would play the recording is refused
 //   COMPARE  compare through the agent: the editor against itself with a trial edit that halves the level shows a
-//            gain of 0.5; version:N with no project open says so; dials "current" keeps a {dials} side's own
+//            gain of 0.5; version:N with no project open says so; dials "current" keeps a {dials} side's own; b_rate
+//            96000: the editor at both rates compared by levels, bands and metrics (they agree), the picture with no
+//            difference line; a rate under 8000, two rates with one under 40000 and the effect's noise refused, b_rate
+//            at A's rate (the effect's noise with it) the ordinary comparison; previous_run: none on a fresh plugin;
+//            after the halving edited and run, previous_run against playing a gain of 0.5 (before poll() takes the
+//            run and after), and 2 once run back; none after a state is loaded into a new processor
 //   TRACE    trace through the agent (dsp/Debug.h): the program that sounds has nothing to find; a trial edit that makes
 //            its gain a NaN finds it at the first sample, in a local, the editor untouched; the recording, which there is
 //            none of yet, and a find it does not know are errors that say so; with notes, the times and a dial asked for
@@ -1935,6 +1956,32 @@ PROBE(plugin, chat)
             const int at = turn("and now?", 2);
             P.eq("sound.no_compile", has(resultText(at + 1), "It did not compile, so nothing was drawn") ? 1 : 0, 1);
             sp.editorPort().setDraft(good);
+            // With a window: the picture shades it, and its words say what is over it.
+            juce::var windowed = pg::product::kIsInstrument ? input({ { "notes", juce::Array<juce::var>{ 57 } } }) : input({ { "input", "sine" } });
+            windowed.getDynamicObject()->setProperty("window", input({ { "from", 0.4 }, { "to", 0.9 } }));
+            ss->add(fake::Response::ok(fake::Sse().start().tool("toolu_s3", "view_sound", windowed).end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("The middle is steady.").end()));
+            const int w = turn("show me the middle", 2);
+            std::string wdata, wabout;
+            const juce::Array<juce::var> wresults = arr(lastUser(w + 1).getProperty("content", {}));
+            for (const juce::var& b : arr(wresults.isEmpty() ? juce::var() : wresults[0].getProperty("content", {})))
+            {
+                if (str(b, "type") == "image" && str(b.getProperty("source", {}), "media_type") == "image/png")
+                    wdata = str(b.getProperty("source", {}), "data");
+                if (str(b, "type") == "text")
+                    wabout = str(b, "text");
+            }
+            std::printf("view_sound with a window: %s\n", wabout.c_str());
+            P.eq("sound.window_about", has(wabout, "The cyan lines (shaded on the waveform) are the window, 0.40 to 0.90 s: the "
+                                                   "average spectrum and the RMS are over it.")
+                                           && has(wabout, "Bottom left: the average spectrum in the window") ? 1 : 0, 1);
+            {
+                juce::MemoryOutputStream png;
+                if (juce::Base64::convertFromBase64(png, juce::String(wdata)))
+                    juce::File(juce::String(probe::outPath("plugin.chat.view_sound.window.png"))).replaceWithData(png.getData(), png.getDataSize());
+                const juce::Image img = juce::ImageFileFormat::loadFrom(png.getData(), png.getDataSize());
+                P.eq("sound.window_png", img.getWidth() == 1120 && img.getHeight() == 800 ? 1 : 0, 1);
+            }
         }
 
         // ---- CHECKS --------------------------------------------------------------------------------------------------------
@@ -2148,6 +2195,212 @@ PROBE(plugin, chat)
             P.eq("checkdials.nudge_words", says(nudge, "(From the plugin: your checks, measured on the files as they are now, each with the dials it takes.\n")
                                                && says(nudge, "dials at defaults") ? 1 : 0, 1);
             sa.clearChecks();
+
+            // The one-shot renders' dials_from: measure_output, view_sound and trace take the dials they do not name as
+            // the user has them (the default), or at the program's defaults, the user's move aside and the first line
+            // saying so; a word they do not take (a check's snapshot) refused.
+            setDial(up);
+            const std::string upDials = pg::product::kIsInstrument ? "Dials: level 0, " : "Dials: gain 12.\n";   // the release as set before
+            const std::string defDials = pg::product::kIsInstrument ? "level -20, release 0.5" : "gain 0";
+            const std::string said = "The dials not named are at their defaults.\n";
+            juce::var short_ = input({ { "hold_seconds", 0.3 }, { "tail_seconds", 0.2 } });
+            if constexpr (pg::product::kIsInstrument)
+                short_.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+            const std::string asNow = toolText(sa.mcpCall("measure_output", short_));
+            short_.getDynamicObject()->setProperty("dials_from", "defaults");
+            const std::string atDefaults = toolText(sa.mcpCall("measure_output", short_));
+            const pg::ChatAgent::McpResult seen = sa.mcpCall("view_sound", short_);
+            const std::string looked = toolText(seen);
+            const std::string traced = toolText(sa.mcpCall("trace", short_));
+            short_.getDynamicObject()->setProperty("dials_from", "snapshot");
+            const pg::ChatAgent::McpResult wrong = sa.mcpCall("measure_output", short_);
+            std::printf("measure_output, the user's dials, then dials_from defaults:\n%s\n%s\nview_sound: %s\ntrace: %s\n", asNow.c_str(),
+                        atDefaults.c_str(), looked.c_str(), traced.c_str());
+            P.eq("renderdials.current", has(asNow, upDials) && !has(asNow, said) ? 1 : 0, 1);
+            P.eq("renderdials.defaults", atDefaults.rfind(said, 0) == 0 && has(atDefaults, "Dials: " + defDials + ".\n") ? 1 : 0, 1);
+            P.eq("renderdials.view_sound", has(looked, said) && has(looked, "Dials: " + defDials + ".") ? 1 : 0, 1);
+            P.eq("renderdials.trace", traced.rfind(said, 0) == 0 && has(traced, "; dials " + defDials + ";") ? 1 : 0, 1);
+            P.eq("renderdials.bad_refused", wrong.isError && has(allText(wrong), "dials_from is current") ? 1 : 0, 1);
+            // compare's own dials: own (the default) lays B's level over the user's dials, the same as A's; defaults puts
+            // the dials no side sets at the program's defaults (A, the editor's files, at the default level against B's
+            // own), the first line saying so; a word it does not take refused.
+            const juce::var givenUp = input({ { "dials", input({ { levelDial, static_cast<double>(up) } }) } });
+            const std::string cmpOwn = toolText(sa.mcpCall("compare", input({ { "a", "editor" }, { "b", givenUp } })));
+            const std::string cmpDefaults = toolText(sa.mcpCall("compare", input({ { "a", "editor" }, { "b", givenUp }, { "dials", "defaults" } })));
+            const pg::ChatAgent::McpResult cmpWrong = sa.mcpCall("compare", input({ { "a", "editor" }, { "b", "editor" }, { "dials", "snapshot" } }));
+            std::printf("compare, own dials:\n%s\ncompare, dials defaults:\n%s\n", cmpOwn.c_str(), cmpDefaults.c_str());
+            P.eq("renderdials.compare_own", has(cmpOwn, "; the same dials.") && !has(cmpOwn, said) ? 1 : 0, 1);
+            P.eq("renderdials.compare_defaults", cmpDefaults.rfind(said, 0) == 0 && has(cmpDefaults, "; dials " + std::string(levelDial) + " ")
+                                                     && !has(cmpDefaults, "Identical bits") ? 1 : 0, 1);
+            P.eq("renderdials.compare_bad_refused", cmpWrong.isError && has(allText(cmpWrong), "dials is own") ? 1 : 0, 1);
+            // view_sound's picture through MCP, made to fit a tool's result from a JPEG's own bytes: most of its width
+            // (sized from the PNG's bytes, it was 391 px of 1120).
+            {
+                int width = 0, height = 0;
+                std::string type;
+                for (const juce::var& b : arr(seen.content))
+                    if (str(b, "type") == "image")
+                    {
+                        juce::MemoryOutputStream bytes;
+                        juce::Base64::convertFromBase64(bytes, juce::String(str(b, "data")));
+                        const juce::Image img = juce::ImageFileFormat::loadFrom(bytes.getData(), bytes.getDataSize());
+                        width = img.getWidth();
+                        height = img.getHeight();
+                        type = str(b, "mimeType");
+                        juce::File(juce::String(probe::outPath("plugin.chat.view_sound.mcp.jpg"))).replaceWithData(bytes.getData(), bytes.getDataSize());
+                    }
+                std::printf("view_sound through MCP: %s of %d x %d\n", type.c_str(), width, height);
+                P.ge("renderdials.mcp_picture_width", static_cast<double>(width), 800.0);
+            }
+
+            // ---- WINDOW ----------------------------------------------------------------------------------------------------
+            {
+                const auto withWindow = [&](const juce::var& window) {
+                    juce::var in = input({ { "hold_seconds", 0.3 }, { "tail_seconds", 0.2 }, { "window", window } });
+                    if constexpr (pg::product::kIsInstrument)
+                        in.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+                    return in;
+                };
+                const juce::var window = input({ { "from", 0.1 }, { "to", 0.25 } });
+                const std::string over = toolText(sa.mcpCall("measure_output", withWindow(window)));
+                std::printf("measure_output with a window:\n%s\n", over.c_str());
+                P.eq("window.measure", has(over, "Window: 0.10 to 0.25 s of ")
+                                           && has(over, pg::product::kIsInstrument ? "In the window: peak " : "for 0.30 s, in the window: out peak ")
+                                           ? 1 : 0, 1);
+                int refused = 0;
+                const juce::var unfit[] = { input({ { "from", 0.3 }, { "to", 0.2 } }), input({ { "from", -1.0 }, { "to", 1.0 } }),
+                                          input({ { "from", 0.0 }, { "to", 30.0 } }), input({ { "to", 1.0 } }),
+                                          input({ { "from", 0.0 }, { "to", 1.0 }, { "at", 2.0 } }), juce::var("all"),
+                                          input({ { "from", 0.5 }, { "to", 0.505 } }) };
+                for (const juce::var& b : unfit)
+                {
+                    const pg::ChatAgent::McpResult r = sa.mcpCall("measure_output", withWindow(b));
+                    refused += r.isError && has(allText(r), "window: {from, to}, seconds of the render, 0 <= from < to <= 20, at "
+                                                            "least 0.01 s long") ? 1 : 0;
+                }
+                P.eq("window.bad_refused", refused, static_cast<int64_t>(std::size(unfit)));
+                // The least window, 0.03 - 0.02 rounding under 0.01, is taken.
+                P.eq("window.least_taken", !sa.mcpCall("measure_output", withWindow(input({ { "from", 0.02 }, { "to", 0.03 } }))).isError
+                                               ? 1 : 0, 1);
+                // trace and compare take none: they say so (trace's render would go on to the window's end).
+                const pg::ChatAgent::McpResult windowTrace = sa.mcpCall("trace", input({ { "window", window } }));
+                const pg::ChatAgent::McpResult windowCompare =
+                    sa.mcpCall("compare", input({ { "a", "editor" }, { "b", "editor" }, { "window", window } }));
+                P.eq("window.trace_compare_refuse", windowTrace.isError && has(allText(windowTrace), "trace takes no window")
+                                                        && windowCompare.isError && has(allText(windowCompare), "compare takes no window")
+                                                        ? 1 : 0, 1);
+                // A check keeps its window: its line and the card name it, the session saves it and loads it back.
+                juce::var check = withWindow(window);
+                check.getDynamicObject()->setProperty("label", "Level over the window");
+                check.getDynamicObject()->setProperty("metric", pg::product::kIsInstrument ? "rms_db" : "sine_gain_db");
+                check.getDynamicObject()->setProperty("max", -100.0);
+                const std::string failing = allText(sa.mcpCall("set_checks", input({ { "checks", juce::Array<juce::var>{ check } } })));
+                std::printf("set_checks with a window:\n%s\n", failing.c_str());
+                P.eq("window.check_line", has(failing, std::string("- FAIL Level over the window (")
+                                                           + (pg::product::kIsInstrument ? "rms_db" : "sine_gain_db") + "; 0.10 to 0.25 s): ")
+                                              ? 1 : 0, 1);
+                check.getDynamicObject()->setProperty("max", 100.0);
+                const std::string passing = allText(sa.mcpCall("set_checks", input({ { "checks", juce::Array<juce::var>{ check } } })));
+                std::string card;
+                for (const pg::ChatEntry& e : sa.chatState().entries)
+                    if (e.kind == pg::ChatEntry::Kind::checks && !e.checks.empty())
+                        card = e.checks[0].detail;
+                const std::string keptState = sa.saveState();
+                const juce::var windowCheck = arr(claude::parseJson(keptState).getProperty("checks", {}))[0];
+                P.eq("window.check_saved", has(passing, "Checks: 1 of 1 pass.") && has(card, "0.10 to 0.25 s")
+                                               && std::fabs(static_cast<double>(windowCheck["window"]["from"]) - 0.1) < 1e-9
+                                               && std::fabs(static_cast<double>(windowCheck["window"]["to"]) - 0.25) < 1e-9 ? 1 : 0, 1);
+                sa.loadState(keptState);
+                P.eq("window.check_loads", sa.saveState() == keptState && has(allText(sa.mcpCall("run_program", input({}))), "Checks: 1 of 1 pass.")
+                                               ? 1 : 0, 1);
+                sa.clearChecks();
+                // tune_dials measures its goals over the window too (it takes the render settings).
+                juce::var tune = withWindow(window);
+                tune.getDynamicObject()->setProperty("tune", juce::Array<juce::var>{ juce::var(levelDial) });
+                tune.getDynamicObject()->setProperty(
+                    "goals", juce::Array<juce::var>{ input({ { "metric", pg::product::kIsInstrument ? "rms_db" : "sine_gain_db" },
+                                                             { "max", 100.0 } }) });
+                tune.getDynamicObject()->setProperty("apply", false);
+                const pg::ChatAgent::McpResult tuned = sa.mcpCall("tune_dials", tune);
+                P.eq("window.tune_takes_it", !tuned.isError && has(allText(tuned), "Every goal is met already") ? 1 : 0, 1);
+            }
+
+            // ---- SPECTRUM ----------------------------------------------------------------------------------------------
+            {
+                const auto withBands = [&](const juce::var& kind) {
+                    juce::var in = input({ { "hold_seconds", 0.5 }, { "tail_seconds", 0.2 }, { "spectrum", kind } });
+                    if constexpr (pg::product::kIsInstrument)
+                        in.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+                    return in;
+                };
+                const std::string thirds = toolText(sa.mcpCall("measure_output", withBands("third")));
+                const std::string notes = toolText(sa.mcpCall("measure_output", withBands("semitone")));
+                const std::string octaves = toolText(sa.mcpCall("measure_output", withBands("octave")));
+                std::printf("measure_output with spectrum third:\n%s\n", thirds.c_str());
+                const std::string of = pg::product::kIsInstrument ? " while held (Hz: dBFS; " : " of the noise, out against in (Hz: gain dB; ";
+                // Each line names its frames (the semitones' as long as the held part, 0.45 s) and the band below which a
+                // tone spreads over the bands beside it.
+                P.eq("spectrum.third", has(thirds, "Third-octave bands" + of + "0.4 s Hann frames; below 25 Hz a tone spreads over the "
+                                                   "bands beside it): 20: ") && has(thirds, ", 20k: ") ? 1 : 0, 1);
+                P.eq("spectrum.octave", has(octaves, "Octave bands" + of + "0.4 s Hann frames): 31.5: ") && has(octaves, ", 16k: ") ? 1 : 0, 1);
+                P.eq("spectrum.semitone", has(notes, "Semitone bands") && has(notes, "a point a MIDI note, an octave a group after its first note")
+                                              && has(notes, std::string(pg::product::kIsInstrument ? "(dBFS; " : "(gain dB; ")
+                                                                + "0.45 s Hann frames, as long as the part, up to 2 s; below F2 a tone "
+                                                                  "spreads over the bands beside it): E0 20.6: ")
+                                              && has(notes, "; C4 262: ") ? 1 : 0, 1);
+                int widthsRefused = 0;
+                for (const juce::var& askedWidth : { juce::var("fifth"), juce::var(3), juce::var("Third") })
+                {
+                    const pg::ChatAgent::McpResult r = sa.mcpCall("measure_output", withBands(askedWidth));
+                    widthsRefused += r.isError && has(allText(r), "spectrum is octave, third or semitone") ? 1 : 0;
+                }
+                P.eq("spectrum.bad_refused", widthsRefused, 3);
+                // Every report ends with the metrics measured, name=value; one without a spectrum has no bands line (the
+                // wobble line names bands of its own).
+                const std::string plain = toolText(sa.mcpCall("measure_output", input({ { "hold_seconds", 0.5 }, { "tail_seconds", 0.2 } })));
+                const std::size_t line = plain.rfind("\nMetrics: ");
+                P.eq("spectrum.metrics_line", line != std::string::npos && plain.find('\n', line + 1) == plain.size() - 1
+                                                  && has(plain.substr(line), pg::product::kIsInstrument ? " rms_db=" : " sine_gain_db=")
+                                                  && !has(plain, "Octave bands") && !has(plain, "Third-octave bands")
+                                                  && !has(plain, "Semitone bands") ? 1 : 0, 1);
+            }
+
+            // ---- BASE ------------------------------------------------------------------------------------------------------
+            if constexpr (pg::product::kIsInstrument)
+            {
+                const auto withBase = [&](const juce::var& base) {
+                    juce::var in = input({ { "hold_seconds", 0.5 }, { "tail_seconds", 0.2 }, { "base_hz", base } });
+                    in.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+                    return in;
+                };
+                const std::string based = toolText(sa.mcpCall("measure_output", withBase(110.0)));
+                std::printf("measure_output with base_hz 110:\n%s\n", based.c_str());
+                P.eq("base.measure", has(based, "Off the orders of 110.00 Hz (base_hz) while held, more than ")
+                                         && has(based, " off_order_db=") ? 1 : 0, 1);
+                int refused = 0;
+                for (const juce::var& b : { juce::var(0.5), juce::var(30000.0), juce::var("low") })
+                {
+                    const pg::ChatAgent::McpResult r = sa.mcpCall("measure_output", withBase(b));
+                    refused += r.isError && has(allText(r), "base_hz: the orders' base, 1 to 20000 Hz") ? 1 : 0;
+                }
+                P.eq("base.bad_refused", refused, 3);
+                // A check keeps its base: its line names it, the session saves it and loads it back.
+                juce::var check = withBase(110.0);
+                check.getDynamicObject()->setProperty("label", "Nothing off the orders");
+                check.getDynamicObject()->setProperty("metric", "off_order_db");
+                check.getDynamicObject()->setProperty("max", -300.0);
+                const std::string failing = allText(sa.mcpCall("set_checks", input({ { "checks", juce::Array<juce::var>{ check } } })));
+                P.eq("base.check_line", has(failing, "- FAIL Nothing off the orders (off_order_db; base_hz 110): ") ? 1 : 0, 1);
+                check.getDynamicObject()->setProperty("max", 100.0);
+                const std::string passing = allText(sa.mcpCall("set_checks", input({ { "checks", juce::Array<juce::var>{ check } } })));
+                const std::string keptState = sa.saveState();
+                const juce::var baseCheck = arr(claude::parseJson(keptState).getProperty("checks", {}))[0];
+                P.eq("base.check_saved", has(passing, "Checks: 1 of 1 pass.") && std::fabs(static_cast<double>(baseCheck["base_hz"]) - 110.0) < 1e-9
+                                             ? 1 : 0, 1);
+                sa.loadState(keptState);
+                P.eq("base.check_loads", sa.saveState() == keptState ? 1 : 0, 1);
+                sa.clearChecks();
+            }
             setDial(was);
         }
 
@@ -2384,6 +2637,38 @@ PROBE(plugin, chat)
             ss->add(fake::Response::ok(fake::Sse().start().text("Hm.").end()));
             const int b2 = turn("tune nothing", 2);
             P.eq("tune.unknown_dial", has(resultText(b2 + 1), "no dial 'nothing'") ? 1 : 0, 1);
+
+            // A sweep: the dial at two values, a bare goal's metric at each, side by side; the dial left where it was. A
+            // sweep that is no list of numbers is refused.
+            const float dialBefore = sp.getParameters()[dialSlot]->getValue();
+            juce::var sweepIn = input({ { "tune", juce::Array<juce::var>{ juce::var(levelDial) } },
+                                        { "sweep", juce::Array<juce::var>{ -12.0, -6.0 } },
+                                        { "goals", juce::Array<juce::var>{ input({ { "metric", metric } }) } } });
+            if constexpr (pg::product::kIsInstrument)
+                sweepIn.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+            ss->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .tool("toolu_t3", "tune_dials", sweepIn)
+                                           .tool("toolu_t4", "tune_dials",
+                                                 input({ { "tune", juce::Array<juce::var>{ juce::var(levelDial) } },
+                                                         { "sweep", "loud" },
+                                                         { "goals", juce::Array<juce::var>{ input({ { "metric", metric } }) } } }))
+                                           .end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("Swept.").end()));
+            const int b3 = turn("how does the level follow the dial?", 2);
+            const std::string swept = resultText(b3 + 1, 0), notList = resultText(b3 + 1, 1);
+            std::printf("tune_dials, a sweep:\n%s\n%s\n", swept.c_str(), notList.c_str());
+            P.eq("tune.sweep_table", has(swept, "Swept " + std::string(levelDial) + " over 2 values (")
+                                         && has(swept, " | " + std::string(metric) + "\n-12 | ")
+                                         && has(swept, "\n-6 | ")
+                                         && has(swept, "No dial was set: a sweep only measures (set_dial sets one).")
+                                         ? 1 : 0, 1);
+            P.eq("tune.sweep_sets_nothing", sp.getParameters()[dialSlot]->getValue() == dialBefore ? 1 : 0, 1);
+            bool sweptEntry = false;
+            for (const pg::ChatEntry& e : sa.chatState().entries)
+                sweptEntry = sweptEntry || (e.kind == pg::ChatEntry::Kind::tool && has(e.text, "swept " + std::string(levelDial) + " over 2 values"));
+            P.eq("tune.sweep_entry", sweptEntry ? 1 : 0, 1);
+            P.eq("tune.sweep_not_list", has(notList, "sweep is a list of 1 to 32 values of the one dial in tune.") ? 1 : 0, 1);
         }
 
         // ---- TRIAL ---------------------------------------------------------------------------------------------------------
@@ -2490,6 +2775,112 @@ PROBE(plugin, chat)
             juce::File(juce::String(probe::outPath("plugin.chat.compare.png"))).replaceWithData(png.getData(), png.getDataSize());
             const juce::Image img = juce::ImageFileFormat::loadFrom(png.getData(), png.getDataSize());
             P.eq("compare.picture", img.getWidth() == 1120 && img.getHeight() == 560 && has(words, "Best fit") ? 1 : 0, 1);
+
+            // b_rate: the editor's files at 48 and 96 kHz, compared by what is the same at every rate (the levels, the
+            // bands, the metrics), not sample by sample, and drawn with no difference line; a rate it does not take, and
+            // an effect's noise (its level per hertz moves with the rate), refused.
+            ss->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .tool("toolu_y5", "compare", input({ { "a", "editor" }, { "b", "editor" }, { "b_rate", 96000 }, { "picture", true } }))
+                                           .tool("toolu_y6", "compare", input({ { "a", "editor" }, { "b", "editor" }, { "b_rate", 1000 } }))
+                                           .tool("toolu_y7", "compare",
+                                                 input({ { "a", "editor" },
+                                                         { "b", "editor" },
+                                                         { "b_rate", 96000 },
+                                                         { "scenario", input({ { "input", "noise" } }) } }))
+                                           .tool("toolu_y8", "compare", input({ { "a", "editor" }, { "b", "editor" }, { "b_rate", 22050 } }))
+                                           .tool("toolu_y9", "compare",
+                                                 pg::product::kIsInstrument
+                                                     ? input({ { "a", "editor" }, { "b", "editor" }, { "b_rate", 48000 } })
+                                                     : input({ { "a", "editor" },
+                                                               { "b", "editor" },
+                                                               { "b_rate", 48000 },
+                                                               { "scenario", input({ { "input", "noise" } }) } }))
+                                           .end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("Compared.").end()));
+            const int rt = turn("does it sound the same at 96 kHz?", 2);
+            const std::string rateLow = resultText(rt + 1, 1), rateNoise = resultText(rt + 1, 2);
+            const std::string rateUnder = resultText(rt + 1, 3), rateSame = resultText(rt + 1, 4);
+            std::string rateWords, rateData;
+            const juce::Array<juce::var> rateResults = arr(lastUser(rt + 1).getProperty("content", {}));
+            for (const juce::var& b : arr(!rateResults.isEmpty() ? rateResults[0].getProperty("content", {}) : juce::var()))
+            {
+                if (str(b, "type") == "image")
+                    rateData = str(b.getProperty("source", {}), "data");
+                if (str(b, "type") == "text")
+                    rateWords = str(b, "text");
+            }
+            std::printf("compare at two rates:\n%s\n%s\n%s\n%s\n", rateWords.c_str(), rateLow.c_str(), rateNoise.c_str(),
+                        rateUnder.c_str());
+            P.eq("compare.rates_lines", has(rateWords, ", A at 48000 Hz and B at 96000 Hz, in blocks of ")
+                                            && has(rateWords, "\nA renders at 48000 Hz and B at 96000 Hz: compared by what is the same "
+                                                              "at every rate (the levels, the octave bands, the metrics), not sample by sample.\n")
+                                            && !has(rateWords, "Best fit") && !has(rateWords, "Identical bits")
+                                            ? 1 : 0, 1);
+            P.eq("compare.rates_agree", has(rateWords, "\nThe metrics agree within their tolerances (") ? 1 : 0, 1);
+            P.eq("compare.rates_picture_words", has(rateWords, "(none at two rates: no sample lines up)") ? 1 : 0, 1);
+            juce::MemoryOutputStream ratePng;
+            juce::Base64::convertFromBase64(ratePng, juce::String(rateData));
+            juce::File(juce::String(probe::outPath("plugin.chat.compare.rates.png"))).replaceWithData(ratePng.getData(), ratePng.getDataSize());
+            const juce::Image rateImg = juce::ImageFileFormat::loadFrom(ratePng.getData(), ratePng.getDataSize());
+            P.eq("compare.rates_picture", rateImg.getWidth() == 1120 && rateImg.getHeight() == 560 ? 1 : 0, 1);
+            P.eq("compare.rates_low_refused", has(rateLow, "b_rate is B's rate in Hz, 8000 to 192000 (40000 or more when it "
+                                                           "differs from A's).") ? 1 : 0, 1);
+            P.eq("compare.rates_noise_refused",
+                 pg::product::kIsInstrument || has(rateNoise, "b_rate takes the sweep (its input at two rates)") ? 1 : 0, 1);
+            // Two rates under 40 kHz refused (a side would lack 20 Hz to 20 kHz); b_rate at A's own rate the ordinary
+            // comparison, the effect's noise with it.
+            P.eq("compare.rates_under_40k_refused",
+                 has(rateUnder, "At two rates both are 40000 Hz or more, so that both hold 20 Hz to 20 kHz: A renders at 48000 Hz "
+                                "and b_rate is 22050.") ? 1 : 0, 1);
+            P.eq("compare.rates_same_rate", has(rateSame, "Identical bits") && !has(rateSame, "A renders at") ? 1 : 0, 1);
+
+            // previous_run: what played before the last run that changed it. A fresh plugin has none; here, the halving
+            // edited and run, previous_run against playing is that halving (before the message thread takes the new
+            // program, and after), and run back, the other way.
+            {
+                pg::Processor fresh;
+                const pg::ChatAgent::McpResult none = fresh.chatAgent().mcpCall("compare", input({ { "a", "previous_run" }, { "b", "editor" } }));
+                P.eq("compare.previous_none", none.isError && has(allText(none), "Nothing played before the last run: no run has changed "
+                                                                                 "the program since the plugin opened") ? 1 : 0, 1);
+            }
+            const juce::var halveFile = input({ { "name", "program.fm" },
+                                                { "old_text", "const float g = expf(0.115129255f * " },
+                                                { "new_text", "const float g = 0.5f * expf(0.115129255f * " } });
+            const juce::var unhalve = input({ { "name", "program.fm" },
+                                              { "old_text", "const float g = 0.5f * expf(0.115129255f * " },
+                                              { "new_text", "const float g = expf(0.115129255f * " } });
+            const juce::var previous = input({ { "a", "previous_run" }, { "b", "playing" } });
+            P.eq("compare.previous_halve_edit", !sa.mcpCall("edit_file", halveFile).isError && !sa.mcpCall("run_program", input({})).isError ? 1 : 0, 1);
+            const std::string halvedRun = toolText(sa.mcpCall("compare", previous));   // the run not yet taken by poll()
+            sp.poll();
+            const std::string halvedPolled = toolText(sa.mcpCall("compare", previous));
+            P.eq("compare.previous_undo_edit", !sa.mcpCall("edit_file", unhalve).isError && !sa.mcpCall("run_program", input({})).isError ? 1 : 0, 1);
+            sp.poll();
+            const std::string doubled = toolText(sa.mcpCall("compare", previous));
+            std::printf("compare previous_run:\n%s\n%s\n", halvedRun.c_str(), doubled.c_str());
+            P.eq("compare.previous_halved", has(halvedRun, "A is what played before the last run; B is the program that plays.")
+                                                && has(halvedRun, "Best fit: B = 0.500 x A (-6.0 dB), no delay")
+                                                && has(halvedRun, "Source, B against A: program.fm +1 -1")
+                                                && halvedPolled == halvedRun
+                                                ? 1 : 0, 1);
+            P.eq("compare.previous_back", has(doubled, "Best fit: B = 2.000 x A (+6.0 dB), no delay") ? 1 : 0, 1);
+            // A state loaded (a host's recall, a project reopened) is no run: nothing played before its program, though a
+            // new processor plays Init until then (this program is not Init).
+            {
+                juce::MemoryBlock state;
+                sp.getStateInformation(state);
+                pg::Processor loaded;
+                loaded.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+                const pg::ChatAgent::McpResult noneLoaded = loaded.chatAgent().mcpCall("compare", previous);
+                const std::string loadedFile = toolText(loaded.chatAgent().mcpCall("read_file", input({ { "name", "program.fm" } })));
+                P.eq("compare.previous_none_loaded",
+                     noneLoaded.isError
+                             && has(allText(noneLoaded), "Nothing played before the last run: no run has changed the program since "
+                                                         "the plugin opened or loaded its session")
+                             && has(loadedFile, "const float g = expf(0.115129255f * ")
+                         ? 1 : 0, 1);
+            }
         }
 
         // ---- TRACE ---------------------------------------------------------------------------------------------------------

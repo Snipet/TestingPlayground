@@ -524,8 +524,9 @@ namespace playground
 
         bool isNumber(const juce::var& v) { return v.isDouble() || v.isInt() || v.isInt64(); }
 
-        // The render's settings as a tool's input schema has them (measure_output's own, which the others share).
-        void addRenderProps(juce::var& props)
+        // The render's settings as a tool's input schema has them (measure_output's own, which the others share); with
+        // `metrics` (the tools that measure them: not view_sound) an instrument's base_hz too.
+        void addRenderProps(juce::var& props, bool metrics = true)
         {
             auto* o = props.getDynamicObject();
             if constexpr (kInstrument)
@@ -534,9 +535,11 @@ namespace playground
                                                          { "items", claude::object({ { "type", "integer" } }) },
                                                          { "description", "MIDI notes played together (69 is A, 440 Hz). "
                                                                           "Default: one note, 48 (C3)." } }));
-                o->setProperty("velocity", prop("number", "The velocity, 0 to 1 (default 0.8)"));
-                o->setProperty("modwheel", prop("number", "The mod wheel, 0 to 1, from the start (default 0)"));
-                o->setProperty("pitchbend", prop("number", "The pitch wheel, -1 to 1, from the start (default 0)"));
+                o->setProperty("velocity", prop("number", "0 to 1 (default 0.8)"));
+                o->setProperty("modwheel", prop("number", "0 to 1, from the start (default 0)"));
+                o->setProperty("pitchbend", prop("number", "-1 to 1, from the start (default 0)"));
+                if (metrics)
+                    o->setProperty("base_hz", prop("number", "off_order_db's base (default: the expected pitch)"));
             }
             o->setProperty("hold_seconds", prop("number", kInstrument ? "How long the notes are held; default 1, at most 10"
                                                                       : "How long the input plays; default 1, at most 10"));
@@ -547,10 +550,10 @@ namespace playground
             o->setProperty("dials", claude::object({ { "type", "object" },
                                                      { "additionalProperties", claude::object({ { "type", "number" } }) },
                                                      { "description", "Dial values to render with, by parameter name, in "
-                                                                      "the parameter's own units. Dials not named keep the "
-                                                                      "values they have now." } }));
-            o->setProperty("bpm", prop("number", "The host's tempo for a program that reads it (host.fm); default 120"));
+                                                                      "the parameter's own units." } }));
+            o->setProperty("bpm", prop("number", "The host's tempo (host.fm); default 120"));
             o->setProperty("scenario", scenario::schema());
+            o->setProperty("window", prop("object", "{from, to}: the seconds measured, not the held part"));
         }
 
         // The metrics' names, for a schema's enum (Measure.h).
@@ -563,7 +566,8 @@ namespace playground
         }
 
         // A goal (Goals.h) from a tool's input: metric and min, max or target (and a tolerance, a weight); false with why.
-        bool goalOf(const juce::var& in, measure::Goal& g, std::string& why)
+        // `bare`: a metric alone is one too (a tune_dials sweep's, reported and not judged).
+        bool goalOf(const juce::var& in, measure::Goal& g, std::string& why, bool bare = false)
         {
             g = {};
             g.metric = in.getProperty("metric", juce::var()).toString().toStdString();
@@ -583,7 +587,7 @@ namespace playground
             take("weight", hasWeight, g.weight);
             if (!hasWeight)
                 g.weight = 1.0;
-            why = measure::invalid(g);
+            why = measure::invalid(g, bare);
             return why.empty();
         }
 
@@ -671,6 +675,10 @@ namespace playground
             }
             if (const juce::var sc = scenario::toVar(r); !sc.isVoid())
                 o->setProperty("scenario", sc);
+            if (const juce::var w = scenario::windowVar(r.window); !w.isVoid())
+                o->setProperty("window", w);
+            if (r.baseHz > 0.0)
+                o->setProperty("base_hz", r.baseHz);
             if (!r.dials.empty())
                 o->setProperty("dials", byName(r.dials));
             return v;
@@ -1990,9 +1998,12 @@ namespace playground
                 o->setProperty("tail_seconds", prop("number", "How long to go on after the impulse; default 1.5, "
                                                               "at most 10"));
             }
-            o->setProperty("bpm", prop("number", "The host's tempo for a program that reads it (host.fm: the host plays "
-                                                 "from the song's start); default 120"));
             o->setProperty("try_edits", scenario::trialSchema());
+            o->setProperty("dials_from", scenario::dialsFromSchema(true));
+            // The report's band levels as data (Measure.h's Request::spectrum).
+            o->setProperty("spectrum", claude::object({ { "enum", juce::Array<juce::var>{ "octave", "third", "semitone" } },
+                                                        { "description", kInstrument ? "Band levels while held, as data"
+                                                                                     : "The noise's gain in bands, as data" } }));
             tools.add(tool("measure_output",
                            "Render the program in the editor offline and measure what comes out. Its report gives "
                            "the metrics (CHECKING YOUR WORK) in words, with the strongest partials and the largest "
@@ -2028,7 +2039,7 @@ namespace playground
                        {}));
         {
             juce::var props = claude::object({});
-            addRenderProps(props);
+            addRenderProps(props, false);
             if constexpr (!kInstrument)
             {
                 props.getDynamicObject()->setProperty(
@@ -2047,18 +2058,17 @@ namespace playground
             props.getDynamicObject()->setProperty("to_seconds", prop("number", "The close-up's end (at most 2 s after "
                                                                                "its start)"));
             props.getDynamicObject()->setProperty("try_edits", scenario::trialSchema());
+            props.getDynamicObject()->setProperty("dials_from", scenario::dialsFromSchema(true));
             tools.add(tool("view_sound",
                            kInstrument
                                ? "See the sound: a PNG of the program rendered offline as measure_output renders it, "
-                                 "drawn as the waveform and level over time, a spectrogram (log frequency, 20 Hz to 20 "
-                                 "kHz), the average spectrum while held (harmonics marked) and a close-up of a few "
-                                 "cycles. When to look: CHECKING YOUR WORK. It "
-                                 "compiles the files as they are now and changes nothing that plays; the user sees the "
-                                 "picture too."
+                                 "drawn as the waveform and level over time, a spectrogram, the average spectrum while "
+                                 "held (harmonics marked) and a close-up of a few cycles. When to look: CHECKING YOUR "
+                                 "WORK. It compiles the files as they are now and changes nothing that plays; the user sees "
+                                 "the picture too."
                                : "See the sound: a PNG of the program rendered offline with an input (a sweep by "
-                                 "default), drawn as the waveform and level over time, a spectrogram (log frequency, 20 Hz "
-                                 "to 20 kHz), the average spectrum while the input plays and a close-up of a few "
-                                 "cycles. You cannot "
+                                 "default), drawn as the waveform and level over time, a spectrogram, the average "
+                                 "spectrum while the input plays and a close-up of a few cycles. You cannot "
                                  "hear the plugin: look when the sound's shape matters, as a filter's response (a "
                                  "sweep: where it is cut), what a drive adds (a sweep's or a sine's harmonics, aliasing "
                                  "that folds back down), a reverb's or a delay's tail (an impulse), a modulation's "
@@ -2109,8 +2119,8 @@ namespace playground
                                          { "items", claude::object({ { "type", "string" } }) },
                                          { "minItems", 1 },
                                          { "maxItems", measure::kMaxTuned },
-                                         { "description", "The float dials to tune, by parameter name (ints and bools "
-                                                          "are set with set_dial)" } }));
+                                         { "description", "The float dials to tune, by name (a sweep's: one dial, of "
+                                                          "any type)" } }));
             props.getDynamicObject()->setProperty(
                 "goals", claude::object({ { "type", "array" },
                                           { "minItems", 1 },
@@ -2119,19 +2129,22 @@ namespace playground
                                                                       { "properties", goalProps(true) },
                                                                       { "required", juce::Array<juce::var>{ "metric" } } }) },
                                           { "description", "What the measurements should come to" } }));
-            props.getDynamicObject()->setProperty("budget", prop("integer", "Renders at most (default 150, at most 400; "
-                                                                            "each takes a few to a few hundred ms)"));
+            props.getDynamicObject()->setProperty(
+                "sweep", claude::object({ { "type", "array" },
+                                          { "items", claude::object({ { "type", "number" } }) },
+                                          { "description", "Values of the one dial, up to 32, each measured in turn; "
+                                                           "no search, nothing set" } }));
+            props.getDynamicObject()->setProperty("budget", prop("integer", "Renders at most (default 150, at most 400)"));
             props.getDynamicObject()->setProperty("apply", prop("boolean", "Set the dials to the best values found "
                                                                            "(default true)"));
-            props.getDynamicObject()->setProperty("seconds", prop("number", "How long it may search, in seconds (default "
-                                                                             "120, at most 170): it stops there with the best "
-                                                                             "so far"));
+            props.getDynamicObject()->setProperty("seconds", prop("number", "Seconds it may search (default 120, at most "
+                                                                             "170), then the best so far"));
             tools.add(tool("tune_dials",
-                           "Find values of up to eight float dials that bring measurements to goals, by rendering "
-                           "offline (as measure_output does) and searching from the dials as they are, points spread "
-                           "over their ranges and a simplex, instead of guessing. Goals are "
+                           "Find values of up to eight float dials that bring measurements to goals by rendering "
+                           "offline (as measure_output does) and searching, instead of guessing; or sweep one dial "
+                           "over values: the goals' metrics at each, side by side. Goals are "
                            "metrics (CHECKING YOUR WORK) with min, max "
-                           "or a target. The best values go on the dials, as set_dial "
+                           "or a target (a sweep's may be a metric alone). The best values go on the dials, as set_dial "
                            "sets them, unless apply is false; the result gives the dials and the measurements before "
                            "and after. Dials not tuned keep their values (or those in dials). It changes no file.",
                            props, { "tune", "goals" }));
@@ -3114,7 +3127,14 @@ namespace playground
         for (std::size_t i = 0; i < results.size() && i < checks.size(); ++i)
         {
             const measure::CheckResult& r = results[i];
-            const std::string from = dialsFromWords(checks[i].dialsFrom);
+            // Its window, its base and where it takes its dials from, as its line and the card say them.
+            const measure::Window& w = checks[i].request.window;
+            std::string from;
+            for (const std::string& part : { w.set() ? measure::windowText(w) : std::string(),
+                                             checks[i].request.baseHz > 0.0 ? "base_hz " + number(checks[i].request.baseHz) : std::string(),
+                                             dialsFromWords(checks[i].dialsFrom) })
+                if (!part.empty())
+                    from += (from.empty() ? "" : "; ") + part;
             rows.push_back({ checks[i].label, r.text + (from.empty() ? "" : "; " + from), r.measured, r.pass });
             pass += r.measured && r.pass ? 1 : 0;
             const std::string line = std::string(!r.measured ? "- NOT MEASURED " : r.pass ? "- pass " : "- FAIL ") + checks[i].label
@@ -3483,8 +3503,11 @@ namespace playground
                                              { "mimeType", juce::String(f.mediaType) } }));
                     out.add(text("(The picture is sent smaller, to fit a tool's result: "
                                  + std::string(f.mediaType == "image/png" ? "a PNG" : "a JPEG") + " of " + std::to_string(f.width) + " x "
-                                 + std::to_string(f.height) + ", from " + std::to_string(f.fromWidth) + " x "
-                                 + std::to_string(f.fromHeight) + ". detail \"high\" sends it whole.)"));
+                                 + std::to_string(f.height)
+                                 + (f.width == f.fromWidth && f.height == f.fromHeight
+                                        ? std::string(", its full size")
+                                        : ", from " + std::to_string(f.fromWidth) + " x " + std::to_string(f.fromHeight))
+                                 + ". detail \"high\" sends it whole.)"));
                 }
                 else if (type == "text")
                     out.add(claude::object({ { "type", "text" }, { "text", b["text"] } }));
@@ -3575,7 +3598,9 @@ namespace playground
             measure::ViewRequest vr = soundpicture::request();
             std::string why;
             vr.render = scenario::renderOf(input, &why);
-            vr.render.current = currentDials();
+            bool defaults = false;
+            if (why.empty() && scenario::dialsFrom(input, defaults, why) && !defaults)
+                vr.render.current = currentDials();
             if constexpr (!kInstrument)
             {
                 const std::string in = str(input, "input");
@@ -3623,7 +3648,10 @@ namespace playground
                                          { "source", claude::object({ { "type", "base64" },
                                                                       { "media_type", "image/png" },
                                                                       { "data", juce::Base64::toBase64(d.png.data(), d.png.size()) } }) } }));
-            content.add(claude::object({ { "type", "text" }, { "text", juce::String::fromUTF8((scenario::trialLine(trials) + d.about).c_str()) } }));
+            content.add(claude::object({ { "type", "text" },
+                                         { "text", juce::String::fromUTF8((scenario::trialLine(trials)
+                                                                           + scenario::dialsLine(defaults && !vr.render.fromCapture)
+                                                                           + d.about).c_str()) } }));
             block.getDynamicObject()->setProperty("content", content);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
@@ -4005,7 +4033,20 @@ namespace playground
             setActivity("Measuring the sound");
             std::string why;
             measure::Request req = scenario::renderOf(input, &why);
-            req.current = currentDials();
+            bool defaults = false;
+            if (why.empty() && scenario::dialsFrom(input, defaults, why) && !defaults)
+                req.current = currentDials();
+            if (const juce::var sp = input.getProperty("spectrum", juce::var()); why.empty() && !sp.isVoid() && !sp.isUndefined())
+            {
+                const juce::String kind = sp.toString();
+                req.spectrum = !sp.isString()     ? measure::Bands::none
+                             : kind == "octave"   ? measure::Bands::octave
+                             : kind == "third"    ? measure::Bands::third
+                             : kind == "semitone" ? measure::Bands::semitone
+                                                  : measure::Bands::none;
+                if (req.spectrum == measure::Bands::none)
+                    why = "spectrum is octave, third or semitone: the bands' width.";
+            }
             Sources files = host_.chatDraft().files;   // a copy: the trial edits (ChatScenario.h) go there
             int trials = 0;
             if (!why.empty() || !scenario::resolve(req, host_, why) || !scenario::tryEdits(input, files, trials, why))
@@ -4013,7 +4054,7 @@ namespace playground
             const std::string report = measure::run(files, req);
             note(report.rfind("It did not compile", 0) == 0 ? "measured the sound: it did not compile"
                                                              : "measured the sound");
-            return scenario::trialLine(trials) + report;
+            return scenario::trialLine(trials) + scenario::dialsLine(defaults && !req.fromCapture) + report;
         }
         if (name == "set_checks")
         {
@@ -4254,12 +4295,27 @@ namespace playground
                 for (const auto& t : *tune)
                     if (t.isString())
                         q.dials.push_back(t.toString().toStdString());
+            // A sweep (Tune.h): the one dial at each value, measured; no search, nothing set.
+            const juce::var sweep = input.getProperty("sweep", juce::var());
+            const bool sweeping = !sweep.isVoid() && !sweep.isUndefined();
+            if (sweeping)
+            {
+                const auto* values = sweep.getArray();
+                if (values == nullptr || values->isEmpty() || values->size() > measure::kMaxSweep)
+                    return fail("sweep is a list of 1 to " + std::to_string(measure::kMaxSweep) + " values of the one dial in tune.");
+                for (const auto& v : *values)
+                {
+                    if (!isNumber(v) && !v.isBool())
+                        return fail("sweep's values are numbers: the dial's own (a bool's 0 or 1).");
+                    q.sweep.push_back(static_cast<float>(static_cast<double>(v)));
+                }
+            }
             if (const auto* goals = input.getProperty("goals", juce::var()).getArray())
                 for (int i = 0; i < goals->size(); ++i)
                 {
                     measure::Goal g;
                     std::string why;
-                    if (!goalOf((*goals)[i], g, why))
+                    if (!goalOf((*goals)[i], g, why, sweeping))
                         return fail("Goal " + std::to_string(i + 1) + ": " + why);
                     q.goals.push_back(std::move(g));
                 }
@@ -4270,16 +4326,21 @@ namespace playground
             const bool apply = applyVar.isBool() ? static_cast<bool>(applyVar) : true;
             const juce::var seconds = input.getProperty("seconds", juce::var());
             q.seconds = isNumber(seconds) ? std::clamp(static_cast<double>(seconds), 1.0, measure::kMaxSeconds) : measure::kDefaultSeconds;
-            setActivity("Tuning the dials");
-            q.progress = [this](int done, int all) {
-                setActivity("Tuning: " + std::to_string(done) + " of " + std::to_string(all) + " renders");
+            setActivity(sweeping ? "Sweeping a dial" : "Tuning the dials");
+            q.progress = [this, sweeping](int done, int all) {
+                setActivity((sweeping ? "Sweeping: " : "Tuning: ") + std::to_string(done) + " of " + std::to_string(all) + " renders");
                 return !cancel_.load();
             };
             const measure::TuneResult t = measure::tune(host_.chatDraft().files, q);
             if (!t.error.empty())
             {
-                note("tuning failed");
+                note(sweeping ? "sweeping failed" : "tuning failed");
                 return fail(t.error);
+            }
+            if (sweeping)
+            {
+                note("swept " + q.dials.front() + " over " + std::to_string(t.sweep.size()) + " value" + (t.sweep.size() == 1 ? "" : "s"));
+                return t.text + "No dial was set: a sweep only measures (set_dial sets one).";
             }
             std::string out = t.text;
             std::string tuned;

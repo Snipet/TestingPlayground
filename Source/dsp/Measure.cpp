@@ -233,6 +233,168 @@ namespace playground::measure
             return out;
         }
 
+        // A bands line's frames, as bandSpectrum took them ("0.4 s Hann frames"; "0.95 s Hann frames, as long as the
+        // part, up to 2 s"; "Hann frames of 0.15 to 0.4 s, each as long as its part, up to 0.4 s"), and the band below
+        // which a tone spreads over the bands beside it (sharpFrom: "; below E1 a tone spreads ..."), of the `printed`.
+        std::string framesText(Bands kind, const Spectrum& s, std::size_t printed)
+        {
+            if (s.frames == 0)
+                return "no frame: the part is under 16 samples";
+            const double asked = kind == Bands::semitone ? kNoteBandSeconds : kBandSeconds;
+            const std::string shortest = fmt("%.3g", 1.0 / s.resolutionHz), longest = fmt("%.3g", s.frameSeconds);
+            const bool one = shortest == longest;
+            std::string out = one ? longest + " s Hann frames" : "Hann frames of " + shortest + " to " + longest + " s";
+            if (shortest != fmt("%.3g", asked))
+                out += (one ? ", as long as the part" : ", each as long as its part") + fmt(", up to %g s", asked);
+            const std::vector<Band> bands = bandsOf(kind);
+            const std::size_t from = sharpFrom(kind, s);
+            if (from >= printed)
+                out += "; in every band a tone spreads over the bands beside it";
+            else if (from > 0)
+                out += "; below "
+                     + (kind == Bands::semitone ? noteName(bands[from].note)
+                                                : bands[from].hz >= 1000.0 ? fmt("%g kHz", bands[from].hz / 1000.0)
+                                                                           : fmt("%g Hz", bands[from].hz))
+                     + " a tone spreads over the bands beside it";
+            return out;
+        }
+
+        // The report's bands (Request::spectrum) from bandSpectrum, `what` the part they are of ("while held", "of the
+        // noise"): its frames (framesText), then each band's level after its centre up to the Nyquist frequency ("31.5:
+        // -62.1, 63: -48.0"), or with `inS` (an effect's input's, over the same part) its gain, out against in ("none"
+        // where nothing goes in); a semitone's an octave a group, after its first note ("C3 131: -20 -61 -48 ..."), a
+        // level in whole dB.
+        std::string bandsLine(Bands kind, const std::string& what, const Spectrum& outS, const Spectrum* inS = nullptr)
+        {
+            const std::vector<Band> bands = bandsOf(kind);
+            const std::vector<double> out = bandLevels(outS, kind);
+            const std::vector<double> inLevels = inS != nullptr ? bandLevels(*inS, kind) : std::vector<double>();
+            const std::vector<double>* in = inS != nullptr ? &inLevels : nullptr;
+            const bool semitone = kind == Bands::semitone;
+            std::size_t printed = 0;
+            while (printed < out.size() && !std::isnan(out[printed]))
+                ++printed;
+            const std::string text = std::string(kind == Bands::octave ? "Octave" : kind == Bands::third ? "Third-octave" : "Semitone")
+                                   + " bands " + what + (in != nullptr ? ", out against in" : "")
+                                   + (semitone ? ", a point a MIDI note, an octave a group after its first note" : "") + " ("
+                                   + (semitone ? "" : "Hz: ") + (in != nullptr ? "gain dB" : "dBFS") + "; "
+                                   + framesText(kind, outS, printed) + "): ";
+            std::string list;
+            for (std::size_t k = 0; k < bands.size() && k < out.size(); ++k)
+            {
+                if (std::isnan(out[k]))
+                    break;                                   // above the Nyquist frequency
+                const bool none = in != nullptr && !((*in)[k] > -200.0);
+                const double v = in != nullptr ? out[k] - (*in)[k] : out[k];
+                const std::string value = none ? std::string("none") : fmt(semitone && in == nullptr ? "%.0f" : "%.1f", v);
+                if (!semitone)
+                    list += (list.empty() ? "" : ", ") + bandName(bands[k].hz) + ": " + value;
+                else if (k == 0 || bands[k].note % 12 == 0)
+                    list += (list.empty() ? "" : "; ") + noteName(bands[k].note) + " "
+                          + fmt(bands[k].hz < 100.0 ? "%.1f" : "%.0f", bands[k].hz) + ": " + value;
+                else
+                    list += " " + value;
+            }
+            return text + list + ".\n";
+        }
+
+        // A frames phrase: "0.95 s Blackman-Harris frames", "Blackman-Harris frames of 0.2 to 0.55 s".
+        std::string framesOf(const Spectrum& s, const char* taper)
+        {
+            const std::string shortest = fmt("%.3g", 1.0 / s.resolutionHz), longest = fmt("%.3g", s.frameSeconds);
+            return shortest == longest ? longest + " s " + taper + " frames"
+                                       : std::string(taper) + " frames of " + shortest + " to " + longest + " s";
+        }
+
+        // Why off_order_db is not measured over `s` (empty when it is): no frame, or a base under twice an order's zone
+        // (every frequency is then near a multiple). `longer` says what narrows the zone ("longer notes").
+        std::string ordersWhy(double base, const Orders& o, const Spectrum& s, const std::string& longer)
+        {
+            if (!(base > 0.0))
+                return "there is no base (no note)";
+            if (s.frames == 0)
+                return "the part holds no frame (it is under 16 samples)";
+            if (base > 2.0 * o.zoneHz)
+                return {};
+            return fmt("every frequency is within %.3g Hz of a multiple of ", o.zoneHz) + fmt("%.2f Hz, the base being under twice ", base)
+                 + fmt("that (%g bins of ", kOrderBins) + framesOf(s, "Blackman-Harris") + "; " + longer + " narrow it, to 3 Hz from 2 s)";
+        }
+
+        // off_order_db's line, after `lead` ("Off the orders of 130.81 Hz (the expected pitch)"): ", more than 6.32 Hz from
+        // each in 0.95 s Blackman-Harris frames: -88.1 dB of the power (half-orders -101.2 dB, third-orders -110.4 dB); the
+        // strongest lines off them 470.0 Hz (-18 dB), 980.0 Hz (-22 dB) under the strongest component." Measured only
+        // (ordersWhy empty).
+        std::string ordersLine(const std::string& lead, const Orders& o, const Spectrum& s)
+        {
+            std::string out = lead + fmt(", more than %.3g Hz from each in ", o.zoneHz) + framesOf(s, "Blackman-Harris");
+            const auto db = [](double x) { return x <= -199.0 ? std::string("none") : fmt("%.1f dB", x); };
+            out += ": " + (o.offDb <= -199.0 ? std::string("none of the power") : fmt("%.1f dB of the power", o.offDb));
+            std::string parts;
+            if (!std::isnan(o.halfDb))
+                parts += "half-orders " + db(o.halfDb);
+            if (!std::isnan(o.thirdDb))
+                parts += (parts.empty() ? "" : ", ") + std::string("third-orders ") + db(o.thirdDb);
+            if (!parts.empty())
+                out += " (" + parts + ")";
+            if (!o.lines.empty())
+            {
+                out += "; the strongest lines off them ";
+                for (std::size_t k = 0; k < o.lines.size(); ++k)
+                    out += (k == 0 ? "" : ", ") + fmt(o.lines[k].hz >= 1000.0 ? "%.0f Hz" : "%.1f Hz", o.lines[k].hz)
+                         + fmt(" (%.0f dB)", o.lines[k].db);
+                out += " under the strongest component";
+            }
+            return out + ".\n";
+        }
+
+        // wobble_db's line, after `lead` ("Wobble while held: each third-octave band's share of the power"); `weighted`
+        // its weights ("power-weighted over the bands within 30 dB of the loudest").
+        std::string wobbleLine(const std::string& lead, const Wobble& w, const char* weighted)
+        {
+            return lead + fmt(" moves %.2f dB", w.db) + " (its SD over " + std::to_string(w.frames) + " frames of 0.1 s, "
+                 + weighted + ")"
+                 + (w.bandHz > 0.0 ? fmt("; the most, %.2f dB, the third at ", w.bandDb)
+                                         + (w.bandHz >= 1000.0 ? fmt("%g kHz", w.bandHz / 1000.0) : fmt("%g Hz", w.bandHz))
+                                   : std::string())
+                 + ".\n";
+        }
+
+        // wobble_db's reason when frames enough were there but too few of them sounded.
+        std::string silentWhy(const Wobble& w)
+        {
+            return "the output is silent in " + std::to_string(w.silent) + " of its " + std::to_string(w.frames + w.silent)
+                 + " frames, and fewer than three sound";
+        }
+
+        // A metric's value as the metrics line writes it: a number in its unit ("inf" for one that never came).
+        std::string numberText(const MetricInfo& m, double v)
+        {
+            if (std::isinf(v))
+                return v > 0.0 ? "inf" : "-inf";
+            if (std::isnan(v))
+                return "nan";
+            const std::string unit = m.unit;
+            if (unit == "dBFS" || unit == "dB" || unit == "cents" || unit == "LUFS")
+                return fmt("%.1f", v);
+            if (unit == "Hz")
+                return fmt(std::fabs(v) >= 1000.0 ? "%.0f" : "%.1f", v);
+            if (unit == "s")
+                return fmt("%.3f", v);
+            if (unit == "ms")
+                return fmt("%.2f", v);
+            return fmt("%.4g", v);                           // "%" and a ratio or a flag
+        }
+
+        // The values measured, name=value in the metrics' order: the report's last line, in the names checks use.
+        std::string metricsLine(const Metrics& values)
+        {
+            std::string out;
+            for (const MetricInfo& m : metrics())
+                if (const auto it = values.find(m.name); it != values.end())
+                    out += (out.empty() ? "" : " ") + std::string(m.name) + "=" + numberText(m, it->second);
+            return out.empty() ? std::string() : "Metrics: " + out + "\n";
+        }
+
         // ---- the dials -------------------------------------------------------------------------------------------
         struct Dials
         {
@@ -322,12 +484,14 @@ namespace playground::measure
         struct Rendered
         {
             Stereo out;
-            double cpuMs = 0.0;                              // the CPU time of the samples timed (render(): timeFrom
-            std::size_t cpuSamples = 0;                      // to timeUntil), and how many they were
+            double cpuMs = 0.0;                              // the CPU time of the calls timed (render(): those that
+            std::size_t cpuSamples = 0;                      // render timeFrom to timeUntil), and their samples
             uint32_t alerts = 0;
+            uint32_t plainAlerts = 0;                        // those by Timeline::plain (when it is set)
             long endedAt = -1;                               // the sample after which no voice was left (-1: never)
             std::vector<int> voicesAt;                       // per timeline event: the voices sounding as a note-on's
                                                              // call started (-1 for the others)
+            int mostVoices = 0;                              // an instrument's: the most voices sounding after a call
         };
 
         double cpuShare(double ms, double audioSeconds)
@@ -352,33 +516,47 @@ namespace playground::measure
 
         // The words every line uses (metricTerms): "held" and "the spectrum" are defined there, once.
         constexpr const char* kInstrumentTerms =
-            "Held: from 50 ms after each note-on (half the note if shorter) to its note-off, a phrase's notes together. "
-            "The spectrum: the held part's power, Welch's average of 0.1 s Hann frames overlapped by half, the same at "
-            "every rate. The band: 20 Hz to 20 kHz. After each unit, the tolerance a target takes unless its goal gives "
+            "Held: from 50 ms after each note-on (half the note if shorter) to its note-off, a phrase's notes together; a "
+            "window {from, to} (seconds of the render) replaces it, except in attack_s and release_s. The spectrum: the "
+            "held part's power, Welch's average of 0.1 s Hann frames overlapped by half (a shorter part: one frame), the same "
+            "at every rate. The band: 20 Hz to 20 kHz. After each unit, the tolerance a target takes unless its goal gives "
             "one.\n";
         constexpr const char* kEffectTerms =
-            "Held: a test signal from 50 ms after it starts to its end (hold_seconds). The spectrum: the held part's power, "
-            "Welch's average of 0.1 s Hann frames overlapped by half, the same at every rate. The band: 20 Hz to 20 kHz. "
-            "After each unit, the tolerance a target takes unless its goal gives one.\n";
+            "Held: a test signal from 50 ms after it starts to its end (hold_seconds); a window {from, to} (seconds of each "
+            "signal's render) replaces it, cut at hold_seconds. The spectrum: the held part's power, Welch's average of "
+            "0.1 s Hann frames overlapped by half, the same at every rate. The band: 20 Hz to 20 kHz. After each unit, the "
+            "tolerance a target takes unless its goal gives one.\n";
 
         constexpr MetricInfo kInstrumentMetrics[] = {
-            { "peak_db", "dBFS", "the largest sample from the first note-on to the last note-off", 1.0, false, 0.0 },
+            { "peak_db", "dBFS", "the largest sample from the first note-on to the last note-off, or the window's", 1.0,
+              false, 0.0 },
             { "rms_db", "dBFS", "the RMS of both channels while held, DC and all", 1.0, false, 0.0 },
+            { "lufs", "LUFS", "BS.1770 integrated loudness while held (under 0.4 s: one block)", 1.0, false, 0.0 },
+            { "rms_a_db", "dBFS", "while held, rms_db A-weighted in the band", 1.0, false, 0.0 },
             { "dc", "", "the mean sample while held", 0.002, false, 0.0 },
             { "correlation", "", "left against right while held: 1 mono, 0 unrelated, -1 out of phase", 0.05, false, 0.0 },
             { "balance_db", "dB", "left's energy over right's while held", 0.5, false, 0.0 },
             { "centroid_hz", "Hz", "the spectrum's power-weighted mean frequency in the band: how bright", 0.05, true, 1.0 },
             { "fundamental_hz", "Hz",
-              "in 0.4 s Hann frames while held, the strongest partial within 600 cents of the expected pitch (the lowest "
-              "note, bent by the pitch wheel's start at 2 semitones; nearer it than another note), else its harmonics' best "
-              "sum there (0: silent)",
+              "in 0.4 s Hann frames while held, over the lowest note's longest stretch of one expected pitch (the lowest "
+              "key held, bent by the pitch wheel at 2 semitones), the strongest partial within 600 cents of it (nearer it "
+              "than another key), else its harmonics' best sum there (0: silent)",
               0.005, true, 0.5 },
-            { "pitch_cents", "cents", "fundamental_hz against the expected pitch", 5.0, false, 0.0 },
+            { "pitch_cents", "cents", "each such stretch's (as fundamental_hz) against its expected pitch: the farthest, signed",
+              5.0, false, 0.0 },
             { "inharmonic_db", "dB",
-              "one note only: in 0.4 s Blackman-Harris frames while held, the strongest component in the band farther than "
+              "one note only: in 0.4 s Blackman-Harris frames while held, the strongest peak in the band farther than "
               "15 Hz from every harmonic of the expected pitch, under the strongest (aliasing, or the sound's own detuning, "
               "FM or noise; under -90: none, the floor)",
               3.0, false, 0.0 },
+            { "off_order_db", "dB",
+              "the held power in the band more than 6 bins of its Blackman-Harris frames (as long as the part, to 2 s) from "
+              "every multiple of base_hz (default the expected pitch), against all of it",
+              3.0, false, 0.0 },
+            { "wobble_db", "dB",
+              "the SD of each third-octave band's share of the power over the spectrum's frames, power-weighted over bands "
+              "within 30 dB of the loudest: flanging, chorus",
+              0.5, false, 0.0 },
             { "step", "", "the largest step between two samples of a channel, the whole render (a jump's is the same at any "
                           "rate, a smooth wave's smaller at a higher one)",
               0.01, false, 0.0 },
@@ -394,7 +572,7 @@ namespace playground::measure
               "from the render's loudest 10 ms (RMS) until the 10 ms RMS stays 60 dB under it: a pluck's or a bell's "
               "decay",
               0.1, true, 0.002 },
-            { "release_s", "s", "from the last note-off until the 10 ms RMS stays 60 dB under rms_db",
+            { "release_s", "s", "from the last note-off until the 10 ms RMS stays 60 dB under the RMS while held",
               0.1, true, 0.002 },
             { "voice_end_s", "s", "from the last note-off until the last voice ended (process returned false)",
               0.1, true, 0.002 },
@@ -406,22 +584,26 @@ namespace playground::measure
                             "3 both",
               0.5, false, 0.0 },
             { "cpu_percent", "%",
-              "the notes' share of one core in real time while held: the rendering thread's own time, of the program's own "
-              "code with its dials still (a moving dial costs more; the frozen copy the plugin plays once they rest, usually "
-              "less)",
+              "the notes' share of one core in real time while held (the rendering thread's own time), dials still: a moving "
+              "one costs more, the frozen copy (once they rest) usually less",
               0.1, true, 0.01 },
             { "cpu16_percent", "%", "the same of sixteen notes held 0.15 s at once (the least of two renders)", 0.1, true,
               0.01 },
         };
 
         constexpr MetricInfo kEffectMetrics[] = {
-            { "sine_peak_db", "dBFS", "the largest output sample of a 220 Hz sine at -12 dBFS", 1.0, false, 0.0 },
+            { "sine_peak_db", "dBFS", "the largest output sample of a 220 Hz sine at -12 dBFS, or the window's", 1.0, false,
+              0.0 },
             { "sine_rms_db", "dBFS", "its output's RMS of both channels while held", 1.0, false, 0.0 },
             { "sine_gain_db", "dB", "its output RMS over its input's, while held", 0.5, false, 0.0 },
             { "thd_db", "dB",
               "in 0.4 s Blackman-Harris frames while held, its output's power in the band farther than 15 Hz from 220 Hz "
               "(harmonics, aliases, noise) against all of it there: THD+N, how much the effect distorts (-240: none)",
               1.0, false, 0.0 },
+            { "off_order_db", "dB",
+              "the same, but more than 6 bins of its Blackman-Harris frames (as long as the held part, to 2 s) from every "
+              "multiple of 220 Hz: aliases, noise",
+              3.0, false, 0.0 },
             { "dc", "", "the sine's output mean sample while held", 0.002, false, 0.0 },
             { "correlation", "", "the sine's output, left against right while held: 1 mono, 0 unrelated, -1 out of phase",
               0.05, false, 0.0 },
@@ -430,6 +612,13 @@ namespace playground::measure
             { "centroid_in_hz", "Hz", "the noise's spectrum going in, its power-weighted mean frequency in the band (about 10 kHz)",
               0.05, true, 1.0 },
             { "centroid_out_hz", "Hz", "the same of the noise coming out: how bright the effect leaves it", 0.05, true, 1.0 },
+            { "noise_lufs", "LUFS", "BS.1770 integrated loudness of the noise coming out while held (going in: -11.9 at 48 kHz)",
+              1.0, false, 0.0 },
+            { "wobble_db", "dB",
+              "a steady tone's output (partials every 10 Hz, flat, -18 dBFS RMS): the SD of each third-octave band's share "
+              "of its power over 0.1 s frames on the tone's period while held (an effect that holds still, a delay or a "
+              "reverb, reads about 0), power-weighted over bands within 30 dB of the loudest: a flanger",
+              0.5, false, 0.0 },
             { "impulse_peak_db", "dBFS", "the largest output sample after an impulse of 0.5 (-6 dBFS)", 1.0, false, 0.0 },
             { "impulse_delay_ms", "ms", "when that sample comes", 0.05, true, 0.1 },
             { "impulse_decay_s", "s",
@@ -443,8 +632,8 @@ namespace playground::measure
                             "3 both",
               0.5, false, 0.0 },
             { "cpu_percent", "%",
-              "the renders' share of one core in real time: the rendering thread's own time, of the program's own code with "
-              "its dials still (a moving dial costs more; the frozen copy the plugin plays once they rest, usually less)",
+              "the renders' share of one core in real time (the rendering thread's own time), dials still: a moving one costs "
+              "more, the frozen copy (once they rest) usually less",
               0.1, true, 0.01 },
         };
     }
@@ -477,6 +666,8 @@ namespace playground::measure
         const std::string unit = m != nullptr ? m->unit : "";
         if (unit == "dBFS")
             return v <= -150.0 ? std::string("silent") : fmt("%.1f dBFS", v);
+        if (unit == "LUFS")
+            return v <= -150.0 ? std::string("under -70 LUFS") : fmt("%.1f LUFS", v);
         if (unit == "dB")
             return v <= -199.0 ? std::string("none") : fmt("%.1f dB", v);
         if (unit == "Hz")
@@ -524,44 +715,62 @@ namespace playground::measure
         }
     }
 
+    namespace
+    {
+        // Each note's held span (heldSpans, before they are joined) and its key; with `settleSeconds` 0, each note's
+        // sounding span (from its note-on).
+        struct KeySpan
+        {
+            std::size_t first = 0, second = 0;
+            int key = 0;
+        };
+
+        std::vector<KeySpan> keySpans(const Timeline& tl, std::size_t heldEnd, double rate, double settleSeconds = kSettleSeconds)
+        {
+            std::vector<KeySpan> spans;
+            std::array<long, 128> on;
+            on.fill(-1);
+            const auto settle = static_cast<std::size_t>(settleSeconds * rate);
+            const auto close = [&](std::size_t key, std::size_t at) {
+                if (on[key] < 0)
+                    return;
+                const auto a = static_cast<std::size_t>(on[key]);
+                on[key] = -1;
+                if (at > a)
+                    spans.push_back({ a + std::min((at - a) / 2, settle), at, static_cast<int>(key) });
+            };
+            for (const auto& [at, e] : tl.events)
+            {
+                const std::size_t key = e.note;
+                if ((e.kind == EventKind::noteOn || e.kind == EventKind::noteOff) && key >= on.size())
+                    continue;                                // no MIDI note (a malformed message): the Engine plays none
+                if (e.kind == EventKind::noteOn)
+                {
+                    close(key, at);                          // pressed again while held: the next starts here
+                    on[key] = static_cast<long>(at);
+                }
+                else if (e.kind == EventKind::noteOff)
+                    close(key, at);
+                else if (e.kind == EventKind::allNotesOff)
+                    for (std::size_t k = 0; k < on.size(); ++k)
+                        close(k, at);
+            }
+            for (std::size_t k = 0; k < on.size(); ++k)
+                close(k, heldEnd);                           // still down at the end
+            std::erase_if(spans, [](const KeySpan& s) { return s.second <= s.first; });
+            return spans;
+        }
+    }
+
     std::vector<Span> heldSpans(const Timeline& tl, std::size_t heldEnd, double rate)
     {
         std::vector<Span> spans;
-        std::array<long, 128> on;
-        on.fill(-1);
-        const auto settle = static_cast<std::size_t>(kSettleSeconds * rate);
-        const auto close = [&](std::size_t key, std::size_t at) {
-            if (on[key] < 0)
-                return;
-            const auto a = static_cast<std::size_t>(on[key]);
-            on[key] = -1;
-            if (at > a)
-                spans.push_back({ a + std::min((at - a) / 2, settle), at });
-        };
-        for (const auto& [at, e] : tl.events)
-        {
-            const std::size_t key = e.note;
-            if ((e.kind == EventKind::noteOn || e.kind == EventKind::noteOff) && key >= on.size())
-                continue;                                    // no MIDI note (a malformed message): the Engine plays none
-            if (e.kind == EventKind::noteOn)
-            {
-                close(key, at);                              // pressed again while held: the next starts here
-                on[key] = static_cast<long>(at);
-            }
-            else if (e.kind == EventKind::noteOff)
-                close(key, at);
-            else if (e.kind == EventKind::allNotesOff)
-                for (std::size_t k = 0; k < on.size(); ++k)
-                    close(k, at);
-        }
-        for (std::size_t k = 0; k < on.size(); ++k)
-            close(k, heldEnd);                               // still down at the end
+        for (const KeySpan& k : keySpans(tl, heldEnd, rate))
+            spans.push_back({ k.first, k.second });
         std::sort(spans.begin(), spans.end());
         std::vector<Span> joined;
         for (const Span& s : spans)
         {
-            if (s.second <= s.first)
-                continue;
             if (!joined.empty() && s.first <= joined.back().second)
                 joined.back().second = std::max(joined.back().second, s.second);
             else
@@ -570,61 +779,288 @@ namespace playground::measure
         return joined;
     }
 
+    double Stretch::hz() const
+    {
+        return 440.0 * std::exp2((static_cast<double>(key) - 69.0 + 2.0 * static_cast<double>(std::clamp(bend, -1.0f, 1.0f))) / 12.0);
+    }
+
+    std::vector<Stretch> stretches(const Timeline& tl, const std::vector<Span>& held, std::size_t heldEnd, double rate, int key)
+    {
+        const std::vector<KeySpan> keys = keySpans(tl, heldEnd, rate);
+        const std::vector<KeySpan> sounding = keySpans(tl, heldEnd, rate, 0.0);
+        // The pitch wheel's moves (of several at one sample, the last), and every sample the expected pitch may change at.
+        std::vector<std::pair<std::size_t, float>> bends;
+        for (const auto& [at, e] : tl.events)
+            if (e.kind == EventKind::pitchBend)
+            {
+                if (!bends.empty() && bends.back().first == at)
+                    bends.back().second = e.velocity;
+                else
+                    bends.push_back({ at, e.velocity });
+            }
+        std::vector<std::size_t> cuts;
+        for (const std::vector<KeySpan>* spans : { &keys, &sounding })
+            for (const KeySpan& k : *spans)
+            {
+                cuts.push_back(k.first);
+                cuts.push_back(k.second);
+            }
+        for (const auto& [at, value] : bends)
+            cuts.push_back(at);
+        for (const Span& s : held)
+        {
+            cuts.push_back(s.first);
+            cuts.push_back(s.second);
+        }
+        std::sort(cuts.begin(), cuts.end());
+        cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
+        std::vector<Stretch> out;
+        struct Bends
+        {
+            float lo, hi;                                    // the merged pieces' least and greatest
+            double sum;                                      // bend x samples
+        };
+        std::vector<Bends> merged;
+        std::size_t h = 0, b = 0;
+        float bend = 0.0f;
+        for (std::size_t c = 0; c + 1 < cuts.size(); ++c)
+        {
+            const std::size_t x = cuts[c], y = cuts[c + 1];
+            while (h < held.size() && held[h].second <= x)
+                ++h;
+            if (h >= held.size())
+                break;
+            for (; b < bends.size() && bends[b].first <= x; ++b)
+                bend = std::clamp(bends[b].second, -1.0f, 1.0f);
+            if (x < held[h].first)
+                continue;                                    // between the held part's spans
+            // The lowest key whose span covers [x, y) and the nearest one above it (no cut falls inside a span).
+            int low = -1, next = -1;
+            const auto consider = [&](int k) {
+                if (k == low)
+                    return;
+                if (low < 0 || k < low)
+                {
+                    if (low >= 0)
+                        next = next < 0 ? low : std::min(next, low);
+                    low = k;
+                }
+                else if (next < 0 || k < next)
+                    next = k;
+            };
+            for (const KeySpan& k : keys)
+                if (k.first <= x && y <= k.second)
+                    consider(k.key);
+            if (low < 0)
+            {
+                // No key's held span covers it (a window's: a note's first 50 ms, a release, a rest): the keys sounding
+                // there (from their note-ons), else those released last before it, else (before any note-on) `key`.
+                std::size_t last = 0;
+                for (const KeySpan& k : sounding)
+                {
+                    if (k.first <= x && y <= k.second)
+                        consider(k.key);
+                    else if (k.second <= x)
+                        last = std::max(last, k.second);
+                }
+                if (low < 0 && last > 0)
+                    for (const KeySpan& k : sounding)
+                        if (k.second == last)
+                            consider(k.key);
+                if (low < 0)
+                    low = key;
+            }
+            // One stretch while the key stays and the wheel stays within kSameBendCents (a resting wheel's jitter, a
+            // stream of near-equal moves), its bend their mean by length.
+            if (!out.empty() && out.back().span.second == x && out.back().key == low
+                && 200.0 * static_cast<double>(std::max(merged.back().hi, bend) - std::min(merged.back().lo, bend)) < kSameBendCents)
+            {
+                Stretch& s = out.back();
+                Bends& m = merged.back();
+                m.lo = std::min(m.lo, bend);
+                m.hi = std::max(m.hi, bend);
+                m.sum += static_cast<double>(bend) * static_cast<double>(y - x);
+                s.span.second = y;
+                s.bend = m.lo == m.hi ? m.lo : static_cast<float>(m.sum / static_cast<double>(y - s.span.first));
+                if (next >= 0)
+                    s.next = s.next < 0 ? next : std::min(s.next, next);
+            }
+            else
+            {
+                out.push_back({ { x, y }, low, next, bend });
+                merged.push_back({ bend, bend, static_cast<double>(bend) * static_cast<double>(y - x) });
+            }
+        }
+        return out;
+    }
+
+    namespace
+    {
+        // spectrum()'s and stereoSpectrum()'s Welch: with `y` null, x's power; else the mean of x's and y's (the channels
+        // as one FFT's real and imaginary parts: bin k's (|Z_k|^2 + |Z_(n-k)|^2) / 4).
+        Spectrum welch(const std::vector<float>& x, const std::vector<float>* y, double rate, const std::vector<Span>& spans,
+                       Taper taper, double seconds)
+        {
+            constexpr std::size_t kLeast = 16;               // a span shorter than this has no frame
+            Spectrum s;
+            s.rate = rate;
+            const std::size_t frame = std::max<std::size_t>(kLeast, static_cast<std::size_t>(std::llround(seconds * rate)));
+            std::size_t n = 1;
+            while (n < frame)
+                n *= 2;
+            s.hzPerBin = rate / static_cast<double>(n);
+            s.power.assign(n / 2 + 1, 0.0);
+            const std::size_t size = y != nullptr ? std::min(x.size(), y->size()) : x.size();
+            std::size_t shortest = frame, longest = 0;
+            for (const auto& [from, to] : spans)
+                if (const std::size_t end = std::min(to, size); end >= from + kLeast)
+                {
+                    shortest = std::min(shortest, end - from);
+                    longest = std::max(longest, std::min(end - from, frame));
+                }
+            s.resolutionHz = rate / static_cast<double>(shortest);
+            s.frameSeconds = static_cast<double>(longest > 0 ? longest : frame) / rate;
+            std::vector<std::complex<double>> a(n);
+            std::vector<double> w;
+            double w2 = 0.0, total = 0.0;
+            for (const auto& [from, to] : spans)
+            {
+                const std::size_t end = std::min(to, size);
+                if (end < from + kLeast)
+                    continue;
+                const std::size_t len = end - from, m = std::min(len, frame);
+                // Frames spread evenly from the span's start to its end, at most half a frame apart.
+                const std::size_t count = len <= frame ? 1 : (len - frame + frame / 2 - 1) / (frame / 2) + 1;
+                if (w.size() != m)
+                {
+                    w.resize(m);
+                    w2 = 0.0;
+                    for (std::size_t i = 0; i < m; ++i)
+                    {
+                        w[i] = taperAt(taper, i, m);
+                        w2 += w[i] * w[i];
+                    }
+                }
+                const double weight = static_cast<double>(len) / static_cast<double>(count) / w2;
+                for (std::size_t f = 0; f < count; ++f)
+                {
+                    const std::size_t at = from + (count == 1 ? 0 : (len - m) * f / (count - 1));
+                    if (y == nullptr)
+                    {
+                        for (std::size_t i = 0; i < n; ++i)
+                            a[i] = i < m ? std::complex<double>(static_cast<double>(x[at + i]) * w[i], 0.0) : std::complex<double>();
+                        fftInPlace(a);
+                        for (std::size_t k = 0; k < s.power.size(); ++k)
+                            s.power[k] += weight * std::norm(a[k]);
+                    }
+                    else
+                    {
+                        for (std::size_t i = 0; i < n; ++i)
+                            a[i] = i < m ? std::complex<double>(static_cast<double>(x[at + i]) * w[i],
+                                                                static_cast<double>((*y)[at + i]) * w[i])
+                                         : std::complex<double>();
+                        fftInPlace(a);
+                        for (std::size_t k = 0; k < s.power.size(); ++k)
+                            s.power[k] += weight * 0.25 * (std::norm(a[k]) + std::norm(a[(n - k) % n]));
+                    }
+                    ++s.frames;
+                }
+                total += static_cast<double>(len);
+            }
+            if (total > 0.0)
+                for (double& p : s.power)
+                    p /= total;
+            return s;
+        }
+    }
+
     Spectrum spectrum(const std::vector<float>& x, double rate, const std::vector<Span>& spans, Taper taper, double seconds)
     {
-        constexpr std::size_t kLeast = 16;                   // a span shorter than this has no frame
-        Spectrum s;
-        s.rate = rate;
-        const std::size_t frame = std::max<std::size_t>(kLeast, static_cast<std::size_t>(std::llround(seconds * rate)));
-        std::size_t n = 1;
-        while (n < frame)
-            n *= 2;
-        s.hzPerBin = rate / static_cast<double>(n);
-        s.power.assign(n / 2 + 1, 0.0);
-        std::size_t shortest = frame;
-        for (const auto& [from, to] : spans)
-            if (const std::size_t end = std::min(to, x.size()); end >= from + kLeast)
-                shortest = std::min(shortest, end - from);
-        s.resolutionHz = rate / static_cast<double>(shortest);
-        std::vector<std::complex<double>> a(n);
-        std::vector<double> w;
-        double w2 = 0.0, total = 0.0;
-        for (const auto& [from, to] : spans)
-        {
-            const std::size_t end = std::min(to, x.size());
-            if (end < from + kLeast)
-                continue;
-            const std::size_t len = end - from, m = std::min(len, frame);
-            // Frames spread evenly from the span's start to its end, at most half a frame apart.
-            const std::size_t count = len <= frame ? 1 : (len - frame + frame / 2 - 1) / (frame / 2) + 1;
-            if (w.size() != m)
-            {
-                w.resize(m);
-                w2 = 0.0;
-                for (std::size_t i = 0; i < m; ++i)
-                {
-                    w[i] = taperAt(taper, i, m);
-                    w2 += w[i] * w[i];
-                }
-            }
-            const double weight = static_cast<double>(len) / static_cast<double>(count) / w2;
-            for (std::size_t f = 0; f < count; ++f)
-            {
-                const std::size_t at = from + (count == 1 ? 0 : (len - m) * f / (count - 1));
-                for (std::size_t i = 0; i < n; ++i)
-                    a[i] = i < m ? std::complex<double>(static_cast<double>(x[at + i]) * w[i], 0.0) : std::complex<double>();
-                fftInPlace(a);
-                for (std::size_t k = 0; k < s.power.size(); ++k)
-                    s.power[k] += weight * std::norm(a[k]);
-                ++s.frames;
-            }
-            total += static_cast<double>(len);
-        }
-        if (total > 0.0)
-            for (double& p : s.power)
-                p /= total;
-        return s;
+        return welch(x, nullptr, rate, spans, taper, seconds);
     }
+
+    Spectrum stereoSpectrum(const std::vector<float>& l, const std::vector<float>& r, double rate, const std::vector<Span>& spans,
+                            Taper taper, double seconds)
+    {
+        return welch(l, &r, rate, spans, taper, seconds);
+    }
+
+    Spectrum bandSpectrum(Bands kind, const std::vector<float>& l, const std::vector<float>& r, double rate,
+                          const std::vector<Span>& spans)
+    {
+        // A shorter span's frame is zero-padded as a whole frame's: the finer bins share a band's edges more closely.
+        return stereoSpectrum(l, r, rate, spans, Taper::hann, kind == Bands::semitone ? kNoteBandSeconds : kBandSeconds);
+    }
+
+    std::size_t sharpFrom(Bands kind, const Spectrum& s)
+    {
+        const std::vector<Band> bands = bandsOf(kind);
+        std::size_t from = bands.size();
+        if (s.frames == 0)
+            return from;
+        while (from > 0 && bands[from - 1].hi - bands[from - 1].lo >= kSharpBins * s.resolutionHz)
+            --from;
+        return from;
+    }
+
+    double Spectrum::bandPower(double lo, double hi) const
+    {
+        const double nyquist = 0.5 * rate;
+        if (power.size() < 2 || !(hzPerBin > 0.0) || !(lo < nyquist))
+            return std::nan("");
+        // Bin k spans k - 0.5 to k + 0.5 bins (the last, the Nyquist frequency's, half of that), and the band takes its
+        // share; the one-sided bins count twice (Parseval's 2 / n), the Nyquist frequency's half once.
+        const double top = static_cast<double>(power.size() - 1);
+        const double a = lo / hzPerBin, b = std::min(hi, nyquist) / hzPerBin;
+        double sum = 0.0;
+        for (auto k = std::max<std::size_t>(1, static_cast<std::size_t>(std::floor(a + 0.5))); k < power.size(); ++k)
+        {
+            const double k0 = static_cast<double>(k) - 0.5, k1 = std::min(static_cast<double>(k) + 0.5, top);
+            if (k0 >= b)
+                break;
+            if (const double share = std::min(k1, b) - std::max(k0, a); share > 0.0)
+                sum += share * power[k];
+        }
+        return sum / top;                                    // 2 / n, n = 2 top
+    }
+
+    std::vector<Band> bandsOf(Bands kind)
+    {
+        // A third's nominal centres (IEC 61260's names) for 1 kHz x 2^(k/3), k = -17 (20 Hz) to 13 (20 kHz).
+        constexpr std::array<double, 31> kThirds{ 20.0,   25.0,   31.5,   40.0,   50.0,   63.0,   80.0,    100.0,   125.0,  160.0, 200.0,
+                                                  250.0,  315.0,  400.0,  500.0,  630.0,  800.0,  1000.0,  1250.0,  1600.0, 2000.0,
+                                                  2500.0, 3150.0, 4000.0, 5000.0, 6300.0, 8000.0, 10000.0, 12500.0, 16000.0, 20000.0 };
+        std::vector<Band> out;
+        const auto add = [&](double nominal, double centre, double half, int note) {
+            out.push_back({ nominal, centre / half, centre * half, note });
+        };
+        if (kind == Bands::octave)
+            for (std::size_t k = 0; k < kOctaveBands.size(); ++k)
+                add(kOctaveBands[k], 1000.0 * std::exp2(static_cast<double>(k) - 5.0), std::numbers::sqrt2, -1);
+        else if (kind == Bands::third)
+            for (std::size_t k = 0; k < kThirds.size(); ++k)
+                add(kThirds[k], 1000.0 * std::exp2((static_cast<double>(k) - 17.0) / 3.0), std::exp2(1.0 / 6.0), -1);
+        else if (kind == Bands::semitone)
+            for (int note = 16; note <= 135; ++note)
+            {
+                const double hz = 440.0 * std::exp2(static_cast<double>(note - 69) / 12.0);
+                add(hz, hz, std::exp2(1.0 / 24.0), note);
+            }
+        return out;
+    }
+
+    std::vector<double> bandLevels(const Spectrum& s, Bands kind)
+    {
+        std::vector<double> out;
+        for (const Band& b : bandsOf(kind))
+        {
+            const double p = s.bandPower(b.lo, b.hi);
+            out.push_back(std::isnan(p) ? p : p > 1e-24 ? 10.0 * std::log10(p) : -240.0);
+        }
+        return out;
+    }
+
+    std::string bandName(double hz) { return hz >= 1000.0 ? fmt("%g", hz / 1000.0) + "k" : fmt("%g", hz); }
 
     double Spectrum::centroid(double lo, double hi) const
     {
@@ -783,8 +1219,8 @@ namespace playground::measure
         {
             const double hz = static_cast<double>(k) * s.hzPerBin;
             const double h = std::max(1.0, std::round(hz / f0));         // the nearest harmonic (below f0: f0)
-            if (std::fabs(hz - h * f0) <= away)
-                continue;                                                // within a harmonic's main lobe
+            if (std::fabs(hz - h * f0) <= away || !localMax(p, k))
+                continue;                                                // within a harmonic's main lobe, or its skirt
             if (at == 0 || p[k] > p[at])
                 at = k;
         }
@@ -825,6 +1261,332 @@ namespace playground::measure
         if (centroidHz != nullptr)
             *centroidHz = s.centroid();
         return s.peaks(count);
+    }
+
+    // ---- loudness and time variation ----------------------------------------------------------------------------------
+    namespace
+    {
+        // A biquad in direct form I, in doubles; a value under 1e-30 is 0 (no denormals in a long silence).
+        struct Biquad
+        {
+            double b0 = 1.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0;
+            double x1 = 0.0, x2 = 0.0, y1 = 0.0, y2 = 0.0;
+
+            double operator()(double x)
+            {
+                double y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+                if (std::fabs(y) < 1e-30)
+                    y = 0.0;
+                x2 = x1;
+                x1 = x;
+                y2 = y1;
+                y1 = y;
+                return y;
+            }
+        };
+
+        // BS.1770's K-weighting at `rate`: its high shelf (+4 dB above about 2 kHz) and its high-pass (the RLB curve), each
+        // a biquad made from the analog centre, gain and Q its 48 kHz coefficients come from (as libebur128 makes them):
+        // at 48 kHz BS.1770's own coefficients.
+        std::array<Biquad, 2> kWeighting(double rate)
+        {
+            std::array<Biquad, 2> k;
+            {
+                const double f0 = 1681.974450955533, gainDb = 3.999843853973347, q = 0.7071752369554196;
+                const double t = std::tan(std::numbers::pi * f0 / rate);
+                const double vh = std::pow(10.0, gainDb / 20.0), vb = std::pow(vh, 0.4996667741545416);
+                const double a0 = 1.0 + t / q + t * t;
+                k[0].b0 = (vh + vb * t / q + t * t) / a0;
+                k[0].b1 = 2.0 * (t * t - vh) / a0;
+                k[0].b2 = (vh - vb * t / q + t * t) / a0;
+                k[0].a1 = 2.0 * (t * t - 1.0) / a0;
+                k[0].a2 = (1.0 - t / q + t * t) / a0;
+            }
+            {
+                const double f0 = 38.13547087602444, q = 0.5003270373238773;
+                const double t = std::tan(std::numbers::pi * f0 / rate);
+                const double a0 = 1.0 + t / q + t * t;
+                k[1].b0 = 1.0;
+                k[1].b1 = -2.0;
+                k[1].b2 = 1.0;
+                k[1].a1 = 2.0 * (t * t - 1.0) / a0;
+                k[1].a2 = (1.0 - t / q + t * t) / a0;
+            }
+            return k;
+        }
+
+        double lufsOf(double meanSquare) { return -0.691 + 10.0 * std::log10(meanSquare); }
+    }
+
+    double loudness(const std::vector<float>& l, const std::vector<float>& r, double rate, const std::vector<Span>& spans)
+    {
+        constexpr std::size_t kLeast = 16;
+        const std::size_t size = std::min(l.size(), r.size());
+        std::size_t end = 0;
+        for (const auto& [from, to] : spans)
+            end = std::max(end, std::min(to, size));
+        // Both channels K-weighted from the render's start (the filters settled where the spans start), their squares
+        // summed, then summed again from the start: a block's mean square is a difference of two.
+        std::vector<double> sum(end + 1, 0.0);
+        {
+            std::array<Biquad, 2> kl = kWeighting(rate), kr = kWeighting(rate);
+            for (std::size_t i = 0; i < end; ++i)
+            {
+                const double yl = kl[1](kl[0](static_cast<double>(l[i]))), yr = kr[1](kr[0](static_cast<double>(r[i])));
+                sum[i + 1] = sum[i] + yl * yl + yr * yr;
+            }
+        }
+        const auto block = static_cast<std::size_t>(std::llround(kLoudnessBlockSeconds * rate));
+        const auto step = std::max<std::size_t>(1, static_cast<std::size_t>(std::llround(kLoudnessStepSeconds * rate)));
+        std::vector<double> z;                               // each block's summed mean square
+        for (const auto& [from, to] : spans)
+        {
+            const std::size_t b = std::min(to, end);
+            if (b < from + kLeast)
+                continue;
+            if (b - from < block)
+                z.push_back((sum[b] - sum[from]) / static_cast<double>(b - from));
+            else
+                for (std::size_t a = from; a + block <= b; a += step)
+                    z.push_back((sum[a + block] - sum[a]) / static_cast<double>(block));
+        }
+        // The absolute gate (-70 LUFS), then the relative one (10 LU under the mean of the blocks the first left).
+        double mean = 0.0;
+        std::size_t n = 0;
+        for (const double p : z)
+            if (p > 0.0 && lufsOf(p) > -70.0)
+            {
+                mean += p;
+                ++n;
+            }
+        if (n == 0)
+            return -240.0;
+        const double gate = lufsOf(mean / static_cast<double>(n)) - 10.0;
+        double kept = 0.0;
+        std::size_t m = 0;
+        for (const double p : z)
+            if (p > 0.0 && lufsOf(p) > -70.0 && lufsOf(p) > gate)
+            {
+                kept += p;
+                ++m;
+            }
+        return m > 0 ? lufsOf(kept / static_cast<double>(m)) : -240.0;
+    }
+
+    double aWeight(double hz)
+    {
+        // IEC 61672-1's R_A(f), over its value at 1 kHz (its +2.00 dB, exactly), squared.
+        const auto ra = [](double f) {
+            const double f2 = f * f;
+            return 12194.0 * 12194.0 * f2 * f2
+                 / ((f2 + 20.6 * 20.6) * std::sqrt((f2 + 107.7 * 107.7) * (f2 + 737.9 * 737.9)) * (f2 + 12194.0 * 12194.0));
+        };
+        const double a = ra(hz) / ra(1000.0);
+        return a * a;
+    }
+
+    double aWeightedPower(const Spectrum& s)
+    {
+        if (s.power.size() < 2 || !(s.hzPerBin > 0.0))
+            return 0.0;
+        // Each bin's power (bandPower's scale: the one-sided bins count twice) by the weight at its frequency.
+        const double top = std::min(kBandHighHz, 0.5 * s.rate);
+        double sum = 0.0;
+        for (std::size_t k = 1; k < s.power.size(); ++k)
+        {
+            const double hz = static_cast<double>(k) * s.hzPerBin;
+            if (hz < kBandLowHz)
+                continue;
+            if (hz > top)
+                break;
+            sum += s.power[k] * aWeight(hz);
+        }
+        return sum / static_cast<double>(s.power.size() - 1);
+    }
+
+    Orders orders(const Spectrum& s, double base)
+    {
+        Orders o;
+        const std::vector<double>& p = s.power;
+        if (p.size() < 8 || !(s.hzPerBin > 0.0) || !(base > 0.0) || s.frames == 0)
+            return o;
+        o.zoneHz = kOrderBins * s.resolutionHz;
+        const double zone = o.zoneHz, top = std::min(kBandHighHz, 0.5 * s.rate);
+        const double halfBase = 0.5 * base, thirdBase = base / 3.0;
+        const bool halves = halfBase >= 2.0 * zone, thirds = thirdBase >= 2.0 * zone;
+        double all = 0.0, off = 0.0, half = 0.0, third = 0.0;
+        std::vector<bool> isOff(p.size(), false);
+        for (std::size_t k = 1; k < p.size(); ++k)
+        {
+            const double hz = static_cast<double>(k) * s.hzPerBin;
+            if (hz < kBandLowHz)
+                continue;
+            if (hz > top)
+                break;
+            all += p[k];
+            const double h = std::max(1.0, std::round(hz / base));          // the nearest order (below the base: the base)
+            if (std::fabs(hz - h * base) <= zone)
+                continue;
+            off += p[k];
+            isOff[k] = true;
+            const double h2 = std::round(hz / halfBase), h3 = std::round(hz / thirdBase);
+            if (halves && std::fmod(h2, 2.0) == 1.0 && std::fabs(hz - h2 * halfBase) <= zone)
+                half += p[k];
+            if (thirds && h3 >= 1.0 && std::fmod(h3, 3.0) != 0.0 && std::fabs(hz - h3 * thirdBase) <= zone)
+                third += p[k];
+        }
+        const auto db = [&](double x) { return all > 0.0 && x > 0.0 ? 10.0 * std::log10(x / all) : -240.0; };
+        o.offDb = db(off);
+        if (halves)
+            o.halfDb = db(half);
+        if (thirds)
+            o.thirdDb = db(third);
+        // The strongest lines off them: local maxima within 60 dB of the strongest component.
+        const double strongest = s.strongest();
+        std::vector<std::pair<double, std::size_t>> found;
+        for (std::size_t k = 2; k + 2 < p.size(); ++k)
+            if (isOff[k] && p[k] >= strongest * 1e-6 && localMax(p, k))
+                found.emplace_back(p[k], k);
+        std::stable_sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        for (std::size_t j = 0; j < found.size() && j < 3; ++j)
+        {
+            Peak line;
+            double lp = 0.0;
+            s.refine(found[j].second, line.hz, lp);
+            line.db = 10.0 * (lp - logPower(strongest)) / std::numbers::ln10;
+            o.lines.push_back(line);
+        }
+        return o;
+    }
+
+    std::size_t wobbleFrame(double rate)
+    {
+        return std::max<std::size_t>(16, static_cast<std::size_t>(std::llround(kSpectrumSeconds * rate)));
+    }
+
+    std::vector<float> steadyTone(std::size_t n, double rate)
+    {
+        // One period of the tone (wobbleFrame's samples): a partial at every multiple of rate / period (10 Hz) in the band,
+        // each a cosine of a fixed random phase, read from one table of the period (k i mod the period) so that the tone
+        // repeats exactly.
+        const std::size_t period = wobbleFrame(rate);
+        const double spacing = rate / static_cast<double>(period);
+        const auto first = static_cast<std::size_t>(std::ceil(kBandLowHz / spacing - 1e-9));
+        const auto last = static_cast<std::size_t>(std::floor(std::min(kBandHighHz, 0.4999 * rate) / spacing + 1e-9));
+        std::vector<double> c(period), s(period), one(period, 0.0);
+        for (std::size_t m = 0; m < period; ++m)
+        {
+            const double x = 2.0 * std::numbers::pi * static_cast<double>(m) / static_cast<double>(period);
+            c[m] = std::cos(x);
+            s[m] = std::sin(x);
+        }
+        const double amp = std::pow(10.0, kSteadyToneDb / 20.0) * std::sqrt(2.0 / static_cast<double>(last - first + 1));
+        uint32_t seed = 33333;                               // fixed phases: the same tone each time
+        for (std::size_t k = first; k <= last; ++k)
+        {
+            seed = seed * 1664525u + 1013904223u;
+            const double phase = 2.0 * std::numbers::pi * static_cast<double>(seed >> 8) / 16777216.0;
+            const double a = amp * std::cos(phase), b = amp * std::sin(phase);
+            for (std::size_t i = 0, m = 0; i < period; ++i)
+            {
+                one[i] += a * c[m] - b * s[m];
+                m += k;
+                if (m >= period)
+                    m -= period;
+            }
+        }
+        // It fades in over its first kSteadyFadeSeconds (raised cosine): no step at its start.
+        const std::size_t fade = std::min(period, static_cast<std::size_t>(kSteadyFadeSeconds * rate));
+        std::vector<float> out(n);
+        for (std::size_t i = 0; i < n; ++i)
+        {
+            const double g = i < fade ? 0.5 - 0.5 * std::cos(std::numbers::pi * static_cast<double>(i) / static_cast<double>(fade)) : 1.0;
+            out[i] = static_cast<float>(g * one[i % period]);
+        }
+        return out;
+    }
+
+    Wobble wobble(const std::vector<float>& l, const std::vector<float>& r, double rate, const std::vector<Span>& spans,
+                  bool onPeriod)
+    {
+        Wobble w;
+        const std::vector<Band> bands = bandsOf(Bands::third);
+        const std::size_t size = std::min(l.size(), r.size());
+        const std::size_t frame = wobbleFrame(rate);
+        const double floorShare = std::pow(10.0, -kWobbleFloorDb / 10.0);
+        std::vector<std::vector<double>> shares;             // each frame's bands, in dB
+        std::vector<double> weight(bands.size(), 0.0);       // each band's power, summed
+        std::vector<double> p(bands.size());
+        for (const auto& [from, to] : spans)
+        {
+            const std::size_t end = std::min(to, size);
+            if (end < from + frame)
+                continue;                                    // shorter than a frame: none
+            // The frames as the spectrum's (welch's): spread evenly from the span's start to its end, at most half a
+            // frame apart; or (onPeriod) end to end, each from a multiple of a frame from the render's start.
+            const std::size_t len = end - from, first = (from + frame - 1) / frame * frame;
+            const std::size_t count = onPeriod ? (end >= first + frame ? (end - first) / frame : 0)
+                                    : len <= frame ? 1 : (len - frame + frame / 2 - 1) / (frame / 2) + 1;
+            for (std::size_t f = 0; f < count; ++f)
+            {
+                const std::size_t at = onPeriod ? first + f * frame : from + (count == 1 ? 0 : (len - frame) * f / (count - 1));
+                const std::vector<Span> one{ { at, at + frame } };
+                const Spectrum out = stereoSpectrum(l, r, rate, one, Taper::hann, kSpectrumSeconds);
+                double total = 0.0;                          // the power in the thirds
+                std::size_t used = 0;                        // the bands under the Nyquist frequency
+                for (std::size_t b = 0; b < bands.size(); ++b)
+                {
+                    p[b] = out.bandPower(bands[b].lo, bands[b].hi);
+                    if (std::isnan(p[b]))
+                        break;
+                    total += p[b];
+                    used = b + 1;
+                }
+                if (!(total > 1e-20))
+                {
+                    ++w.silent;                              // silent: no shape
+                    continue;
+                }
+                // A band's share of the frame's power in the thirds, at least kWobbleFloorDb under it.
+                std::vector<double> row(used);
+                for (std::size_t b = 0; b < used; ++b)
+                {
+                    row[b] = 10.0 * std::log10(std::max(p[b] / total, floorShare));
+                    weight[b] += p[b];
+                }
+                shares.push_back(std::move(row));
+            }
+        }
+        w.frames = static_cast<int>(shares.size());
+        if (w.frames < 3)
+            return w;
+        const std::size_t used = shares.front().size();
+        double most = 0.0;
+        for (std::size_t b = 0; b < used; ++b)
+            most = std::max(most, weight[b]);
+        const double least = most * std::pow(10.0, -kWobbleRangeDb / 10.0);
+        double num = 0.0, den = 0.0;
+        for (std::size_t b = 0; b < used; ++b)
+        {
+            if (!(weight[b] > 0.0) || weight[b] < least)
+                continue;
+            double mean = 0.0, dev = 0.0;
+            for (const std::vector<double>& row : shares)
+                mean += row[b];
+            mean /= static_cast<double>(shares.size());
+            for (const std::vector<double>& row : shares)
+                dev += (row[b] - mean) * (row[b] - mean);
+            const double sd = std::sqrt(dev / static_cast<double>(shares.size()));
+            num += weight[b] * sd;
+            den += weight[b];
+            if (sd > w.bandDb)
+            {
+                w.bandDb = sd;
+                w.bandHz = bands[b].hz;
+            }
+        }
+        w.db = den > 0.0 ? num / den : 0.0;
+        return w;
     }
 
     std::vector<Click> clicks(const std::vector<float>& l, const std::vector<float>& r, double rate)
@@ -889,7 +1651,8 @@ namespace playground::measure
         };
         return notes == o.notes && velocity == o.velocity && holdSeconds == o.holdSeconds && tailSeconds == o.tailSeconds
             && dials == o.dials && current == o.current && rate == o.rate && bpm == o.bpm && modwheel == o.modwheel
-            && pitchbend == o.pitchbend && block == o.block && input == o.input && signal == o.signal
+            && pitchbend == o.pitchbend && block == o.block && input == o.input && signal == o.signal && window == o.window
+            && baseHz == o.baseHz
             && std::equal(phrase.begin(), phrase.end(), o.phrase.begin(), o.phrase.end(),
                           [](const PhraseNote& a, const PhraseNote& b) {
                               return a.note == b.note && a.at == b.at && a.length == b.length && a.velocity == b.velocity;
@@ -910,10 +1673,19 @@ namespace playground::measure
             && part == o.part;
     }
 
+    std::string windowText(const Window& w) { return fmt("%.2f", w.from) + " to " + fmt("%.2f s", w.to); }
+
     bool Request::scenario() const
     {
         return !phrase.empty() || !automate.empty() || !wheels.empty() || hostEdits.stopAt >= 0.0 || hostEdits.jumpAt >= 0.0
             || !events.empty() || !transport.empty() || !blocks.empty() || input != nullptr || !frames.empty();
+    }
+
+    bool Request::startKey() const
+    {
+        return std::any_of(wheels.begin(), wheels.end(), [](const WheelMove& w) {
+            return w.wheel == Wheel::buttons && ((std::clamp(std::lround(w.value), 0L, static_cast<long>(kMaxButtons)) >> wheelcc::kStartBit) & 1L) != 0;
+        });
     }
 
     std::string scenarioText(const Request& r)
@@ -950,7 +1722,7 @@ namespace playground::measure
         for (const WheelMove& w : r.wheels)
             ++counts[static_cast<int>(w.wheel)];
         const char* wheelNames[kWheelKinds] = { "the mod wheel", "the pitch wheel", "pressure", "the pedal", "the steering",
-                                                "the throttle", "the brake", "the clutch", "the gear" };
+                                                "the throttle", "the brake", "the clutch", "the gear", "the buttons" };
         for (int k = 0; k < kWheelKinds; ++k)
             if (counts[k] > 0)
                 parts.push_back(std::string(wheelNames[k]) + " " + std::to_string(counts[k])
@@ -1286,8 +2058,23 @@ namespace playground::measure
             return std::string(kPedalNames[axis - 1]) + " to " + fmt("%.2f", static_cast<double>(wheelcc::pedalOf(v14)));
         }
 
-        // Another control change's mark (the sustain pedal's and the axes' apart), "" for none: the mod wheel, a racing
-        // wheel's gear and buttons by name, any other by number. At the start a value at rest is no moment.
+        // A racing wheel's buttons' mask (wheelcc's four parts) as a mark's words: "buttons 4 and 5 down".
+        [[maybe_unused]] std::string buttonsMark(uint32_t mask)
+        {
+            std::vector<int> down;
+            for (int b = 0; b < wheelcc::kButtonCcs * wheelcc::kButtonBits; ++b)
+                if (((mask >> b) & 1u) != 0)
+                    down.push_back(b);
+            if (down.empty())
+                return "every button up";
+            std::string list;
+            for (std::size_t i = 0; i < down.size(); ++i)
+                list += (i == 0 ? "" : i + 1 == down.size() ? " and " : ", ") + std::to_string(down[i]);
+            return (down.size() == 1 ? "button " : "buttons ") + list + " down";
+        }
+
+        // Another control change's mark (the sustain pedal's, the axes' and the buttons' apart), "" for none: the mod
+        // wheel, a racing wheel's gear by name, any other by number. At the start a value at rest is no moment.
         [[maybe_unused]] std::string controllerMark(std::size_t at, const Event& e)
         {
             using namespace wheelcc;
@@ -1298,13 +2085,6 @@ namespace playground::measure
                 return at > 0 || g != 0 ? "the gear to " + (g < 0 ? std::string("reverse") : g == 0 ? std::string("neutral") : std::to_string(g))
                                         : std::string();
             }
-            if (cc >= kButtons && cc < kButtons + kButtonCcs)
-            {
-                const int lo = (cc - kButtons) * kButtonBits;
-                char b[64];
-                std::snprintf(b, sizeof b, "the buttons' bits %d-%d to 0x%02x", lo, lo + kButtonBits - 1, v);
-                return at > 0 || v != 0 ? std::string(b) : std::string();
-            }
             if (at > 0 || e.velocity != 0.0f)
                 return (cc == 1 ? std::string("the mod wheel") : "controller " + std::to_string(cc)) + " to "
                      + fmt("%.2f", static_cast<double>(e.velocity));
@@ -1313,7 +2093,8 @@ namespace playground::measure
 
         // An instrument's MIDI: `keys` held from the start until offAt (the wheels where the request puts them, at the
         // start, before the notes), or (keys null) the request's scenario: its phrase (else its notes held for holdN), the
-        // wheels after those, a recording's events in place of the notes; with their marks.
+        // wheels after those (the start key's note among them: Request::startKey), a recording's events in place of the
+        // notes; with their marks.
         [[maybe_unused]] void noteParts(Timeline& tl, const Request& req, const std::vector<int>* keys, std::size_t offAt, double rate)
         {
             struct Ev
@@ -1345,6 +2126,30 @@ namespace playground::measure
                     evs.push_back({ off, 1, Event{ 0, EventKind::noteOff, key, 0.0f } });
                 }
             if (keys == nullptr)
+            {
+                // The buttons as the wheel sends them: in time order, a part's control change where its 7 bits change
+                // (from none down, the Engine's rest), and the start key's note while its bit is down (after the
+                // controls at its sample: the ranks).
+                std::vector<const WheelMove*> pressed;
+                for (const WheelMove& w : req.wheels)
+                    if (w.wheel == Wheel::buttons)
+                        pressed.push_back(&w);
+                std::stable_sort(pressed.begin(), pressed.end(), [](const WheelMove* x, const WheelMove* y) { return x->at < y->at; });
+                uint32_t mask = 0;
+                for (const WheelMove* w : pressed)
+                {
+                    using namespace wheelcc;
+                    const std::size_t at = sampleOf(std::min(w->at, kMaxPlaySeconds), rate);
+                    const auto to = static_cast<uint32_t>(std::clamp(std::lround(w->value), 0L, static_cast<long>(kMaxButtons)));
+                    for (int b = 0; b < kButtonCcs; ++b)
+                        if (const uint32_t part = (to >> (b * kButtonBits)) & 0x7Fu; part != ((mask >> (b * kButtonBits)) & 0x7Fu))
+                            evs.push_back({ at, 0, Event{ 0, EventKind::controller, static_cast<uint8_t>(kButtons + b),
+                                                          static_cast<float>(part) / 127.0f } });
+                    if (const bool down = ((to >> kStartBit) & 1u) != 0; down != (((mask >> kStartBit) & 1u) != 0))
+                        evs.push_back(down ? Ev{ at, 2, Event{ 0, EventKind::noteOn, kStartNote, static_cast<float>(kStartVelocity) / 127.0f } }
+                                           : Ev{ at, 1, Event{ 0, EventKind::noteOff, kStartNote, 0.0f } });
+                    mask = to;
+                }
                 for (const WheelMove& w : req.wheels)
                 {
                     const std::size_t at = sampleOf(std::min(w.at, kMaxPlaySeconds), rate);
@@ -1379,8 +2184,11 @@ namespace playground::measure
                             evs.push_back({ at, 0, Event{ 0, EventKind::controller, wheelcc::kGear, static_cast<float>(g & 0x7F) / 127.0f } });
                             break;
                         }
+                        case Wheel::buttons:                 // above, in time order
+                            break;
                     }
                 }
+            }
             std::stable_sort(evs.begin(), evs.end(), [](const Ev& x, const Ev& y) { return x.at != y.at ? x.at < y.at : x.rank < y.rank; });
             for (const Ev& e : evs)
                 tl.events.push_back({ e.at, e.e });
@@ -1401,6 +2209,9 @@ namespace playground::measure
             std::array<int, wheelcc::kAxes> v14{ { wheelcc::kCentre, 0, 0, 0 } };
             std::array<std::size_t, wheelcc::kAxes> axisMarkAt;
             axisMarkAt.fill(~std::size_t{ 0 });
+            // Its buttons' mask as the Engine holds it, and its last mark.
+            uint32_t buttons = 0;
+            std::size_t buttonsMarkAt = ~std::size_t{ 0 };
             for (const auto& [at, e] : tl.events)
             {
                 const std::size_t k = e.note;
@@ -1464,6 +2275,20 @@ namespace playground::measure
                             else if (!msb && axisMarkAt[ua] < tl.marks.size() && tl.marks[axisMarkAt[ua]].at == at)
                                 tl.marks[axisMarkAt[ua]].what = axisMark(a, v14[ua]);
                         }
+                        else if (cc >= wheelcc::kButtons && cc < wheelcc::kButtons + wheelcc::kButtonCcs)
+                        {
+                            // A part of the buttons' mask: one moment a sample, however many parts change in it (none
+                            // at the start at rest).
+                            const int shift = (cc - wheelcc::kButtons) * wheelcc::kButtonBits;
+                            buttons = (buttons & ~(0x7Fu << shift)) | (static_cast<uint32_t>(sevenBits(e)) << shift);
+                            if (buttonsMarkAt < tl.marks.size() && tl.marks[buttonsMarkAt].at == at)
+                                tl.marks[buttonsMarkAt].what = buttonsMark(buttons);
+                            else if (at > 0 || buttons != 0)
+                            {
+                                buttonsMarkAt = tl.marks.size();
+                                tl.marks.push_back({ at, buttonsMark(buttons), -1, false });
+                            }
+                        }
                         else if (std::string what = controllerMark(at, e); !what.empty())
                             tl.marks.push_back({ at, std::move(what), -1, false });
                         break;
@@ -1498,6 +2323,35 @@ namespace playground::measure
         }
 
         std::size_t lastMoment(const Timeline& tl) { return std::max(tl.heldUntil, lastChange(tl)); }
+
+        // Where a request's window ends (0: none), which its render reaches at least.
+        std::size_t windowEnd(const Request& req, double rate)
+        {
+            return req.window.set() ? sampleOf(std::min(req.window.to, kMaxWindowSeconds), rate) : 0;
+        }
+
+        // A window's samples within a render of `length`: at least one when it starts inside it, none (first ==
+        // second == length) when it starts at or after its end.
+        Span windowSpan(const Window& w, std::size_t length, double rate)
+        {
+            const std::size_t a = std::min(sampleOf(w.from, rate), length);
+            return { a, std::clamp(sampleOf(std::min(w.to, kMaxWindowSeconds), rate), std::min(a + 1, length), length) };
+        }
+
+        // Whether a window's span holds less than kMinWindowSeconds (each end rounded to a sample: one short of it
+        // still holds it).
+        [[maybe_unused]] bool tooShort(const Span& s, double rate)
+        {
+            return s.second < s.first + sampleOf(kMinWindowSeconds, rate) - 1;
+        }
+
+        // A timeline's length: `length` when given, else `natural` (what it plays, and the tail) or the window's end when
+        // that is later, the natural length then kept as Timeline::plain.
+        void setLength(Timeline& tl, std::size_t length, std::size_t natural, const Request& req, double rate)
+        {
+            tl.length = length > 0 ? length : std::max(natural, windowEnd(req, rate));
+            tl.plain = length == 0 && tl.length > natural ? natural : 0;
+        }
     }
 
     struct Session::Impl
@@ -1521,20 +2375,22 @@ namespace playground::measure
             if constexpr (kInstrument)
             {
                 noteParts(tl, req, keys, keys != nullptr ? offAt : holdN, rate);
-                tl.length = length > 0 ? length : lastMoment(tl) + tailN;
+                setLength(tl, length, lastMoment(tl) + tailN, req, rate);
             }
             else
             {
                 tl.heldUntil = req.input != nullptr ? std::min(req.input->l.size(), sampleOf(2.0 * kMaxPlaySeconds, rate)) : holdN;
-                tl.length = length > 0 ? length : std::max(tl.heldUntil, lastMoment(tl)) + tailN;
+                setLength(tl, length, std::max(tl.heldUntil, lastMoment(tl)) + tailN, req, rate);
             }
             sortMarks(tl);
             return tl;
         }
 
         // The program as new over `in` (an effect) or the timeline's events (an instrument), as the timeline plans it:
-        // host blocks, each in one call or in those `hooks` ask for; the CPU time of the calls from the one at `timeFrom`
-        // to the one before `timeUntil` (the whole render: 0, and its length or more).
+        // host blocks, each in one call or in those `hooks` ask for, a call ending at Timeline::plain (so the samples
+        // before it are those a render without the window gives, and the alerts by then are kept); the CPU time of the
+        // calls from the first at or after `timeFrom` to the one before `timeUntil`, or of the call that renders both
+        // when none starts between them (the whole render: 0, and its length or more).
         Rendered render(const Dials& dials, const Stereo* in, const Timeline& tl, std::size_t watchFrom, std::size_t timeFrom = 0,
                         std::size_t timeUntil = static_cast<std::size_t>(-1), RenderHooks* hooks = nullptr)
         {
@@ -1572,7 +2428,8 @@ namespace playground::measure
             double t0 = 0.0;
             std::size_t timedFrom = 0;
             bool timing = false;
-            for (std::size_t pos = 0; pos < total;)
+            std::size_t pos = 0;
+            while (pos < total)
             {
                 if (pos >= hostEnd)                              // a host block: the transport, then the dials, once
                 {
@@ -1600,24 +2457,14 @@ namespace playground::measure
                         norm = base;
                     engine.setControls(norm);
                 }
-                if (!timing && r.cpuSamples == 0 && pos >= timeFrom && pos < timeUntil)
-                {
-                    timing = true;
-                    timedFrom = pos;
-                    t0 = threadMs();
-                }
-                else if (timing && pos >= timeUntil)
-                {
-                    timing = false;
-                    r.cpuMs = threadMs() - t0;
-                    r.cpuSamples = pos - timedFrom;
-                }
                 std::size_t n = hostEnd - pos;
                 if (tl.part > 0)                                 // the processor's parts (a recording's)
                     n = std::min(n, static_cast<std::size_t>(tl.part));
                 if (hooks != nullptr)
                     if (const int want = hooks->callLength(pos); want > 0)
                         n = std::min(n, static_cast<std::size_t>(want));
+                if (tl.plain > pos)                              // the window's extra render: from a call of its own
+                    n = std::min(n, tl.plain - pos);
                 block.clear();
                 while (next < tl.events.size() && tl.events[next].first < pos + n)
                 {
@@ -1632,6 +2479,20 @@ namespace playground::measure
                         r.voicesAt[next] = engine.activeVoices();   // as the call starts
                     block.push_back(ev);
                     ++next;
+                }
+                // The timed calls: from the first that starts in [timeFrom, timeUntil), or this one when it renders
+                // past both (no call starts between them), to the first that starts at or after timeUntil.
+                if (!timing && r.cpuSamples == 0 && pos < timeUntil && pos + n > timeFrom && (pos >= timeFrom || pos + n >= timeUntil))
+                {
+                    timing = true;
+                    timedFrom = pos;
+                    t0 = threadMs();
+                }
+                else if (timing && pos >= timeUntil)
+                {
+                    timing = false;
+                    r.cpuMs = threadMs() - t0;
+                    r.cpuSamples = pos - timedFrom;
                 }
                 float* ch[2] = { r.out.l.data() + pos, r.out.r.data() + pos };
                 engine.process(ch, 2, static_cast<int>(n), block);
@@ -1650,13 +2511,17 @@ namespace playground::measure
                     }
                 }
                 pos += n;
+                if (kInstrument)
+                    r.mostVoices = std::max(r.mostVoices, engine.activeVoices());
                 if (kInstrument && r.endedAt < 0 && pos > watchFrom && engine.activeVoices() == 0)
                     r.endedAt = static_cast<long>(pos);
+                if (tl.plain > 0 && pos == tl.plain)
+                    r.plainAlerts = r.alerts |= engine.takeAlerts();
             }
             if (timing)
             {
                 r.cpuMs = threadMs() - t0;
-                r.cpuSamples = std::min(total, timeUntil) - timedFrom;
+                r.cpuSamples = pos - timedFrom;
             }
             r.alerts |= engine.takeAlerts();
             engine.collect();
@@ -1760,12 +2625,12 @@ namespace playground::measure
         if constexpr (kInstrument)
         {
             noteParts(tl, req, nullptr, holdN, rate);
-            tl.length = length > 0 ? length : lastMoment(tl) + tailN;
+            setLength(tl, length, lastMoment(tl) + tailN, req, rate);
         }
         else
         {
             tl.heldUntil = req.input != nullptr ? std::min(req.input->l.size(), sampleOf(2.0 * kMaxPlaySeconds, rate)) : holdN;
-            tl.length = length > 0 ? length : std::max(tl.heldUntil, lastMoment(tl)) + tailN;
+            setLength(tl, length, std::max(tl.heldUntil, lastMoment(tl)) + tailN, req, rate);
         }
         sortMarks(tl);
         return tl;
@@ -1826,6 +2691,17 @@ namespace playground::measure
         }
         if (!kInstrument && request.signal >= 0)
             out += "(input is for view_sound and compare: measure_output plays its own test signals.)\n";
+        // The window (Measure.h): the metrics measured while held measure it instead.
+        const bool windowed = request.window.set();
+        if (windowed)
+            out += "Window: " + windowText(request.window)
+                 + (kInstrument ? " of the render, measured in place of the held part (attack_s and release_s keep the notes')"
+                                : " of the sine's and the noise's renders, measured in place of their held part")
+                 + (kInstrument && plan.plain > 0 ? "; the render goes on to its end, the steps, the decay, the release and the "
+                                                    "alerts measured over the " + seconds(static_cast<double>(plan.plain) / rate)
+                                                    + " it has without it"
+                                                  : std::string())
+                 + ".\n";
         const std::size_t holdN = static_cast<std::size_t>(hold * rate);
         const std::size_t tailN = static_cast<std::size_t>(tail * rate);
         std::vector<std::string> warnings;
@@ -1836,7 +2712,7 @@ namespace playground::measure
         if constexpr (kInstrument)
         {
             // The notes held together from the start (or the scenario's phrase): the held part ends at the last note-off.
-            const bool phrased = !request.phrase.empty() || !request.events.empty();
+            const bool phrased = !request.phrase.empty() || !request.events.empty() || request.startKey();
             std::vector<int> notes;
             if (phrased)
             {
@@ -1851,9 +2727,23 @@ namespace playground::measure
                 notes = notesOf(request);
             const float vel = std::clamp(request.velocity, 0.0f, 1.0f);
             const std::size_t from = plan.firstNote, heldEnd = std::max(plan.heldUntil, from + 1);
+            // The window's samples (the render reaches its end: plan()), else the notes'.
+            const Span win = windowed ? windowSpan(request.window, plan.length, rate) : Span{ from, heldEnd };
             Timeline tl = plan;
-            const Rendered r = impl_->render(dials, nullptr, tl, heldEnd, from, heldEnd);
+            const Rendered r = impl_->render(dials, nullptr, tl, heldEnd, win.first, win.second);
             voiceMarks(tl, r);
+            // The whole render's metrics (the steps, the clicks, the decay, the release, the voices' end, the alerts) over
+            // the length it has without the window (Timeline::plain): a window past it changes none of them.
+            const std::size_t plainN = plan.plain > 0 ? plan.plain : r.out.size();
+            Stereo cut;
+            if (plainN < r.out.size())
+            {
+                cut.l.assign(r.out.l.begin(), r.out.l.begin() + static_cast<std::ptrdiff_t>(plainN));
+                cut.r.assign(r.out.r.begin(), r.out.r.begin() + static_cast<std::ptrdiff_t>(plainN));
+            }
+            const Stereo& whole = plainN < r.out.size() ? cut : r.out;
+            const long endedAt = r.endedAt >= 0 && static_cast<std::size_t>(r.endedAt) <= plainN ? r.endedAt : -1;
+            const uint32_t alerts = plan.plain > 0 ? r.plainAlerts : r.alerts;
 
             if (!phrased)
             {
@@ -1868,12 +2758,16 @@ namespace playground::measure
                 out += "Played: from the first note-on (" + seconds(static_cast<double>(from) / rate) + ") to the last note-off ("
                      + seconds(static_cast<double>(heldEnd) / rate) + "), then " + seconds(tail) + " more.\n";
 
-            // The held part: each note from 50 ms after its note-on to its note-off (Measure.h), the spectra all of it.
-            std::vector<Span> held = heldSpans(plan, heldEnd, rate);
-            if (held.empty())
-                held.push_back({ from, heldEnd });
+            // The held part: each note from 50 ms after its note-on to its note-off (Measure.h), the spectra all of it;
+            // or the window. The notes' own (the envelope's, the release's reference) stays theirs.
+            std::vector<Span> notesHeld = heldSpans(plan, heldEnd, rate);
+            if (notesHeld.empty())
+                notesHeld.push_back({ from, heldEnd });
+            const std::vector<Span> held = windowed ? std::vector<Span>{ win } : notesHeld;
             const std::vector<float> m = mono(r.out, 0, r.out.size());
-            const double heldPeak = peak(r.out, from, heldEnd), heldRms = rmsOver(r.out, held);
+            const double heldPeak = peak(r.out, win.first, win.second), heldRms = rmsOver(r.out, held);
+            const double notesRms = windowed ? rmsOver(r.out, notesHeld) : heldRms;
+            const double notesPeak = windowed ? peak(r.out, from, heldEnd) : heldPeak;
             double corr = 1.0, bal = 0.0;
             stereoOver(r.out, held, corr, bal);
             const double heldDc = dcOver(r.out, held);
@@ -1882,55 +2776,290 @@ namespace playground::measure
             v["dc"] = heldDc;
             v["correlation"] = corr;
             v["balance_db"] = bal;
-            out += "Held: peak " + dbfs(heldPeak) + ", RMS " + dbfs(heldRms) + ", DC " + fmt("%.4f", heldDc)
-                 + ", left/right correlation " + fmt("%.2f", corr) + fmt(" (balance %+.1f dB).\n", bal);
+            out += std::string(windowed ? "In the window: peak " : "Held: peak ") + dbfs(heldPeak) + ", RMS " + dbfs(heldRms)
+                 + ", DC " + fmt("%.4f", heldDc) + ", left/right correlation " + fmt("%.2f", corr)
+                 + fmt(" (balance %+.1f dB).\n", bal);
             if (heldRms < 1e-5)
-                warnings.push_back("It is silent (or nearly) while the note is held.");
+                warnings.push_back(windowed ? "It is silent (or nearly) in the window." : "It is silent (or nearly) while the note is held.");
             if (heldPeak > 1.0)
                 warnings.push_back("Peaks above 0 dBFS with " + std::to_string(notes.size())
                                    + " note(s): a voice should peak near 0.2 to 0.3, since sixteen can sound at once.");
+            // The loudness over the same part: BS.1770's integrated, and the RMS A-weighted (in frames as long as the part,
+            // up to 2 s: a low tone's lobe narrow under the weight's slope).
+            {
+                std::string loud;
+                if (need({ "lufs" }))
+                {
+                    v["lufs"] = loudness(r.out.l, r.out.r, rate, held);
+                    loud = valueText("lufs", v["lufs"]) + " integrated (BS.1770)";
+                }
+                if (need({ "rms_a_db" }))
+                {
+                    const double a = aWeightedPower(stereoSpectrum(r.out.l, r.out.r, rate, held, Taper::hann, kNoteBandSeconds));
+                    v["rms_a_db"] = a > 1e-24 ? 10.0 * std::log10(a) : -240.0;
+                    loud += (loud.empty() ? "" : "; ") + std::string("RMS A-weighted ") + valueText("rms_a_db", v["rms_a_db"]);
+                }
+                if (!loud.empty())
+                    out += std::string(windowed ? "Loudness in the window: " : "Loudness while held: ") + loud + ".\n";
+            }
 
-            // The expected pitch: the lowest note, bent by the pitch wheel where the request starts it, at the usual 2
-            // semitones (host.fm); the pitch looks within 600 cents of it, and nearer it than the next note up.
+            // A plain request without a scenario's moves: the pitch's notes alone, the chord's and the sixteen voices' renders.
+            Request plainReq = request;
+            plainReq.automate.clear();
+            plainReq.hostEdits = {};
+            plainReq.transport.clear();
+            plainReq.blocks.clear();
+
+            // The expected pitch, stretch by stretch (stretches(): the lowest key held, bent by the pitch wheel as it is
+            // then, at the usual 2 semitones of host.fm); the pitch looks within 600 cents of it, and nearer it than a key
+            // held with it. The reference, fundamental_hz's and the default base of off_order_db: the lowest key's longest
+            // stretch.
             const int lowest = *std::min_element(notes.begin(), notes.end());
-            const double lowestHz = noteHz(lowest);
-            const double bend = std::exp2(2.0 * static_cast<double>(std::clamp(request.pitchbend, -1.0f, 1.0f)) / 12.0);
-            const double expectedHz = lowestHz * bend;
-            double loHz = expectedHz * std::exp2(-kPitchCents / 1200.0), hiHz = expectedHz * std::exp2(kPitchCents / 1200.0);
-            for (const int n : notes)
-                if (n > lowest)
-                    hiHz = std::min(hiHz, std::sqrt(expectedHz * noteHz(n) * bend));
+            std::vector<Stretch> parts = stretches(plan, held, heldEnd, rate, lowest);
+            if (parts.empty())                               // (an empty window: no stretch)
+            {
+                float startBend = 0.0f;
+                for (const auto& [at, e] : plan.events)
+                    if (at <= from && e.kind == EventKind::pitchBend)
+                        startBend = std::clamp(e.velocity, -1.0f, 1.0f);
+                parts.push_back({ held.front(), lowest, -1, startBend });
+            }
+            const auto samplesOf = [](const Stretch& s) { return s.span.second - s.span.first; };
+            const Stretch* ref = &parts.front();
+            for (const Stretch& s : parts)
+                if (s.key < ref->key || (s.key == ref->key && samplesOf(s) > samplesOf(*ref)))
+                    ref = &s;
+            const double expectedHz = ref->hz();
+            // The seconds of frame that part a stretch's pitch from 0 Hz and from the key held with it: its frames' main
+            // lobe, 2 of their bins each side, between them (a lobe as wide as the pitch reads it biased, and two that
+            // touch read one); a stretch shorter (its frame its own length, under kPitchSeconds) is left out.
+            const auto nextHz = [](const Stretch& s) { return Stretch{ s.span, s.next, -1, s.bend }.hz(); };
+            const auto partedBy = [&](const Stretch& s) {
+                const double f = s.hz();
+                return 4.0 / std::min(f, s.next >= 0 ? nextHz(s) - f : f);
+            };
+            const auto frameOf = [&](const Stretch& s) { return std::min(static_cast<double>(samplesOf(s)) / rate, kPitchSeconds); };
+            // A note whose held stretch is `takes` seconds long: its first 50 ms are not held (half of it, when shorter).
+            const auto noteOf = [](double takes) { return std::min(2.0 * takes, takes + kSettleSeconds); };
+            // Whether the pitch wheel cuts a stretch (not only a key's edge or the held part's): a stretch of the same key
+            // touches it (stretches() joins those within kSameBendCents).
+            const auto wheelCut = [&](const Stretch& s) {
+                for (const Stretch& o : parts)
+                    if (&o != &s && o.key == s.key && (o.span.second == s.span.first || o.span.first == s.span.second))
+                        return true;
+                return false;
+            };
+            // Why `s` (the reference: its key's longest stretch) is too short for what takes `takes` seconds of frame:
+            // the wheel's moves, else the note's length.
+            const auto shortWhy = [&](const Stretch& s, const std::string& what, double takes) {
+                const std::string length = seconds(static_cast<double>(samplesOf(s)) / rate);
+                if (wheelCut(s))
+                    return "the pitch wheel moves too often: note " + std::to_string(s.key) + " stays at one place of it for "
+                         + length + " at most, too short for frames that part " + what + ": they take " + seconds(takes)
+                         + ", the wheel resting that long";
+                return "note " + std::to_string(s.key) + "'s held stretch (" + length + ") is too short for frames that part "
+                     + what + ": they take " + seconds(takes) + ", a note of " + seconds(noteOf(takes));
+            };
+            const auto tooShortWhy = [&](const Stretch& s) {
+                const double takes = partedBy(s);
+                if (takes > kPitchSeconds)
+                    return s.next >= 0 ? "note " + std::to_string(s.next) + " held with note " + std::to_string(s.key) + " is too near it for "
+                                             + seconds(kPitchSeconds) + " frames to part them"
+                                       : "note " + std::to_string(s.key) + " (" + fmt("%.1f Hz", s.hz()) + ") is too low for "
+                                             + seconds(kPitchSeconds) + " frames to part it from 0 Hz";
+                return shortWhy(s, "its " + fmt("%.1f Hz", s.hz()) + " from "
+                                       + (s.next >= 0 ? "note " + std::to_string(s.next) + " held with it" : std::string("0 Hz")),
+                                takes);
+            };
+            bool follows = true;                             // the pitch follows the note (below): no line says otherwise
             if (need({ "centroid_hz", "fundamental_hz", "pitch_cents" }))
             {
                 const Spectrum sp = spectrum(m, rate, held);
                 const double centroid = sp.centroid();
                 v["centroid_hz"] = centroid;
-                out += "Spectrum while held: centroid " + fmt("%.0f Hz", centroid) + "; strongest partials "
+                out += std::string(windowed ? "Spectrum in the window" : "Spectrum while held") + ": centroid "
+                     + fmt("%.0f Hz", centroid) + "; strongest partials "
                      + partials(sp.peaks(8)) + ".";
-                // The pitch from frames of its own, long enough to part a low chord's notes (Measure.h).
-                const Pitch pitch = pitchOf(spectrum(m, rate, held, Taper::hann, kPitchSeconds), expectedHz, loHz, hiHz);
-                v["fundamental_hz"] = pitch.hz;
-                if (pitch.hz > 0.0)
+                // The pitch of each stretch alone, from frames of its own, long enough to part a low chord's notes
+                // (Measure.h); pitch_cents the cents of the one farthest from its own expected pitch, signed (a phrase is
+                // in tune when each of its notes is: no two notes off apart cancel), the report adding their spread and
+                // their mean by length.
+                struct Read
                 {
-                    v["pitch_cents"] = 1200.0 * std::log2(pitch.hz / expectedHz);
-                    out += " Pitch: " + fmt("%.2f Hz", pitch.hz) + fmt(", %+.1f cents from the expected ", v["pitch_cents"])
-                         + fmt("%.2f Hz", expectedHz) + " (note " + std::to_string(lowest)
-                         + (bend != 1.0 ? ", bent" : "") + ")"
-                         + (pitch.partial ? std::string() : std::string(": no partial near it, its harmonics' sum")) + ".";
+                    const Stretch* s;
+                    Pitch pitch;
+                    double cents;
+                };
+                std::vector<Read> reads;
+                const Read* refRead = nullptr;
+                std::size_t left = 0;
+                for (const Stretch& s : parts)
+                {
+                    if (frameOf(s) < partedBy(s))
+                    {
+                        ++left;
+                        continue;
+                    }
+                    const double f = s.hz();
+                    const double lo = f * std::exp2(-kPitchCents / 1200.0);
+                    const double hi = std::min(f * std::exp2(kPitchCents / 1200.0), s.next >= 0 ? std::sqrt(f * nextHz(s)) : kInf);
+                    const Pitch p = pitchOf(spectrum(m, rate, { s.span }, Taper::hann, kPitchSeconds), f, lo, hi);
+                    reads.push_back({ &s, p, p.hz > 0.0 ? 1200.0 * std::log2(p.hz / f) : 0.0 });
                 }
+                double sum = 0.0, weight = 0.0;
+                std::size_t heard = 0;
+                const Read* lowRead = nullptr;
+                const Read* highRead = nullptr;
+                const Read* farRead = nullptr;
+                for (const Read& rd : reads)
+                {
+                    if (rd.s == ref)
+                        refRead = &rd;
+                    if (rd.pitch.hz > 0.0)
+                    {
+                        ++heard;
+                        sum += static_cast<double>(samplesOf(*rd.s)) * rd.cents;
+                        weight += static_cast<double>(samplesOf(*rd.s));
+                        lowRead = lowRead == nullptr || rd.cents < lowRead->cents ? &rd : lowRead;
+                        highRead = highRead == nullptr || rd.cents > highRead->cents ? &rd : highRead;
+                        farRead = farRead == nullptr || std::fabs(rd.cents) > std::fabs(farRead->cents) ? &rd : farRead;
+                    }
+                }
+                if (refRead != nullptr)
+                    v["fundamental_hz"] = refRead->pitch.hz;
+                else
+                    res.unmeasured["fundamental_hz"] = tooShortWhy(*ref);
+                if (farRead != nullptr)
+                    v["pitch_cents"] = farRead->cents;
+                else if (reads.empty())
+                    res.unmeasured["pitch_cents"] = "no stretch could be read (" + tooShortWhy(*ref) + ")";
+                // Whether the pitch follows the note, for the report's words alone (the metrics keep their meaning, and a
+                // check or a tune, which asks for some, renders nothing more), whenever the part sounds, a stretch read or
+                // none (a drum's hit too short for the pitch's frames is still no pitch to chase): the lowest note and the
+                // note a whole tone up (down from 126), each alone, held 0.6 s with none of the scenario's moves (no wheel:
+                // the request's pitchbend alone, which their pitches are looked for around), measured as this, must come
+                // within 50 cents of a whole tone apart. Both alone, a single note held too: its own render plays the
+                // scenario's wheels and moves for hold_seconds, which a bend or a pitch that drifts would part from the
+                // other's. Not an octave: a sound of a pitch of its own has its second harmonic there. A sound whose pitch
+                // does not follow (noise, most drums, an engine whose pitch is its own) is named unpitched, with both
+                // pitches, in place of cents from a note it does not play (and the Inharmonic line, of the note's
+                // harmonics, is left out); a phrase or a chord of a pitched sound keeps its line.
+                const int other = lowest + 2 <= 127 ? lowest + 2 : lowest - 2;
+                double baseAt = 0.0, otherAt = 0.0;
+                if (all && heldRms >= 1e-5)
+                {
+                    const float played = std::clamp(request.pitchbend, -1.0f, 1.0f);
+                    const auto alone = [&](int key) {
+                        const double hz = Stretch{ {}, key, -1, played }.hz();
+                        const std::vector<int> keys{ key };
+                        const std::size_t n = static_cast<std::size_t>(0.6 * rate);
+                        const Rendered o = impl_->render(dials, nullptr, impl_->plan(dials, plainReq, n, &keys, n), n);
+                        const std::vector<Span> span{ { std::min(n / 2, static_cast<std::size_t>(kSettleSeconds * rate)), n } };
+                        return pitchOf(spectrum(mono(o.out, 0, o.out.size()), rate, span, Taper::hann, kPitchSeconds), hz,
+                                       hz * std::exp2(-kPitchCents / 1200.0), hz * std::exp2(kPitchCents / 1200.0))
+                            .hz;
+                    };
+                    baseAt = alone(lowest);
+                    otherAt = alone(other);
+                    follows = baseAt > 0.0 && otherAt > 0.0
+                           && std::fabs(1200.0 * std::log2(otherAt / baseAt) - 100.0 * static_cast<double>(other - lowest)) <= 50.0;
+                }
+                if (!follows)
+                    out += " Unpitched: its pitch does not follow the note ("
+                         + (baseAt > 0.0 ? fmt("%.2f Hz", baseAt) : std::string("none")) + " at note " + std::to_string(lowest) + ", "
+                         + (otherAt > 0.0 ? fmt("%.2f Hz", otherAt) : std::string("none")) + " at note " + std::to_string(other)
+                         + ", each alone).";
+                else if (farRead != nullptr)
+                {
+                    if (refRead != nullptr && refRead->pitch.hz > 0.0)
+                        out += " Pitch: " + fmt("%.2f Hz", refRead->pitch.hz) + fmt(", %+.1f cents from the expected ", refRead->cents)
+                             + fmt("%.2f Hz", expectedHz) + " (note " + std::to_string(ref->key)
+                             + (std::fabs(200.0 * static_cast<double>(ref->bend)) >= 0.05 ? ", bent" : "")
+                             + (parts.size() > 1 ? ", its longest stretch" : "") + ")"
+                             + (refRead->pitch.partial ? std::string() : std::string(": no partial near it, its harmonics' sum")) + ".";
+                    else
+                        out += " Pitch: not measured at note " + std::to_string(ref->key) + " ("
+                             + (refRead != nullptr ? std::string("silent there") : tooShortWhy(*ref)) + ").";
+                    // Each stretch against its own expected pitch: the farthest (pitch_cents), the spread and the mean.
+                    if (reads.size() > 1 || left > 0)
+                    {
+                        out += " Each stretch (a key held and the pitch wheel's place) against its own expected pitch, over "
+                             + std::to_string(heard) + (heard == 1 ? " stretch: " : " stretches: ") + fmt("%+.1f cents", farRead->cents);
+                        if (heard > 1)
+                            out += " at the farthest (note " + std::to_string(farRead->s->key) + " at "
+                                 + seconds(static_cast<double>(farRead->s->span.first) / rate) + ")" + fmt(", %+.1f", lowRead->cents)
+                                 + fmt(" to %+.1f", highRead->cents) + fmt(", %+.1f on average", sum / weight);
+                        out += (left > 0 ? "; " + std::to_string(left) + " too short for its frames left out" : std::string()) + ".";
+                    }
+                }
+                else if (reads.empty())
+                    out += " Pitch: not measured: " + res.unmeasured["pitch_cents"] + ".";
                 out += "\n";
+            }
+            // The band levels asked for (Request::spectrum), of both channels over the held part (or the window).
+            if (request.spectrum != Bands::none)
+                out += bandsLine(request.spectrum, windowed ? "in the window" : "while held",
+                                 bandSpectrum(request.spectrum, r.out.l, r.out.r, rate, held));
+            // The orders of a fixed base (base_hz, else the expected pitch), of both channels over the same part, whatever
+            // the notes: what is off them (an engine's self-oscillation, a period of two cycles, aliasing, noise).
+            if (need({ "off_order_db" }))
+            {
+                const bool given = request.baseHz > 0.0;
+                const double base = given ? request.baseHz : expectedHz;
+                const Spectrum os = stereoSpectrum(r.out.l, r.out.r, rate, held, Taper::blackmanHarris, kOrderSeconds);
+                const Orders o = orders(os, base);
+                const std::string lead = "Off the orders of " + fmt("%.2f Hz", base) + (given ? " (base_hz)" : " (the expected pitch)")
+                                       + (windowed ? " in the window" : " while held");
+                // Frames as long as the shortest held stretch (or the window), up to kOrderSeconds.
+                const std::string why = ordersWhy(base, o, os, windowed ? "a longer window would" : "longer notes would");
+                if (!why.empty())
+                {
+                    res.unmeasured["off_order_db"] = why;
+                    out += lead + ": not measured, " + why + ".\n";
+                }
+                else
+                {
+                    v["off_order_db"] = o.offDb;
+                    out += ordersLine(lead, o, os);
+                }
+            }
+            // How the spectrum's shape moves over the same part (0.1 s frames; three at least).
+            if (need({ "wobble_db" }))
+            {
+                const Wobble wb = wobble(r.out.l, r.out.r, rate, held);
+                if (wb.frames < 3)
+                {
+                    // Each held stretch makes its own frames, half a frame apart: one over 0.15 s makes three.
+                    const std::string why =
+                        wb.frames + wb.silent >= 3
+                            ? silentWhy(wb)
+                            : std::string(windowed ? "the window" : "the held part") + " makes "
+                                  + (wb.frames + wb.silent == 0 ? "no 0.1 s frame" : "fewer than three 0.1 s frames")
+                                  + (windowed ? " (half a frame apart: three take a window over 0.15 s)"
+                                              : " (each note's held stretch makes its own, half a frame apart: three take "
+                                                "one over 0.15 s, so a note held over 0.2 s)");
+                    res.unmeasured["wobble_db"] = why;
+                    out += "Wobble: not measured, " + why + ".\n";
+                }
+                else
+                {
+                    v["wobble_db"] = wb.db;
+                    out += wobbleLine(std::string(windowed ? "Wobble in the window" : "Wobble while held")
+                                          + ": each third-octave band's share of the power",
+                                      wb, "power-weighted over the bands within 30 dB of the loudest");
+                }
             }
 
             if (need({ "step", "click" }))
             {
                 // The largest step, then the clicks (trace's rule), each with its nearest moment (the click locator).
-                const std::vector<Step> steps = largestSteps(r.out.l, r.out.r, 3, rate);
+                const std::vector<Step> steps = largestSteps(whole.l, whole.r, 3, rate);
                 const double step = steps.empty() ? 0.0 : steps.front().size;
-                const bool click = !clicks(r.out.l, r.out.r, rate).empty();   // any, as trace finds them
+                const bool click = !clicks(whole.l, whole.r, rate).empty();   // any, as trace finds them
                 v["step"] = step;
                 v["click"] = click ? 1.0 : 0.0;
                 out += "Largest step between two samples"
-                     + (heldPeak > 0.0 ? fmt(" (%.0f%% of the held peak)", step / heldPeak * 100.0) : std::string())
+                     + (notesPeak > 0.0 ? fmt(" (%.0f%% of the held peak)", step / notesPeak * 100.0) : std::string())
                      + (steps.size() > 1 ? ", then the clicks: " : ": ") + stepsText(steps, tl, rate)
                      + (click ? "" : "; no click (no step far above those around it)") + ".\n";
                 if (click)
@@ -1942,7 +3071,7 @@ namespace playground::measure
             // (10 ms windows) from its loudest moment on.
             {
                 const std::size_t w = std::max<std::size_t>(static_cast<std::size_t>(0.001 * rate),
-                                                            static_cast<std::size_t>(rate / lowestHz));
+                                                            static_cast<std::size_t>(rate / noteHz(lowest)));
                 const std::vector<double> pk = windowPeaks(r.out, from, heldEnd, w);
                 double attack = kInf;
                 if (!pk.empty())
@@ -1958,8 +3087,8 @@ namespace playground::measure
                 const std::size_t w10 = std::max<std::size_t>(1, static_cast<std::size_t>(0.01 * rate));
                 std::size_t loudAt = 0;
                 double loud = 0.0;
-                for (std::size_t i = 0; i + w10 <= r.out.size(); i += w10)
-                    if (const double x = rms(r.out, i, i + w10); x > loud)
+                for (std::size_t i = 0; i + w10 <= whole.size(); i += w10)
+                    if (const double x = rms(whole, i, i + w10); x > loud)
                     {
                         loud = x;
                         loudAt = i;
@@ -1967,51 +3096,75 @@ namespace playground::measure
                 double decay = kInf;
                 if (loud > 1e-9)
                 {
-                    const long fall = fallTime(r.out, loudAt, toDb(loud), 60.0, rate);
+                    const long fall = fallTime(whole, loudAt, toDb(loud), 60.0, rate);
                     if (fall >= 0)
                         decay = static_cast<double>(fall) / rate;
                 }
                 v["attack_s"] = attack;
                 v["decay_s"] = decay;
-                if (heldRms >= 1e-5)
+                if (notesRms >= 1e-5)
                     out += "Envelope: its peaks come within 3 dB of their loudest " + valueText("attack_s", attack)
                          + " after the note-on; from its loudest moment it falls 60 dB in "
                          + (std::isinf(decay) ? std::string("more than the render") : valueText("decay_s", decay))
                          + ".\n";
             }
 
-            const long fall = fallTime(r.out, heldEnd, toDb(heldRms), 60.0, rate);
-            v["release_s"] = heldRms >= 1e-5 && fall >= 0 ? static_cast<double>(fall) / rate : heldRms < 1e-5 ? 0.0 : kInf;
-            v["voice_end_s"] = r.endedAt >= 0 ? static_cast<double>(r.endedAt - static_cast<long>(heldEnd)) / rate : kInf;
+            // The release under the notes' held level, whatever the window.
+            const long fall = fallTime(whole, heldEnd, toDb(notesRms), 60.0, rate);
+            v["release_s"] = notesRms >= 1e-5 && fall >= 0 ? static_cast<double>(fall) / rate : notesRms < 1e-5 ? 0.0 : kInf;
+            v["voice_end_s"] = endedAt >= 0 ? static_cast<double>(endedAt - static_cast<long>(heldEnd)) / rate : kInf;
             out += "Release: ";
-            if (heldRms < 1e-5)
+            if (notesRms < 1e-5)
                 out += "nothing to release.";
             else if (fall < 0)
                 out += "still within 60 dB of the held level " + seconds(tail) + " after the note-off.";
             else
                 out += "falls 60 dB below the held level " + seconds(static_cast<double>(fall) / rate) + " after the note-off.";
-            if (r.endedAt >= 0)
-                out += " The last voice ended " + seconds(static_cast<double>(r.endedAt - static_cast<long>(heldEnd)) / rate)
+            if (endedAt >= 0)
+                out += " The last voice ended " + seconds(static_cast<double>(endedAt - static_cast<long>(heldEnd)) / rate)
                      + " after it (process returned false).\n";
             else
                 out += " No voice ended within " + seconds(tail) + ": process kept returning true (end the release, or give "
                        "a longer tail_seconds).\n";
 
-            // A plain request without a scenario's moves: the chord's and the sixteen voices' renders.
-            Request plainReq = request;
-            plainReq.automate.clear();
-            plainReq.hostEdits = {};
-            plainReq.transport.clear();
-            plainReq.blocks.clear();
             if (notes.size() == 1 && !phrased)
             {
                 const int n = notes.front();
                 if (need({ "inharmonic_db" }))
                 {
-                    // What is no harmonic of the note: aliasing, unless the sound means it.
-                    const Peak odd = inharmonic(spectrum(m, rate, held, Taper::blackmanHarris, kPuritySeconds), expectedHz, kBandHighHz);
-                    v["inharmonic_db"] = odd.db;
-                    if (heldRms >= 1e-5)
+                    // What is no harmonic of the note: aliasing, unless the sound means it. Each stretch (the note at
+                    // one place of the pitch wheel) against its own harmonics, the strongest of them; one whose frames'
+                    // zones (six bins each side of each harmonic) leave nothing between the harmonics is left out.
+                    Peak odd{ 0.0, -240.0 };
+                    const Stretch* longest = nullptr;
+                    for (const Stretch& s : parts)
+                    {
+                        if (longest == nullptr || samplesOf(s) > samplesOf(*longest))
+                            longest = &s;
+                        const double frame = std::min(static_cast<double>(samplesOf(s)) / rate, kPuritySeconds);
+                        if (12.0 / frame >= s.hz())
+                            continue;
+                        const Peak p = inharmonic(spectrum(m, rate, { s.span }, Taper::blackmanHarris, kPuritySeconds), s.hz(), kBandHighHz);
+                        if (p.db > odd.db)
+                            odd = p;
+                    }
+                    if (odd.db < -200.0)
+                    {
+                        // A frame holds the zones apart over 12 of its bins a harmonic: 12 / f0 seconds.
+                        const double takes = 12.0 / longest->hz();
+                        const std::string what = "what lies between its harmonics (" + fmt("%.1f Hz", longest->hz()) + " apart) from them";
+                        const std::string why = takes > kPuritySeconds
+                                                    ? "the note's held stretch (" + seconds(static_cast<double>(samplesOf(*longest)) / rate)
+                                                          + ") is too short for frames that part " + what + ": they take "
+                                                          + seconds(takes) + ", longer than its " + seconds(kPuritySeconds) + " frames"
+                                                    : shortWhy(*longest, what, takes);
+                        res.unmeasured["inharmonic_db"] = why;
+                        if (heldRms >= 1e-5 && follows)
+                            out += "Inharmonic: not measured, " + why + ".\n";
+                    }
+                    else
+                        v["inharmonic_db"] = odd.db;
+                    if (odd.db >= -200.0 && heldRms >= 1e-5 && follows)   // an unpitched sound has no harmonics of the note to judge
                     {
                         out += "Inharmonic: ";
                         if (odd.db < -90.0)
@@ -2043,15 +3196,15 @@ namespace playground::measure
                         warnings.push_back("The chord peaks above 0 dBFS: lower the voice's level.");
                 }
             }
-            v["alerts"] = static_cast<double>(r.alerts & 3u);
-            out += "Alerts: " + alertsText(r.alerts) + ".\n";
+            v["alerts"] = static_cast<double>(alerts & 3u);
+            out += "Alerts: " + alertsText(alerts) + ".\n";
             // The CPU: the notes asked for while held, and sixteen voices at once, measured: sixteen keys from the lowest
             // note up held for 0.15 s, timed after the first 0.03 s, the least of two renders.
             const double heldSeconds = static_cast<double>(r.cpuSamples) / rate;
             const double share = cpuShare(r.cpuMs, heldSeconds);
             v["cpu_percent"] = share;
-            out += "CPU: the notes held take " + percent(share) + " of one core (" + fmt("%.2f ms", r.cpuMs) + " for "
-                 + seconds(heldSeconds) + ")";
+            out += std::string(windowed ? "CPU: the window takes " : "CPU: the notes held take ") + percent(share) + " of one core ("
+                 + fmt("%.2f ms", r.cpuMs) + " for " + seconds(heldSeconds) + ")";
             if (need({ "cpu16_percent" }))
             {
                 const int low = std::min(*std::min_element(notes.begin(), notes.end()), 127 - 15);
@@ -2060,13 +3213,20 @@ namespace playground::measure
                     keys.push_back(low + k);
                 const std::size_t warm = static_cast<std::size_t>(0.03 * rate), len = static_cast<std::size_t>(0.15 * rate);
                 double best = kInf;
+                int most = 0;
                 for (int k = 0; k < 2; ++k)
                 {
                     const Rendered sixteen = impl_->render(dials, nullptr, impl_->plan(dials, plainReq, len, &keys, len), len, warm, len);
                     best = std::min(best, cpuShare(sixteen.cpuMs, static_cast<double>(sixteen.cpuSamples) / rate));
+                    most = std::max(most, sixteen.mostVoices);
                 }
                 v["cpu16_percent"] = best;
-                out += "; sixteen voices at once take " + percent(best);
+                // Its words only when more than one voice sounds (a program that plays one voice, its others ending
+                // at once, has no sixteen to time), saying how many when fewer than sixteen.
+                if (most >= Patch::kVoices)
+                    out += "; sixteen voices at once take " + percent(best);
+                else if (most > 1)
+                    out += "; sixteen keys at once take " + percent(best) + " (" + std::to_string(most) + " voices sound)";
             }
             out += cpuMoving + ".\n";
         }
@@ -2094,7 +3254,9 @@ namespace playground::measure
             std::vector<Found> found;
             // A move or an edit at or after a signal's end: the signal, then silence until it and the tail.
             const std::size_t late = lastChange(plan);
-            const auto through = [&](const Stereo& signalIn, const char* name, std::size_t ends = 0, bool starts = false) {
+            // `counted`: its steps, alerts and CPU time count in step, alerts and cpu_percent (all but wobble_db's tone).
+            const auto through = [&](const Stereo& signalIn, const char* name, std::size_t ends = 0, bool starts = false,
+                                     bool counted = true) {
                 Stereo padded;
                 if (late >= signalIn.size())
                 {
@@ -2110,6 +3272,8 @@ namespace playground::measure
                     tl.marks.push_back({ 0, name, -1, false });
                 sortMarks(tl);
                 Rendered r = impl_->render(dials, &in, tl, 0);
+                if (!counted)
+                    return std::move(r.out);
                 cpu += r.cpuMs;
                 audio += static_cast<double>(r.cpuSamples) / rate;
                 alerts |= r.alerts;
@@ -2122,40 +3286,93 @@ namespace playground::measure
                 return std::move(r.out);
             };
 
-            // A signal's held part: from 50 ms after it starts (half of it when shorter) to its end (Measure.h).
+            // A signal's held part: from 50 ms after it starts (half of it when shorter) to its end (Measure.h); or the
+            // window, cut at its end (too little of it when it starts there or after, or under kMinWindowSeconds before:
+            // those metrics are then not measured).
             const std::size_t settle = std::min(holdN / 2, static_cast<std::size_t>(kSettleSeconds * rate));
-            const std::vector<Span> held{ { settle, holdN } };
-            if (everything || need({ "sine_peak_db", "sine_rms_db", "sine_gain_db", "thd_db", "dc", "correlation", "balance_db" }))
+            const Span win = windowed ? windowSpan(request.window, holdN, rate) : Span{ 0, holdN };
+            const std::vector<Span> held{ windowed ? win : Span{ settle, holdN } };
+            const bool outside = windowed && (win.first >= win.second || tooShort(win, rate));
+            const std::string outsideWhy = win.first >= win.second
+                                             ? "the window starts after the sine and the noise end (hold_seconds, " + seconds(hold) + ")"
+                                             : "the window holds less than " + seconds(kMinWindowSeconds)
+                                                   + " of the sine and the noise (they end at hold_seconds, " + seconds(hold) + ")";
+            const auto unmeasured = [&](std::initializer_list<const char*> names) {
+                for (const char* n : names)
+                    res.unmeasured[n] = outsideWhy;
+            };
+            // A window outside the signals: their metrics are not measured (the signals still play for the steps, the
+            // alerts and the CPU of every signal).
+            const bool sineWanted =
+                need({ "sine_peak_db", "sine_rms_db", "sine_gain_db", "thd_db", "off_order_db", "dc", "correlation", "balance_db" });
+            if (sineWanted && outside)
+            {
+                unmeasured({ "sine_peak_db", "sine_rms_db", "sine_gain_db", "thd_db", "off_order_db", "dc", "correlation",
+                             "balance_db" });
+                out += "Sine 220 Hz at -12.0 dBFS for " + seconds(hold) + ": not measured, " + outsideWhy + ".\n";
+            }
+            if (everything || (sineWanted && !outside))
             {
                 const Stereo sine = signal(holdN, [&](std::size_t i) {
                     return sineAmp * static_cast<float>(std::sin(2.0 * std::numbers::pi * 220.0 * static_cast<double>(i) / rate));
                 });
                 const Stereo o = through(sine, "the sine", holdN);
-                const double inRms = rmsOver(sine, held), outRms = rmsOver(o, held);
-                double corr = 1.0, bal = 0.0;
-                stereoOver(o, held, corr, bal);
-                const double outDc = dcOver(o, held);
-                const std::vector<float> mo = mono(o, 0, holdN);
-                const double thd = outRms > 1e-9 ? awayDb(spectrum(mo, rate, held, Taper::blackmanHarris, kPuritySeconds), 220.0) : -240.0;
-                v["sine_peak_db"] = toDb(peak(o, 0, holdN));
-                v["sine_rms_db"] = toDb(outRms);
-                v["sine_gain_db"] = outRms > 1e-12 ? toDb(outRms / inRms) : -240.0;
-                v["thd_db"] = thd;
-                v["dc"] = outDc;
-                v["correlation"] = corr;
-                v["balance_db"] = bal;
-                out += "Sine 220 Hz at -12.0 dBFS for " + seconds(hold) + ": out peak " + dbfs(peak(o, 0, holdN)) + ", RMS "
-                     + dbfs(outRms) + (outRms > 1e-9 ? fmt(" (gain %+.1f dB)", toDb(outRms / inRms)) : std::string())
-                     + ", DC " + fmt("%.4f", outDc) + ", left/right correlation " + fmt("%.2f", corr)
-                     + fmt(" (balance %+.1f dB)", bal) + ". Partials out: "
-                     + partials(spectrum(mo, rate, held).peaks(8))
-                     + (outRms > 1e-9 ? "; THD+N (all but 220 Hz, in the band) " + valueText("thd_db", thd) : std::string()) + ".\n";
-                if (outRms < 1e-5)
-                    warnings.push_back("The sine comes out silent (or nearly).");
-                if (peak(o, 0, holdN) > 1.0)
-                    warnings.push_back("Peaks above 0 dBFS from a -12 dBFS sine: the effect adds a lot of gain.");
+                if (sineWanted && !outside)
+                {
+                    const double inRms = rmsOver(sine, held), outRms = rmsOver(o, held);
+                    double corr = 1.0, bal = 0.0;
+                    stereoOver(o, held, corr, bal);
+                    const double outDc = dcOver(o, held);
+                    const std::vector<float> mo = mono(o, 0, holdN);
+                    const double thd = outRms > 1e-9 ? awayDb(spectrum(mo, rate, held, Taper::blackmanHarris, kPuritySeconds), 220.0) : -240.0;
+                    const double outPeak = peak(o, win.first, win.second);
+                    v["sine_peak_db"] = toDb(outPeak);
+                    v["sine_rms_db"] = toDb(outRms);
+                    v["sine_gain_db"] = outRms > 1e-12 ? toDb(outRms / inRms) : -240.0;
+                    v["thd_db"] = thd;
+                    v["dc"] = outDc;
+                    v["correlation"] = corr;
+                    v["balance_db"] = bal;
+                    out += "Sine 220 Hz at -12.0 dBFS for " + seconds(hold) + (windowed ? ", in the window" : "") + ": out peak "
+                         + dbfs(outPeak) + ", RMS " + dbfs(outRms)
+                         + (outRms > 1e-9 ? fmt(" (gain %+.1f dB)", toDb(outRms / inRms)) : std::string()) + ", DC "
+                         + fmt("%.4f", outDc) + ", left/right correlation " + fmt("%.2f", corr)
+                         + fmt(" (balance %+.1f dB)", bal) + ". Partials out: " + partials(spectrum(mo, rate, held).peaks(8))
+                         + (outRms > 1e-9 ? "; THD+N (all but 220 Hz, in the band) " + valueText("thd_db", thd) : std::string())
+                         + ".\n";
+                    // What is no harmonic of the sine (its orders, 220 Hz's multiples): aliases, noise, a line of its own.
+                    if (need({ "off_order_db" }))
+                    {
+                        const Spectrum os = stereoSpectrum(o.l, o.r, rate, held, Taper::blackmanHarris, kOrderSeconds);
+                        const Orders ord = orders(os, 220.0);
+                        const std::string lead = std::string("Off the orders of 220 Hz in the sine's output") + (windowed ? " in the window" : "");
+                        const std::string why = ordersWhy(220.0, ord, os, windowed ? "a longer window would" : "a longer hold_seconds would");
+                        if (!why.empty())
+                        {
+                            res.unmeasured["off_order_db"] = why;
+                            out += lead + ": not measured, " + why + ".\n";
+                        }
+                        else
+                        {
+                            v["off_order_db"] = ord.offDb;
+                            out += ordersLine(lead, ord, os);
+                        }
+                    }
+                    if (outRms < 1e-5)
+                        warnings.push_back(windowed ? "The sine comes out silent (or nearly) in the window."
+                                                    : "The sine comes out silent (or nearly).");
+                    if (outPeak > 1.0)
+                        warnings.push_back("Peaks above 0 dBFS from a -12 dBFS sine: the effect adds a lot of gain.");
+                }
             }
-            if (everything || need({ "noise_gain_db", "centroid_in_hz", "centroid_out_hz" }))
+            const bool noiseWanted = need({ "noise_gain_db", "centroid_in_hz", "centroid_out_hz", "noise_lufs" })
+                                  || request.spectrum != Bands::none;
+            if (noiseWanted && outside)
+            {
+                unmeasured({ "noise_gain_db", "centroid_in_hz", "centroid_out_hz", "noise_lufs" });
+                out += "Noise at -18.0 dBFS RMS for " + seconds(hold) + ": not measured, " + outsideWhy + ".\n";
+            }
+            if (everything || (noiseWanted && !outside))
             {
                 uint32_t seed = 22222;                       // a fixed noise: the same report each time
                 const float noiseAmp = static_cast<float>(std::pow(10.0, -18.0 / 20.0) * std::sqrt(3.0));
@@ -2164,18 +3381,83 @@ namespace playground::measure
                     return noiseAmp * (static_cast<float>(seed >> 8) / 8388608.0f - 1.0f);
                 });
                 const Stereo o = through(noise, "the noise", holdN);
-                const double inRms = rmsOver(noise, held), outRms = rmsOver(o, held);
-                double corr = 1.0, bal = 0.0;
-                stereoOver(o, held, corr, bal);
-                const double cin = spectrum(mono(noise, 0, holdN), rate, held).centroid();
-                const double cout = spectrum(mono(o, 0, holdN), rate, held).centroid();
-                v["noise_gain_db"] = outRms > 1e-12 ? toDb(outRms / inRms) : -240.0;
-                v["centroid_in_hz"] = cin;
-                v["centroid_out_hz"] = cout;
-                out += "Noise at -18.0 dBFS RMS for " + seconds(hold) + ": out RMS " + dbfs(outRms)
-                     + (outRms > 1e-9 ? fmt(" (gain %+.1f dB)", toDb(outRms / inRms)) : std::string())
-                     + ", left/right correlation " + fmt("%.2f", corr) + "; spectral centroid " + fmt("%.0f Hz", cin)
-                     + " in, " + fmt("%.0f Hz", cout) + " out.\n";
+                if (noiseWanted && !outside)
+                {
+                    const double inRms = rmsOver(noise, held), outRms = rmsOver(o, held);
+                    double corr = 1.0, bal = 0.0;
+                    stereoOver(o, held, corr, bal);
+                    const double cin = spectrum(mono(noise, 0, holdN), rate, held).centroid();
+                    const double cout = spectrum(mono(o, 0, holdN), rate, held).centroid();
+                    v["noise_gain_db"] = outRms > 1e-12 ? toDb(outRms / inRms) : -240.0;
+                    v["centroid_in_hz"] = cin;
+                    v["centroid_out_hz"] = cout;
+                    out += "Noise at -18.0 dBFS RMS for " + seconds(hold) + (windowed ? ", in the window" : "") + ": out RMS "
+                         + dbfs(outRms) + (outRms > 1e-9 ? fmt(" (gain %+.1f dB)", toDb(outRms / inRms)) : std::string())
+                         + ", left/right correlation " + fmt("%.2f", corr) + "; spectral centroid " + fmt("%.0f Hz", cin)
+                         + " in, " + fmt("%.0f Hz", cout) + " out";
+                    // Its loudness, BS.1770's integrated, out and in.
+                    if (need({ "noise_lufs" }))
+                    {
+                        v["noise_lufs"] = loudness(o.l, o.r, rate, held);
+                        out += "; loudness " + valueText("noise_lufs", v["noise_lufs"]) + " out, "
+                             + valueText("noise_lufs", loudness(noise.l, noise.r, rate, held)) + " in (BS.1770, integrated)";
+                    }
+                    out += ".\n";
+                    // Its band levels asked for (Request::spectrum): the effect's gain in each, out against in.
+                    if (request.spectrum != Bands::none)
+                    {
+                        const Spectrum bandsIn = bandSpectrum(request.spectrum, noise.l, noise.r, rate, held);
+                        out += bandsLine(request.spectrum, windowed ? "of the noise in the window" : "of the noise",
+                                         bandSpectrum(request.spectrum, o.l, o.r, rate, held), &bandsIn);
+                    }
+                }
+            }
+            // How a steady tone's shape moves through it (wobble_db alone: a signal its steps, alerts and CPU time do not
+            // count in): its output's frames on the tone's period, after its fade-in, so that an effect that holds still
+            // reads 0 once its memory has settled (three frames at least).
+            if (need({ "wobble_db" }))
+            {
+                const std::string lead = "Steady tone (partials every 10 Hz, flat) at " + fmt("%.1f dBFS RMS", kSteadyToneDb)
+                                       + " for " + seconds(hold);
+                if (outside)
+                {
+                    const std::string why = win.first >= win.second
+                                              ? "the window starts after the steady tone ends (hold_seconds, " + seconds(hold) + ")"
+                                              : "the window holds less than " + seconds(kMinWindowSeconds)
+                                                    + " of the steady tone (it ends at hold_seconds, " + seconds(hold) + ")";
+                    res.unmeasured["wobble_db"] = why;
+                    out += lead + ": not measured, " + why + ".\n";
+                }
+                else
+                {
+                    Stereo tone;
+                    tone.l = steadyTone(holdN, rate);
+                    tone.r = tone.l;
+                    const Stereo o = through(tone, "the steady tone", holdN, false, false);
+                    const std::size_t faded = static_cast<std::size_t>(std::ceil(kSteadyFadeSeconds * rate));
+                    const std::vector<Span> after{ { std::max(held.front().first, faded), held.front().second } };
+                    const Wobble wb = wobble(o.l, o.r, rate, after, true);
+                    if (wb.frames < 3)
+                    {
+                        // Whole periods only, each from a multiple of 0.1 s: the held part (from 0.05 s) holds three
+                        // from hold_seconds 0.4, and any window of 0.4 s does.
+                        const std::string why = wb.frames + wb.silent >= 3
+                                                  ? silentWhy(wb)
+                                                  : std::string(windowed ? "the window" : "the held part")
+                                                        + " holds fewer than three whole 0.1 s periods of the tone (a frame each, "
+                                                          "from its start: "
+                                                        + (windowed ? "any window of 0.4 s holds three" : "hold_seconds 0.4 holds three")
+                                                        + ")";
+                        res.unmeasured["wobble_db"] = why;
+                        out += lead + ": wobble not measured, " + why + ".\n";
+                    }
+                    else
+                    {
+                        v["wobble_db"] = wb.db;
+                        out += wobbleLine(lead + (windowed ? ", in the window" : "") + ": each third-octave band's share of the output's power",
+                                          wb, "on the tone's period, power-weighted over the bands within 30 dB of the loudest");
+                    }
+                }
             }
             if (everything || need({ "impulse_peak_db", "impulse_delay_ms", "impulse_decay_s" }))
             {
@@ -2237,13 +3519,28 @@ namespace playground::measure
                 own.l.resize(n + tailN, 0.0f);
                 own.r.resize(n + tailN, 0.0f);
                 const Stereo o = through(own, "its own input", n);
-                const double inRms = rms(own, 0, n), outRms = rms(o, 0, n);
-                const double cin = spectrum(mono(own, 0, n), rate, { { 0, n } }).centroid();
-                const double cout = spectrum(mono(o, 0, n), rate, { { 0, n } }).centroid();
-                out += "Its own input, " + seconds(static_cast<double>(n) / rate) + ": in peak " + dbfs(peak(own, 0, n)) + ", RMS "
-                     + dbfs(inRms) + "; out peak " + dbfs(peak(o, 0, n)) + ", RMS " + dbfs(outRms)
-                     + (inRms > 1e-9 && outRms > 1e-9 ? fmt(" (gain %+.1f dB)", toDb(outRms / inRms)) : std::string())
-                     + "; spectral centroid " + fmt("%.0f Hz", cin) + " in, " + fmt("%.0f Hz", cout) + " out.\n";
+                // All of it, or the window's part of it.
+                const Span part = windowed ? windowSpan(request.window, n, rate) : Span{ 0, n };
+                const auto [a, b] = part;
+                const double inRms = rms(own, a, b), outRms = rms(o, a, b);
+                const double cin = spectrum(mono(own, 0, n), rate, { part }).centroid();
+                const double cout = spectrum(mono(o, 0, n), rate, { part }).centroid();
+                out += "Its own input, " + seconds(static_cast<double>(n) / rate);
+                if (a >= b)
+                    out += ": the window starts after it ends.\n";
+                else if (windowed && tooShort(part, rate))
+                    out += ": the window holds less than " + seconds(kMinWindowSeconds) + " of it.\n";
+                else
+                    out += (windowed ? ", in the window" : "") + std::string(": in peak ") + dbfs(peak(own, a, b)) + ", RMS "
+                         + dbfs(inRms) + "; out peak " + dbfs(peak(o, a, b)) + ", RMS " + dbfs(outRms)
+                         + (inRms > 1e-9 && outRms > 1e-9 ? fmt(" (gain %+.1f dB)", toDb(outRms / inRms)) : std::string())
+                         + "; spectral centroid " + fmt("%.0f Hz", cin) + " in, " + fmt("%.0f Hz", cout) + " out.\n";
+                if (request.spectrum != Bands::none && a < b && !(windowed && tooShort(part, rate)))
+                {
+                    const Spectrum bandsIn = bandSpectrum(request.spectrum, own.l, own.r, rate, { part });
+                    out += bandsLine(request.spectrum, windowed ? "of its own input in the window" : "of its own input",
+                                     bandSpectrum(request.spectrum, o.l, o.r, rate, { part }), &bandsIn);
+                }
             }
             if (everything)
             {
@@ -2267,6 +3564,7 @@ namespace playground::measure
         }
         for (const std::string& w : warnings)
             out += "Note: " + w + "\n";
+        out += metricsLine(v);                               // the numbers, by the names checks use
         res.report = std::move(out);
         return res;
     }
