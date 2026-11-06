@@ -15,8 +15,9 @@
 //   CODE      the program runs with no note; the dials' own items give way to the interface's; every item it shows is
 //             inside its area, in the left column, none overlapping another; the area under the problems list
 //   VIEW      the toolbar's PANEL cell shows the PANEL view: the tabs, the editor and the problems go, the interface
-//             starts under the toolbar and fits; the processor keeps the choice, and its state carries it to another
-//             processor; CODE brings the editor back
+//             starts under the toolbar and fits, in the area panelViewArea computes (the panel's fit, run_program's
+//             line, lays it out there), the chat open and folded; the processor keeps the choice, and its state
+//             carries it to another processor; CODE brings the editor back
 //   CONTROLS  a drag up on the large knob raises its parameter by a quarter for 50 px, and a double-click returns it to
 //             its default; the knob's log taper puts 632 Hz at its middle (the host's text says so); a click on a
 //             button of a row of buttons chooses its value, a click on the switch flips it, a click on the menu opens
@@ -208,6 +209,12 @@ panel accent=orange {
         P.eq(key + ".png_written", ok ? 1 : 0, 1);
         std::printf("wrote %s\n", path.c_str());
         return ok;
+    }
+
+    bool sameRect(const funkgui::Rect& a, const funkgui::Rect& b)
+    {
+        return std::fabs(a.x - b.x) < 0.5f && std::fabs(a.y - b.y) < 0.5f && std::fabs(a.w - b.w) < 0.5f
+            && std::fabs(a.h - b.h) < 0.5f;
     }
 
     bool inside(const funkgui::Rect& in, const funkgui::Rect& r)
@@ -476,6 +483,22 @@ PROBE(gui, panel)
         P.eq("view.panel", panel.panelView() && port.panelView() ? 1 : 0, 1);
         P.le("view.from_toolbar", static_cast<double>(L->area.y), 100.0);
         P.eq("view.fits", L->maxScrollY == 0.0f && L->maxScrollX == 0.0f ? 1 : 0, 1);
+        // Where the panel's fit (run_program's line) lays it out: the same area, by panelViewArea's arithmetic.
+        {
+            const funkgui::Rect a = pg::ui::panelViewArea(static_cast<float>(pg::ui::kDefaultWidth),
+                                                          static_cast<float>(pg::ui::kDefaultHeight), port.chatOpen(),
+                                                          panel.chatWant());
+            P.eq("view.area_as_fit_says", sameRect(a, L->area) ? 1 : 0, 1);
+            panel.setChatOpen(false);                // the chat folded to its rail: the area wider
+            host.settle();
+            const funkgui::Rect folded = pg::ui::panelViewArea(static_cast<float>(pg::ui::kDefaultWidth),
+                                                               static_cast<float>(pg::ui::kDefaultHeight), false,
+                                                               panel.chatWant());
+            P.eq("view.area_as_fit_says_folded", sameRect(folded, panel.guiLayout().area) && folded.w > a.w ? 1 : 0, 1);
+            panel.setChatOpen(true);
+            host.settle();
+            L = &panel.guiLayout();
+        }
         bool editorGone = true;                  // no text field in the left column (the chat's message box stays)
         for (const funkgui::A11yItem& a : host.accessibility())
             editorGone = editorGone && !(a.role == funkgui::a11yrole::editableText && a.bounds.x < panel.chatCard().x);
