@@ -66,6 +66,36 @@
 // otherwise Tab moves the focus ring over the controls, and the arrows, Page and Home/End adjust the focused dial.
 // Every parameter write goes through one funkgui::GestureController (begin/set/end gestures for the host).
 //
+// Unchanged frames (FunkGui's Panel::needsDraw, v0.25.0): an editor whose picture has not changed records, uploads and
+// draws nothing; its last frame stays up. needsDraw() is true only when something drawn changed since the last
+// draw():
+//   - dirty_, set wherever the Panel changes what it shows (input, a refresh of the processor's state, a layout, a
+//     menu's or a file chooser's answer: the host the items reach is HostProxy, which marks the Panel before the
+//     callback runs), which each tick hands on to undrawn_, kept until draw();
+//   - a shown item moving (settled() false: an ease, a drag, a display's new values, Claude working, a shader that
+//     animates, and what moves with no input to it: a .gui control's value or live= mark, a pad's, an envelope's, a
+//     shader's inputs, a circuit's knob, held a quarter second after the last move: Items.h Stirred), and the frame
+//     after it settles;
+//   - the mix of every shown item's drawKey() (Items.h; a hidden item's is left out, as draw() leaves the item out)
+//     and of the Panel's own words and states, taken each tick, which catches what changes with no input and no
+//     motion: a host's automation of a dial, a live= mark, a shader's inputs, a number display's new readout (eight a
+//     second, a frame each, the rate calm), a label read through a callback, a notice that ran out.
+// Once a second it records the frame anyway (kRedrawEvery), a safety net: EditorHost then submits it only if it
+// differs from the last frame drawn (canvas/FrameCompare.h), so an idle editor still sends the GPU nothing.
+// wantsFullRate() (FunkGui's FramePump: 60 Hz, else about 12) is a shown item moving, a change not ticked yet, or a
+// compile running: what is hidden (a dial a .gui file's interface draws, a page not shown) never keeps the rate up.
+// gui.dump DRAW checks the sources, gui.code TYPES the type names' colours, gui.styles PAGES a hidden page's knob and
+// RATE what moves with no input (a knob's, a pad's, an envelope's), gui.shaders DRAW a shader's inputs, gui.panel
+// SETTLE displays that stand still and readouts that change.
+//
+// The meters' reader: the audio thread measures the levels and fills the scopes' rings only while someone reads them
+// (Engine::readers). A Panel is a reader from its making, and while the host ticks it. EditorHost ticks a Panel only
+// while its window shows (a minimised or hidden window is skipped) and calls idle() ten times a second whatever, so a
+// Panel that sees kHiddenIdles idle calls and kHiddenAfter seconds with no tick lets the reader go (its displays then
+// show nothing anyone sees), and takes it again at its next tick: the levels start again from that block and the
+// scopes from silence, as for any reader that comes (Engine.h). HeadlessHost ticks before each idle call, so a probe's
+// Panel stays a reader unless the probe calls idle() alone. gui.panel HIDDEN checks.
+//
 // Message thread only. The ports and the EditorPort belong to the processor and outlive the Panel.
 #pragma once
 
@@ -126,6 +156,7 @@ namespace playground::ui
     class CodeAssist;                                    // the editor's language features (CodeAssist.h)
     class SchematicView;                                 // a netlist's Schematic view (SchematicView.h)
     class DisplayItem;                                   // a program's display (DisplayItem.h)
+    struct DisplayFeed;                                  // the displays' samples and spectra (DisplayItem.h)
     class GuiControlItem;                                // a .gui file's control (GuiItems.h)
     class GuiView;                                       // a .gui file's interface: its items (GuiView.h)
 
@@ -195,6 +226,12 @@ namespace playground::ui
         int dialRows() const noexcept { return dials_.rows; }             // the rows of dials, or of sections
         const DialsLayout& dialsLayout() const noexcept { return dials_; }
         const DisplayItem& displayItem(int d) const;                      // display d of the program's (shown or not)
+        const DisplayFeed& displayFeed() const noexcept { return *feed_; } // the displays' samples and spectra
+        // A reader of the meters now (EditorPort::addMeterReader; "The meters' reader" above).
+        bool readingMeters() const noexcept { return reading_; }
+        // A shown item unsettled at the last tick: the motion part of needsDraw() and wantsFullRate(), without the
+        // Panel's own changes (dirty_: a refresh's, the top bar's CPU figure among them, which moves with real time).
+        bool moving() const noexcept { return moving_; }
         // A .gui file's interface: whether the program has one, the PANEL view, its layout, slot's control, a page
         // chosen, a scroll (the wheel's, by px).
         bool hasGui() const noexcept { return !panelSpec_.gui.empty(); }
@@ -207,6 +244,7 @@ namespace playground::ui
         const Item& guiItem(int kind, int k) const;   // kind 0: a pad, 1: an envelope, 2: tabs, 3: a keyboard, 4: a shader
         void chooseGuiPage(int node, int page);
         void scrollGui(float dx, float dy);
+        int layouts() const noexcept { return layouts_; }    // layout() calls so far (a scroll makes none)
         funkgui::Point centreOfView(bool panel) const;                    // the CODE or the PANEL cell
         funkgui::Point centreOfButton(int slot, int value) const;         // a buttons dial's row for that value
         funkgui::Rect chatCard() const noexcept { return card_; }
@@ -278,6 +316,7 @@ namespace playground::ui
         funkgui::Point centreOfExplorerToggle() const;
         ExplorerItem& explorer();
         const ExplorerItem& explorer() const;
+        int explorerBuilds() const noexcept { return explorerBuilds_; }   // its rows made, so far
         funkgui::Rect explorerCard() const noexcept { return explorerCard_; }
         // EXAMPLES' choice (Examples.h): the example and its library files, a fresh start (startAfresh), run.
         void loadExample(int i);
@@ -365,6 +404,7 @@ namespace playground::ui
         void  tick(float dt) override;
         void  idle(double nowSec) override;
         void  draw(funkgui::Canvas&, const funkgui::Theme&) override;
+        bool  needsDraw() const override;                // above, "Unchanged frames"
         bool  wantsFullRate() const override;
         void  pointerMove(const funkgui::PointerEvent&) override;
         void  pointerExit() override;
@@ -462,11 +502,13 @@ namespace playground::ui
         std::string maskedKey() const;
 
         EditorPort& port_;
+        class HostProxy;                                 // the host as host_ and the items reach it (Panel.cpp, above:
+        std::unique_ptr<HostProxy> proxy_;               // "Unchanged frames"); before the items, which it outlives
         std::vector<std::unique_ptr<Item>> items_;
         std::vector<int> itemOfSlot_;                    // dial slot -> item index
         std::vector<int> itemOfDisplay_;                 // display -> item index
         Meters meters_{};                                // the Engine's, as the last frame read them
-        std::vector<float> scopeIn_, scopeOut_;          // the scopes' samples, read each frame they show
+        std::unique_ptr<DisplayFeed> feed_;              // the scopes' samples, read each frame they show, and spectra
         ShownState shown_;                               // a picture's state (showState), else empty
         bool showing_ = false, shownPlaying_ = false;
         std::size_t shownAt_ = 0;                        // the frame shown
@@ -484,8 +526,9 @@ namespace playground::ui
         int chatToggleItem_ = -1;                        // fold or open the chat
         bool chatOpen_ = true;
         // The explorer (Explorer.h): its item, its fold button, its card; the projects and the open one's presets it
-        // lists (read again every few seconds while it is open); what its rows were made from (syncExplorer rebuilds
-        // them when it changes).
+        // lists (read again every few seconds while it is open: listsRevision_ bumps when what was read differs); what
+        // its rows were made from, as a hash taken each frame (syncExplorer rebuilds them when it changes); how often
+        // they were made.
         int explorerItem_ = -1, explorerToggleItem_ = -1;
         bool explorerOpen_ = true;
         bool explorerShown_ = true;                      // open, in the CODE view, and the window has room for it
@@ -496,7 +539,10 @@ namespace playground::ui
         std::vector<PresetEntry> presetList_;            // the project open's
         std::string presetsOf_;                          // the project presetList_ is of
         double projectsAt_ = -100.0;
-        std::string explorerKey_;
+        uint64_t listsRevision_ = 0;
+        uint64_t explorerKey_ = 0;
+        bool explorerStale_ = true;                      // made again at the next frame, whatever the hash
+        int explorerBuilds_ = 0;
         void syncExplorer();
         void layoutExplorer();
         void openFromExplorer(ExplorerItem::Section section, const ExplorerItem::Row& row);
@@ -525,7 +571,8 @@ namespace playground::ui
         int modelItem_ = -1, thinkingItem_ = -1, fastItem_ = -1, webItem_ = -1, sendItem_ = -1;
         funkgui::CellModel* zoom_ = nullptr;             // the zoom's steps (zoomModel_)
         float width_ = 0.0f, height_ = 0.0f;
-        uint32_t layoutRevision_ = 0;                    // bumps with each layout()
+        uint32_t layoutRevision_ = 0;                    // bumps with each layout() and scroll (what moved)
+        int layouts_ = 0;                                // layout()'s calls (probes)
         std::string title_, subtitle_, status_, meter_;
         std::string meterAlerts_, meterLoad_;            // meter_'s two parts, drawn either side of the snowflake
         bool frozenShown_ = false;                       // the snowflake: the frozen copy plays
@@ -593,7 +640,20 @@ namespace playground::ui
         funkgui::Point pointer_{};
         bool hasPointer_ = false;
         bool ring_ = false;                              // the focus ring is shown (keyboard use)
-        bool dirty_ = true;                              // an input event since the last tick
+        bool dirty_ = true;                              // a change since the last tick (input, a refresh, a layout)
+        // Unchanged frames (above): a change not drawn yet (dirty_ as each tick found it, kept until draw()); an item
+        // unsettled at the last tick, and at the tick before (the frame a motion ends in draws too); the mix of what
+        // draw() reads (watchKey) at the last tick and at the last draw; when that was.
+        bool undrawn_ = true;
+        bool moving_ = false, settling_ = false;
+        uint64_t watched_ = 0, drawnKey_ = 0;
+        double drawnAt_ = -1.0e9;
+        uint64_t watchKey() const;
+        // The meters' reader (above): held, the last tick's time (the host's clock; -1 before any tick or idle call),
+        // and the idle calls since.
+        bool reading_ = false;
+        double tickedAt_ = -1.0;
+        int idlesSinceTick_ = 0;
         int  pressed_ = -1;                              // the item holding the pointer between down and up
         int  focus_ = -1;
         int  touched_ = -1;                              // the last item used, for the spec line

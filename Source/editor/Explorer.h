@@ -98,6 +98,10 @@ namespace playground::ui
         // Item
         void tick(float dt, bool hovered, bool focused, funkgui::Point pointer) override;
         void draw(funkgui::Canvas&, const funkgui::Theme&, bool focusRing) const override;
+        uint64_t drawKey() const override
+        {
+            return DrawKey{}.mix(revision_).mix(bounds_).mix(pointer_).h;
+        }
         bool contains(funkgui::Point p) const override { return bounds_.contains(p); }
         funkgui::Cursor cursorAt(funkgui::Point p) const override;
         void pointerExit() override { pointer_ = { -1.0e4f, -1.0e4f }; }

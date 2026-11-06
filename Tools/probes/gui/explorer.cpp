@@ -23,6 +23,10 @@
 //             the header's + opens PROJECTS to save
 //   PRESETS   the presets of the project open, the one applied marked; a click applies one (its dial at once, no
 //             compile); the header's + opens PROJECTS with a preset's name to save
+//   POLL      the projects and the open one's presets are read again every 3 s: with nothing changed, no project's
+//             file is read whole (ProjectStore's parses()) and the rows are not made again (Panel::explorerBuilds); a
+//             preset another instance saves shows at the next poll, its file read once for the listing and the
+//             presets both, the rows made again once
 //   FOLD      a section's header folds it (its rows gone) and opens it again; the chevron folds the explorer away (its
 //             rows gone, the program's card wider by the explorer and its gap, the program's card's header holding the
 //             button that opens it); the processor keeps it folded, and its state carries that to another processor;
@@ -242,6 +246,27 @@ PROBE(gui, explorer)
         P.eq("presets.applied_marked", wide >= 0 && ex.row(S::presets, wide)->active ? 1 : 0, 1);
     }
     writePng(P, host, "gui.explorer.png");
+
+    // ---- POLL: the lists read again every 3 s, a project's file read whole only when it changed, the rows made again
+    // only when what they show changed ------------------------------------------------------------------------------------
+    {
+        const int parses0 = pg::projectstore::parses(), builds0 = panel.explorerBuilds();
+        host.tick(400);                                  // 6.7 s: two polls
+        P.eq("poll.still_reads_no_file", pg::projectstore::parses() - parses0, 0);
+        P.eq("poll.still_rows_kept", panel.explorerBuilds() - builds0, 0);
+        // Another instance saves a preset of the project open (its file written): at the next poll one read of the
+        // file serves the listing and the presets, and the rows are made again once.
+        const std::vector<pg::projectstore::Dial> dials{ { "level", 0.5f } };
+        P.eq("poll.other_saved", pg::projectstore::savePreset("Beta Lead", "Third", dials, 1) ? 1 : 0, 1);
+        const int parses1 = pg::projectstore::parses();
+        host.tick(200);
+        P.eq("poll.change_read_once", pg::projectstore::parses() - parses1, 1);
+        P.eq("poll.change_shown", ex.rows(S::presets) == 3 && find(ex, S::presets, "Third") >= 0 ? 1 : 0, 1);
+        P.eq("poll.change_rows_made_once", panel.explorerBuilds() - builds0, 1);
+        P.eq("poll.tidy", pg::projectstore::removePreset("Beta Lead", "Third") ? 1 : 0, 1);
+        host.tick(200);
+        P.eq("poll.tidy_shown", ex.rows(S::presets), 2);
+    }
     {
         // A preset's click: its dial at once.
         clickAt(host, ex.centreOfRow(S::presets, find(ex, S::presets, "Soft")));

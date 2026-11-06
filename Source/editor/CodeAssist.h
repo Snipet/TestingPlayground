@@ -115,7 +115,9 @@ namespace playground::ui
     // FMinus by lang::lexLine, a line at a time. The state: bit 0, inside a block comment; the bits above it, the
     // conditional directives met so far in the file, which index `file`'s flags in `conditionals` (a directive met
     // past them, as while a snapshot is due after an edit, chooses nothing). A group a conditional skips is one span
-    // of csInactive; a conditional's, a #define's and an #undef's line its parts (the macros as constants).
+    // of csInactive; a conditional's, a #define's and an #undef's line its parts (the macros as constants). Its output
+    // depends on `types` too: when they change, every editor it highlights is rehighlighted (CodeAssist::sync; FunkGui's
+    // TextEditor keeps each line's spans). One editor's: its token buffer is scratch, kept with its capacity.
     class CodeHighlighter final : public funkgui::text::Highlighter
     {
     public:
@@ -127,6 +129,7 @@ namespace playground::ui
         std::shared_ptr<const TypeNames> types_;
         std::shared_ptr<const Conditionals> conditionals_;
         const std::vector<uint8_t>* flags_ = nullptr;    // this file's, in conditionals_
+        mutable std::vector<lang::Token> toks_;
     };
 
     // A netlist (a .cir file) by lang::lexCirLine, a line at a time (no state: a SPICE line stands alone), in the code's
@@ -136,6 +139,9 @@ namespace playground::ui
     {
     public:
         uint32_t line(std::string_view line, uint32_t stateIn, std::vector<funkgui::text::Span>& out) const override;
+
+    private:
+        mutable std::vector<lang::Token> toks_;
     };
 
     // The highlighter's palette for a theme (GRAPHITE or PAPER): the theme's inks, and a few colours of its own.
@@ -196,6 +202,9 @@ namespace playground::ui
 
         void tick(float dt, funkgui::Point pointer, bool focused);
         bool settled() const;
+        // What its drawing (the status line, the find and go-to bars, the overlays) shows now, mixed (Item::drawKey):
+        // the Panel draws again when it moves.
+        uint64_t drawKey() const;
         void tabShown();                                 // another tab: the overlays close
         void focusChanged(bool focused);
 
@@ -289,6 +298,9 @@ namespace playground::ui
         int findCurrent() const noexcept { return current_; }
         const char* language(int tab) const;             // the status line's: FMinus, SPICE, GUI (LLVM IR: a view)
         lang::Service& service();                        // the index, brought up to date
+        // Bumps each time the index's module names or constants change and the FMinus tabs are highlighted again with
+        // them (their texts and revisions unchanged): the Panel draws again (Panel::needsDraw).
+        uint32_t highlights() const noexcept { return highlights_; }
 
     private:
         struct Diag
@@ -353,6 +365,7 @@ namespace playground::ui
         std::shared_ptr<const Conditionals> conditionals_ = std::make_shared<Conditionals>();
         void updateConditionals();                       // a new snapshot when the files' conditionals change
         uint64_t conditionalsRevision_ = 0;              // the files' revision the snapshot is of
+        uint32_t highlights_ = 0;
         funkgui::HostServices* host_ = nullptr;
         funkgui::Rect area_{};
         bool themeDark_ = true;

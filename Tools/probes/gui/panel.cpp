@@ -8,6 +8,9 @@
 //   gui.panel.small.png   the least size, CODE view, scrolled to its end
 //   gui.panel.readouts.png  READOUTS' panel: number displays of Shared's fields and of the main module's, formatted
 //   gui.panel.state.png     STATE's picture Panel at its frames' last; .picture.png view_panel's picture with values
+//   gui.panel.settle.png    SETTLE's panel: a tone's scope and a field's, after a ramp of the field
+//   gui.panel.spectrum.png  SPECTRUM's panel: two spectra of the output (and the effect's of its input), the effect's
+//                           input noise, the synth's voice a sine
 // and checks:
 //   CODE      the program runs with no note; the dials' own items give way to the interface's; every item it shows is
 //             inside its area, in the left column, none overlapping another; the area under the problems list
@@ -27,7 +30,13 @@
 //             fields, and the spectrum's strongest point is at the sine's frequency and level (a point either way,
 //             3 dB)
 //   SCROLL    at the least size the CODE view's interface is taller than its strip: the wheel over its ground
-//             scrolls it (its items move up, none drawn outside its area), and over a knob it turns the knob instead
+//             scrolls it (its items move up, none drawn outside its area), and over a knob it turns the knob instead.
+//             A trackpad's run of small steps (Panel::scrollGui, which the wheel over the ground calls) lays nothing
+//             out again (Panel::layouts): every node moves together, by the same whole px, each control and display
+//             shown exactly while its node is on a page shown and at least in part in the area, and each where a
+//             layout at that scroll puts it (the window a px wider and back; and layoutGui made apart at the scroll
+//             rounded: the nodes on the pages shown and the tabs' tabs, at no scroll, a step, a half px, a fraction
+//             and the bottom); a step's cost against a layout's, printed
 //   PRAGMAS   a program without a .gui file in the PANEL view: its #pragma panel dials from the column's top
 //   READOUTS  a program whose Shared's init sets its fields, with no note played: number displays of shared->level
 //             (0.750), of an int, shared->notes (3, not 3.000), of shared->speed with unit="rpm" decimals=0 scale=60
@@ -41,6 +50,28 @@
 //             as asked (the text says so, and what the displays read), a name that is none listed with the fields, the
 //             dial moving the picture and not the user's dial; at's dials drawn as the render left them, and its state
 //             refused once the program that plays is another (gui.panel.state.png, gui.panel.state.picture.png)
+//   SETTLE    while a steady 220 Hz tone plays, its scope (found from its rising zero crossing between two samples) and a
+//             field scope of a constant settle: neither unsettled over a second of frames, and the panel's frames as its
+//             items ask them (Cadence.h) at the calm rate, 12 a second; the tone's level moved by a few hundredths of a
+//             px of its trace is no move, by px a move; the field's step moves its scope, which settles again once its
+//             points are all the new value; after a ramp longer than its 150 points, they are oldest first, the newest
+//             last (its ring); number displays of the output's peak and of a field that moves each block: a new
+//             readout at each refresh is no motion but the item's draw key, each one recorded (needsDraw), the panel
+//             at the calm rate, 12 a second
+//   SPECTRUM  a spectrum's points (the source's Spectrum: a real FFT, its tables made once) against the complex FFT a
+//             display ran for itself each frame before (oldSpectrum, below), on fixed signals at 44.1, 48 and 96 kHz:
+//             within 0.02 dB at every point as drawn (-84 to 0 dB), and within 0.003 dB of the same in double
+//             precision (exactSpectrum: what differed was the old one's twiddles by recurrence); in a panel showing two
+//             spectra of the output (and the effect's of its input) while audio plays, a block every second frame: one
+//             FFT a source for each new block, none on a frame with no block, both displays the same points; once the
+//             ring holds only silence, no FFT while blocks still come, and the displays still fall 30 dB a second; an
+//             FFT's cost against the old one's, printed
+//   HIDDEN    the meters' reader (Panel.h): a panel the host ticks reads them (the output's level shows); four idle
+//             calls 0.1 s apart with no tick keep it, twelve let it go (the meters' readers one fewer, and the audio
+//             thread measures nothing: the levels read 0 while the sound plays); its next tick takes it again (the
+//             level back at the next block); a calm panel ticked 12 times a second with idle calls 10 a second between
+//             never lets go; a second panel reads too, lets go hidden, and closed then removes nothing more
+#include "Cadence.h"
 #include "Probe.h"
 
 #include "editor/DisplayItem.h"
@@ -55,13 +86,23 @@
 #include <funkgui/panel/HeadlessGuiScope.h>
 #include <funkgui/panel/HeadlessHost.h>
 #include <funkgui/prefs/UiPreferences.h>
+#include <funkgui/text/FontService.h>
+#include <funkgui/text/TextFit.h>
 #include <funkgui/widgets/TextEditor.h>
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <cstdio>
+#include <numbers>
 #include <string>
 #include <vector>
+
+#if defined(_WIN32)
+#include <chrono>
+#else
+#include <time.h>
+#endif
 
 namespace pg = playground;
 
@@ -198,9 +239,190 @@ panel accent=orange {
         return out;
     }
 
+    // Every control and display of the interface shows exactly while its node is on a page shown and at least in part
+    // in the area (GuiView::place).
+    bool shownFollowsArea(const pg::ui::Panel& panel)
+    {
+        const pg::ui::GuiLayout& L = panel.guiLayout();
+        const std::vector<pg::GuiNode>& nodes = panel.panelSpec().gui.nodes;
+        bool ok = true;
+        for (std::size_t i = 0; i < nodes.size() && i < L.rects.size(); ++i)
+        {
+            const funkgui::Rect& r = L.rects[i];
+            const bool in = L.visible[i] && r.right() > L.area.x && r.x < L.area.right() && r.bottom() > L.area.y
+                         && r.y < L.area.bottom();
+            const pg::GuiNode& n = nodes[i];
+            const bool control = n.kind == pg::GuiKind::knob || n.kind == pg::GuiKind::slider || n.kind == pg::GuiKind::toggle
+                              || n.kind == pg::GuiKind::buttons || n.kind == pg::GuiKind::menu;
+            if (control && n.slot >= 0 && n.slot < pg::kMaxControls)
+                ok = ok && panel.guiControl(n.slot).shown() == in;
+            else if (n.kind == pg::GuiKind::display && n.display >= 0 && n.display < pg::kMaxDisplays)
+                ok = ok && panel.displayItem(n.display).shown() == in;
+        }
+        return ok;
+    }
+
+    // The interface's places as text: every node's rect and whether it is on a page shown, each control's and
+    // display's cell and whether it shows, the pads', envelopes' and tabs' places.
+    std::string itemPlaces(const pg::ui::Panel& panel)
+    {
+        std::string out;
+        char line[160];
+        const auto rect = [&](const char* what, int k, const funkgui::Rect& r, bool shown) {
+            std::snprintf(line, sizeof line, "%s %d: %.2f %.2f %.2f %.2f %d\n", what, k, static_cast<double>(r.x),
+                          static_cast<double>(r.y), static_cast<double>(r.w), static_cast<double>(r.h), shown ? 1 : 0);
+            out += line;
+        };
+        const pg::ui::GuiLayout& L = panel.guiLayout();
+        rect("area", 0, L.area, true);
+        for (std::size_t i = 0; i < L.rects.size(); ++i)
+            rect("node", static_cast<int>(i), L.rects[i], L.visible[i]);
+        for (int c = 0; c < pg::kMaxControls; ++c)
+            rect("control", c, panel.guiControl(c).cell(), panel.guiControl(c).shown());
+        for (int d = 0; d < pg::kMaxDisplays; ++d)
+            rect("display", d, panel.displayItem(d).cell(), panel.displayItem(d).shown());
+        for (int k = 0; k < 8; ++k)
+        {
+            const auto& pad = static_cast<const pg::ui::GuiXyItem&>(panel.guiItem(0, k));
+            rect("pad", k, pad.pad(), pad.shown());
+            const funkgui::Point e = panel.guiItem(1, k).centre();
+            rect("envelope", k, { e.x, e.y, 0.0f, 0.0f }, panel.guiItem(1, k).shown());
+            const auto& tabs = static_cast<const pg::ui::GuiTabsItem&>(panel.guiItem(2, k));
+            for (const funkgui::Rect& t : tabs.tabs())
+                rect("tab", k, t, tabs.shown());
+        }
+        return out;
+    }
+
     float hzOfPoint(int k)
     {
         return 20.0f * std::pow(1000.0f, static_cast<float>(k) / static_cast<float>(pg::ui::DisplayItem::kSpectrumPoints - 1));
+    }
+
+    // SPECTRUM's reference: a spectrum display's points as each display computed them for itself every frame before
+    // the source's Spectrum (DisplayItem.h), a complex radix-2 FFT of all its samples, its twiddles by recurrence,
+    // each bin's magnitude, kept here as it was.
+    void oldFft(std::vector<std::complex<float>>& a)
+    {
+        const std::size_t n = a.size();
+        for (std::size_t i = 1, j = 0; i < n; ++i)
+        {
+            std::size_t bit = n >> 1;
+            for (; (j & bit) != 0; bit >>= 1)
+                j ^= bit;
+            j ^= bit;
+            if (i < j)
+                std::swap(a[i], a[j]);
+        }
+        for (std::size_t len = 2; len <= n; len <<= 1)
+        {
+            const float ang = -2.0f * std::numbers::pi_v<float> / static_cast<float>(len);
+            const std::complex<float> w(std::cos(ang), std::sin(ang));
+            for (std::size_t i = 0; i < n; i += len)
+            {
+                std::complex<float> wk(1.0f, 0.0f);
+                for (std::size_t k = 0; k < len / 2; ++k)
+                {
+                    const std::complex<float> u = a[i + k], v = a[i + k + len / 2] * wk;
+                    a[i + k] = u + v;
+                    a[i + k + len / 2] = u - v;
+                    wk *= w;
+                }
+            }
+        }
+    }
+
+    std::vector<float> oldSpectrum(const float* x, int n, float rate, int points)
+    {
+        std::vector<std::complex<float>> a(static_cast<std::size_t>(n));
+        float windowSum = 0.0f;
+        for (int i = 0; i < n; ++i)
+        {
+            const float w = 0.5f - 0.5f * std::cos(2.0f * std::numbers::pi_v<float> * static_cast<float>(i) / static_cast<float>(n - 1));
+            windowSum += w;
+            a[static_cast<std::size_t>(i)] = { x[i] * w, 0.0f };
+        }
+        oldFft(a);
+        const float norm = 2.0f / std::max(windowSum, 1.0f);
+        const float binHz = rate / static_cast<float>(n);
+        std::vector<float> out(static_cast<std::size_t>(points), -120.0f);
+        for (int k = 0; k < points; ++k)
+        {
+            const float hz = 20.0f * std::pow(1000.0f, static_cast<float>(k) / static_cast<float>(points - 1));
+            const float half = std::pow(1000.0f, 0.5f / static_cast<float>(points - 1));
+            const float lo = hz / half, hi = hz * half;
+            int b0 = static_cast<int>(std::floor(lo / binHz)), b1 = static_cast<int>(std::ceil(hi / binHz));
+            b0 = std::clamp(b0, 1, n / 2);
+            b1 = std::clamp(b1, b0, n / 2);
+            float peak = 0.0f;
+            for (int b = b0; b <= b1; ++b)
+                peak = std::max(peak, std::abs(a[static_cast<std::size_t>(b)]) * norm);
+            out[static_cast<std::size_t>(k)] = 20.0f * std::log10(std::max(peak, 1.0e-6f));
+        }
+        return out;
+    }
+
+    // The same points in double precision, every twiddle exact: what both should be.
+    std::vector<float> exactSpectrum(const float* x, int n, float rate, int points)
+    {
+        std::vector<std::complex<double>> a(static_cast<std::size_t>(n));
+        double windowSum = 0.0;
+        for (int i = 0; i < n; ++i)
+        {
+            const double w = 0.5 - 0.5 * std::cos(2.0 * std::numbers::pi * i / (n - 1));
+            windowSum += w;
+            a[static_cast<std::size_t>(i)] = { x[i] * w, 0.0 };
+        }
+        for (std::size_t i = 1, j = 0; i < a.size(); ++i)
+        {
+            std::size_t bit = a.size() >> 1;
+            for (; (j & bit) != 0; bit >>= 1)
+                j ^= bit;
+            j ^= bit;
+            if (i < j)
+                std::swap(a[i], a[j]);
+        }
+        for (std::size_t len = 2; len <= a.size(); len <<= 1)
+            for (std::size_t i = 0; i < a.size(); i += len)
+                for (std::size_t k = 0; k < len / 2; ++k)
+                {
+                    const double ang = -2.0 * std::numbers::pi * static_cast<double>(k) / static_cast<double>(len);
+                    const std::complex<double> u = a[i + k], v = a[i + k + len / 2] * std::polar(1.0, ang);
+                    a[i + k] = u + v;
+                    a[i + k + len / 2] = u - v;
+                }
+        const std::vector<float> bins = oldSpectrum(x, n, rate, points);   // (only its shape: the bins below)
+        const float binHz = rate / static_cast<float>(n);
+        std::vector<float> out(bins.size(), -120.0f);
+        for (int k = 0; k < points; ++k)
+        {
+            const float hz = 20.0f * std::pow(1000.0f, static_cast<float>(k) / static_cast<float>(points - 1));
+            const float half = std::pow(1000.0f, 0.5f / static_cast<float>(points - 1));
+            int b0 = static_cast<int>(std::floor(hz / half / binHz)), b1 = static_cast<int>(std::ceil(hz * half / binHz));
+            b0 = std::clamp(b0, 1, n / 2);
+            b1 = std::clamp(b1, b0, n / 2);
+            double peak = 0.0;
+            for (int b = b0; b <= b1; ++b)
+                peak = std::max(peak, std::abs(a[static_cast<std::size_t>(b)]) * 2.0 / windowSum);
+            out[static_cast<std::size_t>(k)] = static_cast<float>(20.0 * std::log10(std::max(peak, 1.0e-6)));
+        }
+        return out;
+    }
+
+    // A point as drawSpectrum draws it: -84 to 0 dB.
+    float drawnDb(float db) { return std::clamp(db, -84.0f, 0.0f); }
+
+    // A clock for a printed cost, in seconds: this thread's CPU time (what the work took, however often a busy machine
+    // put the thread aside); on Windows, whose C runtime has no clock_gettime, the steady clock's wall time.
+    double threadSeconds()
+    {
+#if defined(_WIN32)
+        return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+#else
+        timespec ts{};
+        clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+        return static_cast<double>(ts.tv_sec) + 1.0e-9 * static_cast<double>(ts.tv_nsec);
+#endif
     }
 }
 
@@ -487,6 +709,109 @@ PROBE(gui, panel)
         host.wheel(L->area.right() - 6.0f, L->area.y + 10.0f, -5.0f);
         host.settle();
         writePng(P, host, "gui.panel.small.png", "scroll");
+
+        // A trackpad's run of small steps from the top (Panel::scrollGui, as the wheel over the ground scrolls): the
+        // items move, nothing is laid out again.
+        panel.scrollGui(0.0f, -1.0e4f);
+        host.settle();
+        const int layouts0 = panel.layouts();
+        const std::vector<funkgui::Rect> top = panel.guiLayout().rects;
+        bool together = true, whole = true, follows = shownFollowsArea(panel);
+        float moved = 0.0f;
+        for (int k = 0; k < 12; ++k)
+        {
+            panel.scrollGui(0.0f, 19.0f);                // a trackpad's step, 0.037 of the wheel
+            host.tick(1);
+            const std::vector<funkgui::Rect>& now = panel.guiLayout().rects;
+            const float dy = now.empty() || top.empty() ? 0.0f : now[0].y - top[0].y;
+            for (std::size_t i = 0; i < now.size() && i < top.size(); ++i)
+                together = together && now[i].y - top[i].y == dy && now[i].x == top[i].x && now[i].w == top[i].w
+                        && now[i].h == top[i].h;
+            whole = whole && dy == std::round(dy);
+            follows = follows && shownFollowsArea(panel);
+            moved = -dy;
+        }
+        std::printf("scroll: 12 small steps moved the interface %.0f px\n", static_cast<double>(moved));
+        P.eq("scroll.steps_lay_out_nothing", static_cast<int64_t>(panel.layouts() - layouts0), 0);
+        P.ge("scroll.steps_moved", static_cast<double>(moved), 100.0);
+        P.eq("scroll.steps_move_together", together ? 1 : 0, 1);
+        P.eq("scroll.steps_whole_px", whole ? 1 : 0, 1);
+        P.eq("scroll.steps_shown_follow", follows ? 1 : 0, 1);
+        // Where a layout at that scroll puts each item: the window a px wider and back, laid out twice.
+        {
+            const std::string scrolled = itemPlaces(panel);
+            host.resize(pg::ui::kMinWidth + 1, pg::ui::kMinHeight);
+            host.settle();
+            host.resize(pg::ui::kMinWidth, pg::ui::kMinHeight);
+            host.settle();
+            P.ge("scroll.laid_out_again", static_cast<double>(panel.layouts() - layouts0), 2.0);
+            const std::string laidOut = itemPlaces(panel);
+            if (scrolled != laidOut)
+                std::printf("scrolled:\n%s\nlaid out:\n%s\n", scrolled.c_str(), laidOut.c_str());
+            P.eq("scroll.as_a_layout", scrolled == laidOut ? 1 : 0, 1);
+        }
+        // And what a layout at that scroll makes, apart from the panel's (both sides above take the layout at no scroll,
+        // moved): layoutGui at the scroll rounded, in the panel's area (its gutter taken), with its pages and the
+        // program's dials, every node on a page shown and each tabs node's tabs. At no scroll first (the inputs are the
+        // panel's), then a step, a half px, a fraction and the bottom; then back where the steps left it.
+        {
+            const pg::ui::GuiMeasure gm = [](const std::string& text, const funkgui::TextStyle& st) {
+                return funkgui::text::width(funkgui::FontService::get().atlas(), text.c_str(), st);
+            };
+            const auto same = [](const funkgui::Rect& a, const funkgui::Rect& b) {
+                return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h;
+            };
+            const auto apart = [&](float scrollY) {
+                const pg::ui::GuiLayout& shown = panel.guiLayout();
+                const pg::ui::GuiLayout made = pg::ui::layoutGui(panel.panelSpec(), port.controls(), gm, shown.pages,
+                                                                 shown.area, 0.0f, std::round(scrollY));
+                bool ok = made.rects.size() == shown.rects.size() && made.visible == shown.visible;
+                for (std::size_t i = 0; ok && i < made.rects.size(); ++i)
+                    ok = !made.visible[i] || same(made.rects[i], shown.rects[i]);
+                for (int k = 0; ok && k < 8; ++k)
+                {
+                    const auto& tabs = static_cast<const pg::ui::GuiTabsItem&>(panel.guiItem(2, k));
+                    if (!tabs.shown())
+                        continue;
+                    const std::vector<funkgui::Rect> want = pg::ui::guiTabRects(
+                        panel.panelSpec(), tabs.node(), made.rects[static_cast<std::size_t>(tabs.node())], gm);
+                    ok = want.size() == tabs.tabs().size();
+                    for (std::size_t t = 0; ok && t < want.size(); ++t)
+                        ok = same(want[t], tabs.tabs()[t]);
+                }
+                if (!ok)
+                    std::printf("scroll %.2f: the moved layout differs from one made at that scroll\n",
+                                static_cast<double>(scrollY));
+                return ok;
+            };
+            const float bottom = panel.guiLayout().maxScrollY;
+            std::printf("scroll: the bottom at %.2f px\n", static_cast<double>(bottom));
+            int agree = 0;
+            for (const float s : { 0.0f, 19.0f, 57.5f, 120.4f, bottom })
+            {
+                panel.scrollGui(0.0f, -1.0e4f);
+                panel.scrollGui(0.0f, s);
+                host.tick(1);
+                agree += apart(s) ? 1 : 0;
+            }
+            P.eq("scroll.as_a_layout_apart", agree, 5);
+            panel.scrollGui(0.0f, -1.0e4f);
+            panel.scrollGui(0.0f, moved);
+            host.tick(1);
+        }
+        // A scroll step's cost against a layout's (threadSeconds(); printed, as the machine may be busy).
+        {
+            constexpr int kRuns = 40;
+            const double t0 = threadSeconds();
+            for (int k = 0; k < kRuns; ++k)
+                panel.scrollGui(0.0f, k % 2 == 0 ? 19.0f : -19.0f);
+            const double t1 = threadSeconds();
+            for (int k = 0; k < kRuns; ++k)
+                host.resize(pg::ui::kMinWidth + (k % 2 == 0 ? 1 : 0), pg::ui::kMinHeight);
+            const double t2 = threadSeconds();
+            std::printf("scroll: a step %.1f us, a resize's layout %.1f us\n", 1.0e6 * (t1 - t0) / kRuns,
+                        1.0e6 * (t2 - t1) / kRuns);
+        }
         host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
         host.settle();
     }
@@ -756,6 +1081,437 @@ PROBE(gui, panel)
                 std::fwrite(a.png.data(), 1, a.png.size(), f);
                 std::fclose(f);
             }
+    }
+
+    // ---- SETTLE --------------------------------------------------------------------------------------------------------
+    // A steady tone's scope and a field scope of a constant stand still while the audio plays (Panel.h "Unchanged
+    // frames": the panel then runs at the calm rate), and move when what they show changes.
+    {
+        const std::string params = "    param float gain [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
+                                   "    param float level [[fminus::range(0, 1)]] [[fminus::default(0.25)]];\n"
+                                   "    float hold, wob;\n";
+        const std::string wob = "        wob += 0.01f;\n        if (wob > 1) wob = 0;\n";
+        const std::string main = kInstrument
+                                     ? "module Voice\n{\n" + params + "    float ph;\n"
+                                       "    void start(float n, float v) {}\n"
+                                       "    bool process(float* restrict left, float* restrict right, int n)\n    {\n"
+                                       "        for (int i = 0; i < n; ++i)\n        {\n"
+                                       "            const float s = gain[i] * sinf(6.28318531f * ph);\n"
+                                       "            ph += 220.0f / 48000;\n            if (ph >= 1) ph -= 1;\n"
+                                       "            left[i] += s;\n            right[i] += s;\n        }\n"
+                                       "        hold = level[n - 1];\n" + wob + "        return true;\n    }\n};\n"
+                                     : "module Effect\n{\n" + params + "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                                       "        for (int i = 0; i < n; ++i)\n        {\n"
+                                       "            left[i] *= gain[i];\n            right[i] *= gain[i];\n        }\n"
+                                       "        hold = level[n - 1];\n" + wob + "    }\n};\n";
+        const std::string settleGui = "panel { row { scope out label=\"WAVE\" width=240 height=120; scope hold label=\"HOLD\" width=240 height=120 }\n"
+                                      "        row { knob gain; knob level } }\n";
+        load(processor, { { pg::kProgramName, main }, { "panel.gui", settleGui } });
+        processor.prepareToPlay(48000.0, 256);
+        settleRun(processor, host);
+        panel.setPanelView(true);
+        host.settle();
+        P.eq("settle.compiles", port.status().ok && port.status().notes.empty() ? 1 : 0, 1);
+        if (!port.status().notes.empty() || !port.status().errors.empty())
+            std::printf("notes:\n%s%s", port.status().errors.c_str(), port.status().notes.c_str());
+        const pg::ui::DisplayItem* wave = nullptr;
+        const pg::ui::DisplayItem* field = nullptr;
+        for (int d = 0; d < pg::kMaxDisplays; ++d)
+        {
+            const pg::ui::DisplayItem& item = panel.displayItem(d);
+            if (item.shown() && item.display().kind == pg::DisplayKind::scope)
+                (item.display().audio() ? wave : field) = &item;
+        }
+        P.eq("settle.scopes_shown", wave != nullptr && field != nullptr ? 1 : 0, 1);
+        // A sixtieth of a second of audio (three blocks of 256): the effect's input a 220 Hz sine at 0.5, the synth's
+        // voice its own (its note held from the first block).
+        juce::AudioBuffer<float> buffer(2, 256);
+        double phase = 0.0;
+        bool noted = false;
+        const auto sixtieth = [&](int) {
+            for (int b = 0; b < 3; ++b)
+            {
+                juce::MidiBuffer midi;
+                if (kInstrument && !noted)
+                {
+                    midi.addEvent(juce::MidiMessage::noteOn(1, 57, static_cast<juce::uint8>(100)), 0);
+                    noted = true;
+                }
+                for (int i = 0; i < 256; ++i)
+                {
+                    const float v = kInstrument ? 0.0f : static_cast<float>(0.5 * std::sin(phase));
+                    phase += 2.0 * 3.14159265358979 * 220.0 / 48000.0;
+                    buffer.setSample(0, i, v);
+                    buffer.setSample(1, i, v);
+                }
+                processor.processBlock(buffer, midi);
+            }
+        };
+        // n frames at 60 Hz with audio; how many of them found the display unsettled.
+        const auto unsettled = [&](const pg::ui::DisplayItem* item, int n) {
+            int k = 0;
+            for (int f = 0; f < n; ++f)
+            {
+                sixtieth(f);
+                host.tick(1);
+                k += item != nullptr && !item->settled() ? 1 : 0;
+            }
+            return k;
+        };
+        (void)unsettled(nullptr, 180);                   // the tone starts; the field's scope fills (2.5 s)
+        constexpr int stillFrames = 60;
+        int waveUnsettled = 0, fieldUnsettled = 0;
+        for (int f = 0; f < stillFrames; ++f)
+        {
+            sixtieth(f);
+            host.tick(1);
+            waveUnsettled += wave != nullptr && !wave->settled() ? 1 : 0;
+            fieldUnsettled += field != nullptr && !field->settled() ? 1 : 0;
+        }
+        std::printf("settle: of %d frames of a steady tone, the scope unsettled in %d, the field scope in %d\n", stillFrames,
+                    waveUnsettled, fieldUnsettled);
+        P.eq("settle.audio_scope_still", waveUnsettled, 0);
+        P.eq("settle.field_scope_still", fieldUnsettled, 0);
+        // The panel's frames as the items ask them (probe/Cadence.h): the calm rate, about 12 a second.
+        const probe::Cadence calm = probe::runCadence(host, 120, sixtieth, [&] { return panel.moving(); });
+        std::printf("settle: a steady tone's panel, %.1f frames a second\n", calm.framesPerSecond());
+        P.le("settle.calm_frames_per_second", calm.framesPerSecond(), 12.5);
+        // The tone's level moved by a few hundredths of a px of the trace: no move; by px: a move.
+        juce::AudioProcessorParameter& gain = *processor.getParameters()[0];
+        juce::AudioProcessorParameter& level = *processor.getParameters()[1];
+        gain.setValueNotifyingHost(0.501f);
+        P.eq("settle.audio_scope_sub_px", unsettled(wave, 30), 0);
+        gain.setValueNotifyingHost(0.8f);
+        P.ge("settle.audio_scope_moves", unsettled(wave, 6), 1);
+        // The field's value steps: its scope moves, then stands still again once its points are all the new value.
+        level.setValueNotifyingHost(0.75f);
+        P.ge("settle.field_scope_steps", unsettled(field, 6), 1);
+        (void)unsettled(field, 180);
+        P.eq("settle.field_scope_still_again", unsettled(field, 30), 0);
+        // Its ring: a ramp longer than its points, oldest first, the newest last.
+        for (int f = 0; f < 200; ++f)
+        {
+            level.setValueNotifyingHost(0.1f + 0.8f * static_cast<float>(f) / 199.0f);
+            sixtieth(f);
+            host.tick(1);
+        }
+        const std::vector<float> points = field != nullptr ? field->points() : std::vector<float>{};
+        bool rising = points.size() == static_cast<std::size_t>(pg::ui::DisplayItem::kHistory);
+        for (std::size_t k = 1; k < points.size(); ++k)
+            rising = rising && points[k] >= points[k - 1];
+        P.eq("settle.ring_oldest_first", rising && points.front() < points.back() ? 1 : 0, 1);
+        P.near("settle.ring_newest_last", points.empty() ? -9.0 : static_cast<double>(points.back()), 2.0 * 0.9 - 1.0, 0.01);
+        writePng(P, host, "gui.panel.settle.png", "settle");
+
+        // Number displays (the output's peak, and a field that moves each block): the readout, made again eight times
+        // a second, changes at each refresh. That is no motion but the item's draw key: the frame that made it is
+        // recorded (needsDraw), and the panel stays at the calm rate.
+        load(processor, { { pg::kProgramName, main },
+                          { "panel.gui", "panel { row { number out label=\"PEAK\"; number wob label=\"WOB\" }\n        row { knob gain; knob level } }\n" } });
+        settleRun(processor, host);
+        noted = false;                                   // the synth's note held again, in the new program
+        P.eq("settle.numbers_compile", port.status().ok && port.status().notes.empty() ? 1 : 0, 1);
+        if (!port.status().notes.empty() || !port.status().errors.empty())
+            std::printf("notes:\n%s%s", port.status().errors.c_str(), port.status().notes.c_str());
+        const pg::ui::DisplayItem* number = nullptr;
+        for (int d = 0; d < pg::kMaxDisplays; ++d)
+        {
+            const pg::ui::DisplayItem& item = panel.displayItem(d);
+            if (item.shown() && item.display().kind == pg::DisplayKind::number && !item.display().audio())
+                number = &item;
+        }
+        P.eq("settle.number_shown", number != nullptr ? 1 : 0, 1);
+        (void)unsettled(nullptr, 30);
+        host.draw();
+        std::string drawnReadout = number != nullptr ? number->readout() : std::string();
+        uint64_t key = number != nullptr ? number->drawKey() : 0;
+        int changes = 0, keyMissed = 0, frameMissed = 0, numberUnsettled = 0;
+        const probe::Cadence numbers = probe::runCadence(host, 240, sixtieth, [&] {
+            if (number != nullptr)
+            {
+                numberUnsettled += number->settled() ? 0 : 1;
+                if (number->readout() != drawnReadout)
+                {
+                    ++changes;
+                    keyMissed += number->drawKey() != key ? 0 : 1;
+                    frameMissed += panel.needsDraw() ? 0 : 1;
+                }
+                key = number->drawKey();
+            }
+            if (panel.needsDraw())                       // as EditorHost records a frame
+            {
+                host.draw();
+                drawnReadout = number != nullptr ? number->readout() : std::string();
+            }
+            return panel.moving();
+        });
+        std::printf("settle: number displays, %d readouts in %d frames, %.1f frames a second\n", changes, numbers.frames,
+                    numbers.framesPerSecond());
+        P.ge("settle.number_readouts", changes, 16);
+        P.eq("settle.number_no_motion", numberUnsettled, 0);
+        P.eq("settle.number_key_follows", keyMissed, 0);
+        P.eq("settle.number_frame_recorded", frameMissed, 0);
+        P.le("settle.number_frames_per_second", numbers.framesPerSecond(), 12.5);
+    }
+
+    // ---- SPECTRUM ------------------------------------------------------------------------------------------------------
+    // A source's spectrum, made once for all its displays when a new block comes (DisplayItem.h's Spectrum), against
+    // the FFT each display ran for itself every frame before.
+    {
+        constexpr int kN = pg::ui::DisplayItem::kScopeSamples;
+        constexpr int kPoints = pg::ui::DisplayItem::kSpectrumPoints;
+        // Fixed signals of kN samples at a rate: signal s's sample i.
+        const char* const names[] = { "sine_1k", "sine_37hz", "two_tones", "noise", "impulse", "sweep", "sine_19k",
+                                      "square", "silence" };
+        constexpr int kSignals = static_cast<int>(sizeof names / sizeof names[0]);
+        const auto fill = [&](int s, double rate, std::vector<float>& x) {
+            uint32_t noise = 0x2545F491u;
+            constexpr double twoPi = 2.0 * std::numbers::pi;
+            for (int i = 0; i < kN; ++i)
+            {
+                const double t = i / rate;
+                noise = noise * 1664525u + 1013904223u;
+                const double u = static_cast<double>(noise >> 8) / 8388608.0 - 1.0;
+                double v = 0.0;
+                switch (s)
+                {
+                    case 0: v = std::sin(twoPi * 1000.0 * t); break;
+                    case 1: v = 0.1 * std::sin(twoPi * 37.3 * t + 0.3); break;
+                    case 2: v = 0.5 * std::sin(twoPi * 100.0 * t) + 0.01 * std::sin(twoPi * 5000.0 * t + 1.0); break;
+                    case 3: v = 0.1 * u; break;
+                    case 4: v = i == kN / 2 ? 1.0 : 0.0; break;
+                    case 5: v = 0.5 * std::sin(twoPi * 20.0 * (kN / rate) / std::log(1000.0) * (std::pow(1000.0, i / static_cast<double>(kN)) - 1.0)); break;
+                    case 6: v = 0.3 * std::sin(twoPi * 19000.0 * t); break;
+                    case 7: v = std::fmod(220.0 * t, 1.0) < 0.5 ? 0.25 : -0.25; break;
+                    default: v = 0.0; break;
+                }
+                x[static_cast<std::size_t>(i)] = static_cast<float>(v);
+            }
+        };
+        std::vector<float> x(static_cast<std::size_t>(kN));
+        pg::ui::Spectrum analyser;
+        double worstExact = 0.0;
+        for (int s = 0; s < kSignals; ++s)
+        {
+            double most = 0.0, mostUndrawn = 0.0, newExact = 0.0, oldExact = 0.0;
+            for (const double rate : { 44100.0, 48000.0, 96000.0 })
+            {
+                fill(s, rate, x);
+                const std::vector<float> before = oldSpectrum(x.data(), kN, static_cast<float>(rate), kPoints);
+                const std::vector<float> exact = exactSpectrum(x.data(), kN, static_cast<float>(rate), kPoints);
+                analyser.compute(x.data(), static_cast<float>(rate));
+                for (int k = 0; k < kPoints; ++k)
+                {
+                    const float a = before[static_cast<std::size_t>(k)], b = analyser.points()[k];
+                    const float e = exact[static_cast<std::size_t>(k)];
+                    most = std::max(most, static_cast<double>(std::fabs(drawnDb(a) - drawnDb(b))));
+                    mostUndrawn = std::max(mostUndrawn, static_cast<double>(std::fabs(a - b)));
+                    newExact = std::max(newExact, static_cast<double>(std::fabs(drawnDb(b) - drawnDb(e))));
+                    oldExact = std::max(oldExact, static_cast<double>(std::fabs(drawnDb(a) - drawnDb(e))));
+                }
+            }
+            std::printf("spectrum: %-9s at 44.1, 48 and 96 kHz, the most a point differs as drawn: old and new %.5f dB, new "
+                        "and exact %.5f, old and exact %.5f (old and new %.4f under the drawn floor too)\n", names[s], most,
+                        newExact, oldExact, mostUndrawn);
+            P.le(std::string("spectrum.match_") + names[s], most, 0.02);
+            worstExact = std::max(worstExact, newExact);
+        }
+        P.le("spectrum.exact_db", worstExact, 0.003);
+        // An FFT's cost, the old against the new (threadSeconds(); printed, as the machine may be busy).
+        {
+            fill(3, 48000.0, x);
+            constexpr int kRuns = 300;
+            float sink = 0.0f;
+            const double t0 = threadSeconds();
+            for (int r = 0; r < kRuns; ++r)
+                sink += oldSpectrum(x.data(), kN, 48000.0f, kPoints)[static_cast<std::size_t>(r % kPoints)];
+            const double t1 = threadSeconds();
+            for (int r = 0; r < kRuns; ++r)
+            {
+                analyser.compute(x.data(), 48000.0f);
+                sink += analyser.points()[r % kPoints];
+            }
+            const double t2 = threadSeconds();
+            std::printf("spectrum: one FFT and its points, %.1f us before, %.1f us now (%.1fx)%s\n", 1.0e6 * (t1 - t0) / kRuns,
+                        1.0e6 * (t2 - t1) / kRuns, (t1 - t0) / std::max(t2 - t1, 1.0e-9), sink == 0.0f ? " " : "");
+        }
+
+        // A panel: two spectra of the output (the effect's also one of its input) while the effect's input plays noise
+        // and the synth's voice middle C, at a gain.
+        const std::string params = "    param float gain [[fminus::range(0, 1)]] [[fminus::default(1)]];\n";
+        const std::string main = kInstrument
+                                     ? "module Voice\n{\n" + params + "    float ph;\n    float step;\n"
+                                       "    void start(float n, float v) { step = 440.0f * expf(0.0577622650f * (n - 69)) / 48000; }\n"
+                                       "    bool process(float* restrict left, float* restrict right, int n)\n    {\n"
+                                       "        for (int i = 0; i < n; ++i)\n        {\n"
+                                       "            const float s = 0.25f * gain[i] * sinf(6.28318531f * ph);\n"
+                                       "            ph += step;\n            if (ph >= 1) ph -= 1;\n"
+                                       "            left[i] += s;\n            right[i] += s;\n        }\n"
+                                       "        return true;\n    }\n};\n"
+                                     : "module Effect\n{\n" + params + "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                                       "        for (int i = 0; i < n; ++i)\n        {\n"
+                                       "            left[i] *= gain[i];\n            right[i] *= gain[i];\n        }\n    }\n};\n";
+        const std::string spectraGui = kInstrument
+            ? "panel { row { spectrum out label=\"OUT A\" width=240 height=120; spectrum out label=\"OUT B\" width=240 height=120 }\n"
+              "        row { knob gain } }\n"
+            : "panel { row { spectrum out label=\"OUT A\" width=240 height=120; spectrum out label=\"OUT B\" width=240 height=120;"
+              " spectrum in label=\"IN\" width=240 height=120 }\n        row { knob gain } }\n";
+        load(processor, { { pg::kProgramName, main }, { "panel.gui", spectraGui } });
+        processor.prepareToPlay(48000.0, 512);
+        settleRun(processor, host);
+        panel.setPanelView(true);
+        host.settle();
+        P.eq("spectrum.compiles", port.status().ok && port.status().notes.empty() ? 1 : 0, 1);
+        if (!port.status().notes.empty() || !port.status().errors.empty())
+            std::printf("notes:\n%s%s", port.status().errors.c_str(), port.status().notes.c_str());
+        std::vector<const pg::ui::DisplayItem*> outs;
+        const pg::ui::DisplayItem* ins = nullptr;
+        for (int d = 0; d < pg::kMaxDisplays; ++d)
+        {
+            const pg::ui::DisplayItem& item = panel.displayItem(d);
+            if (item.shown() && item.display().kind == pg::DisplayKind::spectrum)
+            {
+                if (item.display().source == "in")
+                    ins = &item;
+                else
+                    outs.push_back(&item);
+            }
+        }
+        P.eq("spectrum.shown", outs.size() == 2 && (kInstrument || ins != nullptr) ? 1 : 0, 1);
+        juce::AudioBuffer<float> buffer(2, 512);
+        uint32_t noise = 0x9E3779B9u;
+        bool noted = false;
+        const auto block = [&] {
+            juce::MidiBuffer midi;
+            if (kInstrument && !noted)
+            {
+                midi.addEvent(juce::MidiMessage::noteOn(1, 60, static_cast<juce::uint8>(100)), 0);
+                noted = true;
+            }
+            for (int i = 0; i < 512; ++i)
+            {
+                noise = noise * 1664525u + 1013904223u;
+                const float v = kInstrument ? 0.0f : 0.1f * (static_cast<float>(noise >> 8) / 8388608.0f - 1.0f);
+                buffer.setSample(0, i, v);
+                buffer.setSample(1, i, v);
+            }
+            processor.processBlock(buffer, midi);
+        };
+        for (int f = 0; f < 30; ++f)                     // the noise starts and fills the scopes' rings
+        {
+            block();
+            host.tick(1);
+        }
+        // A block every second frame: one FFT a source for each, none on the frames between.
+        const pg::ui::DisplayFeed& feed = panel.displayFeed();
+        const int outBefore = feed.outSpectrum.computed(), inBefore = feed.inSpectrum.computed();
+        int blocks = 0, apart = 0;
+        for (int f = 0; f < 120; ++f)
+        {
+            if (f % 2 == 0)
+            {
+                block();
+                ++blocks;
+            }
+            host.tick(1);
+            if (outs.size() == 2 && outs[0]->spectrum() != outs[1]->spectrum())
+                ++apart;
+        }
+        const int outFfts = feed.outSpectrum.computed() - outBefore, inFfts = feed.inSpectrum.computed() - inBefore;
+        std::printf("spectrum: %d blocks in 120 frames, %d FFTs of the output for its two displays, %d of the input\n",
+                    blocks, outFfts, inFfts);
+        P.eq("spectrum.output_ffts_per_block", outFfts, blocks);
+        P.eq("spectrum.input_ffts_per_block", inFfts, kInstrument ? 0 : blocks);
+        P.eq("spectrum.displays_agree", apart, 0);
+        const auto strongest = [](const pg::ui::DisplayItem* item) {
+            const std::vector<float>& s = item->spectrum();
+            return s.empty() ? -200.0f : *std::max_element(s.begin(), s.end());
+        };
+        if (!outs.empty() && kInstrument)
+            P.near("spectrum.level_db", static_cast<double>(strongest(outs[0])), -12.04, 3.0);   // a sine at 0.25
+        else if (!outs.empty())
+            P.in("spectrum.level_db", static_cast<double>(strongest(outs[0])), -60.0, -25.0);    // noise at 0.1
+        writePng(P, host, "gui.panel.spectrum.png", "spectrum");
+        // Silence: once the rings hold nothing else, blocks still come but no FFT runs, and the displays fall 30 dB a
+        // second all the same.
+        processor.getParameters()[0]->setValueNotifyingHost(0.0f);
+        for (int f = 0; f < 12; ++f)                     // the gain glides to 0 (20 ms), then 2048 samples of silence
+        {
+            block();
+            host.tick(1);
+        }
+        const int silentBefore = feed.outSpectrum.computed();
+        const float top = outs.empty() ? -200.0f : strongest(outs[0]);
+        for (int f = 0; f < 30; ++f)
+        {
+            block();
+            host.tick(1);
+        }
+        const float fallen = outs.empty() ? -200.0f : strongest(outs[0]);
+        std::printf("spectrum: silence, %d FFTs in 30 frames with a block each; the strongest point %.2f dB, then %.2f\n",
+                    feed.outSpectrum.computed() - silentBefore, static_cast<double>(top), static_cast<double>(fallen));
+        P.eq("spectrum.silence_no_fft", feed.outSpectrum.computed() - silentBefore, 0);
+        P.near("spectrum.falls_db_in_half_a_second", static_cast<double>(top - fallen), 15.0, 0.05);
+
+        // ---- HIDDEN ----------------------------------------------------------------------------------------------------
+        // The sound back up; then the host stops ticking the panel (a minimised window) while its idle calls go on.
+        processor.getParameters()[0]->setValueNotifyingHost(1.0f);
+        for (int f = 0; f < 8; ++f)
+        {
+            block();
+            host.tick(1);
+        }
+        pg::Meters m;
+        port.meters(m);
+        const int readers = port.meterReaders();
+        P.eq("hidden.reads_while_ticked", panel.readingMeters() && readers >= 1 ? 1 : 0, 1);
+        P.ge("hidden.levels_while_ticked", static_cast<double>(m.outPeak[0]), 0.01);
+        double t = host.nowSeconds();
+        for (int k = 0; k < 4; ++k)
+            panel.idle(t += 0.1);
+        P.eq("hidden.not_at_once", port.meterReaders(), readers);
+        for (int k = 0; k < 8; ++k)
+            panel.idle(t += 0.1);
+        P.eq("hidden.lets_go", port.meterReaders(), readers - 1);
+        P.eq("hidden.panel_says", panel.readingMeters() ? 0 : 1, 1);
+        for (int f = 0; f < 4; ++f)
+            block();
+        port.meters(m);
+        P.eq("hidden.nothing_measured", m.outPeak[0] == 0.0f && m.outRms[1] == 0.0f ? 1 : 0, 1);
+        host.tick(1);                                    // shown again
+        P.eq("hidden.back_at_its_tick", port.meterReaders() == readers && panel.readingMeters() ? 1 : 0, 1);
+        block();
+        port.meters(m);
+        P.ge("hidden.measured_again", static_cast<double>(m.outPeak[0]), 0.01);
+        // A calm panel ticked about 12 times a second, its idle calls 10 a second between, never lets go (3 s).
+        {
+            bool kept = true;
+            double nextIdle = host.nowSeconds() + 0.05;
+            for (int k = 0; k < 36; ++k)
+            {
+                host.tick(1, 1.0f / 12.0f);              // a tick, then the clock 1/12 s on (and HeadlessHost's idle call)
+                for (; nextIdle < host.nowSeconds(); nextIdle += 0.1)
+                {
+                    panel.idle(nextIdle);
+                    kept = kept && panel.readingMeters();
+                }
+            }
+            P.eq("hidden.calm_keeps_it", kept && port.meterReaders() == readers ? 1 : 0, 1);
+        }
+        // A second panel, hidden and then closed: its reader goes once, never another's.
+        {
+            {
+                pg::ui::Panel other(processor.ports(), port);
+                funkgui::HeadlessHost otherHost(other, 0, 2.0f);
+                otherHost.tick(1);
+                P.eq("hidden.second_reads", port.meterReaders(), readers + 1);
+                double u = otherHost.nowSeconds();
+                for (int k = 0; k < 12; ++k)
+                    other.idle(u += 0.1);
+                P.eq("hidden.second_lets_go", port.meterReaders(), readers);
+            }
+            P.eq("hidden.second_closed", port.meterReaders(), readers);
+        }
     }
     return P.finish();
 }

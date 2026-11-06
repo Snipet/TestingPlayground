@@ -15,9 +15,9 @@
 // layer: a screen reader hears announcements only) and the capture environment (CANVAS_DUMP, UI_KEYS: the probes'
 // HeadlessHost covers them).
 //
-// The cost: a frame is rasterised only when its primitives differ from the last one's (a still panel costs a tick and
-// a recording), at most 30 times a second, at the display's scale times the zoom, one sample a pixel. Message thread
-// only.
+// The cost: a frame is recorded only when the Panel says something it draws changed (Panel::needsDraw, as EditorHost
+// since FunkGui v0.25.0: a still panel costs a tick), and rasterised only when its primitives differ from the last
+// one's, at most 30 times a second, at the display's scale times the zoom, one sample a pixel. Message thread only.
 #pragma once
 
 #include <funkgui/canvas/Canvas.h>

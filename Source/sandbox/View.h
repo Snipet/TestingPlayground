@@ -6,6 +6,7 @@
 // HeadlessHost records its frame, which editor/Picture.h draws (on the GPU, else SoftRaster).
 #pragma once
 
+#include "editor/DisplayItem.h"
 #include "editor/GuiView.h"
 #include "editor/Items.h"
 
@@ -105,7 +106,7 @@ namespace playground::sandbox
         std::vector<int> displays_;
         ui::GuiView view_;
         Meters meters_{};
-        std::vector<float> scopeIn_, scopeOut_;
+        ui::DisplayFeed feed_;
         std::string shownPage_, allPages_;
         bool dirty_ = true;                      // until the first frame (the displays take their values then)
         funkgui::HostServices* host_ = nullptr;

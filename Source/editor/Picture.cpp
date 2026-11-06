@@ -43,7 +43,7 @@ namespace playground
         constexpr float kDpi = 1.5f;             // the picture's pixels a logical px: the panel's text stays legible
 
         // The meters are measured only while someone reads them (EditorPort::addMeterReader). When the picture's Panel
-        // is the only reader (no editor open), wait for two blocks measured (the one under way may have begun before
+        // is the only reader (no editor shown), wait for two blocks measured (the one under way may have begun before
         // it), so its displays show the sound playing now: 100 ms at most, for an audio thread that is not running.
         void waitForMeters(EditorPort& port)
         {

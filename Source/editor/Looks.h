@@ -75,6 +75,9 @@ namespace playground::ui::looks
     void number(funkgui::Canvas& c, const funkgui::Theme& th, const Display& d, const char* text);
     // scope: `ys` in -1..1 (the screen's height), `n` of them across its width.
     void scope(funkgui::Canvas& c, const funkgui::Theme& th, const Display& d, const float* ys, int n);
+    // The px a scope in `cell` draws a value of 1 from its middle (a change of a value by 0.5 / scopeScale is half a
+    // px of its trace: DisplayItem's tolerance).
+    float scopeScale(const funkgui::Rect& cell);
 
     // Where on the VU scale (0..1) a level of `vu` VU sits: the needle moves with the amplitude, so -20 is near the
     // left end and 0 at about 71 %.

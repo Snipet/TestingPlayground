@@ -65,9 +65,10 @@
 //
 // Meters. Each block the Engine reads the fields the program's displays show (Patch::tap: an effect's instance, an
 // instrument's newest sounding voice, and the module Shared's one, whether a voice sounds or not) and publishes them (Meters) through a seqlock, which the editor reads at its frame
-// rate. While someone reads them (readers(): an editor open, a tool that listens; addReader), it also measures what
-// came in (an effect's input) and what goes out, and keeps the last kScopeLength samples of each for the scopes; with
-// no reader the levels read 0 and the scopes stand still, which saves an effect about as much as a light program
+// rate. While someone reads them (readers(): an editor shown, which lets go while its window is minimised or hidden,
+// Panel.h; a tool that listens; addReader), it also measures what came in (an effect's input) and what goes out (each
+// side's peak and energy in lanes, Levels.h), and keeps the last kScopeLength samples of each for the scopes; with no
+// reader the levels read 0 and the scopes stand still, which saves an effect about as much as a light program
 // costs. A reader that comes finds the levels from the next block on (its first block's own) and the scopes silent
 // before it. For a tool that listens (the MCP's listen) the meters also say, every block, what the host and the
 // player do (the transport, the note-ons, the keys held, the voices and their steals, a voice dropped for going

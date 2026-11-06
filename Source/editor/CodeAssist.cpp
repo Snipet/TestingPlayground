@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <utility>
 
@@ -350,11 +351,17 @@ namespace playground::ui
                 flags_ = &f->second;
     }
 
+    // A line's tokens go into toks_, kept with its capacity, and a name is looked up as it is (a view of the line): the
+    // highlighter allocates nothing once its buffer has grown to a line's tokens (a conditional's or a #define's line
+    // aside). FunkGui's TextEditor calls it only for the lines an edit reached (it keeps every line's spans, v0.25.0),
+    // and for every line on rehighlight() (CodeAssist::sync, when the type names or the constants change) and on a new
+    // highlighter (CodeAssist::updateConditionals, when a tab's conditionals read otherwise).
     uint32_t CodeHighlighter::line(std::string_view l, uint32_t stateIn, std::vector<funkgui::text::Span>& out) const
     {
         bool inComment = (stateIn & 1u) != 0;
         uint32_t met = stateIn >> 1;                     // the conditional directives before this line
-        std::vector<lang::Token> toks;
+        std::vector<lang::Token>& toks = toks_;
+        toks.clear();
         lang::lexLine(l, 0, inComment, toks);
         const auto state = [&] { return (inComment ? 1u : 0u) | (std::min<uint32_t>(met, 0x7FFFFFFFu) << 1); };
         const auto flag = [&](uint32_t k) -> uint8_t {
@@ -409,10 +416,10 @@ namespace playground::ui
                         st = csFunction;
                     else if (prev != nullptr && prev->kind == lang::Tok::keyword && prev->text == "enum")
                         st = csType;                         // an enumeration's tag
-                    else if (types_ != nullptr && std::binary_search(types_->names.begin(), types_->names.end(), std::string(t.text)))
+                    else if (types_ != nullptr && std::binary_search(types_->names.begin(), types_->names.end(), t.text, std::less<>{}))
                         st = csType;
                     else if (types_ != nullptr
-                             && std::binary_search(types_->constants.begin(), types_->constants.end(), std::string(t.text)))
+                             && std::binary_search(types_->constants.begin(), types_->constants.end(), t.text, std::less<>{}))
                         st = csConstant;
                     break;
                 }
@@ -503,7 +510,8 @@ namespace playground::ui
 
     uint32_t CircuitHighlighter::line(std::string_view l, uint32_t, std::vector<funkgui::text::Span>& out) const
     {
-        std::vector<lang::Token> toks;
+        std::vector<lang::Token>& toks = toks_;          // kept with its capacity, as CodeHighlighter's
+        toks.clear();
         lang::lexCirLine(l, 0, toks);
         for (std::size_t i = 0; i < toks.size(); ++i)
         {
@@ -522,10 +530,13 @@ namespace playground::ui
                 case lang::Tok::unknown:   st = csPlain; break;
                 case lang::Tok::identifier:
                 {
-                    std::string w(t.text);
-                    for (char& c : w)
-                        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-                    if (w == "opamp" || w == "ota")
+                    const auto is = [&](std::string_view word) {   // SPICE's case-blind compare, with no copy
+                        return t.text.size() == word.size()
+                               && std::equal(word.begin(), word.end(), t.text.begin(), [](char a, char b) {
+                                      return a == static_cast<char>(std::tolower(static_cast<unsigned char>(b)));
+                                  });
+                    };
+                    if (is("opamp") || is("ota"))
                         st = csType;
                     else if (next != nullptr && next->text == "(")
                         st = csFunction;              // a model's card, D(IS=...), or a solver's steps, omega(2)
@@ -676,8 +687,21 @@ namespace playground::ui
         for (int i = 0; i < tabs_.count(); ++i)
             files.push_back({ tabs_.name(i), tabs_.editor(i).text() });
         service_.setFiles(files);
-        types_->names = service_.typeNames();
-        types_->constants = service_.constantNames();
+        std::vector<std::string> names = service_.typeNames();
+        std::vector<std::string> constants = service_.constantNames();
+        if (names == types_->names && constants == types_->constants)
+            return;
+        types_->names = std::move(names);
+        types_->constants = std::move(constants);
+        // The editors keep each line's spans (FunkGui's TextEditor, v0.25.0) and highlight again only the lines an edit
+        // reaches: a module's name or a constant that came or went recolours lines nobody edited (another tab's too).
+        for (int i = 0; i < tabs_.count(); ++i)
+        {
+            funkgui::TextEditor& e = tabs_.editor(i);
+            if (dynamic_cast<const CodeHighlighter*>(e.highlighter()) != nullptr)
+                e.rehighlight();
+        }
+        ++highlights_;                                   // the Panel draws again (its revision did not move)
     }
 
     lang::Service& CodeAssist::service()
@@ -695,7 +719,8 @@ namespace playground::ui
         auto next = std::make_shared<Conditionals>(Conditionals::of(files));
         if (next->files == conditionals_->files)
             return;
-        // The tabs whose directives read otherwise: a highlighter of the new snapshot (every line's state again).
+        // The tabs whose directives read otherwise: a highlighter of the new snapshot (every line's state again; the
+        // editor highlights every line with it), and the Panel draws again (another tab's edit may dim this one).
         for (int i = 0; i < tabs_.count(); ++i)
         {
             if (!fmFile(i))
@@ -705,7 +730,10 @@ namespace playground::ui
             const bool same = (was == conditionals_->files.end()) == (now == next->files.end())
                            && (was == conditionals_->files.end() || was->second == now->second);
             if (!same)
+            {
                 tabs_.editor(i).setHighlighter(std::make_unique<CodeHighlighter>(types_, next, tabs_.name(i)));
+                ++highlights_;
+            }
         }
         // The other tabs keep their highlighters, and the snapshot each holds, whose flags for them are these.
         conditionals_ = std::move(next);
@@ -1390,6 +1418,28 @@ namespace playground::ui
         }
     }
 
+    uint64_t CodeAssist::drawKey() const
+    {
+        DrawKey k;
+        k.mix(highlights_).mix(checking_).mix(focused_).mix(area_).mix(activeTab()).mix(errorCount()).mix(warningCount());
+        k.mix(hover_.has_value()).mix(hoverPoint_).mix(hoverProblems_.size());
+        if (hover_)
+            k.mix(hover_->range.from.line).mix(hover_->range.from.col).mix(hover_->range.to.line).mix(hover_->range.to.col);
+        k.mix(completion_.has_value()).mix(choice_).mix(scrollRow_);
+        if (completion_)
+            k.mix(completion_->items.size());
+        k.mix(signature_.has_value()).mix(signatureAt_.line).mix(signatureAt_.col);
+        if (signature_)
+            k.mix(signature_->active).mix(signature_->label);
+        k.mix(findOpen_).mix(replaceOpen_).mix(findFocus_).mix(findField_).mix(matchCase_).mix(wholeWord_);
+        k.mix(findEdit_.buffer).mix(findEdit_.caret).mix(findEdit_.allSelected);
+        k.mix(replaceEdit_.buffer).mix(replaceEdit_.caret).mix(replaceEdit_.allSelected);
+        k.mix(matches_.size()).mix(current_);
+        k.mix(gotoOpen_).mix(gotoBad_).mix(gotoEdit_.buffer).mix(gotoEdit_.caret).mix(gotoEdit_.allSelected);
+        k.mix(statusWords_ ? statusWords_() : std::string()).mix(formatOnRun());   // a machine-wide switch: another
+        return k.h;                                                               // window may flip it
+    }
+
     bool CodeAssist::settled() const
     {
         if (checkDue_)
@@ -1412,6 +1462,8 @@ namespace playground::ui
         Sources now = filesOf(tabs_);
         const bool drawingOnly = !(now == asked_) && cir::sameProgram(now, asked_);
         asked_ = std::move(now);
+        if (!drawingOnly)
+            sync();                                      // the index, and the types' colours, follow the rested files
         return !drawingOnly;
     }
 

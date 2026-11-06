@@ -1,5 +1,6 @@
 // Source/dsp/Engine.cpp: see Engine.h.
 #include "dsp/Engine.h"
+#include "dsp/Levels.h"
 
 #include "Product.h"
 
@@ -902,14 +903,9 @@ namespace playground
         // 50 ms; `fresh`: the first block measured since no one read them, its own levels.
         void levels(const float* x, int n, float fs, float& peak, float& rms, bool fresh) noexcept
         {
-            float p = 0.0f;
-            double s = 0.0;
-            for (int i = 0; i < n; ++i)
-            {
-                const float v = std::isfinite(x[i]) ? x[i] : 0.0f;
-                p = std::max(p, std::fabs(v));
-                s += static_cast<double>(v) * static_cast<double>(v);
-            }
+            const BlockLevels b = blockLevels(x, n);    // in lanes (Levels.h)
+            const float p = b.peak;
+            const double s = b.energy;
             const float seconds = static_cast<float>(n) / std::max(fs, 1.0f);
             peak = std::max(p, peak * std::exp(-2.30258509f * seconds));
             const float keep = std::exp(-seconds / 0.05f);

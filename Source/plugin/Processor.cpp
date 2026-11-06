@@ -53,7 +53,7 @@ namespace playground
         // What building a .gui file's shaders needs (fminus/Shaders.h): shaderc, bundled in the plugin
         // (Contents/Resources/shaderc: CMakeLists.txt copies the pinned bgfx's there; on Windows shaderc.exe, there in
         // the VST3 and beside the Standalone's .exe), else where <prefix>SHADERC says (the probes'); FunkGui's
-        // prelude, varyings and bgfx_shader.sh; the renderer's target.
+        // prelude, varyings and bgfx_shader.sh; the renderer's target and check; the disk cache's folder.
         ShaderTools shaderTools()
         {
             ShaderTools t;
@@ -85,6 +85,12 @@ namespace playground
             t.platform = "linux";
             t.profile = "spirv";
 #endif
+            // The renderer's own check of a built shader (on macOS Metal's compiler), on the compiler's thread: the
+            // message thread's shaders::set() then finds the code checked and compiles nothing (FunkGui v0.25.0).
+            t.check = [](const std::vector<uint8_t>& binary, std::string& why) {
+                return funkgui::shaders::check(binary.data(), static_cast<uint32_t>(binary.size()), why);
+            };
+            t.cacheDir = shaderCacheFolder();          // the builds kept between sessions (the user's caches)
             return t;
         }
         const juce::Identifier kParamId{ "id" }, kParamValue{ "value" };   // the APVTS's <PARAM id value> children
@@ -1464,8 +1470,8 @@ namespace playground
     std::vector<PresetEntry> Processor::presets(const std::string& project) const
     {
         std::vector<PresetEntry> out;
-        if (const std::optional<projectstore::Project> p = projectstore::load(project))
-            for (const projectstore::Preset& pr : p->presets)
+        if (const auto ps = projectstore::presetsOf(project))   // its file read only when it changed
+            for (const projectstore::PresetSummary& pr : *ps)
                 out.push_back({ pr.name, whenOf(pr.savedMs), pr.from });
         return out;
     }

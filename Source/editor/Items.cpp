@@ -1,10 +1,22 @@
 // Source/editor/Items.cpp: the text helpers Items.h declares.
 #include "editor/Items.h"
 
+#include <funkgui/widgets/TextEditor.h>
+
 #include <cstdint>
 
 namespace playground::ui
 {
+    DrawKey& DrawKey::mix(const funkgui::TextEditor& e) noexcept
+    {
+        const funkgui::TextPos caret = e.caret(), anchor = e.anchor();
+        mix(e.revision()).mix(caret.line).mix(caret.col).mix(anchor.line).mix(anchor.col).mix(e.scroll()).mix(e.focused());
+        mix(e.decorations().size()).mix(e.lineMarks().size()).mix(e.bounds());
+        for (const funkgui::Decoration& d : e.decorations())
+            mix(static_cast<int>(d.kind)).mix(d.from.line).mix(d.from.col).mix(d.to.line).mix(d.to.col);
+        return *this;
+    }
+
     std::string asciiText(std::string_view s)
     {
         std::string out;

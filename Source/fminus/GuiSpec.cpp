@@ -430,6 +430,9 @@ namespace playground
                 : file_(file), controls_(controls), fields_(fields), instrument_(instrument), fileNames_(fileNames),
                   notes_(notes) {}
 
+            // readGuiShaders': a shader's inputs taken at their word, with no program to look them up in.
+            void guessInputs() { guessing_ = true; }
+
             PanelSpec build(const std::vector<Element>& top)
             {
                 spec_.gui.file = file_.name;
@@ -1551,6 +1554,8 @@ namespace playground
                                 else
                                     note(p.value, "an instrument has no input: in is left out");
                             }
+                            else if (guessing_)
+                                n.inputs[k++] = one;
                             else if (const int slot = slotNamed(one); slot >= 0)
                                 n.inputs[k++] = "param:" + std::to_string(slot);
                             else if (const int d = hiddenTap(p.value, one, "a shader's input"); d >= 0)
@@ -1695,7 +1700,7 @@ namespace playground
             std::map<std::string, std::vector<Prop>> classes_, defaults_;
             std::set<std::string> said_;
             int taps_ = 0;
-            bool panelSeen_ = false, full_ = false, quiet_ = false;
+            bool panelSeen_ = false, full_ = false, quiet_ = false, guessing_ = false;
         };
     }
 
@@ -1715,5 +1720,22 @@ namespace playground
             top.push_back(std::move(e));
         Builder b(gui, controls, fields, instrument, fileNames, notes);
         return b.build(top);
+    }
+
+    std::vector<PanelShader> readGuiShaders(const SourceFile& gui, bool instrument)
+    {
+        std::string notes;                               // readGuiSpec's to say, once the program has compiled
+        const std::vector<Token> tokens = lex(gui.text, gui.name, notes);
+        Parser parser(tokens, gui.name, notes);
+        std::vector<Element> top = parser.list(0);
+        parser.strays();
+        for (Element& e : parser.takeExtra())
+            top.push_back(std::move(e));
+        Controls none{};
+        const std::vector<PanelField> fields;
+        const std::vector<std::string> fileNames;
+        Builder b(gui, none, fields, instrument, fileNames, notes);
+        b.guessInputs();
+        return b.build(top).shaders;
     }
 }

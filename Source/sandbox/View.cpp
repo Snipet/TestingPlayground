@@ -183,7 +183,7 @@ namespace playground::sandbox
     {
         demoMeters();
         ui::updateDisplays(items_, displays_, meters_, [this](bool input, float* out, int n) { demoScope(input, meters_.rate, out, n); },
-                           scopeIn_, scopeOut_, dt);
+                           feed_, dt);
         view_.tick(spec_, meters_, true);
         const funkgui::Point far{ -1.0e4f, -1.0e4f };
         for (const auto& item : items_)

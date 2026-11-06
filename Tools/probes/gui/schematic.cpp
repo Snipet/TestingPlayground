@@ -28,7 +28,8 @@
 //   GESTURES  each gives the exact text as one undo step: placing every kind (by click), a wire from pin to pin, a
 //             wire into a mid-wire T, a wire dragged from a wire point, the Ground tool, a move, a refused overlap (no
 //             change), rotate, mirror, delete (its stubs pruned), a deleted wire splitting a net, Start a circuit; the
-//             info strip's notices (a placement says nothing, a merge is said until the text moves); a netlist of parts
+//             info strip's notices (a placement says nothing, a merge is said until the text moves; one that runs out
+//             at the idle rate, with no input, asks for that frame: Panel.h "Unchanged frames"); a netlist of parts
 //             the view cannot draw (no Start, the Not drawn banner before the count)
 //   UNDO      Cmd-Z and Cmd-Shift-Z in either view undo and redo the other's steps; so do the toolbar's Undo and Redo
 //   OVERTAKEN a drag whose base a merge (Claude's write) moves is cancelled and changes nothing; that write moving a
@@ -60,7 +61,8 @@
 //             on the slots of their dials; a drag up on one turns its dial (the program card's) and leaves the text
 //             alone, the info strip saying its value; a double-click its default, closing the drag its second press
 //             began; the body still moves the part; a switch's chip steps its position; a program that calls the
-//             module's set() itself gets no knobs, and the info strip says why
+//             module's set() itself gets no knobs, and the info strip says why; the host's automation of a dial moves
+//             the view (the full rate) and it settles a quarter second after
 //   PLAY      a netlist no program #includes: the banner's Play this circuit writes program.fm (CirTemplates.h's host
 //             program, the library tabs it needs), runs it, the view staying on the netlist, and offers Undo, which
 //             gives program.fm's text back in one step; a probe's reason the strip draws (a node typed since RUN)
@@ -945,6 +947,17 @@ PROBE(gui, schematic)
             std::printf("not drawn: %s\n", v.stripRight().c_str());
             P.eq("empty.undrawn_banner_and_count", v.stripRight() == "Not drawn: Q1 (a BJT: Phase 2)   1 PROBLEM" ? 1 : 0, 1);
             P.eq("empty.start_refused_says", !v.startCircuit() && v.notice() == "Start a circuit is for an empty netlist" ? 1 : 0, 1);
+            // Its 4 s run out at the idle rate with no input: that frame draws (Panel.h "Unchanged frames").
+            host.draw();
+            int ticks = 0;
+            while (!v.notice().empty() && ticks < 80)
+            {
+                host.tick(1, 1.0f / 12.0f);
+                if (!v.notice().empty())
+                    host.draw();
+                ++ticks;
+            }
+            P.eq("draw.notice_ends", v.notice().empty() && panel.needsDraw() ? 1 : 0, 1);
         }
     }
 
@@ -1927,6 +1940,17 @@ PROBE(gui, schematic)
         }
         P.eq("dials.checked", checkSettled(host, panel.codeAssist()) ? 1 : 0, 1);   // the picture the same each run
         writePng(P, host, "gui.schematic.dials.png", "dials");
+        {
+            // The host's automation of Ptone's dial turns its knob with no input here: the view moves (the full rate)
+            // while it does and a quarter second after (Items.h Stirred), then settles.
+            host.settle();
+            juce::AudioProcessorParameter& tone = *r.processor.getParameters()[1];
+            tone.setValueNotifyingHost(tone.getValue() + (tone.getValue() < 0.5f ? 0.05f : -0.05f));
+            host.tick(1);
+            P.eq("dials.automation_moves", !v.settled() && panel.wantsFullRate() ? 1 : 0, 1);
+            host.tick(20);
+            P.eq("dials.automation_settles", v.settled() ? 1 : 0, 1);
+        }
         frame(v, host);                           // 100 %, the drawing centred: room in the canvas's lower left
         host.settle();
         // dragging Pdrive's knob 60 px up turns the dial of its slot (the program card's): +0.4 of its range
