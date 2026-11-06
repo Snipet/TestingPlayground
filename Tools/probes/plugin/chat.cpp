@@ -99,7 +99,9 @@
 //            the defaults; a word it does not take is refused; a failing check at the defaults sends the turn on with
 //            words that say each check takes its own dials (not "the dials as they are now"); measure_output,
 //            view_sound and trace take the dials as the user has them, or with dials_from defaults at the defaults,
-//            the first line saying so, and refuse snapshot; view_sound's picture through MCP at least 800 px wide
+//            the first line saying so, and refuse snapshot; compare's dials defaults puts the dials no side sets at
+//            the defaults (the first line saying so; own lays a {dials} side over the user's), and refuses a word it
+//            does not take; view_sound's picture through MCP at least 800 px wide
 //   TUNE     tune_dials: a level for an RMS (an instrument) or a gain for a gain (an effect): the goal met, the dial
 //            set (measured afterwards, it gives the goal); an unknown dial an error result
 //   TRIAL    try_edits (ChatScenario.h): measure_output with a passage edited and a file added on a copy says so in
@@ -2141,6 +2143,18 @@ PROBE(plugin, chat)
             P.eq("renderdials.view_sound", has(looked, said) && has(looked, "Dials: " + defDials + ".") ? 1 : 0, 1);
             P.eq("renderdials.trace", traced.rfind(said, 0) == 0 && has(traced, "; dials " + defDials + ";") ? 1 : 0, 1);
             P.eq("renderdials.bad_refused", wrong.isError && has(allText(wrong), "dials_from is current") ? 1 : 0, 1);
+            // compare's own dials: own (the default) lays B's level over the user's dials, the same as A's; defaults puts
+            // the dials no side sets at the program's defaults (A, the editor's files, at the default level against B's
+            // own), the first line saying so; a word it does not take refused.
+            const juce::var givenUp = input({ { "dials", input({ { levelDial, static_cast<double>(up) } }) } });
+            const std::string cmpOwn = toolText(sa.mcpCall("compare", input({ { "a", "editor" }, { "b", givenUp } })));
+            const std::string cmpDefaults = toolText(sa.mcpCall("compare", input({ { "a", "editor" }, { "b", givenUp }, { "dials", "defaults" } })));
+            const pg::ChatAgent::McpResult cmpWrong = sa.mcpCall("compare", input({ { "a", "editor" }, { "b", "editor" }, { "dials", "snapshot" } }));
+            std::printf("compare, own dials:\n%s\ncompare, dials defaults:\n%s\n", cmpOwn.c_str(), cmpDefaults.c_str());
+            P.eq("renderdials.compare_own", has(cmpOwn, "; the same dials.") && !has(cmpOwn, said) ? 1 : 0, 1);
+            P.eq("renderdials.compare_defaults", cmpDefaults.rfind(said, 0) == 0 && has(cmpDefaults, "; dials " + std::string(levelDial) + " ")
+                                                     && !has(cmpDefaults, "Identical bits") ? 1 : 0, 1);
+            P.eq("renderdials.compare_bad_refused", cmpWrong.isError && has(allText(cmpWrong), "dials is own") ? 1 : 0, 1);
             // view_sound's picture through MCP, made to fit a tool's result from a JPEG's own bytes: most of its width
             // (sized from the PNG's bytes, it was 391 px of 1120).
             {

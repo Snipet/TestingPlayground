@@ -565,7 +565,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   and the transport once a block, the events at their samples), so a phrase and the wheels give the same bits at any
   block size, and a moving dial, as in a DAW, does not; `dsp.tune` and `plugin.chatexample` check both at 64 and 333.
   measure_output, view_sound and trace also take `dials_from` (current or defaults: `scenario::dialsFrom`; not in a
-  check's render settings, which set_checks' own covers, nor tune_dials'), the result's first line saying defaults.
+  check's render settings, which set_checks' own covers, nor tune_dials'), and compare its own `dials` (own, current or
+  defaults), the result's first line saying defaults.
   `try_edits` apply to a copy of the editor's files with edit_file's rule (in measure_output, view_sound and compare's
   b), and the result's first line says nothing changed: these tools stay out of `kChangingTools`. compare
   (`ChatCompare`, `dsp/Compare.h`) renders two sources in two Sessions with one request; its "playing" is the

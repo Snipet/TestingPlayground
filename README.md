@@ -932,7 +932,8 @@ to edit a part's line to move it.
     note-on 52"). **Trial edits** (`try_edits`) render a change on a copy of the files: Claude tests a fix before it
     makes it, and your editor, its undo and what plays stay as they are. `Source/plugin/ChatScenario.h`.
   - **compare** renders two versions alike (the editor's files, what plays, a saved version or a preset of the
-    project open, other dial settings) and says whether they are the same to the last bit, or how and where they
+    project open, other dial settings; the dials a side does not set as you have them, or at the program's defaults
+    when Claude asks) and says whether they are the same to the last bit, or how and where they
     differ: the difference's level and when, a gain or a delay that explains it, the octave bands, the measurements
     that moved, the code and the dials that differ; with a picture of both on request. `Source/dsp/Compare.h`.
   - **trace** finds where a problem starts ("it blows up when I push the resonance", "it went silent", "it clicks"):

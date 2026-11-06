@@ -24,7 +24,8 @@
 // dials_from: current | defaults, measure_output's, view_sound's and trace's: the dials a render does not name as they
 // are in the plugin now (the default; the caller fills Request::current) or at the program's defaults (it leaves it
 // empty). A one-shot render has no later, so set_checks' snapshot is not among them; compare's word is its own (dials:
-// own or current). Not in a check's render settings either: set_checks takes its own, for every check.
+// own, current or defaults; its first line is dialsLine's too). Not in a check's render settings either: set_checks
+// takes its own, for every check.
 //
 // try_edits: [{file, old_text, new_text} or {name, content}] on a copy of the editor's files, in order, with
 // edit_file's rule (old_text occurs exactly once) and write_file's (a whole file, new or replaced): measure_output,

@@ -1,9 +1,10 @@
 // Source/plugin/ChatCompare.cpp: the chat's compare (ChatAgent.h): two of the program's sources rendered offline
 // alike and compared (dsp/Compare.h), read-only. A side is the editor's files, what plays, a saved version of the
 // project open (or another project's), a preset of it or a dial setting over the editor's files, or the user's
-// recording ("capture", ChatScenario.h); each renders with its own dials (a version's, a preset's) unless `dials` is
-// "current" (a preset's and a {dials} side's still apply). Its result is at most twelve lines, and a picture when
-// asked (SoundPicture.h's drawPair).
+// recording ("capture", ChatScenario.h); each renders with its own dials (a version's, a preset's) over the plugin's,
+// unless `dials` is "current" (the plugin's; a preset's and a {dials} side's still apply) or "defaults" (its own over
+// the program's defaults, the plugin's aside). Its result is at most twelve lines, and a picture when asked
+// (SoundPicture.h's drawPair).
 #include "plugin/ChatAgent.h"
 
 #include "plugin/ChatScenario.h"
@@ -220,7 +221,7 @@ namespace playground
               { "b", claude::object({ { "description", "Like a" } }) },
               { "scenario", scenario::schema() },
               { "try_edits", scenario::trialSchema() },
-              { "dials", claude::object({ { "enum", juce::Array<juce::var>{ "own", "current" } } }) },
+              { "dials", claude::object({ { "enum", juce::Array<juce::var>{ "own", "current", "defaults" } } }) },
               { "picture", claude::object({ { "type", "boolean" } }) },
               { "detail", claude::object({ { "type", "boolean" } }) } });
         juce::var schema = claude::object({ { "type", "object" }, { "properties", props } });
@@ -233,9 +234,10 @@ namespace playground
                 "a, b: playing is the running program's own code (not the frozen copy it plays once its dials hold still); "
                 "version:N is the open project's (one not kept lists those kept); project:Name@N, @N left out its newest; "
                 "preset:Name and {dials: {...}} lay dials over the editor's files; capture is the user's recording. dials: "
-                "own (each side's saved values, the default) or current (the plugin's; a preset's and {dials} still "
-                "apply). An effect's input: the scenario's, else noise. try_edits apply to b; detail adds the difference "
-                "over time; picture draws both (about 1,000 tokens)." },
+                "own (each side's saved values over the plugin's, the default), current (the plugin's; a preset's and "
+                "{dials} still apply) or defaults (each side's own over the program's defaults). An effect's input: the "
+                "scenario's, else noise. try_edits apply to b; detail adds the difference over time; picture draws both "
+                "(about 1,000 tokens)." },
               { "eager_input_streaming", true },
               { "input_schema", schema } });
     }
@@ -274,14 +276,18 @@ namespace playground
             return done(why, true);
         if (a.capture || b.capture)
             req.tailSeconds = 0.0f;                          // as long as the recording, no more
-        const bool current = input.getProperty("dials", juce::var()).toString() == "current";
+        const juce::String which = input.getProperty("dials", juce::var()).toString();
+        if (which.isNotEmpty() && which != "own" && which != "current" && which != "defaults")
+            return done("dials is own (each side's saved values over the plugin's), current (the plugin's) or defaults (each "
+                        "side's own over the program's defaults).", true);
+        const bool current = which == "current", defaults = which == "defaults";
         measure::CompareSide A, B;
-        const std::map<std::string, float> now = currentDials();
+        const std::map<std::string, float> now = defaults ? std::map<std::string, float>{} : currentDials();
         for (const auto& [side, from] : { std::pair<measure::CompareSide*, Side*>{ &A, &a }, { &B, &b } })
         {
             side->files = from->files;
             side->request = req;
-            side->request.current = now;
+            side->request.current = now;                 // none: the dials no side sets at the program's defaults
             if (!current || from->given)                 // over the scenario's (a recording's, at its start)
                 for (const auto& [name, x] : from->dials)
                     side->request.dials[name] = x;
@@ -303,7 +309,7 @@ namespace playground
             return done(scenario::trialLine(trials) + c.error, true);
 
         const measure::Sound& rendered = a.capture ? c.b : c.a;
-        std::string out = scenario::trialLine(trials);
+        std::string out = scenario::trialLine(trials) + scenario::dialsLine(defaults && !req.fromCapture);
         out += "Compared offline (nothing that plays changed): A is " + a.words + "; B is " + b.words + (trials > 0 ? " with the trial edits" : "")
              + ". Both: " + rendered.title + ", at " + number(c.rate) + " Hz in blocks of "
              + (req.blocks.empty() ? std::to_string(req.block) : std::string("the recording's sizes")) + ".\n";
