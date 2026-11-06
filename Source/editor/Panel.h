@@ -234,6 +234,7 @@ namespace playground::ui
         const Item& guiItem(int kind, int k) const;   // kind 0: a pad, 1: an envelope, 2: tabs, 3: a keyboard, 4: a shader
         void chooseGuiPage(int node, int page);
         void scrollGui(float dx, float dy);
+        int layouts() const noexcept { return layouts_; }    // layout() calls so far (a scroll makes none)
         funkgui::Point centreOfView(bool panel) const;                    // the CODE or the PANEL cell
         funkgui::Point centreOfButton(int slot, int value) const;         // a buttons dial's row for that value
         funkgui::Rect chatCard() const noexcept { return card_; }
@@ -555,7 +556,8 @@ namespace playground::ui
         int modelItem_ = -1, thinkingItem_ = -1, fastItem_ = -1, webItem_ = -1, sendItem_ = -1;
         funkgui::CellModel* zoom_ = nullptr;             // the zoom's steps (zoomModel_)
         float width_ = 0.0f, height_ = 0.0f;
-        uint32_t layoutRevision_ = 0;                    // bumps with each layout()
+        uint32_t layoutRevision_ = 0;                    // bumps with each layout() and scroll (what moved)
+        int layouts_ = 0;                                // layout()'s calls (probes)
         std::string title_, subtitle_, status_, meter_;
         std::string meterAlerts_, meterLoad_;            // meter_'s two parts, drawn either side of the snowflake
         bool frozenShown_ = false;                       // the snowflake: the frozen copy plays

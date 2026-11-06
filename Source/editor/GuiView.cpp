@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdlib>
 #include <limits>
 #include <sstream>
@@ -84,23 +85,50 @@ namespace playground::ui
             clear(spec);
             return;
         }
+        // Laid out once at no scroll (the content's places): the scroll only moves what is shown (scrolled()).
         pages_.resize(spec.gui.nodes.size(), 0);
-        gui_ = layoutGui(spec, controls, measureText, pages_, area, scrollX_, scrollY_);
-        if (gui_.maxScrollY > 0.0f)                      // a gutter for the scroll bar
+        content_ = layoutGui(spec, controls, measureText, pages_, area, 0.0f, 0.0f);
+        if (content_.maxScrollY > 0.0f)                  // a gutter for the scroll bar
         {
             area.w -= kScrollGutter;
-            gui_ = layoutGui(spec, controls, measureText, pages_, area, scrollX_, scrollY_);
+            content_ = layoutGui(spec, controls, measureText, pages_, area, 0.0f, 0.0f);
         }
-        pages_ = gui_.pages;
-        scrollX_ = std::clamp(scrollX_, 0.0f, gui_.maxScrollX);
-        scrollY_ = std::clamp(scrollY_, 0.0f, gui_.maxScrollY);
+        pages_ = content_.pages;
+        contentTabs_.assign(spec.gui.nodes.size(), {});
+        for (std::size_t i = 0; i < spec.gui.nodes.size(); ++i)
+            if (spec.gui.nodes[i].kind == GuiKind::tabs)
+                contentTabs_[i] = guiTabRects(spec, static_cast<int>(i), content_.rects[i], measureText);
+        scrollX_ = std::clamp(scrollX_, 0.0f, content_.maxScrollX);
+        scrollY_ = std::clamp(scrollY_, 0.0f, content_.maxScrollY);
+        scrolled();
         place(spec);
     }
 
     void GuiView::clear(const PanelSpec& spec)
     {
-        gui_ = GuiLayout{};
+        content_ = gui_ = GuiLayout{};
+        contentTabs_.clear();
+        shownTabs_.clear();
         place(spec);
+    }
+
+    void GuiView::scrolled()
+    {
+        shownX_ = std::round(scrollX_);
+        shownY_ = std::round(scrollY_);
+        gui_ = content_;
+        for (funkgui::Rect& r : gui_.rects)
+        {
+            r.x -= shownX_;
+            r.y -= shownY_;
+        }
+        shownTabs_ = contentTabs_;
+        for (std::vector<funkgui::Rect>& tabs : shownTabs_)
+            for (funkgui::Rect& r : tabs)
+            {
+                r.x -= shownX_;
+                r.y -= shownY_;
+            }
     }
 
     bool GuiView::choosePage(const PanelSpec& spec, int node, int page)
@@ -114,13 +142,18 @@ namespace playground::ui
         return true;
     }
 
-    bool GuiView::scrollBy(float dx, float dy)
+    bool GuiView::scrollBy(const PanelSpec& spec, float dx, float dy)
     {
-        const float x = std::clamp(scrollX_ + dx, 0.0f, gui_.maxScrollX), y = std::clamp(scrollY_ + dy, 0.0f, gui_.maxScrollY);
+        const float x = std::clamp(scrollX_ + dx, 0.0f, content_.maxScrollX), y = std::clamp(scrollY_ + dy, 0.0f, content_.maxScrollY);
         if (x == scrollX_ && y == scrollY_)
             return false;
         scrollX_ = x;
         scrollY_ = y;
+        if (std::round(x) != shownX_ || std::round(y) != shownY_)
+        {
+            scrolled();
+            place(spec);                                 // each item where the layout put it, moved (and shown or not)
+        }
         return true;
     }
 
@@ -203,7 +236,7 @@ namespace playground::ui
                 std::vector<std::string> titles;
                 for (const int child : n.children)
                     titles.push_back(nodes[static_cast<std::size_t>(child)].text);
-                item.place(static_cast<int>(i), gui_.rects[i], guiTabRects(spec, static_cast<int>(i), gui_.rects[i], measureText),
+                item.place(static_cast<int>(i), gui_.rects[i], i < shownTabs_.size() ? shownTabs_[i] : std::vector<funkgui::Rect>(),
                            std::move(titles), gui_.pages[i], area, seen(i), n.color, n.style);
             }
         }

@@ -3288,6 +3288,7 @@ namespace playground::ui
         placeMutedNotice();
         placeMeter();
         ++layoutRevision_;
+        ++layouts_;
         dirty_ = true;
     }
 
@@ -5381,10 +5382,13 @@ namespace playground::ui
         layout();
     }
 
+    // The wheel over a .gui file's interface: its items move by the scroll and nothing is laid out again (GuiView.h).
     void Panel::scrollGui(float dx, float dy)
     {
-        if (guiView_->scrollBy(dx, dy))
-            layout();
+        if (!guiView_->scrollBy(panelSpec_, dx, dy))
+            return;
+        ++layoutRevision_;                               // their accessibility items moved
+        dirty_ = true;
     }
 
     funkgui::Point Panel::centreOfView(bool panel) const { return centreOf(panel ? panelViewItem_ : viewItem_); }

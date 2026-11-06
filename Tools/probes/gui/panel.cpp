@@ -30,7 +30,12 @@
 //             fields, and the spectrum's strongest point is at the sine's frequency and level (a point either way,
 //             3 dB)
 //   SCROLL    at the least size the CODE view's interface is taller than its strip: the wheel over its ground
-//             scrolls it (its items move up, none drawn outside its area), and over a knob it turns the knob instead
+//             scrolls it (its items move up, none drawn outside its area), and over a knob it turns the knob instead.
+//             A trackpad's run of small steps (Panel::scrollGui, which the wheel over the ground calls) lays nothing
+//             out again (Panel::layouts): every node moves together, by the same whole px, each control and display
+//             shown exactly while its node is on a page shown and at least in part in the area, and each where a
+//             layout at that scroll puts it (the window a px wider and back); a step's cost against a layout's,
+//             printed
 //   PRAGMAS   a program without a .gui file in the PANEL view: its #pragma panel dials from the column's top
 //   READOUTS  a program whose Shared's init sets its fields, with no note played: number displays of shared->level
 //             (0.750), of an int, shared->notes (3, not 3.000), of shared->speed with unit="rpm" decimals=0 scale=60
@@ -223,6 +228,61 @@ panel accent=orange {
         for (int d = 0; d < pg::kMaxDisplays; ++d)
             if (panel.displayItem(d).shown())
                 out.push_back(panel.displayItem(d).cell());
+        return out;
+    }
+
+    // Every control and display of the interface shows exactly while its node is on a page shown and at least in part
+    // in the area (GuiView::place).
+    bool shownFollowsArea(const pg::ui::Panel& panel)
+    {
+        const pg::ui::GuiLayout& L = panel.guiLayout();
+        const std::vector<pg::GuiNode>& nodes = panel.panelSpec().gui.nodes;
+        bool ok = true;
+        for (std::size_t i = 0; i < nodes.size() && i < L.rects.size(); ++i)
+        {
+            const funkgui::Rect& r = L.rects[i];
+            const bool in = L.visible[i] && r.right() > L.area.x && r.x < L.area.right() && r.bottom() > L.area.y
+                         && r.y < L.area.bottom();
+            const pg::GuiNode& n = nodes[i];
+            const bool control = n.kind == pg::GuiKind::knob || n.kind == pg::GuiKind::slider || n.kind == pg::GuiKind::toggle
+                              || n.kind == pg::GuiKind::buttons || n.kind == pg::GuiKind::menu;
+            if (control && n.slot >= 0 && n.slot < pg::kMaxControls)
+                ok = ok && panel.guiControl(n.slot).shown() == in;
+            else if (n.kind == pg::GuiKind::display && n.display >= 0 && n.display < pg::kMaxDisplays)
+                ok = ok && panel.displayItem(n.display).shown() == in;
+        }
+        return ok;
+    }
+
+    // The interface's places as text: every node's rect and whether it is on a page shown, each control's and
+    // display's cell and whether it shows, the pads', envelopes' and tabs' places.
+    std::string itemPlaces(const pg::ui::Panel& panel)
+    {
+        std::string out;
+        char line[160];
+        const auto rect = [&](const char* what, int k, const funkgui::Rect& r, bool shown) {
+            std::snprintf(line, sizeof line, "%s %d: %.2f %.2f %.2f %.2f %d\n", what, k, static_cast<double>(r.x),
+                          static_cast<double>(r.y), static_cast<double>(r.w), static_cast<double>(r.h), shown ? 1 : 0);
+            out += line;
+        };
+        const pg::ui::GuiLayout& L = panel.guiLayout();
+        rect("area", 0, L.area, true);
+        for (std::size_t i = 0; i < L.rects.size(); ++i)
+            rect("node", static_cast<int>(i), L.rects[i], L.visible[i]);
+        for (int c = 0; c < pg::kMaxControls; ++c)
+            rect("control", c, panel.guiControl(c).cell(), panel.guiControl(c).shown());
+        for (int d = 0; d < pg::kMaxDisplays; ++d)
+            rect("display", d, panel.displayItem(d).cell(), panel.displayItem(d).shown());
+        for (int k = 0; k < 8; ++k)
+        {
+            const auto& pad = static_cast<const pg::ui::GuiXyItem&>(panel.guiItem(0, k));
+            rect("pad", k, pad.pad(), pad.shown());
+            const funkgui::Point e = panel.guiItem(1, k).centre();
+            rect("envelope", k, { e.x, e.y, 0.0f, 0.0f }, panel.guiItem(1, k).shown());
+            const auto& tabs = static_cast<const pg::ui::GuiTabsItem&>(panel.guiItem(2, k));
+            for (const funkgui::Rect& t : tabs.tabs())
+                rect("tab", k, t, tabs.shown());
+        }
         return out;
     }
 
@@ -641,6 +701,60 @@ PROBE(gui, panel)
         host.wheel(L->area.right() - 6.0f, L->area.y + 10.0f, -5.0f);
         host.settle();
         writePng(P, host, "gui.panel.small.png", "scroll");
+
+        // A trackpad's run of small steps from the top (Panel::scrollGui, as the wheel over the ground scrolls): the
+        // items move, nothing is laid out again.
+        panel.scrollGui(0.0f, -1.0e4f);
+        host.settle();
+        const int layouts0 = panel.layouts();
+        const std::vector<funkgui::Rect> top = panel.guiLayout().rects;
+        bool together = true, whole = true, follows = shownFollowsArea(panel);
+        float moved = 0.0f;
+        for (int k = 0; k < 12; ++k)
+        {
+            panel.scrollGui(0.0f, 19.0f);                // a trackpad's step, 0.037 of the wheel
+            host.tick(1);
+            const std::vector<funkgui::Rect>& now = panel.guiLayout().rects;
+            const float dy = now.empty() || top.empty() ? 0.0f : now[0].y - top[0].y;
+            for (std::size_t i = 0; i < now.size() && i < top.size(); ++i)
+                together = together && now[i].y - top[i].y == dy && now[i].x == top[i].x && now[i].w == top[i].w
+                        && now[i].h == top[i].h;
+            whole = whole && dy == std::round(dy);
+            follows = follows && shownFollowsArea(panel);
+            moved = -dy;
+        }
+        std::printf("scroll: 12 small steps moved the interface %.0f px\n", static_cast<double>(moved));
+        P.eq("scroll.steps_lay_out_nothing", static_cast<int64_t>(panel.layouts() - layouts0), 0);
+        P.ge("scroll.steps_moved", static_cast<double>(moved), 100.0);
+        P.eq("scroll.steps_move_together", together ? 1 : 0, 1);
+        P.eq("scroll.steps_whole_px", whole ? 1 : 0, 1);
+        P.eq("scroll.steps_shown_follow", follows ? 1 : 0, 1);
+        // Where a layout at that scroll puts each item: the window a px wider and back, laid out twice.
+        {
+            const std::string scrolled = itemPlaces(panel);
+            host.resize(pg::ui::kMinWidth + 1, pg::ui::kMinHeight);
+            host.settle();
+            host.resize(pg::ui::kMinWidth, pg::ui::kMinHeight);
+            host.settle();
+            P.ge("scroll.laid_out_again", static_cast<double>(panel.layouts() - layouts0), 2.0);
+            const std::string laidOut = itemPlaces(panel);
+            if (scrolled != laidOut)
+                std::printf("scrolled:\n%s\nlaid out:\n%s\n", scrolled.c_str(), laidOut.c_str());
+            P.eq("scroll.as_a_layout", scrolled == laidOut ? 1 : 0, 1);
+        }
+        // A scroll step's cost against a layout's (threadSeconds(); printed, as the machine may be busy).
+        {
+            constexpr int kRuns = 40;
+            const double t0 = threadSeconds();
+            for (int k = 0; k < kRuns; ++k)
+                panel.scrollGui(0.0f, k % 2 == 0 ? 19.0f : -19.0f);
+            const double t1 = threadSeconds();
+            for (int k = 0; k < kRuns; ++k)
+                host.resize(pg::ui::kMinWidth + (k % 2 == 0 ? 1 : 0), pg::ui::kMinHeight);
+            const double t2 = threadSeconds();
+            std::printf("scroll: a step %.1f us, a resize's layout %.1f us\n", 1.0e6 * (t1 - t0) / kRuns,
+                        1.0e6 * (t2 - t1) / kRuns);
+        }
         host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
         host.settle();
     }
