@@ -966,7 +966,21 @@ namespace playground
             t = 0.0f;
         frame_.program = current_ != nullptr ? current_->program() : 0;
         frame_.rate = fs_;
-        if (current_ != nullptr && current_->taps() > 0)
+        // A panel's edit's taps (setTaps), when they are of the program that plays; else the program's own.
+        if (const uint64_t g = tapGenIn_.load(std::memory_order_acquire); g != tapSeen_)
+        {
+            TapTable t;
+            if (tapSet_.read(t))                         // else one is being written: the next block reads it
+            {
+                tapWant_ = t;
+                tapSeen_ = g;
+            }
+        }
+        const bool edited = current_ != nullptr && tapWant_.program != 0 && tapWant_.program == current_->program();
+        const int tapCount = current_ == nullptr ? 0
+                           : edited              ? static_cast<int>(std::min<uint32_t>(tapWant_.count, kMaxDisplays))
+                                                 : std::min(current_->taps(), kMaxDisplays);
+        if (current_ != nullptr && tapCount > 0)
         {
             int instance = -1;
             if constexpr (kInstrument)
@@ -981,8 +995,9 @@ namespace playground
             }
             else
                 instance = 0;
-            for (int t = 0; t < std::min(current_->taps(), kMaxDisplays); ++t)
-                frame_.taps[t] = current_->tap(t, instance);
+            for (int t = 0; t < tapCount; ++t)
+                frame_.taps[t] = edited ? current_->tapOf(tapWant_.taps[static_cast<std::size_t>(t)], instance)
+                                        : current_->tap(t, instance);
         }
         // The player and the host (Meters' second part): the transport, the keys held, the voices.
         frame_.samples += static_cast<uint64_t>(n);
@@ -1023,6 +1038,14 @@ namespace playground
         publishProbes(n);
         ++frame_.frame;
         meters_.publish(frame_);
+        tapsRead_.store(tapSeen_, std::memory_order_release);   // a panel's taps, in the meters now (setTaps)
+    }
+
+    // ---- a panel's taps (Engine.h, setTaps) ------------------------------------------------------------------------------
+    uint64_t Engine::setTaps(const TapTable& table) noexcept
+    {
+        tapSet_.publish(table);
+        return tapGenIn_.fetch_add(1, std::memory_order_release) + 1;
     }
 
     // ---- the probes (Engine.h, "Probes") ---------------------------------------------------------------------------------
