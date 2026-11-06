@@ -219,7 +219,7 @@ namespace playground::measure
         if constexpr (kInstrument)
         {
             Request r = request.render;
-            if (r.phrase.empty() && r.events.empty())
+            if (r.phrase.empty() && r.events.empty() && !r.startKey())
             {
                 std::vector<int> notes;
                 for (const int n : request.render.notes)

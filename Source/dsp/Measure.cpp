@@ -917,6 +917,13 @@ namespace playground::measure
             || !events.empty() || !transport.empty() || !blocks.empty() || input != nullptr || !frames.empty();
     }
 
+    bool Request::startKey() const
+    {
+        return std::any_of(wheels.begin(), wheels.end(), [](const WheelMove& w) {
+            return w.wheel == Wheel::buttons && ((std::clamp(std::lround(w.value), 0L, static_cast<long>(kMaxButtons)) >> wheelcc::kStartBit) & 1L) != 0;
+        });
+    }
+
     std::string scenarioText(const Request& r)
     {
         std::vector<std::string> parts;
@@ -1322,7 +1329,8 @@ namespace playground::measure
 
         // An instrument's MIDI: `keys` held from the start until offAt (the wheels where the request puts them, at the
         // start, before the notes), or (keys null) the request's scenario: its phrase (else its notes held for holdN), the
-        // wheels after those, a recording's events in place of the notes; with their marks.
+        // wheels after those (the start key's note among them: Request::startKey), a recording's events in place of the
+        // notes; with their marks.
         [[maybe_unused]] void noteParts(Timeline& tl, const Request& req, const std::vector<int>* keys, std::size_t offAt, double rate)
         {
             struct Ev
@@ -1356,7 +1364,8 @@ namespace playground::measure
             if (keys == nullptr)
             {
                 // The buttons as the wheel sends them: in time order, a part's control change where its 7 bits change
-                // (from none down, the Engine's rest).
+                // (from none down, the Engine's rest), and the start key's note while its bit is down (after the
+                // controls at its sample: the ranks).
                 std::vector<const WheelMove*> pressed;
                 for (const WheelMove& w : req.wheels)
                     if (w.wheel == Wheel::buttons)
@@ -1372,6 +1381,9 @@ namespace playground::measure
                         if (const uint32_t part = (to >> (b * kButtonBits)) & 0x7Fu; part != ((mask >> (b * kButtonBits)) & 0x7Fu))
                             evs.push_back({ at, 0, Event{ 0, EventKind::controller, static_cast<uint8_t>(kButtons + b),
                                                           static_cast<float>(part) / 127.0f } });
+                    if (const bool down = ((to >> kStartBit) & 1u) != 0; down != (((mask >> kStartBit) & 1u) != 0))
+                        evs.push_back(down ? Ev{ at, 2, Event{ 0, EventKind::noteOn, kStartNote, static_cast<float>(kStartVelocity) / 127.0f } }
+                                           : Ev{ at, 1, Event{ 0, EventKind::noteOff, kStartNote, 0.0f } });
                     mask = to;
                 }
                 for (const WheelMove& w : req.wheels)
@@ -1887,7 +1899,7 @@ namespace playground::measure
         if constexpr (kInstrument)
         {
             // The notes held together from the start (or the scenario's phrase): the held part ends at the last note-off.
-            const bool phrased = !request.phrase.empty() || !request.events.empty();
+            const bool phrased = !request.phrase.empty() || !request.events.empty() || request.startKey();
             std::vector<int> notes;
             if (phrased)
             {

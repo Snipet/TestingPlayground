@@ -55,6 +55,12 @@ namespace playground
         inline constexpr uint8_t kButtons = 21;           // 21 to 24: the buttons' mask, 7 bits each (bits 0-6, 7-13,
         inline constexpr int kButtonCcs = 4;              // 14-20, 21-27)
         inline constexpr int kButtonBits = 7;
+        // The start key (the PS button, host.fm's bit 17): the wheel also plays a note while it is down, its note-on
+        // after the control changes of the press and its note-off after those of the release (plugin/WheelMap.h's
+        // Map, and a render's scenario: dsp/Measure.cpp's noteParts).
+        inline constexpr int kStartBit = 17;
+        inline constexpr uint8_t kStartNote = 36;         // C2
+        inline constexpr uint8_t kStartVelocity = 100;    // of 127
         inline constexpr uint8_t kLsb = 32;
         inline constexpr int kAxes = 4;                   // steering, throttle, brake, clutch: kSteering + axis
         inline constexpr int kCentre = 8192;

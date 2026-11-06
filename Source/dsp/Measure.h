@@ -109,7 +109,7 @@ namespace playground::measure
         gear,                                     // -1 reverse, 0 neutral, 1..7 (rounded)
         buttons,                                  // its buttons (host->buttons): the mask, a bit a button, 0..kMaxButtons,
                                                   // sent as the wheel sends it (wheelcc 21 to 24: a part's control change
-                                                  // when its 7 bits change)
+                                                  // when its 7 bits change; the start key's note while bit 17 is down)
     };
     inline constexpr int kWheelKinds = static_cast<int>(Wheel::buttons) + 1;
     inline constexpr int kMaxButtons = (1 << 24) - 1;     // bits 0 to 23, each mask a float holds exactly
@@ -193,6 +193,9 @@ namespace playground::measure
         bool sameRender(const Request& o) const;
         // Anything of a scenario beyond the notes held together: a phrase, moves, wheels, host edits, a recording.
         bool scenario() const;
+        // The wheels press the start key (the buttons' bit wheelcc::kStartBit): the wheel's note plays beside the notes,
+        // so a report or a view takes what plays as a phrase.
+        bool startKey() const;
     };
 
     // What a request plays, by absolute sample (Session::timeline): the plan a render follows, and what the click

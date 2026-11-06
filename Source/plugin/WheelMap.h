@@ -127,8 +127,9 @@ namespace playground::wheel
     // that a program whose voice runs only while it has a note (an engine that cranks on its first key and then keeps
     // itself going) starts without a keyboard. Its bit stays in the buttons' mask too.
     inline constexpr int kStartButton = 25;                  // the PS button (bit 17)
-    inline constexpr uint8_t kStartNote = 36;                // C2
-    inline constexpr uint8_t kStartVelocity = 100;
+    inline constexpr uint8_t kStartNote = wheelcc::kStartNote;          // C2 (a render's scenario plays it too)
+    inline constexpr uint8_t kStartVelocity = wheelcc::kStartVelocity;
+    static_assert(kBits[wheelcc::kStartBit].button == kStartButton && kBits[wheelcc::kStartBit].pad == Pad::none);
 
     // A MIDI message on channel 1: a control change (its number and 7-bit value), or the start key's note.
     struct Message

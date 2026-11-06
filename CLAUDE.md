@@ -558,10 +558,10 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - **A scenario and trial edits** (`plugin/ChatScenario.h`; `measure::Request`'s scenario, `Timeline`, `RenderHooks`):
   measure_output, view_sound, each check (it keeps its scenario), tune_dials and compare take one `scenario` property
   (its schema one line, its details in the prompt's CHECKING YOUR WORK): a phrase, dial moves, wheels (a racing
-  wheel's `buttons` a mask, its 7-bit parts sent in time order where they change, as the wheel sends them), host
-  edits, the rate and the block ("host": `ChatHost::chatHostRate`, `chatHostBlock`, filled in before each render;
-  "capture": the
-  user's recording, through `scenario::captured` alone). A render plays host blocks as the processor does (the dials
+  wheel's `buttons` a mask, its 7-bit parts sent in time order where they change, as the wheel sends them, and the
+  start key's note while bit 17 is down: `Request::startKey`, which makes the report and the view take it as a
+  phrase), host edits, the rate and the block ("host": `ChatHost::chatHostRate`, `chatHostBlock`, filled in before
+  each render; "capture": the user's recording, through `scenario::captured` alone). A render plays host blocks as the processor does (the dials
   and the transport once a block, the events at their samples), so a phrase and the wheels give the same bits at any
   block size, and a moving dial, as in a DAW, does not; `dsp.tune` and `plugin.chatexample` check both at 64 and 333.
   measure_output, view_sound and trace also take `dials_from` (current or defaults: `scenario::dialsFrom`; not in a
