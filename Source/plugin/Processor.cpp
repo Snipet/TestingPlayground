@@ -419,6 +419,7 @@ namespace playground
                 keepDry(channels.data(), numCh, len);
             largestCall_ = std::max(largestCall_, len);
             capture_.input(channels.data(), numCh, len);
+            trimGate();                                          // the A/B's: a lower program waits for the trim
             engine_.process(channels.data(), numCh, len, std::span<const Event>(events_.data(), numEvents));
             capture_.output(channels.data(), numCh, len);
             trimOutput(channels.data(), numCh, len);             // the A/B's matched loudness (ProcessorAb.cpp)
@@ -1074,6 +1075,7 @@ namespace playground
         }
         picturesIdle();                                          // the pictures' GPU context, let go when idle
         journalPoll();                                           // what moved since the last poll (ProcessorLive.cpp)
+        abSessionLoaded();                                       // a session loaded since ends the A/B (ProcessorAb.cpp)
         if (compiler_.revision() != seen_)
         {
             const CompileStatus s = compiler_.status();
@@ -1123,6 +1125,7 @@ namespace playground
             }
         }
         abMatched();                                             // the A/B's loudness, once measured
+        abFollowDials();                                         // and again once its dials moved and came to rest
         // Dials Claude set, after the compile that may have brought them: host gestures, on this thread.
         std::vector<std::pair<int, float>> dials;
         {
@@ -1202,11 +1205,22 @@ namespace playground
                 if (!projectPreset_.empty())
                     program.setProperty(kProjectPreset, juce::String::fromUTF8(projectPreset_.c_str()), nullptr);
             }
-            program.appendChild(filesTree(kRunTag, running_), nullptr);
+            // While an A/B is on (or its Close or Keep compiles), what played before it began (or the files on their
+            // way), and those dials while each side has its own: a side never kept is not what the session plays.
+            const Sources& run = abKept_.on ? abKept_.run : running_;
+            program.appendChild(filesTree(kRunTag, run), nullptr);
             program.appendChild(filesTree(kDraftTag, draft_.files), nullptr);
-            keys = circuits::keysOf(running_);
+            keys = circuits::keysOf(run);
             for (std::string& k : circuits::keysOf(draft_.files))
                 keys.push_back(std::move(k));
+            if (abKept_.on && abKept_.dials)
+                for (int c = 0; c < kMaxControls; ++c)
+                {
+                    juce::ValueTree p = state.getChildWithProperty(kParamId, juce::var(idOf(c)));
+                    const float norm = abKept_.norms[static_cast<std::size_t>(c)];
+                    if (p.isValid() && std::isfinite(norm))
+                        p.setProperty(kParamValue, static_cast<double>(std::clamp(norm, 0.0f, 1.0f)), nullptr);
+                }
         }
         // The self-test's answers for the netlists of the program that plays and of the draft (Answers::of: each once).
         if (const std::vector<std::pair<std::string, std::string>> answers = circuits::answers().of(keys); !answers.empty())
@@ -1466,7 +1480,12 @@ namespace playground
             baseDials_.clear();
             draft_ = std::move(draft);
             ++draftRevision_;
+            abKept_ = {};                                        // an A/B's: the session's program plays, as saved
         }
+        // An A/B (ProcessorAb.cpp) ends: its compile still waiting is taken back (it would play over the session's
+        // program), the session's program plays untrimmed from its first block, and poll() ends it once that is out.
+        abLoading_.store(true);
+        (void)compiler_.withdraw(abQueued_.load());
         // The self-test's answers it kept (each read back as this FMinus's answer for its key, or left out), stored
         // before it compiles: the program plays its refined configuration from the first block.
         const juce::ValueTree kept = program.getChildWithName(kCircuitsTag);
@@ -1481,6 +1500,7 @@ namespace playground
         adoptMeaning(s);                                         // the values are the session's program's now
         journal_.dialsNote(Journal::Who::host, "loaded a saved state (the program, its files and its dials)");
         syncDials();
+        abStateLoaded_.store(std::max<uint64_t>(1, s.request));
     }
 
     // ---- EditorPort ------------------------------------------------------------------------------------------------------

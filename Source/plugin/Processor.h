@@ -26,7 +26,9 @@
 //     run="1"/>; a state without one leaves the folder as it is).
 //   - A/B listening (ProcessorAb.cpp; EditorPort::ab): two versions of a project, or the editor's files and a
 //     version, played in turn as runs of their files, the louder turned down on the Engine's output (AbMatch.h measures
-//     them offline), until one is kept (its files the draft) or it ends; never in the session.
+//     them offline), until one is kept (its files the draft) or it ends. Not in the session itself: a session saved
+//     while it is on keeps what played before it began (and those dials, when each side has its own), as Close would
+//     put back, and a session loaded ends it.
 //
 // What a host may do, and what the Engine sees of it:
 //   - a block larger than prepareToPlay announced: the Engine gets it in parts of at most that size;
@@ -358,13 +360,15 @@ namespace playground
         uint64_t defaultsRequest_ = 0;
         // A/B listening (ProcessorAb.cpp; EditorPort::ab), the message thread's: what it shows (`st`), each side's dials (its
         // own, by name: a version's saved ones, Current's as they were, then as the user left them on that side), its
-        // circuits' answers (a version's, restored before it compiles), the request that compiled each side last and the
-        // program that plays it (the trim's key: a refine's when the self-test compiled it again), what played before it
-        // began (its files, program and dials: endAb's), the requests it made (a program that lands from any other ends
-        // it, once its request is past `seenRequest`, the newest known when it began), the side's compile on its way, the
-        // loudness job asked for last.
+        // circuits' answers (a version's, restored before it compiles), the request that compiled each side last (or that
+        // the program it plays answers) and the program that plays it (the trim's key: a refine's when the self-test
+        // compiled it again), what played before it began (its files, program and dials: endAb's), the requests it made (a
+        // program that lands from any other ends it, once its request is past `seenRequest`, the newest known when it
+        // began), the side's compile on its way, the loudness job asked for last and the dials it measured each side at
+        // (none while a move waits to be measured), and the dials as the last poll() saw them, since when.
         struct AbRun
         {
+            using Measured = std::array<std::map<std::string, float>, 2>;
             AbState st;
             std::array<std::vector<projectstore::Dial>, 2> dials, saved;   // as they play; a version's as saved
             std::array<std::vector<projectstore::Answer>, 2> answers;
@@ -381,20 +385,51 @@ namespace playground
             uint64_t seenRequest = 0;
             uint64_t pendingRequest = 0;
             uint64_t job = 0;
+            std::optional<Measured> measuredWith;
+            std::array<float, kMaxControls> rawSeen{};
+            double movedAt = 0.0;                                // seconds() then
+            bool restless = false;                               // the dials moved since the last look
         };
         AbRun ab_;
         uint64_t abJobs_ = 0;
+        // Close's or Keep's compile on its way (0: none), its files and dials: until it lands the trims stay (that program
+        // untrimmed, the side that plays as it was) and a session saved keeps those files (abKept_).
+        uint64_t abEnding_ = 0;
+        Sources abEndingFiles_;
+        std::vector<projectstore::Dial> abEndingDials_;
         // A side's dials (its own), for when its compile lands (poll), as a version's are; ends with the next request past it.
         std::vector<projectstore::Dial> abDials_;
         uint64_t abDialsRequest_ = 0;
         ab::Matcher abMatcher_;                                  // the loudness (AbMatch.h), on a thread of its own
         mutable std::mutex abLineMutex_;
         std::string abLine_;                                     // the A/B in words, for Claude (chatAb: any thread)
+        // What a session saved while the A/B is on (or while its Close or Keep compiles) keeps as the program and dials
+        // that play (getStateInformation, any thread; under programMutex_): what played before it began, and the dials
+        // then (normalised) while each side has its own; the files Keep or Close compiles until they land.
+        struct AbKept
+        {
+            bool on = false;
+            Sources run;
+            bool dials = false;
+            std::array<float, kMaxControls> norms{};
+        };
+        AbKept abKept_;
+        // A session loaded (setStateInformation, any thread): its compile's request, for poll() to end the A/B with (the
+        // message thread's); `abLoading_` meanwhile lets the program it plays be untrimmed at once (trimOutput), and
+        // `abQueued_` is the newest request the A/B made, which a session loaded takes back when it still waits.
+        std::atomic<uint64_t> abStateLoaded_{ 0 };
+        std::atomic<bool> abLoading_{ false };
+        std::atomic<uint64_t> abQueued_{ 0 };
         void abLanded(const CompileStatus& s);                   // poll(): a compile landed
         void abMatched();                                        // poll(): the loudness measured, when it is
+        void abSessionLoaded();                                  // poll() and each A/B call: a session loaded ends it
+        void abFollowDials();                                    // poll(): dials moved and at rest measured again
+        AbRun::Measured abMeasureDials() const;                  // each side's dials as a measure now would take them
         void abMeasure();                                        // the loudness asked for again (both sides' as they play)
         void abPublish();                                        // the trims to the audio thread, the line for Claude
-        void abStop();                                           // it ends: nothing more measured, the trims away
+        // It ends: nothing more measured; the trims away, or, while `ending` (Close's or Keep's compile) is on its way,
+        // kept until it lands (abLanded).
+        void abStop(uint64_t ending = 0);
         void abPlay(int side, bool journal);
         bool abSide(const projectstore::Project* p, int version, int k, std::string& why);   // side k read
         void setDialsToDefaults(const Controls& cs);
@@ -488,19 +523,34 @@ namespace playground
         int maxBlock_ = 1;
         int largestCall_ = 0;
 
-        // A/B listening's matched loudness (ProcessorAb.cpp): the program each side plays and its gain (the message
-        // thread writes the gain, then the program; 0: none), and, the audio thread's, the gain as it ramps from one to
-        // the next over 20 ms (smootherstep, one tick per sample) when the program that plays has another. The Engine's
-        // output only (after the recorder, before the bypass), so the meters, the scopes and a recording are untrimmed.
-        struct AbTrim
+        // A/B listening's matched loudness (ProcessorAb.cpp): the programs it knows and the gain each plays at (each
+        // side's, and while Close or Keep compiles, the program on its way at 1; 0: none), and whether a program it does
+        // not know keeps the gain that plays (`hold`: while it is on or ending, so a side's refine, a side's old program
+        // while its next compiles and a program from elsewhere until poll() ends it are never turned up). The message
+        // thread writes them inside a sequence count (odd while it writes); the audio thread keeps the gain it aims at
+        // when the count moved under its read. Then, the audio thread's, the gain as it ramps from one to the next over
+        // 20 ms (smootherstep, one tick per sample) when the program that plays has another. The Engine's output only
+        // (after the recorder, before the bypass), so the meters, the scopes and a recording are untrimmed.
+        struct AbTrims
         {
-            std::atomic<uint64_t> program{ 0 };
-            std::atomic<float> gain{ 1.0f };
+            static constexpr std::size_t kPrograms = 3;
+            std::atomic<uint32_t> sequence{ 0 };
+            std::array<std::atomic<uint64_t>, kPrograms> program{};
+            std::array<std::atomic<float>, kPrograms> gain{};
+            std::atomic<bool> hold{ false };
         };
-        std::array<AbTrim, 2> abTrim_{};
+        AbTrims abTrims_;
         fsdsp::SmoothRamp trimFade_{};
         float trimFrom_ = 1.0f, trimTo_ = 1.0f, trimNow_ = 1.0f;
         bool trimSet_ = false;
+        // A switch never plays above the matched level: a program coming that plays lower waits (Engine::holdPending)
+        // while the one that plays is turned down to its gain (`gateGain_`), and one that plays higher is turned up
+        // only once the program going out is silent (Engine::outgoing).
+        float gateGain_ = 1.0f;
+        bool gating_ = false;
+        // The table read for `program`: false when it moved under the read; else its gain when it is known, and `hold`.
+        bool trimLookup(uint64_t program, float& gain, bool& known, bool& hold) const noexcept;
+        void trimGate() noexcept;                                 // before each Engine call
         void trimOutput(float* const* channels, int numChannels, int numSamples) noexcept;
         // The bypass: w, the Engine's share of the output, 1 while processing and 0 while bypassed, ramped over 20 ms
         // between them (one tick per sample, so the fade does not depend on how the host splits its blocks).
