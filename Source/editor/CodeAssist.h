@@ -86,7 +86,9 @@ namespace playground::ui
     enum CodeStyle : uint16_t
     {
         csPlain = 0, csKeyword, csType, csComment, csNumber, csOperator, csDirective, csString, csFunction, csMember,
-        csAttribute, csPunct, csConstant, csCount
+        csAttribute, csPunct, csConstant,
+        csInactive,                              // a group a conditional skips (#if 0, an #ifndef DEBUG's): dimmed
+        csCount
     };
 
     // The module names the highlighter shows as types, and the constants' (enumeration constants, the top level's
@@ -97,15 +99,34 @@ namespace playground::ui
         std::vector<std::string> constants;      // sorted
     };
 
-    // FMinus by lang::lexLine, a line at a time (the state: inside a block comment).
+    // The conditionals the highlighter dims by: each FMinus tab's conditional directives (#if ... #endif), in order, as
+    // the compile reads them on the plugin's macros (lang::conditionals over the tabs, lang::kDefines), by the tab's
+    // name. A snapshot, never changed: CodeAssist makes a new one when the files' change, and gives the tabs whose
+    // directives read otherwise a highlighter of it (the editor keeps each line's start state).
+    struct Conditionals
+    {
+        static constexpr uint8_t kInert = 1;     // the directive is in a skipped group: dimmed itself
+        static constexpr uint8_t kSkipping = 2;  // the lines after it, to the next conditional, are skipped: dimmed
+        std::map<std::string, std::vector<uint8_t>, std::less<>> files;
+
+        static Conditionals of(const Sources& files);
+    };
+
+    // FMinus by lang::lexLine, a line at a time. The state: bit 0, inside a block comment; the bits above it, the
+    // conditional directives met so far in the file, which index `file`'s flags in `conditionals` (a directive met
+    // past them, as while a snapshot is due after an edit, chooses nothing). A group a conditional skips is one span
+    // of csInactive; a conditional's, a #define's and an #undef's line its parts (the macros as constants).
     class CodeHighlighter final : public funkgui::text::Highlighter
     {
     public:
-        explicit CodeHighlighter(std::shared_ptr<const TypeNames> types) : types_(std::move(types)) {}
+        explicit CodeHighlighter(std::shared_ptr<const TypeNames> types, std::shared_ptr<const Conditionals> conditionals = {},
+                                 std::string_view file = {});
         uint32_t line(std::string_view line, uint32_t stateIn, std::vector<funkgui::text::Span>& out) const override;
 
     private:
         std::shared_ptr<const TypeNames> types_;
+        std::shared_ptr<const Conditionals> conditionals_;
+        const std::vector<uint8_t>* flags_ = nullptr;    // this file's, in conditionals_
     };
 
     // A netlist (a .cir file) by lang::lexCirLine, a line at a time (no state: a SPICE line stands alone), in the code's
@@ -329,6 +350,9 @@ namespace playground::ui
         lang::Service service_;
         uint64_t synced_ = ~uint64_t{ 0 };
         std::shared_ptr<TypeNames> types_ = std::make_shared<TypeNames>();
+        std::shared_ptr<const Conditionals> conditionals_ = std::make_shared<Conditionals>();
+        void updateConditionals();                       // a new snapshot when the files' conditionals change
+        uint64_t conditionalsRevision_ = 0;              // the files' revision the snapshot is of
         funkgui::HostServices* host_ = nullptr;
         funkgui::Rect area_{};
         bool themeDark_ = true;
