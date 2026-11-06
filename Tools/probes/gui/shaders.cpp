@@ -45,7 +45,10 @@
 //             lately down to three quarters of it, the newest kept; the folder scanned at the process's first write
 //             there, not at each (shaderCacheScans), that scan removing a temporary file left long ago and keeping a
 //             new one; RUN's early builds take a shader's inputs at their word (readGuiShaders), and a wrong guess (an
-//             input the program lacks) costs a build, never the result
+//             input the program lacks) costs one build more (two shaderc runs for one shader), never the result; a
+//             compile's four new shaders run shaderc four times and the builds after the compile find them made, and
+//             with a renderer's check of 150 ms (a wait) a program of 100 ms or more compiles in less than the two's
+//             sum (the early builds run while FMinus compiles)
 //   TIME      printed, never checked: a RUN's compile (a small program, and one of 100 ms or more) alone and with four
 //             new shaders, the same four again, on a second instance and after a restart; and four shaders built and
 //             checked one after another (as RUN built them before) and at once
@@ -81,6 +84,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -914,16 +919,75 @@ PROBE(gui, shaders)
                                      { "panel.gui", "panel { row { shader \"still.sc\" inputs=\"cutoff nosuch\" } row { knob "
                                                     "cutoff; knob level } }\n" },
                                      { "still.sc", saltedStill(200) } };
+            const uint64_t runs = pg::shadercRuns();
+            const pg::ShaderCache::Counts before = pg::shaderCache().counts();
             load(guess, wrong);
             guess.settle();
+            const pg::ShaderCache::Counts after = pg::shaderCache().counts();
+            const uint64_t ran = pg::shadercRuns() - runs;
             const pg::CompileStatus c = guess.editorPort().status();
             const pg::ShaderBuild direct = pg::buildShader("still.sc", saltedStill(200), { "cutoff" }, plain);
             P.eq("cache.guess_wrong_right_result", c.panel.shaders.size() == 1 && direct.ok() && c.panel.shaders[0].binary == direct.binary
                                                        && c.panel.shaders[0].inputs == std::vector<std::string>{ "cutoff" } ? 1 : 0, 1);
+            // The guess's build and the program's: one more than a right guess.
+            P.eq("cache.guess_wrong_two_builds", static_cast<int64_t>(after.built - before.built), 2);
+            P.eq("cache.guess_wrong_two_shaderc", static_cast<int64_t>(ran), 2);
             P.eq("cache.guess_reads_inputs", static_cast<int64_t>(pg::readGuiShaders(wrong[1], kInstrument).size()), 1);
             const std::vector<pg::PanelShader> guessed = pg::readGuiShaders(wrong[1], kInstrument);
             P.eq("cache.guess_takes_names", !guessed.empty() && guessed[0].inputs == std::vector<std::string>{ "cutoff", "nosuch" } ? 1 : 0, 1);
         }
+
+        // RUN's early builds (Compiler::build): started before FMinus compiles, so that the builds after the compile
+        // find them made. A compile with four new shaders runs shaderc four times (a right guess costs nothing more),
+        // and the builds after the compile take all four from memory. And they run while FMinus compiles: with a
+        // renderer's check that takes 150 ms for a code it has not seen (as Metal's compile may; here a wait), a
+        // program of 100 ms or more with those four shaders compiles in less than the two's sum, which it would take
+        // were the early builds made before the compile, after it, or not at all.
+        {
+            pg::Engine engine;
+            engine.prepare(48000.0, 256);
+            pg::Compiler compiler(engine);
+            compiler.setFreezing(false);
+            compiler.setSelfTesting(false);
+            pg::ShaderTools x = fresh(root / "early");
+            compiler.setShaderTools(x);
+            const int salt = 31;                         // TIME's salts are never 30 or 31 more than a multiple of 32
+            const uint64_t runs = pg::shadercRuns();
+            const pg::ShaderCache::Counts before = pg::shaderCache().counts();
+            const pg::CompileStatus light = compiler.compileNow(timedFiles(salt, true, false));
+            const pg::ShaderCache::Counts after = pg::shaderCache().counts();
+            bool four = light.ok && light.panel.shaders.size() == 4;
+            for (const pg::PanelShader& sh : light.panel.shaders)
+                four = four && !sh.binary.empty();
+            P.eq("cache.early_compiles", four ? 1 : 0, 1);
+            P.eq("cache.early_builds_each_once", static_cast<int64_t>(after.built - before.built), 4);
+            P.eq("cache.early_shaderc_four", static_cast<int64_t>(pg::shadercRuns() - runs), 4);
+            P.ge("cache.early_made_before_needed",
+                 static_cast<double>(after.memory + after.waited - before.memory - before.waited), 4.0);
+
+            const std::chrono::milliseconds checkTime(150);
+            std::mutex seenMutex;
+            std::set<std::vector<uint8_t>> seen;
+            x.check = [&seenMutex, &seen, checkTime](const std::vector<uint8_t>& binary, std::string&) {
+                {
+                    const std::lock_guard<std::mutex> lock(seenMutex);
+                    if (!seen.insert(binary).second)
+                        return true;
+                }
+                std::this_thread::sleep_for(checkTime);
+                return true;
+            };
+            compiler.setShaderTools(x);
+            const auto t0 = std::chrono::steady_clock::now();
+            const pg::CompileStatus h = compiler.compileNow(timedFiles(salt, true, true));
+            const double total = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            const double checkMs = static_cast<double>(checkTime.count());
+            std::printf("early: a compile of %.1f ms with four checks of %.0f ms at once took %.1f ms (their sum %.1f)\n", h.ms,
+                        checkMs, total, h.ms + checkMs);
+            P.eq("cache.early_heavy_compiles", h.ok && h.panel.shaders.size() == 4 && seen.size() == 4 ? 1 : 0, 1);
+            P.le("cache.early_beside_the_compile", total, h.ms + checkMs);
+        }
+
         std::filesystem::remove_all(root, ec);
     }
 
