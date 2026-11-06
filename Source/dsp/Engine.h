@@ -93,6 +93,18 @@
 // read, at most 4 x kProbeRing ring copies and 12 stat reads and zeroes a call (an instrument's voices a look for the
 // newest a block).
 //
+// A program that stops (Patch.h, "The loop budget"). A call that runs past its budget stops its Patch, which the
+// Engine then calls no more, and it goes at once, fading, since nothing steps: an effect's output from the program's
+// last good samples, held, to its input over 20 ms (smootherstep; the block's input is kept for it), then its input as
+// it comes, as with no program; an instrument's voices of it, each from its last good samples, held, to silence over
+// 20 ms (no stop(): the program plays no more), and no note starts on it. While the program it replaced is still there
+// (an effect's 20 ms crossfade, an instrument's first block or its old voices fading) and the program was offered
+// `revertible` (the compiler's RUN, until settle()), the Engine goes back to the one it replaced instead, which so plays
+// on: an effect's crossfade turns back from where it is, the stopped side fading out under it; an instrument's held
+// keys start again on it (its voices that were fading go on fading). stops() counts the stops of the program that
+// plays, and lastStop() says the newest: the program, the call, the sample (from prepare()) and whether the Engine
+// went back. A stopped program plays no more, even across prepare() (restart() makes it as new: a render's).
+//
 // Flush-to-zero. process() runs in it (fsdsp::ScopedFtz), the mode the programs are compiled for, whoever calls it:
 // the audio thread has it already; an offline render (Measure, the chat's tools) would otherwise make FMinus set and
 // clear it around every call into the program.
@@ -195,11 +207,35 @@ namespace playground
         void process(float* const* channels, int numChannels, int numSamples, std::span<const Event> events) noexcept;
 
         // ---- off the audio thread --------------------------------------------------------------------------------
-        void offer(std::unique_ptr<Patch> patch);     // plays from the next block, as above
+        // Plays from the next block, as above. `revertible`: should it stop while the program it replaces is still
+        // there, the Engine goes back to that one, until settle() (above, "A program that stops").
+        void offer(std::unique_ptr<Patch> patch, bool revertible = false);
+        // The compiler's: `program`, offered revertible, plays on, and the Engine never goes back from it now. False
+        // when it went back from it already.
+        bool settle(uint64_t program) noexcept;
+        uint64_t revertible() const noexcept { return revertible_.load(std::memory_order_acquire); }
         void offerFrozen(std::unique_ptr<Patch::Frozen> frozen);   // taken at a block's start if it fits (above)
         void collect();                               // destroys the programs (and copies) the audio thread handed back
 
         // ---- any thread ------------------------------------------------------------------------------------------
+        // A program's stop (above, "A program that stops").
+        struct Stopped
+        {
+            uint64_t program = 0;                     // its id (Patch::program)
+            Patch::Method call = Patch::Method::none;     // the call that ran past its budget
+            uint64_t at = 0;                          // the sample (from prepare()) its block or voice's part began at
+            bool reverted = false;                    // the Engine went back to the program it replaced
+        };
+        uint64_t stops() const noexcept { return stops_.load(std::memory_order_acquire); }
+        bool lastStop(Stopped& out) const noexcept { return stopped_.read(out); }   // false while published: again
+        // The program that plays with no swap under way as of the last block (0: none, or a swap), when the last block
+        // began and ended (the steady clock's nanoseconds: a start after the end is a block under way, which a call that
+        // runs past its budget makes long) and how long it was (seconds): what the compiler waits on.
+        uint64_t settledProgram() const noexcept { return settled_.load(std::memory_order_acquire); }
+        int64_t lastBlockStartNs() const noexcept { return blockStartNs_.load(std::memory_order_acquire); }
+        int64_t lastBlockNs() const noexcept { return blockNs_.load(std::memory_order_acquire); }
+        double lastBlockSeconds() const noexcept { return blockSeconds_.load(std::memory_order_relaxed); }
+
         float rate() const noexcept { return rate_.load(std::memory_order_relaxed); }
         double tailSeconds() const noexcept { return 5.0; }
         // The busiest recent block's processing time over the block's own length (1 = a whole core), decaying.
@@ -282,6 +318,7 @@ namespace playground
 
         static constexpr int kGrid = 16;                  // the voices' calls end on multiples of it (absolute)
         static constexpr uint64_t kNever = ~uint64_t{ 0 };
+        static constexpr uint64_t kReverted = uint64_t{ 1 } << 63;   // revertible_: the Engine went back from the id
 
         struct Voice
         {
@@ -294,9 +331,20 @@ namespace playground
             bool fading = false;        // stolen (released: its stop() came first), or its program swapped out: gain falls
                                     // to 0, then the voice is free
             bool pedal = false;         // its key let go while the sustain pedal was down: stopped when it comes up
+            bool exiting = false;       // its program stopped: its last samples, held, fade out (above)
             float gain = 1.0f, fall = 0.0f;   // per sample, while fading
+            float lastL = 0.0f, lastR = 0.0f; // its last part's last samples (finite)
             uint64_t fed = 0;           // the feedGen_ its instance's dials were last written at
             uint64_t calledAt = kNever; // the absolute sample of its last circuit call
+        };
+
+        // An effect's side of a program that may stop (above): its last good samples, and its exit (the fade from them
+        // to the input, samples left), current_'s and old_'s.
+        struct Exit
+        {
+            float l = 0.0f, r = 0.0f;
+            int left = 0;
+            bool on = false;
         };
 
         void takePending() noexcept;
@@ -315,6 +363,18 @@ namespace playground
         void firstCalls(int at, int instance) noexcept;
         // The effect's program over the block: its first circuit call, then its process cut at the grid ticks that call.
         void playEffect(float* left, float* right, int n) noexcept;
+        // A program that stops (above): current_ over the block in place (playEffect), or its exit once it has stopped;
+        // old_'s, on the copies of the input; an exit's fade from its held samples to the block's input (inL_, inR_).
+        void runEffect(float* left, float* right, int n) noexcept;
+        void runOldEffect(float* left, float* right, int n) noexcept;
+        void exitEffect(Exit& e, float* left, float* right, int n) noexcept;
+        // An instrument's voice of a stopped program over [from, from + len) of the block: its held samples, fading.
+        void exitVoice(Voice& v, int from, int len, bool onGrid) noexcept;
+        // current_ has stopped: back to old_ when allowed (an instrument's held keys start again on it), else the stop
+        // published; at the block's sample `at`. revert() is the going back alone.
+        void stopCheck(int at) noexcept;
+        bool revert(int at) noexcept;
+        void noteStop(int at, bool reverted) noexcept;
         // A voice of current_ let go at the absolute sample `at`: its instance missed calls if a window was open.
         void freeVoice(Voice& v, uint64_t at) noexcept;
         // A voice of current_ that has had no stop() since its start gets it now, and is released (so its key-up, the
@@ -426,6 +486,21 @@ namespace playground
         int stealFade_ = 96, swapFade_ = 960;         // samples (2 ms and 20 ms at the rate)
 
         std::vector<float> accL_, accR_, voiceL_, voiceR_, dryL_, dryR_, mono_;
+        std::vector<float> inL_, inR_;                // an effect's block's input, kept (above, "A program that stops")
+
+        // A program that stops (above): the effect's sides, whether current_'s stop is published, the block's length
+        // (a revert's dials), the stops published, the program that may be gone back from (offer's `revertible`), and
+        // what the compiler waits on.
+        Exit exitCur_{}, exitOld_{};
+        bool stopNoted_ = false;
+        int blockN_ = 0;
+        fsdsp::Seqlock<Stopped> stopped_;
+        std::atomic<uint64_t> stops_{ 0 };
+        std::atomic<uint64_t> revertible_{ 0 };
+        std::atomic<uint64_t> settled_{ 0 };
+        std::atomic<int64_t> blockStartNs_{ 0 }, blockNs_{ 0 };
+        std::atomic<double> blockSeconds_{ 0.0 };
+
         std::atomic<float> load_{ 0.0f };
         std::atomic<uint32_t> alerts_{ 0 };
         std::atomic<uint64_t> alertTally_{ 0 };       // alertTally (the audio thread's, the only writer)

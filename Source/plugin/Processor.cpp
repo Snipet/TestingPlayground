@@ -719,6 +719,26 @@ namespace playground
     {
         Controls controls;
         std::array<std::vector<std::string>, kMaxControls> options;
+        if (!s.ok && !s.restored.empty())
+        {
+            // A program that stopped as it played, and the one before it played again (Compiler.h, "A program that
+            // stops"): its files, dials and panel, and the stopped one's files what played before them.
+            capture_.noteProgram(s.program, s.restored, s.controls, s.circuits);
+            {
+                const std::lock_guard<std::mutex> lock(programMutex_);
+                if (s.program == program_)
+                    return;
+                controls_ = s.controls;
+                panel_ = s.panel;
+                program_ = s.program;
+                previous_ = running_;
+                running_ = s.restored;
+            }
+            if (run)
+                writeCarry(s, s.controls, s.panel.options, given);
+            updateHostDisplay(juce::AudioProcessor::ChangeDetails().withParameterInfoChanged(true));
+            return;
+        }
         if (!s.ok)
         {
             // The program that played plays on, unless a refine (Compiler.h, "The self-test") compiled it again since
@@ -923,6 +943,15 @@ namespace playground
                     journal_.dialsNote(Journal::Who::user, runWords(s));   // a new dial at its default (apply)
                 else
                     journal_.note(Journal::Who::user, runWords(s));
+            }
+            else if (s.stopped && (!s.restored.empty() || s.program == s.stoppedProgram) && s.stoppedProgram != stopJournaled_)
+            {
+                // A program that stopped as it played, after its run was journalled (Compiler.h, "A program that stops").
+                stopJournaled_ = s.stoppedProgram;
+                const std::string first = s.errors.substr(0, s.errors.find('\n'));
+                const std::size_t at = first.find(": error: ");
+                journal_.note(Journal::Who::plugin, "the program stopped (" + (at == std::string::npos ? first : first.substr(at + 9))
+                                                        + (s.restored.empty() ? "); nothing plays" : "); the program before plays again"));
             }
             if (dialsRequest_ != 0 && s.request >= dialsRequest_)
             {

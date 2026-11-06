@@ -65,6 +65,22 @@
 // One compile offers at a time: compileNow waits for the compile the thread runs (a RUN's, a refine's), and the thread
 // starts none while compileNow compiles, so the program offered last is the one compiled last.
 //
+// A program that stops (Patch.h, "The loop budget"; Engine.h). A RUN's program is offered `revertible`, and the thread
+// waits for its first blocks before it says how the RUN went: until it has played a block with no swap under way, or
+// the audio thread has stopped (no block under way, and none for three of its own, 20 ms at least: a host that calls
+// none); a block under way, which a call past its budget makes long, is waited for (ten seconds at most).
+// Should it stop meanwhile, the Engine has gone back to the program it replaced, and the RUN's outcome is that of a
+// compile that failed: `ok` false and `stopped`, `errors` the stop's message ("program.fm:14:10: error: process() ran
+// past its budget: a loop that never ends?"), and the program that played plays on, its status (`program`, the
+// recipe the freezer and a refine read) as it was. A program that stops later (a note, a dial, the input that
+// sets its loop going; one compileNow or a refine offered) is the Engine's to fade out; this thread, at its next pass,
+// says so in the status (a revision of its own: `ok` false, `stopped`, the stop's message, `sources` the stopped
+// program's files) and plays the program that played before it again: the files of the last program of other files
+// that played (compiled again with their configurations, CircuitPins, under a new id, with the dials' carry) as a
+// refine is offered; their dials in `controls` and `panel`, their files in `restored`, the new id in `program`. With
+// none (the first program, or one a state load brought: no run's, as the processor says), nothing plays until the next
+// RUN. A program that stopped is never gone back to again, nor refined, nor frozen.
+//
 // The dials' carry (Controls.h's DialCarry). Just before it offers a program (a RUN's, compileNow's unless told not to,
 // a refine's), the compiler asks the carrier setDialCarrier gave (the processor's) how the dials come across: what each
 // slot's plain value is under the new declarations, kept in its units, and the host's normalised value it was made
@@ -116,6 +132,12 @@ namespace playground
                                                // or the refine's (above, "The self-test")
         bool        refined = false;           // a refine brought it up to date (above): `program` is the refine's, and
                                                // when `ok`, all but `request`; else the failed compile's outcome stays
+        bool        stopped = false;           // the program of `sources` compiled and stopped as it played (above, "A
+                                               // program that stops"): a call ran past its loop budget, `errors` say which
+        uint64_t    stoppedProgram = 0;        // then its id: `request` when it stopped in its first blocks (or in init),
+                                               // else the program that played (`program` too when nothing plays now)
+        Sources     restored;                  // after such a stop, the files of `program` when this thread played the
+                                               // program before again (above): `controls` and `panel` are its then
         CircuitPins circuits;                  // the configuration each netlist of `program` was generated with
                                                // (Patch::Recipe::pins): what a recording's replay compiles it with
         // The circuit fields of `program`'s main module (Patch.h, "Circuits"; Patch::Recipe::bindings): each one's field,
@@ -227,9 +249,9 @@ namespace playground
     private:
         struct Built;                          // a compile not offered yet (Compiler.cpp)
         // `files` compiled at `rate` as program `id` (CompileStatus::request and program, Patch::program: Meters::program
-        // names it), not offered.
+        // names it), not offered; `pins`, the configurations of its netlists (a program played again after a stop).
         static std::unique_ptr<Built> build(float rate, Sources files, uint64_t id, const ShaderTools& tools,
-                                            ShaderCache& cache, bool keepIr);
+                                            ShaderCache& cache, bool keepIr, const CircuitPins* pins = nullptr);
 
         void run();
         void freezer();                        // the freezer's thread
@@ -238,8 +260,13 @@ namespace playground
         // the status as stored.
         CompileStatus finish(CompileStatus s);
         // A compile the caller ran (compileNow's, a RUN's: its patch offered here when it compiled, with its carry
-        // when `carry`), published.
-        CompileStatus land(std::unique_ptr<Built> b, uint64_t landed, bool carry = true);
+        // when `carry`), published. `watch` (a RUN's): offered revertible, and its first blocks waited for (above, "A
+        // program that stops"); firstBlocks() is the wait, false when the Engine went back from it.
+        CompileStatus land(std::unique_ptr<Built> b, uint64_t landed, bool carry = true, bool watch = false);
+        bool firstBlocks(uint64_t program);
+        // The Engine's stops of the program that plays since last looked at (above): the status, and the program
+        // before it played again. Under mutex_ (let go while it compiles).
+        void checkStops(std::unique_lock<std::mutex>& lock);
         void carryInto(Built& b, const DialCarrier& carrier);   // the carry asked for and set, before the offer
         // The IR: a program taken (its texts when the compile kept them; else, when someone looks, the IR-only compile
         // due; run() makes it), the frozen copy's. Each takes mutex_ itself and bumps the revision.
@@ -261,8 +288,10 @@ namespace playground
         // The status brought up to date by a refine that plays (above): its notes end with `chosen`.
         void finishRefine(CompileStatus s, const std::string& chosen);
         // A compile that plays: its recipe, the self-tests it wants and the landed() count read before it began (a
-        // refine held is stale then: let go).
-        void played(Patch::Recipe recipe, std::vector<circuits::Job> jobs, uint64_t landed);
+        // refine held is stale then: let go). `previous`: the program that played before is kept (previous_) when its
+        // files differ, to play again should this one stop (above); false (a state load's, a program played again after
+        // a stop) forgets it.
+        void played(Patch::Recipe recipe, std::vector<circuits::Job> jobs, uint64_t landed, bool previous = true);
 
         Engine& engine_;
         mutable std::mutex mutex_;
@@ -283,6 +312,11 @@ namespace playground
         // The freezer's: the recipe of the program last offered, whether to freeze and after how long, the values
         // tried for which program.
         Patch::Recipe recipe_;                 // mutex_
+        // A program that stops (above; mutex_): the program before the one that plays, of other files (0: none), the
+        // Engine's stops looked at, and the newest program that stopped (never refined or frozen).
+        Patch::Recipe previous_;
+        uint64_t stopsSeen_ = 0;
+        uint64_t stoppedProgram_ = 0;
         bool freezing_ = true;                 // mutex_
         double freezeAfter_ = kFreezeAfterSeconds;
         uint64_t triedProgram_ = 0;

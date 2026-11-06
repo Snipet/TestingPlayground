@@ -2,6 +2,7 @@
 #include "dsp/Compiler.h"
 
 #include "dsp/Engine.h"
+#include "fminus/CirDoc.h"
 #include "fminus/Circuits.h"
 #include "fminus/Patch.h"
 
@@ -55,16 +56,18 @@ namespace playground
     };
 
     std::unique_ptr<Compiler::Built> Compiler::build(float rate, Sources files, uint64_t id, const ShaderTools& tools,
-                                                     ShaderCache& cache, bool keepIr)
+                                                     ShaderCache& cache, bool keepIr, const CircuitPins* pins)
     {
         auto b = std::make_unique<Built>();
-        Patch::Result r = Patch::compile(files, rate, keepIr);
+        Patch::Result r = Patch::compile(files, rate, keepIr, pins);
         b->ir = std::move(r.ir);
         b->keepIr = keepIr;
         b->jobs = std::move(r.circuitJobs);
         CompileStatus& s = b->status;
         s.request = id;
         s.ok = r.patch != nullptr;
+        s.stopped = r.stopped != Patch::Method::none;     // an init that ran past its budget (Patch.h)
+        s.stoppedProgram = s.stopped ? id : 0;
         s.errors = std::move(r.errors);
         s.notes = std::move(r.notes);
         s.ms = r.compileMs;
@@ -152,12 +155,13 @@ namespace playground
                 break;
             const bool on = freezing_;
             const double after = freezeAfter_;
+            const uint64_t stopped = stoppedProgram_;
             lock.unlock();
             DialState d;
             const bool read = engine_.dials(d);
             if (engine_.ownCode())
                 triedProgram_ = 0;                     // a recording plays the program's own code: after it, try again
-            else if (on && read && d.program != 0)
+            else if (on && read && d.program != 0 && d.program != stopped)   // (a stopped program plays no more)
             {
                 if (d.stillSeconds < after)
                     triedProgram_ = 0;                 // a dial moved: any values may be tried again
@@ -340,25 +344,144 @@ namespace playground
         return s;
     }
 
-    CompileStatus Compiler::land(std::unique_ptr<Built> b, uint64_t landed, bool carry)
+    CompileStatus Compiler::land(std::unique_ptr<Built> b, uint64_t landed, bool carry, bool watch)
     {
-        if (b->patch)
+        if (!b->patch)
+            return finish(std::move(b->status));
+        if (carry)
         {
-            if (carry)
+            DialCarrier carrier;
             {
-                DialCarrier carrier;
-                {
-                    const std::lock_guard<std::mutex> lock(mutex_);
-                    carrier = carrier_;
-                }
-                carryInto(*b, carrier);            // just before the offer: the dials as they are now
+                const std::lock_guard<std::mutex> lock(mutex_);
+                carrier = carrier_;
             }
-            engine_.offer(std::move(b->patch));
-            played(std::move(b->recipe), std::move(b->jobs), landed);
-            // Its IR before its status: a view that sees the status has the text.
-            tookProgram(b->status.request, fileOf(b->status), b->keepIr, b->ir);
+            carryInto(*b, carrier);                // just before the offer: the dials as they are now
         }
-        return finish(std::move(b->status));
+        const uint64_t id = b->status.request;
+        engine_.offer(std::move(b->patch), watch);
+        if (watch && !firstBlocks(id))
+        {
+            // It stopped in its first blocks, and the Engine went back to the program it replaced, which plays on: the
+            // RUN failed, as a compile that does not compile fails (above, "A program that stops").
+            Engine::Stopped st;
+            bool read = false;
+            for (int k = 0; k < 1000 && !(read = engine_.lastStop(st) && st.program == id); ++k)
+                std::this_thread::yield();        // published just after the Engine claimed the revert
+            CompileStatus s = std::move(b->status);
+            s.ok = false;
+            s.stopped = true;
+            s.stoppedProgram = id;
+            s.errors = Patch::stopMessage(s.sources, read ? st.call : Patch::Method::process, engine_.rate());
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                stoppedProgram_ = id;
+            }
+            return finish(std::move(s));
+        }
+        played(std::move(b->recipe), std::move(b->jobs), landed, carry);
+        // Its IR before its status: a view that sees the status has the text.
+        tookProgram(b->status.request, fileOf(b->status), b->keepIr, b->ir);
+        CompileStatus s = finish(std::move(b->status));
+        if (!watch)
+            return s;
+        std::unique_lock<std::mutex> lock(mutex_);
+        checkStops(lock);                          // one that stopped with nothing to go back to: said at once
+        return status_;
+    }
+
+    bool Compiler::firstBlocks(uint64_t program)
+    {
+        // Until it plays a block with no swap under way, the Engine goes back from it, or the audio thread stops: no
+        // block under way, and none ended for three of its own (20 ms at least: none ever came, or a host that calls
+        // none). A block under way may be a call that runs past its budget, sixteen times its samples' time or more:
+        // waited for, ten seconds at most.
+        using namespace std::chrono;
+        const auto start = steady_clock::now();
+        const auto idle = [this] {
+            const int64_t began = engine_.lastBlockStartNs(), ended = engine_.lastBlockNs();
+            if (began > ended)
+                return false;
+            const int64_t now = duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
+            const double gap = std::max(0.02, 3.0 * engine_.lastBlockSeconds());
+            return static_cast<double>(now - ended) * 1e-9 > gap;
+        };
+        while (engine_.settledProgram() != program && engine_.revertible() == program && !idle()
+               && steady_clock::now() - start < seconds(10))
+            std::this_thread::sleep_for(milliseconds(1));
+        return engine_.settle(program);
+    }
+
+    void Compiler::checkStops(std::unique_lock<std::mutex>& lock)
+    {
+        const uint64_t count = engine_.stops();
+        if (count == stopsSeen_)
+            return;
+        stopsSeen_ = count;
+        Engine::Stopped st;
+        bool read = false;
+        for (int k = 0; k < 100 && !(read = engine_.lastStop(st)); ++k)
+            std::this_thread::yield();
+        if (!read || st.reverted || st.program == 0 || st.program != recipe_.program || st.program == stoppedProgram_)
+            return;                                // land() said so, or it is not the program that plays
+        stoppedProgram_ = st.program;
+        const float rate = engine_.rate();
+        CompileStatus s = status_;
+        s.ok = false;
+        s.stopped = true;
+        s.stoppedProgram = st.program;
+        s.refined = false;
+        s.errors = Patch::stopMessage(recipe_.files, st.call, rate);
+        s.sources = recipe_.files;
+        s.restored.clear();
+        s.program = st.program;                    // (silent) until the program before it plays again
+        if (previous_.program != 0 && !previous_.files.empty())
+        {
+            // The program before it, compiled again with its netlists' configurations and offered as a refine is.
+            const Patch::Recipe before = previous_;
+            const uint64_t id = ++nextId_;
+            const ShaderTools tools = tools_;
+            const bool keepIr = irWanted_;
+            const uint64_t landed = circuits::answers().landed();
+            const bool was = compiling_;
+            compiling_ = true;
+            lock.unlock();
+            std::unique_ptr<Built> b = build(rate, before.files, id, tools, shaders_, keepIr, &before.pins);
+            lock.lock();
+            if (b->patch && recipe_.program == st.program)   // (else another program plays now)
+            {
+                carryInto(*b, carrier_);           // the dials as they are now, under mutex_ (as a refine's)
+                engine_.offer(std::move(b->patch));
+                s.program = id;
+                s.restored = b->status.sources;
+                s.controls = b->status.controls;
+                s.panel = b->status.panel;
+                s.carry = b->status.carry;
+                s.notes = b->status.notes;
+                s.circuitKeys = b->status.circuitKeys;
+                s.circuits = b->status.circuits;
+                s.circuitDials = b->status.circuitDials;
+                s.probes = b->status.probes;
+                lock.unlock();
+                played(std::move(b->recipe), std::move(b->jobs), landed, false);
+                tookProgram(id, fileOf(b->status), b->keepIr, b->ir);
+                b.reset();
+                lock.lock();
+            }
+            else
+            {
+                lock.unlock();
+                b.reset();
+                lock.lock();
+            }
+            compiling_ = was;
+            idle_.notify_all();
+            wake_.notify_all();
+            if (recipe_.program != st.program && recipe_.program != s.program)
+                return;                            // a RUN landed meanwhile: its status stands
+        }
+        s.revision = status_.revision + 1;
+        status_ = std::move(s);
+        revision_.store(status_.revision, std::memory_order_release);
     }
 
     CompileStatus Compiler::finish(CompileStatus s)
@@ -452,7 +575,7 @@ namespace playground
                 compiling_ = true;
                 lock.unlock();
                 const uint64_t landed = circuits::answers().landed();
-                land(build(engine_.rate(), std::move(files), id, tools, shaders_, keepIr), landed);
+                land(build(engine_.rate(), std::move(files), id, tools, shaders_, keepIr), landed, true, true);
                 lock.lock();
                 compiling_ = false;
                 compiled = true;
@@ -495,6 +618,10 @@ namespace playground
                 ir_.making = irDue_;
                 bumpIr();
             }
+            // A program that stopped as it played (above, "A program that stops"): said, and the one before it played
+            // again.
+            if (!hasQueued_ && !stop_)
+                checkStops(lock);
             // The self-test's answer for the program that plays, compiled in when it may be (above), at a pass of its
             // own: never the one whose compile made it due (a RUN's waiter and the processor have that compile's status
             // first).
@@ -511,11 +638,20 @@ namespace playground
     }
 
     // ---- the self-test --------------------------------------------------------------------------------------------------
-    void Compiler::played(Patch::Recipe recipe, std::vector<circuits::Job> jobs, uint64_t landed)
+    void Compiler::played(Patch::Recipe recipe, std::vector<circuits::Job> jobs, uint64_t landed, bool previous)
     {
         std::unique_ptr<Built> stale;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
+            // The program before, to play again should this one stop (above, "A program that stops"): one of other files
+            // (a refine's are the same), never one that stopped.
+            Engine::Stopped st;                    // (one that stopped since this thread looked: the newest stop)
+            const bool stopped = recipe_.program == stoppedProgram_
+                              || (engine_.lastStop(st) && st.program == recipe_.program && !st.reverted);
+            if (!previous)
+                previous_ = {};
+            else if (recipe_.program != 0 && !stopped && !cir::sameProgram(recipe_.files, recipe.files))
+                previous_ = recipe_;
             recipe_ = std::move(recipe);
             playing_ = jobs;
             landedSeen_ = landed;                  // an answer that lands from now on is looked at (checkLanded)
@@ -570,7 +706,8 @@ namespace playground
 
     bool Compiler::mayRefine() const
     {
-        if (!(refineDue_ || held_) || hasQueued_ || compiling_ || stop_ || recipe_.program == 0)
+        if (!(refineDue_ || held_) || hasQueued_ || compiling_ || stop_ || recipe_.program == 0
+            || recipe_.program == stoppedProgram_)   // a program that stopped plays no more
             return false;
         return quiet();
     }
