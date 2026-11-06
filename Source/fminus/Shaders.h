@@ -11,7 +11,7 @@
 //                      out the audio's level (its peak, 0..1)
 // and v_uv (0..1 across, y down) and v_px (px from the top left corner), FunkGui's varyings.
 //
-// buildShader() runs bgfx's shaderc on it (about 60 ms; never on the audio thread) into the binary FunkGui's
+// buildShader() runs bgfx's shaderc on it (about 40 to 60 ms; never on the audio thread) into the binary FunkGui's
 // ShaderLibrary takes, where the Compiler compiles the program: on its own thread for a RUN, on the calling thread for
 // compileNow (the processor's construction, a host's session or preset load: often the message thread). shaderc's
 // errors come back as a note's text on the file's own line. The Compiler then has the renderer check the binary there
@@ -19,10 +19,26 @@
 // Panel's shaders::set() on the message thread compiles nothing; a binary the renderer refuses is a note too, and not
 // handed on. A state load pays for the check whether or not an editor opens (FunkGui remembers a code it accepted, so
 // another instance's load of the same shader does not compile it again).
+//
+// The cache (ShaderCache; shaderCache(), the process's, which every Compiler shares): a build is looked for in memory
+// (the 64 used last), then on disk (ShaderTools::cacheDir, shaderCacheFolder(): kept between sessions, capped at
+// cacheBytes, the files used least lately removed first), and only then made by shaderc; one that another thread is
+// making is waited for, never made twice. A build is keyed by everything its bytes come from: the file's name, the
+// source shaderc compiles (shaderSource: FunkGui's head, the plugin's names, the inputs, the text), FunkGui's varyings
+// and bgfx_shader.sh, the platform and profile, and shaderc itself (its path, size and modification time: a new shaderc
+// builds again). The disk keeps only builds that compiled, each in a file of its own written under a temporary name and
+// renamed into place, so two instances or two processes writing one never leave half of it; a file that does not read
+// back whole and exactly (its length, its checksum, its key) is ignored and made again. buildAll() runs a panel's builds
+// (four at most) at once, each then checked by the renderer, and shaderc runs at most kShadercAtOnce times at once in
+// the process; the Compiler starts them before FMinus compiles the program (readGuiShaders: the .gui file's shaders,
+// their inputs taken at their word), so a RUN waits for the longer of the two, not for their sum.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
+#include <future>
 #include <map>
 #include <mutex>
 #include <string>
@@ -47,6 +63,9 @@ namespace playground
         // funkgui::shaders::check (any thread): whether the renderer takes a binary, else why; none: not checked here
         // (the Panel's shaders::set() checks it).
         std::function<bool(const std::vector<uint8_t>& binary, std::string& why)> check;
+        // The disk cache (ShaderCache, above): its folder (shaderCacheFolder(); empty: none) and its cap in bytes.
+        std::filesystem::path cacheDir;
+        std::uintmax_t cacheBytes = 16u << 20;
         bool usable() const noexcept { return !shaderc.empty() && !prelude.empty() && !varyingDef.empty(); }
     };
 
@@ -54,8 +73,21 @@ namespace playground
     {
         std::vector<uint8_t> binary;          // shaderc's output, when it compiled
         std::string error;                    // why not: "glow.sc:4: note: the shader does not compile: ..." lines
+        // buildAll()'s check: the renderer refused the binary (ShaderTools::check), and why ("" when it gave no reason).
+        bool refused = false;
+        std::string refusal;
         bool ok() const noexcept { return !binary.empty(); }
     };
+
+    // A shader to build: its file's name and text, and its inputs' names (PanelShader's).
+    struct ShaderJob
+    {
+        std::string file;
+        std::string body;
+        std::vector<std::string> inputs;
+    };
+
+    inline constexpr int kShadercAtOnce = 4;  // shaderc's runs at once in a process, at most (fewer on fewer cores)
 
     // The fragment shader shaderc compiles: FunkGui's head, the plugin's names for `inputs` (up to eight names), and
     // the file's text. bodyLine: the line of the result where the file's first line is.
@@ -67,19 +99,51 @@ namespace playground
     ShaderBuild buildShader(const std::string& file, const std::string& body, const std::vector<std::string>& inputs,
                             const ShaderTools& tools);
 
-    // The builds of the sources seen last (a program run again with the same shader does not run shaderc again), the
-    // 32 newest. Thread-safe.
+    // The builds seen last, in memory and on disk (above). Thread-safe.
     class ShaderCache
     {
     public:
+        // A shader's build: the memory's, the disk's (tools.cacheDir), one another thread is making, else shaderc's (a
+        // build shaderc could not run for, no temporary folder or a time-out, is never kept).
         ShaderBuild build(const std::string& file, const std::string& body, const std::vector<std::string>& inputs,
                           const ShaderTools& tools);
+        // Several builds at once, each as build() makes it on a thread of its own (the first on the calling one) and then
+        // checked by the renderer (tools.check, when given: ShaderBuild::refused): their builds in the jobs' order.
+        std::vector<ShaderBuild> buildAll(const std::vector<ShaderJob>& jobs, const ShaderTools& tools);
+
+        // Where this cache's builds came from (probes).
+        struct Counts
+        {
+            uint64_t memory = 0;              // found in memory
+            uint64_t waited = 0;              // another thread's build, waited for
+            uint64_t disk = 0;                // read from the disk cache
+            uint64_t built = 0;               // made by shaderc (buildShader)
+        };
+        Counts counts() const;
+        // Lets go of the memory's builds, as a new process starts with none (the disk cache stays). Probes only.
+        void forget();
+
+        static constexpr std::size_t kMemoryBuilds = 64;
 
     private:
-        std::mutex mutex_;
-        std::map<std::string, std::pair<uint64_t, ShaderBuild>> builds_;   // by the source, with when it was used
+        mutable std::mutex mutex_;
+        std::map<std::string, std::pair<uint64_t, ShaderBuild>> builds_;   // by the key, with when it was used
+        std::map<std::string, std::shared_future<ShaderBuild>> making_;    // by the key: the builds under way
         uint64_t clock_ = 0;
+        Counts counts_;
     };
+
+    // The process's cache, every Compiler's: a second instance of a program builds nothing.
+    ShaderCache& shaderCache();
+
+    // The user's folder for the disk cache (ShaderTools::cacheDir): ~/Library/Caches/<Company>/<Name>/Shaders on macOS,
+    // %LOCALAPPDATA%\<Company>\<Name>\Shaders on Windows, $XDG_CACHE_HOME (else ~/.cache)/<Company>/<Name>/Shaders
+    // elsewhere (Product.h's names); under CTest (<ENV_PREFIX>PREFS_DIR set) that folder's shaders/, never the user's.
+    // Empty when there is none.
+    std::filesystem::path shaderCacheFolder();
+
+    // The times this process started shaderc (buildShader), for the probes.
+    uint64_t shadercRuns();
 
     // A shader binary's id for FunkGui's ShaderLibrary: its bytes' hash, never 0 (the same shader, the same id).
     uint32_t shaderId(const std::vector<uint8_t>& binary);

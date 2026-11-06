@@ -62,7 +62,6 @@ namespace playground::sandbox
         PanelSpec spec_;
         std::string notes_;                      // readGuiSpec's, and the shaders' builds
         ShaderTools tools_;
-        ShaderCache shaders_;
         int areaW_, areaH_;                      // the area the report lays it out in (the last render's; open's default)
     };
 }

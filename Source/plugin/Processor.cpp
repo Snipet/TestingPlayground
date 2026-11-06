@@ -53,7 +53,7 @@ namespace playground
         // What building a .gui file's shaders needs (fminus/Shaders.h): shaderc, bundled in the plugin
         // (Contents/Resources/shaderc: CMakeLists.txt copies the pinned bgfx's there; on Windows shaderc.exe, there in
         // the VST3 and beside the Standalone's .exe), else where <prefix>SHADERC says (the probes'); FunkGui's
-        // prelude, varyings and bgfx_shader.sh; the renderer's target.
+        // prelude, varyings and bgfx_shader.sh; the renderer's target and check; the disk cache's folder.
         ShaderTools shaderTools()
         {
             ShaderTools t;
@@ -90,6 +90,7 @@ namespace playground
             t.check = [](const std::vector<uint8_t>& binary, std::string& why) {
                 return funkgui::shaders::check(binary.data(), static_cast<uint32_t>(binary.size()), why);
             };
+            t.cacheDir = shaderCacheFolder();          // the builds kept between sessions (the user's caches)
             return t;
         }
         const juce::Identifier kParamId{ "id" }, kParamValue{ "value" };   // the APVTS's <PARAM id value> children
