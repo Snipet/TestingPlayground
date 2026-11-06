@@ -608,6 +608,15 @@ namespace playground::ui
         void syncExplorer();
         void layoutExplorer();
         void openFromExplorer(ExplorerItem::Section section, const ExplorerItem::Row& row);
+        // The folder (EditorPort::folder, plugin/FolderSync.h): what this Panel last read of it (read again when its
+        // revision moves: refresh()), the rows of its explorer section, what a row does, a conflict's choice (a menu at
+        // the pointer: which side to keep), and the notices a save that landed or a new conflict give.
+        FolderState folderState_;
+        uint64_t folderSeen_ = 0;
+        bool folderKnown_ = false;                       // folderState_ read once (the notices start from it)
+        void syncFolder();
+        void folderRow(const ExplorerItem::Row& row);
+        void chooseConflict(const std::string& file);
         // The IR view: this Panel is an IR viewer while its IR tab is open (EditorPort::addIrViewer), and the view shown
         // has its text made from what there is (refresh(); a view shown again catches up then).
         bool irViewing_ = false;

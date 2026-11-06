@@ -153,6 +153,13 @@ namespace playground::ui
 
     namespace
     {
+        // The FOLDER section's rows (Explorer.h): what each does (ExplorerItem::Row::index).
+        constexpr int kFolderOn = 0, kFolderCode = 1, kFolderShow = 2, kFolderRun = 3, kFolderConflict = 4;
+#if defined(_WIN32)
+        constexpr const char* kShowFolder = "Show in Explorer";
+#else
+        constexpr const char* kShowFolder = "Show in Finder";
+#endif
         // The problems as the code editor marks them.
         std::vector<Diagnostic> diagnosticsOf(const std::vector<Problem>& problems)
         {
@@ -2858,6 +2865,15 @@ namespace playground::ui
                     openProjects(true);
                 else if (s == ExplorerItem::Section::projects)
                     openProjects(false);
+                else if (s == ExplorerItem::Section::folder)
+                {
+                    std::string why;
+                    pushEditor();                        // what the folder last gets is what the tabs show
+                    (void)port_.setFolderSync(false, why);
+                    notice("FOLDER OFF: IT STAYS AS IT IS");
+                    syncFolder();
+                    dirty_ = true;
+                }
             };
             explorerItem_ = add(std::make_unique<ExplorerItem>(kExplorerA11yBase, std::move(hooks)));
         }
@@ -3472,6 +3488,90 @@ namespace playground::ui
             port_.removeIrViewer();                      // its IR tab goes with it: nothing kept for it
     }
 
+    // ---- the folder (plugin/FolderSync.h) ----------------------------------------------------------------------------
+    // What the port says of the folder, read again when its revision moves; a save that landed and a new conflict say
+    // so in the status (not what this Panel found when it was made).
+    void Panel::syncFolder()
+    {
+        const uint64_t r = port_.folderRevision();
+        if (folderKnown_ && r == folderSeen_)
+            return;
+        FolderState now = port_.folder();
+        if (folderKnown_ && now.on)
+        {
+            if (now.landedCount != folderState_.landedCount && !now.landed.empty())
+                notice("FROM THE FOLDER: " + upper(now.landed));
+            for (const std::string& file : now.conflicts)
+                if (std::find(folderState_.conflicts.begin(), folderState_.conflicts.end(), file) == folderState_.conflicts.end())
+                {
+                    notice(upper(file) + ": CHANGED HERE AND IN THE FOLDER");
+                    break;
+                }
+        }
+        folderState_ = std::move(now);
+        folderSeen_ = r;
+        folderKnown_ = true;
+        explorerKey_.clear();
+        dirty_ = true;
+    }
+
+    void Panel::folderRow(const ExplorerItem::Row& row)
+    {
+        std::string why;
+        switch (row.index)
+        {
+            case kFolderOn:
+                pushEditor();                            // the folder starts from what the tabs show
+                if (port_.setFolderSync(true, why))
+                    notice("FOLDER: " + upper(port_.folder().name));
+                else
+                    notice("NO FOLDER: " + upper(why));
+                break;
+            case kFolderCode:
+                if (!port_.openFolder(FolderApp::vscode, why))
+                    notice("NOT OPENED: " + upper(why));
+                break;
+            case kFolderShow:
+                if (!port_.openFolder(FolderApp::files, why))
+                    notice("NOT OPENED: " + upper(why));
+                break;
+            case kFolderRun:
+                port_.setFolderRunOnSave(!folderState_.runOnSave);
+                break;
+            case kFolderConflict:
+                chooseConflict(row.key);
+                break;
+            default:
+                break;
+        }
+        syncFolder();
+    }
+
+    // A conflict: which side to keep (a menu at the pointer); the other goes to the folder's .conflicts/.
+    void Panel::chooseConflict(const std::string& file)
+    {
+        if (host_ == nullptr)
+            return;
+        pushEditor();                                    // the plugin's side is what the tabs show
+        funkgui::MenuRequest request;
+        request.items.push_back({ 1, "Keep the plugin's " + file + " (the folder's to .conflicts)" });
+        request.items.push_back({ 2, "Keep the folder's " + file + " (the plugin's to .conflicts)" });
+        request.anchor = { pointer_.x, pointer_.y, 1.0f, 1.0f };
+        request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
+        host_->showMenu(request, [this, file](int chosen) {
+            if (chosen != 1 && chosen != 2)
+                return;
+            pushEditor();
+            std::string why;
+            if (port_.resolveFolderConflict(file, chosen == 1, why))
+                notice(chosen == 1 ? "KEPT THE PLUGIN'S " + upper(file) : "KEPT THE FOLDER'S " + upper(file));
+            else
+                notice("NOT KEPT: " + upper(why));
+            syncFolder();
+            dirty_ = true;
+        });
+    }
+
     // ---- pictures ------------------------------------------------------------------------------------------------------
     namespace
     {
@@ -3820,6 +3920,7 @@ namespace playground::ui
         key += std::string(files().irOpen() ? "I" : "-") + (files().irShown() ? "S" : "-") + std::to_string(files().irView())
              + (frozenPlays ? "F" : "-");
         key += '\x1c' + st.name + '\x1d' + st.preset;
+        key += '\x1a' + std::to_string(folderSeen_);
         for (const ProjectEntry& e : projectList_)
             key += '\x1e' + e.name + '\x1d' + e.when + '\x1d' + std::to_string(e.latest);
         for (const PresetEntry& e : presetList_)
@@ -3853,6 +3954,76 @@ namespace playground::ui
             {
                 g.action = chat::Icon::plus;
                 g.actionTitle = "New file";
+            }
+            groups.push_back(std::move(g));
+        }
+        {
+            // The folder (plugin/FolderSync.h): off, the row that turns it on; on, its actions, its conflicts and its
+            // notes.
+            ExplorerItem::Group g;
+            g.section = S::folder;
+            g.title = "FOLDER";
+            g.counted = false;
+            const FolderState& f = folderState_;
+            const auto row = [](std::string label, std::string detail, chat::Icon icon, int index, std::string help,
+                                std::string spec) {
+                ExplorerItem::Row r;
+                r.label = std::move(label);
+                r.detail = std::move(detail);
+                r.icon = icon;
+                r.index = index;
+                r.help = std::move(help);
+                r.spec = std::move(spec);
+                return r;
+            };
+            if (!f.on)
+            {
+                g.rows.push_back(row("Edit in a folder", "VS Code, any editor", chat::Icon::folder, kFolderOn,
+                                     "Mirrors the program's files to a folder on disk, synced both ways",
+                                     "FOLDER   THE PROGRAM'S FILES IN A FOLDER ON DISK FOR VS CODE OR ANY EDITOR, SYNCED BOTH WAYS"));
+                if (!f.error.empty())
+                {
+                    ExplorerItem::Row e;
+                    e.label = upper(f.error);
+                    e.heading = true;
+                    g.rows.push_back(std::move(e));
+                }
+            }
+            else
+            {
+                g.action = chat::Icon::cross;
+                g.actionTitle = "Stop syncing with the folder";
+                ExplorerItem::Row where;                 // the folder's name; its path under the pointer
+                where.label = upper(f.name);
+                where.heading = true;
+                where.spec = "FOLDER   " + upper(f.path);
+                g.rows.push_back(std::move(where));
+                g.rows.push_back(row("Open in VS Code", {}, chat::Icon::code, kFolderCode, "Opens the folder in VS Code",
+                                     "VS CODE   OPEN THE FOLDER THERE; A SAVE LANDS HERE AS ONE UNDO STEP"));
+                g.rows.push_back(row(kShowFolder, {}, chat::Icon::folder, kFolderShow, "Shows the folder: " + f.path,
+                                     upper(std::string(kShowFolder)) + "   " + upper(f.path)));
+                ExplorerItem::Row run = row("Run on save", {}, chat::Icon::play, kFolderRun,
+                                            "Runs the program each time a save in the folder lands",
+                                            "RUN ON SAVE   EACH SAVE IN THE FOLDER THAT LANDS RUNS THE PROGRAM");
+                run.marked = f.runOnSave;
+                g.rows.push_back(std::move(run));
+                for (const std::string& file : f.conflicts)
+                {
+                    ExplorerItem::Row c = row(file, "in both", chat::Icon::alert, kFolderConflict,
+                                              "Changed here and in the folder: choose which to keep",
+                                              upper(file) + "   CHANGED HERE AND IN THE FOLDER: KEEP ONE, THE OTHER GOES TO .CONFLICTS");
+                    c.error = true;
+                    c.key = file;
+                    g.rows.push_back(std::move(c));
+                }
+                for (const std::string& n : f.notes)     // whole under the pointer, as a caption may be cut
+                {
+                    ExplorerItem::Row e;
+                    e.label = upper(n);
+                    e.heading = true;
+                    e.spec = "FOLDER   " + upper(n);
+                    g.rows.push_back(std::move(e));
+                }
             }
             groups.push_back(std::move(g));
         }
@@ -3995,6 +4166,9 @@ namespace playground::ui
             case S::ir:
                 if (row.index >= 0 && row.index < irview::kViews)
                     openIrView(row.index);
+                break;
+            case S::folder:
+                folderRow(row);
                 break;
         }
         explorerKey_.clear();                            // what it shows may have changed (a tab, a tick)
@@ -4406,6 +4580,7 @@ namespace playground::ui
         syncColumnWidths();
         syncCodePanel();
         keepStepDefaults(nowSec, false);
+        syncFolder();
         // The draft, when a host loaded a session while the editor was open, or Claude changed the files. (While the
         // editor is in the code window, that Panel's: this one's hidden copy takes nothing and gives nothing.)
         bool textChanged = std::exchange(pushedFiles_, false);   // a gesture's files, given at once

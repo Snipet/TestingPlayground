@@ -73,7 +73,7 @@ namespace playground::ui::chat
     {
         none, plus, key, chevronDown, chevronRight, chevronUp, arrowUp, stop, copy, check, file, play, dial, wave, alert,
         pencil, bolt, chevronLeft, bubble, dice, blocks, list, sun, moon, code, book, question, globe, image, cross,
-        snowflake, gear, chip, circuit, probe, window
+        snowflake, gear, chip, circuit, probe, window, folder
     };
 
     inline void drawIcon(funkgui::Canvas& c, Icon icon, float cx, float cy, float size, funkgui::Col ink)
@@ -388,6 +388,16 @@ namespace playground::ui::chat
                 const float xs[3] = { cx + s * 0.2f, cx + s * 0.78f, cx + s * 0.78f };
                 const float ys[3] = { cy - s * 0.78f, cy - s * 0.78f, cy - s * 0.2f };
                 c.polyline(xs, ys, 3, w, ink);
+                break;
+            }
+            case Icon::folder:
+            {
+                // A folder: its tab at the top left over its body (the program's files in a folder on disk).
+                const float xs[6] = { cx - s * 0.8f, cx - s * 0.8f, cx - s * 0.25f, cx - s * 0.08f, cx + s * 0.8f, cx + s * 0.8f };
+                const float ys[6] = { cy + s * 0.62f, cy - s * 0.62f, cy - s * 0.62f, cy - s * 0.42f, cy - s * 0.42f, cy + s * 0.62f };
+                c.polyline(xs, ys, 6, w, ink);
+                c.segment(cx - s * 0.8f, cy + s * 0.62f, cx + s * 0.8f, cy + s * 0.62f, w, ink);
+                c.segment(cx - s * 0.8f, cy - s * 0.18f, cx + s * 0.8f, cy - s * 0.18f, w, ink);
                 break;
             }
             case Icon::probe:
