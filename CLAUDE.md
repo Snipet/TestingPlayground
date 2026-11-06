@@ -691,7 +691,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   unit, its option's name, the number after a scaled one). `plugin.live` checks both tools, `dsp.meters` LISTEN the
   fields, `plugin.chat` SEEN the two records.
 - **MCP results** stay small: a picture is at most `kMcpPictureBytes` (75,000 bytes, 100,000 base64 characters:
-  the PNG when it fits, else scaled down, else a JPEG, `chatimages::fit`), the text after it saying what was sent;
+  the picture as it is when it fits, else the largest that fits of a JPEG and a scaled PNG, each sized from its own
+  bytes, `chatimages::fit`), the text after it saying what was sent;
   view_panel and view_sound take MCP's own `detail: "high"` for the whole picture. The plugin's own chat keeps its
   pictures as they were. The guide is the system prompt as `ChatAgent::guidePrompt` has it: the same text but the
   lines of How you work only the plugin's chat needs (ChatPrompt.cpp's `kWork` marks them: its `<plugin_state>`, the
