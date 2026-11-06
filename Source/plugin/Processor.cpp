@@ -36,6 +36,11 @@ namespace playground
                                kProject{ "project" }, kProjectVersion{ "projectVersion" }, kProjectPreset{ "projectPreset" };
         const juce::Identifier kSource{ "source" }, kDraft{ "draft" };   // the version before files
         const juce::Identifier kChatTag{ "CHAT" }, kJson{ "json" };      // the chat with Claude (ChatAgent::saveState)
+        // MCP's marks (ChatAgent::mcpMarksToKeep, Live.h's KeptMark): <MCP><MARK token><FILE name hash netlist lines/>
+        // </MARK></MCP>, the hashes in hex, so that get_status `since` with a token from before the plugin was opened
+        // again still says which files changed (a state from before them has none).
+        const juce::Identifier kMcpTag{ "MCP" }, kMarkTag{ "MARK" }, kToken{ "token" }, kHash{ "hash" }, kNetlist{ "netlist" },
+                               kLines{ "lines" };
         const juce::Identifier kEditorTag{ "EDITOR" }, kWidth{ "w" }, kHeight{ "h" };   // the editor's size
         const juce::Identifier kView{ "view" };                                          // and its view: "panel"
         const juce::Identifier kChat{ "chat" };                                          // its chat: "closed"
@@ -850,13 +855,14 @@ namespace playground
         return projectName_;
     }
 
-    PanelPicture Processor::chatPicture(PictureView view, const std::string& name)
+    PanelPicture Processor::chatPicture(PictureView view, const std::string& name, const PictureState& state)
     {
         std::unique_lock<std::mutex> lock(pictureMutex_);
         pictureAsked_ = true;
         pictureReady_ = false;
         pictureView_ = view;
         picturePage_ = name;
+        pictureState_ = state;
         if (!pictureDone_.wait_for(lock, std::chrono::seconds(10), [this] { return pictureReady_; }))
         {
             pictureAsked_ = false;
@@ -877,11 +883,13 @@ namespace playground
                 pictureAsked_ = false;
                 const PictureView view = pictureView_;
                 const std::string page = picturePage_;
+                const PictureState state = std::move(pictureState_);
+                pictureState_ = {};
                 lock.unlock();
                 PanelPicture p = view == PictureView::schematic
                                      ? pictureSchematic(editorPort(), page)
                                      : picturePanel(ports(), editorPort(), editorW_.load(), editorH_.load(),
-                                                    view == PictureView::window, page);
+                                                    view == PictureView::window, page, state);
                 lock.lock();
                 picture_ = std::move(p);
                 pictureReady_ = true;
@@ -911,7 +919,10 @@ namespace playground
             if (s.request == userRun_.load() && s.request != journaled_)
             {
                 journaled_ = s.request;                          // a refine's status answers it again (Compiler.h)
-                journal_.note(Journal::Who::you, runWords(s));
+                if (s.ok)
+                    journal_.dialsNote(Journal::Who::user, runWords(s));   // a new dial at its default (apply)
+                else
+                    journal_.note(Journal::Who::user, runWords(s));
             }
             if (dialsRequest_ != 0 && s.request >= dialsRequest_)
             {
@@ -1011,6 +1022,28 @@ namespace playground
         juce::ValueTree chat{ kChatTag };
         chat.setProperty(kJson, juce::String::fromUTF8(chat_.saveState().c_str()), nullptr);
         state.appendChild(chat, nullptr);
+        if (const std::vector<KeptMark> marks = chat_.mcpMarksToKeep(); !marks.empty())
+        {
+            const auto hex = [](uint64_t h) { return juce::String::toHexString(h).paddedLeft('0', 16); };
+            juce::ValueTree mcp{ kMcpTag };
+            for (const KeptMark& m : marks)
+            {
+                juce::ValueTree mark{ kMarkTag };
+                mark.setProperty(kToken, juce::String(m.token), nullptr);
+                for (const KeptMark::File& f : m.files)
+                {
+                    juce::ValueTree file{ kFileTag };
+                    file.setProperty(kName, juce::String::fromUTF8(f.name.c_str()), nullptr);
+                    file.setProperty(kHash, hex(f.hash), nullptr);
+                    if (f.netlist != 0)
+                        file.setProperty(kNetlist, hex(f.netlist), nullptr);
+                    file.setProperty(kLines, f.lines, nullptr);
+                    mark.appendChild(file, nullptr);
+                }
+                mcp.appendChild(mark, nullptr);
+            }
+            state.appendChild(mcp, nullptr);
+        }
         const std::vector<std::string> pages = guiPages();
         const std::vector<FileView> views = fileViews();
         if ((editorW_.load() > 0 && editorH_.load() > 0) || panelView_.load() || !chatOpen_.load() || !explorerOpen_.load()
@@ -1088,6 +1121,27 @@ namespace playground
             chat_.loadState(chat.getProperty(kJson).toString().toStdString());
             state.removeChild(chat, nullptr);
         }
+        {
+            // MCP's marks, now of before the plugin was opened again (none in a state from before them).
+            const juce::ValueTree mcp = state.getChildWithName(kMcpTag);
+            const auto hash = [](const juce::var& v) { return static_cast<uint64_t>(v.toString().getHexValue64()); };
+            std::vector<KeptMark> marks;
+            for (int k = 0; mcp.isValid() && k < mcp.getNumChildren() && k < 64; ++k)
+                if (const juce::ValueTree mark = mcp.getChild(k); mark.hasType(kMarkTag))
+                {
+                    KeptMark m;
+                    m.token = mark.getProperty(kToken).toString().substring(0, 64).toStdString();
+                    for (int j = 0; j < mark.getNumChildren() && j < 256; ++j)
+                        if (const juce::ValueTree file = mark.getChild(j); file.hasType(kFileTag))
+                            m.files.push_back({ file.getProperty(kName).toString().substring(0, 200).toStdString(),
+                                                hash(file.getProperty(kHash)), hash(file.getProperty(kNetlist, "0")),
+                                                std::max(0, static_cast<int>(file.getProperty(kLines, 0))) });
+                    marks.push_back(std::move(m));
+                }
+            chat_.restoreMcpMarks(std::move(marks));
+            if (mcp.isValid())
+                state.removeChild(mcp, nullptr);
+        }
         const juce::ValueTree editor = state.getChildWithName(kEditorTag);
         panelView_.store(editor.isValid() && editor.getProperty(kView).toString() == "panel");
         chatOpen_.store(!(editor.isValid() && editor.getProperty(kChat).toString() == "closed"));
@@ -1154,7 +1208,7 @@ namespace playground
         apply(s, false, true, Given{});
         apvts_.replaceState(state);
         adoptMeaning(s);                                         // the values are the session's program's now
-        journal_.note(Journal::Who::host, "loaded a saved state (the program, its files and its dials)");
+        journal_.dialsNote(Journal::Who::host, "loaded a saved state (the program, its files and its dials)");
         syncDials();
     }
 
@@ -1178,7 +1232,7 @@ namespace playground
             const std::lock_guard<std::mutex> lock(programMutex_);
             before = std::exchange(draft_, draft);
         }
-        journalDraft(before, draft, Journal::Who::you);
+        journalDraft(before, draft, Journal::Who::user);
     }
 
     bool Processor::setDraftIf(const Draft& draft, uint64_t revision)
@@ -1190,7 +1244,7 @@ namespace playground
                 return false;                            // Claude's write (or a host's load) the editor has not merged
             before = std::exchange(draft_, draft);
         }
-        journalDraft(before, draft, Journal::Who::you);
+        journalDraft(before, draft, Journal::Who::user);
         return true;
     }
 
@@ -1503,7 +1557,7 @@ namespace playground
         }
         if (!openVersion(*p, *v, why))
             return false;
-        journal_.note(Journal::Who::you, "opened project \"" + p->name + "\", version " + std::to_string(v->number));
+        journal_.dialsNote(Journal::Who::user, "opened project \"" + p->name + "\", version " + std::to_string(v->number));
         return true;
     }
 
@@ -1533,8 +1587,8 @@ namespace playground
         const uint64_t id = compiler_.request(d.files);
         defaultsRequest_ = id;
         userRun_.store(id);
-        journal_.note(Journal::Who::you,
-                      "started afresh from " + what + " (its files only, every dial at its default)");
+        journal_.dialsNote(Journal::Who::user,
+                           "started afresh from " + what + " (its files only, every dial at its default)");
     }
 
     bool Processor::saveVersion(const std::string& name, SavedVersion& saved, std::string& why)
@@ -1556,7 +1610,7 @@ namespace playground
             return false;
         saved = { r->number, r->unchanged, r->created };
         if (!r->unchanged)
-            journal_.note(Journal::Who::you, "saved version " + std::to_string(r->number) + " of \"" + projectstore::tidyName(name) + "\"");
+            journal_.note(Journal::Who::user, "saved version " + std::to_string(r->number) + " of \"" + projectstore::tidyName(name) + "\"");
         const std::lock_guard<std::mutex> lock(programMutex_);
         const std::string tidy = projectstore::tidyName(name);
         // The preset applied stays named while the dials are still its.
@@ -1622,7 +1676,7 @@ namespace playground
         const std::vector<projectstore::Dial> dials = dialsNow();
         if (!projectstore::savePreset(project, preset, dials, version, &why))
             return false;
-        journal_.note(Journal::Who::you, "saved preset \"" + projectstore::tidyName(preset) + "\"");
+        journal_.note(Journal::Who::user, "saved preset \"" + projectstore::tidyName(preset) + "\"");
         const std::lock_guard<std::mutex> lock(programMutex_);
         projectPreset_ = projectstore::tidyName(preset);
         baseDials_ = dials;
@@ -1661,7 +1715,7 @@ namespace playground
         else
             setDialsByName(cs, options, pr->dials);
         syncOwnDials();                                          // the preset's dials: its line says so
-        journal_.note(Journal::Who::you, "applied preset \"" + pr->name + "\" of \"" + p->name + "\"");
+        journal_.dialsNote(Journal::Who::user, "applied preset \"" + pr->name + "\" of \"" + p->name + "\"");
         const std::lock_guard<std::mutex> lock(programMutex_);
         projectPreset_ = pr->name;
         baseDials_ = open ? overlay(baseDials_, pr->dials) : overlay(p->latest().dials, pr->dials);
@@ -1754,22 +1808,25 @@ namespace playground
             journalDraft(before, d, Journal::Who::chat);
     }
 
-    bool Processor::chatSetDraftIf(const Draft& draft, const std::string& file, const std::string& expected)
+    bool Processor::chatSetDraftIf(const Draft& draft, const Sources& read)
     {
-        const auto named = [&](const SourceFile& f) { return f.name == file; };
-        const auto mine = std::find_if(draft.files.begin(), draft.files.end(), named);
-        if (mine == draft.files.end())
+        if (read.empty())
             return false;
+        for (const SourceFile& r : read)
+            if (findFile(draft.files, r.name) == nullptr)
+                return false;
         Draft before, d;
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
-            const auto it = std::find_if(draft_.files.begin(), draft_.files.end(), named);
-            if (it == draft_.files.end() || it->text != expected)
-                return false;                            // a gesture synced meanwhile: never overwritten
-            // Only this file's text is written (and the tab shown): the others stay as they are now, whatever the user
-            // typed in them since the tool read the draft.
+            for (const SourceFile& r : read)
+                if (const SourceFile* now = findFile(draft_.files, r.name); now == nullptr || now->text != r.text)
+                    return false;                        // a gesture or typing synced meanwhile: never overwritten
+            // Only these files' texts are written (and the tab shown), all in one change: the others stay as they are
+            // now, whatever the user typed in them since the tool read the draft.
             d = draft_;
-            d.files[static_cast<std::size_t>(it - draft_.files.begin())].text = mine->text;
+            for (SourceFile& f : d.files)
+                if (findFile(read, f.name) != nullptr)
+                    f.text = findFile(draft.files, f.name)->text;
             const auto shown = draft.active >= 0 && draft.active < static_cast<int>(draft.files.size())
                                    ? std::find_if(d.files.begin(), d.files.end(), [&](const SourceFile& f) {
                                          return f.name == draft.files[static_cast<std::size_t>(draft.active)].name;
@@ -1793,7 +1850,12 @@ namespace playground
         compiler_.wait();
         const CompileStatus s = compiler_.status();
         if (!chat_.mcpWorking() && s.request >= id)
-            journal_.note(Journal::Who::chat, runWords(s));
+        {
+            if (s.ok)
+                journal_.dialsNote(Journal::Who::chat, runWords(s));
+            else
+                journal_.note(Journal::Who::chat, runWords(s));
+        }
         return s.request >= id ? s : CompileStatus{};
     }
 

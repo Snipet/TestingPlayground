@@ -11,6 +11,11 @@
 
 namespace playground::mcp
 {
+    // The words of `values` in view_panel and in the server's gui_sandbox (a render's): the same in both, so the
+    // server's list says them once (gui_sandbox's, listed first). No number in them, or both copies would stay.
+    inline constexpr const char* kPanelValues = "Dials and fields (as panel.gui names them; in, out in dBFS) drawn at "
+                                                "these values";
+
     // A property's description that an earlier property of the same name has word for word is left out; `seen` holds the
     // ones described so far. The plugin runs it over its tools (a goal's words in tune_dials are set_checks', a check's
     // render settings measure_output's), and the server again over the whole list once it has added `instance` to each

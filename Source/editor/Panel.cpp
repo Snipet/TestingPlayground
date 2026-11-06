@@ -720,7 +720,8 @@ namespace playground::ui
                   [this] {
                       if (persist_)
                           persist_();
-                  } })
+                  },
+                  [this](bool redo) { return undoStep(redo); } })
         {
             assist_.setArea(editor);
             assist_.setStatusWords([this] { return schematicShown() ? schematic_.statusWords() : std::string(); });
@@ -775,7 +776,7 @@ namespace playground::ui
             for (std::size_t k = 1; k < need.size(); ++k)
                 if (find(need[k].name) < 0)
                     addFileQuiet(need[k].name, need[k].text);
-            replaceText(editorOf(0), hp.text);
+            (void)replaceCounted(tabs_.front(), hp.text);
             playFile_ = file;
             playProgram_ = name(0);
             if (run_)
@@ -797,7 +798,7 @@ namespace playground::ui
         {
             if (playedNote().empty())
                 return;
-            editorOf(0).undo();
+            (void)ownStep(0, false);
             playOn_ = false;
         }
         // The completion list, the signature and the hover card, over everything (the Panel draws them last).
@@ -854,6 +855,7 @@ namespace playground::ui
             renaming_ = -1;
             why_.clear();
             tabs_.clear();
+            groups_.clear();
             for (const SourceFile& f : d.files)
                 if (tabs_.size() < kMaxFiles)
                     tabs_.push_back(makeTab(f.name, f.text));
@@ -871,8 +873,11 @@ namespace playground::ui
         // tab whose file is gone closes. The tabs follow the draft's order and the tab it shows. Fresh (an example or
         // RANDOM's program: EditorPort::startAfresh): a tab is kept only for a file of its name, its text set anew (no
         // undo steps, the caret and the scroll at the top), as a new window has it; every other file gets a new tab.
+        // When it changes several tabs' texts (not fresh), their steps are one undo step across them (groups_).
         void merge(const Draft& d, bool fresh = false)
         {
+            recount();                                   // what was typed before it takes those tabs out of the groups
+            UndoGroup changed;
             renaming_ = -1;
             why_.clear();
             editor().setFocused(false);
@@ -922,12 +927,21 @@ namespace playground::ui
                     if (const auto v = views_.find(f.name);
                         v != views_.end() && t.editor->text() != funkgui::TextEditor::sanitise(f.text))
                         v->second.merged = true;
-                    replaceText(*t.editor, f.text);
+                    if (replaceCounted(t, f.text))
+                        changed.members.push_back({ t.serial, t.step });
                 }
                 tabs_.push_back(std::move(t));
             }
             if (tabs_.empty())
                 tabs_.push_back(makeTab(kProgramName, ""));
+            if (fresh)
+                groups_.clear();                         // every tab's text set anew: no undo steps
+            else if (changed.members.size() > 1)
+            {
+                groups_.push_back(std::move(changed));
+                if (groups_.size() > kMaxUndoGroups)
+                    groups_.erase(groups_.begin());
+            }
             for (auto v = views_.begin(); v != views_.end();)   // a file gone takes its view (and its pins) with it
                 v = find(v->first) < 0 ? forgetView(v) : std::next(v);
             active_ = std::clamp(d.active, 0, count() - 1);
@@ -1525,9 +1539,33 @@ namespace playground::ui
         bool key(const funkgui::KeyEvent& e, funkgui::GestureController&) override
         {
             if (renaming_ < 0 && schematicShown())
-                return schematic_.key(e);
+            {
+                recount();
+                return schematic_.key(e);                // its undo and redo come back through undoStep
+            }
             if (renaming_ < 0)
-                return assist_.key(e);
+            {
+                // Undo and redo where the text has the keys: a group's step, or the tab's own through the code assist (it
+                // follows the caret), counted.
+                recount();
+                const int undo = undoKey(e);
+                if (undo == 0 || irShown() || assist_.takesKeys() || !editor().focused())
+                    return assist_.key(e);
+                if (const UndoGroup* g = groupAt(undo > 0))
+                {
+                    groupStep(*g, undo > 0);
+                    return true;
+                }
+                Tab& t = tabs_[static_cast<std::size_t>(active_)];
+                const uint32_t was = t.editor->revision();
+                const bool used = assist_.key(e);
+                if (t.editor->revision() != was)
+                {
+                    t.step += undo;
+                    t.counted = t.editor->revision();
+                }
+                return used;
+            }
             // The name being edited takes every key: Return keeps it, Escape cancels, Cmd-V pastes.
             if (e.key == funkgui::Key::enter)
                 commitRename();
@@ -1926,11 +1964,149 @@ namespace playground::ui
         {
             std::string name;
             std::unique_ptr<funkgui::TextEditor> editor;
+            uint64_t serial = 0;                         // this tab's, never another's (the undo groups' names)
+            int64_t step = 0;                            // its place in its undo history, counted (groups_)
+            uint32_t counted = 0;                        // its editor's revision when that was counted
         };
+
+        // One undo step across tabs: what one merge of the draft changed in several tabs' texts at once (Claude's
+        // edit_file with files, a session loaded over open tabs), each tab's part its own step in its editor. Cmd-Z in one
+        // of them, while it is at that step, undoes the step in each tab still at it (a tab typed in since keeps its own
+        // steps and leaves the group); Cmd-Shift-Z or Cmd-Y in one of them, while it has the step undone, redoes it so.
+        // Each tab is named by serial, never by address (a tab closed leaves its groups), and its step by its place in
+        // the tab's undo history (Tab::step, counted as below).
+        struct UndoGroup
+        {
+            struct Member
+            {
+                uint64_t tab = 0;                        // Tab::serial
+                int64_t step = 0;                        // the tab's place (Tab::step) just after the group's step
+            };
+            std::vector<Member> members;
+        };
+        static constexpr std::size_t kMaxUndoGroups = 32;
+
+        // ---- one undo step across tabs (groups_) ----------------------------------------------------------------------
+        // Each tab's place in its own undo history is counted (Tab::step): one more for each step a merge or Play this
+        // circuit makes, one less or one more for each undo or redo (the text's keys, the Schematic view's keys, buttons
+        // and menu, Play's Undo). A group's member is a tab and its place just after the group's step: the tab is at that
+        // step while its place is the member's, and has it undone while its place is one less, however far it went back
+        // and came again. A change of a tab's text that is not counted (typing, a gesture, Format, a completion) takes the
+        // tab out of every group; a new step where the tab could redo takes it out of the groups whose steps those were.
+
+        // Cmd-Z -1, Cmd-Shift-Z and Cmd-Y +1 (as TextEditor reads them), any other key 0.
+        static int undoKey(const funkgui::KeyEvent& e)
+        {
+            if (e.key != funkgui::Key::character || !e.mods.cmd)
+                return 0;
+            const char32_t c = e.ch >= U'A' && e.ch <= U'Z' ? e.ch - U'A' + U'a' : e.ch;
+            return c == U'z' ? (e.mods.shift ? 1 : -1) : c == U'y' ? 1 : 0;
+        }
+
+        int tabOf(uint64_t serial) const
+        {
+            for (int i = 0; i < count(); ++i)
+                if (tabs_[static_cast<std::size_t>(i)].serial == serial)
+                    return i;
+            return -1;
+        }
+
+        // The members `out` says out of every group; a group left with fewer than two members is none.
+        template <typename Out>
+        void leaveGroups(Out out)
+        {
+            for (UndoGroup& g : groups_)
+                g.members.erase(std::remove_if(g.members.begin(), g.members.end(), out), g.members.end());
+            groups_.erase(std::remove_if(groups_.begin(), groups_.end(), [](const UndoGroup& g) { return g.members.size() < 2; }),
+                          groups_.end());
+        }
+
+        // A change of t's text that was not counted: t leaves every group (its steps are its own).
+        void recount(Tab& t)
+        {
+            if (t.editor->revision() == t.counted)
+                return;
+            t.counted = t.editor->revision();
+            leaveGroups([&](const UndoGroup::Member& m) { return m.tab == t.serial; });
+        }
+        // ... in every tab; and a tab closed leaves the groups.
+        void recount()
+        {
+            for (Tab& t : tabs_)
+                recount(t);
+            leaveGroups([&](const UndoGroup::Member& m) { return tabOf(m.tab) < 0; });
+        }
+
+        // `text` in place of t's as one new step of its undo history (replaceText), counted: the steps it could redo are
+        // gone, and the groups' steps among them. True when the text changed.
+        bool replaceCounted(Tab& t, const std::string& text)
+        {
+            recount(t);
+            const uint32_t was = t.editor->revision();
+            replaceText(*t.editor, text);
+            if (t.editor->revision() == was)
+                return false;
+            leaveGroups([&](const UndoGroup::Member& m) { return m.tab == t.serial && m.step > t.step; });
+            ++t.step;
+            t.counted = t.editor->revision();
+            return true;
+        }
+
+        // Tab i's own undo (or redo) step, counted. False when it has none.
+        bool ownStep(int i, bool redo)
+        {
+            Tab& t = tabs_[static_cast<std::size_t>(i)];
+            recount(t);
+            if (!(redo ? t.editor->redo() : t.editor->undo()))
+                return false;
+            t.step += redo ? 1 : -1;
+            t.counted = t.editor->revision();
+            return true;
+        }
+
+        // The group whose step the tab shown is at (redo: has undone), the newest; nullptr when none is (after recount()).
+        const UndoGroup* groupAt(bool redo) const
+        {
+            const Tab& shown = tabs_[static_cast<std::size_t>(active_)];
+            const int64_t after = shown.step + (redo ? 1 : 0);   // the place the group's step leaves it
+            for (auto g = groups_.rbegin(); g != groups_.rend(); ++g)
+                if (std::any_of(g->members.begin(), g->members.end(),
+                                [&](const UndoGroup::Member& m) { return m.tab == shown.serial && m.step == after; }))
+                    return &*g;
+            return nullptr;
+        }
+
+        // A group's step undone (or redone) in each of its tabs at that step (or with it undone); a tab elsewhere in its
+        // history is left as it is and stays in the group.
+        void groupStep(const UndoGroup& g, bool redo)
+        {
+            std::vector<UndoGroup::Member> lost;
+            for (const UndoGroup::Member& m : std::vector<UndoGroup::Member>(g.members))
+                if (const int i = tabOf(m.tab); i >= 0 && tabs_[static_cast<std::size_t>(i)].step == m.step - (redo ? 1 : 0)
+                                                && !ownStep(i, redo))
+                    lost.push_back(m);                   // its step is no longer in its history (past maxUndo)
+            leaveGroups([&](const UndoGroup::Member& m) {
+                return std::any_of(lost.begin(), lost.end(), [&](const UndoGroup::Member& x) { return x.tab == m.tab && x.step == m.step; });
+            });
+        }
+
+        // Undo (or redo) in the tab shown, as Cmd-Z (Cmd-Shift-Z, Cmd-Y) and the Schematic view's buttons do: its group's
+        // step, or its own. False when there is nothing to undo.
+        bool undoStep(bool redo)
+        {
+            recount();
+            if (const UndoGroup* g = groupAt(redo))
+            {
+                groupStep(*g, redo);
+                return true;
+            }
+            return ownStep(active_, redo);
+        }
+
 
         Tab makeTab(std::string_view n, std::string_view text)
         {
-            Tab t{ std::string(n), std::make_unique<funkgui::TextEditor>(id_) };
+            Tab t{ std::string(n), std::make_unique<funkgui::TextEditor>(id_), ++serials_ };
             funkgui::TextEditorOptions o;
             o.style = funkgui::editorFont(funkgui::EditorFont::code);
             o.softTabs = true;
@@ -1946,6 +2122,7 @@ namespace playground::ui
             assist_.configure(*t.editor, n);
             t.editor->setText(text);
             t.editor->attach(host_);
+            t.counted = t.editor->revision();
             return t;
         }
 
@@ -2116,6 +2293,8 @@ namespace playground::ui
         std::vector<Tab> tabs_;
         int active_ = 0;
         uint64_t structure_ = 0;
+        std::vector<UndoGroup> groups_;                  // newest last, at most kMaxUndoGroups
+        uint64_t serials_ = 0;
         bool focused_ = false;
         bool pressedEditor_ = false;
         funkgui::HostServices* host_ = nullptr;
@@ -5057,6 +5236,15 @@ namespace playground::ui
     // ---- a .gui file's interface ----------------------------------------------------------------------------------------
     const GuiLayout& Panel::guiLayout() const noexcept { return guiView_->places(); }
 
+    void Panel::showState(ShownState state)
+    {
+        shown_ = std::move(state);
+        showing_ = true;
+        shownPlaying_ = false;
+        shownAt_ = 0;
+        dirty_ = true;
+    }
+
     void Panel::setPanelView(bool on)
     {
         if (on == panelView_)
@@ -5192,17 +5380,63 @@ namespace playground::ui
         // The displays: what the Engine published since the last frame, and the scopes' samples.
         {
             Meters m;
-            if (port_.meters(m))
+            const bool frames = showing_ && !shown_.frames.empty();
+            if (frames)
+            {
+                // A picture's state (showState): its frame, as of this panel's program; the last one's readouts made
+                // again from it.
+                if (shownPlaying_ && shownAt_ + 1 < shown_.frames.size())
+                {
+                    ++shownAt_;
+                    if (shownAt_ + 1 == shown_.frames.size())
+                        for (const int i : itemOfDisplay_)
+                            if (i >= 0)
+                                static_cast<DisplayItem&>(*items_[static_cast<std::size_t>(i)]).readoutNow();
+                }
+                meters_ = shown_.frames[shownAt_];
+                meters_.program = panelProgram_;
+            }
+            else if (port_.meters(m))
                 meters_ = m;
             // The fields are this panel's program's once the audio thread plays it; until then they are another's,
             // and read as 0.
             Meters shown = meters_;
             if (shown.program != panelProgram_)
                 std::fill(std::begin(shown.taps), std::end(shown.taps), 0.0f);
-            updateDisplays(items_, itemOfDisplay_, shown,
-                           [this](bool input, float* out, int n) { port_.scope(input, out, n); }, scopeIn_, scopeOut_, dt);
-            // The controls' live= marks (none until the audio thread plays this program) and the shaders' inputs.
-            guiView_->tick(panelSpec_, shown, meters_.program == panelProgram_);
+            if (showing_)
+            {
+                for (const auto& [tap, v] : shown_.taps)
+                    if (tap >= 0 && tap < kMaxDisplays)
+                        shown.taps[tap] = v;
+                for (int c = 0; c < 2; ++c)
+                {
+                    if (shown_.inLevel >= 0.0f)
+                        shown.inPeak[c] = shown.inRms[c] = shown_.inLevel;
+                    if (shown_.outLevel >= 0.0f)
+                        shown.outPeak[c] = shown.outRms[c] = shown_.outLevel;
+                }
+            }
+            const auto scope = [this, frames](bool input, float* out, int n) {
+                if (!frames)
+                {
+                    port_.scope(input, out, n);
+                    return;
+                }
+                // The state's samples, the newest last (silence before them).
+                const std::vector<float>& s = input ? shown_.scopeIn : shown_.scopeOut;
+                const int have = std::min(n, static_cast<int>(s.size()));
+                std::fill(out, out + (n - have), 0.0f);
+                std::copy(s.end() - have, s.end(), out + (n - have));
+            };
+            updateDisplays(items_, itemOfDisplay_, shown, scope, scopeIn_, scopeOut_, dt);
+            // The controls' live= marks (none until the audio thread plays this program, but a state's taps: drawn as
+            // asked) and the shaders' inputs.
+            uint32_t stateTaps = 0;
+            if (showing_)
+                for (const auto& tv : shown_.taps)
+                    if (tv.first >= 0 && tv.first < kMaxDisplays)
+                        stateTaps |= 1u << tv.first;
+            guiView_->tick(panelSpec_, shown, meters_.program == panelProgram_, stateTaps);
         }
         const int hovered = hasPointer_ && pressed_ < 0 ? itemAt(pointer_) : pressed_;
         const funkgui::Point far{ -1.0e4f, -1.0e4f };

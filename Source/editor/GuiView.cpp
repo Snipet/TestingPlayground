@@ -277,7 +277,7 @@ namespace playground::ui
         }
     }
 
-    void GuiView::tick(const PanelSpec& spec, const Meters& shown, bool live)
+    void GuiView::tick(const PanelSpec& spec, const Meters& shown, bool live, uint32_t liveTaps)
     {
         // The controls' live= fields: where the program has each parameter now (none until it plays this program).
         for (const int i : controls_)
@@ -289,7 +289,7 @@ namespace playground::ui
             if (d < 0 || d >= static_cast<int>(spec.displays.size()))
                 continue;
             const int t = spec.displays[static_cast<std::size_t>(d)].tap;
-            const bool now = live && t >= 0 && t < kMaxDisplays;
+            const bool now = t >= 0 && t < kMaxDisplays && (live || ((liveTaps >> t) & 1u) != 0);
             item.setLive(now ? shown.taps[t] : std::numeric_limits<float>::quiet_NaN());
         }
         // The shaders' inputs: a parameter's 0..1, a field's value, the audio's level.

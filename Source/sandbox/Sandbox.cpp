@@ -915,18 +915,47 @@ namespace playground::sandbox
             if (!theme.empty())
                 said += "theme is graphite or paper: the user's. ";
         }
-        // The dials at their defaults, but those `values` names.
+        // The dials at their defaults, but those `values` names; the fields and the audio's levels it names in place
+        // of the demo's (as view_panel's values draws them).
         std::array<float, kMaxControls> values{};
         for (int c = 0; c < kMaxControls; ++c)
             values[static_cast<std::size_t>(c)] = normOf(controls_[static_cast<std::size_t>(c)], controls_[static_cast<std::size_t>(c)].def);
+        std::vector<std::pair<int, float>> taps;
+        float inLevel = -1.0f, outLevel = -1.0f;
+        std::string fieldsShown;
         if (const juce::DynamicObject* o = r["values"].getDynamicObject())
             for (const auto& kv : o->getProperties())
             {
                 int slot = -1;
-                const Dial* d = dialNamed(kv.name.toString().toStdString(), &slot);
+                const std::string name = kv.name.toString().toStdString();
+                const Dial* d = dialNamed(name, &slot);
                 if (d == nullptr)
                 {
-                    said += "There is no dial " + kv.name.toString().toStdString() + ". ";
+                    double x = 0.0;
+                    const bool num = kv.value.isInt() || kv.value.isInt64() || kv.value.isDouble() || kv.value.isBool();
+                    if (num)
+                        x = static_cast<double>(kv.value);
+                    bool found = false;
+                    if (name == "out" || (name == "in" && !instrument_))
+                    {
+                        found = true;
+                        if (num && std::isfinite(x))
+                            (name == "in" ? inLevel : outLevel) = x > -240.0 ? static_cast<float>(std::pow(10.0, x / 20.0)) : 0.0f;
+                    }
+                    else
+                        for (const PanelDisplay& disp : spec_.displays)
+                            if (!disp.audio() && disp.tap >= 0 && (disp.source == name || disp.name == name))
+                            {
+                                found = true;
+                                if (num && std::isfinite(x))
+                                    taps.emplace_back(disp.tap, static_cast<float>(x));
+                            }
+                    if (!found)
+                        said += "There is no dial or field " + name + ". ";
+                    else if (!num || !std::isfinite(x))
+                        said += name + " takes a number. ";
+                    else
+                        fieldsShown += (fieldsShown.empty() ? "" : ", ") + name;
                     continue;
                 }
                 Dial named = *d;                      // its values' names as the panel has them
@@ -942,6 +971,8 @@ namespace playground::sandbox
             }
         const std::string page = text(r["page"]);
         View view(spec_, controls_, values, files_, notes_, w, h, page, instrument_);
+        if (!taps.empty() || inLevel >= 0.0f || outLevel >= 0.0f)
+            view.setShown(std::move(taps), inLevel, outLevel);
         funkgui::HeadlessHost host(view, themeIndex, kDpi);
         host.settle(120);
         const picture::Drawn drawn = picture::draw(host.draw());
@@ -1002,7 +1033,8 @@ namespace playground::sandbox
                   + " not built here, shown as placeholders (the notes say why)";
         else
             line += std::string("; drawn by the GPU as the plugin draws it") + (spec_.shaders.empty() ? "" : ", shaders included");
-        line += "; the displays show demo values. Sandbox #" + std::to_string(number_) + ".";
+        line += "; the displays show demo values" + (fieldsShown.empty() ? std::string() : " but " + fieldsShown + " (as asked)")
+              + ". Sandbox #" + std::to_string(number_) + ".";
         // The area goes back with it: the server keeps it, so a helper started again lays the panel out as it was.
         return object({ { "ok", true },
                         { "text", str(line) },

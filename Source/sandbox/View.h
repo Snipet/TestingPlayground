@@ -21,6 +21,7 @@
 #include <array>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace playground::sandbox
@@ -70,6 +71,9 @@ namespace playground::sandbox
         int pictureHeight() const noexcept;
         const std::string& shownPage() const noexcept { return shownPage_; }
         const std::string& allPages() const noexcept { return allPages_; }
+        // A render's values for fields (gui_sandbox's values, by tap: in place of the demo's) and the audio's levels
+        // (linear, peak and RMS; < 0: the demo's), from the next frame on.
+        void setShown(std::vector<std::pair<int, float>> taps, float inLevel, float outLevel);
 
         // funkgui::Panel
         void attach(funkgui::HostServices& host) override { host_ = &host; }
@@ -87,7 +91,7 @@ namespace playground::sandbox
         void closeGestures() override { view_.releaseKeys(); }
 
     private:
-        void demoMeters();                       // the meters for this frame (MockMeters)
+        void demoMeters();                       // the meters for this frame (MockMeters), then the values asked for
 
         const PanelSpec& spec_;
         const Controls& controls_;
@@ -95,6 +99,8 @@ namespace playground::sandbox
         int width_, height_;
         std::vector<std::unique_ptr<MockPort>> ports_;
         std::vector<funkgui::ParamPort*> portList_;
+        std::vector<std::pair<int, float>> shownTaps_;
+        float shownIn_ = -1.0f, shownOut_ = -1.0f;
         ui::GuiView::Items items_;
         std::vector<int> displays_;
         ui::GuiView view_;

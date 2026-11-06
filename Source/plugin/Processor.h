@@ -265,7 +265,7 @@ namespace playground
         // ChatHost: Claude's tools (ChatAgent.h), from the agent's worker thread.
         Draft chatDraft() const override;
         void chatSetDraft(const Draft& draft) override;
-        bool chatSetDraftIf(const Draft& draft, const std::string& file, const std::string& expected) override;
+        bool chatSetDraftIf(const Draft& draft, const Sources& read) override;
         std::string chatSchematicPins(const std::string& file) const override;
         CompileStatus chatRun(const Sources& files) override;
         CompileStatus chatLastStatus() const override;
@@ -276,7 +276,7 @@ namespace playground
         void chatSetDial(int slot, float plain) override;
         float chatLoad() const override;
         uint32_t chatAlerts() const override;
-        PanelPicture chatPicture(PictureView view, const std::string& name) override;
+        PanelPicture chatPicture(PictureView view, const std::string& name, const PictureState& state) override;
         // For the live tools (ProcessorLive.cpp; any thread): what plays now, the meters measured while a tool listens,
         // the journal of changes, the dials' options' names.
         void chatLive(LiveRead& io) const override;
@@ -348,6 +348,7 @@ namespace playground
         bool pictureAsked_ = false, pictureReady_ = false;
         PictureView pictureView_ = PictureView::panel;
         std::string picturePage_;                                // its page, or its netlist (a schematic's)
+        PictureState pictureState_;                              // what it draws in place of what plays
         PanelPicture picture_;
         std::vector<std::pair<int, float>> pendingDials_;
 

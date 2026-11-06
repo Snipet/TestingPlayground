@@ -145,11 +145,11 @@ namespace playground
 
         virtual Draft chatDraft() const = 0;                        // the editor's files and tab
         virtual void chatSetDraft(const Draft& draft) = 0;          // the files Claude wrote; the editor follows
-        // chatSetDraft's conditional write (edit_circuit): file `file`'s text taken from `draft` (and its tab shown),
-        // under the same lock as the test, only while that file's text is still `expected` (the text the tool read);
-        // false, and nothing set, when a gesture of the user's changed it meanwhile (or the file is gone). The other
-        // files stay as they are now.
-        virtual bool chatSetDraftIf(const Draft& draft, const std::string& file, const std::string& expected) = 0;
+        // chatSetDraft's conditional write (edit_file, edit_circuit): each file `read` names gets its text from `draft`
+        // (and the tab `draft` shows is shown), in one change of the draft, under the same lock as the test, only while
+        // every one of them is still the text the tool read (`read`'s); false, and nothing set, when a gesture or the
+        // typing of the user's changed any of them meanwhile (or one is gone). The other files stay as they are now.
+        virtual bool chatSetDraftIf(const Draft& draft, const Sources& read) = 0;
         // A netlist's session pins (EditorPort::schematicPins: *@ part, input and output lines, "" for none).
         virtual std::string chatSchematicPins(const std::string& file) const = 0;
         virtual CompileStatus chatRun(const Sources& files) = 0;    // RUN, then the compile's outcome
@@ -165,8 +165,9 @@ namespace playground
         virtual float chatLoad() const = 0;
         virtual uint32_t chatAlerts() const = 0;
         // A picture (view_panel), made on the message thread; this thread waits for it (10 s at most): the panel (`name`
-        // a tabs page's title, "" for the user's), the whole editor, or a netlist's schematic (`name` its .cir file).
-        virtual PanelPicture chatPicture(PictureView view, const std::string& name) = 0;
+        // a tabs page's title, "" for the user's), the whole editor, or a netlist's schematic (`name` its .cir file);
+        // the panel or the editor with `state` drawn in place of what plays (picturePanel: view_panel's values and at).
+        virtual PanelPicture chatPicture(PictureView view, const std::string& name, const PictureState& state) = 0;
         // For the live tools (listen, get_status: any thread, beside a running call; Live.h): what plays now; a tool
         // that listens (the meters and the scopes are measured only while one does, on: true while it listens); what
         // changed since a token (Journal.h; `issue`: the token returned is handed out); the dials' options' names.
@@ -226,6 +227,8 @@ namespace playground
         // For probes: called where edit_circuit has read the netlist and applied its commands, before each conditional
         // write (attempt 0, then 1 after a conflict), on the thread the tool runs on: a probe plants a gesture there.
         void setCircuitWriteHookForTests(std::function<void(int attempt)> hook) { circuitWriteHook_ = std::move(hook); }
+        // For probes: the same for edit_file, where it has read the files and applied the edits, before each write.
+        void setFileWriteHookForTests(std::function<void(int attempt)> hook) { fileWriteHook_ = std::move(hook); }
 
         // The system prompt and the tools as sent (for probes and the docs).
         static const std::string& systemPrompt();
@@ -280,6 +283,12 @@ namespace playground
         // A call of Claude Desktop's that is not live runs (any thread): what it changes is its own, which get_status
         // `since` does not report back to it (the Processor's journal asks).
         bool mcpWorking() const noexcept { return mcpWorking_.load(); }
+        // MCP's marks as the session keeps them (the Processor's state, Live.h's KeptMark): the newest kMcpMarks tokens
+        // get_status gave, oldest first, those kept from before the plugin was opened again first; and back, as marks
+        // of before (mcpKept_), which the new journal does not know: get_status with one of their tokens says which
+        // files changed since it (Live.cpp). Any thread.
+        std::vector<KeptMark> mcpMarksToKeep();
+        void restoreMcpMarks(std::vector<KeptMark> marks);
 
     private:
         static claude::Headers headersFor(const std::string& key);  // the key and the API version
@@ -293,15 +302,21 @@ namespace playground
         juce::var compareTool(const juce::var& toolUse);           // compare's (ChatCompare.cpp)
         juce::var traceTool(const juce::var& toolUse);             // trace's (ChatTrace.cpp)
         juce::var captureTool(const juce::var& toolUse);           // capture's (ChatCapture.cpp)
+        // view_panel's values and at: the state its picture draws (at's render of the program that plays, offline, to
+        // its moment); "" or why it cannot be.
+        std::string panelState(const juce::var& input, PictureState& state);
         std::string toolText(const std::string& name, const juce::var& input, bool& isError);
-        // read_file and edit_file (ChatFiles.cpp): a file whole, a range of its lines or the lines that hold a text,
-        // numbered (a part read marks nothing seen); one passage or a list of them replaced, all or none, in one write
-        // that never overwrites what the user typed meanwhile (chatSetDraftIf), and with `expected` only while the file
-        // is still that version. Every read and write says the file's version (its text's hash); keepVersion keeps the
-        // text of the newest kFileVersions given (mutex held), so a refused write shows what changed since.
+        // read_file and edit_file (ChatFiles.cpp): a file whole, a range of its lines or the lines that hold a text or
+        // match a pattern (regex), in one file or in every file, numbered (a part read marks nothing seen); one passage or a list of them replaced, in one file or in several
+        // (`files`: a list, or a unified diff), all or none, in one write that never overwrites what the user typed
+        // meanwhile (chatSetDraftIf), and with `expected` only while the file is still that version. Every read and
+        // write says the file's version (its text's hash); keepVersion keeps the text of the newest kFileVersions
+        // given (mutex held), so a refused write shows what changed since. A refusal's text (`refused`) is kept too, but
+        // counts as no call that gave it: a version kept already keeps when and how it was given, a new one is not
+        // `asked` (so a refusal never makes a change Claude's own).
         std::string readFileText(const juce::var& input, bool& isError);
         std::string editFileText(const juce::var& input, bool& isError);
-        std::string keepVersion(const std::string& name, const std::string& text);
+        std::string keepVersion(const std::string& name, const std::string& text, bool refused = false);
         // The checks measured on the editor's files and the plugin's dials: their entry brought up to date, and the
         // results in words for Claude ("" with no checks). The worker's.
         std::string evaluateChecks();
@@ -347,6 +362,7 @@ namespace playground
         ChatHost& host_;
         std::unique_ptr<claude::Transport> transport_;
         std::function<void(int)> circuitWriteHook_;                 // setCircuitWriteHookForTests
+        std::function<void(int)> fileWriteHook_;                    // setFileWriteHookForTests
 
         mutable std::mutex mutex_;
         uint64_t revision_ = 1;
@@ -372,9 +388,12 @@ namespace playground
         {
             std::string name, version;                              // a file, and its text's version as read_file says it
             std::shared_ptr<const std::string> text;
+            uint64_t given = 0;                                     // when it was given last (versionsGiven_ then)
+            bool asked = true;                                      // given by a read or a write, not a refusal alone
         };
         static constexpr std::size_t kFileVersions = 16;
         std::deque<FileVersion> fileVersions_;                      // the newest versions read or written (keepVersion)
+        uint64_t versionsGiven_ = 0;                                // keepVersion's count
         uint64_t lastSignature_ = 0;                                // the plugin's state as Claude last got it
         bool resendState_ = false;                                  // a summary came: the state goes with what follows
         std::vector<std::string> requests_;                         // bodies sent (probes)
@@ -422,6 +441,7 @@ namespace playground
         std::string mcpHint();                                      // "" when nothing changed since MCP's last result
         std::mutex liveMutex_;                                      // the members below (a leaf)
         std::deque<McpMark> mcpMarks_;                              // the newest kMcpMarks tokens MCP was given
+        std::deque<KeptMark> mcpKept_;                              // and those of before the plugin was opened again
         std::set<uint64_t> mcpStopped_;                             // MCP calls cancelled that are not the one running
                                                                     // (a listen, one about to start): mcpCancel's
         std::string mcpLook_;                                       // the journal's token at MCP's last result

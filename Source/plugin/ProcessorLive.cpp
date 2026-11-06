@@ -121,7 +121,7 @@ namespace playground
             polled_[i].store(now);
             const Control k = control(c);
             if (k.used)
-                journal_.dial(editor ? Journal::Who::you : Journal::Who::host, c, k.name, dialTextOf(c, was), dialTextOf(c, now));
+                journal_.dial(editor ? Journal::Who::user : Journal::Who::host, c, k.name, dialTextOf(c, was), dialTextOf(c, now));
         }
         // The host's bypass and its transport.
         if (const bool b = bypassed_.load(std::memory_order_relaxed); b != polledBypass_)

@@ -524,6 +524,104 @@ namespace playground
 
         bool isNumber(const juce::var& v) { return v.isDouble() || v.isInt() || v.isInt64(); }
 
+        // An effect's input for a sound's render (view_sound's, view_panel's at): what goes in (a sweep unless said),
+        // and a sine's frequency.
+        void soundInput(const juce::var& input, measure::ViewRequest& vr)
+        {
+            if constexpr (!kInstrument)
+            {
+                const std::string in = input.getProperty("input", juce::var()).toString().toStdString();
+                vr.input = in == "noise"     ? measure::ViewInput::noise
+                         : in == "impulse"   ? measure::ViewInput::impulse
+                         : in == "sine"      ? measure::ViewInput::sine
+                         : in == "silence"   ? measure::ViewInput::silence
+                                             : measure::ViewInput::sweep;
+                const juce::var f = input.getProperty("frequency", juce::var());
+                if (isNumber(f))
+                    vr.frequency = static_cast<float>(static_cast<double>(f));
+            }
+            else
+            {
+                static_cast<void>(input);
+                static_cast<void>(vr);
+            }
+        }
+
+        // view_panel's at: a render watched up to its moment `end` (a sample), offline, in the Session's own Engine:
+        // the meters after the call at or after each of the last frames' times (60 a second, the last at `end`, at
+        // most a field scope's 2.5 s), numbered afresh; at `end`, the scopes and the dials. Its reader comes before the
+        // first call, so the levels and the scopes are measured from the first sample (an impulse's at 0 too), and the
+        // calls are view_sound's but the last, cut at `end`.
+        class MomentHooks final : public measure::RenderHooks
+        {
+        public:
+            static constexpr std::size_t kFrames = 150;
+
+            MomentHooks(std::size_t end, double rate, const std::atomic<bool>& cancel) : end_(end), cancel_(cancel)
+            {
+                every_ = std::max(1.0, rate / 60.0);
+                count_ = std::min<std::size_t>(kFrames, 1 + static_cast<std::size_t>(static_cast<double>(end) / every_));
+            }
+
+            void started(Engine& engine) override
+            {
+                if (!reading_)
+                    engine.addReader();
+                reading_ = true;
+            }
+
+            int callLength(std::size_t at) override
+            {
+                return at < end_ ? static_cast<int>(std::min<std::size_t>(end_ - at, 1u << 20)) : 0;
+            }
+
+            bool afterCall(const measure::CallInfo& call) override
+            {
+                const std::size_t done = call.at + static_cast<std::size_t>(call.length);
+                while (frames.size() < count_ && markOf(frames.size()) <= done)
+                {
+                    Meters m;
+                    if (!call.engine.meters(m) && !frames.empty())
+                        m = frames.back();
+                    m.frame = static_cast<uint32_t>(frames.size() + 1);
+                    frames.push_back(m);
+                }
+                if (done < end_)
+                    return !cancel_.load();
+                reached = true;
+                constexpr int n = PictureState::kScopeSamples;
+                scopeOut.assign(n, 0.0f);
+                call.engine.scope(false, scopeOut.data(), n);
+                if constexpr (!kInstrument)
+                {
+                    scopeIn.assign(n, 0.0f);
+                    call.engine.scope(true, scopeIn.data(), n);
+                }
+                call.engine.dials(dials);
+                call.engine.removeReader();
+                reading_ = false;
+                return false;
+            }
+
+            std::vector<Meters> frames;
+            std::vector<float> scopeIn, scopeOut;
+            DialState dials;
+            bool reached = false;
+
+        private:
+            std::size_t markOf(std::size_t k) const
+            {
+                const double back = static_cast<double>(count_ - 1 - k) * every_;
+                return static_cast<std::size_t>(std::max(0.0, static_cast<double>(end_) - std::round(back)));
+            }
+
+            std::size_t end_;
+            const std::atomic<bool>& cancel_;
+            double every_ = 800.0;
+            std::size_t count_ = 1;
+            bool reading_ = false;
+        };
+
         // The render's settings as a tool's input schema has them (measure_output's own, which the others share); with
         // `metrics` (the tools that measure them: not view_sound) an instrument's base_hz too.
         void addRenderProps(juce::var& props, bool metrics = true)
@@ -1902,15 +2000,19 @@ namespace playground
     {
         juce::Array<juce::var> tools;
         tools.add(tool("read_file",
-                       "Read one of the plugin's files as it is now in the editor. Call this before editing a file you "
+                       "Read one of the plugin's files as it is now in the editor, or search every file (find). Call "
+                       "this before editing a file you "
                        "have not seen in its current form (the user may have typed in it since the last plugin_state). "
                        "Its first line gives the file's line count and version (edit_file's expected); a part (from, "
                        "lines, find) comes with its lines numbered.",
+                       // find with no name searches every file, so nothing is required (ChatFiles.cpp).
                        claude::object({ { "name", prop("string", "The file's name, such as program.fm") },
                                         { "from", prop("integer", "The first line to read, from 1") },
                                         { "lines", prop("integer", "How many lines (default: to the end)") },
-                                        { "find", prop("string", "A text: the lines that hold it, 2 around each") } }),
-                       { "name" }));
+                                        { "find", prop("string", "A text: the lines that hold it, 2 around each (no name: in "
+                                                                 "every file)") },
+                                        { "regex", prop("boolean", "find is a regex (RE2's syntax)") } }),
+                       {}));
         tools.add(tool("write_file",
                        "Create a file or replace a file's whole text. Use it for a new program or a large rewrite; use "
                        "edit_file for a change to part of a file. The editor shows the file and the user can undo the "
@@ -1920,20 +2022,33 @@ namespace playground
                                                                   "filters.fm") },
                                         { "content", prop("string", "The file's whole text") } }),
                        { "name", "content" }));
-        tools.add(tool("edit_file",
-                       "Replace one exact passage of a file with new text. old_text must occur exactly once in the "
-                       "file, with the same whitespace; include enough surrounding lines to make it unique. Prefer "
-                       "this to write_file for changes to part of a file. A passage that does not occur gets the "
-                       "closest one back, numbered, and what differs.",
-                       claude::object({ { "name", prop("string", "The file's name") },
-                                        { "old_text", prop("string", "The passage as it is now, exactly") },
-                                        { "new_text", prop("string", "What replaces it") },
-                                        { "edits", claude::object({ { "type", "array" },
-                                                                    { "description", "[{old_text, new_text}] in place of those "
-                                                                                     "two: in order, all or none" } }) },
-                                        { "expected", prop("string", "read_file's version: write only if the file is still "
-                                                                     "it") } }),
-                       { "name" }));
+        {
+            // files: several files' edits as one change (each entry as the tool's own name, edits and expected), or a
+            // unified diff of them (ChatFiles.cpp); name is then left out, so none is required. Its two forms as anyOf,
+            // the form the API's JSON Schema reference names (strict tools too).
+            juce::Array<juce::var> listOrDiff;
+            listOrDiff.add(claude::object({ { "type", "array" } }));
+            listOrDiff.add(claude::object({ { "type", "string" } }));
+            tools.add(tool("edit_file",
+                           "Replace one exact passage of a file with new text. old_text must occur exactly once in the "
+                           "file, with the same whitespace; include enough surrounding lines to make it unique. Prefer "
+                           "this to write_file for changes to part of a file. A passage that does not occur gets the "
+                           "closest one back, numbered, and what differs. A diff's hunk goes where its old lines occur "
+                           "nearest its @@ line.",
+                           claude::object({ { "name", prop("string", "The file's name") },
+                                            { "old_text", prop("string", "The passage as it is now, exactly") },
+                                            { "new_text", prop("string", "What replaces it") },
+                                            { "edits", claude::object({ { "type", "array" },
+                                                                        { "description", "[{old_text, new_text}] in place of those "
+                                                                                         "two: in order, all or none" } }) },
+                                            { "expected", prop("string", "read_file's version: write only if the file is still "
+                                                                         "it") },
+                                            { "files", claude::object({ { "anyOf", juce::var(listOrDiff) },
+                                                                        { "description", "[{name, edits, expected}] or a unified "
+                                                                                         "diff, in place of name: all or none, one "
+                                                                                         "undo step" } }) } }),
+                           {}));
+        }
         {
             juce::var ops = claude::object({ { "type", "array" },
                                              { "items", claude::object({ { "type", "string" } }) },
@@ -2013,9 +2128,9 @@ namespace playground
                            props, {}));
         }
         tools.add(tool("view_panel",
-                       "See the plugin's interface: a picture (PNG) of the program's panel as the user sees it in the "
-                       "PANEL view (its panel.gui, or its dials), drawn now from the program that plays, or of a .cir "
-                       "file's schematic. Use it after "
+                       "See the plugin's interface: a picture of the program's panel as the user sees it in the PANEL "
+                       "view (its panel.gui, or its dials), drawn from the program that plays, or of a .cir file's "
+                       "schematic. Use it after "
                        "you write or change panel.gui and run it, to check the layout as a designer would: crowding, "
                        "overlaps, text cut off, ragged rows, sizes and colours that do not read, a page left empty; "
                        "then fix what you see. view \"window\" shows the whole editor instead (the code and the "
@@ -2026,16 +2141,27 @@ namespace playground
                        "Shaders are drawn as the user's screen draws them (a striped placeholder only where the GPU "
                        "cannot draw the picture, which its text then says) and the displays show the sound playing "
                        "now. A picture costs about 2,000 input tokens: look once or twice for a new interface, not "
-                       "after every small change.",
+                       "after every small change. To see the panel in a state of your choosing (a dashboard in 12th "
+                       "gear at -40 degrees, a warning lit, a meter near the top), values draws dials (in their units, "
+                       "or an int's option by its name) and fields (a display's, a live= mark's or a shader's input, as "
+                       "panel.gui names them: rpm, shared->gear) at the values given, and in and out at a level in "
+                       "dBFS; nothing that plays changes. at draws the state the program that plays reaches at a "
+                       "moment: it renders it offline with view_sound's settings ({seconds, notes, dials, scenario, "
+                       "...}: seconds from the start, at most 20) and draws its displays, its shaders' inputs and its "
+                       "dials as they are then (a field's scope its last 2.5 s, a VU's needle on its way), values over "
+                       "it. With either, the text gives what each display shown reads.",
                        claude::object({ { "view", claude::object({ { "type", "string" },
                                                                    { "enum", juce::Array<juce::var>{ "panel", "window", "schematic" } },
-                                                                   { "description", "panel (the default): the program's "
-                                                                                    "panel; window: the whole editor; "
-                                                                                    "schematic: the drawing of the .cir "
-                                                                                    "file name (default the first .cir)" } }) },
-                                        { "page", prop("string", "A page's title to show (a tabs element's), else the "
-                                                                 "pages the user has") },
-                                        { "name", prop("string", "The file's name") } }),
+                                                                   { "description", "panel (the default), window (the whole "
+                                                                                    "editor) or schematic (the drawing of "
+                                                                                    "the .cir file name, else the first)" } }) },
+                                        { "page", prop("string", "A tabs page to show by its title, else the user's") },
+                                        { "name", prop("string", "The file's name") },
+                                        { "values", claude::object({ { "type", "object" }, { "description", mcp::kPanelValues } }) },
+                                        { "at", claude::object({ { "type", "object" },
+                                                                 { "description", "{seconds, view_sound's settings}: the state "
+                                                                                  "an offline render of what plays reaches "
+                                                                                  "then" } }) } }),
                        {}));
         {
             juce::var props = claude::object({});
@@ -3286,8 +3412,10 @@ namespace playground
             "graphite or paper (else the user's, as the plugin shows it), a tabs page by its title, and the dials at the "
             "values you give ({ \"cutoff\": 2000, \"wave\": \"SAW\" }: numbers in their units, an int's or a bool's by "
             "its names), the rest at their defaults. The displays show demo values (a steady tone, fields moving across "
-            "their ranges, a live= mark under its knob), not the user's sound. The picture is made smaller to fit, unless "
-            "detail \"high\".\n"
+            "their ranges, a live= mark under its knob), not the user's sound, but the fields values names (a display's, "
+            "a live= mark's or a shader's input, as the .gui names them: { \"shared->gear\": 12 }) and in and out (a "
+            "level in dBFS), drawn at those values, as view_panel's values draws them. The picture is made smaller to "
+            "fit, unless detail \"high\".\n"
             "- apply: only when the user asks for the design in their plugin, with sandbox (its number: needed). It writes "
             "the .gui into the open plugin's program (its own .gui file when it has one, else panel.gui) and runs it "
             "there, which the user sees at once; it says what changed and what the run said. With no plugin open it gives "
@@ -3320,9 +3448,8 @@ namespace playground
                     if (juce::DynamicObject* props = schema["properties"].getDynamicObject())
                         props->setProperty("detail", claude::object({ { "type", "string" },
                                                                       { "enum", juce::Array<juce::var>{ "high" } },
-                                                                      { "description", "high: the picture at its full size, "
-                                                                                       "which may not fit (by default it is "
-                                                                                       "made smaller to fit)" } }));
+                                                                      { "description", "high: the picture whole (else made "
+                                                                                       "smaller to fit)" } }));
                 mcp::dropRepeated(schema, described);
                 out.add(claude::object({ { "name", name },
                                          { "title", title },
@@ -3522,6 +3649,88 @@ namespace playground
         return r;
     }
 
+    // ---- view_panel's state ---------------------------------------------------------------------------------------------
+    std::string ChatAgent::panelState(const juce::var& input, PictureState& state)
+    {
+        state = {};
+        // values: by name, a number (a dial's plain value, a field's, a level's dBFS) or a dial's option by name.
+        const juce::var values = input.getProperty("values", juce::var());
+        if (const juce::DynamicObject* o = values.getDynamicObject())
+            for (const auto& kv : o->getProperties())
+            {
+                PictureValue v;
+                v.name = kv.name.toString().toStdString();
+                if (isNumber(kv.value) || kv.value.isBool())
+                    v.number = static_cast<float>(static_cast<double>(kv.value));
+                else if (kv.value.isString())
+                {
+                    v.text = kv.value.toString().trim().toStdString();
+                    v.isText = true;
+                }
+                else
+                    return "values takes a number for each name (a dial's option may be its name): " + v.name + " has none.";
+                state.values.push_back(std::move(v));
+            }
+        else if (!values.isVoid())
+            return "values is an object: {\"name\": number}.";
+        const juce::var at = input.getProperty("at", juce::var());
+        if (at.isVoid())
+            return {};
+        if (!at.isObject())
+            return "at is an object: {seconds, and view_sound's settings}.";
+        // What plays, as it plays: a trial change is view_sound's alone (the panel drawn is the running program's), and
+        // seconds is the one moment.
+        if (at.hasProperty("try_edits"))
+            return "at renders the program that plays: try a change with view_sound, or run it first.";
+        if (at.hasProperty("from_seconds") || at.hasProperty("to_seconds"))
+            return "at takes no from_seconds or to_seconds: seconds is the moment it draws.";
+        // at: the program that plays, rendered offline with view_sound's settings to its moment.
+        constexpr double kMaxAt = 20.0;
+        const juce::var sec = at.getProperty("seconds", juce::var());
+        const double seconds = isNumber(sec) ? static_cast<double>(sec) : -1.0;
+        if (!(seconds > 0.0) || seconds > kMaxAt)
+            return "at needs seconds: the moment to draw, from the render's start, more than 0 and at most 20.";
+        const Sources files = host_.chatRunning();
+        if (files.empty())
+            return "Nothing plays yet: at renders the program that plays (run_program plays the editor's files).";
+        measure::ViewRequest vr;
+        std::string why;
+        vr.render = scenario::renderOf(at, &why);
+        vr.render.current = currentDials();
+        soundInput(at, vr);
+        if (why.empty())
+            scenario::resolve(vr.render, host_, why);
+        if (!why.empty())
+            return "at: " + why;
+        setActivity("Rendering the program to its moment");
+        measure::Session session(files, vr.render.rate);
+        if (!session.compiled())
+            return "the program that plays did not compile for the render:\n" + capped(session.errors());
+        // As view_sound renders it (its words say so), and on past its end, silent, to a later moment.
+        const std::size_t end = std::max<std::size_t>(1, static_cast<std::size_t>(std::llround(seconds * session.rate())));
+        if (end > session.lengthOf(vr.render))
+            vr.length = end;
+        MomentHooks hooks(end, session.rate(), cancel_);
+        const measure::Sound sound = measure::renderSound(session, vr, &hooks);
+        if (cancel_.load())
+            return "stopped.";
+        if (!hooks.reached || hooks.frames.empty())
+            return "the render ended before its moment.";
+        state.sources = files;                    // the picture draws it only if this is still what plays
+        state.frames = std::move(hooks.frames);
+        state.scopeIn = std::move(hooks.scopeIn);
+        state.scopeOut = std::move(hooks.scopeOut);
+        const Controls& cs = session.controls();
+        for (int c = 0; c < kMaxControls; ++c)
+            if (cs[static_cast<std::size_t>(c)].used)
+                state.dials.emplace_back(cs[static_cast<std::size_t>(c)].name, hooks.dials.plain[static_cast<std::size_t>(c)]);
+        char when[32];
+        std::snprintf(when, sizeof when, "%.2f s", seconds);
+        state.about = std::string(when) + " into an offline render of the program that plays (" + sound.title
+                    + "; nothing that plays changed)";
+        return {};
+    }
+
     // ---- the tools ----------------------------------------------------------------------------------------------------
     juce::var ChatAgent::runTool(const juce::var& use)
     {
@@ -3569,7 +3778,23 @@ namespace playground
             }
             else
                 setActivity("Looking at the panel");
-            const PanelPicture pic = host_.chatPicture(pv, what);
+            // A state of Claude's choosing (values), or the one the program reaches at a moment (at): the panel's.
+            PictureState state;
+            std::string note;
+            if (pv == PictureView::schematic)
+            {
+                if (input.hasProperty("values") || input.hasProperty("at"))
+                    note = " (values and at draw the panel's displays and dials: the schematic shows the netlist as it is.)";
+            }
+            else if (const std::string why = panelState(input, state); !why.empty())
+            {
+                block.getDynamicObject()->setProperty("content", juce::String::fromUTF8(("No picture: " + why).c_str()));
+                block.getDynamicObject()->setProperty("is_error", true);
+                return block;
+            }
+            if (state.rendered())
+                setActivity("Looking at the panel");
+            const PanelPicture pic = host_.chatPicture(pv, what, state);
             if (pic.png.empty())
             {
                 block.getDynamicObject()->setProperty("content", juce::String::fromUTF8(("No picture: " + pic.why).c_str()));
@@ -3581,7 +3806,7 @@ namespace playground
                                          { "source", claude::object({ { "type", "base64" },
                                                                       { "media_type", "image/png" },
                                                                       { "data", juce::Base64::toBase64(pic.png.data(), pic.png.size()) } }) } }));
-            content.add(claude::object({ { "type", "text" }, { "text", juce::String::fromUTF8(pic.about.c_str()) } }));
+            content.add(claude::object({ { "type", "text" }, { "text", juce::String::fromUTF8((pic.about + note).c_str()) } }));
             block.getDynamicObject()->setProperty("content", content);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
@@ -3601,18 +3826,7 @@ namespace playground
             bool defaults = false;
             if (why.empty() && scenario::dialsFrom(input, defaults, why) && !defaults)
                 vr.render.current = currentDials();
-            if constexpr (!kInstrument)
-            {
-                const std::string in = str(input, "input");
-                vr.input = in == "noise"     ? measure::ViewInput::noise
-                         : in == "impulse"   ? measure::ViewInput::impulse
-                         : in == "sine"      ? measure::ViewInput::sine
-                         : in == "silence"   ? measure::ViewInput::silence
-                                             : measure::ViewInput::sweep;
-                const juce::var f = input.getProperty("frequency", juce::var());
-                if (isNumber(f))
-                    vr.frequency = static_cast<float>(static_cast<double>(f));
-            }
+            soundInput(input, vr);
             const juce::var from = input.getProperty("from_seconds", juce::var()), to = input.getProperty("to_seconds", juce::var());
             if (isNumber(from) && isNumber(to))
             {
@@ -3814,7 +4028,7 @@ namespace playground
                 d.active = i;
                 if (circuitWriteHook_)
                     circuitWriteHook_(attempt);
-                if (!host_.chatSetDraftIf(d, file, before))
+                if (!host_.chatSetDraftIf(d, { { file, before } }))
                     continue;
                 // What changed, in words: each command's line, the netlist's lines (its drawing aside), what the
                 // circuit compiler says of the new text, and the text itself when it is short. Its version, as a write's:
@@ -3863,7 +4077,16 @@ namespace playground
                     markSeen(file, a.text);
                 }
                 else
+                {
                     out += "(" + std::to_string(a.text.size()) + " bytes: read_file shows it whole.)\n";
+                    // Every line it changed is listed above: seen as an edit_file is, only if the text it edited was
+                    // (its drawing's *@ lines aside, which no state sends).
+                    if (more == 0)
+                    {
+                        const std::lock_guard<std::mutex> lock(mutex_);
+                        carrySeen(file, before, a.text);
+                    }
+                }
                 note("drew " + file + " (" + std::to_string(ops.size()) + (ops.size() == 1 ? " change)" : " changes)"));
                 return out;
             }
@@ -4415,7 +4638,7 @@ namespace playground
             std::string out = "Files: ";
             for (std::size_t i = 0; i < d.files.size(); ++i)
                 out += (i == 0 ? "" : ", ") + d.files[i].name + " (" + std::to_string(lineCount(d.files[i].text))
-                     + " lines" + (static_cast<int>(i) == d.active ? ", shown" : "") + ")";
+                     + (lineCount(d.files[i].text) == 1 ? " line" : " lines") + (static_cast<int>(i) == d.active ? ", shown" : "") + ")";
             out += "\nWhat plays: ";
             out += cir::sameProgram(running, d.files) ? "these files\n"
                                                       : "an earlier version (the files were edited since the run)\n";

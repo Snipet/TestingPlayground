@@ -13,8 +13,8 @@
 //            measure_output's spectrum (octave, third, semitone), described, on no other tool; an instrument's base_hz
 //            described on measure_output, undescribed in a check's and tune_dials', on no other tool, none of the effect's;
 //            tune_dials' sweep (numbers, its cap said, its first sentence naming it) and compare's b_rate and
-//            previous_run, each on its own tool alone; read_file's from, lines and
-//            find, edit_file's edits and expected (only its name required), trace's render settings (its dials; the
+//            previous_run, each on its own tool alone; read_file's from, lines,
+//            find and regex (nothing required), edit_file's edits, expected and files (a list or a diff; nothing required), trace's render settings (its dials; the
 //            synth's notes); an instrument's notes,
 //            velocity and wheels in the synth's measure_output and
 //            in none of the effect's tools; edit_circuit's description its first sentence, its face "Edit a circuit", its `name`
@@ -556,7 +556,8 @@ PROBE(plugin, mcp)
         const juce::var checkedMetric = setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["metric"];
         P.eq("link.tune_metric_string", tunedMetric["type"].toString() == "string" && !tunedMetric.hasProperty("enum")
                                             && checkedMetric["enum"].size() == static_cast<int>(pg::measure::metrics().size()) ? 1 : 0, 1);
-        // read_file's part (from, lines, find) and edit_file's list and guard (edits, expected; only its name required).
+        // read_file's part (from, lines, find, regex; find with no name searches every file: nothing required) and
+        // edit_file's list, guard and files (edits, expected; files a list or a diff, in place of name: nothing required).
         {
             juce::var readFile, editFile, trace;
             if (const juce::Array<juce::var>* t = tools.getArray())
@@ -574,8 +575,10 @@ PROBE(plugin, mcp)
                                           && trace["properties"].hasProperty("notes") == kInstrument
                                           && !trace["properties"]["dials"].hasProperty("description") ? 1 : 0, 1);
             P.eq("link.file_tools", readFile["properties"].hasProperty("from") && readFile["properties"].hasProperty("lines")
-                                        && readFile["properties"].hasProperty("find") && editFile["properties"].hasProperty("edits")
-                                        && editFile["properties"].hasProperty("expected") && editFile["required"].size() == 1 ? 1 : 0, 1);
+                                        && readFile["properties"].hasProperty("find") && readFile["properties"]["regex"]["type"].toString() == "boolean"
+                                        && !readFile.hasProperty("required") && editFile["properties"].hasProperty("edits")
+                                        && editFile["properties"].hasProperty("expected")
+                                        && editFile["properties"]["files"]["anyOf"].size() == 2 && !editFile.hasProperty("required") ? 1 : 0, 1);
         }
         // set_checks' dials_from: where a check takes the dials it does not name (its three words, described); its
         // mode (replace, merge, remove); nothing required (without checks it lists them).
@@ -1090,10 +1093,12 @@ PROBE(plugin, mcp)
                 for (const juce::var& tool : *t)
                 {
                     titled = titled && tool["title"].toString().isNotEmpty() && tool["title"].toString() != tool["name"].toString();
-                    // the annotations: no title (the tool's own), a read-only tool no destructiveHint, never openWorld
+                    // the annotations: no title (the tool's own), a read-only tool no destructiveHint, never openWorld,
+                    // a writing tool no readOnlyHint (false is MCP's default)
                     const juce::var hints = tool["annotations"];
                     lean = lean && !hints.hasProperty("title") && hints.hasProperty("openWorldHint") && !static_cast<bool>(hints["openWorldHint"])
-                        && (static_cast<bool>(hints["readOnlyHint"]) ? !hints.hasProperty("destructiveHint") : hints.hasProperty("destructiveHint"));
+                        && (static_cast<bool>(hints["readOnlyHint"]) ? !hints.hasProperty("destructiveHint") : hints.hasProperty("destructiveHint"))
+                        && (static_cast<bool>(hints["readOnlyHint"]) || !hints.hasProperty("readOnlyHint"));
                     if (tool["name"].toString() == "measure_output")
                         measure = tool;
                     if (tool["name"].toString() == "write_file")

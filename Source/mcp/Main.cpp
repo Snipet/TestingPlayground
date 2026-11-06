@@ -1050,7 +1050,7 @@ namespace
                 { "height", prop("integer", "render: its height in px (612)") },
                 { "theme", choice({ "graphite", "paper" }, nullptr) },
                 { "page", prop("string", "render: a tabs page to show, by its title") },
-                { "values", object({ { "type", "object" }, { "description", "render: dials at these values, by name" } }) },
+                { "values", object({ { "type", "object" }, { "description", pg::mcp::kPanelValues } }) },
                 { "detail", choice({ "high" }, "render: the picture whole; open, edit: the whole report") },
                 { "instance", prop("string", "open from instance, apply: which plugin, when several are open") },
                 { "sandbox", prop("integer", "edit, render, apply (needed), close: the number your open gave (Sandbox #n)") },

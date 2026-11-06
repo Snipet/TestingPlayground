@@ -58,6 +58,8 @@ namespace playground::ui
         // readout.
         float level() const noexcept;
         const std::string& readout() const noexcept { return readout_; }
+        // Its readout made again at the next update (a picture's last frame: what it shows then, not 1/8 s before).
+        void readoutNow() noexcept { readoutIn_ = 0.0f; }
         int traceSize() const noexcept { return static_cast<int>(display_.audio() ? trace_.size() : history_.size()); }
 
         // Item

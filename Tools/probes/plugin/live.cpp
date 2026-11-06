@@ -16,8 +16,10 @@
 //   LINK    through the socket: a listen of 5 s, get_status answered meanwhile (before the listen's reply), then a cancel
 //           that stops the listen at once (its reply says it stopped early), the readers back to none
 //   SINCE   get_status's dial lines in their units (a frequency in kHz, a scaled percentage with its number, an int by
-//           its option's name) and its token; with since: the editor's drag of a dial, one line in its units; the
-//           host's automation; a typed edit, and its diff against the file at the token; RUN; a version and a preset
+//           its option's name) and its token; with since, each in the third person ("the user moved", never "you"): the
+//           editor's drag of a dial, one line in its units; the host's automation, its two moves of a dial with a run
+//           between them a line each, on either side of the run's; a typed edit, and its diff against the file at the
+//           token; RUN; a version and a preset
 //           saved and the preset applied (its dials no move); the host's bypass and its end, its transport starting, a
 //           new sample rate; the next call with the new token: nothing; another instance's token: the whole state;
 //           another tool's result starts with the hint while changes wait (the first three named with their values,
@@ -26,9 +28,16 @@
 //           Claude Desktop's own write no change but in the diff; a host move just before a preset that leaves that
 //           dial alone still a move; a bypass ending after a token: that token's reader reads the end, an older
 //           token's one line, never "still"
-//   LAYOUT  a netlist redrawn (its *@ lines alone): listen says the editor's files play, get_status since says "you
-//           redrew pedal.cir", and with files "changed" that only its drawing changed (no *@ line in the diff); a
+//   NET     a dial moved three times (by the user, the host, the user, back where it started): one line, its net
+//           change, at its first move's place; a dial moved, a preset applied that sets it, the dial moved again: a line
+//           on either side of the preset's, the second from the preset's value; files "changed" with a new file of one
+//           line: "1 line"
+//   LAYOUT  a netlist redrawn (its *@ lines alone): listen says the editor's files play, get_status since says "the
+//           user redrew pedal.cir", and with files "changed" that only its drawing changed (no *@ line in the diff); a
 //           netlist line edited beside it: that line's diff alone
+//   REOPEN  the plugin opened again from its session: a token from before still says which files changed since (one
+//           edited, with read_file's versions, one redrawn, one added, one closed, one as it was), and after a second
+//           opening too; files "none" leaves it out; a token of no record is not this instance's
 //   CANCEL  two cancels before a listen starts: the first one's listen still stops at once
 //   NEWCHAT New chat while a call of Claude Desktop's runs: the chat stays busy until it ends
 #include "Probe.h"
@@ -48,6 +57,7 @@
 #include <funkgui/panel/HeadlessGuiScope.h>
 #include <funkgui/params/ParamPort.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -491,20 +501,29 @@ PROBE(plugin, live)
 
         const std::string hinted = textOf(a.mcpCall("read_file", object({ { "name", "panel.gui" } })));
         std::printf("read_file's result after the changes: %s\n", hinted.substr(0, hinted.find('\n')).c_str());
-        P.eq("since.hint", hinted.rfind("(The user changed ", 0) == 0 && has(hinted, "get_status with since shows them.)") ? 1 : 0, 1);
+        // the host moved a dial too: not "The user changed"
+        P.eq("since.hint", hinted.rfind("(", 0) == 0 && has(hinted.substr(0, hinted.find('\n')), " things changed since the last MCP call here: ")
+                               && has(hinted, "get_status with since shows them.)") ? 1 : 0, 1);
         // It names the first three, oldest first, with their values and without their times, and how many more there are.
         const std::string hintLine = hinted.substr(0, hinted.find('\n'));
-        P.eq("since.hint_names_three", has(hintLine, " since the last MCP call here: you moved cutoff 1.00 kHz -> 2.52 kHz; the host moved mix 50 % -> ")
-                                           && has(hintLine, "; you edited program.fm; +") && has(hintLine, " more. get_status with since shows them.)") ? 1 : 0, 1);
+        P.eq("since.hint_names_three", has(hintLine, " since the last MCP call here: the user moved cutoff 1.00 kHz -> 2.52 kHz; the host moved mix 50 % -> 30 %")
+                                           && has(hintLine, "; the user edited program.fm; +") && has(hintLine, " more. get_status with since shows them.)") ? 1 : 0, 1);
         const std::string since = textOf(a.mcpCall("get_status", object({ { "since", juce::String(token) } })));
         std::printf("get_status since:\n%s", since.c_str());
-        P.eq("since.drag_one_line", count(since, "you moved cutoff 1.00 kHz -> 2.52 kHz\n"), 1);
-        P.eq("since.host_moved", has(since, "the host moved mix 50 % -> ") && has(since, "-> 80 %\n") ? 1 : 0, 1);
+        P.eq("since.drag_one_line", count(since, "the user moved cutoff 1.00 kHz -> 2.52 kHz\n"), 1);
+        // the host's two moves of mix (30 %, then 80 %), a run between them (which may set dials): a line each, on either
+        // side of the run's, never one net change that would read as if the run came after 80 %
+        const std::size_t mixFirst = since.find("the host moved mix 50 % -> 30 %\n"), ranAt = since.find("the user ran it: "),
+                          mixThen = since.find("the host moved mix 30 % -> 80 %\n");
+        P.eq("since.host_moved", mixFirst != std::string::npos && ranAt != std::string::npos && mixThen != std::string::npos
+                                     && mixFirst < ranAt && ranAt < mixThen && count(since, "moved mix ") == 2 ? 1 : 0, 1);
+        P.eq("since.net_said", has(since, "oldest first (a dial's moves as one line, its net change):\n") ? 1 : 0, 1);
         P.eq("since.preset_no_move", has(since, "80 % -> 30 %") ? 0 : 1, 1);
-        P.eq("since.edited", has(since, "you edited program.fm\n") ? 1 : 0, 1);
-        P.eq("since.ran", has(since, "you ran it: it compiled, 3 dials\n") ? 1 : 0, 1);
-        P.eq("since.version", has(since, "you saved version 1 of \"Live probe\"\n") ? 1 : 0, 1);
-        P.eq("since.presets", has(since, "you saved preset \"Bright\"\n") && has(since, "you applied preset \"Bright\" of \"Live probe\"\n") ? 1 : 0, 1);
+        P.eq("since.edited", has(since, "the user edited program.fm\n") ? 1 : 0, 1);
+        P.eq("since.ran", has(since, "the user ran it: it compiled, 3 dials\n") ? 1 : 0, 1);
+        P.eq("since.version", has(since, "the user saved version 1 of \"Live probe\"\n") ? 1 : 0, 1);
+        P.eq("since.presets", has(since, "the user saved preset \"Bright\"\n") && has(since, "the user applied preset \"Bright\" of \"Live probe\"\n") ? 1 : 0, 1);
+        P.eq("since.no_you", has(since, " you ") ? 0 : 1, 1);
         P.eq("since.bypass", has(since, "the host bypassed the plugin, until ") ? 1 : 0, 1);
         P.eq("since.transport", has(since, "the host started playing, at 100.0 BPM, bar 2\n") ? 1 : 0, 1);
         P.eq("since.rate", has(since, "the host changed the sample rate: 48 kHz -> 44.1 kHz\n") ? 1 : 0, 1);
@@ -526,7 +545,7 @@ PROBE(plugin, live)
         q.editorPort().setDraft(d);
         const std::string sinceB = textOf(a.mcpCall("get_status", object({ { "since", juce::String(tokenB) } })));
         const std::string sinceA = textOf(a.mcpCall("get_status", object({ { "since", juce::String(tokenA) } })));
-        P.eq("since.per_token", has(sinceB, "\n+// typed again\n") && count(sinceA, "you edited program.fm\n") == 1
+        P.eq("since.per_token", has(sinceB, "\n+// typed again\n") && count(sinceA, "the user edited program.fm\n") == 1
                                     && has(sinceA, "\n+// typed again\n") ? 1 : 0, 1);
         d = q.editorPort().draft();
         const pg::ChatAgent::McpResult wrote = a.mcpCall("write_file", object({ { "name", "program.fm" },
@@ -544,7 +563,7 @@ PROBE(plugin, live)
         const std::string preset = textOf(a.mcpCall("get_status", object({ { "since", juce::String(beforePreset) } })));
         std::printf("get_status since, a host move then a preset:\n%s", preset.c_str());
         P.eq("since.move_before_preset", has(preset, "the host moved mix ") && has(preset, "-> 55 %\n") && !has(preset, "moved cutoff")
-                                             && has(preset, "you applied preset \"Cutoff only\"") ? 1 : 0, 1);
+                                             && has(preset, "the user applied preset \"Cutoff only\"") ? 1 : 0, 1);
 
         // A bypass that ends after a token was handed out: that token's reader reads its end, an older one's one line.
         const std::string beforeBypass = tokenOf(preset);
@@ -556,6 +575,70 @@ PROBE(plugin, live)
         P.eq("since.bypass_ended", has(bypassOld, "the host bypassed the plugin, until ") && !has(bypassOld, "it still is")
                                        && !has(bypassOld, "un-bypassed") ? 1 : 0, 1);
         P.eq("since.unbypass_after_token", has(bypassNew, "the host un-bypassed the plugin\n") && !has(bypassNew, "bypassed the plugin,") ? 1 : 0, 1);
+
+        // ---- NET -------------------------------------------------------------------------------------------------------
+        // A dial's moves as one line, its net change: the user's, the host's, the user's again, back where it started (a
+        // token handed out between them, so the journal keeps three), at the first move's place, before the move of mix
+        // the host made in between.
+        {
+            const std::string beforeNet = tokenOf(bypassNew);
+            const float cutoffWas = q.getParameters()[cutoff]->getValue();
+            knob.beginGesture();
+            knob.setValue01(0.2f);
+            q.poll();
+            knob.endGesture();
+            q.poll();
+            tokenOf(textOf(a.mcpCall("get_status", none)));
+            q.getParameters()[mix]->setValueNotifyingHost(0.4f);
+            q.poll();
+            q.getParameters()[cutoff]->setValueNotifyingHost(0.3f);
+            q.poll();
+            tokenOf(textOf(a.mcpCall("get_status", none)));
+            knob.beginGesture();
+            knob.setValue01(cutoffWas);
+            q.poll();
+            knob.endGesture();
+            q.poll();
+            const std::string net = textOf(a.mcpCall("get_status", object({ { "since", juce::String(beforeNet) } })));
+            std::printf("get_status since, cutoff moved three times:\n%s", net.c_str());
+            const std::size_t cutoffAt = net.find("the user and the host moved cutoff and back to ");
+            const std::size_t mixAt = net.find("the host moved mix 55 % -> 40 %\n");
+            P.eq("net.one_line", count(net, "cutoff"), 1);
+            P.eq("net.back_where_it_was", cutoffAt != std::string::npos && has(net.substr(cutoffAt), " kHz (3 times)\n") ? 1 : 0, 1);
+            P.eq("net.first_move_place", cutoffAt != std::string::npos && mixAt != std::string::npos && cutoffAt < mixAt ? 1 : 0, 1);
+
+            // A preset between two moves of a dial sets it with no line of its own: a line on either side of the
+            // preset's, the second from the preset's value (5 kHz), so that read oldest first the last says where it is.
+            const std::string beforeBetween = tokenOf(net);
+            knob.beginGesture();
+            knob.setValue01(0.25f);
+            q.poll();
+            knob.endGesture();
+            q.poll();
+            P.eq("net.preset_between_applied", q.editorPort().applyPreset("Live probe", "Cutoff only", why) ? 1 : 0, 1);
+            q.poll();
+            knob.beginGesture();
+            knob.setValue01(0.35f);
+            q.poll();
+            knob.endGesture();
+            q.poll();
+            const std::string between = textOf(a.mcpCall("get_status", object({ { "since", juce::String(beforeBetween) } })));
+            std::printf("get_status since, cutoff moved, a preset, cutoff moved again:\n%s", between.c_str());
+            const std::size_t firstAt = between.find("the user moved cutoff "), presetAt = between.find("the user applied preset \"Cutoff only\"");
+            const std::size_t thenAt = presetAt == std::string::npos ? presetAt : between.find("the user moved cutoff 5.00 kHz -> ", presetAt);
+            P.eq("net.preset_between", count(between, "moved cutoff ") == 2 && firstAt != std::string::npos && presetAt != std::string::npos
+                                           && thenAt != std::string::npos && firstAt < presetAt && !has(between, "(2 times)") ? 1 : 0, 1);
+
+            // files "changed" against a token this journal knows: a new file of one line is "1 line"
+            const std::string beforeMemo = tokenOf(between);
+            const pg::Draft withoutMemo = q.editorPort().draft();
+            pg::Draft memo = withoutMemo;
+            memo.files.push_back({ "memo.fm", "// memo\n" });
+            q.editorPort().setDraft(memo);
+            const std::string memoSince = textOf(a.mcpCall("get_status", object({ { "since", juce::String(beforeMemo) }, { "files", "changed" } })));
+            P.eq("net.one_line_file", has(memoSince, "memo.fm: new since then, 1 line (read_file shows it).\n") ? 1 : 0, 1);
+            q.editorPort().setDraft(withoutMemo);
+        }
 
         // ---- LAYOUT ----------------------------------------------------------------------------------------------------
         // A netlist redrawn (its *@ lines alone, fminus/CirDoc.h) is no edit: listen says the editor's files play, and
@@ -577,7 +660,7 @@ PROBE(plugin, live)
             const std::string redrew = textOf(a.mcpCall("get_status", object({ { "since", juce::String(beforeRedraw) } })));
             std::printf("get_status since, a netlist redrawn:\n%s", redrew.c_str());
             P.eq("layout.listen_plays_draft", at != std::string::npos && has(heard, "What plays is the editor's files.") ? 1 : 0, 1);
-            P.eq("layout.since_redrew", has(redrew, "you redrew pedal.cir\n") && !has(redrew, "you edited pedal.cir") ? 1 : 0, 1);
+            P.eq("layout.since_redrew", has(redrew, "the user redrew pedal.cir\n") && !has(redrew, "the user edited pedal.cir") ? 1 : 0, 1);
             // files "changed": a drawing's *@ lines are no diff (one line says so), a netlist line changed beside them is
             const std::string changed = textOf(a.mcpCall("get_status", object({ { "since", juce::String(beforeRedraw) }, { "files", "changed" } })));
             P.eq("layout.changed_drawing_only", has(changed, "pedal.cir: only its drawing (its *@ lines) changed.\n")
@@ -593,6 +676,60 @@ PROBE(plugin, live)
             std::printf("get_status since, files changed, a netlist line edited and the drawing moved:\n%s", both.c_str());
             P.eq("layout.changed_netlist_lines", end != std::string::npos && has(both, "pedal.cir (+1 -1):\n") && has(both, "; a comment typed")
                                                      && !has(both, "\n+*@") && !has(both, "\n-*@") && !has(both, "only its drawing") ? 1 : 0, 1);
+        }
+
+        // ---- REOPEN ----------------------------------------------------------------------------------------------------
+        // The plugin opened again (a new processor from the session's state): a token from before is not the new
+        // journal's, but the session kept its files' hashes, so get_status says which changed since, after the whole
+        // state (an edit with read_file's versions, a netlist redrawn, a file added, one closed, one as it was); and
+        // so does the next opening's; files "none" says nothing of them; a token of no record is not this instance's.
+        {
+            pg::Draft dq = q.editorPort().draft();
+            dq.files.push_back({ "extra.fm", "// extra\n" });
+            q.editorPort().setDraft(dq);
+            const std::string beforeClose = tokenOf(textOf(a.mcpCall("get_status", none)));
+            juce::MemoryBlock session;
+            q.getStateInformation(session);
+            pg::Processor r;
+            r.setStateInformation(session.getData(), static_cast<int>(session.getSize()));
+            pg::ChatAgent& ra = r.chatAgent();
+            pg::Draft dr = r.editorPort().draft();
+            for (pg::SourceFile& f : dr.files)
+            {
+                if (f.name == "program.fm")
+                    f.text += "// after the reopen\n";
+                if (const std::size_t at = f.text.find("*@ part R1 6,-6"); f.name == "pedal.cir" && at != std::string::npos)
+                    f.text.replace(at, 15, "*@ part R1 6,-12");
+            }
+            dr.files.erase(std::remove_if(dr.files.begin(), dr.files.end(), [](const pg::SourceFile& f) { return f.name == "extra.fm"; }),
+                           dr.files.end());
+            dr.files.push_back({ "notes.fm", "// notes\n" });
+            r.editorPort().setDraft(dr);
+            const std::string reopened = textOf(ra.mcpCall("get_status", object({ { "since", juce::String(beforeClose) } })));
+            std::printf("get_status since a token from before the plugin was opened again:\n%s", reopened.c_str());
+            const std::string readNow = resultOf(ra.mcpCall("read_file", object({ { "name", "program.fm" } })));
+            // read_file's first line, "program.fm: 42 lines, version 1a2b3c4d.": "42 lines, version 1a2b3c4d"
+            const std::string readHead = readNow.substr(0, readNow.find('\n'));
+            const std::size_t colon = readHead.find(": ");
+            const std::string linesNow = colon == std::string::npos || readHead.size() < colon + 3 || readHead.find(", version ") == std::string::npos
+                                             ? std::string()
+                                             : readHead.substr(colon + 2, readHead.size() - colon - 3);
+            P.eq("reopen.said", has(reopened, "That token is from before the plugin was opened again") && has(reopened, "Dials:\n") ? 1 : 0, 1);
+            P.eq("reopen.edited", !linesNow.empty() && has(reopened, "program.fm changed: now " + linesNow + " (then ") ? 1 : 0, 1);
+            P.eq("reopen.redrawn", has(reopened, "pedal.cir: only its drawing (its *@ lines) changed.\n") ? 1 : 0, 1);
+            P.eq("reopen.added", has(reopened, "notes.fm: new since then, 1 line.\n") ? 1 : 0, 1);
+            P.eq("reopen.closed", has(reopened, "extra.fm is gone (closed or renamed).\n") ? 1 : 0, 1);
+            P.eq("reopen.as_they_were", has(reopened, "As they were: panel.gui.\n") ? 1 : 0, 1);
+            juce::MemoryBlock sessionAgain;
+            r.getStateInformation(sessionAgain);
+            pg::Processor t;
+            t.setStateInformation(sessionAgain.getData(), static_cast<int>(sessionAgain.getSize()));
+            const std::string twice = textOf(t.chatAgent().mcpCall("get_status", object({ { "since", juce::String(beforeClose) } })));
+            P.eq("reopen.twice", has(twice, "That token is from before the plugin was opened again") && has(twice, "notes.fm: new since then") ? 1 : 0, 1);
+            const std::string quiet = textOf(ra.mcpCall("get_status", object({ { "since", juce::String(beforeClose) }, { "files", "none" } })));
+            P.eq("reopen.files_none", has(quiet, "That token is from before") && !has(quiet, "notes.fm: new") ? 1 : 0, 1);
+            const std::string stranger = textOf(ra.mcpCall("get_status", object({ { "since", "abc-1" } })));
+            P.eq("reopen.unknown_token", has(stranger, "That token is not this instance's") && !has(stranger, "since then") ? 1 : 0, 1);
         }
 
         // Cancels that come before a listen starts, two of them: each stops its own listen at once.

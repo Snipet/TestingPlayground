@@ -2417,6 +2417,8 @@ namespace playground::measure
                 std::copy_n(in->r.begin(), std::min(total, in->size()), r.out.r.begin());
             }
             r.voicesAt.assign(tl.events.size(), -1);
+            if (hooks != nullptr)
+                hooks->started(engine);
             std::vector<Event> block;
             std::array<float, kMaxControls> norm = dials.norm;
             std::array<float, kMaxControls> base = dials.norm;   // a recording's dials where its frames say (else these)

@@ -6,11 +6,15 @@
 #include "editor/Picture.h"
 
 #include "editor/CodeAssist.h"
+#include "editor/DisplayItem.h"
+#include "editor/Items.h"
 #include "editor/Panel.h"
 #include "editor/SchematicDraw.h"
 #include "editor/Theme.h"
 #include "fminus/CirDoc.h"
 #include "plugin/EditorPort.h"
+
+#include "Product.h"
 
 #include <funkgui/panel/HeadlessHost.h>
 #include <funkgui/prefs/UiPreferences.h>
@@ -21,16 +25,21 @@
 #include <funkgui/widgets/TextEditor.h>
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <memory>
 #include <thread>
 
 namespace playground
 {
     namespace
     {
+        static_assert(PictureState::kScopeSamples == ui::DisplayItem::kScopeSamples);
         constexpr float kDpi = 1.5f;             // the picture's pixels a logical px: the panel's text stays legible
 
         // The meters are measured only while someone reads them (EditorPort::addMeterReader). When the picture's Panel
@@ -51,6 +60,159 @@ namespace playground
                     return;
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
+        }
+
+        // A dial's port in a picture whose state sets it: the user's in all but its value, which the knob and a
+        // shader's input of it read (a picture's Panel writes nothing).
+        class ShownPort final : public funkgui::ParamPort
+        {
+        public:
+            ShownPort(funkgui::ParamPort& real, float value01) : real_(real), value_(value01) {}
+            float value01() const override { return value_; }
+            float default01() const override { return real_.default01(); }
+            int numSteps() const override { return real_.numSteps(); }
+            void beginGesture() override {}
+            void setValue01(float) override {}
+            void endGesture() override {}
+            const char* id() const override { return real_.id(); }
+            void* native() const override { return real_.native(); }
+
+        private:
+            funkgui::ParamPort& real_;
+            float value_;
+        };
+
+        std::string lowered(std::string s)
+        {
+            for (char& c : s)
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            return s;
+        }
+
+        std::string numberText(float v)
+        {
+            char buf[32];
+            std::snprintf(buf, sizeof buf, "%.4g", static_cast<double>(v));
+            return buf;
+        }
+
+        // A value's plain number for dial `c` (its options by name, from the range's low end; on and off), false when
+        // it names none.
+        bool plainOfValue(const Control& c, const std::vector<std::string>& options, const PictureValue& v, float& plain)
+        {
+            if (!v.isText)
+            {
+                plain = v.number;
+                return std::isfinite(plain);
+            }
+            const std::string t = lowered(v.text);
+            for (std::size_t k = 0; k < options.size(); ++k)
+                if (!options[k].empty() && lowered(options[k]) == t)
+                {
+                    plain = (c.type == ControlType::toggle ? 0.0f : c.min) + static_cast<float>(k);
+                    return true;
+                }
+            if (t == "on" || t == "true" || t == "off" || t == "false")
+            {
+                plain = t == "on" || t == "true" ? 1.0f : 0.0f;
+                return true;
+            }
+            char* end = nullptr;
+            const double x = std::strtod(t.c_str(), &end);
+            plain = static_cast<float>(x);
+            return end != t.c_str() && std::isfinite(x);
+        }
+
+        // What a state asks of the picture, against the program the panel shows: the dials (normalised, by slot), the
+        // taps, the levels, and in words what was drawn and what names nothing.
+        struct Resolved
+        {
+            std::array<float, kMaxControls> dial01{};
+            std::array<bool, kMaxControls> dialSet{};
+            ui::Panel::ShownState shown;
+            std::string drawn;                   // "gear 12, drive TRUCK, out -6 dBFS"
+            std::string refused;                 // "drive takes a number or one of its names. "
+            std::string unknown;                 // "speed, x"
+        };
+
+        Resolved resolve(const PictureState& state, const Controls& cs, const PanelSpec& spec)
+        {
+            Resolved r;
+            const auto slotNamed = [&](const std::string& name) {
+                for (int c = 0; c < kMaxControls; ++c)
+                    if (cs[static_cast<std::size_t>(c)].used && name == cs[static_cast<std::size_t>(c)].name)
+                        return c;
+                return -1;
+            };
+            const auto setDial = [&](int slot, float plain) {
+                const Control& c = cs[static_cast<std::size_t>(slot)];
+                r.dial01[static_cast<std::size_t>(slot)] = normOf(c, plain);
+                r.dialSet[static_cast<std::size_t>(slot)] = true;
+            };
+            for (const auto& [name, plain] : state.dials)  // at's: the dials as the render had them then
+                if (const int slot = slotNamed(name); slot >= 0)
+                    setDial(slot, plain);
+            if (state.rendered())
+            {
+                r.shown.frames = state.frames;
+                r.shown.scopeIn = state.scopeIn;
+                r.shown.scopeOut = state.scopeOut;
+            }
+            for (const PictureValue& v : state.values)
+            {
+                const auto said = [&](const std::string& what) { r.drawn += (r.drawn.empty() ? "" : ", ") + v.name + " " + what; };
+                if (const int slot = slotNamed(v.name); slot >= 0)
+                {
+                    const Control& c = cs[static_cast<std::size_t>(slot)];
+                    const std::vector<std::string>& options = spec.options[static_cast<std::size_t>(slot)];
+                    float plain = 0.0f;
+                    if (!plainOfValue(c, options, v, plain))
+                    {
+                        r.refused += v.name + " takes a number" + (options.empty() ? std::string() : " or one of its names") + ". ";
+                        continue;
+                    }
+                    setDial(slot, plain);
+                    said(dialText(c, plainOf(c, normOf(c, plain)), options));
+                    continue;
+                }
+                const bool level = v.name == "out" || (v.name == "in" && !product::kIsInstrument);
+                if (level && !v.isText)
+                {
+                    const float lin = v.number > -240.0f ? std::pow(10.0f, v.number / 20.0f) : 0.0f;
+                    (v.name == "in" ? r.shown.inLevel : r.shown.outLevel) = std::isfinite(lin) ? lin : 0.0f;
+                    said(numberText(v.number) + " dBFS");
+                    continue;
+                }
+                bool found = false;
+                for (const PanelDisplay& d : spec.displays)
+                    if (!d.audio() && d.tap >= 0 && (d.source == v.name || d.name == v.name))
+                    {
+                        if (!v.isText)
+                            r.shown.taps.emplace_back(d.tap, v.number);
+                        found = true;
+                    }
+                if (found && !v.isText)
+                    said(numberText(v.number));
+                else if (found || level)
+                    r.refused += v.name + " takes a number. ";
+                else
+                    r.unknown += (r.unknown.empty() ? "" : ", ") + v.name;
+            }
+            return r;
+        }
+
+        // The fields the panel reads, each once (a display's, a live= mark's, a shader's input), for the words.
+        std::string fieldsOf(const PanelSpec& spec)
+        {
+            std::string out;
+            std::vector<std::string> seen;
+            for (const PanelDisplay& d : spec.displays)
+                if (!d.audio() && std::find(seen.begin(), seen.end(), d.source) == seen.end())
+                {
+                    seen.push_back(d.source);
+                    out += (out.empty() ? "" : ", ") + d.source;
+                }
+            return out;
         }
     }
 
@@ -73,9 +235,32 @@ namespace playground
     }
 
     PanelPicture picturePanel(std::span<funkgui::ParamPort* const> ports, EditorPort& port, int width, int height,
-                              bool window, const std::string& page)
+                              bool window, const std::string& page, const PictureState& state)
     {
         PanelPicture out;
+        // A state to draw (view_panel's values and at): resolved against the program the panel shows (as the Panel's
+        // refresh takes it), its dials through ports of their own.
+        const bool stated = !state.empty();
+        const CompileStatus status = port.status();
+        // at's render is of the files that played when it began: drawn on another program's panel, its taps (by
+        // place) and dials (by name) would land on displays and dials that are not theirs.
+        if (state.rendered() && !cir::sameProgram(state.sources, status.ok ? status.sources : port.running()))
+        {
+            out.why = "the program that plays changed while at rendered it; look again";
+            return out;
+        }
+        const Controls cs = status.ok ? status.controls : port.controls();
+        const PanelSpec spec = status.ok ? status.panel : port.panel();
+        Resolved asked = stated ? resolve(state, cs, spec) : Resolved{};
+        std::vector<std::unique_ptr<ShownPort>> shownPorts;
+        std::vector<funkgui::ParamPort*> drawnPorts(ports.begin(), ports.end());
+        for (std::size_t c = 0; c < drawnPorts.size() && c < static_cast<std::size_t>(kMaxControls); ++c)
+            if (asked.dialSet[c] && drawnPorts[c] != nullptr)
+            {
+                shownPorts.push_back(std::make_unique<ShownPort>(*drawnPorts[c], asked.dial01[c]));
+                drawnPorts[c] = shownPorts.back().get();
+            }
+        const bool rendered = state.rendered();
         // What the user has, given back after: the view, the chat's fold, the pages, the netlists' views (a picture's
         // Panel writes none of them on a gesture, as it has none, but what it lays out is never the session's).
         const bool view = port.panelView();
@@ -83,9 +268,12 @@ namespace playground
         const std::vector<std::string> pages = port.guiPages();
         const std::vector<FileView> fileViews = port.fileViews();
         {
-            ui::Panel panel(ports, port, true);      // a picture's: no probe and no session pin of its own, the user's
-                                                     // stay as they are
-            waitForMeters(port);
+            ui::Panel panel(drawnPorts, port, true);  // a picture's: no probe and no session pin of its own, the
+                                                      // user's stay as they are
+            if (stated)
+                panel.showState(asked.shown);
+            if (!rendered)
+                waitForMeters(port);
             funkgui::HeadlessHost host(panel, funkgui::UiPreferences::get().theme(), kDpi);
             host.resize(std::max(width > 0 ? width : ui::kDefaultWidth, ui::kMinWidth),
                         std::max(height > 0 ? height : ui::kDefaultHeight, ui::kMinHeight));
@@ -114,6 +302,15 @@ namespace playground
                 allPages += (allPages.empty() ? "" : "; ") + these;
             }
             host.settle(120);
+            if (rendered)
+            {
+                // at's frames, one a frame up to its moment, which the picture shows (a field scope's last seconds, a
+                // VU's swing and the peaks as the editor would have them then).
+                panel.playShown();
+                for (int k = 0; k < 400 && !panel.shownDone(); ++k)
+                    host.tick(1);
+                host.tick(1);                        // the last frame's readouts
+            }
             const picture::Drawn drawn = picture::draw(host.draw());
             const funkgui::Image& img = drawn.image;
             out.gpu = drawn.gpu;
@@ -144,8 +341,61 @@ namespace playground
                                                : ". Shown: page " + shownPage)
                           + (drawn.gpu ? std::string(". Drawn by the GPU as the user's screen draws it, shaders included")
                                        : ". Drawn without the GPU (" + drawn.why + "): each shader shows as a striped "
-                                         "placeholder here, though the user's screen draws it")
-                          + "; the displays show the sound playing now.";
+                                         "placeholder here, though the user's screen draws it");
+                if (!stated)
+                    out.about += "; the displays show the sound playing now.";
+                else
+                {
+                    // What was drawn in place of what plays, and what the displays read then.
+                    out.about += rendered ? "; the displays and the dials show the state " + state.about
+                                          : std::string("; the displays show the sound playing now");
+                    if (!asked.drawn.empty())
+                        out.about += (rendered ? ", and " : ", but ") + asked.drawn + " (as asked)";
+                    out.about += ".";
+                    if (!asked.refused.empty())
+                        out.about += " Not drawn: " + asked.refused.substr(0, asked.refused.size() - 1);
+                    if (!asked.unknown.empty())
+                    {
+                        const std::string fields = fieldsOf(spec);
+                        out.about += " No dial or field of the panel is named " + asked.unknown
+                                   + (fields.empty() ? std::string(" (it reads no field)") : " (its fields: " + fields + ")") + ".";
+                    }
+                    // The displays shown, as they read (their labels as drawn), and with at the fields no display
+                    // shown reads (a shader's input, a live= mark's, another page's), their values then.
+                    std::string reads, others;
+                    std::vector<std::string> named;
+                    const PanelSpec& shownSpec = panel.panelSpec();
+                    for (std::size_t d = 0; d < shownSpec.displays.size() && d < static_cast<std::size_t>(kMaxDisplays); ++d)
+                    {
+                        const PanelDisplay& x = shownSpec.displays[d];
+                        const ui::DisplayItem& item = panel.displayItem(static_cast<int>(d));
+                        if (!x.hidden && item.shown() && !item.readout().empty())
+                        {
+                            const PanelDisplay& shownAs = item.display();
+                            reads += (reads.empty() ? "" : ", ") + ui::upper(ui::asciiText(shownAs.label.empty() ? shownAs.name : shownAs.label))
+                                   + " " + item.readout();
+                            named.push_back(x.source);
+                        }
+                    }
+                    if (rendered && !state.frames.empty())
+                    {
+                        Meters last = state.frames.back();
+                        for (const auto& [tap, v] : asked.shown.taps)
+                            if (tap >= 0 && tap < kMaxDisplays)
+                                last.taps[tap] = v;
+                        for (const PanelDisplay& x : shownSpec.displays)
+                            if (!x.audio() && x.tap >= 0 && x.tap < kMaxDisplays
+                                && std::find(named.begin(), named.end(), x.source) == named.end())
+                            {
+                                named.push_back(x.source);
+                                others += (others.empty() ? "" : ", ") + x.source + " " + numberText(last.taps[x.tap]);
+                            }
+                    }
+                    if (!reads.empty())
+                        out.about += " The displays shown read: " + reads + ".";
+                    if (!others.empty())
+                        out.about += " The fields no display shown reads, then: " + others + ".";
+                }
             }
         }
         port.setPanelView(view);
