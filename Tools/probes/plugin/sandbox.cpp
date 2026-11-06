@@ -9,7 +9,8 @@
 //   EDIT     an edit naming no dial: GuiSpec's note on its line, the control listed as naming no dial; a dial no
 //            control names listed; an old_text that does not occur refused, nothing changed; with no program, a
 //            display of shared->speed mocked as the main module's fields are, no note; an overlap and what
-//            sticks out of its container reported, text too wide, and a panel taller than the area scrolling
+//            sticks out of its container reported, text too wide, and a panel taller than the area scrolling (what is out
+//            of view until scrolled named)
 //   RENDER   a PNG of the size asked (1.5 pixels a px) in both themes, which differ (gui.sandbox.png, .paper.png); a
 //            dial's value moves its knob: the pictures differ inside its cell and nowhere else (gui.sandbox.knob.png);
 //            a large render without detail made smaller to fit the MCP cap (100,000 base64 characters), and saying so
@@ -256,11 +257,13 @@ namespace
     // A rect (logical px in the area) from the report's line of the element named `what` ("knob drive 10,20 60x80").
     bool rectOf(const std::string& report, const std::string& what, float& x, float& y, float& w, float& h)
     {
-        const std::size_t at = report.find(what + " ");
-        if (at == std::string::npos)
-            return false;
+        // Its line among the elements: the name followed by its place (the name may be said before, as out of view).
         int xi = 0, yi = 0, wi = 0, hi = 0;
-        if (std::sscanf(report.c_str() + at + what.size() + 1, "%d,%d %dx%d", &xi, &yi, &wi, &hi) != 4)
+        std::size_t at = report.find(what + " ");
+        while (at != std::string::npos
+               && std::sscanf(report.c_str() + at + what.size() + 1, "%d,%d %dx%d", &xi, &yi, &wi, &hi) != 4)
+            at = report.find(what + " ", at + 1);
+        if (at == std::string::npos)
             return false;
         x = static_cast<float>(xi);
         y = static_cast<float>(yi);
@@ -419,6 +422,8 @@ PROBE(plugin, sandbox)
         P.eq("edit.outside", has(r.text, "knob tone (line 2) sticks out of its row (line 2)") ? 1 : 0, 1);
         P.eq("edit.too_wide", has(r.text, "label \"A LABEL FAR TOO LONG FOR ITS ROOM\" (line 5): its text") ? 1 : 0, 1);
         P.eq("edit.scrolls", has(r.text, "taller than the area by") && has(r.text, "so it scrolls") ? 1 : 0, 1);
+        // What the spacer pushes down (GuiLayout.h's guiFit, run_program's check too): the dial added last.
+        P.eq("edit.out_of_view", has(r.text, "Out of view until scrolled: ") && has(r.text, "knob spare (line") ? 1 : 0, 1);
         // Back to the blank panel's (drive large, wave, tone; spare left over), for the pictures.
         r = s.sandbox(object({ { "action", "open" }, { "from", "blank" }, { "dials", dials() } }));
         P.eq("edit.reopened", !r.error && numberIn(r.text) == blank + 1 ? 1 : 0, 1);
