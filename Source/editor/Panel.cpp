@@ -1396,10 +1396,10 @@ namespace playground::ui
             }
         }
 
-        bool contains(funkgui::Point p) const override
-        {
-            return bar_.contains(p) || editor().contains(p) || (!hidden_ && assist_.over(p));
-        }
+        bool contains(funkgui::Point p) const override { return bar_.contains(p) || editor().contains(p) || overlayAt(p); }
+        // Over what the code editor draws over everything (the completion list, the find and go-to bars, the status
+        // line): the window bounds the list, not the program's card, so it may lie over a column's edge.
+        bool overlayAt(funkgui::Point p) const { return !hidden_ && assist_.over(p); }
         funkgui::Cursor cursorAt(funkgui::Point p) const override
         {
             if (schematicShown() && !bar_.contains(p) && !assist_.statusRect().contains(p))
@@ -2917,15 +2917,15 @@ namespace playground::ui
         }
 
         // The columns' edges (Columns.h): the explorer's right one and the chat's left one, each a handle that sets its
-        // card's width (last of the items: hit first by itemAt, drawn over the cards' edges).
+        // card's width (last of the items: hit by itemAt before the cards' items, drawn over the cards' edges).
         {
             const auto edge = [&](bool chat) {
                 columns::EdgeItem::Hooks h;
                 h.width = [this, chat] { return chat ? fit_.chat : fit_.explorer; };
                 h.least = [this, chat] { return chat ? fit_.chatLeast : fit_.explorerLeast; };
                 h.most = [this, chat] { return chat ? fit_.chatMost : fit_.explorerMost; };
-                h.set = [this, chat](float px, bool keep) { setColumnWidth(chat, px, keep); };
-                h.reset = [this, chat] { setColumnWidth(chat, 0.0f, true); };
+                h.set = [this, chat](float px, columns::Keep keep) { setColumnWidth(chat, px, keep); };
+                h.reset = [this, chat] { setColumnWidth(chat, 0.0f, columns::Keep::now); };
                 return add(std::make_unique<columns::EdgeItem>(
                     idFor(), chat ? -1 : 1, chat ? "Chat width" : "Explorer width",
                     chat ? "CHAT WIDTH" : "EXPLORER WIDTH", std::move(h)));
@@ -3203,6 +3203,9 @@ namespace playground::ui
         static_cast<columns::EdgeItem&>(*items_[static_cast<std::size_t>(explorerEdgeItem_)])
             .place(explorerCard_.right(), kMainY, bottom, explorerShown_);
         static_cast<columns::EdgeItem&>(*items_[static_cast<std::size_t>(chatEdgeItem_)]).place(card_.x, kMainY, bottom, chatOpen_);
+        // An edge that hides (its card folded, or away for the window or the view) gives up the focus: no key reaches it.
+        if (isEdge(focus_) && !items_[static_cast<std::size_t>(focus_)]->shown())
+            setFocus(-1);
 
         // The zoom, in the status bar's right corner.
         {
@@ -3324,6 +3327,7 @@ namespace playground::ui
     // The host closes the open gestures before it lets go of the Panel; no HostServices call from here.
     Panel::~Panel()
     {
+        keepStepDefaults(0.0, true);                     // a width stepped just before the editor closed
         guiView_->releaseKeys();                         // a note held as the editor closes is let go
         releasePictures();
         if (probeOwner_ != 0)
@@ -3560,34 +3564,67 @@ namespace playground::ui
             funkgui::UiPreferences::get().getInt(chat ? columns::kChatWidthKey : columns::kExplorerWidthKey, 0, 0, most));
     }
 
-    void Panel::setColumnWidth(bool chat, float px, bool keep)
+    void Panel::setColumnWidth(bool chat, float px, columns::Keep keep)
     {
         const int w = columns::keptWidth(px, chat);
         (chat ? chatWant_ : explorerWant_) = static_cast<float>(w);
-        if (keep)
+        if (keep != columns::Keep::notYet)
         {
-            // The session keeps it, and this Mac, as the default for an instance that has set none (0: the share).
+            // The session keeps it, and this Mac, as the default for an instance that has set none (0: the share): a
+            // gesture's end at once, a step once the steps pause (keepStepDefaults: one write for a held arrow).
             (chat ? seenChatWidth_ : seenExplorerWidth_) = w;
             if (chat)
                 port_.setChatWidth(w);
             else
                 port_.setExplorerWidth(w);
-            funkgui::UiPreferences::get().setInt(chat ? columns::kChatWidthKey : columns::kExplorerWidthKey, w);
+            int& pending = stepDefault_[chat ? 1 : 0];
+            if (keep == columns::Keep::now)
+            {
+                pending = -1;
+                funkgui::UiPreferences::get().setInt(chat ? columns::kChatWidthKey : columns::kExplorerWidthKey, w);
+            }
+            else
+            {
+                pending = w;
+                stepAt_ = host_ != nullptr ? host_->nowSeconds() : 0.0;
+            }
         }
         layout();
         dirty_ = true;
     }
 
-    // The port's widths, when another set them since (a second Panel of this processor, a host loading a session).
+    void Panel::keepStepDefaults(double nowSec, bool now)
+    {
+        if (stepDefault_[0] < 0 && stepDefault_[1] < 0)
+            return;
+        if (!now && nowSec - stepAt_ < columns::kDefaultPause && nowSec >= stepAt_)
+            return;
+        for (int k = 0; k < 2; ++k)
+            if (stepDefault_[k] >= 0)
+            {
+                funkgui::UiPreferences::get().setInt(k == 1 ? columns::kChatWidthKey : columns::kExplorerWidthKey,
+                                                     stepDefault_[k]);
+                stepDefault_[k] = -1;
+            }
+    }
+
+    // The port's widths, when another set them since (a second Panel of this processor, a host loading a session): a
+    // step of this Panel's not yet in this Mac's default is then no longer the last width set, and goes.
     void Panel::syncColumnWidths()
     {
         const int e = port_.explorerWidth(), c = port_.chatWidth();
         if (e == seenExplorerWidth_ && c == seenChatWidth_)
             return;
         if (e != seenExplorerWidth_)
+        {
             explorerWant_ = wantedWidth(e, false);
+            stepDefault_[0] = -1;
+        }
         if (c != seenChatWidth_)
+        {
             chatWant_ = wantedWidth(c, true);
+            stepDefault_[1] = -1;
+        }
         seenExplorerWidth_ = e;
         seenChatWidth_ = c;
         layout();
@@ -3976,6 +4013,15 @@ namespace playground::ui
         files().attach(&host);
         chatView().attach(&host);
         inputItem().attach(&host);
+        // This Mac's default widths as the host found them: EditorHost reloads the preferences after the Panel is made,
+        // just before this, so a width another process set since this one first read them counts (the session's win).
+        const float e = wantedWidth(seenExplorerWidth_, false), c = wantedWidth(seenChatWidth_, true);
+        if (e != explorerWant_ || c != chatWant_)
+        {
+            explorerWant_ = e;
+            chatWant_ = c;
+            layout();
+        }
     }
 
     int Panel::width() const { return static_cast<int>(width_); }
@@ -4199,6 +4245,7 @@ namespace playground::ui
     void Panel::refresh(double nowSec)
     {
         syncColumnWidths();
+        keepStepDefaults(nowSec, false);
         // The draft, when a host loaded a session while the editor was open, or Claude changed the files.
         bool textChanged = std::exchange(pushedFiles_, false);   // a gesture's files, given at once
         if (mergeDraft())
@@ -5792,9 +5839,12 @@ namespace playground::ui
     {
         if (dialogOpen())
             return -1;                                   // the dialog covers the panel
-        for (const int e : { explorerEdgeItem_, chatEdgeItem_ })   // a band over a card's edge: before the card's items
-            if (e >= 0 && items_[static_cast<std::size_t>(e)]->shown() && items_[static_cast<std::size_t>(e)]->contains(p))
-                return e;
+        // A band over a card's edge, before the cards' items; but under the code editor's overlays, which the items'
+        // order lets reach a point first, as before the edges were.
+        if (editorItem_ < 0 || !(items_[static_cast<std::size_t>(editorItem_)]->shown() && files().overlayAt(p)))
+            for (const int e : { explorerEdgeItem_, chatEdgeItem_ })
+                if (e >= 0 && items_[static_cast<std::size_t>(e)]->shown() && items_[static_cast<std::size_t>(e)]->contains(p))
+                    return e;
         for (std::size_t i = 0; i < items_.size(); ++i)
             if (items_[i]->shown() && items_[i]->contains(p))
                 return static_cast<int>(i);

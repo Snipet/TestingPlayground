@@ -353,6 +353,7 @@ namespace playground::ui
         float chatWant() const noexcept { return chatWant_; }
         bool explorerEdgeShown() const;
         bool chatEdgeShown() const;
+        bool edgeFocused(bool chat) const noexcept { return focus_ >= 0 && focus_ == (chat ? chatEdgeItem_ : explorerEdgeItem_); }
         funkgui::Point centreOfExplorerEdge() const;
         funkgui::Point centreOfChatEdge() const;
         // The key dialog.
@@ -420,7 +421,8 @@ namespace playground::ui
                                                          // the rest of its click (a double-click's second press,
                                                          // its doubleClick) reaches nothing under it
 
-        int  itemAt(funkgui::Point) const;               // the item under p, -1 for none (an edge first)
+        int  itemAt(funkgui::Point) const;               // the item under p, -1 for none (an edge before the cards'
+                                                         // items, under the code editor's overlays)
         bool moveFocus(int dir);
         void setFocus(int item);
         void refresh(double nowSec);                     // the port's status, draft and dials, when they changed
@@ -504,15 +506,20 @@ namespace playground::ui
         int explorerItem_ = -1, explorerToggleItem_ = -1;
         bool explorerOpen_ = true;
         // The columns' widths (Columns.h): the edges' items; the widths asked (0: the share); the port's as this Panel
-        // last saw them (another Panel's drag, a session loaded: refresh() takes them); what layout() fit.
+        // last saw them (another Panel's drag, a session loaded: refresh() takes them); what layout() fit; a step's
+        // width on its way to this Mac's default (-1: none), and when the last step was.
         int explorerEdgeItem_ = -1, chatEdgeItem_ = -1;
         float explorerWant_ = 0.0f, chatWant_ = 0.0f;
         int seenExplorerWidth_ = 0, seenChatWidth_ = 0;
         columns::Fit fit_;
+        int stepDefault_[2] = { -1, -1 };                // [0] the explorer's, [1] the chat's
+        double stepAt_ = 0.0;
         bool isEdge(int item) const noexcept { return item >= 0 && (item == explorerEdgeItem_ || item == chatEdgeItem_); }
         float wantedWidth(int session, bool chat) const; // the session's width, else this Mac's default, else 0
-        void setColumnWidth(bool chat, float px, bool keep);   // keep: the session and this Mac's default take it
+        void setColumnWidth(bool chat, float px, columns::Keep keep);
         void syncColumnWidths();                         // refresh(): the port's widths, when another set them
+        void keepStepDefaults(double nowSec, bool now);  // a step's width to this Mac's default, once the steps pause
+                                                         // (now: at once)
         bool explorerShown_ = true;                      // open, in the CODE view, and the window has room for it
         void toggleExplorer();
         funkgui::Rect explorerCard_;

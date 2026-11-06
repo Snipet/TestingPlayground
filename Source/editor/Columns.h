@@ -15,7 +15,9 @@
 // (UiPreferences: kExplorerWidthKey, kChatWidthKey); 0 is none, the share of the window. A double-click on the edge,
 // or Delete, resets it to 0 in both. A drag never pushes the other column: the chat keeps its width before the
 // explorer does, so the explorer's edge stops where the chat's width begins, while the chat's pushes the explorer down
-// to its least.
+// to its least. Only a width that changes what shows is set: a key or a screen reader's step that moves nothing (a
+// column that gave way to the window, already at its reach) leaves the width asked as it was, so the column comes back
+// to it when the window widens. A hidden edge (its card folded or away) sets nothing.
 //
 // Message thread only (the item); fit() is plain arithmetic.
 #pragma once
@@ -49,6 +51,19 @@ namespace playground::ui::columns
     // This Mac's defaults for an instance that has set no width (FunkGui's UiPreferences, int keys, px; 0: none).
     inline constexpr const char* kExplorerWidthKey = "explorerWidth";
     inline constexpr const char* kChatWidthKey = "chatWidth";
+    // A step's width reaches this Mac's default once the steps pause this long (s): UiPreferences writes its file at
+    // every change, and a held arrow repeats about thirty times a second.
+    inline constexpr double kDefaultPause = 0.5;
+
+    // How a new width is kept: not yet (a drag goes on); now (a drag's release, a reset: the session and this Mac's
+    // default at once); a step (a key's or a screen reader's: the session at once, this Mac's default after
+    // kDefaultPause without another).
+    enum class Keep
+    {
+        notYet,
+        now,
+        step
+    };
 
     struct Asked
     {
@@ -84,8 +99,7 @@ namespace playground::ui::columns
         {
             std::function<float()> width;                // the card's width now
             std::function<float()> least, most;          // its reach now (Fit's)
-            std::function<void(float px, bool keep)> set;   // a new width; keep: the gesture ended (the session and
-                                                            // this Mac's default take it)
+            std::function<void(float px, Keep keep)> set;   // a new width, kept as `keep` says
             std::function<void()> reset;                 // the width the share gives (none kept)
         };
 
@@ -118,7 +132,8 @@ namespace playground::ui::columns
         bool shown() const override { return shown_; }
 
     private:
-        void stepTo(float px);                           // a key's or a screen reader's width, kept at once
+        void stepTo(float px);                           // a key's or a screen reader's width (Keep::step), when it
+                                                         // changes what shows
 
         uint32_t id_;
         int grows_;

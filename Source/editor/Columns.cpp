@@ -128,14 +128,14 @@ namespace playground::ui::columns
         if (w != hooks_.width())
         {
             moved_ = true;
-            hooks_.set(w, false);
+            hooks_.set(w, Keep::notYet);
         }
     }
 
     void EdgeItem::pointerUp(const funkgui::PointerEvent&, funkgui::GestureController&)
     {
         if (dragging_ && moved_)
-            hooks_.set(hooks_.width(), true);           // the session and this Mac's default keep it
+            hooks_.set(hooks_.width(), Keep::now);       // the session and this Mac's default keep it
         dragging_ = false;
         moved_ = false;
     }
@@ -151,11 +151,20 @@ namespace playground::ui::columns
 
     void EdgeItem::stepTo(float px)
     {
-        hooks_.set(std::clamp(std::round(px), hooks_.least(), std::max(hooks_.least(), hooks_.most())), true);
+        if (!shown_)
+            return;                                      // its card folded or away: nothing to set
+        const float least = hooks_.least();
+        const float w = std::clamp(std::round(px), least, std::max(least, hooks_.most()));
+        // As a drag: only a width that moves the edge. A step against the reach (a column that gave way to the window
+        // shows less than its user asked) keeps what was asked, so the column comes back to it as the window widens.
+        if (w != hooks_.width())
+            hooks_.set(w, Keep::step);
     }
 
     bool EdgeItem::key(const funkgui::KeyEvent& e, funkgui::GestureController&)
     {
+        if (!shown_)
+            return false;                                // hidden while focused: no key is the edge's
         if (e.key == funkgui::Key::left || e.key == funkgui::Key::right)
         {
             // The arrow moves the edge its way: the explorer's right edge to the right widens it, the chat's left edge to
