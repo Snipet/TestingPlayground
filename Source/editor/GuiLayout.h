@@ -104,4 +104,23 @@ namespace playground::ui
     // A tabs node's tabs: their rects (in its strip at the top, or its list at the left for look=side).
     std::vector<funkgui::Rect> guiTabRects(const PanelSpec& spec, int node, const funkgui::Rect& rect,
                                            const GuiMeasure& measure);
+
+    // ---- the layout checked: gui_sandbox's report (sandbox/Sandbox.cpp) and run_program's line (editor/Picture.cpp)
+    // Whether an element of `k` holds others (a row, a column, a grid, a section, a box, tabs, a page).
+    bool guiContainer(GuiKind k);
+    // An element as the checks name it: its kind and what it shows ("knob cutoff", "meter shared->rpm", "keyboard from
+    // 48, 25 keys", "section \"FILTER\"").
+    std::string guiNodeName(const GuiNode& n, const PanelSpec& spec, const Controls& controls);
+    // How a layout (layoutGui's) fits its area: how far its content reaches past it (px; 0: it fits that way), and
+    // the elements on the pages shown that are not wholly in it at no scroll, by node (what draws: no container, spacer
+    // or divider), in the file's order.
+    struct GuiFit
+    {
+        float overW = 0.0f, overH = 0.0f;
+        std::vector<int> outOfView;
+    };
+    GuiFit guiFit(const PanelSpec& spec, const GuiLayout& gl);
+    // The fit in one line, "" when the content fits: "Panel layout: its content is 140 px taller than <area> (853 x
+    // 612), so it scrolls; out of view until scrolled: keyboard from 48, 25 keys (line 40), ..." (four named at most).
+    std::string guiFitLine(const PanelSpec& spec, const Controls& controls, const GuiLayout& gl, const std::string& area);
 }

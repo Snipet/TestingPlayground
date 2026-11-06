@@ -700,4 +700,109 @@ namespace playground::ui
         Layouter l(spec, none, measure);
         return l.tabRects(node, rect);
     }
+
+    // ---- the layout checked (GuiLayout.h) --------------------------------------------------------------------------
+    bool guiContainer(GuiKind k) { return isContainer(k); }
+
+    std::string guiNodeName(const GuiNode& n, const PanelSpec& spec, const Controls& controls)
+    {
+        const auto dial = [&](int slot) {
+            return slot >= 0 && slot < kMaxControls && controls[static_cast<std::size_t>(slot)].used
+                     ? std::string(controls[static_cast<std::size_t>(slot)].name)
+                     : std::string("?");
+        };
+        const auto displayWord = [](DisplayKind k) {
+            switch (k)
+            {
+                case DisplayKind::meter:    return "meter";
+                case DisplayKind::vu:       return "vu";
+                case DisplayKind::led:      return "led";
+                case DisplayKind::number:   return "number";
+                case DisplayKind::scope:    return "scope";
+                case DisplayKind::spectrum: return "spectrum";
+            }
+            return "display";
+        };
+        switch (n.kind)
+        {
+            case GuiKind::row:      return n.wrap ? "row (wraps)" : "row";
+            case GuiKind::column:   return "column";
+            case GuiKind::grid:     return "grid of " + std::to_string(n.cols);
+            case GuiKind::section:  return "section \"" + n.text + "\"";
+            case GuiKind::box:      return "box";
+            case GuiKind::tabs:     return "tabs";
+            case GuiKind::page:     return "page \"" + n.text + "\"";
+            case GuiKind::spacer:   return "spacer";
+            case GuiKind::divider:  return "divider";
+            case GuiKind::label:    return "label \"" + n.text + "\"";
+            case GuiKind::knob:     return "knob " + dial(n.slot);
+            case GuiKind::slider:   return "slider " + dial(n.slot);
+            case GuiKind::toggle:   return "switch " + dial(n.slot);
+            case GuiKind::buttons:  return "buttons " + dial(n.slot);
+            case GuiKind::menu:     return "menu " + dial(n.slot);
+            case GuiKind::xy:       return "xy " + dial(n.slot) + " " + dial(n.slot2);
+            case GuiKind::envelope: return "envelope " + dial(n.env[0]) + " " + dial(n.env[1]) + " " + dial(n.env[2]) + " " + dial(n.env[3]);
+            case GuiKind::display:
+                if (n.display >= 0 && static_cast<std::size_t>(n.display) < spec.displays.size())
+                {
+                    const PanelDisplay& d = spec.displays[static_cast<std::size_t>(n.display)];
+                    return std::string(displayWord(d.kind)) + " " + d.source;
+                }
+                return "display";
+            case GuiKind::keyboard: return "keyboard from " + std::to_string(n.from) + ", " + std::to_string(n.keys) + " keys";
+            case GuiKind::shader:   return "shader \"" + n.file + "\"";
+        }
+        return "element";
+    }
+
+    GuiFit guiFit(const PanelSpec& spec, const GuiLayout& gl)
+    {
+        GuiFit out;
+        out.overW = gl.maxScrollX;
+        out.overH = gl.maxScrollY;
+        if (out.overW <= 0.0f && out.overH <= 0.0f)
+            return out;
+        // At no scroll the content's top left is the area's (the root's place, less the scroll it was laid out at):
+        // what reaches past the area's right or bottom edge (by more than a px) is not wholly in view.
+        const float sx = gl.rects.empty() ? 0.0f : std::max(0.0f, gl.area.x - gl.rects[0].x);
+        const float sy = gl.rects.empty() ? 0.0f : std::max(0.0f, gl.area.y - gl.rects[0].y);
+        const std::vector<GuiNode>& nodes = spec.gui.nodes;
+        for (std::size_t i = 1; i < nodes.size() && i < gl.rects.size(); ++i)
+        {
+            if (i >= gl.visible.size() || !gl.visible[i] || isContainer(nodes[i].kind) || nodes[i].kind == GuiKind::spacer
+                || nodes[i].kind == GuiKind::divider)
+                continue;
+            const funkgui::Rect& r = gl.rects[i];
+            if (r.right() + sx > gl.area.right() + 1.0f || r.bottom() + sy > gl.area.bottom() + 1.0f)
+                out.outOfView.push_back(static_cast<int>(i));
+        }
+        return out;
+    }
+
+    std::string guiFitLine(const PanelSpec& spec, const Controls& controls, const GuiLayout& gl, const std::string& area)
+    {
+        const GuiFit fit = guiFit(spec, gl);
+        if (fit.overW <= 0.0f && fit.overH <= 0.0f)
+            return {};
+        const auto px = [](float v) { return std::to_string(static_cast<long>(std::lround(v))); };
+        std::string out = "Panel layout: its content is ";
+        if (fit.overH > 0.0f)
+            out += px(fit.overH) + " px taller";
+        if (fit.overW > 0.0f)
+            out += std::string(fit.overH > 0.0f ? " and " : "") + px(fit.overW) + " px wider";
+        out += " than " + area + " (" + px(gl.area.w) + " x " + px(gl.area.h) + "), so it scrolls";
+        if (!fit.outOfView.empty())
+        {
+            constexpr std::size_t kNamed = 4;
+            out += "; out of view until scrolled: ";
+            for (std::size_t k = 0; k < fit.outOfView.size() && k < kNamed; ++k)
+            {
+                const GuiNode& n = spec.gui.nodes[static_cast<std::size_t>(fit.outOfView[k])];
+                out += (k == 0 ? "" : ", ") + guiNodeName(n, spec, controls) + " (line " + std::to_string(n.line) + ")";
+            }
+            if (fit.outOfView.size() > kNamed)
+                out += " and " + std::to_string(fit.outOfView.size() - kNamed) + " more";
+        }
+        return out + ".";
+    }
 }
