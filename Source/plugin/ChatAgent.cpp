@@ -534,6 +534,14 @@ namespace playground
                    + (options.empty() ? "" : "; options " + options) + (colors.empty() ? "" : "; colours " + colors) + "\n";
         }
 
+        // A program that stopped (Compiler.h, "A program that stops"): what plays now, in words.
+        std::string stopWords(const CompileStatus& s)
+        {
+            return s.program == s.stoppedProgram ? "stopped as it played, and nothing plays now"
+                 : !s.restored.empty()          ? "stopped as it played; the program before it plays again, with its dials"
+                                                : "stopped as it began; the program before it plays on";
+        }
+
         std::string compileLine(const CompileStatus& s)
         {
             if (s.revision == 0)
@@ -541,10 +549,7 @@ namespace playground
             if (s.ok)
                 return "compiled in " + number(std::round(s.ms)) + " ms and plays\n" + s.notes;
             if (s.stopped)                             // Compiler.h, "A program that stops"
-                return std::string(s.program == s.stoppedProgram ? "stopped as it played, and nothing plays now"
-                                   : !s.restored.empty()          ? "stopped as it played; the program before it plays again"
-                                                                  : "stopped as it began; the program before it plays on")
-                     + ":\n" + s.errors;
+                return stopWords(s) + ":\n" + s.errors;
             return "did not compile (the program before it plays on):\n" + s.errors + s.notes;
         }
 
@@ -4279,7 +4284,7 @@ namespace playground
             if (s.stopped)                             // a call ran past its loop budget (Compiler.h, "A program that stops")
             {
                 note("ran it: it stopped");
-                return "It compiled but stopped as it began, so the program that played before plays on:\n" + capped(s.errors);
+                return "It compiled but " + stopWords(s) + ":\n" + capped(s.errors);
             }
             int errors = 0;
             for (std::size_t p = s.errors.find(": error:"); p != std::string::npos; p = s.errors.find(": error:", p + 1))

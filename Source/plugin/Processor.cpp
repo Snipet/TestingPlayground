@@ -939,12 +939,15 @@ namespace playground
             if (s.request == userRun_.load() && s.request != journaled_)
             {
                 journaled_ = s.request;                          // a refine's status answers it again (Compiler.h)
+                if (s.stopped)
+                    stopJournaled_ = s.stoppedProgram;           // said with the run (runWords)
                 if (s.ok)
                     journal_.dialsNote(Journal::Who::user, runWords(s));   // a new dial at its default (apply)
                 else
                     journal_.note(Journal::Who::user, runWords(s));
             }
-            else if (s.stopped && (!s.restored.empty() || s.program == s.stoppedProgram) && s.stoppedProgram != stopJournaled_)
+            else if (s.stopped && (!s.restored.empty() || s.program == s.stoppedProgram) && s.stoppedProgram != stopJournaled_
+                     && s.stoppedProgram != chatStopJournaled_.load())
             {
                 // A program that stopped as it played, after its run was journalled (Compiler.h, "A program that stops").
                 stopJournaled_ = s.stoppedProgram;
@@ -1880,6 +1883,8 @@ namespace playground
         const CompileStatus s = compiler_.status();
         if (!chat_.mcpWorking() && s.request >= id)
         {
+            if (s.stopped)
+                chatStopJournaled_.store(s.stoppedProgram);     // said with the run: poll() says it no more
             if (s.ok)
                 journal_.dialsNote(Journal::Who::chat, runWords(s));
             else
