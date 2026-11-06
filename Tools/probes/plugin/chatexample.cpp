@@ -395,7 +395,7 @@ PROBE(plugin, chatexample)
         P.eq("prompt.metric_tolerances", tolerances, count);
         P.eq("prompt.metric_terms", has(prompt, pg::measure::metricTerms()) && !has(prompt, "5 % of a frequency")
                                         && !has(prompt, "1 dB for levels") ? 1 : 0, 1);
-        P.eq("prompt.tune_time_limit", has(prompt, "for up to its time limit: 120 s unless set") ? 1 : 0, 1);
+        P.eq("prompt.tune_time_limit", has(prompt, "by rendering many times (for up to 120 s unless set)") ? 1 : 0, 1);
     }
     P.eq("prompt.host", has(prompt, "THE HOST: TEMPO") && has(prompt, "Host* host;") && has(prompt, "lfo.follow(")
                             && has(prompt, "<host_file name=\"host.fm\">\n" + std::string(pg::Patch::hostSource()) + "</host_file>")

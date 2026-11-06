@@ -472,7 +472,8 @@ namespace playground
         }
 
         // A goal (Goals.h) from a tool's input: metric and min, max or target (and a tolerance, a weight); false with why.
-        bool goalOf(const juce::var& in, measure::Goal& g, std::string& why)
+        // `bare`: a metric alone is one too (a tune_dials sweep's, reported and not judged).
+        bool goalOf(const juce::var& in, measure::Goal& g, std::string& why, bool bare = false)
         {
             g = {};
             g.metric = in.getProperty("metric", juce::var()).toString().toStdString();
@@ -492,7 +493,7 @@ namespace playground
             take("weight", hasWeight, g.weight);
             if (!hasWeight)
                 g.weight = 1.0;
-            why = measure::invalid(g);
+            why = measure::invalid(g, bare);
             return why.empty();
         }
 
@@ -1964,8 +1965,8 @@ namespace playground
                                          { "items", claude::object({ { "type", "string" } }) },
                                          { "minItems", 1 },
                                          { "maxItems", measure::kMaxTuned },
-                                         { "description", "The float dials to tune, by parameter name (ints and bools "
-                                                          "are set with set_dial)" } }));
+                                         { "description", "The float dials to tune, by name (a sweep's: one dial, of "
+                                                          "any type)" } }));
             props.getDynamicObject()->setProperty(
                 "goals", claude::object({ { "type", "array" },
                                           { "minItems", 1 },
@@ -1974,19 +1975,22 @@ namespace playground
                                                                       { "properties", goalProps(true) },
                                                                       { "required", juce::Array<juce::var>{ "metric" } } }) },
                                           { "description", "What the measurements should come to" } }));
-            props.getDynamicObject()->setProperty("budget", prop("integer", "Renders at most (default 150, at most 400; "
-                                                                            "each takes a few to a few hundred ms)"));
+            props.getDynamicObject()->setProperty(
+                "sweep", claude::object({ { "type", "array" },
+                                          { "items", claude::object({ { "type", "number" } }) },
+                                          { "description", "Values of the one dial, up to 32, each measured in turn; "
+                                                           "no search, nothing set" } }));
+            props.getDynamicObject()->setProperty("budget", prop("integer", "Renders at most (default 150, at most 400)"));
             props.getDynamicObject()->setProperty("apply", prop("boolean", "Set the dials to the best values found "
                                                                            "(default true)"));
-            props.getDynamicObject()->setProperty("seconds", prop("number", "How long it may search, in seconds (default "
-                                                                             "120, at most 170): it stops there with the best "
-                                                                             "so far"));
+            props.getDynamicObject()->setProperty("seconds", prop("number", "Seconds it may search (default 120, at most "
+                                                                             "170), then the best so far"));
             tools.add(tool("tune_dials",
-                           "Find values of up to eight float dials that bring measurements to goals, by rendering "
-                           "offline (as measure_output does) and searching from the dials as they are, points spread "
-                           "over their ranges and a simplex, instead of guessing. Goals are "
+                           "Find values of up to eight float dials that bring measurements to goals by rendering "
+                           "offline (as measure_output does) and searching, instead of guessing; or sweep one dial "
+                           "over values: the goals' metrics at each, side by side. Goals are "
                            "metrics (CHECKING YOUR WORK) with min, max "
-                           "or a target. The best values go on the dials, as set_dial "
+                           "or a target (a sweep's may be a metric alone). The best values go on the dials, as set_dial "
                            "sets them, unless apply is false; the result gives the dials and the measurements before "
                            "and after. Dials not tuned keep their values (or those in dials). It changes no file.",
                            props, { "tune", "goals" }));
@@ -3945,12 +3949,27 @@ namespace playground
                 for (const auto& t : *tune)
                     if (t.isString())
                         q.dials.push_back(t.toString().toStdString());
+            // A sweep (Tune.h): the one dial at each value, measured; no search, nothing set.
+            const juce::var sweep = input.getProperty("sweep", juce::var());
+            const bool sweeping = !sweep.isVoid() && !sweep.isUndefined();
+            if (sweeping)
+            {
+                const auto* values = sweep.getArray();
+                if (values == nullptr || values->isEmpty() || values->size() > measure::kMaxSweep)
+                    return fail("sweep is a list of 1 to " + std::to_string(measure::kMaxSweep) + " values of the one dial in tune.");
+                for (const auto& v : *values)
+                {
+                    if (!isNumber(v) && !v.isBool())
+                        return fail("sweep's values are numbers: the dial's own (a bool's 0 or 1).");
+                    q.sweep.push_back(static_cast<float>(static_cast<double>(v)));
+                }
+            }
             if (const auto* goals = input.getProperty("goals", juce::var()).getArray())
                 for (int i = 0; i < goals->size(); ++i)
                 {
                     measure::Goal g;
                     std::string why;
-                    if (!goalOf((*goals)[i], g, why))
+                    if (!goalOf((*goals)[i], g, why, sweeping))
                         return fail("Goal " + std::to_string(i + 1) + ": " + why);
                     q.goals.push_back(std::move(g));
                 }
@@ -3961,16 +3980,21 @@ namespace playground
             const bool apply = applyVar.isBool() ? static_cast<bool>(applyVar) : true;
             const juce::var seconds = input.getProperty("seconds", juce::var());
             q.seconds = isNumber(seconds) ? std::clamp(static_cast<double>(seconds), 1.0, measure::kMaxSeconds) : measure::kDefaultSeconds;
-            setActivity("Tuning the dials");
-            q.progress = [this](int done, int all) {
-                setActivity("Tuning: " + std::to_string(done) + " of " + std::to_string(all) + " renders");
+            setActivity(sweeping ? "Sweeping a dial" : "Tuning the dials");
+            q.progress = [this, sweeping](int done, int all) {
+                setActivity((sweeping ? "Sweeping: " : "Tuning: ") + std::to_string(done) + " of " + std::to_string(all) + " renders");
                 return !cancel_.load();
             };
             const measure::TuneResult t = measure::tune(host_.chatDraft().files, q);
             if (!t.error.empty())
             {
-                note("tuning failed");
+                note(sweeping ? "sweeping failed" : "tuning failed");
                 return fail(t.error);
+            }
+            if (sweeping)
+            {
+                note("swept " + q.dials.front() + " over " + std::to_string(t.sweep.size()) + " value" + (t.sweep.size() == 1 ? "" : "s"));
+                return t.text + "No dial was set: a sweep only measures (set_dial sets one).";
             }
             std::string out = t.text;
             std::string tuned;

@@ -48,6 +48,9 @@
 
 namespace playground::scenario
 {
+    // The rates a render takes (a scenario's rate, compare's b_rate), in Hz.
+    inline constexpr double kMinRate = 8000.0, kMaxRate = 192000.0;
+
     // A render's settings from a tool's input (measure_output's, view_sound's, a check's, tune_dials', trace's): the
     // notes, the velocity, the times, the host's tempo, the wheels at the start, the dials asked for, the window
     // (readWindow: trace refuses one before it reads them) and the scenario (read(): why, when it cannot be), over

@@ -114,13 +114,18 @@
 //   BASE     an instrument's base_hz (off_order_db's base) through MCP: the report's orders line names it, one under 1
 //            Hz, over 20 kHz or not a number refused; a check with one names it on its line, is saved with it and loads
 //   TUNE     tune_dials: a level for an RMS (an instrument) or a gain for a gain (an effect): the goal met, the dial
-//            set (measured afterwards, it gives the goal); an unknown dial an error result
+//            set (measured afterwards, it gives the goal); an unknown dial an error result; a sweep of two values, its
+//            table, the dial left as it was; a sweep that is no list refused
 //   TRIAL    try_edits (ChatScenario.h): measure_output with a passage edited and a file added on a copy says so in
 //            its first line and renders it, the editor's files untouched; an edit whose text is not there is an error
 //            that names it; a scenario through the agent is in the report, and one that cannot be is refused naming
 //            its part; a check that would play the recording is refused
 //   COMPARE  compare through the agent: the editor against itself with a trial edit that halves the level shows a
-//            gain of 0.5; version:N with no project open says so; dials "current" keeps a {dials} side's own
+//            gain of 0.5; version:N with no project open says so; dials "current" keeps a {dials} side's own; b_rate
+//            96000: the editor at both rates compared by levels, bands and metrics (they agree), the picture with no
+//            difference line; a rate under 8000 and the effect's noise refused; previous_run: none on a fresh plugin;
+//            after the halving edited and run, previous_run against playing a gain of 0.5 (before poll() takes the
+//            run and after), and 2 once run back
 //   TRACE    trace through the agent (dsp/Debug.h): the program that sounds has nothing to find; a trial edit that makes
 //            its gain a NaN finds it at the first sample, in a local, the editor untouched; the recording, which there is
 //            none of yet, and a find it does not know are errors that say so; with notes, the times and a dial asked for
@@ -2399,6 +2404,38 @@ PROBE(plugin, chat)
             ss->add(fake::Response::ok(fake::Sse().start().text("Hm.").end()));
             const int b2 = turn("tune nothing", 2);
             P.eq("tune.unknown_dial", has(resultText(b2 + 1), "no dial 'nothing'") ? 1 : 0, 1);
+
+            // A sweep: the dial at two values, a bare goal's metric at each, side by side; the dial left where it was. A
+            // sweep that is no list of numbers is refused.
+            const float dialBefore = sp.getParameters()[dialSlot]->getValue();
+            juce::var sweepIn = input({ { "tune", juce::Array<juce::var>{ juce::var(levelDial) } },
+                                        { "sweep", juce::Array<juce::var>{ -12.0, -6.0 } },
+                                        { "goals", juce::Array<juce::var>{ input({ { "metric", metric } }) } } });
+            if constexpr (pg::product::kIsInstrument)
+                sweepIn.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+            ss->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .tool("toolu_t3", "tune_dials", sweepIn)
+                                           .tool("toolu_t4", "tune_dials",
+                                                 input({ { "tune", juce::Array<juce::var>{ juce::var(levelDial) } },
+                                                         { "sweep", "loud" },
+                                                         { "goals", juce::Array<juce::var>{ input({ { "metric", metric } }) } } }))
+                                           .end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("Swept.").end()));
+            const int b3 = turn("how does the level follow the dial?", 2);
+            const std::string swept = resultText(b3 + 1, 0), notList = resultText(b3 + 1, 1);
+            std::printf("tune_dials, a sweep:\n%s\n%s\n", swept.c_str(), notList.c_str());
+            P.eq("tune.sweep_table", has(swept, "Swept " + std::string(levelDial) + " over 2 values (")
+                                         && has(swept, " | " + std::string(metric) + "\n-12 | ")
+                                         && has(swept, "\n-6 | ")
+                                         && has(swept, "No dial was set: a sweep only measures (set_dial sets one).")
+                                         ? 1 : 0, 1);
+            P.eq("tune.sweep_sets_nothing", sp.getParameters()[dialSlot]->getValue() == dialBefore ? 1 : 0, 1);
+            bool sweptEntry = false;
+            for (const pg::ChatEntry& e : sa.chatState().entries)
+                sweptEntry = sweptEntry || (e.kind == pg::ChatEntry::Kind::tool && has(e.text, "swept " + std::string(levelDial) + " over 2 values"));
+            P.eq("tune.sweep_entry", sweptEntry ? 1 : 0, 1);
+            P.eq("tune.sweep_not_list", has(notList, "sweep is a list of 1 to 32 values of the one dial in tune.") ? 1 : 0, 1);
         }
 
         // ---- TRIAL ---------------------------------------------------------------------------------------------------------
@@ -2505,6 +2542,78 @@ PROBE(plugin, chat)
             juce::File(juce::String(probe::outPath("plugin.chat.compare.png"))).replaceWithData(png.getData(), png.getDataSize());
             const juce::Image img = juce::ImageFileFormat::loadFrom(png.getData(), png.getDataSize());
             P.eq("compare.picture", img.getWidth() == 1120 && img.getHeight() == 560 && has(words, "Best fit") ? 1 : 0, 1);
+
+            // b_rate: the editor's files at 48 and 96 kHz, compared by what is the same at every rate (the levels, the
+            // bands, the metrics), not sample by sample, and drawn with no difference line; a rate it does not take, and
+            // an effect's noise (its level per hertz moves with the rate), refused.
+            ss->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .tool("toolu_y5", "compare", input({ { "a", "editor" }, { "b", "editor" }, { "b_rate", 96000 }, { "picture", true } }))
+                                           .tool("toolu_y6", "compare", input({ { "a", "editor" }, { "b", "editor" }, { "b_rate", 1000 } }))
+                                           .tool("toolu_y7", "compare",
+                                                 input({ { "a", "editor" },
+                                                         { "b", "editor" },
+                                                         { "b_rate", 96000 },
+                                                         { "scenario", input({ { "input", "noise" } }) } }))
+                                           .end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("Compared.").end()));
+            const int rt = turn("does it sound the same at 96 kHz?", 2);
+            const std::string rateLow = resultText(rt + 1, 1), rateNoise = resultText(rt + 1, 2);
+            std::string rateWords, rateData;
+            const juce::Array<juce::var> rateResults = arr(lastUser(rt + 1).getProperty("content", {}));
+            for (const juce::var& b : arr(!rateResults.isEmpty() ? rateResults[0].getProperty("content", {}) : juce::var()))
+            {
+                if (str(b, "type") == "image")
+                    rateData = str(b.getProperty("source", {}), "data");
+                if (str(b, "type") == "text")
+                    rateWords = str(b, "text");
+            }
+            std::printf("compare at two rates:\n%s\n%s\n%s\n", rateWords.c_str(), rateLow.c_str(), rateNoise.c_str());
+            P.eq("compare.rates_lines", has(rateWords, ", A at 48000 Hz and B at 96000 Hz, in blocks of ")
+                                            && has(rateWords, "\nA renders at 48000 Hz and B at 96000 Hz: compared by what is the same "
+                                                              "at every rate (the levels, the octave bands, the metrics), not sample by sample.\n")
+                                            && !has(rateWords, "Best fit") && !has(rateWords, "Identical bits")
+                                            ? 1 : 0, 1);
+            P.eq("compare.rates_agree", has(rateWords, "\nThe metrics agree within their tolerances (") ? 1 : 0, 1);
+            P.eq("compare.rates_picture_words", has(rateWords, "(none at two rates: no sample lines up)") ? 1 : 0, 1);
+            juce::MemoryOutputStream ratePng;
+            juce::Base64::convertFromBase64(ratePng, juce::String(rateData));
+            juce::File(juce::String(probe::outPath("plugin.chat.compare.rates.png"))).replaceWithData(ratePng.getData(), ratePng.getDataSize());
+            const juce::Image rateImg = juce::ImageFileFormat::loadFrom(ratePng.getData(), ratePng.getDataSize());
+            P.eq("compare.rates_picture", rateImg.getWidth() == 1120 && rateImg.getHeight() == 560 ? 1 : 0, 1);
+            P.eq("compare.rates_low_refused", has(rateLow, "b_rate is B's rate in Hz, 8000 to 192000.") ? 1 : 0, 1);
+            P.eq("compare.rates_noise_refused",
+                 pg::product::kIsInstrument || has(rateNoise, "b_rate takes the sweep (its input at two rates)") ? 1 : 0, 1);
+
+            // previous_run: what played before the last run that changed it. A fresh plugin has none; here, the halving
+            // edited and run, previous_run against playing is that halving (before the message thread takes the new
+            // program, and after), and run back, the other way.
+            {
+                pg::Processor fresh;
+                const pg::ChatAgent::McpResult none = fresh.chatAgent().mcpCall("compare", input({ { "a", "previous_run" }, { "b", "editor" } }));
+                P.eq("compare.previous_none", none.isError && has(allText(none), "Nothing played before the last run since the plugin opened") ? 1 : 0, 1);
+            }
+            const juce::var halveFile = input({ { "name", "program.fm" },
+                                                { "old_text", "const float g = expf(0.115129255f * " },
+                                                { "new_text", "const float g = 0.5f * expf(0.115129255f * " } });
+            const juce::var unhalve = input({ { "name", "program.fm" },
+                                              { "old_text", "const float g = 0.5f * expf(0.115129255f * " },
+                                              { "new_text", "const float g = expf(0.115129255f * " } });
+            const juce::var previous = input({ { "a", "previous_run" }, { "b", "playing" } });
+            P.eq("compare.previous_halve_edit", !sa.mcpCall("edit_file", halveFile).isError && !sa.mcpCall("run_program", input({})).isError ? 1 : 0, 1);
+            const std::string halvedRun = toolText(sa.mcpCall("compare", previous));   // the run not yet taken by poll()
+            sp.poll();
+            const std::string halvedPolled = toolText(sa.mcpCall("compare", previous));
+            P.eq("compare.previous_undo_edit", !sa.mcpCall("edit_file", unhalve).isError && !sa.mcpCall("run_program", input({})).isError ? 1 : 0, 1);
+            sp.poll();
+            const std::string doubled = toolText(sa.mcpCall("compare", previous));
+            std::printf("compare previous_run:\n%s\n%s\n", halvedRun.c_str(), doubled.c_str());
+            P.eq("compare.previous_halved", has(halvedRun, "A is what played before the last run; B is the program that plays.")
+                                                && has(halvedRun, "Best fit: B = 0.500 x A (-6.0 dB), no delay")
+                                                && has(halvedRun, "Source, B against A: program.fm +1 -1")
+                                                && halvedPolled == halvedRun
+                                                ? 1 : 0, 1);
+            P.eq("compare.previous_back", has(doubled, "Best fit: B = 2.000 x A (+6.0 dB), no delay") ? 1 : 0, 1);
         }
 
         // ---- TRACE ---------------------------------------------------------------------------------------------------------

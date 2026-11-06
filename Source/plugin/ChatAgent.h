@@ -21,7 +21,8 @@
 // turn at most (a turn that only talks is never sent on); clearChecks (the card's Clear) and an empty set_checks stop
 // it. The session keeps the checks. tune_dials (dsp/Tune.h) searches up to eight float dials for goals by rendering
 // offline (up to 400 renders and `seconds`, 120 by default and 170 at most, the activity counting them, the stop button
-// or the time limit ending the search with the best so far) and sets the best values as set_dial does.
+// or the time limit ending the search with the best so far) and sets the best values as set_dial does; its sweep
+// renders one dial at given values instead, a table of the goals' metrics, and sets nothing.
 //
 // A planner (setPlanner, chat.json "planner"): a second model plans each of the user's requests before the chosen one
 // builds it (Claude Fable 5.1 planning the DSP and the architecture, Claude Sonnet 5.5 writing, running and testing).
@@ -150,6 +151,9 @@ namespace playground
         virtual CompileStatus chatRun(const Sources& files) = 0;    // RUN, then the compile's outcome
         virtual CompileStatus chatLastStatus() const = 0;
         virtual Sources chatRunning() const = 0;
+        // What played before the last run that changed what plays (a netlist's drawing aside): compare's previous_run.
+        // None before a second program has played since the plugin opened (it is not kept with the session).
+        virtual Sources chatPrevious() const { return {}; }
         virtual Controls chatDials() const = 0;                     // the running program's
         virtual float chatDialValue(int slot) const = 0;            // plain value
         virtual void chatSetDial(int slot, float plain) = 0;        // a host gesture, applied soon on the message thread

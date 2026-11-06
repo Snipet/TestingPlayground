@@ -16,7 +16,6 @@ namespace playground::scenario
     {
         constexpr bool kInstrument = product::kIsInstrument;
         constexpr int kMaxTrialEdits = 32;
-        constexpr double kMinRate = 8000.0, kMaxRate = 192000.0;
         constexpr const char* kInputs[] = { "sweep", "noise", "impulse", "sine", "silence" };   // ViewInput's order
         constexpr const char* kWheels[] = { "mod", "bend", "pressure", "sustain", "steering", "throttle", "brake", "clutch",
                                             "gear", "buttons" };                            // measure::Wheel's

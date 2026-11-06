@@ -7,6 +7,7 @@
 #include "Examples.h"
 #include "Product.h"
 
+#include "fminus/CirDoc.h"
 #include "fminus/Circuits.h"
 #include "fsdsp/core/Sanitize.h"
 
@@ -735,6 +736,8 @@ namespace playground
             controls_ = s.controls;
             panel_ = s.panel;
             program_ = s.program;
+            if (!running_.empty() && !cir::sameProgram(running_, s.sources))
+                previous_ = running_;                            // compare's previous_run
             running_ = s.sources;
         }
         if (reset)
@@ -1691,6 +1694,15 @@ namespace playground
             return s.sources;                                    // poll() may not have taken it yet
         const std::lock_guard<std::mutex> lock(programMutex_);
         return running_;
+    }
+
+    Sources Processor::chatPrevious() const
+    {
+        const CompileStatus s = compiler_.status();
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        if (s.ok && !running_.empty() && !cir::sameProgram(running_, s.sources))
+            return running_;                                     // poll() has not taken the newest yet: it comes after this
+        return previous_;
     }
 
     Controls Processor::chatDials() const

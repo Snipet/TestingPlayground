@@ -53,7 +53,7 @@ namespace playground::measure
         }
     }
 
-    std::string invalid(const Goal& g)
+    std::string invalid(const Goal& g, bool bare)
     {
         if (metricInfo(g.metric) == nullptr)
         {
@@ -62,7 +62,7 @@ namespace playground::measure
                 names += (names.empty() ? "" : ", ") + std::string(m.name);
             return "There is no metric '" + g.metric + "'. This plugin's: " + names + ".";
         }
-        if (!g.hasMin && !g.hasMax && !g.hasTarget)
+        if (!bare && !judged(g))
             return "A goal on " + g.metric + " needs min, max or target.";
         if (g.hasTarget && (g.hasMin || g.hasMax))
             return "A goal on " + g.metric + " takes a target or bounds (min, max), not both.";

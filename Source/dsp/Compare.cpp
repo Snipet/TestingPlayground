@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <string_view>
 
 namespace playground::measure
 {
@@ -110,8 +111,94 @@ namespace playground::measure
             std::string errors;
         };
 
-        // `length` samples (0: as its request plays): a recording's, when the other side is one.
-        Rendered renderSide(const CompareSide& side, double rate, std::size_t length)
+        // The octave bands, B against A, each side over its first samples (na of A at its rate, nb of B at its), into
+        // c.bandsDb and a line. A band above either side's Nyquist frequency, or silent in both, is NaN.
+        void compareBands(Comparison& c, const Sound& a, std::size_t na, const Sound& b, std::size_t nb)
+        {
+            const std::vector<double> la = bandsOver(a, na, c.rate), lb = bandsOver(b, nb, c.rateB);
+            std::string bands;
+            for (std::size_t k = 0; k < c.bandsDb.size() && k < la.size() && k < lb.size(); ++k)
+            {
+                if (std::isnan(la[k]) || std::isnan(lb[k]))   // above the Nyquist frequency
+                {
+                    c.bandsDb[k] = std::nan("");
+                    continue;
+                }
+                const bool silent = la[k] < -220.0 && lb[k] < -220.0;
+                c.bandsDb[k] = silent ? std::nan("") : std::clamp(lb[k] - la[k], -120.0, 120.0);
+                bands += (bands.empty() ? "" : ", ") + bandName(Comparison::kBands[k]) + " "
+                       + (silent ? std::string("silent") : fmt(std::fabs(c.bandsDb[k]) < 0.05 ? "%.1f" : "%+.1f", c.bandsDb[k]));
+            }
+            c.lines.push_back("Octave bands, B against A (dB, Hz): " + bands + ".");
+        }
+
+        // The metrics a rate changes by their definition, set aside at two rates: step (a smooth wave's steps are
+        // smaller at a higher rate), and an effect's noise_gain_db, noise_lufs and impulse_peak_db (white noise and a
+        // one-sample impulse spread over the rate's whole band, so a filter's share of them moves with the rate).
+        constexpr const char* kRateBound[] = { "step", "noise_gain_db", "noise_lufs", "impulse_peak_db" };
+
+        bool rateBound(const std::string& name)
+        {
+            return std::any_of(std::begin(kRateBound), std::end(kRateBound), [&](const char* m) { return name == m; });
+        }
+
+        // The metrics, side by side where they differ beyond their tolerance (the CPU's aside, which no two renders
+        // share; at two rates those rateBound too), into c.metrics and a line.
+        void compareMetrics(Comparison& c, Session& sa, Session& sb, Request qa, Request qb)
+        {
+            const auto aside = [&](const std::string& name) { return name.rfind("cpu", 0) == 0 || (c.twoRates() && rateBound(name)); };
+            qa.rate = c.rate;
+            qb.rate = c.rateB;
+            for (const MetricInfo& m : metrics())
+                if (!aside(m.name))
+                {
+                    qa.want.insert(m.name);
+                    qb.want.insert(m.name);
+                }
+            const Result ma = sa.measure(qa), mb = sb.measure(qb);
+            c.metricsMeasured = true;
+            for (const MetricInfo& m : metrics())
+            {
+                const auto ia = ma.values.find(m.name), ib = mb.values.find(m.name);
+                if (aside(m.name) || ia == ma.values.end() || ib == mb.values.end())
+                    continue;
+                const double x = ia->second, y = ib->second;
+                if (std::isnan(x) || std::isnan(y))
+                    continue;
+                const double tol = m.relative ? std::max(m.tolerance * std::max(std::fabs(x), std::fabs(y)), m.floor) : m.tolerance;
+                // At two rates inharmonic_db under its floor (-90 dB: none) on both sides agrees: what is left there is
+                // the frames' own leakage, which the rate moves.
+                const bool floored = c.twoRates() && std::string_view(m.name) == "inharmonic_db" && x < -90.0 && y < -90.0;
+                const bool differs = std::isinf(x) || std::isinf(y) ? x != y : std::fabs(x - y) > tol && !floored;
+                if (differs)
+                    c.metrics.push_back({ m.name, x, y });
+            }
+            std::string line;
+            for (std::size_t k = 0; k < c.metrics.size() && k < 6; ++k)
+                line += (line.empty() ? "" : "; ") + c.metrics[k].metric + " " + valueText(c.metrics[k].metric, c.metrics[k].a) + " | "
+                      + valueText(c.metrics[k].metric, c.metrics[k].b);
+            if (c.metrics.size() > 6)
+                line += "; and " + std::to_string(c.metrics.size() - 6) + " more";
+            std::string stepAside;                           // the rate's own metrics, named
+            if (c.twoRates())
+            {
+                std::vector<std::string> names;
+                for (const MetricInfo& m : metrics())
+                    if (rateBound(m.name))
+                        names.emplace_back(m.name);
+                std::string list;
+                for (std::size_t k = 0; k < names.size(); ++k)
+                    list += (k == 0 ? "" : k + 1 == names.size() ? " and " : ", ") + names[k];
+                stepAside = " (" + list + (names.size() == 1 ? " is" : " are") + " set aside: the rate moves "
+                          + (names.size() == 1 ? "it" : "them") + " by definition)";
+            }
+            c.lines.push_back(c.metrics.empty() ? "The metrics agree within their tolerances" + stepAside + "."
+                                                : "Metrics beyond their tolerance (A | B): " + line + stepAside + ".");
+        }
+
+        // `length` samples (0: as its request plays): a recording's, when the other side is one. An effect's input is the
+        // request's, else `input`.
+        Rendered renderSide(const CompareSide& side, double rate, std::size_t length, ViewInput input)
         {
             Rendered out;
             if (side.recordedL != nullptr)
@@ -133,12 +220,65 @@ namespace playground::measure
             ViewRequest vr;
             vr.render = side.request;
             vr.render.rate = rate;
-            vr.input = ViewInput::noise;                     // an effect's, unless the request names one
+            vr.input = input;                                // an effect's, unless the request names one
             vr.length = length;
             out.sound = renderSound(*out.session, vr);
             return out;
         }
 
+        // Two rates (Comparison::twoRates): no sample lines up with another, so the sides are compared by what is the
+        // same at every rate, over the shorter side's seconds: the levels, the octave bands, the metrics and, with
+        // detail, B's level against A's in 32 parts.
+        void acrossRates(Comparison& c, const Rendered& ra, const Rendered& rb, const CompareSide& sa, const CompareSide& sb,
+                         const CompareOptions& options)
+        {
+            const Sound& a = ra.sound;
+            const Sound& b = rb.sound;
+            c.lengthA = a.l.size();
+            c.lengthB = b.l.size();
+            const double secondsA = static_cast<double>(c.lengthA) / c.rate, secondsB = static_cast<double>(c.lengthB) / c.rateB;
+            const double both = std::min(secondsA, secondsB);
+            const std::size_t na = std::min(c.lengthA, static_cast<std::size_t>(std::llround(both * c.rate)));
+            const std::size_t nb = std::min(c.lengthB, static_cast<std::size_t>(std::llround(both * c.rateB)));
+            c.length = na;
+            c.lines.push_back("A renders at " + fmt("%g", c.rate) + " Hz and B at " + fmt("%g", c.rateB)
+                              + " Hz: compared by what is the same at every rate (the levels, the octave bands, the metrics), "
+                                "not sample by sample.");
+            if (std::fabs(secondsA - secondsB) > 1.0 / std::min(c.rate, c.rateB))
+                c.lines.push_back("B is " + seconds(secondsB) + " long and A " + seconds(secondsA) + ": compared over the first "
+                                  + seconds(both) + ".");
+            const double rmsA = rmsOf(a.l, a.r, na), rmsB = rmsOf(b.l, b.r, nb);
+            c.lines.push_back("Levels: A peak " + dbfs(peakOf(a.l, a.r, na)) + ", RMS " + dbfs(rmsA) + "; B peak "
+                              + dbfs(peakOf(b.l, b.r, nb)) + ", RMS " + dbfs(rmsB)
+                              + (rmsA > 1e-12 && rmsB > 1e-12 ? fmt(" (B's RMS %+.1f dB against A's)", toDb(rmsB / rmsA)) : std::string())
+                              + ".");
+            compareBands(c, a, na, b, nb);
+            if (options.metrics && ra.session != nullptr && rb.session != nullptr)
+                compareMetrics(c, *ra.session, *rb.session, sa.request, sb.request);
+            else if (options.metrics)
+                c.lines.push_back("The metrics are not compared: a side is a recording, not a render.");
+            if (options.detail && na > 0 && nb > 0)
+            {
+                std::string env;
+                for (std::size_t part = 0; part < 32; ++part)
+                {
+                    const auto energy = [part](const Sound& s, std::size_t n) {
+                        const std::size_t from = n * part / 32, to = std::max(from + 1, n * (part + 1) / 32);
+                        double e = 0.0;
+                        for (std::size_t i = from; i < to && i < n; ++i)
+                            e += static_cast<double>(s.l[i]) * s.l[i] + static_cast<double>(s.r[i]) * s.r[i];
+                        return e / static_cast<double>(to - from);
+                    };
+                    const double ea = energy(a, na), eb = energy(b, nb);
+                    const bool silent = ea <= 1e-24 && eb <= 1e-24;
+                    const double db = silent ? 0.0
+                                             : std::clamp(10.0 * std::log10(std::max(eb, 1e-30) / std::max(ea, 1e-30)), -120.0, 120.0);
+                    c.envelopeDb.push_back(static_cast<float>(db));
+                    env += (part == 0 ? "" : " ") + (silent ? std::string("silent") : fmt(std::fabs(db) < 0.05 ? "%.1f" : "%+.1f", db));
+                }
+                c.lines.push_back("B's level against A's over time (32 parts of " + seconds(both / 32.0) + ", dB): " + env + ".");
+            }
+        }
     }
 
     Comparison compare(const CompareSide& sa, const CompareSide& sb, const CompareOptions& options)
@@ -146,12 +286,27 @@ namespace playground::measure
         Comparison c;
         const double rate = sa.request.rate > 1000.0 ? sa.request.rate : 48000.0;
         c.rate = rate;
-        const std::size_t recorded = sa.recordedL != nullptr ? sa.recordedL->size() : sb.recordedL != nullptr ? sb.recordedL->size() : 0;
-        Rendered ra = renderSide(sa, rate, recorded), rb = renderSide(sb, rate, recorded);
+        c.rateB = sb.request.rate > 1000.0 ? sb.request.rate : rate;
+        // A recording's length sets both sides' (in seconds: each in its own rate's samples).
+        const double recorded = sa.recordedL != nullptr   ? static_cast<double>(sa.recordedL->size()) / c.rate
+                              : sb.recordedL != nullptr ? static_cast<double>(sb.recordedL->size()) / c.rateB
+                                                        : 0.0;
+        const auto lengthAt = [recorded](double r) { return static_cast<std::size_t>(std::llround(recorded * r)); };
+        // An effect's input unless the request names one: noise, or at two rates the sweep (20 Hz to 20 kHz at -12
+        // dBFS, the same at every rate; white noise's level per hertz falls as the rate rises).
+        const ViewInput input = c.twoRates() ? ViewInput::sweep : ViewInput::noise;
+        Rendered ra = renderSide(sa, c.rate, lengthAt(c.rate), input), rb = renderSide(sb, c.rateB, lengthAt(c.rateB), input);
         if (!ra.errors.empty() || !rb.errors.empty())
         {
             c.error = (!ra.errors.empty() ? "A does not compile:\n" + ra.errors : std::string())
                     + (!rb.errors.empty() ? "B does not compile:\n" + rb.errors : std::string());
+            return c;
+        }
+        if (c.twoRates())
+        {
+            acrossRates(c, ra, rb, sa, sb, options);
+            c.a = std::move(ra.sound);
+            c.b = std::move(rb.sound);
             return c;
         }
         const Sound& a = ra.sound;
@@ -257,60 +412,9 @@ namespace playground::measure
             c.lines.push_back(fit);
         }
 
-        // The octave bands.
-        {
-            const std::vector<double> la = bandsOver(a, n, rate), lb = bandsOver(b, n, rate);
-            std::string bands;
-            for (std::size_t k = 0; k < c.bandsDb.size() && k < la.size() && k < lb.size(); ++k)
-            {
-                if (std::isnan(la[k]))                       // above the Nyquist frequency
-                {
-                    c.bandsDb[k] = std::nan("");
-                    continue;
-                }
-                const bool silent = la[k] < -220.0 && lb[k] < -220.0;
-                c.bandsDb[k] = silent ? std::nan("") : std::clamp(lb[k] - la[k], -120.0, 120.0);
-                bands += (bands.empty() ? "" : ", ") + bandName(Comparison::kBands[k]) + " "
-                       + (silent ? std::string("silent") : fmt(std::fabs(c.bandsDb[k]) < 0.05 ? "%.1f" : "%+.1f", c.bandsDb[k]));
-            }
-            c.lines.push_back("Octave bands, B against A (dB, Hz): " + bands + ".");
-        }
-
-        // The metrics, side by side where they differ beyond their tolerance.
+        compareBands(c, a, n, b, n);
         if (options.metrics && ra.session != nullptr && rb.session != nullptr)
-        {
-            Request qa = sa.request, qb = sb.request;
-            qa.rate = qb.rate = rate;
-            for (const MetricInfo& m : metrics())
-                if (std::string(m.name).rfind("cpu", 0) != 0)
-                {
-                    qa.want.insert(m.name);
-                    qb.want.insert(m.name);
-                }
-            const Result ma = ra.session->measure(qa), mb = rb.session->measure(qb);
-            c.metricsMeasured = true;
-            for (const MetricInfo& m : metrics())
-            {
-                const auto ia = ma.values.find(m.name), ib = mb.values.find(m.name);
-                if (std::string(m.name).rfind("cpu", 0) == 0 || ia == ma.values.end() || ib == mb.values.end())
-                    continue;
-                const double x = ia->second, y = ib->second;
-                if (std::isnan(x) || std::isnan(y))
-                    continue;
-                const double tol = m.relative ? std::max(m.tolerance * std::max(std::fabs(x), std::fabs(y)), m.floor) : m.tolerance;
-                const bool differs = std::isinf(x) || std::isinf(y) ? x != y : std::fabs(x - y) > tol;
-                if (differs)
-                    c.metrics.push_back({ m.name, x, y });
-            }
-            std::string line;
-            for (std::size_t k = 0; k < c.metrics.size() && k < 6; ++k)
-                line += (line.empty() ? "" : "; ") + c.metrics[k].metric + " " + valueText(c.metrics[k].metric, c.metrics[k].a) + " | "
-                      + valueText(c.metrics[k].metric, c.metrics[k].b);
-            if (c.metrics.size() > 6)
-                line += "; and " + std::to_string(c.metrics.size() - 6) + " more";
-            c.lines.push_back(c.metrics.empty() ? "The metrics agree within their tolerances."
-                                                : "Metrics beyond their tolerance (A | B): " + line + ".");
-        }
+            compareMetrics(c, *ra.session, *rb.session, sa.request, sb.request);
         else if (options.metrics)
             c.lines.push_back("The metrics are not compared: a side is a recording, not a render.");
 

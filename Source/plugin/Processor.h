@@ -246,6 +246,7 @@ namespace playground
         CompileStatus chatRun(const Sources& files) override;
         CompileStatus chatLastStatus() const override;
         Sources chatRunning() const override;
+        Sources chatPrevious() const override;
         Controls chatDials() const override;
         float chatDialValue(int slot) const override;
         void chatSetDial(int slot, float plain) override;
@@ -267,6 +268,7 @@ namespace playground
         // before the parameters, whose names and texts read controls_ (control()).
         mutable std::mutex programMutex_;
         Sources running_;
+        Sources previous_;                                       // what played before running_ (chatPrevious)
         Draft draft_;
         uint64_t draftRevision_ = 1;
         Controls controls_{};

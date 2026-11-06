@@ -537,7 +537,7 @@ namespace playground::soundpicture
             curve(b.levelDb, kB.withAlpha(0.85f), 1.5f);
             curve(difference, kDiff, 1.2f);
             title(g, "Level over time (dBFS, RMS over 10 ms)", kLeft + 6, kLevelTop + 2);
-            timeAxis(g, static_cast<double>(std::max(a.length, b.length)) / a.rate, kLevelTop + kLevelH + 2);
+            timeAxis(g, std::max(static_cast<double>(a.length) / a.rate, static_cast<double>(b.length) / b.rate), kLevelTop + kLevelH + 2);
 
             // The average spectra, on one scale: dB under the louder of the two.
             g.setColour(kPanel);

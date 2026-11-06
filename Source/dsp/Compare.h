@@ -1,8 +1,18 @@
 // Source/dsp/Compare.h: two programs rendered alike and compared, sample by sample (JUCE-free): the chat's compare
 // (plugin/ChatCompare.cpp), an A/B and a null test. Each side is a program's files and the render it is played in (one
-// request, its dials the side's own), or a recording (what played, the capture lane's); both render at one rate, an
-// effect with one input (Request::signal, its own Request::input, else noise), each in a Session of its own, and as
-// long as the recording when a side is one.
+// request, its dials the side's own), or a recording (what played, the capture lane's); each renders at its request's
+// rate (one rate for both, unless B is asked at another), an effect with one input (Request::signal, its own
+// Request::input, else noise; at two rates the sweep), each in a Session of its own, and as long as the recording (in
+// seconds) when a side is one.
+//
+// At two rates (a rate check: does the program sound the same at 96 kHz?) no sample lines up with another, so the
+// sides are compared by what is the same at every rate: the levels, the octave bands, the metrics (those the rate moves
+// by their definition set aside: step, which a smooth wave makes smaller at a higher rate, and an effect's
+// noise_gain_db, noise_lufs and impulse_peak_db, whose white noise and one-sample impulse spread over the rate's whole
+// band; inharmonic_db under its -90 dB floor on both sides agrees) and, with `detail`, B's level against A's in 32
+// parts; no null test, gain or lag. An effect's input is then the
+// sweep (20 Hz to 20 kHz, the same at every rate) unless the request names one; the chat's compare refuses noise and
+// the impulse there.
 //
 // What it finds, in a few lines: identical bits (over the shorter side when their lengths differ); or how far apart
 // they are (the RMS of A - B against A's, in dB), the peak difference and when, the first and the last sample that
@@ -39,8 +49,9 @@ namespace playground::measure
     {
         std::string error;                        // why nothing was compared ("" when it was): a side did not compile
         bool identical = false;
-        double rate = 48000.0;
-        std::size_t length = 0;                   // samples compared (the shorter side's)
+        double rate = 48000.0;                    // A's
+        double rateB = 48000.0;                   // B's: A's, unless it was asked at another (then twoRates())
+        std::size_t length = 0;                   // samples compared (the shorter side's; at two rates, A's of them)
         std::size_t lengthA = 0, lengthB = 0;
         double diffDb = -240.0;                   // RMS of A - B against A's (dB; against full scale when A is silent)
         double peakDiff = 0.0;
@@ -59,9 +70,12 @@ namespace playground::measure
         };
         std::vector<Differs> metrics;             // those beyond their tolerance (both sides rendered)
         bool metricsMeasured = false;
-        std::vector<float> envelopeDb;            // detail: the difference's level in 32 parts, against A's (dB)
+        std::vector<float> envelopeDb;            // detail: the difference's level in 32 parts, against A's (dB); at two
+                                                  // rates B's level against A's in each part (dB)
         Sound a, b;                               // what was rendered (a recording's samples for its side), for a picture
         std::vector<std::string> lines;           // the result in words: at most seven lines
+
+        bool twoRates() const { return rateB != rate; }
     };
 
     struct CompareOptions

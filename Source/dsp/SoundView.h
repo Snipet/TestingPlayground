@@ -6,11 +6,13 @@
 //   the waveform   each column's least and greatest sample, left and right (the right drawn too where it differs), and
 //                  the level (RMS over 10 ms, dBFS) at each column
 //   spectrogram    `rows` rows on a log frequency axis from 20 Hz to 20 kHz (or the Nyquist frequency) by `columns`
-//                  columns in time (a 4096-point Blackman-Harris window about each), in dB under the loudest cell,
-//                  down to -120
-//   the spectrum   the held part's average (Welch: 8192-point Blackman-Harris windows, half overlapped; a part shorter
-//                  than one, one window over it alone, nothing from outside it), on the same axis, in dB under its
-//                  loudest; with one note, its harmonics' frequencies, to mark
+//                  columns in time (an 85 ms Blackman-Harris window about each: 4096 points at 48 kHz), in dB under
+//                  the loudest cell, down to -120
+//   the spectrum   the held part's average (Welch: 171 ms Blackman-Harris windows, 8192 points at 48 kHz, half
+//                  overlapped; a part shorter than one, one window over it alone, nothing from outside it), on the same
+//                  axis, in dB under its loudest; with one note, its harmonics' frequencies, to mark
+// The windows are fixed in seconds as nearly as a power of two allows (the 48 kHz sizes scaled by the rate, so 44.1 kHz
+// keeps them): a picture at 96 kHz shows the detail of one at 48 kHz.
 //   a close-up     a few cycles of the held sound (four of the lowest note; an effect's: of its sine, or 10 ms), or the
 //                  stretch from..to that the request asks for
 //
@@ -73,8 +75,9 @@ namespace playground::measure
 
         std::vector<float> spectrum;              // the held part's average (the window's), per spectrum column: dB
                                                   // under its loudest
-        float spectrumTop = -300.0f;              // that loudest column, in dB of power (two views' spectra drawn on one
-                                                  // scale: compare's picture)
+        float spectrumTop = -300.0f;              // that loudest column, in dB of power on the 48 kHz frame's scale at
+                                                  // every rate (two views' spectra drawn on one scale: compare's picture,
+                                                  // at two rates too)
         std::vector<double> harmonics;            // one note: its harmonics' Hz below hiHz (at most 40)
 
         std::size_t zoomFrom = 0, zoomTo = 0;     // the close-up's samples

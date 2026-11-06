@@ -25,8 +25,11 @@ namespace playground::measure
     };
 
     // Why a goal cannot be ("" when it can): no metric of that name for this plugin's kind, neither a bound nor a
-    // target, a target with a bound, a least above a most, a tolerance or a weight below 0.
-    std::string invalid(const Goal& g);
+    // target (unless `bare`: a tune_dials sweep's goal may be a metric alone, reported and not judged), a target with a
+    // bound, a least above a most, a tolerance or a weight below 0.
+    std::string invalid(const Goal& g, bool bare = false);
+    // A goal with a bound or a target (one that is met or not); a bare one only names its metric.
+    inline bool judged(const Goal& g) { return g.hasMin || g.hasMax || g.hasTarget; }
     // The tolerance that applies: the goal's, else the metric's (a relative one as a share of the target or the bound,
     // never under the metric's floor).
     double toleranceOf(const Goal& g);

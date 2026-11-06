@@ -469,15 +469,22 @@ namespace playground::measure
             v.levelDb[k] = static_cast<float>(t > f ? toDb(std::sqrt(e / static_cast<double>(t - f))) : -240.0);
         }
 
-        // The spectrogram: a 4096-point window about each column's middle (85 ms at 48 kHz: a low note's harmonics
+        // The frames are fixed in seconds as nearly as a power of two allows: the 48 kHz sizes scaled by the rate, so a
+        // picture at 96 kHz (compare's at two rates) has the detail of one at 48 (44.1 kHz keeps them).
+        const auto frameFor = [rate](double at48k) {
+            const double n = std::exp2(std::round(std::log2(std::max(1.0, at48k * rate / 48000.0))));
+            return static_cast<std::size_t>(std::clamp(n, 512.0, 65536.0));
+        };
+
+        // The spectrogram: a 4096-point window at 48 kHz about each column's middle (85 ms: a low note's harmonics
         // apart, an envelope's shape still clear).
         v.columns = cols;
         v.rows = std::max(32, request.rows);
         v.cells.assign(static_cast<std::size_t>(v.rows) * static_cast<std::size_t>(cols), static_cast<float>(kFloorDb));
-        constexpr std::size_t kFrame = 4096;
+        const std::size_t frame = frameFor(4096.0);
         {
-            Spectra spectra(kFrame);
-            const Axis axis(rate, kFrame, v.loHz, v.hiHz, v.rows);
+            Spectra spectra(frame);
+            const Axis axis(rate, frame, v.loHz, v.hiHz, v.rows);
             std::vector<double> p;
             std::vector<float> col(static_cast<std::size_t>(v.rows));
             for (int c = 0; c < cols && total > 0; ++c)
@@ -495,30 +502,33 @@ namespace playground::measure
         // The average spectrum of the held part (an impulse's or silence's: all of it), or of the window: Welch's, or
         // one frame over it alone when it is shorter than a frame (nothing from outside it).
         {
-            constexpr std::size_t kWelch = 8192;
+            const std::size_t welch = frameFor(8192.0);   // 171 ms
             const std::size_t from = spectrumFrom, to = heldTo;
-            std::vector<double> sum(kWelch / 2 + 1, 0.0), p;
-            Spectra spectra(kWelch);
+            std::vector<double> sum(welch / 2 + 1, 0.0), p;
+            Spectra spectra(welch);
             int frames = 0;
-            if (to < from + kWelch)
+            if (to < from + welch)
             {
                 spectra.powerOver(L, R, from, to, p);
                 sum = p;
                 frames = 1;
             }
             else
-                for (std::size_t a = from; a + kWelch <= to; a += kWelch / 2)
+                for (std::size_t a = from; a + welch <= to; a += welch / 2)
                 {
-                    spectra.power(L, R, static_cast<long>(a + kWelch / 2), p);
+                    spectra.power(L, R, static_cast<long>(a + welch / 2), p);
                     for (std::size_t k = 0; k < sum.size(); ++k)
                         sum[k] += p[k];
                     ++frames;
                 }
             const int columns = std::max(32, request.spectrumColumns);
             v.spectrum.assign(static_cast<std::size_t>(columns), 0.0f);
-            Axis(rate, kWelch, v.loHz, v.hiHz, columns).place(sum, v.spectrum.data());
+            Axis(rate, welch, v.loHz, v.hiHz, columns).place(sum, v.spectrum.data());
+            // In power of a tone's line (a frame's power grows as its length squared): the 48 kHz frame's scale at
+            // every rate.
+            const double perFrame = 10.0 * std::log10(std::max(frames, 1)) + 20.0 * std::log10(static_cast<double>(welch) / 8192.0);
             for (const float x : v.spectrum)
-                v.spectrumTop = std::max(v.spectrumTop, x - static_cast<float>(10.0 * std::log10(std::max(frames, 1))));
+                v.spectrumTop = std::max(v.spectrumTop, x - static_cast<float>(perFrame));
             normalise(v.spectrum);
         }
 

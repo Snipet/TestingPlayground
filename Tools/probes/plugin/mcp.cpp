@@ -11,7 +11,8 @@
 //            settings' window described on measure_output alone (view_sound, a check, tune_dials), not trace's;
 //            measure_output's spectrum (octave, third, semitone), described, on no other tool; an instrument's base_hz
 //            described on measure_output, undescribed in a check's and tune_dials', on no other tool, none of the effect's;
-//            read_file's from, lines and
+//            tune_dials' sweep (numbers, its cap said, its first sentence naming it) and compare's b_rate and
+//            previous_run, each on its own tool alone; read_file's from, lines and
 //            find, edit_file's edits and expected (only its name required), trace's render settings (its dials; the
 //            synth's notes); an instrument's notes,
 //            velocity and wheels in the synth's measure_output and
@@ -655,6 +656,24 @@ PROBE(plugin, mcp)
                                                   && !viewSound["inputSchema"]["properties"].hasProperty("base_hz") && bases == 2
                                             : bases == 0 && !checkedBase.isObject();
             P.eq("link.base_hz", baseOk ? 1 : 0, 1);
+            // tune_dials' sweep (a list of numbers, its cap in its words; the first sentence names it) and compare's b_rate
+            // (a number) and previous_run (in a's words), each on its own tool alone.
+            juce::var compareProps;
+            int sweeps = 0, rates = 0;
+            if (const juce::Array<juce::var>* t = tools.getArray())
+                for (const juce::var& tool : *t)
+                {
+                    if (tool["name"].toString() == "compare")
+                        compareProps = tool["inputSchema"]["properties"];
+                    sweeps += tool["inputSchema"]["properties"].hasProperty("sweep") ? 1 : 0;
+                    rates += tool["inputSchema"]["properties"].hasProperty("b_rate") ? 1 : 0;
+                }
+            const juce::var sweep = tuneDials["inputSchema"]["properties"]["sweep"];
+            P.eq("link.sweep", sweep["type"].toString() == "array" && sweep["items"]["type"].toString() == "number"
+                                   && sweep["description"].toString().contains("32") && sweeps == 1
+                                   && tuneDials["description"].toString().contains("or sweep one dial over values") ? 1 : 0, 1);
+            P.eq("link.compare_rate", compareProps["b_rate"]["type"].toString() == "number" && rates == 1
+                                          && compareProps["a"]["description"].toString().contains("previous_run") ? 1 : 0, 1);
         }
         // An instrument's render settings (its notes, velocity and wheels) in an instrument's tools only: measure_output
         // has them in the synth, and no tool of the effect's lists them.
