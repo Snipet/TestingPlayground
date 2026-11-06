@@ -17,7 +17,8 @@
 //             the file), and the program still plays; a shader of no file, and a fifth one, are notes of the .gui file
 //   PANEL     the Panel registers the built shader with FunkGui (shaders::has) and shows it over its cell; its inputs
 //             follow a parameter's 0..1 and the output's level; a shader that reads u_time moves every frame (never
-//             settled), one that does not settles; a shader that was not built says why (to a screen reader too)
+//             settled, the panel asking for every frame), one that does not settles; a shader that was not built says
+//             why (to a screen reader too)
 //   PICTURE   the panel's frame drawn for a picture (picture::draw) on the GPU on this Mac, at SoftRaster's size; in the
 //             still shader's cell SoftRaster's image is FunkGui's striped placeholder and the GPU's is not, but the
 //             shader's colours (its gradient's ends, from in_cutoff); away from the shaders' cells the two images agree
@@ -25,6 +26,8 @@
 //             by picturesIdle within kPictureHoldSeconds and let go after; view_panel's picture (picturePanel) drawn
 //             by the GPU, its text saying so; with the GPU forced off (picture::forceSoftRasterForTests), a picture
 //             still, its text saying each shader shows as a striped placeholder, and why
+//   DRAW      a panel whose one shader is still asks for no frame while nothing changes, and for one when the parameter
+//             it reads moves with no input (Panel.h "Unchanged frames")
 #include "Probe.h"
 
 #include "editor/GuiItems.h"
@@ -346,6 +349,17 @@ PROBE(gui, shaders)
                 host.tick(1);
             }
             P.ge("panel.input_level", static_cast<double>(moving->inputs()[0]), 0.2);
+            // A shader that reads u_time moves every frame: the panel asks for each (Panel.h "Unchanged frames").
+            host.settle(60);
+            host.draw();
+            int asked = 0;
+            for (int k = 0; k < 6; ++k)
+            {
+                host.tick(1, 1.0f / 12.0f);
+                asked += panel.needsDraw() ? 1 : 0;
+                host.draw();
+            }
+            P.eq("draw.animated_asks", asked, 6);
         }
     }
     {
@@ -455,6 +469,29 @@ PROBE(gui, shaders)
         P.eq("picture.fallback_differs", onSoft.png != onGpu.png ? 1 : 0, 1);
         writeBytes(probe::outPath("gui.shaders.picture-soft.png"), onSoft.png);
         pg::picturesIdle(0.0);
+    }
+
+    // ---- DRAW ----------------------------------------------------------------------------------------------------------
+    // A panel whose only shader is still: quiet while nothing changes, and a frame when the parameter it reads moves
+    // with no input (a host's automation): its inputs are what it draws (Panel.h "Unchanged frames").
+    {
+        const char* const still = "panel { shader \"still.sc\" inputs=\"cutoff\" width=160 height=90 }\n";
+        load(processor, { { pg::kProgramName, program() }, { "panel.gui", still }, { "still.sc", kStill } });
+        processor.settle();
+        host.tick(2);
+        host.settle();
+        host.draw();
+        int asked = 0;
+        for (int k = 0; k < 11; ++k)
+        {
+            host.tick(1, 1.0f / 12.0f);
+            asked += panel.needsDraw() ? 1 : 0;
+        }
+        P.eq("draw.still_quiet", asked, 0);
+        juce::AudioProcessorParameter& cutoff = *processor.getParameters()[0];
+        cutoff.setValueNotifyingHost(cutoff.getValue() < 0.5f ? 0.75f : 0.25f);
+        host.tick(1, 1.0f / 12.0f);
+        P.eq("draw.still_input", panel.needsDraw() ? 1 : 0, 1);
     }
     return P.finish();
 }

@@ -50,8 +50,9 @@
 //             *@ lines from mid-file before .end (cir::lineMap)
 //   TYPES     a module named on a line before it is declared: the line is drawn plain, and after the declaration is
 //             typed (the line itself not edited) it keeps its colour until the index has the name, then is drawn in the
-//             types' colour with no input (CodeAssist::sync rehighlights the editors, whose spans FunkGui keeps); the
-//             Code view's tick, recording and highlighter costs printed
+//             types' colour with no input (CodeAssist::sync rehighlights the editors, whose spans FunkGui keeps), the
+//             Panel asking for that frame; the Code view's tick, recording and highlighter costs printed; idle, the
+//             Code view asks for no frame
 #include "Probe.h"
 
 #include "editor/CodeAssist.h"
@@ -868,12 +869,18 @@ PROBE(gui, code)
         ed.setCaret(ed.endPos());
         ed.insert("module Zork\n{\n    float y;\n};\n");
         P.eq("types.stale_until_synced", inkOf(host.draw(), "Zork") == zork ? 1 : 0, 1);
+        bool asked = false;
         for (int k = 0; k < 120 && code.highlights() == before; ++k)
         {
             host.tick(1, 1.0f / 12.0f);
+            if (code.highlights() != before)
+                asked = panel.needsDraw();           // the tick that recoloured asks for a frame
+            else
+                host.draw();
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
         P.eq("types.rehighlighted", code.highlights() != before ? 1 : 0, 1);
+        P.eq("types.draw_asked", asked ? 1 : 0, 1);
         P.eq("types.recoloured", inkOf(host.draw(), "Zork") == thing ? 1 : 0, 1);
 
         // The Code view's cost (printed, not checked: the machine is shared): a frame's tick and recording, and the
@@ -906,6 +913,13 @@ PROBE(gui, code)
         const double lineUs = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / lines;
         std::printf("code view: a tick %.3f ms, a recording %.3f ms; the highlighter %.3f us a line (%d lines)\n", tickMs,
                     drawMs, lineUs, lines);
+        int idle = 0;
+        for (int k = 0; k < 11; ++k)
+        {
+            host.tick(1, 1.0f / 12.0f);
+            idle += panel.needsDraw() ? 1 : 0;
+        }
+        P.eq("types.code_view_idle", idle, 0);
     }
     funkgui::UiPreferences::get().setTheme(0);
     return P.finish();

@@ -1303,6 +1303,28 @@ namespace playground::ui
         }
     }
 
+    uint64_t CodeAssist::drawKey() const
+    {
+        DrawKey k;
+        k.mix(highlights_).mix(checking_).mix(focused_).mix(area_).mix(activeTab()).mix(errorCount()).mix(warningCount());
+        k.mix(hover_.has_value()).mix(hoverPoint_).mix(hoverProblems_.size());
+        if (hover_)
+            k.mix(hover_->range.from.line).mix(hover_->range.from.col).mix(hover_->range.to.line).mix(hover_->range.to.col);
+        k.mix(completion_.has_value()).mix(choice_).mix(scrollRow_);
+        if (completion_)
+            k.mix(completion_->items.size());
+        k.mix(signature_.has_value()).mix(signatureAt_.line).mix(signatureAt_.col);
+        if (signature_)
+            k.mix(signature_->active).mix(signature_->label);
+        k.mix(findOpen_).mix(replaceOpen_).mix(findFocus_).mix(findField_).mix(matchCase_).mix(wholeWord_);
+        k.mix(findEdit_.buffer).mix(findEdit_.caret).mix(findEdit_.allSelected);
+        k.mix(replaceEdit_.buffer).mix(replaceEdit_.caret).mix(replaceEdit_.allSelected);
+        k.mix(matches_.size()).mix(current_);
+        k.mix(gotoOpen_).mix(gotoBad_).mix(gotoEdit_.buffer).mix(gotoEdit_.caret).mix(gotoEdit_.allSelected);
+        k.mix(statusWords_ ? statusWords_() : std::string()).mix(formatOnRun());   // a machine-wide switch: another
+        return k.h;                                                               // window may flip it
+    }
+
     bool CodeAssist::settled() const
     {
         if (checkDue_)

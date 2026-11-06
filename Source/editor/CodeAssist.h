@@ -181,6 +181,9 @@ namespace playground::ui
 
         void tick(float dt, funkgui::Point pointer, bool focused);
         bool settled() const;
+        // What its drawing (the status line, the find and go-to bars, the overlays) shows now, mixed (Item::drawKey):
+        // the Panel draws again when it moves.
+        uint64_t drawKey() const;
         void tabShown();                                 // another tab: the overlays close
         void focusChanged(bool focused);
 

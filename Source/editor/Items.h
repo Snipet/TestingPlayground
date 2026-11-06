@@ -14,12 +14,19 @@
 #include <funkgui/params/GestureController.h>
 #include <funkgui/text/Highlighter.h>
 
+#include <bit>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
+
+namespace funkgui
+{
+    class TextEditor;
+}
 
 namespace playground::ui
 {
@@ -44,6 +51,12 @@ namespace playground::ui
         virtual bool a11yAction(uint32_t id, funkgui::A11yAction, double value, funkgui::GestureController&) = 0;
         virtual void specLine(char* out, std::size_t n) const = 0;
         virtual bool settled() const { return true; }
+        // What draw() reads that may change with no input to the Panel, no motion of the item's own (settled()) and no
+        // change the Panel makes and marks: a parameter's value (a host's automation, Claude, a preset), a field the
+        // program writes, a label or a state read through a callback. The Panel mixes every item's key each tick and
+        // draws again when the mix moves (Panel::needsDraw, FunkGui's unchanged frames). 0, the default, for an item
+        // whose picture changes only with those.
+        virtual uint64_t drawKey() const { return 0; }
         virtual funkgui::Point centre() const = 0;
         virtual bool shown() const { return true; }      // false: not drawn, no input, no Tab stop
         virtual bool focusable() const { return true; }  // false: no Tab stop (a readout)
@@ -51,6 +64,37 @@ namespace playground::ui
         // A text field holding the caret: every key is its own first (Tab too), Escape (when it does not use it)
         // leaves it.
         virtual bool takesAllKeys() const { return false; }
+    };
+
+    // A draw key's mix (Item::drawKey, Panel::needsDraw): FNV-1a over what is added, in order.
+    struct DrawKey
+    {
+        uint64_t h = 1469598103934665603ull;
+        DrawKey& word(uint64_t v) noexcept
+        {
+            h ^= v;
+            h *= 1099511628211ull;
+            return *this;
+        }
+        template <typename T>
+            requires std::is_integral_v<T>
+        DrawKey& mix(T v) noexcept
+        {
+            return word(static_cast<uint64_t>(v));
+        }
+        DrawKey& mix(float v) noexcept { return word(std::bit_cast<uint32_t>(v)); }
+        DrawKey& mix(std::string_view s) noexcept
+        {
+            for (const char c : s)
+                word(static_cast<unsigned char>(c));
+            return word(s.size());
+        }
+        DrawKey& mix(const char* s) noexcept { return mix(std::string_view(s != nullptr ? s : "")); }
+        DrawKey& mix(const std::string& s) noexcept { return mix(std::string_view(s)); }
+        DrawKey& mix(funkgui::Point p) noexcept { return mix(p.x).mix(p.y); }
+        DrawKey& mix(const funkgui::Rect& r) noexcept { return mix(r.x).mix(r.y).mix(r.w).mix(r.h); }
+        DrawKey& mix(const funkgui::TextEditor& e) noexcept;   // its text's revision, caret, selection, scroll, focus,
+                                                               // decorations and bounds (Items.cpp)
     };
 
     inline constexpr funkgui::TextStyle kStatusStyle{ 10.0f, 1.4f, 0.03f, false };

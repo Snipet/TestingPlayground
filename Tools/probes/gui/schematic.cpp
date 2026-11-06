@@ -28,7 +28,8 @@
 //   GESTURES  each gives the exact text as one undo step: placing every kind (by click), a wire from pin to pin, a
 //             wire into a mid-wire T, a wire dragged from a wire point, the Ground tool, a move, a refused overlap (no
 //             change), rotate, mirror, delete (its stubs pruned), a deleted wire splitting a net, Start a circuit; the
-//             info strip's notices (a placement says nothing, a merge is said until the text moves); a netlist of parts
+//             info strip's notices (a placement says nothing, a merge is said until the text moves; one that runs out
+//             at the idle rate, with no input, asks for that frame: Panel.h "Unchanged frames"); a netlist of parts
 //             the view cannot draw (no Start, the Not drawn banner before the count)
 //   UNDO      Cmd-Z and Cmd-Shift-Z in either view undo and redo the other's steps; so do the toolbar's Undo and Redo
 //   OVERTAKEN a drag whose base a merge (Claude's write) moves is cancelled and changes nothing; that write moving a
@@ -945,6 +946,17 @@ PROBE(gui, schematic)
             std::printf("not drawn: %s\n", v.stripRight().c_str());
             P.eq("empty.undrawn_banner_and_count", v.stripRight() == "Not drawn: Q1 (a BJT: Phase 2)   1 PROBLEM" ? 1 : 0, 1);
             P.eq("empty.start_refused_says", !v.startCircuit() && v.notice() == "Start a circuit is for an empty netlist" ? 1 : 0, 1);
+            // Its 4 s run out at the idle rate with no input: that frame draws (Panel.h "Unchanged frames").
+            host.draw();
+            int ticks = 0;
+            while (!v.notice().empty() && ticks < 80)
+            {
+                host.tick(1, 1.0f / 12.0f);
+                if (!v.notice().empty())
+                    host.draw();
+                ++ticks;
+            }
+            P.eq("draw.notice_ends", v.notice().empty() && panel.needsDraw() ? 1 : 0, 1);
         }
     }
 

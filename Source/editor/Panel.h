@@ -66,6 +66,21 @@
 // otherwise Tab moves the focus ring over the controls, and the arrows, Page and Home/End adjust the focused dial.
 // Every parameter write goes through one funkgui::GestureController (begin/set/end gestures for the host).
 //
+// Unchanged frames (FunkGui's Panel::needsDraw, v0.25.0): an editor whose picture has not changed records, uploads and
+// draws nothing; its last frame stays up. needsDraw() is true only when something drawn changed since the last
+// draw():
+//   - dirty_, set wherever the Panel changes what it shows (input, a refresh of the processor's state, a layout, a
+//     menu's or a file chooser's answer: the host the items reach is HostProxy, which marks the Panel before the
+//     callback runs), which each tick hands on to undrawn_, kept until draw();
+//   - an item moving (settled() false: an ease, a drag, a display's new values, Claude working, a shader that
+//     animates), and the frame after it settles;
+//   - the mix of every item's drawKey() (Items.h) and of the Panel's own words and states, taken each tick, which
+//     catches what changes with no input and no motion: a host's automation of a dial, a live= mark, a shader's
+//     inputs, a label read through a callback, a notice that ran out.
+// Once a second it records the frame anyway (kRedrawEvery), a safety net: EditorHost then submits it only if it
+// differs from the last frame drawn (canvas/FrameCompare.h), so an idle editor still sends the GPU nothing.
+// gui.dump DRAW checks the sources, gui.code TYPES the type names' colours.
+//
 // Message thread only. The ports and the EditorPort belong to the processor and outlive the Panel.
 #pragma once
 
@@ -365,6 +380,7 @@ namespace playground::ui
         void  tick(float dt) override;
         void  idle(double nowSec) override;
         void  draw(funkgui::Canvas&, const funkgui::Theme&) override;
+        bool  needsDraw() const override;                // above, "Unchanged frames"
         bool  wantsFullRate() const override;
         void  pointerMove(const funkgui::PointerEvent&) override;
         void  pointerExit() override;
@@ -462,6 +478,8 @@ namespace playground::ui
         std::string maskedKey() const;
 
         EditorPort& port_;
+        class HostProxy;                                 // the host as host_ and the items reach it (Panel.cpp, above:
+        std::unique_ptr<HostProxy> proxy_;               // "Unchanged frames"); before the items, which it outlives
         std::vector<std::unique_ptr<Item>> items_;
         std::vector<int> itemOfSlot_;                    // dial slot -> item index
         std::vector<int> itemOfDisplay_;                 // display -> item index
@@ -593,7 +611,15 @@ namespace playground::ui
         funkgui::Point pointer_{};
         bool hasPointer_ = false;
         bool ring_ = false;                              // the focus ring is shown (keyboard use)
-        bool dirty_ = true;                              // an input event since the last tick
+        bool dirty_ = true;                              // a change since the last tick (input, a refresh, a layout)
+        // Unchanged frames (above): a change not drawn yet (dirty_ as each tick found it, kept until draw()); an item
+        // unsettled at the last tick, and at the tick before (the frame a motion ends in draws too); the mix of what
+        // draw() reads (watchKey) at the last tick and at the last draw; when that was.
+        bool undrawn_ = true;
+        bool moving_ = false, settling_ = false;
+        uint64_t watched_ = 0, drawnKey_ = 0;
+        double drawnAt_ = -1.0e9;
+        uint64_t watchKey() const;
         int  pressed_ = -1;                              // the item holding the pointer between down and up
         int  focus_ = -1;
         int  touched_ = -1;                              // the last item used, for the spec line

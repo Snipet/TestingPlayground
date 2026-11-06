@@ -2922,6 +2922,28 @@ namespace playground::ui
         }
     }
 
+    uint64_t SchematicView::drawKey() const
+    {
+        if (!showing())
+            return 0;
+        DrawKey k;
+        k.mix(ed_->revision()).mix(notice_).mix(flash_.size()).mix(field_.on).mix(field_.row).mix(field_.why);
+        for (const Row& r : field_.rows)
+            k.mix(r.edit.buffer).mix(r.edit.caret).mix(r.edit.allSelected);
+        k.mix(static_cast<int>(tool_)).mix(static_cast<int>(kind_)).mix(static_cast<int>(orient_)).mix(static_cast<int>(drag_));
+        k.mix(pointer_).mix(focused_).mix(laneScroll_).mix(stepAt_).mix(area_).mix(marks_.size());
+        k.mix(st_->schematic).mix(st_->zoom).mix(st_->cx).mix(st_->cy).mix(st_->selected.size()).mix(st_->probes.size());
+        for (const std::string& part : st_->selected)
+            k.mix(part);
+        for (const ProbeSlot& slot : slots_)
+            k.mix(slot.net).mix(slot.node).mix(slot.reason).mix(slot.valid);
+        if (dials_.port)
+            for (const Knob& kn : knobs())
+                if (const funkgui::ParamPort* port = dials_.port(kn.slot))
+                    k.mix(kn.slot).mix(port->value01());
+        return k.h;
+    }
+
     bool SchematicView::settled() const
     {
         if (!showing())

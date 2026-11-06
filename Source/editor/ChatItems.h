@@ -63,6 +63,7 @@ namespace playground::ui
             pointer_ = p;
         }
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override;
+        uint64_t drawKey() const override;
         bool contains(funkgui::Point p) const override;
         funkgui::Cursor cursorAt(funkgui::Point p) const override;
         void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController&, funkgui::HostServices&) override;
@@ -130,6 +131,7 @@ namespace playground::ui
             focused_ = focused;
         }
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override;
+        uint64_t drawKey() const override;               // its spec's answers now: the label, look, icon, state
         bool contains(funkgui::Point p) const override { return bounds_.contains(p); }
         funkgui::Cursor cursorAt(funkgui::Point) const override
         {

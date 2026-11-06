@@ -85,6 +85,10 @@ namespace playground::ui
 
         void tick(float dt, bool hovered, bool focused, funkgui::Point pointer) override;
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override;
+        uint64_t drawKey() const override                // its value (a host's automation too) and its live= mark
+        {
+            return DrawKey{}.mix(value_.value01()).mix(live01_).mix(hovered_).mix(hoverButton_).mix(dragging_).h;
+        }
         bool contains(funkgui::Point p) const override { return shown_ && area_.contains(p) && cell_.contains(p); }
         funkgui::Cursor cursorAt(funkgui::Point p) const override;
         void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController& g, funkgui::HostServices& h) override;
@@ -147,6 +151,15 @@ namespace playground::ui
 
         void tick(float, bool hovered, bool, funkgui::Point) override { hovered_ = hovered; }
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override;
+        uint64_t drawKey() const override
+        {
+            return DrawKey{}
+                .mix(vx_ != nullptr ? vx_->value01() : -1.0f)
+                .mix(vy_ != nullptr ? vy_->value01() : -1.0f)
+                .mix(hovered_)
+                .mix(dragging_)
+                .h;
+        }
         bool contains(funkgui::Point p) const override { return shown() && area_.contains(p) && pad().contains(p); }
         funkgui::Cursor cursorAt(funkgui::Point) const override { return funkgui::Cursor::crosshair; }
         void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController& g, funkgui::HostServices&) override;
@@ -185,6 +198,13 @@ namespace playground::ui
 
         void tick(float, bool hovered, bool, funkgui::Point) override { hovered_ = hovered; }
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override;
+        uint64_t drawKey() const override                // the four parameters' values
+        {
+            DrawKey k;
+            for (const GuiValue* v : adsr_)
+                k.mix(v != nullptr ? v->value01() : -1.0f);
+            return k.mix(hovered_).h;
+        }
         bool contains(funkgui::Point p) const override { return shown() && area_.contains(p) && cell_.contains(p); }
         void pointerDown(const funkgui::PointerEvent&, funkgui::GestureController&, funkgui::HostServices&) override {}
         void accessibility(std::vector<funkgui::A11yItem>& out) const override;
@@ -227,6 +247,7 @@ namespace playground::ui
 
         void tick(float, bool hovered, bool, funkgui::Point p) override;
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override;
+        uint64_t drawKey() const override { return DrawKey{}.mix(held_).mix(hover_).mix(pitch_).mix(mod_).mix(dragWheel_).h; }
         bool contains(funkgui::Point p) const override { return shown_ && area_.contains(p) && cell_.contains(p); }
         funkgui::Cursor cursorAt(funkgui::Point) const override { return funkgui::Cursor::pointingHand; }
         void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController&, funkgui::HostServices&) override;
@@ -288,6 +309,13 @@ namespace playground::ui
 
         void tick(float, bool, bool, funkgui::Point) override { changed_ = false; }
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override;
+        uint64_t drawKey() const override                // its inputs (u_params) and what it draws
+        {
+            DrawKey k;
+            for (const float v : inputs_)
+                k.mix(v);
+            return k.mix(program_).mix(why_).mix(cell_).h;
+        }
         bool contains(funkgui::Point p) const override { return shown_ && area_.contains(p) && cell_.contains(p); }
         void pointerDown(const funkgui::PointerEvent&, funkgui::GestureController&, funkgui::HostServices&) override {}
         void accessibility(std::vector<funkgui::A11yItem>& out) const override;
@@ -320,6 +348,7 @@ namespace playground::ui
 
         void tick(float, bool hovered, bool, funkgui::Point p) override;
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override;
+        uint64_t drawKey() const override { return DrawKey{}.mix(page_).mix(hover_).mix(rect_).h; }
         bool contains(funkgui::Point p) const override { return shown_ && area_.contains(p) && tabAt(p) >= 0; }
         funkgui::Cursor cursorAt(funkgui::Point) const override { return funkgui::Cursor::pointingHand; }
         void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController&, funkgui::HostServices&) override;

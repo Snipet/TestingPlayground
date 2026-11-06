@@ -222,6 +222,10 @@ namespace playground::ui
         // ---- as an Item (FilesItem's) -------------------------------------------------------------------------------
         void tick(float dt, funkgui::Point pointer, bool focused);
         bool settled() const;
+        // What it draws now that no input to it and no motion of its own (settled()) reports, mixed (Item::drawKey):
+        // the notice (its 4 s count down at the idle rate), the flashes, the field, the circuit dials' values (a host's
+        // automation turns them), the probes' slots, the view and the text's revision.
+        uint64_t drawKey() const;
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool focused) const;
         funkgui::Cursor cursorAt(funkgui::Point p) const;
         void pointerMove(funkgui::Point p);              // the pointer over the item (a key places under it)

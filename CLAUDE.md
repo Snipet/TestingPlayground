@@ -991,7 +991,12 @@ place (its `products/<key>.cmake`, and its names in the docs).
   looked up in `compile()`, a method on `Patch` the Engine calls; document it in Patch.h and the README.
 - **A view**: add an `Item` in `Source/editor/Panel.cpp` (a FunkGui widget, or your own drawing on the
   `funkgui::Canvas`, under a tag of its own after `ui::kMarkTag` when a probe needs to find it) and place it in the
-  constructor; then check `gui.dump`'s PNGs, both products'.
+  constructor; then check `gui.dump`'s PNGs, both products'. The editor draws only what changed (Panel.h, "Unchanged
+  frames": `Panel::needsDraw`): an item's motion is `settled()` false while it moves; what its `draw()` reads that can
+  change with no input, no motion and no `dirty_` of the Panel's (a port's value, a field, a callback's label, a
+  countdown that ends) goes into its `drawKey()`; a callback the host runs later (a menu's, a file chooser's) goes
+  through the Panel's host (`HostProxy`), which marks the Panel. A source that does neither freezes on screen until
+  something else draws (at most a second: the safety net); `gui.dump` DRAW has a row for each source.
 - **A .gui element** (a control, a display, a container): its `GuiKind` in `PanelSpec.h` and its word, arguments,
   properties and notes in `GuiSpec.cpp`, its natural size in `GuiLayout.cpp`, its item and drawing in `GuiItems` (a
   display's in `DisplayItem`), placed by `Panel::layoutGuiItems`; teach it in the prompt's THE INTERFACE

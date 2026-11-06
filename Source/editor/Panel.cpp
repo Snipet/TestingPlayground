@@ -199,6 +199,7 @@ namespace playground::ui
         constexpr float kChatGap = 12.0f;                // between the two cards
         constexpr float kChatRailW = 44.0f;              // the chat folded: its rail's width
         constexpr float kChatRailGap = 12.0f;            // and the gap before it
+        constexpr double kRedrawEvery = 1.0;             // s: needsDraw()'s safety net (Panel.h "Unchanged frames")
         constexpr float kExplorerShare = 0.16f;          // the explorer, open: of the width
         constexpr float kExplorerMinW = 180.0f;
         constexpr float kExplorerMaxW = 250.0f;
@@ -487,6 +488,12 @@ namespace playground::ui
             }
             void specLine(char* out, std::size_t n) const override { dial_.specLine(out, n); }
             bool settled() const override { return dial_.settled(); }
+            // The parameter's value as the host has it (automation, Claude, a preset move it with no input here) and
+            // the program's control (ControlModel::key), the look and the hover.
+            uint64_t drawKey() const override
+            {
+                return DrawKey{}.mix(model_.key()).mix(static_cast<int>(style_)).mix(color_).mix(cell_).mix(hovered_).mix(hoverRow_).h;
+            }
             funkgui::Point centre() const override
             {
                 return style_ == DialStyle::knob ? dial_.geom().centre() : funkgui::Point{ cell_.centreX(), cell_.centreY() };
@@ -647,6 +654,18 @@ namespace playground::ui
                     spec_(out, n);
             }
             bool settled() const override { return sel_->settled(); }
+            uint64_t drawKey() const override            // the cell chosen and those enabled (the zoom's: the display)
+            {
+                DrawKey k;
+                k.mix(sel_->bounds());
+                if (model_)
+                {
+                    k.mix(model_->count()).mix(model_->active());
+                    for (int i = 0; i < model_->count(); ++i)
+                        k.mix(model_->enabled(i)).mix(model_->label(i));
+                }
+                return k.h;
+            }
             funkgui::Point centre() const override
             {
                 const funkgui::Rect b = sel_->bounds();
@@ -1282,6 +1301,19 @@ namespace playground::ui
             assist_.tick(dt, pointer, focused_);
         }
         bool settled() const override { return assist_.settled() && (hidden_ || schematic_.settled()); }
+        // The tabs, the editor shown (its text, caret, selection, scroll, squiggles), the code editor's own drawing and
+        // the Schematic view's, the name being edited: what the tab bar and the editor draw (Item::drawKey).
+        uint64_t drawKey() const override
+        {
+            DrawKey k;
+            k.mix(revision()).mix(active_).mix(tabs_.size()).mix(problems_.size()).mix(pointer_).mix(focused_).mix(hidden_);
+            k.mix(ir_.open).mix(ir_.shown).mix(ir_.view).mix(renaming_).mix(edit_.buffer).mix(edit_.caret).mix(edit_.allSelected)
+                .mix(why_).mix(playOn_).mix(bar_).mix(editorBounds_);
+            k.mix(editor()).mix(assist_.drawKey());
+            if (schematicShown())
+                k.mix(schematic_.drawKey());
+            return k.h;
+        }
 
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override
         {
@@ -2372,6 +2404,14 @@ namespace playground::ui
             void setBounds(funkgui::Rect b) { bounds_ = b; }
 
             void tick(float, bool, bool, funkgui::Point pointer) override { pointer_ = pointer; }
+            uint64_t drawKey() const override
+            {
+                DrawKey k;
+                k.mix(bounds_).mix(pointer_).mix(problems_.size());
+                for (const Problem& p : problems_)
+                    k.mix(p.file).mix(p.line).mix(p.column).mix(p.error).mix(p.warning).mix(p.text);
+                return k.h;
+            }
             void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool) const override
             {
                 namespace type = funkgui::type;
@@ -2491,6 +2531,10 @@ namespace playground::ui
             {
                 hovered_ = hovered;
                 pointer_ = pointer;
+            }
+            uint64_t drawKey() const override
+            {
+                return DrawKey{}.mix(bounds_).mix(dials_).mix(hidden_).mix(open_).mix(hovered_).mix(pointer_).h;
             }
             void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override
             {
@@ -2627,6 +2671,57 @@ namespace playground::ui
             bool shown_ = false;
         };
     }
+
+    // ---- the host, as the items reach it -----------------------------------------------------------------------------
+    // Every call goes to the host the Panel was attached to. A menu's and a file chooser's answer comes later, outside
+    // any input to the Panel (Panel.h "Unchanged frames"): the Panel is marked changed before the callback runs, so
+    // what the answer does is drawn, whoever asked (the Panel, the code editor, the Schematic view, a .gui's menu).
+    class Panel::HostProxy final : public funkgui::HostServices
+    {
+    public:
+        HostProxy(Panel& panel, funkgui::HostServices& host) : panel_(panel), host_(host) {}
+
+        void setUnboundedDrag(bool on) override { host_.setUnboundedDrag(on); }
+        void showParamMenu(funkgui::ParamPort& p, float x, float y) override { host_.showParamMenu(p, x, y); }
+        void nudgeFullRate() override { host_.nudgeFullRate(); }
+        double nowSeconds() const override { return host_.nowSeconds(); }
+        void beginBatch() override { host_.beginBatch(); }
+        void endBatch() override { host_.endBatch(); }
+        int themeIndex() const override { return host_.themeIndex(); }
+        juce::Component* ownerComponent() override { return host_.ownerComponent(); }
+        int zoomPercent() const override { return host_.zoomPercent(); }
+        void setZoomPercent(int percent) override { host_.setZoomPercent(percent); }
+        std::span<const int> zoomSteps() const override { return host_.zoomSteps(); }
+        bool zoomFits(int percent) const override { return host_.zoomFits(percent); }
+        unsigned services() const override { return host_.services(); }
+        bool showMenu(const funkgui::MenuRequest& request, funkgui::MenuCallback done) override
+        {
+            return host_.showMenu(request, [panel = &panel_, then = std::move(done)](int id) {
+                panel->dirty_ = true;
+                if (then)
+                    then(id);
+            });
+        }
+        void dismissMenus() override { host_.dismissMenus(); }
+        bool chooseFiles(const funkgui::FileRequest& request, funkgui::FilesCallback done) override
+        {
+            return host_.chooseFiles(request,
+                                     [panel = &panel_, then = std::move(done)](const std::vector<std::string>& paths) {
+                                         panel->dirty_ = true;
+                                         if (then)
+                                             then(paths);
+                                     });
+        }
+        bool copyText(std::string_view utf8) override { return host_.copyText(utf8); }
+        bool commandKeyIsMeta() const override { return host_.commandKeyIsMeta(); }
+        std::string clipboardText() const override { return host_.clipboardText(); }
+        void announce(std::string_view text, Announce priority) override { host_.announce(text, priority); }
+        void a11yFocus(uint32_t itemId) override { host_.a11yFocus(itemId); }
+
+    private:
+        Panel& panel_;
+        funkgui::HostServices& host_;
+    };
 
     // ---- construction ---------------------------------------------------------------------------------------------------
     // The items are made with no place: layout() gives them their places for the panel's size. Their order is the Tab
@@ -3896,8 +3991,10 @@ namespace playground::ui
     const std::string& Panel::chatPlaceholder() const { return inputItem().placeholder(); }
     const std::string& Panel::transcript() const { return chatView().text(); }
 
-    void Panel::attach(funkgui::HostServices& host)
+    void Panel::attach(funkgui::HostServices& real)
     {
+        proxy_ = std::make_unique<HostProxy>(*this, real);
+        funkgui::HostServices& host = *proxy_;
         host_ = &host;
         gestures_.emplace(host);
         if (zoom_ != nullptr)
@@ -3905,6 +4002,7 @@ namespace playground::ui
         files().attach(&host);
         chatView().attach(&host);
         inputItem().attach(&host);
+        dirty_ = true;
     }
 
     int Panel::width() const { return static_cast<int>(width_); }
@@ -4147,6 +4245,7 @@ namespace playground::ui
             const uint64_t before = port_.checkStatus().revision;   // read first: the check may finish at once
             port_.check(files().draft().files);
             files().assist().checkSent(before);
+            dirty_ = true;                               // the status line says Checking...
         }
         if (files().assist().checking())
             if (const CheckStatus c = port_.checkStatus(); files().assist().takeCheckResult(c.revision))
@@ -4210,6 +4309,7 @@ namespace playground::ui
             if (!sameDials)
                 layout();
             statusChanged = true;
+            dirty_ = true;                               // its messages, its dials, its interface
         }
         compiling_ = port_.compiling();
         if (textChanged || statusChanged)
@@ -5445,7 +5545,53 @@ namespace playground::ui
             const int idx = static_cast<int>(i);
             items_[i]->tick(dt, hovered == idx, ring_ && focus_ == idx, hasPointer_ ? pointer_ : far);
         }
+        // Unchanged frames (Panel.h): a change not drawn yet, what moves, and what draw() would read now.
+        undrawn_ = undrawn_ || dirty_;
         dirty_ = false;
+        settling_ = moving_;
+        moving_ = std::any_of(items_.begin(), items_.end(), [](const auto& it) { return it->shown() && !it->settled(); });
+        watched_ = watchKey();
+    }
+
+    // Everything draw() reads that may change with no input and no motion: each item's key (Item::drawKey) and whether
+    // it shows, and the Panel's own words, states and places (most of them mark dirty_ where they change already: this
+    // catches the rest).
+    uint64_t Panel::watchKey() const
+    {
+        DrawKey k;
+        for (const auto& it : items_)
+            k.mix(it->shown()).mix(it->drawKey());
+        k.mix(status_).mix(meter_).mix(meterAlerts_).mix(meterLoad_).mix(port_.alerts() != 0).mix(projectText_).mix(title_)
+            .mix(subtitle_).mix(activity_).mix(desktop_).mix(chat_.busy).mix(unread_).mix(frozenShown_).mix(mutedShown_)
+            .mix(compiling_).mix(lastOk_).mix(edited_).mix(chatOpen_).mix(explorerShown_).mix(panelView_).mix(dropActive_)
+            .mix(dropHover_).mix(keyOpen_).mix(keyWhy_).mix(keyEdit_.buffer).mix(keyEdit_.caret).mix(keyEdit_.allSelected)
+            .mix(projects_.isOpen()).mix(export_.isOpen()).mix(settings_.isOpen()).mix(settings_.revision())
+            .mix(focus_).mix(ring_).mix(pressed_).mix(touched_).mix(hasPointer_).mix(pointer_).mix(width_).mix(height_)
+            .mix(layoutRevision_).mix(buttonsRoom_);
+        // The footer: the spec line of the control under the hand (a dial's value moves with the host's automation).
+        if (!dialogOpen())
+        {
+            int src = pressed_;
+            if (src < 0 && hasPointer_)
+                src = itemAt(pointer_);
+            if (src < 0)
+                src = focus_ >= 0 ? focus_ : touched_;
+            if (src >= 0)
+            {
+                char line[256] = {};
+                items_[static_cast<std::size_t>(src)]->specLine(line, sizeof line);
+                k.mix(static_cast<const char*>(line));
+            }
+        }
+        return k.h;
+    }
+
+    bool Panel::needsDraw() const
+    {
+        if (undrawn_ || dirty_ || moving_ || settling_ || watched_ != drawnKey_)
+            return true;
+        // The safety net (Panel.h): a frame recorded once a second, which EditorHost submits only when it differs.
+        return host_ != nullptr && host_->nowSeconds() - drawnAt_ >= kRedrawEvery;
     }
 
     void Panel::idle(double nowSec)
@@ -5464,6 +5610,11 @@ namespace playground::ui
 
     void Panel::draw(funkgui::Canvas& c, const funkgui::Theme& hostTheme)
     {
+        // What this frame draws is what needsDraw() compares with from now on.
+        undrawn_ = false;
+        settling_ = false;
+        drawnKey_ = watched_;
+        drawnAt_ = host_ != nullptr ? host_->nowSeconds() : 0.0;
         const funkgui::Theme th = productTheme(hostTheme);
         files().setTheme(th);                            // the code's colours follow the theme
         const float contentW = width_ - 2.0f * kMargin;
@@ -5755,6 +5906,7 @@ namespace playground::ui
 
     void Panel::pointerDown(const funkgui::PointerEvent& e)
     {
+        dirty_ = true;                                   // input: drawn at the next frame
         ring_ = false;                                   // the pointer is the affordance now
         pointer_ = { e.x, e.y };
         hasPointer_ = true;
@@ -5828,6 +5980,7 @@ namespace playground::ui
 
     void Panel::pointerDrag(const funkgui::PointerEvent& e)
     {
+        dirty_ = true;                                   // input: drawn at the next frame
         pointer_ = { e.x, e.y };
         if (pressed_ >= 0 && gestures_)
             items_[static_cast<std::size_t>(pressed_)]->pointerDrag(e, *gestures_);
@@ -5836,6 +5989,7 @@ namespace playground::ui
 
     void Panel::pointerUp(const funkgui::PointerEvent& e)
     {
+        dirty_ = true;                                   // input: drawn at the next frame
         if (pressed_ >= 0 && gestures_)
             items_[static_cast<std::size_t>(pressed_)]->pointerUp(e, *gestures_);
         pressed_ = -1;
@@ -5844,6 +5998,7 @@ namespace playground::ui
 
     void Panel::doubleClick(const funkgui::PointerEvent& e)
     {
+        dirty_ = true;                                   // input: drawn at the next frame
         // The double-click's second press went to the window (dragWindow), which may have zoomed or minimised since:
         // its release, and so this, comes where the pointer now is over the panel, and is no click of the panel's.
         if (windowPress_ || closingPress_)
@@ -6127,6 +6282,7 @@ namespace playground::ui
 
     void Panel::a11yAction(uint32_t id, funkgui::A11yAction a, double value)
     {
+        dirty_ = true;                                   // input: drawn at the next frame
         if (!gestures_)
             return;
         if (settings_.isOpen())
@@ -6168,6 +6324,7 @@ namespace playground::ui
 
     void Panel::closeGestures()
     {
+        dirty_ = true;                                   // input: drawn at the next frame
         if (gestures_)
             gestures_->closeAll();
         guiView_->releaseKeys();
