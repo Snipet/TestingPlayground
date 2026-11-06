@@ -140,11 +140,11 @@ namespace playground
 
         virtual Draft chatDraft() const = 0;                        // the editor's files and tab
         virtual void chatSetDraft(const Draft& draft) = 0;          // the files Claude wrote; the editor follows
-        // chatSetDraft's conditional write (edit_circuit): file `file`'s text taken from `draft` (and its tab shown),
-        // under the same lock as the test, only while that file's text is still `expected` (the text the tool read);
-        // false, and nothing set, when a gesture of the user's changed it meanwhile (or the file is gone). The other
-        // files stay as they are now.
-        virtual bool chatSetDraftIf(const Draft& draft, const std::string& file, const std::string& expected) = 0;
+        // chatSetDraft's conditional write (edit_file, edit_circuit): each file `read` names gets its text from `draft`
+        // (and the tab `draft` shows is shown), in one change of the draft, under the same lock as the test, only while
+        // every one of them is still the text the tool read (`read`'s); false, and nothing set, when a gesture or the
+        // typing of the user's changed any of them meanwhile (or one is gone). The other files stay as they are now.
+        virtual bool chatSetDraftIf(const Draft& draft, const Sources& read) = 0;
         // A netlist's session pins (EditorPort::schematicPins: *@ part, input and output lines, "" for none).
         virtual std::string chatSchematicPins(const std::string& file) const = 0;
         virtual CompileStatus chatRun(const Sources& files) = 0;    // RUN, then the compile's outcome
@@ -217,6 +217,8 @@ namespace playground
         // For probes: called where edit_circuit has read the netlist and applied its commands, before each conditional
         // write (attempt 0, then 1 after a conflict), on the thread the tool runs on: a probe plants a gesture there.
         void setCircuitWriteHookForTests(std::function<void(int attempt)> hook) { circuitWriteHook_ = std::move(hook); }
+        // For probes: the same for edit_file, where it has read the files and applied the edits, before each write.
+        void setFileWriteHookForTests(std::function<void(int attempt)> hook) { fileWriteHook_ = std::move(hook); }
 
         // The system prompt and the tools as sent (for probes and the docs).
         static const std::string& systemPrompt();
@@ -292,10 +294,11 @@ namespace playground
         juce::var captureTool(const juce::var& toolUse);           // capture's (ChatCapture.cpp)
         std::string toolText(const std::string& name, const juce::var& input, bool& isError);
         // read_file and edit_file (ChatFiles.cpp): a file whole, a range of its lines or the lines that hold a text,
-        // numbered (a part read marks nothing seen); one passage or a list of them replaced, all or none, in one write
-        // that never overwrites what the user typed meanwhile (chatSetDraftIf), and with `expected` only while the file
-        // is still that version. Every read and write says the file's version (its text's hash); keepVersion keeps the
-        // text of the newest kFileVersions given (mutex held), so a refused write shows what changed since.
+        // numbered (a part read marks nothing seen); one passage or a list of them replaced, in one file or in several
+        // (`files`: a list, or a unified diff), all or none, in one write that never overwrites what the user typed
+        // meanwhile (chatSetDraftIf), and with `expected` only while the file is still that version. Every read and
+        // write says the file's version (its text's hash); keepVersion keeps the text of the newest kFileVersions
+        // given (mutex held), so a refused write shows what changed since.
         std::string readFileText(const juce::var& input, bool& isError);
         std::string editFileText(const juce::var& input, bool& isError);
         std::string keepVersion(const std::string& name, const std::string& text);
@@ -344,6 +347,7 @@ namespace playground
         ChatHost& host_;
         std::unique_ptr<claude::Transport> transport_;
         std::function<void(int)> circuitWriteHook_;                 // setCircuitWriteHookForTests
+        std::function<void(int)> fileWriteHook_;                    // setFileWriteHookForTests
 
         mutable std::mutex mutex_;
         uint64_t revision_ = 1;

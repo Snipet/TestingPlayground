@@ -7,7 +7,7 @@
 //            full descriptions for comparison, and compact), a setting's description given once (view_sound's render
 //            settings, set_checks' goals: not again in a check's or tune_dials'); tune_dials' metric a plain string,
 //            set_checks' the metrics' names, and its dials_from (current, snapshot, defaults); read_file's from, lines and
-//            find, edit_file's edits and expected (only its name required), trace's render settings (its dials; the
+//            find, edit_file's edits, expected and files (a list or a diff; nothing required), trace's render settings (its dials; the
 //            synth's notes); an instrument's notes,
 //            velocity and wheels in the synth's measure_output and
 //            in none of the effect's tools; edit_circuit's description its first sentence, its face "Edit a circuit", its `name`
@@ -549,7 +549,8 @@ PROBE(plugin, mcp)
         const juce::var checkedMetric = setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["metric"];
         P.eq("link.tune_metric_string", tunedMetric["type"].toString() == "string" && !tunedMetric.hasProperty("enum")
                                             && checkedMetric["enum"].size() == static_cast<int>(pg::measure::metrics().size()) ? 1 : 0, 1);
-        // read_file's part (from, lines, find) and edit_file's list and guard (edits, expected; only its name required).
+        // read_file's part (from, lines, find) and edit_file's list, guard and files (edits, expected; files a list or a
+        // diff, in place of name: nothing required).
         {
             juce::var readFile, editFile, trace;
             if (const juce::Array<juce::var>* t = tools.getArray())
@@ -568,7 +569,8 @@ PROBE(plugin, mcp)
                                           && !trace["properties"]["dials"].hasProperty("description") ? 1 : 0, 1);
             P.eq("link.file_tools", readFile["properties"].hasProperty("from") && readFile["properties"].hasProperty("lines")
                                         && readFile["properties"].hasProperty("find") && editFile["properties"].hasProperty("edits")
-                                        && editFile["properties"].hasProperty("expected") && editFile["required"].size() == 1 ? 1 : 0, 1);
+                                        && editFile["properties"].hasProperty("expected")
+                                        && editFile["properties"]["files"]["anyOf"].size() == 2 && !editFile.hasProperty("required") ? 1 : 0, 1);
         }
         // set_checks' dials_from: where a check takes the dials it does not name (its three words, described).
         const juce::var dialsFrom = setChecks["inputSchema"]["properties"]["dials_from"];

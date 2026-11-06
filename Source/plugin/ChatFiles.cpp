@@ -11,6 +11,10 @@
 // tried once more on the new text). With `expected`, the version Claude read (every read and write says the file's
 // version, its text's hash), it writes only while the file is still that version: otherwise it writes nothing, says the
 // user changed it, and shows the lines that changed since (the newest kFileVersions versions given are kept for that).
+// With `files` it does all of that for several files at once: a list of each file's name, edits and expected, or a
+// unified diff (each hunk's old lines found where a line starts, the occurrence nearest its line when there are
+// several); all or none across them, in one write of the draft (chatSetDraftIf's, of every file it read), which the
+// editor merges as one undo step across their tabs (Panel.cpp's FilesItem::merge).
 #include "plugin/ChatAgent.h"
 
 #include "dsp/TextDiff.h"
@@ -19,6 +23,8 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <string_view>
 
 namespace playground
 {
@@ -257,6 +263,227 @@ namespace playground
             }
             return first;
         }
+
+        // ---- the edits -------------------------------------------------------------------------------------------------
+        // One replacement: old_text by new_text, occurring exactly once in what the edits before it left; or a unified
+        // diff's hunk (`hunk`): its old lines (the context and - lines) found where a line starts, the occurrence
+        // nearest `line` (its old start, moved by what the hunks before it in the file added and removed) when they
+        // occur more than once, and with no old lines its new ones inserted after line `line` (0: at the start).
+        struct Edit
+        {
+            std::string oldText, newText;
+            int line = 0;
+            bool hunk = false;
+        };
+
+        // A file's edits, and the version it must still be ("": any).
+        struct FileEdits
+        {
+            std::string name;
+            std::vector<Edit> edits;
+            std::string expected;
+        };
+
+        // The edits a holder gives (edit_file's input, or one of its files): old_text and new_text, or edits. "" when they
+        // read, else why not (`missing`: when it gives neither).
+        std::string editsOf(const juce::var& holder, std::vector<Edit>& out, const std::string& missing)
+        {
+            const juce::var list = holder.getProperty("edits", juce::var());
+            const bool single = holder.hasProperty("old_text") || holder.hasProperty("new_text");
+            if (!list.isVoid() && !list.isUndefined())
+            {
+                if (single)
+                    return "Give old_text and new_text, or edits, not both";
+                const juce::Array<juce::var>* arr = list.getArray();
+                if (arr == nullptr || arr->isEmpty() || arr->size() > kMaxEdits)
+                    return "edits is a list of 1 to " + std::to_string(kMaxEdits) + " edits, [{old_text, new_text}]";
+                for (int i = 0; i < arr->size(); ++i)
+                {
+                    const juce::var& e = (*arr)[i];
+                    const juce::var o = e.getProperty("old_text", juce::var()), n = e.getProperty("new_text", juce::var());
+                    if (!o.isString() || !n.isString())
+                        return "Edit " + std::to_string(i + 1) + " needs old_text and new_text. Nothing was changed.";
+                    out.push_back({ o.toString().toStdString(), n.toString().toStdString() });
+                }
+                return {};
+            }
+            const juce::var o = holder.getProperty("old_text", juce::var()), n = holder.getProperty("new_text", juce::var());
+            if (!o.isString() || !n.isString())
+                return missing;
+            out.push_back({ o.toString().toStdString(), n.toString().toStdString() });
+            return {};
+        }
+
+        // ---- a unified diff --------------------------------------------------------------------------------------------
+        // A --- or +++ line's path: a timestamp after a tab and git's a/ or b/ off, quotes taken away.
+        std::string diffPath(std::string_view s)
+        {
+            if (const std::size_t tab = s.find('\t'); tab != std::string_view::npos)
+                s = s.substr(0, tab);
+            while (!s.empty() && s.back() == ' ')
+                s.remove_suffix(1);
+            while (!s.empty() && s.front() == ' ')
+                s.remove_prefix(1);
+            if (s.size() >= 2 && s.front() == '"' && s.back() == '"')
+                s = s.substr(1, s.size() - 2);
+            if (s.size() > 2 && (s.substr(0, 2) == "a/" || s.substr(0, 2) == "b/"))
+                s.remove_prefix(2);
+            return std::string(s);
+        }
+
+        // A file's header: a --- line and the +++ line after it.
+        bool fileHeader(const std::vector<std::string_view>& lines, std::size_t i)
+        {
+            return i + 1 < lines.size() && lines[i].substr(0, 4) == "--- " && lines[i + 1].substr(0, 4) == "+++ ";
+        }
+
+        // "@@ -12,3 +12,4 @@ words": the old side's first line (a count after it is not needed: the hunk's lines say).
+        bool hunkHeader(std::string_view l, int& oldStart)
+        {
+            if (l.substr(0, 4) != "@@ -" || l.find(" @@", 4) == std::string_view::npos)
+                return false;
+            std::size_t p = 4;
+            long v = 0;
+            if (p >= l.size() || std::isdigit(static_cast<unsigned char>(l[p])) == 0)
+                return false;
+            while (p < l.size() && std::isdigit(static_cast<unsigned char>(l[p])) != 0 && v < 100000000)
+                v = v * 10 + (l[p++] - '0');
+            oldStart = static_cast<int>(v);
+            return true;
+        }
+
+        // A unified diff of the program's files (git diff's, diff -u's: each file's --- and +++ lines, then its @@ hunks;
+        // what comes between them, git's diff and index lines or words, is passed over) as each file's edits, a hunk an
+        // edit. The counts in a hunk's header are not needed (its lines say), a blank line in a hunk is a blank line of
+        // context whose space was lost, and blank lines at a hunk's end are dropped (context on both sides alike, so the
+        // change is the same). "" when it reads, else why not.
+        std::string parseDiff(const std::string& diff, std::vector<FileEdits>& out)
+        {
+            const std::vector<std::string_view> lines = linesOf(diff);
+            std::size_t i = 0;
+            while (i < lines.size())
+            {
+                if (fileHeader(lines, i))
+                {
+                    const std::string from = diffPath(lines[i].substr(4)), to = diffPath(lines[i + 1].substr(4));
+                    if (to == "/dev/null")
+                        return "The diff deletes " + from + ": delete_file does that";
+                    if (from == "/dev/null")
+                        return "The diff makes a new file, " + to + ": write_file does that";
+                    if (from != to)
+                        return "The diff renames " + from + " to " + to + ": rename_file does that";
+                    if (std::any_of(out.begin(), out.end(), [&](const FileEdits& f) { return f.name == to; }))
+                        return "The diff names " + to + " twice: give its hunks under one --- and +++";
+                    if (out.size() >= kMaxFiles)
+                        return "The diff names more than " + std::to_string(kMaxFiles) + " files";
+                    out.push_back({ to, {}, {} });
+                    i += 2;
+                    continue;
+                }
+                int oldStart = 0;
+                if (!hunkHeader(lines[i], oldStart))
+                {
+                    ++i;                                       // between the files
+                    continue;
+                }
+                if (out.empty())
+                    return "The diff's first hunk comes before a file's --- and +++ lines";
+                FileEdits& f = out.back();
+                if (f.edits.size() >= static_cast<std::size_t>(kMaxEdits))
+                    return "The diff has more than " + std::to_string(kMaxEdits) + " hunks for " + f.name;
+                std::vector<std::pair<char, std::string_view>> body;   // ' ', '-' or '+', and the line
+                bool oldEnds = true, newEnds = true;                    // each side's last line ends with a line end
+                for (++i; i < lines.size() && !fileHeader(lines, i); ++i)
+                {
+                    const std::string_view h = lines[i];
+                    if (h.empty())
+                        body.push_back({ '\0', {} });               // a blank line of context, its space lost
+                    else if (h.front() == ' ' || h.front() == '-' || h.front() == '+')
+                        body.push_back({ h.front(), h.substr(1) });
+                    else if (h.front() == '\\')                     // "\ No newline at end of file": the line before
+                    {
+                        const char was = body.empty() ? '+' : body.back().first;
+                        oldEnds = oldEnds && was == '+';
+                        newEnds = newEnds && was == '-';
+                    }
+                    else
+                        break;
+                }
+                while (!body.empty() && body.back().first == '\0')
+                    body.pop_back();
+                Edit e;
+                e.hunk = true;
+                e.line = oldStart;
+                std::size_t olds = 0, news = 0;
+                for (const auto& [kind, text] : body)
+                {
+                    if (kind != '+')
+                    {
+                        e.oldText.append(text).push_back('\n');
+                        ++olds;
+                    }
+                    if (kind != '-')
+                    {
+                        e.newText.append(text).push_back('\n');
+                        ++news;
+                    }
+                }
+                if (!oldEnds && olds > 0)
+                    e.oldText.pop_back();
+                if (!newEnds && news > 0)
+                    e.newText.pop_back();
+                if (olds + news > 0)
+                    f.edits.push_back(std::move(e));
+            }
+            if (out.empty())
+                return "The diff names no file: each file's hunks come after its --- a/<name> and +++ b/<name> lines";
+            for (const FileEdits& f : out)
+                if (f.edits.empty())
+                    return "The diff has no hunk for " + f.name;
+            return {};
+        }
+
+        // The lines a text holds (a last one without its line end counts).
+        int lineCount(std::string_view t)
+        {
+            return static_cast<int>(std::count(t.begin(), t.end(), '\n')) + (!t.empty() && t.back() != '\n' ? 1 : 0);
+        }
+
+        // Where a hunk's old lines are in `t`: at a line's start (and at the text's end when their last line has no line
+        // end), the occurrence nearest line `near` (1-based); npos when they do not occur.
+        std::size_t hunkAt(const std::string& t, const std::string& old, int near)
+        {
+            const bool toEnd = !old.empty() && old.back() != '\n';
+            std::size_t best = std::string::npos, scanned = 0;
+            long bestDistance = 0;
+            int line = 1;                                        // the line `scanned` is on
+            for (std::size_t p = t.find(old); p != std::string::npos; p = t.find(old, p + 1))
+            {
+                line += static_cast<int>(std::count(t.begin() + static_cast<std::ptrdiff_t>(scanned), t.begin() + static_cast<std::ptrdiff_t>(p), '\n'));
+                scanned = p;
+                if ((p > 0 && t[p - 1] != '\n') || (toEnd && p + old.size() != t.size()))
+                    continue;
+                const long distance = std::labs(static_cast<long>(line) - static_cast<long>(near));
+                if (best == std::string::npos || distance < bestDistance)
+                {
+                    best = p;
+                    bestDistance = distance;
+                }
+            }
+            return best;
+        }
+
+        // Where line `after` ends in `t` (0: the text's start; past its last line: its end).
+        std::size_t afterLine(const std::string& t, int after)
+        {
+            std::size_t at = 0;
+            for (int n = 0; n < after && at < t.size(); ++n)
+            {
+                const std::size_t end = t.find('\n', at);
+                at = end == std::string::npos ? t.size() : end + 1;
+            }
+            return at;
+        }
     }
 
     std::string ChatAgent::keepVersion(const std::string& name, const std::string& text)
@@ -400,52 +627,76 @@ namespace playground
             isError = true;
             return why;
         };
-        const juce::var nameVar = input.getProperty("name", juce::var());
-        if (!nameVar.isString())
-            return fail("edit_file needs name, and old_text and new_text (or edits)");
-        const std::string file = nameVar.toString().toStdString();
-        // The edits: one passage, or a list of them.
-        struct Edit
-        {
-            std::string oldText, newText;
+        // The files and their edits: one file (name, and old_text and new_text or edits, and expected), or several
+        // (files: a list of those, or a unified diff), all or none.
+        std::vector<FileEdits> files;
+        const juce::var filesVar = input.getProperty("files", juce::var());
+        const bool many = !filesVar.isVoid() && !filesVar.isUndefined();
+        const auto expectedOf = [](const juce::var& holder, std::string& out) {
+            const juce::var v = holder.getProperty("expected", juce::var());
+            out = v.isString() ? v.toString().trim().toStdString() : std::string();
+            return v.isVoid() || v.isUndefined() || !out.empty();
         };
-        std::vector<Edit> edits;
-        const juce::var list = input.getProperty("edits", juce::var());
-        const bool single = input.hasProperty("old_text") || input.hasProperty("new_text");
-        if (!list.isVoid() && !list.isUndefined())
+        if (many)
         {
-            if (single)
-                return fail("Give old_text and new_text, or edits, not both");
-            const juce::Array<juce::var>* arr = list.getArray();
-            if (arr == nullptr || arr->isEmpty() || arr->size() > kMaxEdits)
-                return fail("edits is a list of 1 to " + std::to_string(kMaxEdits) + " edits, [{old_text, new_text}]");
-            for (int i = 0; i < arr->size(); ++i)
+            for (const char* k : { "name", "old_text", "new_text", "edits", "expected" })
+                if (input.hasProperty(k))
+                    return fail("Give files, or name and its edits, not both. Nothing was changed.");
+            if (filesVar.isString())
             {
-                const juce::var& e = (*arr)[i];
-                const juce::var o = e.getProperty("old_text", juce::var()), n = e.getProperty("new_text", juce::var());
-                if (!o.isString() || !n.isString())
-                    return fail("Edit " + std::to_string(i + 1) + " needs old_text and new_text. Nothing was changed.");
-                edits.push_back({ o.toString().toStdString(), n.toString().toStdString() });
+                if (const std::string why = parseDiff(filesVar.toString().toStdString(), files); !why.empty())
+                    return fail(why + ". Nothing was changed.");
+            }
+            else
+            {
+                const juce::Array<juce::var>* arr = filesVar.getArray();
+                if (arr == nullptr || arr->isEmpty() || arr->size() > static_cast<int>(kMaxFiles))
+                    return fail("files is a list of 1 to " + std::to_string(kMaxFiles) + " files, [{name, edits, expected}], or a unified "
+                                "diff. Nothing was changed.");
+                for (int i = 0; i < arr->size(); ++i)
+                {
+                    const juce::var& e = (*arr)[i];
+                    const juce::var n = e.getProperty("name", juce::var());
+                    if (!n.isString() || n.toString().isEmpty())
+                        return fail("File " + std::to_string(i + 1) + " of files needs a name. Nothing was changed.");
+                    FileEdits f{ n.toString().toStdString(), {}, {} };
+                    if (std::any_of(files.begin(), files.end(), [&](const FileEdits& g) { return g.name == f.name; }))
+                        return fail(f.name + " is named twice in files: give its edits in one entry. Nothing was changed.");
+                    if (const std::string why = editsOf(e, f.edits, "needs old_text and new_text, or edits"); !why.empty())
+                        return fail(f.name + ": " + why + (why.find("Nothing was changed") == std::string::npos ? ". Nothing was changed." : ""));
+                    if (!expectedOf(e, f.expected))
+                        return fail(f.name + ": expected is the version read_file gave (8 hex digits). Nothing was changed.");
+                    files.push_back(std::move(f));
+                }
             }
         }
         else
         {
-            const juce::var o = input.getProperty("old_text", juce::var()), n = input.getProperty("new_text", juce::var());
-            if (!o.isString() || !n.isString())
-                return fail("edit_file needs name, and old_text and new_text (or edits)");
-            edits.push_back({ o.toString().toStdString(), n.toString().toStdString() });
+            const juce::var nameVar = input.getProperty("name", juce::var());
+            if (!nameVar.isString())
+                return fail("edit_file needs name, and old_text and new_text (or edits), or files");
+            FileEdits f{ nameVar.toString().toStdString(), {}, {} };
+            if (const std::string why = editsOf(input, f.edits, "edit_file needs name, and old_text and new_text (or edits)"); !why.empty())
+                return fail(why);
+            if (!expectedOf(input, f.expected))
+                return fail("expected is the version read_file gave (8 hex digits)");
+            files.push_back(std::move(f));
         }
-        const juce::var expectedVar = input.getProperty("expected", juce::var());
-        const std::string expected = expectedVar.isString() ? expectedVar.toString().trim().toStdString() : std::string();
-        if (!expectedVar.isVoid() && !expectedVar.isUndefined() && expected.empty())
-            return fail("expected is the version read_file gave (8 hex digits)");
-        const auto label = [&](std::size_t i) {
-            return edits.size() == 1 ? std::string() : "Edit " + std::to_string(i + 1) + " of " + std::to_string(edits.size()) + ": ";
+        // What an edit's error starts with: nothing for one edit of one file, "Edit 2 of 3: " for one file's list; with
+        // files, the file's name, and a hunk's line.
+        const auto label = [&](const FileEdits& f, std::size_t i) {
+            const Edit& e = f.edits[i];
+            const std::string what = e.hunk ? "hunk" : "edit";
+            const std::string place = e.hunk ? " (@@ -" + std::to_string(e.line) + ")" : std::string();
+            if (!many)
+                return f.edits.size() == 1 ? std::string() : "Edit " + std::to_string(i + 1) + " of " + std::to_string(f.edits.size()) + ": ";
+            return f.name + (f.edits.size() == 1 ? place + ": "
+                                                 : ", " + what + " " + std::to_string(i + 1) + " of " + std::to_string(f.edits.size()) + place + ": ");
         };
 
         // The text changed since `version` (the file's lines that changed, against the kept text), refused: the
         // user's edit, unless the text now is a version one of Claude's calls gave (a read, a write, edit_circuit).
-        const auto changedSince = [&](const std::string& version, const std::string& now) {
+        const auto changedSince = [&](const std::string& file, const std::string& version, const std::string& now) {
             std::shared_ptr<const std::string> then;
             std::string nowVersion;
             bool known = false;
@@ -462,7 +713,7 @@ namespace playground
             }
             std::string out = file + " changed since version " + version
                             + (known ? " (now version " + nowVersion + ", which one of your own calls gave)" : " (the user's edit, which is kept)")
-                            + ": nothing was written. ";
+                            + ": nothing was written" + (many ? " to any file. " : ". ");
             if (!then)
                 return fail(out + "That version's text is no longer kept, so read_file shows the file now (version " + nowVersion + ").");
             const textdiff::Unified u = textdiff::unified(*then, now, 2, kChangedLines);
@@ -471,73 +722,151 @@ namespace playground
                         + ". Edit again from this text.");
         };
 
-        setActivity("Editing " + file);
-        for (int attempt = 0; attempt < 2; ++attempt)
-        {
-            Draft d = host_.chatDraft();
-            const auto f = std::find_if(d.files.begin(), d.files.end(), [&](const SourceFile& s) { return s.name == file; });
-            if (f == d.files.end())
+        // One file's edits on its text, in order, each on the text the ones before it left: "" and the text changed, or
+        // why not.
+        const auto apply = [&](const FileEdits& f, std::string& t) -> std::string {
+            int moved = 0;                                       // the lines the hunks before this one added, less removed
+            for (std::size_t i = 0; i < f.edits.size(); ++i)
             {
-                std::string names;
-                for (const SourceFile& s : d.files)
-                    names += (names.empty() ? "" : ", ") + s.name;
-                return fail("There is no file " + file + ". The files: " + names);
-            }
-            const std::string before = f->text;
-            // Compared, not kept: keeping it first could push out the very version it was given (changedSince looks
-            // that up, then keeps the text now).
-            if (!expected.empty() && versionOf(before) != expected)
-                return changedSince(expected, before);
-            // All or none, in order, each on the text the ones before it left.
-            std::string t = before;
-            for (std::size_t i = 0; i < edits.size(); ++i)
-            {
-                const Edit& e = edits[i];
+                const Edit& e = f.edits[i];
+                if (e.hunk)
+                {
+                    const int near = e.line + moved;
+                    std::size_t at = 0;
+                    if (e.oldText.empty())
+                    {
+                        at = afterLine(t, near);
+                        if (at == t.size() && !t.empty() && t.back() != '\n')
+                        {
+                            t.push_back('\n');                   // after a last line with no line end
+                            at = t.size();
+                        }
+                    }
+                    else if ((at = hunkAt(t, e.oldText, near)) == std::string::npos)
+                    {
+                        const std::string closer = closest(t, e.oldText);
+                        return label(f, i) + "its old lines (context and -) do not occur in " + f.name
+                             + (i > 0 ? " (as the hunks before it leave it)" : "") + ". "
+                             + (closer.empty() ? std::string("Nothing in it is close: read_file shows its text.\n") : closer)
+                             + "Nothing was changed.";
+                    }
+                    t.replace(at, e.oldText.size(), e.newText);
+                    moved += lineCount(e.newText) - lineCount(e.oldText);
+                    continue;
+                }
                 if (e.oldText.empty())
-                    return fail(label(i) + "old_text is empty: give the exact passage to replace. Nothing was changed.");
+                    return label(f, i) + "old_text is empty: give the exact passage to replace. Nothing was changed.";
                 std::size_t count = 0;
                 std::vector<std::string> where;
                 const std::size_t at = occurs(t, e.oldText, count, where);
                 if (count == 0)
                 {
                     const std::string near = closest(t, e.oldText);
-                    return fail(label(i) + "old_text does not occur in " + file + (i > 0 ? " (as the edits before it leave it)" : "")
-                                + ". " + (near.empty() ? std::string("Nothing in it is close: read_file shows its text.\n") : near)
-                                + "Nothing was changed.");
+                    return label(f, i) + "old_text does not occur in " + f.name + (i > 0 ? " (as the edits before it leave it)" : "") + ". "
+                         + (near.empty() ? std::string("Nothing in it is close: read_file shows its text.\n") : near) + "Nothing was changed.";
                 }
                 if (count > 1)
-                    return fail(label(i) + "old_text occurs " + std::to_string(count) + " times in " + file + " (lines " + joinedAnd(where)
-                                + (count > where.size() ? ", ..." : "") + "): include more of the surrounding lines so it occurs once. "
-                                  "Nothing was changed.");
+                    return label(f, i) + "old_text occurs " + std::to_string(count) + " times in " + f.name + " (lines " + joinedAnd(where)
+                         + (count > where.size() ? ", ..." : "") + "): include more of the surrounding lines so it occurs once. "
+                           "Nothing was changed.";
                 t.replace(at, e.oldText.size(), e.newText);
             }
-            f->text = t;
-            d.active = static_cast<int>(f - d.files.begin());
-            if (!host_.chatSetDraftIf(d, file, before))
+            return {};
+        };
+
+        std::vector<std::string> names;
+        std::size_t total = 0;
+        for (const FileEdits& f : files)
+        {
+            names.push_back(f.name);
+            total += f.edits.size();
+        }
+        setActivity("Editing " + (files.size() <= 2 ? joinedAnd(names) : std::to_string(files.size()) + " files"));
+        const auto fileNames = [](const Draft& d) {
+            std::string out;
+            for (const SourceFile& s : d.files)
+                out += (out.empty() ? "" : ", ") + s.name;
+            return out;
+        };
+        for (int attempt = 0; attempt < 2; ++attempt)
+        {
+            Draft d = host_.chatDraft();
+            Sources read;                                        // each file as the edits found it
+            for (const FileEdits& f : files)
             {
-                // The user typed in it between the read and the write: their text stays. With expected, that is the
-                // answer; without, the edits are tried once more on the new text.
-                if (!expected.empty() || attempt == 1)
+                const SourceFile* s = findFile(d.files, f.name);
+                if (s == nullptr)
+                    return fail("There is no file " + f.name + ". The files: " + fileNames(d) + (many ? ". Nothing was changed." : ""));
+                read.push_back(*s);
+            }
+            // Compared, not kept: keeping it first could push out the very version it was given (changedSince looks
+            // that up, then keeps the text now).
+            for (std::size_t k = 0; k < files.size(); ++k)
+                if (!files[k].expected.empty() && versionOf(read[k].text) != files[k].expected)
+                    return changedSince(files[k].name, files[k].expected, read[k].text);
+            // All or none: every file's edits on a copy first.
+            std::vector<std::string> after;
+            for (std::size_t k = 0; k < files.size(); ++k)
+            {
+                after.push_back(read[k].text);
+                if (const std::string why = apply(files[k], after.back()); !why.empty())
+                    return fail(why);
+            }
+            for (SourceFile& s : d.files)
+                for (std::size_t k = 0; k < files.size(); ++k)
+                    if (s.name == files[k].name)
+                        s.text = after[k];
+            d.active = static_cast<int>(findFile(d.files, files.front().name) - d.files.data());
+            if (fileWriteHook_)
+                fileWriteHook_(attempt);
+            if (!host_.chatSetDraftIf(d, read))
+            {
+                // The user typed in one of them between the read and the write: their text stays. A file with
+                // expected says so at once; else the edits are tried once more on the new text.
+                const Draft now = host_.chatDraft();
+                std::vector<std::string> moved;
+                for (std::size_t k = 0; k < files.size(); ++k)
                 {
-                    const Draft now = host_.chatDraft();
-                    const auto g = std::find_if(now.files.begin(), now.files.end(), [&](const SourceFile& s) { return s.name == file; });
-                    if (!expected.empty() && g != now.files.end())
-                        return changedSince(expected, g->text);
-                    return fail(file + " changed while editing (the user's typing, which is kept): try again.");
+                    const SourceFile* g = findFile(now.files, files[k].name);
+                    if (g != nullptr && g->text == read[k].text)
+                        continue;
+                    if (!files[k].expected.empty() && g != nullptr)
+                        return changedSince(files[k].name, files[k].expected, g->text);
+                    moved.push_back(files[k].name);
                 }
+                if (attempt == 1)
+                    return fail(joinedAnd(moved.empty() ? names : moved) + " changed while editing (the user's typing, which is kept): try "
+                                "again." + (many ? " Nothing was changed." : ""));
                 continue;
             }
-            std::string version;
+            std::vector<std::string> versions;
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
-                carrySeen(file, before, t);                      // seen only if what it edited was
-                version = keepVersion(file, t);
-                addEntry(ChatEntry::Kind::tool, "edited " + file + (edits.size() > 1 ? " (" + std::to_string(edits.size()) + " changes)" : ""));
+                for (std::size_t k = 0; k < files.size(); ++k)
+                {
+                    carrySeen(files[k].name, read[k].text, after[k]);   // seen only if what it edited was
+                    versions.push_back(keepVersion(files[k].name, after[k]));
+                }
+                addEntry(ChatEntry::Kind::tool, "edited " + joinedAnd(names)
+                                                    + (total > 1 ? " (" + std::to_string(total) + " changes)" : ""));
             }
-            const std::size_t lines = linesOf(t).size();
-            return "Edited " + file + (edits.size() > 1 ? ": " + std::to_string(edits.size()) + " edits, one step the user can undo" : "")
-                 + "; now " + std::to_string(lines) + (lines == 1 ? " line" : " lines") + ", version " + version + ".";
+            const auto lines = [&](std::size_t k) {
+                const std::size_t n = linesOf(after[k]).size();
+                return std::to_string(n) + (n == 1 ? " line" : " lines");
+            };
+            if (!many)
+                return "Edited " + names[0] + (total > 1 ? ": " + std::to_string(total) + " edits, one step the user can undo" : "") + "; now "
+                     + lines(0) + ", version " + versions[0] + ".";
+            std::string out = "Edited " + std::to_string(files.size()) + (files.size() == 1 ? " file" : " files")
+                            + ", one step the user can undo:\n";
+            for (std::size_t k = 0; k < files.size(); ++k)
+            {
+                const std::size_t n = files[k].edits.size();
+                const std::string what = files[k].edits.front().hunk ? (n == 1 ? " hunk" : " hunks") : (n == 1 ? " edit" : " edits");
+                out += "- " + files[k].name + ": " + std::to_string(n) + what + "; now " + lines(k) + ", version " + versions[k] + "\n";
+            }
+            return out;
         }
-        return fail(file + " changed while editing (the user's typing, which is kept): try again.");
+        return fail(joinedAnd(names) + " changed while editing (the user's typing, which is kept): try again.");
     }
 }

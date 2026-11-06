@@ -1764,20 +1764,33 @@ namespace playground
                                                                   "filters.fm") },
                                         { "content", prop("string", "The file's whole text") } }),
                        { "name", "content" }));
-        tools.add(tool("edit_file",
-                       "Replace one exact passage of a file with new text. old_text must occur exactly once in the "
-                       "file, with the same whitespace; include enough surrounding lines to make it unique. Prefer "
-                       "this to write_file for changes to part of a file. A passage that does not occur gets the "
-                       "closest one back, numbered, and what differs.",
-                       claude::object({ { "name", prop("string", "The file's name") },
-                                        { "old_text", prop("string", "The passage as it is now, exactly") },
-                                        { "new_text", prop("string", "What replaces it") },
-                                        { "edits", claude::object({ { "type", "array" },
-                                                                    { "description", "[{old_text, new_text}] in place of those "
-                                                                                     "two: in order, all or none" } }) },
-                                        { "expected", prop("string", "read_file's version: write only if the file is still "
-                                                                     "it") } }),
-                       { "name" }));
+        {
+            // files: several files' edits as one change (each entry as the tool's own name, edits and expected), or a
+            // unified diff of them (ChatFiles.cpp); name is then left out, so none is required. Its two forms as anyOf,
+            // the form the API's JSON Schema reference names (strict tools too).
+            juce::Array<juce::var> listOrDiff;
+            listOrDiff.add(claude::object({ { "type", "array" } }));
+            listOrDiff.add(claude::object({ { "type", "string" } }));
+            tools.add(tool("edit_file",
+                           "Replace one exact passage of a file with new text. old_text must occur exactly once in the "
+                           "file, with the same whitespace; include enough surrounding lines to make it unique. Prefer "
+                           "this to write_file for changes to part of a file. A passage that does not occur gets the "
+                           "closest one back, numbered, and what differs. A diff's hunk goes where its old lines occur "
+                           "nearest its @@ line.",
+                           claude::object({ { "name", prop("string", "The file's name") },
+                                            { "old_text", prop("string", "The passage as it is now, exactly") },
+                                            { "new_text", prop("string", "What replaces it") },
+                                            { "edits", claude::object({ { "type", "array" },
+                                                                        { "description", "[{old_text, new_text}] in place of those "
+                                                                                         "two: in order, all or none" } }) },
+                                            { "expected", prop("string", "read_file's version: write only if the file is still "
+                                                                         "it") },
+                                            { "files", claude::object({ { "anyOf", juce::var(listOrDiff) },
+                                                                        { "description", "[{name, edits, expected}] or a unified "
+                                                                                         "diff, in place of name: all or none, one "
+                                                                                         "undo step" } }) } }),
+                           {}));
+        }
         {
             juce::var ops = claude::object({ { "type", "array" },
                                              { "items", claude::object({ { "type", "string" } }) },
@@ -3628,7 +3641,7 @@ namespace playground
                 d.active = i;
                 if (circuitWriteHook_)
                     circuitWriteHook_(attempt);
-                if (!host_.chatSetDraftIf(d, file, before))
+                if (!host_.chatSetDraftIf(d, { { file, before } }))
                     continue;
                 // What changed, in words: each command's line, the netlist's lines (its drawing aside), what the
                 // circuit compiler says of the new text, and the text itself when it is short. Its version, as a write's:

@@ -1689,22 +1689,25 @@ namespace playground
             journalDraft(before, d, Journal::Who::chat);
     }
 
-    bool Processor::chatSetDraftIf(const Draft& draft, const std::string& file, const std::string& expected)
+    bool Processor::chatSetDraftIf(const Draft& draft, const Sources& read)
     {
-        const auto named = [&](const SourceFile& f) { return f.name == file; };
-        const auto mine = std::find_if(draft.files.begin(), draft.files.end(), named);
-        if (mine == draft.files.end())
+        if (read.empty())
             return false;
+        for (const SourceFile& r : read)
+            if (findFile(draft.files, r.name) == nullptr)
+                return false;
         Draft before, d;
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
-            const auto it = std::find_if(draft_.files.begin(), draft_.files.end(), named);
-            if (it == draft_.files.end() || it->text != expected)
-                return false;                            // a gesture synced meanwhile: never overwritten
-            // Only this file's text is written (and the tab shown): the others stay as they are now, whatever the user
-            // typed in them since the tool read the draft.
+            for (const SourceFile& r : read)
+                if (const SourceFile* now = findFile(draft_.files, r.name); now == nullptr || now->text != r.text)
+                    return false;                        // a gesture or typing synced meanwhile: never overwritten
+            // Only these files' texts are written (and the tab shown), all in one change: the others stay as they are
+            // now, whatever the user typed in them since the tool read the draft.
             d = draft_;
-            d.files[static_cast<std::size_t>(it - draft_.files.begin())].text = mine->text;
+            for (SourceFile& f : d.files)
+                if (findFile(read, f.name) != nullptr)
+                    f.text = findFile(draft.files, f.name)->text;
             const auto shown = draft.active >= 0 && draft.active < static_cast<int>(draft.files.size())
                                    ? std::find_if(d.files.begin(), d.files.end(), [&](const SourceFile& f) {
                                          return f.name == draft.files[static_cast<std::size_t>(draft.active)].name;

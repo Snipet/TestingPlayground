@@ -79,7 +79,16 @@
 //            one write the editor undoes in one step, its result the line count and version; `expected` refuses a write
 //            after the user's edit, keeps it and shows its line (the result's first line naming the edit), and with the
 //            version it gives the write goes; given the oldest of the versions kept, it still shows the lines changed;
-//            edit_circuit's result gives its version, and an `expected` from before it is refused as Claude's own change
+//            edit_circuit's result gives its version, and an `expected` from before it is refused as Claude's own change;
+//            edit_file's files (MULTI): one bad edit in the second file changes neither; files beside name is refused;
+//            two files in one write, the result a line each and the tool's row naming both, merged as one undo step
+//            across their tabs (Cmd-Z in either tab undoes both, Cmd-Shift-Z in the other redoes both; a tab typed in
+//            since keeps its typing and its edit while the other's Cmd-Z undoes its own); the user's typing planted
+//            between the read and the write is kept and the edits run again on it, and with that file's expected
+//            nothing is written to either; a unified diff of two files (git's headers, a hunk whose lines occur twice
+//            placed by its @@ line, a blank context line whose space was lost, a last line without its line end) in one
+//            step Cmd-Z undoes; a hunk that misses gives the closest passage and changes nothing; a diff that makes a
+//            file is refused; hunks of new lines alone go at the start and after a last line with no line end
 //   SOUND    view_sound through the agent (a program that sounds): its result a PNG of 1120 x 800 and what it shows,
 //            the tool's entry with the picture's thumbnail (480 px), the session without the PNG but with the thumbnail;
 //            a program that does not compile draws nothing and says why
@@ -1816,6 +1825,160 @@ PROBE(plugin, chat)
                                                      && has(toolText(stale), "tone.cir changed since version " + before + " (now version " + drawn
                                                                                  + ", which one of your own calls gave): nothing was written.")
                                                      && !has(toolText(stale), "the user's edit") && has(fileText("tone.cir"), "22n") ? 1 : 0, 1);
+        }
+        // MULTI: edit_file's files, several files' edits in one write (all or none, each file's version guard), which the
+        // editor merges as one undo step across their tabs; and as a unified diff.
+        {
+            const auto settle = [&] {
+                processor.poll();
+                for (int k = 0; k < 40; ++k)
+                {
+                    host.tick(1);
+                    const int a = panel.activeFile();
+                    if (a >= 0 && panel.editor().text() == fileText(panel.fileName(a)))
+                        break;
+                }
+            };
+            const auto write = [&](const char* name, const std::string& text) {
+                agent.mcpCall("write_file", input({ { "name", name }, { "content", juce::String(text) } }));
+                settle();
+            };
+            const auto edit = [&](const juce::var& in) {
+                const pg::ChatAgent::McpResult r = agent.mcpCall("edit_file", in);
+                settle();
+                return r;
+            };
+            const auto tabOf = [&](const std::string& name) {
+                for (int i = 0; i < panel.fileCount(); ++i)
+                    if (panel.fileName(i) == name)
+                        return i;
+                return -1;
+            };
+            // A key in the text of a tab (shown first by a click on it), then a frame: the Panel gives its files to the
+            // processor.
+            const auto keysIn = [&](const std::string& name, const char* spec) {
+                const funkgui::Point t = panel.centreOfTab(tabOf(name));
+                host.click(t.x, t.y);
+                host.tick(1);
+                const funkgui::Rect eb = panel.editor().bounds();
+                host.click(eb.centreX(), eb.centreY());
+                host.keys(spec);
+                host.tick(2);
+            };
+            const auto files = [](std::initializer_list<juce::var> entries) {
+                juce::Array<juce::var> a;
+                for (const juce::var& e : entries)
+                    a.add(e);
+                return juce::var(a);
+            };
+            write("notes.fm", notes);
+            write("other.fm", other);
+            juce::Array<juce::var> two;
+            two.add(input({ { "old_text", juce::String(lineOf(2)) }, { "new_text", "float v2(float x) { return -x; }" } }));
+            two.add(input({ { "old_text", juce::String(lineOf(9)) }, { "new_text", "float v9(float x) { return -x; }" } }));
+            std::string notesEdited = notes;
+            notesEdited.replace(notesEdited.find(lineOf(2)), lineOf(2).size(), "float v2(float x) { return -x; }");
+            notesEdited.replace(notesEdited.find(lineOf(9)), lineOf(9).size(), "float v9(float x) { return -x; }");
+            std::string otherEdited = other;
+            otherEdited.replace(otherEdited.find("return x;"), 9, "return -x;");
+            const juce::var both = files({ input({ { "name", "notes.fm" }, { "edits", juce::var(two) } }),
+                                           input({ { "name", "other.fm" }, { "old_text", "return x;" }, { "new_text", "return -x;" } }) });
+
+            // A bad edit in the second file: nothing changes in either.
+            const pg::ChatAgent::McpResult oneBad = edit(input({ { "files", files({ input({ { "name", "notes.fm" }, { "edits", juce::var(two) } }),
+                                                                                 input({ { "name", "other.fm" }, { "old_text", "no such line" },
+                                                                                         { "new_text", "x" } }) }) } }));
+            std::printf("edit_file files, one bad:\n%s\n", toolText(oneBad).c_str());
+            P.eq("multi.one_bad_none", oneBad.isError && has(toolText(oneBad), "other.fm: old_text does not occur in other.fm.")
+                                           && has(toolText(oneBad), "Nothing was changed.") && fileText("notes.fm") == notes
+                                           && fileText("other.fm") == other ? 1 : 0, 1);
+            // files with name: refused.
+            const pg::ChatAgent::McpResult mixed = edit(input({ { "name", "notes.fm" }, { "files", both } }));
+            P.eq("multi.mixed_refused", mixed.isError && has(toolText(mixed), "Give files, or name and its edits, not both") ? 1 : 0, 1);
+
+            // Both files in one write: the result names each, the editor's tabs have both, the chat's card one row.
+            const pg::ChatAgent::McpResult applied = edit(input({ { "files", both } }));
+            std::printf("edit_file files:\n%s\n", toolText(applied).c_str());
+            P.eq("multi.applied", !applied.isError
+                                      && toolText(applied).rfind("Edited 2 files, one step the user can undo:\n- notes.fm: 2 edits; now 12 lines, version ", 0) == 0
+                                      && has(toolText(applied), "\n- other.fm: 1 edit; now 2 lines, version ") && fileText("notes.fm") == notesEdited
+                                      && fileText("other.fm") == otherEdited && panel.fileName(panel.activeFile()) == "notes.fm"
+                                      && panel.editor().text() == notesEdited ? 1 : 0, 1);
+            P.eq("multi.entry", lastText(agent.chatState(), pg::ChatEntry::Kind::tool) == "edited notes.fm and other.fm (3 changes)" ? 1 : 0, 1);
+            // Cmd-Z in either tab undoes both (the processor then has both as they were); Cmd-Shift-Z redoes both.
+            keysIn("other.fm", "cmd+z");
+            const bool undone = fileText("notes.fm") == notes && fileText("other.fm") == other;
+            keysIn("notes.fm", "cmd+shift+z");
+            const bool redone = fileText("notes.fm") == notesEdited && fileText("other.fm") == otherEdited;
+            P.eq("multi.one_undo_step", undone && redone ? 1 : 0, 1);
+            // Typed in since: Cmd-Z in notes.fm undoes notes.fm's part alone, and other.fm keeps the typing and the edit.
+            keysIn("other.fm", "q");
+            const std::string typed = fileText("other.fm");
+            keysIn("notes.fm", "cmd+z");
+            P.eq("multi.undo_keeps_typing", typed != otherEdited && fileText("other.fm") == typed && fileText("notes.fm") == notes ? 1 : 0, 1);
+
+            // The user types between the read and the write (planted): nothing is overwritten; the edits run again on
+            // the new text and both files are written. With other.fm's version given, nothing is written to either.
+            write("notes.fm", notes);
+            write("other.fm", other);
+            const auto plant = [&](int attempt) {
+                if (attempt > 0)
+                    return;
+                pg::Draft d = processor.editorPort().draft();
+                for (pg::SourceFile& f : d.files)
+                    if (f.name == "other.fm")
+                        f.text += "// typed meanwhile\n";
+                processor.editorPort().setDraft(d);
+            };
+            agent.setFileWriteHookForTests(plant);
+            const pg::ChatAgent::McpResult plantedWrite = edit(input({ { "files", both } }));
+            P.eq("multi.typing_kept", !plantedWrite.isError && fileText("notes.fm") == notesEdited && fileText("other.fm") == otherEdited + "// typed meanwhile\n" ? 1 : 0, 1);
+            write("notes.fm", notes);
+            write("other.fm", other);
+            const std::string otherVersion = versionIn(toolText(agent.mcpCall("read_file", input({ { "name", "other.fm" } }))));
+            const pg::ChatAgent::McpResult guardedBoth = edit(input({ { "files", files({ input({ { "name", "notes.fm" }, { "edits", juce::var(two) } }),
+                                                                                     input({ { "name", "other.fm" }, { "old_text", "return x;" },
+                                                                                             { "new_text", "return -x;" },
+                                                                                             { "expected", juce::String(otherVersion) } }) }) } }));
+            agent.setFileWriteHookForTests(nullptr);
+            std::printf("edit_file files, other.fm typed in with its version given:\n%s\n", toolText(guardedBoth).c_str());
+            P.eq("multi.expected_none", guardedBoth.isError
+                                            && has(toolText(guardedBoth), "other.fm changed since version " + otherVersion
+                                                                          + " (the user's edit, which is kept): nothing was written to any file.")
+                                            && fileText("notes.fm") == notes && fileText("other.fm") == other + "// typed meanwhile\n" ? 1 : 0, 1);
+
+            // A unified diff of two files: git's headers, a hunk whose context occurs twice (the one nearest its line),
+            // a blank context line whose space was lost, a file's last line without a line end; one undo step.
+            write("notes.fm", notes);
+            write("other.fm", other);
+            write("twice.fm", "// twice\nx = 1;\ny = 2;\n\nx = 1;\ny = 2;");
+            const std::string diff = "diff --git a/notes.fm b/notes.fm\nindex 1a2b3c4..5d6e7f8 100644\n--- a/notes.fm\n+++ b/notes.fm\n"
+                                     "@@ -10,3 +10,3 @@ float v9(float x)\n " + lineOf(10) + "\n-" + lineOf(11) + "\n+float v11(float x) { return x * 11.5f; }\n "
+                                   + lineOf(12) + "\n"
+                                     "--- a/twice.fm\n+++ b/twice.fm\n@@ -6,2 +6,2 @@\n x = 1;\n-y = 2;\n\\ No newline at end of file\n+y = 3;\n"
+                                     "\\ No newline at end of file\n@@ -3,3 +3,3 @@\n y = 2;\n\n-x = 1;\n+x = 0;\n";
+            const pg::ChatAgent::McpResult patched = edit(input({ { "files", juce::String(diff) } }));
+            std::printf("edit_file files, a diff:\n%s\n", toolText(patched).c_str());
+            std::string notesPatched = notes;
+            notesPatched.replace(notesPatched.find(lineOf(11)), lineOf(11).size(), "float v11(float x) { return x * 11.5f; }");
+            P.eq("multi.diff_applied", !patched.isError && has(toolText(patched), "- notes.fm: 1 hunk; now 12 lines")
+                                           && has(toolText(patched), "- twice.fm: 2 hunks; now 6 lines") && fileText("notes.fm") == notesPatched
+                                           && fileText("twice.fm") == "// twice\nx = 1;\ny = 2;\n\nx = 0;\ny = 3;" ? 1 : 0, 1);
+            keysIn("twice.fm", "cmd+z");
+            P.eq("multi.diff_one_undo_step", fileText("notes.fm") == notes && fileText("twice.fm") == "// twice\nx = 1;\ny = 2;\n\nx = 1;\ny = 2;" ? 1 : 0, 1);
+            // A hunk whose lines do not occur: the closest passage, and nothing changed in any file.
+            const std::string missDiff = "--- a/notes.fm\n+++ b/notes.fm\n@@ -5,2 +5,2 @@\n " + lineOf(5) + "\n-float v6(float x) { return x * 6.5f; }\n+x\n"
+                                     "--- a/twice.fm\n+++ b/twice.fm\n@@ -1 +1 @@\n-// twice\n+// two\n";
+            const pg::ChatAgent::McpResult missed = edit(input({ { "files", juce::String(missDiff) } }));
+            std::printf("edit_file files, a diff that misses:\n%s\n", toolText(missed).c_str());
+            P.eq("multi.diff_miss", missed.isError && has(toolText(missed), "notes.fm (@@ -5): its old lines (context and -) do not occur in notes.fm.")
+                                        && has(toolText(missed), "The closest passage, lines 5 to 6:\n5\t") && fileText("notes.fm") == notes
+                                        && has(fileText("twice.fm"), "// twice\n") ? 1 : 0, 1);
+            const pg::ChatAgent::McpResult made = edit(input({ { "files", "--- /dev/null\n+++ b/new.fm\n@@ -0,0 +1 @@\n+float n;\n" } }));
+            P.eq("multi.diff_new_file_refused", made.isError && has(toolText(made), "The diff makes a new file, new.fm: write_file does that. Nothing was changed.") ? 1 : 0, 1);
+            // Hunks of new lines alone (diff -U0's): at the start, and after a last line with no line end.
+            const pg::ChatAgent::McpResult added = edit(input({ { "files", "--- twice.fm\n+++ twice.fm\n@@ -0,0 +1 @@\n+// top\n@@ -6,0 +8 @@\n+z = 3;\n" } }));
+            P.eq("multi.diff_inserts", !added.isError && fileText("twice.fm") == "// top\n// twice\nx = 1;\ny = 2;\n\nx = 1;\ny = 2;\nz = 3;\n" ? 1 : 0, 1);
         }
         processor.editorPort().setDraft(saved);
         host.tick(2);

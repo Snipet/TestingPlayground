@@ -241,7 +241,7 @@ namespace playground
         // ChatHost: Claude's tools (ChatAgent.h), from the agent's worker thread.
         Draft chatDraft() const override;
         void chatSetDraft(const Draft& draft) override;
-        bool chatSetDraftIf(const Draft& draft, const std::string& file, const std::string& expected) override;
+        bool chatSetDraftIf(const Draft& draft, const Sources& read) override;
         std::string chatSchematicPins(const std::string& file) const override;
         CompileStatus chatRun(const Sources& files) override;
         CompileStatus chatLastStatus() const override;
