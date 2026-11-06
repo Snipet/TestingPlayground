@@ -204,6 +204,10 @@ namespace playground
         // fields its displays read (Meters::program), so a panel never shows one program's fields on another's displays.
         uint64_t program() const noexcept { return program_; }
         void setProgram(uint64_t id) noexcept { program_ = id; }
+        // How its dials come across from the program before it (Controls.h's DialCarry): set by the Compiler before it
+        // offers the Patch, read by the audio thread (Engine.h, "Dials"). None: every dial as the host's value says.
+        const DialCarry& carry() const noexcept { return carry_; }
+        void setCarry(const DialCarry& c) noexcept { carry_ = c; }
 
         // ---- frozen dials (above) ------------------------------------------------------------------------------------
         class Frozen;
@@ -353,6 +357,7 @@ namespace playground
         std::vector<bool> initialised_;
         std::size_t instanceSize_ = 0, instanceAlign_ = 16;
         Controls controls_{};
+        DialCarry carry_{};
         PanelSpec panel_;
         struct Tap
         {

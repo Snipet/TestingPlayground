@@ -18,6 +18,12 @@
 //   BYNAME   a version whose dials are listed in another order, with a name the program lacks: each lands on its own
 //            parameter, the unknown is ignored
 //   SAME     a version saved as "glass bloom": the same project, named so now (one file)
+//   LABEL    an int whose values have names (a panel.gui's buttons) keeps its value's name with its number: a version
+//            saved on PITCH (KEYS CAR PITCH) has "label": "PITCH" in its JSON (a float none), and so does a preset;
+//            after TRUCK is inserted before PITCH (the run keeps PITCH: 3) and the dial moved to KEYS, the preset
+//            applies PITCH (3, never TRUCK), not edited; version 1 opens on PITCH (2) and a version saved since on its
+//            own (3); a project from before labels (the field taken out) lands on the number, as it did, and its
+//            latest version saved again unchanged adds no version but gains its label
 //   SESSION  the session keeps the project, its version and the preset; a session from before projects names a preset,
 //            now the project of that name
 //   MIGRATE  a preset file from before projects becomes a project of one version (its files, tab and dials, a note of
@@ -104,6 +110,19 @@ namespace
         juce::var root = juce::JSON::parse(dir.getChildFile(juce::String(from) + ".fmproject").loadFileAsString());
         change(root);
         dir.getChildFile(juce::String(as) + ".fmproject").replaceWithText(juce::JSON::toString(root));
+    }
+
+    // LABEL's program: drive, an int whose values `names` (quoted texts) name through a panel.gui's buttons, and level.
+    pg::Sources labelled(const std::string& names, int count)
+    {
+        const std::string params = "    param int drive [[fminus::range(0, " + std::to_string(count - 1) + ")]];\n"
+                                   "    param float level [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n";
+        const std::string program = kInstrument
+            ? "module Voice\n{\n" + params + "    bool held;\n    void start(float n, float v) { held = true; }\n"
+                  "    void stop() { held = false; }\n    bool process(float* restrict left, float* restrict right, int n) { return held; }\n};\n"
+            : "module Effect\n{\n" + params + "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                  "        for (int i = 0; i < n; ++i) { left[i] = left[i] * level[i]; right[i] = right[i] * level[i]; }\n    }\n};\n";
+        return { { pg::kProgramName, program }, { "panel.gui", "row {\n    buttons drive " + names + "\n    knob level\n}\n" } };
     }
 
     juce::var dialVar(const char* name, double value)
@@ -323,6 +342,65 @@ PROBE(plugin, projects)
         P.eq("migrate.files", c.editorPort().draft().files == files && c.editorPort().draft().active == 1 ? 1 : 0, 1);
         P.near("migrate.level", static_cast<double>(dial(c, 0)), 0.6, 1e-4);
         P.near("migrate.tone", static_cast<double>(dial(c, 1)), 3000.0, 0.05);
+    }
+
+    // LABEL
+    {
+        const pg::Sources three = labelled("\"KEYS\" \"CAR\" \"PITCH\"", 3);
+        const pg::Sources four = labelled("\"KEYS\" \"CAR\" \"TRUCK\" \"PITCH\"", 4);
+        pg::Processor c;
+        pg::EditorPort& pc = c.editorPort();
+        pc.setDraft({ three, 0 });
+        pc.run(three);
+        c.settle();
+        setDial(c, 0, 2.0f);                                    // PITCH
+        P.eq("label.saved", pc.saveVersion("Gears", saved, why) && pc.savePreset("On pitch", why) ? 1 : 0, 1);
+        const juce::var root = juce::JSON::parse(dir.getChildFile("Gears.fmproject").loadFileAsString());
+        const juce::var d0 = root["versions"][0]["dials"][0], d1 = root["versions"][0]["dials"][1];
+        P.eq("label.in_json", d0["name"].toString() == "drive" && static_cast<int>(d0["value"]) == 2 && d0["label"].toString() == "PITCH"
+                                  && !d1.hasProperty("label") && root["presets"][0]["dials"][0]["label"].toString() == "PITCH" ? 1 : 0, 1);
+        pc.setDraft({ four, 0 });
+        pc.run(four);
+        c.settle();
+        P.near("label.run_keeps_pitch", static_cast<double>(dial(c, 0)), 3.0, 0.0);
+        setDial(c, 0, 0.0f);                                    // KEYS
+        P.eq("label.preset_applied", pc.applyPreset("Gears", "On pitch", why) ? 1 : 0, 1);
+        std::printf("label: the preset applied after TRUCK came: %s\n", c.getParameters()[0]->getCurrentValueAsText().toRawUTF8());
+        P.near("label.preset_pitch", static_cast<double>(dial(c, 0)), 3.0, 0.0);
+        P.eq("label.preset_not_edited", c.getParameters()[0]->getCurrentValueAsText() == "PITCH" && !pc.project().dialsEdited ? 1 : 0, 1);
+        P.eq("label.second_saved", pc.saveVersion("Gears", saved, why) && saved.number == 2 ? 1 : 0, 1);
+        pg::Processor e;
+        P.eq("label.first_opens", e.editorPort().openProject("Gears", 1, why) ? 1 : 0, 1);
+        e.settle();
+        P.near("label.first_on_pitch", static_cast<double>(dial(e, 0)), 2.0, 0.0);
+        P.eq("label.second_opens", e.editorPort().openProject("Gears", 2, why) ? 1 : 0, 1);
+        e.settle();
+        P.near("label.second_on_pitch", static_cast<double>(dial(e, 0)), 3.0, 0.0);
+        P.eq("label.second_text", e.getParameters()[0]->getCurrentValueAsText() == "PITCH" ? 1 : 0, 1);
+        // A project from before labels: the number, as before (2 is TRUCK now).
+        rewrite(dir, "Gears", "Old gears", [](juce::var& old) {
+            old.getDynamicObject()->setProperty("name", "Old gears");
+            for (const char* list : { "versions", "presets" })
+                for (juce::var& item : *old[list].getArray())
+                    for (juce::var& d : *item["dials"].getArray())
+                        d.getDynamicObject()->removeProperty("label");
+        });
+        P.eq("label.old_applied", e.editorPort().applyPreset("Old gears", "On pitch", why) ? 1 : 0, 1);
+        e.settle();
+        P.near("label.old_by_number", static_cast<double>(dial(e, 0)), 2.0, 0.0);
+        // Its latest version opened (on 3, PITCH: the number) and saved again unchanged: no version added, the version
+        // given its values' names.
+        P.eq("label.old_opens", e.editorPort().openProject("Old gears", 2, why) ? 1 : 0, 1);
+        e.settle();
+        const bool same = e.editorPort().saveVersion("Old gears", saved, why) && saved.unchanged && saved.number == 2;
+        const juce::var old = juce::JSON::parse(dir.getChildFile("Old gears.fmproject").loadFileAsString());
+        const juce::var v1 = old["versions"][0]["dials"][0], v2 = old["versions"][1]["dials"][0];
+        std::printf("label: an old version saved again: unchanged %d, number %d, versions %d\n", saved.unchanged ? 1 : 0, saved.number,
+                    old["versions"].size());
+        P.eq("label.old_unchanged_no_version", same && old["versions"].size() == 2 ? 1 : 0, 1);
+        P.eq("label.old_gains_label", v2["label"].toString() == "PITCH" && static_cast<int>(v2["value"]) == 3 && !v1.hasProperty("label")
+                                          ? 1 : 0, 1);
+        P.eq("label.removed", pc.deleteProject("Gears", why) && pc.deleteProject("Old gears", why) ? 1 : 0, 1);
     }
 
     // CAP: the newest 100 versions.

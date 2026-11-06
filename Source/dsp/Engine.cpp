@@ -346,10 +346,11 @@ namespace playground
     }
 
     // ---- the audio thread: the dials -------------------------------------------------------------------------------------
-    void Engine::setControls(const std::array<float, kMaxControls>& normalised) noexcept
+    void Engine::setControls(const std::array<float, kMaxControls>& normalised, uint64_t meaning) noexcept
     {
         norm_ = normalised;
         normSet_ = true;
+        meaning_ = meaning;
     }
 
     void Engine::glideControls(int n) noexcept
@@ -360,6 +361,13 @@ namespace playground
         const bool snap = fedPatch_ != current_;
         fedPatch_ = current_;
         moved_ = false;
+        // The dials' carry (Engine.h): while the host's values are in the controls it was made from.
+        const DialCarry& carry = current_->carry();
+        if (snap)
+            carryOver_ = 0;
+        const uint32_t carrying = normSet_ && meaning_ != 0 && meaning_ == carry.from && meaning_ != current_->program()
+                                      ? carry.slots & ~carryOver_
+                                      : 0u;
         bool streaming = false;
         // The circuit dials (Engine.h): the block's last sample at which a bound value changes (-1: none), and whether
         // a switch did (its ramp's window).
@@ -374,7 +382,14 @@ namespace playground
             if (!info.used)
                 continue;
             const bool circuit = ((bound >> c) & 1u) != 0;
-            const float target = normSet_ ? plainOf(info, norm_[static_cast<std::size_t>(c)]) : info.def;
+            float target = normSet_ ? plainOf(info, norm_[static_cast<std::size_t>(c)]) : info.def;
+            if (((carrying >> c) & 1u) != 0)
+            {
+                if (norm_[static_cast<std::size_t>(c)] == carry.fromNorm[static_cast<std::size_t>(c)])
+                    target = carry.plain[static_cast<std::size_t>(c)];
+                else
+                    carryOver_ |= 1u << c;               // moved since: as the host's value says, from now on
+            }
             if (snap || info.type != ControlType::real)
             {
                 const bool changed = g.cur != target || g.moving();

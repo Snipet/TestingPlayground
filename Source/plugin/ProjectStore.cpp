@@ -57,6 +57,8 @@ namespace playground::projectstore
                 auto* o = new juce::DynamicObject();
                 o->setProperty("name", str(d.name));
                 o->setProperty("value", std::isfinite(d.value) ? static_cast<double>(d.value) : 0.0);
+                if (!d.label.empty())
+                    o->setProperty("label", str(d.label));
                 out.add(juce::var(o));
             }
             return out;
@@ -70,7 +72,8 @@ namespace playground::projectstore
                     if (d.isObject())
                     {
                         const double value = static_cast<double>(d["value"]);
-                        out.push_back({ d["name"].toString().toStdString(), std::isfinite(value) ? static_cast<float>(value) : 0.0f });
+                        out.push_back({ d["name"].toString().toStdString(), std::isfinite(value) ? static_cast<float>(value) : 0.0f,
+                                        d.hasProperty("label") ? d["label"].toString().toStdString() : std::string() });
                     }
             return out;
         }
@@ -144,11 +147,26 @@ namespace playground::projectstore
             return out;
         }
 
+        // The labels aside: a label follows from its value and the files' options, and a version saved before labels has
+        // none (saveVersion gives it them).
         bool sameDials(const std::vector<Dial>& a, const std::vector<Dial>& b)
         {
             return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](const Dial& x, const Dial& y) {
                        return x.name == y.name && x.value == y.value;
                    });
+        }
+
+        // The labels `from` has that `to` lacks (the same dials, sameDials), given to `to`: whether any was.
+        bool addLabels(std::vector<Dial>& to, const std::vector<Dial>& from)
+        {
+            bool added = false;
+            for (std::size_t i = 0; i < to.size() && i < from.size(); ++i)
+                if (to[i].label.empty() && !from[i].label.empty())
+                {
+                    to[i].label = from[i].label;
+                    added = true;
+                }
+            return added;
         }
 
         void fail(std::string* why, const std::string& what)
@@ -601,11 +619,13 @@ namespace playground::projectstore
             {
                 saved.number = last.number;
                 saved.unchanged = true;
-                // The same program: answers it lacks (a refine since it was saved) join it, as no version is added.
+                // The same program: answers it lacks (a refine since it was saved) join it, as no version is added, and so
+                // do its values' names (a version saved before labels).
                 std::vector<Answer> merged = mergedAnswers(last.circuits, circuits);
                 const bool more = merged != last.circuits;
                 last.circuits = std::move(merged);
-                if (p.name != tidy || more)              // the same project, named in another case now, or answered
+                const bool named = addLabels(last.dials, dials);
+                if (p.name != tidy || more || named)     // the same project, named in another case now, answered, labelled
                 {
                     p.name = tidy;
                     if (!write(std::move(p), why))

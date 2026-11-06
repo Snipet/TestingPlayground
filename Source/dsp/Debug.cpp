@@ -1798,6 +1798,10 @@ namespace playground::measure
 
         Writers writers(files);
         std::vector<Traced> traced;
+        // The effect's input as renderSound plays it (its own input, a recording's, aside).
+        const int input = vr.render.signal >= 0 && vr.render.signal <= static_cast<int>(ViewInput::silence) ? vr.render.signal
+                                                                                                              : static_cast<int>(vr.input);
+        const bool impulseIn = !kInstrument && q.render.input == nullptr && input == static_cast<int>(ViewInput::impulse);
         if (find != TraceFind::none)
         {
             std::vector<Found> found;
@@ -1816,12 +1820,14 @@ namespace playground::measure
             const auto unexplained = [&](const Found& f) {
                 return !any || explained == static_cast<std::size_t>(-1) || (f.kind == TraceFind::dc ? f.settled : f.at) + 1 < explained;
             };
-            if (any || find == TraceFind::click)
+            // The effect's test impulse: its steps, and its echoes', are the response it plays, never a click (measure's
+            // impulse render marks none either).
+            if ((any || find == TraceFind::click) && !impulseIn)
                 for (const Found& f : findClicks(x, any ? 1 : kMaxProblems))
                     if (unexplained(f))
                         found.push_back(f);
             if (any || find == TraceFind::silence)
-                if (Found f = findSilence(x, vr.render.signal >= 0 ? vr.render.signal : q.input, q.render.input != nullptr);
+                if (Found f = findSilence(x, input, q.render.input != nullptr);
                     f.kind != TraceFind::none && unexplained(f))
                     found.push_back(f);
             if (any || find == TraceFind::dc)
@@ -1857,7 +1863,9 @@ namespace playground::measure
                 if (any || find == TraceFind::runaway)
                     checked.push_back("a runaway (the guard's clip, a field past 1e6 at a thousand times its first 10 ms)");
                 if (any || find == TraceFind::click)
-                    checked.push_back("clicks (no step stands out from those around it)");
+                    checked.push_back(impulseIn ? "clicks (none looked for: the input is the test impulse, whose steps and their "
+                                                  "echoes are the response, not clicks)"
+                                                : "clicks (no step stands out from those around it)");
                 if (any || find == TraceFind::silence)
                     checked.push_back(kInstrument ? "silence while a key is held" : "silence while the input plays");
                 if (any || find == TraceFind::dc)

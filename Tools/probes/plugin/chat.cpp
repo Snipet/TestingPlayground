@@ -56,6 +56,16 @@
 //            what it shows, drawn on the message thread by the GPU on this Mac (the text says so); the user's view
 //            stays; with the GPU forced off (editor/Picture.h's test hook), a picture still, the text saying each
 //            shader shows as a striped placeholder and why; the saved session keeps no picture
+//   PANELSTATE view_panel's values and at, over MCP on a processor of its own playing a program whose fields tell
+//            the time: values draws a Shared field, a dial and the output's level as asked (the text says so, and what
+//            the displays read), names the one that is no dial or field with the panel's fields, refuses a dial's word
+//            it has not, and moves nothing that plays; at renders the program offline to 0.5 s, a scenario's move of
+//            the gain on the way, and draws its fields (the seconds 0.500 in the instance and in Shared, the gain 0.80);
+//            values over at; a moment past the render's end; a moment in the first host block metered from the first
+//            sample (the effect's impulse at 0); at without seconds, past 20 s, with try_edits and values not an object
+//            refused with no picture (plugin.chat.view_panel.at.png); at's dials_from as view_sound's: the gain moved
+//            (G 0.90), then the defaults (G 0.50, the text's first line saying so); a snapshot, a window and base_hz
+//            refused
 //   CIRCUIT  edit_circuit through the agent, on the Tube Screamer's netlist (screamer.cir, as pedal.cir) shown in an
 //            editor's Schematic view: each command (add with and without at, place, connect, disconnect, set, rename, delete,
 //            layout) gives apply's exact text, merged into the tab as one undo step, and the parts it changed flash; a
@@ -66,23 +76,55 @@
 //            overwritten (the commands run again on the new text), a second fails ("pedal.cir changed while drawing: try
 //            again"); nor is one made in the view no frame has synced yet (the view gives it to the processor at once);
 //            the result holds generate()'s error and warning; a short netlist's result is its whole text, and
-//            seen; write_file of a netlist without *@ lines keeps the drawing and says so; view_panel's view
+//            seen; a long one's (past 4,000 bytes) is seen when the result lists every line it changed and Claude had
+//            seen the text it edited, not with more changed than it lists nor after the user's edit planted between
+//            the read and the write; write_file of a netlist without *@ lines keeps the drawing and says so; view_panel's view
 //            "schematic": a PNG at 100 % with every part labelled, its text giving each part line's place and the pins'
 //            points; the user's view, file views and tab as they were
 //   FILES    read_file by lines (exactly those, numbered, after the line count and version; to the end; past it
 //            refused; numbers past an int's range clamped or refused), by a text (the lines that hold it with two
-//            around each, groups apart; none); a part read is not the file seen, nor is an edit after it (the next
-//            state sends it, with the user's line and the edit, and names unchanged a file read whole), and an edit of
-//            a file seen is seen; edit_file's miss gives the closest passage, numbered, and what differs (the
-//            characters; only the whitespace; a fragment of a long line, a letter off, gets that line), a passage that
-//            occurs four times names its lines; a list with one bad edit changes nothing and names it; a good one is
-//            one write the editor undoes in one step, its result the line count and version; `expected` refuses a write
-//            after the user's edit, keeps it and shows its line (the result's first line naming the edit), and with the
-//            version it gives the write goes; given the oldest of the versions kept, it still shows the lines changed;
-//            edit_circuit's result gives its version, and an `expected` from before it is refused as Claude's own change
+//            around each, groups apart; none); SEARCH: a regex (dsp/Regex.h: RE2's syntax over a table of patterns and
+//            lines, \Q...\E's last character the one a repetition repeats; backreferences, lookaround, a**, a bound
+//            past 1000, a pattern too large (its program, or the work of writing it out), \p and a range backwards
+//            refused in words; nested counts of what writes nothing compiled at once; (a+)+$, (a|aa)+$ and (a*)*c over
+//            100,000 a's and a b at most a few steps a character, in under a second, and a pattern of many states
+//            stopped at its steps), find with no name in every file (a pattern: the count in each file, then each one's
+//            line count, version and lines; a text and a pattern found in another case; none), a pattern in one file,
+//            refused ones (a pattern it does not take, saying how to find the text itself; from with no name; no name
+//            and no find), and a pattern of many states over a 30,000-character line stopped at its 20 million steps,
+//            saying where, in one file and in every file (a line found before it: none counted only in the files
+//            searched, and what was not searched named), the steps one budget across the lines and files of a call
+//            (stopped in a second file where neither alone spends it); a part read is not the file seen, nor is an edit
+//            after it (the next state sends it, with the user's line and the edit, and names unchanged a file read
+//            whole), and an edit of a file seen is seen; edit_file's miss gives the closest passage, numbered, and what
+//            differs (the characters; only the whitespace; a fragment of a long line, a letter off, gets that line), a
+//            passage that occurs four times names its lines; a list with one bad edit changes nothing and names it; a
+//            good one is one write the editor undoes in one step, its result the line count and version; `expected`
+//            refuses a write after the user's edit, keeps it and shows its line (the result's first line naming the
+//            edit), and with the version it gives the write goes; given the oldest of the versions kept, it still shows
+//            the lines changed; edit_circuit's result gives its version, and an `expected` from before it is refused as
+//            Claude's own change; edit_file's files (MULTI): one bad edit in the second file changes neither; files
+//            beside name is refused; two files in one write, the result a line each and the tool's row naming both,
+//            merged as one undo step across their tabs (Cmd-Z in either tab undoes both, Cmd-Shift-Z in the other
+//            redoes both; a tab typed in since keeps its typing and its edit while the other's Cmd-Z undoes its own);
+//            the user's typing planted between the read and the write is kept and the edits run again on it, and with
+//            that file's expected nothing is written to either; the user's undo of Claude's edit back to a text it
+//            read before: the edit's version refused as the user's change (twice), never Claude's own; a unified diff of two files (git's headers, a hunk
+//            whose lines occur twice placed by its @@ line, a blank context line whose space was lost, a last line
+//            without its line end) in one step Cmd-Z undoes; a hunk that misses gives the closest passage and changes
+//            nothing; a diff that makes a file is refused; hunks of new lines alone go at the start and after a last
+//            line with no line end; a hunk's lines occurring three times go to the occurrence nearest its @@ line, and
+//            in another file only as the hunk before moved it; a context line that lost its space or was indented with
+//            a tab, before -/+ lines, a bare @@ line and git's header-only blocks (a rename, an empty file made) are
+//            refused, nothing changed; the list sent as a JSON string is read as the list; 42 hunks for one file go in
+//            one call; undo through two multi-file changes and an edit of one file: Cmd-Z twice undoes both changes in
+//            both files, Cmd-Shift-Z and Cmd-Y redo them though the tab's history went back past them; in a netlist's
+//            Schematic view Cmd-Z undoes the change in both files and the drawing loses its part; a session loaded over
+//            two tabs is one step; a fresh start ends the groups
 //   SOUND    view_sound through the agent (a program that sounds): its result a PNG of 1120 x 800 and what it shows,
 //            the tool's entry with the picture's thumbnail (480 px), the session without the PNG but with the thumbnail;
-//            a program that does not compile draws nothing and says why
+//            a program that does not compile draws nothing and says why; with a window, a PNG that shades it and words
+//            that say the average spectrum and the RMS are over it
 //   CHECKS   set_checks: its result measures them at once (one passes, one fails), saying the count and the one that
 //            fails alone (the card has both); "Done." while one fails: the next
 //            request carries the results as the user's line and the turn goes on, the history valid; a dial set and a
@@ -90,22 +132,57 @@
 //            program's that played), and the turn ends; run_program after a default changed lists the dials, and
 //            again says them unchanged in a line; one card a turn with its rows,
 //            a note that Claude went on; checks that cannot pass: twice, then the turn ends ("will not ask again"); a
-//            metric that is none refused; a turn that only talks is not sent on; the session keeps them (and loads
+//            metric that is none refused; a turn that only talks is not sent on, nor one that only lists them, nor one
+//            that only sweeps a dial (tune_dials' sweep sets nothing); the
+//            session keeps them (and loads
 //            them); clearChecks forgets them (a note),
 //            and a turn after it goes on no more
 //   CHECKDIALS a check that passes at the defaults fails once the user turns the level (gain) up, and its FAIL line
 //            names that dial with its value and default; dials_from snapshot measures the dials as they were when set
 //            (the user's move aside), shows so in the card, is saved with its snapshot and loads; defaults measures at
 //            the defaults; a word it does not take is refused; a failing check at the defaults sends the turn on with
-//            words that say each check takes its own dials (not "the dials as they are now")
+//            words that say each check takes its own dials (not "the dials as they are now"), and its FAIL line, the
+//            user's dial turned up, says the dials as they are do not affect it (no dial named as moved); measure_output,
+//            view_sound and trace take the dials as the user has them, or with dials_from defaults at the defaults,
+//            the first line saying so, and refuse snapshot; compare's dials defaults puts the dials no side sets at
+//            the defaults (the first line saying so; own lays a {dials} side over the user's), and refuses a word it
+//            does not take; view_sound's picture through MCP at least 800 px wide
+//   CHECKEDIT set_checks without checks lists them (none: says so), numbered, each as set_checks takes it (the
+//            label, metric, bound, notes, dials, scenario, dials_from, current too, and snapshot; an effect's without
+//            an instrument's settings; numbers as written); a listed check merged back reads the same (one from a
+//            snapshot, the user's dial moved since, keeps its own, and the result says so); merge by label (case aside:
+//            a new bound), a label added, by index (renamed: the result names the old label and the new), dials_from
+//            snapshot on the merged alone; an item's own dials_from standing for the call's, the result saying how
+//            each check takes its dials; refused, nothing changed: an index past the list, a mode it does not take,
+//            merge without checks, a label none has, a label two share, on remove an index whose check has another
+//            label; remove by label, by index (its label, case aside, that check's), the last one clearing them; a
+//            check whose dials name a dial the program has not FAILs saying so; a run that renames the dial two checks
+//            name (one in its dials, one moving it) names both checks and each FAILs for it, names apart a check from a
+//            snapshot that holds it (the new name at its default; it passes), and the program back, they pass
+//   WINDOW   the render settings' window through MCP: measure_output's report over it; a window it cannot take refused
+//            (to before from, from below 0, to past 20 s, from left out, a key it has not, not an object, under 0.01 s)
+//            and the least taken; trace and compare refusing one; a check with
+//            one names it on its line and in the card, is saved with it and measures the same once loaded, and a
+//            failing one says so; tune_dials takes one
+//   SPECTRUM measure_output's spectrum through MCP: an octave's, a third's and a semitone's bands in the report (an
+//            instrument's levels while held, an effect's noise's gain), a width it does not take refused; every report
+//            ending with the metrics, name=value
+//   BASE     an instrument's base_hz (off_order_db's base) through MCP: the report's orders line names it, one under 1
+//            Hz, over 20 kHz or not a number refused; a check with one names it on its line, is saved with it and loads
 //   TUNE     tune_dials: a level for an RMS (an instrument) or a gain for a gain (an effect): the goal met, the dial
-//            set (measured afterwards, it gives the goal); an unknown dial an error result
+//            set (measured afterwards, it gives the goal); an unknown dial an error result; a sweep of two values, its
+//            table, the dial left as it was; a sweep that is no list refused
 //   TRIAL    try_edits (ChatScenario.h): measure_output with a passage edited and a file added on a copy says so in
 //            its first line and renders it, the editor's files untouched; an edit whose text is not there is an error
 //            that names it; a scenario through the agent is in the report, and one that cannot be is refused naming
 //            its part; a check that would play the recording is refused
 //   COMPARE  compare through the agent: the editor against itself with a trial edit that halves the level shows a
-//            gain of 0.5; version:N with no project open says so; dials "current" keeps a {dials} side's own
+//            gain of 0.5; version:N with no project open says so; dials "current" keeps a {dials} side's own; b_rate
+//            96000: the editor at both rates compared by levels, bands and metrics (they agree), the picture with no
+//            difference line; a rate under 8000, two rates with one under 40000 and the effect's noise refused, b_rate
+//            at A's rate (the effect's noise with it) the ordinary comparison; previous_run: none on a fresh plugin;
+//            after the halving edited and run, previous_run against playing a gain of 0.5 (before poll() takes the
+//            run and after), and 2 once run back; none after a state is loaded into a new processor
 //   TRACE    trace through the agent (dsp/Debug.h): the program that sounds has nothing to find; a trial edit that makes
 //            its gain a NaN finds it at the first sample, in a local, the editor untouched; the recording, which there is
 //            none of yet, and a find it does not know are errors that say so; with notes, the times and a dial asked for
@@ -176,6 +253,7 @@
 #include "plugin/Processor.h"
 
 #include "dsp/Measure.h"
+#include "dsp/Regex.h"
 #include "fminus/CirDoc.h"
 
 #include "Library.h"
@@ -223,6 +301,42 @@ namespace
                    "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
                    "        for (int i = 0; i < n; ++i)\n        {\n"
                    "            left[i] *= level[i];\n            right[i] *= level[i];\n        }\n    }\n};\n";
+    }
+
+    // A program whose fields tell the time (view_panel's at): Shared's clock and the main module's t, the seconds its
+    // instance has played (an instrument's from its note), and g, its gain dial as the last call saw it; a panel of
+    // readouts of them, a scope of t, and a meter of the output.
+    pg::Sources clockProgram()
+    {
+        const std::string shared = "module Shared\n{\n    float clock;\n};\n\n";
+        const std::string fields = "    Shared* shared;\n"
+                                   "    param float gain [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
+                                   "    float inv, t, g, ph, step;\n"
+                                   "    void init(float rate) { inv = 1.0f / rate; step = 220.0f * inv; }\n";
+        const std::string tell = "        t += n * inv;\n        shared->clock = t;\n        g = gain[n - 1];\n";
+        const std::string main =
+            pg::product::kIsInstrument
+                ? "module Voice\n{\n" + fields + "    void start(float note, float v) { t = 0; }\n"
+                  "    bool process(float* restrict left, float* restrict right, int n)\n    {\n"
+                  "        for (int i = 0; i < n; ++i)\n        {\n"
+                  "            const float out = 0.25f * gain[i] * sinf(6.28318531f * ph);\n"
+                  "            ph += step;\n            if (ph >= 1) ph -= 1;\n"
+                  "            left[i] += out;\n            right[i] += out;\n        }\n" + tell + "        return true;\n    }\n};\n"
+                : "module Effect\n{\n" + fields +
+                  "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                  "        for (int i = 0; i < n; ++i)\n        {\n"
+                  "            left[i] *= gain[i];\n            right[i] *= gain[i];\n        }\n" + tell + "    }\n};\n";
+        const std::string gui = "row gap=10 {\n"
+                                "    section \"STATE\" {\n"
+                                "        knob gain\n"
+                                "        number t label=\"T\" decimals=3\n"
+                                "        number shared->clock label=\"CLOCK\" decimals=3\n"
+                                "        number g label=\"G\" decimals=2\n"
+                                "        scope t label=\"TRACE\" min=0 max=4\n"
+                                "        meter out label=\"OUT\"\n"
+                                "    }\n"
+                                "}\n";
+        return { { pg::kProgramName, shared + main }, { "panel.gui", gui } };
     }
 
     // A program that sounds, with a dial to fix: an instrument's sine with its level (dB) and a release (s, 60 dB); an
@@ -1170,6 +1284,130 @@ PROBE(plugin, chat)
         P.eq("view.session_line", has(saved, "A picture of the panel or the sound: not kept in the session") && has(saved, "pictures_cut") ? 1 : 0, 1);
     }
 
+    // ---- PANELSTATE: view_panel's values and at, on a processor of its own --------------------------------------------
+    {
+        pg::Processor sp;                                     // its program and its dials stay out of the rest
+        pg::ChatAgent& sa = sp.chatAgent();
+        {
+            pg::Draft d;
+            d.files = clockProgram();
+            sp.editorPort().setDraft(d);
+            sp.editorPort().run(d.files);
+            sp.settle();
+            const pg::CompileStatus st = sp.editorPort().status();
+            P.eq("panelstate.program_plays", st.ok && sp.editorPort().running() == d.files ? 1 : 0, 1);
+            if (!st.ok)
+                std::printf("%s\n", st.errors.c_str());
+        }
+        // A call of Claude Desktop's (the picture is drawn at the next poll, here): its text, and its PNG's bytes.
+        const auto look = [&](const juce::var& in, std::string& png, bool& error) {
+            pg::ChatAgent::McpResult r;
+            std::atomic<bool> done{ false };
+            std::thread desktop([&] {
+                r = sa.mcpCall("view_panel", in);
+                done.store(true);
+            });
+            for (int k = 0; k < 6000 && !done.load(); ++k)
+            {
+                sp.poll();
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            desktop.join();
+            png.clear();
+            for (const juce::var& b : arr(r.content))
+                if (str(b, "type") == "image")
+                    png = str(b, "data");
+            error = r.isError;
+            return toolText(r);
+        };
+        std::string png, plain;
+        bool error = false;
+        const std::string none = look(input({}), plain, error);
+        std::printf("view_panel, as it plays: %s\n", none.c_str());
+        P.eq("panelstate.plain_says_nothing_more", !error && has(none, "the displays show the sound playing now.")
+                                                       && !has(none, "The displays shown read") ? 1 : 0, 1);
+        // values: a field (Shared's), a dial, the output's level and a name that is none; nothing that plays moves.
+        const float gainBefore = sp.getParameters()[0]->getValue();
+        const std::string valued = look(input({ { "values", input({ { "shared->clock", 12 }, { "gain", 0.9 }, { "out", -6 },
+                                                                     { "zzz", 1 } }) } }),
+                                        png, error);
+        std::printf("view_panel, values: %s\n", valued.c_str());
+        P.eq("panelstate.values_png", !error && png.rfind("iVBORw0KGgo", 0) == 0 && png != plain ? 1 : 0, 1);
+        P.eq("panelstate.values_drawn", has(valued, "but shared->clock 12, gain 0.90, out -6 dBFS (as asked).") ? 1 : 0, 1);
+        P.eq("panelstate.values_read", has(valued, "CLOCK 12.000") && has(valued, "OUT -6.0") ? 1 : 0, 1);
+        P.eq("panelstate.values_unknown", has(valued, "No dial or field of the panel is named zzz (its fields: t, shared->clock, g).") ? 1 : 0, 1);
+        P.eq("panelstate.values_nothing_moved", sp.getParameters()[0]->getValue() == gainBefore ? 1 : 0, 1);
+        // A dial by an option it has not: refused in words, the picture drawn all the same.
+        const std::string worded = look(input({ { "values", input({ { "gain", "loud" } }) } }), png, error);
+        P.eq("panelstate.values_dial_takes_a_number", !error && has(worded, "Not drawn: gain takes a number.") && !has(worded, "No dial") ? 1 : 0, 1);
+
+        // at: the program that plays rendered offline to its moment, a dial moving on the way (the scenario); values
+        // over it.
+        juce::var moves = juce::Array<juce::var>{ input({ { "dial", "gain" }, { "at", 0.1 }, { "to", 0.8 } }) };
+        juce::var at = input({ { "seconds", 0.5 }, { "scenario", input({ { "automate", moves } }) } });
+        if constexpr (!pg::product::kIsInstrument)
+            at.getDynamicObject()->setProperty("input", "sine");
+        const std::string moment = look(input({ { "at", at } }), png, error);
+        std::printf("view_panel, at: %s\n", moment.c_str());
+        {
+            juce::MemoryOutputStream out;
+            if (juce::Base64::convertFromBase64(out, juce::String(png)))
+                juce::File(juce::String(probe::outPath("plugin.chat.view_panel.at.png"))).replaceWithData(out.getData(), out.getDataSize());
+        }
+        P.eq("panelstate.at_png", !error && png.rfind("iVBORw0KGgo", 0) == 0 ? 1 : 0, 1);
+        P.eq("panelstate.at_said", has(moment, "the displays and the dials show the state 0.50 s into an offline render of the "
+                                               "program that plays (")
+                                       && has(moment, "nothing that plays changed)") ? 1 : 0, 1);
+        // The fields at 0.5 s: the instance's seconds and Shared's clock (an instrument's from its note at 0), the
+        // gain the move left.
+        P.eq("panelstate.at_fields", has(moment, "T 0.500") && has(moment, "CLOCK 0.500") && has(moment, "G 0.80") ? 1 : 0, 1);
+        P.eq("panelstate.at_nothing_moved", sp.getParameters()[0]->getValue() == gainBefore ? 1 : 0, 1);
+        const std::string over = look(input({ { "at", input({ { "seconds", 1.25 } }) }, { "values", input({ { "t", 7 } }) } }), png, error);
+        std::printf("view_panel, at and values: %s\n", over.c_str());
+        P.eq("panelstate.values_over_at", has(over, "1.25 s into") && has(over, ", and t 7 (as asked).") && has(over, "T 7.000")
+                                              && has(over, "CLOCK 1.250") ? 1 : 0, 1);
+        // A moment past the render's end: it goes on, silent, to it.
+        const std::string later = look(input({ { "at", input({ { "seconds", 4 } }) } }), png, error);
+        P.eq("panelstate.at_past_the_end", !error && has(later, "4.00 s into") && has(later, "T 4.000") ? 1 : 0, 1);
+        // A moment in the first host block, metered from the first sample: the effect's impulse at 0 (0.5 at the gain's
+        // 0.5), the synth's note.
+        juce::var soon = input({ { "seconds", 0.004 } });
+        if constexpr (!pg::product::kIsInstrument)
+            soon.getDynamicObject()->setProperty("input", "impulse");
+        const std::string first = look(input({ { "at", soon } }), png, error);
+        std::printf("view_panel, at 4 ms: %s\n", first.c_str());
+        P.eq("panelstate.at_first_block_metered", !error && has(first, "0.00 s into") && has(first, "OUT -") && !has(first, "OUT -INF")
+                                                      && (pg::product::kIsInstrument || has(first, "OUT -12.0")) ? 1 : 0, 1);
+        // Refused, with no picture: no seconds, too late a moment, values not an object.
+        const std::string noSeconds = look(input({ { "at", input({ { "notes", juce::Array<juce::var>{ 60 } } }) } }), png, error);
+        P.eq("panelstate.at_needs_seconds", error && png.empty() && has(noSeconds, "at needs seconds") ? 1 : 0, 1);
+        look(input({ { "at", input({ { "seconds", 25 } }) } }), png, error);
+        P.eq("panelstate.at_at_most_20", error && png.empty() ? 1 : 0, 1);
+        const std::string notObject = look(input({ { "values", 3 } }), png, error);
+        P.eq("panelstate.values_an_object", error && has(notObject, "values is an object") ? 1 : 0, 1);
+        juce::var edits = juce::Array<juce::var>{ input({ { "name", pg::kProgramName }, { "old_text", "t += n * inv;" },
+                                                          { "new_text", "t += 2 * n * inv;" } }) };
+        const std::string trial = look(input({ { "at", input({ { "seconds", 0.5 }, { "try_edits", edits } }) } }), png, error);
+        P.eq("panelstate.at_no_trial_edits", error && png.empty() && has(trial, "try a change with view_sound") ? 1 : 0, 1);
+        // dials_from, as view_sound reads it: the dials as they are (the gain moved), else the defaults, said first; a
+        // snapshot, a window and base_hz refused.
+        sp.getParameters()[0]->setValueNotifyingHost(pg::normOf(sp.control(0), 0.9f));
+        sp.poll();
+        const std::string asTheyAre = look(input({ { "at", input({ { "seconds", 0.5 } }) } }), png, error);
+        P.eq("panelstate.at_current_dials", !error && has(asTheyAre, "G 0.90") && !has(asTheyAre, "at their defaults") ? 1 : 0, 1);
+        const std::string byDefault = look(input({ { "at", input({ { "seconds", 0.5 }, { "dials_from", "defaults" } }) } }), png, error);
+        std::printf("view_panel, at with dials_from defaults: %s\n", byDefault.c_str());
+        P.eq("panelstate.at_dials_from_defaults", !error && byDefault.rfind("The dials not named are at their defaults.\nThe program's panel", 0) == 0
+                                                      && has(byDefault, "G 0.50") ? 1 : 0, 1);
+        const std::string snapshot = look(input({ { "at", input({ { "seconds", 0.5 }, { "dials_from", "snapshot" } }) } }), png, error);
+        P.eq("panelstate.at_no_snapshot", error && png.empty() && has(snapshot, "at: dials_from is current") ? 1 : 0, 1);
+        const std::string windowed = look(input({ { "at", input({ { "seconds", 0.5 }, { "window", input({ { "from", 0.2 }, { "to", 0.4 } }) } }) } }),
+                                          png, error);
+        P.eq("panelstate.at_no_window", error && png.empty() && has(windowed, "at takes no from_seconds, to_seconds or window") ? 1 : 0, 1);
+        const std::string based = look(input({ { "at", input({ { "seconds", 0.5 }, { "base_hz", 110 } }) } }), png, error);
+        P.eq("panelstate.at_no_base_hz", error && png.empty() && has(based, "at takes no base_hz") ? 1 : 0, 1);
+    }
+
     // ---- CIRCUIT ---------------------------------------------------------------------------------------------------------
     {
         const std::string screamer = cir::written(pg::findLibraryFile("screamer.cir")->source);
@@ -1576,6 +1814,65 @@ PROBE(plugin, chat)
             if (juce::Base64::convertFromBase64(png, juce::String(data)))
                 juce::File(juce::String(probe::outPath("plugin.chat.view_schematic.png"))).replaceWithData(png.getData(), png.getDataSize());
         }
+        {
+            // A long netlist (past 4,000 bytes: no whole text in the result) is seen after an edit whose every changed
+            // line the result lists, as an edit_file's is, when the chat's Claude had seen the text it edited: the next
+            // state names it unchanged. Not when more lines changed than the result shows, nor when the user's edit
+            // came between the tool's read and its write (the commands ran again on a text Claude never saw).
+            std::string longText = "* long.cir: thirty-one resistors on one net, and a long note\n.input u in\n.output vout a\nR0 in a 1k\n";
+            for (int k = 1; k <= 31; ++k)
+                longText += "R" + std::to_string(k) + " a 0 100k\n";
+            for (int k = 1; k <= 40; ++k)
+                longText += "* the note's line " + std::to_string(k) + ", long enough that the netlist runs well past four thousand bytes\n";
+            longText += ".end\n";
+            pg::Draft ld = processor.editorPort().draft();
+            ld.files.push_back({ "long.cir", longText });
+            processor.editorPort().setDraft(ld);
+            host.tick(2);
+            const auto stateAfter = [&](const char* message) {
+                script->add(fake::Response::ok(fake::Sse().start().text("Seen.").end()));
+                agent.send(message);
+                agent.waitIdle();
+                const juce::Array<juce::var> m = messagesOf(script->body(script->postCount() - 1));
+                std::string state;
+                for (const auto& b : arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {})))
+                    if (str(b, "text").rfind("<plugin_state>", 0) == 0)
+                        state = str(b, "text");
+                return state;
+            };
+            const auto named = [](const std::string& state) { return has(state, "<file name=\"long.cir\" lines=\""); };
+            const auto whole = [](const std::string& state) { return has(state, "<file name=\"long.cir\">\n"); };
+            const Turn t = drawTurn("toolu_c_long", "long.cir", { "set R1 47k" }, "");
+            const std::string after = stateAfter("and now?");
+            std::printf("a long netlist edited: %s\n", t.result.substr(0, t.result.find('\n')).c_str());
+            P.eq("circuit.long_seen", !t.error && fileText("long.cir").size() > 4000 && has(t.result, " bytes: read_file shows it whole.)")
+                                          && has(t.result, "47k") && !has(t.result, " more)\n") && named(after) && !whole(after) ? 1 : 0, 1);
+            const Turn many = drawTurn("toolu_c_long_many", "long.cir", { "rename a b" }, "");
+            const std::string afterMany = stateAfter("and the net?");
+            std::printf("a long netlist, a net renamed: %s\n", many.result.substr(0, many.result.find('\n')).c_str());
+            P.eq("circuit.long_many_unseen", !many.error && has(many.result, " more)\n") && has(fileText("long.cir"), " b 0 100k")
+                                                 && whole(afterMany) ? 1 : 0, 1);
+            agent.setCircuitWriteHookForTests([&](int attempt) {
+                if (attempt != 0)
+                    return;
+                pg::Draft d = processor.editorPort().draft();
+                for (pg::SourceFile& f : d.files)
+                    if (f.name == "long.cir")
+                        f.text.insert(f.text.find(".end"), "* the user's line\n");
+                processor.editorPort().setDraft(d);
+            });
+            const Turn clash = drawTurn("toolu_c_long_clash", "long.cir", { "set R2 47k" }, "");
+            agent.setCircuitWriteHookForTests({});
+            const std::string afterClash = stateAfter("and the user's line?");
+            P.eq("circuit.long_clash_unseen", !clash.error && !has(clash.result, " more)\n") && has(fileText("long.cir"), "* the user's line\n")
+                                                  && whole(afterClash) && has(afterClash, "* the user's line\n") ? 1 : 0, 1);
+            pg::Draft back = processor.editorPort().draft();
+            back.files.erase(std::remove_if(back.files.begin(), back.files.end(), [](const pg::SourceFile& f) { return f.name == "long.cir"; }),
+                             back.files.end());
+            back.active = std::min(back.active, static_cast<int>(back.files.size()) - 1);
+            processor.editorPort().setDraft(back);
+            host.tick(2);
+        }
         processor.editorPort().setDraft(saved);
     }
 
@@ -1638,6 +1935,124 @@ PROBE(plugin, chat)
                                       && has(four, "\n12\t" + lineOf(12) + "\n") && !has(four, "\n4\t") ? 1 : 0, 1);
         const std::string none = toolText(call("read_file", input({ { "name", "notes.fm" }, { "find", "nothing like it" } })));
         P.eq("files.find_none", has(none, "; no line holds \"nothing like it\".") ? 1 : 0, 1);
+
+        // SEARCH: find with regex (dsp/Regex.h), and find with no name, in every file (the tabs' order: each file's line
+        // count, version and lines, two around each), a part read like any. The engine first: RE2's syntax (a table of
+        // patterns and lines), its refusals in words, and its time linear in the text whatever the pattern.
+        {
+            struct Case
+            {
+                const char* pattern;
+                const char* text;
+                bool matches;
+            };
+            const Case cases[] = {
+                { "abc", "xxabcxx", true },          { "abc", "xxabxcx", false },       { "^abc", "xabc", false },
+                { "abc$", "xabc", true },            { "a.c", "a\xcf\x80" "c", true },  { "[^a-c]x", "ax", false },
+                { "\\bgain\\b", "float gain;", true }, { "\\bgain\\b", "gains", false }, { "\\Bain", "gain", true },
+                { "colou?r", "color", true },        { "^a{2,3}$", "aaaa", false },     { "^a{2,}$", "aaaaa", true },
+                { "x{,3}", "x{,3}", true },          { "(?:foo|bar)baz", "xbazbaz", false }, { "(foo|bar)baz", "barbaz", true },
+                { "(?i)GAIN", "gain", true },        { "GAIN", "gain", false },         { "(?i:G)AIN", "gain", false },
+                { "[[:digit:]]+\\.\\d+f", "1.5f", true }, { "\\w+\\s*\\(", "foo (", true }, { "\\Qa.b(\\E", "axb(", false },
+                { "\\Qa.b(\\E", "a.b(", true },      { "\\x{3c0}", "\xcf\x80", true },  { "(?P<n>ab)c", "abc", true },
+                { "[]a]", "]", true },               { "[^\\d]", "5", false },          { "(?i)[^a]", "A", false },
+                { "^$", "", true },                  { "a|", "zzz", true },             { "(a*)*b", "aaab", true },
+                { "^\\Qab\\E*$", "a", true },        { "^\\Qab\\E*$", "abb", true },     { "^\\Qab\\E*$", "abab", false },
+                { "^\\Qa|b)\\E$", "a|b)", true },    { "^(a){0}b$", "b", true },        { "^(?:a{0}|b){3}$", "bb", true },
+            };
+            std::string wrong;
+            for (const Case& c : cases)
+            {
+                pg::regex::Regex re = pg::regex::Regex::compile(c.pattern);
+                std::uint64_t steps = 100000;
+                if (!re.ok() || (re.search(c.text, steps) == pg::regex::Found::yes) != c.matches)
+                    wrong += std::string(" ") + c.pattern + (re.ok() ? "" : " (" + re.error() + ")");
+            }
+            std::printf("regex: %zu cases, wrong:%s\n", std::size(cases), wrong.empty() ? " none" : wrong.c_str());
+            P.eq("files.regex_syntax", wrong.empty() ? 1 : 0, 1);
+            const auto refused = [](const char* pattern) { return pg::regex::Regex::compile(pattern).error(); };
+            P.eq("files.regex_refusals", has(refused("(a)\\1"), "backreferences are not supported") && has(refused("(?=a)"), "lookahead and lookbehind")
+                                             && has(refused("a**"), "bad repetition operator: **") && has(refused("a{1001}"), "at most 1000")
+                                             && has(refused("(a{100}){100}"), "too large") && has(refused("\\p{L}"), "\\p")
+                                             && has(refused("(?:(?:()()()()()()()()()()a){1000}){5}"), "too large")
+                                             && has(refused("\\Q\\E*"), "missing argument to repetition operator: *")
+                                             && refused("[z-a]") == "invalid character class range: z-a (at character 2)" ? 1 : 0, 1);
+            // (a+)+$ and (a|aa)+$ on 100,000 a's and a b: exponential for a backtracking engine, here a few steps a
+            // character; a pattern whose states are many stops at its steps.
+            const std::string aaa = std::string(100000, 'a') + "b";
+            bool linear = true;
+            for (const char* pattern : { "(a+)+$", "(a|aa)+$", "(a*)*c" })
+            {
+                pg::regex::Regex re = pg::regex::Regex::compile(pattern);
+                const std::uint64_t budget = 20000000;
+                std::uint64_t steps = budget;
+                const auto t0 = std::chrono::steady_clock::now();
+                const pg::regex::Found f = re.search(aaa, steps);
+                const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                std::printf("regex %s on %zu characters: %s, %llu steps, %.1f ms\n", pattern, aaa.size(), f == pg::regex::Found::no ? "no" : "?",
+                            static_cast<unsigned long long>(budget - steps), ms);
+                linear = linear && f == pg::regex::Found::no && budget - steps <= (aaa.size() + 1) * (2 * re.size() + 1) && ms < 1000.0;
+            }
+            pg::regex::Regex many = pg::regex::Regex::compile("a{0,1000}b");
+            std::uint64_t few = 1000000;
+            P.eq("files.regex_linear", linear && many.search(aaa, few) == pg::regex::Found::spent && few == 0 ? 1 : 0, 1);
+            // Counts nested over what writes nothing (a{0}, (), \Q\E) write nothing, at once: written out, they would be
+            // 1000^4 copies of nothing (a link's single worker held for hours).
+            {
+                const auto t0 = std::chrono::steady_clock::now();
+                const auto msSince = [&] { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); };
+                bool empty = true;
+                for (const char* pattern : { "(((a{0}){1000}){1000}){1000}", "((((a{0}){1000}){1000}){1000}){1000}",
+                                             "((((){0,1000}){0,1000}){0,1000}){0,1000}", "((((\\Q\\E){2,}){1000}){1000}){1000}x" })
+                {
+                    const pg::regex::Regex re = pg::regex::Regex::compile(pattern);
+                    empty = empty && re.ok() && re.size() <= 2;
+                    if (msSince() > 100.0)
+                        break;                                  // too slow already (seconds, or hours, the next)
+                }
+                const double ms = msSince();
+                std::printf("regex: nested counts of nothing compiled in %.3f ms\n", ms);
+                P.eq("files.regex_compile_bounded", empty && ms < 100.0 ? 1 : 0, 1);
+            }
+        }
+        {
+            const std::string otherVersion = versionIn(toolText(call("read_file", input({ { "name", "other.fm" }, { "from", 1 } }))));
+            const std::string otherLines = "1\t// other.fm\n2\tfloat other(float x) { return x; }\n";
+            // A pattern in every file: the count in each, then each file's lines.
+            const std::string pattern = "\\bv(7|11)\\(|other\\(";
+            const std::string every = toolText(call("read_file", input({ { "find", juce::String(pattern) }, { "regex", true } })));
+            std::printf("find %s, regex, every file:\n%s", pattern.c_str(), every.c_str());
+            std::string around;
+            for (int n = 5; n <= 12; ++n)
+                around += std::to_string(n) + "\t" + lineOf(n) + "\n";
+            P.eq("files.find_every_file", every == "3 lines match \"" + pattern + "\" (notes.fm 2, other.fm 1; none in the other file), with 2 lines "
+                                                   "around each:\nnotes.fm: 12 lines, version " + version + "; lines 7, 11:\n" + around
+                                                   + "other.fm: 2 lines, version " + otherVersion + "; line 2:\n" + otherLines ? 1 : 0, 1);
+            // A text in every file, in another case when none holds it in its own; none anywhere.
+            const std::string cased = toolText(call("read_file", input({ { "name", "" }, { "find", "OTHER(" } })));
+            P.eq("files.find_every_case", cased == "1 line holds \"OTHER(\" (in another case) (other.fm 1; none in the other 2 files), with 2 lines around "
+                                                   "each:\nother.fm: 2 lines, version " + otherVersion + "; line 2:\n" + otherLines ? 1 : 0, 1);
+            const std::string casedPattern = toolText(call("read_file", input({ { "find", "OTHER\\(" }, { "regex", true } })));
+            P.eq("files.find_every_case_regex", casedPattern == "1 line matches \"OTHER\\(\" (in another case) (other.fm 1; none in the other 2 files), with "
+                                                               "2 lines around each:\nother.fm: 2 lines, version " + otherVersion + "; line 2:\n" + otherLines ? 1 : 0, 1);
+            const std::string nowhere = toolText(call("read_file", input({ { "find", "nothing like it" } })));
+            P.eq("files.find_every_none", nowhere == "No line of the 3 files holds \"nothing like it\".\n" ? 1 : 0, 1);
+            // A pattern in one file, as a text's find.
+            const std::string tens = toolText(call("read_file", input({ { "name", "notes.fm" }, { "find", "x \\* 1[0-2]\\.0f" }, { "regex", true } })));
+            P.eq("files.find_regex", has(tens, "notes.fm: 12 lines, version " + version + "; 3 lines match \"x \\* 1[0-2]\\.0f\" (10, 11, 12), with 2 lines around each:\n8\t" + lineOf(8) + "\n")
+                                         && has(tens, "\n12\t" + lineOf(12) + "\n") && !has(tens, "\n7\t") ? 1 : 0, 1);
+            // Refused: a pattern it does not take (in words, and how to find the text itself); from or lines with no
+            // name; no name and no find.
+            const pg::ChatAgent::McpResult open = call("read_file", input({ { "find", "(v7" }, { "regex", true } }));
+            const pg::ChatAgent::McpResult behind = call("read_file", input({ { "name", "notes.fm" }, { "find", "(?<=x)y" }, { "regex", true } }));
+            const pg::ChatAgent::McpResult ranged = call("read_file", input({ { "find", "v7" }, { "from", 3 } }));
+            const pg::ChatAgent::McpResult nameless = call("read_file", input({ { "lines", 3 } }));
+            P.eq("files.find_refused", open.isError && toolText(open) == "find \"(v7\" is not a regex this search takes: missing ): the ( at character 1 is not "
+                                                                         "closed. (Without regex, find looks for its text as it is.)"
+                                           && behind.isError && has(toolText(behind), "lookahead and lookbehind")
+                                           && ranged.isError && toolText(ranged) == "from and lines read one file: give its name too"
+                                           && nameless.isError && has(toolText(nameless), "read_file needs a name (or find alone") ? 1 : 0, 1);
+        }
 
         // A part read is not the file seen: the user edits both files while the chat's Claude listens; it then reads a
         // part of notes.fm and other.fm whole, and edits notes.fm. The next state sends notes.fm again (the user's line
@@ -1768,7 +2183,7 @@ PROBE(plugin, chat)
         const pg::ChatAgent::McpResult guarded = call("edit_file", input({ { "name", "notes.fm" }, { "edits", juce::var(mine) }, { "expected", juce::String(v1) } }));
         std::printf("edit_file with expected, after the user's edit:\n%s\n", allText(guarded).c_str());
         // The result's first line names what the user changed since the last MCP call (the edit, by its file).
-        P.eq("files.hint_names_the_edit", allText(guarded).rfind("(The user changed 1 thing since the last MCP call here: you edited notes.fm. "
+        P.eq("files.hint_names_the_edit", allText(guarded).rfind("(The user changed 1 thing since the last MCP call here: the user edited notes.fm. "
                                                                  "get_status with since shows it.)", 0) == 0 ? 1 : 0, 1);
         P.eq("files.expected_refuses", guarded.isError && has(toolText(guarded), "notes.fm changed since version " + v1 + " (the user's edit, which is kept): nothing was written.")
                                            && has(toolText(guarded), "\n+// the user's line\n") && fileText("notes.fm") == theirs ? 1 : 0, 1);
@@ -1816,6 +2231,425 @@ PROBE(plugin, chat)
                                                      && has(toolText(stale), "tone.cir changed since version " + before + " (now version " + drawn
                                                                                  + ", which one of your own calls gave): nothing was written.")
                                                      && !has(toolText(stale), "the user's edit") && has(fileText("tone.cir"), "22n") ? 1 : 0, 1);
+        }
+        // MULTI: edit_file's files, several files' edits in one write (all or none, each file's version guard), which the
+        // editor merges as one undo step across their tabs; and as a unified diff.
+        {
+            const auto settle = [&] {
+                processor.poll();
+                for (int k = 0; k < 40; ++k)
+                {
+                    host.tick(1);
+                    const int a = panel.activeFile();
+                    if (a >= 0 && panel.editor().text() == fileText(panel.fileName(a)))
+                        break;
+                }
+            };
+            const auto write = [&](const char* name, const std::string& text) {
+                agent.mcpCall("write_file", input({ { "name", name }, { "content", juce::String(text) } }));
+                settle();
+            };
+            const auto edit = [&](const juce::var& in) {
+                const pg::ChatAgent::McpResult r = agent.mcpCall("edit_file", in);
+                settle();
+                return r;
+            };
+            const auto tabOf = [&](const std::string& name) {
+                for (int i = 0; i < panel.fileCount(); ++i)
+                    if (panel.fileName(i) == name)
+                        return i;
+                return -1;
+            };
+            // A key in the text of a tab (shown first by a click on it), then a frame: the Panel gives its files to the
+            // processor.
+            const auto keysIn = [&](const std::string& name, const char* spec) {
+                const funkgui::Point t = panel.centreOfTab(tabOf(name));
+                host.click(t.x, t.y);
+                host.tick(1);
+                const funkgui::Rect eb = panel.editor().bounds();
+                host.click(eb.centreX(), eb.centreY());
+                host.keys(spec);
+                host.tick(2);
+            };
+            const auto files = [](std::initializer_list<juce::var> entries) {
+                juce::Array<juce::var> a;
+                for (const juce::var& e : entries)
+                    a.add(e);
+                return juce::var(a);
+            };
+            write("notes.fm", notes);
+            write("other.fm", other);
+            juce::Array<juce::var> two;
+            two.add(input({ { "old_text", juce::String(lineOf(2)) }, { "new_text", "float v2(float x) { return -x; }" } }));
+            two.add(input({ { "old_text", juce::String(lineOf(9)) }, { "new_text", "float v9(float x) { return -x; }" } }));
+            std::string notesEdited = notes;
+            notesEdited.replace(notesEdited.find(lineOf(2)), lineOf(2).size(), "float v2(float x) { return -x; }");
+            notesEdited.replace(notesEdited.find(lineOf(9)), lineOf(9).size(), "float v9(float x) { return -x; }");
+            std::string otherEdited = other;
+            otherEdited.replace(otherEdited.find("return x;"), 9, "return -x;");
+            const juce::var both = files({ input({ { "name", "notes.fm" }, { "edits", juce::var(two) } }),
+                                           input({ { "name", "other.fm" }, { "old_text", "return x;" }, { "new_text", "return -x;" } }) });
+
+            // A bad edit in the second file: nothing changes in either.
+            const pg::ChatAgent::McpResult oneBad = edit(input({ { "files", files({ input({ { "name", "notes.fm" }, { "edits", juce::var(two) } }),
+                                                                                 input({ { "name", "other.fm" }, { "old_text", "no such line" },
+                                                                                         { "new_text", "x" } }) }) } }));
+            std::printf("edit_file files, one bad:\n%s\n", toolText(oneBad).c_str());
+            P.eq("multi.one_bad_none", oneBad.isError && has(toolText(oneBad), "other.fm: old_text does not occur in other.fm.")
+                                           && has(toolText(oneBad), "Nothing was changed.") && fileText("notes.fm") == notes
+                                           && fileText("other.fm") == other ? 1 : 0, 1);
+            // files with name: refused.
+            const pg::ChatAgent::McpResult mixed = edit(input({ { "name", "notes.fm" }, { "files", both } }));
+            P.eq("multi.mixed_refused", mixed.isError && has(toolText(mixed), "Give files, or name and its edits, not both") ? 1 : 0, 1);
+
+            // Both files in one write: the result names each, the editor's tabs have both, the chat's card one row.
+            const pg::ChatAgent::McpResult applied = edit(input({ { "files", both } }));
+            std::printf("edit_file files:\n%s\n", toolText(applied).c_str());
+            P.eq("multi.applied", !applied.isError
+                                      && toolText(applied).rfind("Edited 2 files, one step the user can undo:\n- notes.fm: 2 edits; now 12 lines, version ", 0) == 0
+                                      && has(toolText(applied), "\n- other.fm: 1 edit; now 2 lines, version ") && fileText("notes.fm") == notesEdited
+                                      && fileText("other.fm") == otherEdited && panel.fileName(panel.activeFile()) == "notes.fm"
+                                      && panel.editor().text() == notesEdited ? 1 : 0, 1);
+            P.eq("multi.entry", lastText(agent.chatState(), pg::ChatEntry::Kind::tool) == "edited notes.fm and other.fm (3 changes)" ? 1 : 0, 1);
+            // Cmd-Z in either tab undoes both (the processor then has both as they were); Cmd-Shift-Z redoes both.
+            keysIn("other.fm", "cmd+z");
+            const bool undone = fileText("notes.fm") == notes && fileText("other.fm") == other;
+            keysIn("notes.fm", "cmd+shift+z");
+            const bool redone = fileText("notes.fm") == notesEdited && fileText("other.fm") == otherEdited;
+            P.eq("multi.one_undo_step", undone && redone ? 1 : 0, 1);
+            // Typed in since: Cmd-Z in notes.fm undoes notes.fm's part alone, and other.fm keeps the typing and the edit.
+            keysIn("other.fm", "q");
+            const std::string typed = fileText("other.fm");
+            keysIn("notes.fm", "cmd+z");
+            P.eq("multi.undo_keeps_typing", typed != otherEdited && fileText("other.fm") == typed && fileText("notes.fm") == notes ? 1 : 0, 1);
+
+            // The user types between the read and the write (planted): nothing is overwritten; the edits run again on
+            // the new text and both files are written. With other.fm's version given, nothing is written to either.
+            write("notes.fm", notes);
+            write("other.fm", other);
+            const auto plant = [&](int attempt) {
+                if (attempt > 0)
+                    return;
+                pg::Draft d = processor.editorPort().draft();
+                for (pg::SourceFile& f : d.files)
+                    if (f.name == "other.fm")
+                        f.text += "// typed meanwhile\n";
+                processor.editorPort().setDraft(d);
+            };
+            agent.setFileWriteHookForTests(plant);
+            const pg::ChatAgent::McpResult plantedWrite = edit(input({ { "files", both } }));
+            P.eq("multi.typing_kept", !plantedWrite.isError && fileText("notes.fm") == notesEdited && fileText("other.fm") == otherEdited + "// typed meanwhile\n" ? 1 : 0, 1);
+            write("notes.fm", notes);
+            write("other.fm", other);
+            const std::string otherVersion = versionIn(toolText(agent.mcpCall("read_file", input({ { "name", "other.fm" } }))));
+            const pg::ChatAgent::McpResult guardedBoth = edit(input({ { "files", files({ input({ { "name", "notes.fm" }, { "edits", juce::var(two) } }),
+                                                                                     input({ { "name", "other.fm" }, { "old_text", "return x;" },
+                                                                                             { "new_text", "return -x;" },
+                                                                                             { "expected", juce::String(otherVersion) } }) }) } }));
+            agent.setFileWriteHookForTests(nullptr);
+            std::printf("edit_file files, other.fm typed in with its version given:\n%s\n", toolText(guardedBoth).c_str());
+            P.eq("multi.expected_none", guardedBoth.isError
+                                            && has(toolText(guardedBoth), "other.fm changed since version " + otherVersion
+                                                                          + " (the user's edit, which is kept): nothing was written to any file.")
+                                            && fileText("notes.fm") == notes && fileText("other.fm") == other + "// typed meanwhile\n" ? 1 : 0, 1);
+
+            // The user's undo of Claude's edit, back to a text Claude read before it: an `expected` of the edit's version is
+            // refused as the user's change, never as one of Claude's own calls (the text now is one a read gave, but
+            // before that version); a second refusal the same, though the first showed it.
+            write("other.fm", other);
+            const std::string readFirst = versionIn(toolText(agent.mcpCall("read_file", input({ { "name", "other.fm" } }))));
+            const std::string own = versionIn(toolText(edit(input({ { "name", "other.fm" }, { "old_text", "return x;" }, { "new_text", "return -x;" } }))));
+            keysIn("other.fm", "cmd+z");
+            const bool undoneByUser = fileText("other.fm") == other;
+            const auto afterUndo = [&] {
+                return toolText(edit(input({ { "name", "other.fm" }, { "old_text", "return -x;" }, { "new_text", "return 2.0f * x;" },
+                                             { "expected", juce::String(own) } })));
+            };
+            const std::string firstRefusal = afterUndo(), secondRefusal = afterUndo();
+            std::printf("edit_file with the edit's version, after the user's undo:\n%s\n", firstRefusal.c_str());
+            const auto namesTheUser = [&](const std::string& said) {
+                return has(said, "other.fm changed since version " + own + " (the user's edit, which is kept): nothing was written.")
+                    && has(said, "Its version now: " + readFirst + ".") && !has(said, "your own calls");
+            };
+            P.eq("files.undo_names_the_user", undoneByUser && own.size() == 8 && own != readFirst && namesTheUser(firstRefusal)
+                                                  && fileText("other.fm") == other ? 1 : 0, 1);
+            P.eq("files.undo_again_the_user", namesTheUser(secondRefusal) ? 1 : 0, 1);
+
+            // A unified diff of two files: git's headers, a hunk whose context occurs twice (the one nearest its line),
+            // a blank context line whose space was lost, a file's last line without a line end; one undo step.
+            write("notes.fm", notes);
+            write("other.fm", other);
+            write("twice.fm", "// twice\nx = 1;\ny = 2;\n\nx = 1;\ny = 2;");
+            const std::string diff = "diff --git a/notes.fm b/notes.fm\nindex 1a2b3c4..5d6e7f8 100644\n--- a/notes.fm\n+++ b/notes.fm\n"
+                                     "@@ -10,3 +10,3 @@ float v9(float x)\n " + lineOf(10) + "\n-" + lineOf(11) + "\n+float v11(float x) { return x * 11.5f; }\n "
+                                   + lineOf(12) + "\n"
+                                     "--- a/twice.fm\n+++ b/twice.fm\n@@ -6,2 +6,2 @@\n x = 1;\n-y = 2;\n\\ No newline at end of file\n+y = 3;\n"
+                                     "\\ No newline at end of file\n@@ -3,3 +3,3 @@\n y = 2;\n\n-x = 1;\n+x = 0;\n";
+            const pg::ChatAgent::McpResult patched = edit(input({ { "files", juce::String(diff) } }));
+            std::printf("edit_file files, a diff:\n%s\n", toolText(patched).c_str());
+            std::string notesPatched = notes;
+            notesPatched.replace(notesPatched.find(lineOf(11)), lineOf(11).size(), "float v11(float x) { return x * 11.5f; }");
+            P.eq("multi.diff_applied", !patched.isError && has(toolText(patched), "- notes.fm: 1 hunk; now 12 lines")
+                                           && has(toolText(patched), "- twice.fm: 2 hunks; now 6 lines") && fileText("notes.fm") == notesPatched
+                                           && fileText("twice.fm") == "// twice\nx = 1;\ny = 2;\n\nx = 0;\ny = 3;" ? 1 : 0, 1);
+            keysIn("twice.fm", "cmd+z");
+            P.eq("multi.diff_one_undo_step", fileText("notes.fm") == notes && fileText("twice.fm") == "// twice\nx = 1;\ny = 2;\n\nx = 1;\ny = 2;" ? 1 : 0, 1);
+            // A hunk whose lines do not occur: the closest passage, and nothing changed in any file.
+            const std::string missDiff = "--- a/notes.fm\n+++ b/notes.fm\n@@ -5,2 +5,2 @@\n " + lineOf(5) + "\n-float v6(float x) { return x * 6.5f; }\n+x\n"
+                                     "--- a/twice.fm\n+++ b/twice.fm\n@@ -1 +1 @@\n-// twice\n+// two\n";
+            const pg::ChatAgent::McpResult missed = edit(input({ { "files", juce::String(missDiff) } }));
+            std::printf("edit_file files, a diff that misses:\n%s\n", toolText(missed).c_str());
+            P.eq("multi.diff_miss", missed.isError && has(toolText(missed), "notes.fm (@@ -5): its old lines (context and -) do not occur in notes.fm.")
+                                        && has(toolText(missed), "The closest passage, lines 5 to 6:\n5\t") && fileText("notes.fm") == notes
+                                        && has(fileText("twice.fm"), "// twice\n") ? 1 : 0, 1);
+            const pg::ChatAgent::McpResult made = edit(input({ { "files", "--- /dev/null\n+++ b/new.fm\n@@ -0,0 +1 @@\n+float n;\n" } }));
+            P.eq("multi.diff_new_file_refused", made.isError && has(toolText(made), "The diff makes a new file, new.fm: write_file does that. Nothing was changed.") ? 1 : 0, 1);
+            // Hunks of new lines alone (diff -U0's): at the start, and after a last line with no line end.
+            const pg::ChatAgent::McpResult added = edit(input({ { "files", "--- twice.fm\n+++ twice.fm\n@@ -0,0 +1 @@\n+// top\n@@ -6,0 +8 @@\n+z = 3;\n" } }));
+            P.eq("multi.diff_inserts", !added.isError && fileText("twice.fm") == "// top\n// twice\nx = 1;\ny = 2;\n\nx = 1;\ny = 2;\nz = 3;\n" ? 1 : 0, 1);
+            // A hunk whose old lines occur three times, each with lines after it: the occurrence nearest its @@ line, the
+            // second, alone changes. In another file a first hunk adds 8 lines, so the next hunk's @@ line (the old file's
+            // numbering) finds the second of two occurrences only as the hunk before it moved it.
+            write("rep.fm", "// rep\nx = 1;\ny = 2;\nz = 0;\n// mid\nx = 1;\ny = 2;\nz = 0;\n// late\nx = 1;\ny = 2;\nz = 0;\n");
+            const std::string movedText = "// two\na = 1;\nb = 2;\n// 4\n// 5\n// 6\n// 7\n// 8\n// 9\na = 1;\nb = 2;\n// end\n";
+            write("moved.fm", movedText);
+            std::string addedLines, plus;
+            for (int k = 1; k <= 8; ++k)
+            {
+                addedLines += "// added " + std::to_string(k) + "\n";
+                plus += "+// added " + std::to_string(k) + "\n";
+            }
+            const pg::ChatAgent::McpResult nearest = edit(input({ { "files", juce::String("--- a/rep.fm\n+++ b/rep.fm\n@@ -6,2 +6,2 @@\n x = 1;\n-y = 2;\n+y = 3;\n"
+                                                                                       "--- a/moved.fm\n+++ b/moved.fm\n@@ -1 +1,9 @@\n // two\n" + plus
+                                                                                       + "@@ -10,2 +18,2 @@\n a = 1;\n-b = 2;\n+b = 3;\n") } }));
+            P.eq("multi.diff_nearest", !nearest.isError
+                                           && fileText("rep.fm") == "// rep\nx = 1;\ny = 2;\nz = 0;\n// mid\nx = 1;\ny = 3;\nz = 0;\n// late\nx = 1;\ny = 2;\nz = 0;\n"
+                                           && fileText("moved.fm") == "// two\n" + addedLines + "a = 1;\nb = 2;\n// 4\n// 5\n// 6\n// 7\n// 8\n// 9\na = 1;\nb = 3;\n// end\n"
+                                       ? 1 : 0, 1);
+            // A diff never drops a line that could be part of the change: a context line that lost its space (a "}" in
+            // column 0) or was indented with a tab ends its hunk, and the -/+ lines after it are refused, naming it; an
+            // @@ line that is no hunk's header is refused; so are git's header-only blocks (a rename, an empty file made).
+            const std::string strays = "// strays\nfloat f(float x) {\n    return x;\n}\nfloat g = 1;\n";
+            write("strays.fm", strays);
+            const auto refusedDiff = [&](const std::string& patch, const std::string& because) {
+                const pg::ChatAgent::McpResult r = edit(input({ { "files", juce::String(patch) } }));
+                std::printf("edit_file files, a diff refused:\n%s\n", toolText(r).c_str());
+                return r.isError && has(toolText(r), because + ". Nothing was changed.") && fileText("strays.fm") == strays;
+            };
+            const std::string head = "--- a/strays.fm\n+++ b/strays.fm\n";
+            P.eq("multi.diff_stray_line", refusedDiff(head + "@@ -2,4 +2,4 @@\n float f(float x) {\n-    return x;\n+    return -x;\n}\n-float g = 1;\n+float g = 2;\n",
+                                                  "strays.fm (@@ -2): `}` is not a context, - or + line (a context line starts with a space)")
+                                              && refusedDiff(head + "@@ -2,4 +2,4 @@\n float f(float x) {\n-    return x;\n+    return -x;\n\t}\n-float g = 1;\n+float g = 2;\n",
+                                                         "strays.fm (@@ -2): `\\t}` is not a context, - or + line (a context line starts with a space)")
+                                          ? 1 : 0, 1);
+            P.eq("multi.diff_bare_hunk_header", refusedDiff(head + "@@\n-float g = 1;\n+float g = 2;\n@@ -2,2 +2,2 @@\n float f(float x) {\n-    return x;\n+    return -x;\n",
+                                                        "strays.fm: `@@` is not a hunk's header (@@ -<line>,<count> +<line>,<count> @@)")
+                                                    ? 1 : 0, 1);
+            P.eq("multi.diff_header_only_refused",
+                 refusedDiff("diff --git a/old.fm b/new.fm\nsimilarity index 100%\nrename from old.fm\nrename to new.fm\n" + head + "@@ -5 +5 @@\n-float g = 1;\n+float g = 2;\n",
+                         "The diff renames old.fm to new.fm: rename_file does that")
+                         && refusedDiff(head + "@@ -5 +5 @@\n-float g = 1;\n+float g = 2;\ndiff --git a/empty.fm b/empty.fm\nnew file mode 100644\nindex 0000000..e69de29\n",
+                                    "The diff makes a new file, empty.fm: write_file does that")
+                     ? 1 : 0, 1);
+            // The list written as a string (its JSON): read as the list; a string that starts with [ but is no list is
+            // refused as such, never read as a diff.
+            const pg::ChatAgent::McpResult asString = edit(input({ { "files", "[{\"name\":\"strays.fm\",\"old_text\":\"float g = 1;\",\"new_text\":\"float g = 2;\"}]" } }));
+            const pg::ChatAgent::McpResult badString = edit(input({ { "files", " [{\"name\": \"strays.fm\"" } }));
+            P.eq("multi.list_as_string", !asString.isError && has(toolText(asString), "- strays.fm: 1 edit; now 5 lines") && has(fileText("strays.fm"), "float g = 2;\n")
+                                             && badString.isError
+                                             && has(toolText(badString), "files is a list of files or a unified diff: this string starts with [ but is no JSON list.")
+                                         ? 1 : 0, 1);
+            // A diff of 42 hunks for one file goes in one call (hunks have a cap of their own, past edits' 32).
+            std::string manyBefore, manyAfter, manyDiff = "--- a/many.fm\n+++ b/many.fm\n";
+            for (int k = 1; k <= 50; ++k)
+            {
+                manyBefore += "float m" + std::to_string(k) + " = " + std::to_string(k) + ";\n";
+                manyAfter += "float m" + std::to_string(k) + " = " + (k <= 42 ? "-" : "") + std::to_string(k) + ";\n";
+                if (k <= 42)
+                    manyDiff += "@@ -" + std::to_string(k) + " +" + std::to_string(k) + " @@\n-float m" + std::to_string(k) + " = " + std::to_string(k)
+                              + ";\n+float m" + std::to_string(k) + " = -" + std::to_string(k) + ";\n";
+            }
+            write("many.fm", manyBefore);
+            const pg::ChatAgent::McpResult manyHunks = edit(input({ { "files", juce::String(manyDiff) } }));
+            P.eq("multi.diff_many_hunks", !manyHunks.isError && has(toolText(manyHunks), "- many.fm: 42 hunks; now 50 lines") && fileText("many.fm") == manyAfter ? 1 : 0, 1);
+
+            // Undo through several of Claude's multi-file changes: each one step across its tabs, whatever came between.
+            // Two changes of notes.fm and other.fm, after an edit of notes.fm alone: Cmd-Z twice in notes.fm undoes both
+            // changes in both files; once more, notes.fm's own edit; Cmd-Shift-Z redoes that, and then each change in both
+            // (the second Cmd-Shift-Z finds the first change though notes.fm's history went back past it and came again);
+            // Cmd-Y redoes too.
+            write("notes.fm", notes);
+            write("other.fm", other);
+            std::string ownEdited = notes;
+            ownEdited.replace(ownEdited.find(lineOf(1)), lineOf(1).size(), "float v1(float x) { return 0.0f; }");
+            (void)edit(input({ { "name", "notes.fm" }, { "old_text", juce::String(lineOf(1)) }, { "new_text", "float v1(float x) { return 0.0f; }" } }));
+            (void)edit(input({ { "files", both } }));
+            std::string firstNotes = ownEdited;
+            firstNotes.replace(firstNotes.find(lineOf(2)), lineOf(2).size(), "float v2(float x) { return -x; }");
+            firstNotes.replace(firstNotes.find(lineOf(9)), lineOf(9).size(), "float v9(float x) { return -x; }");
+            const pg::ChatAgent::McpResult second = edit(input({ { "files", files({ input({ { "name", "notes.fm" }, { "old_text", juce::String(lineOf(5)) },
+                                                                                            { "new_text", "float v5(float x) { return 5.0f; }" } }),
+                                                                                    input({ { "name", "other.fm" }, { "old_text", "// other.fm" },
+                                                                                            { "new_text", "// the other file" } }) }) } }));
+            std::string secondNotes = firstNotes, secondOther = otherEdited;
+            secondNotes.replace(secondNotes.find(lineOf(5)), lineOf(5).size(), "float v5(float x) { return 5.0f; }");
+            secondOther.replace(0, 11, "// the other file");
+            const bool bothSecond = !second.isError && fileText("notes.fm") == secondNotes && fileText("other.fm") == secondOther;
+            keysIn("notes.fm", "cmd+z");
+            const bool secondUndone = fileText("notes.fm") == firstNotes && fileText("other.fm") == otherEdited;
+            keysIn("notes.fm", "cmd+z");
+            const bool firstUndone = fileText("notes.fm") == ownEdited && fileText("other.fm") == other;
+            P.eq("multi.undo_through_changes", bothSecond && secondUndone && firstUndone ? 1 : 0, 1);
+            keysIn("notes.fm", "cmd+z");
+            const bool ownUndone = fileText("notes.fm") == notes && fileText("other.fm") == other;
+            keysIn("notes.fm", "cmd+shift+z");
+            const bool ownRedone = fileText("notes.fm") == ownEdited && fileText("other.fm") == other;
+            keysIn("notes.fm", "cmd+shift+z");
+            const bool firstRedone = fileText("notes.fm") == firstNotes && fileText("other.fm") == otherEdited;
+            keysIn("notes.fm", "cmd+y");
+            P.eq("multi.redo_after_own_steps", ownUndone && ownRedone && firstRedone && fileText("notes.fm") == secondNotes
+                                                   && fileText("other.fm") == secondOther ? 1 : 0, 1);
+
+            // In a netlist's Schematic view: a change of tone.cir (a part added) and notes.fm, then Cmd-Z there undoes
+            // both and the drawing loses the part; Cmd-Shift-Z gives both back, and the part.
+            write("notes.fm", notes);
+            {
+                const funkgui::Point t = panel.centreOfTab(tabOf("tone.cir"));
+                host.click(t.x, t.y);
+                host.tick(1);
+            }
+            panel.setSchematic(true);
+            host.settle();
+            const std::string toneBefore = fileText("tone.cir");
+            const pg::ChatAgent::McpResult drawnEdit = edit(input({ { "files", files({ input({ { "name", "tone.cir" }, { "old_text", "C2     b  0  22n" },
+                                                                                               { "new_text", "C2     b  0  22n\nR9     b  0  1k" } }),
+                                                                                       input({ { "name", "notes.fm" }, { "old_text", juce::String(lineOf(3)) },
+                                                                                               { "new_text", "float v3(float x) { return 3.0f; }" } }) }) } }));
+            pg::ui::SchematicView& sv = panel.schematic();
+            const bool drewR9 = !drawnEdit.isError && panel.schematicShown() && sv.file() == "tone.cir" && sv.drawing().part("R9") >= 0;
+            host.keys("cmd+z");
+            host.tick(2);
+            const bool schematicUndone = fileText("tone.cir") == toneBefore && fileText("notes.fm") == notes && sv.drawing().part("R9") < 0;
+            host.keys("cmd+shift+z");
+            host.tick(2);
+            P.eq("multi.schematic_one_step", drewR9 && schematicUndone && has(fileText("tone.cir"), "\nR9     b  0  1k") && has(fileText("notes.fm"), "return 3.0f;")
+                                                 && sv.drawing().part("R9") >= 0 ? 1 : 0, 1);
+            panel.setSchematic(false);
+            host.settle();
+
+            // A session loaded over two open tabs whose texts it changes (a host's setStateInformation, in a processor of
+            // its own, as a load restores the chat too): one Cmd-Z gives both back.
+            {
+                pg::Processor loader;
+                pg::Draft ld;
+                ld.files = { saved.files.front(), { "notes.fm", notes }, { "other.fm", other } };
+                ld.active = 1;
+                loader.editorPort().setDraft(ld);
+                juce::MemoryBlock session;
+                loader.getStateInformation(session);
+                ld.files[1].text = notesEdited;
+                ld.files[2].text = otherEdited;
+                loader.editorPort().setDraft(ld);
+                pg::ui::Panel lp(loader.ports(), loader.editorPort());
+                funkgui::HeadlessHost lh(lp, 0, 1.0f);
+                lh.settle();
+                const auto loaderText = [&](const std::string& name) {
+                    const pg::Draft now = loader.editorPort().draft();
+                    const pg::SourceFile* f = pg::findFile(now.files, name);
+                    return f == nullptr ? std::string() : f->text;
+                };
+                loader.setStateInformation(session.getData(), static_cast<int>(session.getSize()));
+                for (int k = 0; k < 40 && lp.editor().text() != loaderText(lp.fileName(lp.activeFile())); ++k)
+                {
+                    loader.poll();
+                    lh.tick(1);
+                }
+                const bool loaded = loaderText("notes.fm") == notes && loaderText("other.fm") == other && lp.editor().text() == notes;
+                const funkgui::Rect eb = lp.editor().bounds();
+                lh.click(eb.centreX(), eb.centreY());
+                lh.keys("cmd+z");
+                lh.tick(2);
+                P.eq("multi.session_one_step", loaded && loaderText("notes.fm") == notesEdited && loaderText("other.fm") == otherEdited ? 1 : 0, 1);
+            }
+
+            // A fresh start (an example's) ends every group: after it, Cmd-Z in one of the files changes neither.
+            (void)edit(input({ { "files", both } }));
+            const pg::Sources fresh = { processor.editorPort().draft().files.front(), { "notes.fm", "// fresh notes\n" }, { "other.fm", "// fresh other\n" } };
+            if (!panel.startAfresh(fresh, "a fresh start", "Start afresh"))
+                host.chooseMenuItem(1);
+            settle();
+            const bool started = fileText("notes.fm") == "// fresh notes\n" && fileText("other.fm") == "// fresh other\n";
+            keysIn("notes.fm", "cmd+z");
+            P.eq("multi.fresh_start_ends_groups", started && fileText("notes.fm") == "// fresh notes\n" && fileText("other.fm") == "// fresh other\n" ? 1 : 0, 1);
+        }
+        // A pattern whose states are many, over a long line: the search stops at its steps (a tenth of a second or so),
+        // and says where and what to do, in one file and in every file.
+        {
+            pg::Draft ld;
+            ld.files = { saved.files.front(), { "long.fm", "// " + std::string(30000, 'a') + "\n" } };
+            processor.editorPort().setDraft(ld);
+            const auto t0 = std::chrono::steady_clock::now();
+            const std::string inOne = toolText(agent.mcpCall("read_file", input({ { "name", "long.fm" }, { "find", "a{1000}b" }, { "regex", true } })));
+            const std::string inAll = toolText(agent.mcpCall("read_file", input({ { "find", "a{1000}b" }, { "regex", true } })));
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            std::printf("a pattern of many states over 30,000 characters, twice: %.0f ms\n%s%s", ms, inOne.c_str(), inAll.c_str());
+            const std::string costly = "this pattern takes more than 20 million steps over so much text; a simpler one, or ";
+            P.eq("files.find_regex_stops", has(inOne, "; the search stopped at line 1: " + costly + "from and lines, searches the rest.\n")
+                                               && inAll == "No line found yet: the search stopped at long.fm's line 1: " + costly
+                                                             + "a file's name with from and lines, searches the rest.\n"
+                                               && ms < 4000.0 ? 1 : 0, 1);
+
+            // Stopped partway with a line found before: none is said only of the files searched to their end, and what
+            // was not searched is named (the rest of the file it stopped in, and the files after it).
+            pg::Draft zd;
+            zd.files = { saved.files.front(), { "z1.fm", "// zebra\n" }, ld.files.back(), { "z2.fm", "// zebra\n" } };
+            processor.editorPort().setDraft(zd);
+            const std::string cutShort = toolText(agent.mcpCall("read_file", input({ { "find", "zebra|a{1000}b" }, { "regex", true } })));
+            const std::string cutNone = toolText(agent.mcpCall("read_file", input({ { "find", "a{1000}b" }, { "regex", true } })));
+            std::printf("%s%s", cutShort.c_str(), cutNone.c_str());
+            P.eq("files.find_every_stopped", has(cutShort, "1 line matches \"zebra|a{1000}b\" (z1.fm 1; none in the other file searched; not searched: "
+                                                           "long.fm from line 1, z2.fm), with 2 lines around each:\nz1.fm: 1 line, version ")
+                                                 && has(cutShort, "; line 1:\n1\t// zebra\n(the search stopped at long.fm's line 1: " + costly)
+                                                 && !has(cutShort, "z2.fm: ")
+                                                 && cutNone == "No line found yet: the search stopped at long.fm's line 1 (z2.fm not searched): " + costly
+                                                                   + "a file's name with from and lines, searches the rest.\n"
+                                             ? 1 : 0, 1);
+
+            // The steps are one budget for the call, across lines and files: a{1000}b over lines of 2,000 a's, eight in
+            // each of two files (neither file alone spends 20 million), stops in the second, at the line where what the
+            // lines before it (and the program's) left runs out.
+            pg::regex::Regex costs = pg::regex::Regex::compile("a{1000}b");
+            const auto cost = [&](std::string_view l) {
+                std::uint64_t left = std::uint64_t(1) << 40;
+                (void)costs.search(l, left);
+                return (std::uint64_t(1) << 40) - left;
+            };
+            const std::string row(2000, 'a');
+            std::string eight;
+            for (int k = 0; k < 8; ++k)
+                eight += row + "\n";
+            std::uint64_t before = 0;                                  // the program's lines first
+            for (std::string_view t = saved.files.front().text; !t.empty();)
+            {
+                const std::size_t nl = std::min(t.find('\n'), t.size());
+                std::string_view l = t.substr(0, nl);
+                if (!l.empty() && l.back() == '\r')
+                    l.remove_suffix(1);
+                before += cost(l);
+                t.remove_prefix(std::min(nl + 1, t.size()));
+            }
+            const std::uint64_t each = cost(row), budget = 20'000'000;
+            const std::uint64_t at = before < budget ? (budget - before) / each + 1 - 8 : 0;   // b.fm's line
+            pg::Draft sd;
+            sd.files = { saved.files.front(), { "a.fm", eight }, { "b.fm", eight } };
+            processor.editorPort().setDraft(sd);
+            const std::string shared = toolText(agent.mcpCall("read_file", input({ { "find", "a{1000}b" }, { "regex", true } })));
+            std::printf("%llu steps a line, %llu before them: %s", static_cast<unsigned long long>(each), static_cast<unsigned long long>(before),
+                        shared.c_str());
+            P.eq("files.regex_steps_shared", 8 * each < budget && at > 1 && at <= 8
+                                                 && shared == "No line found yet: the search stopped at b.fm's line " + std::to_string(at) + ": " + costly
+                                                                  + "a file's name with from and lines, searches the rest.\n"
+                                             ? 1 : 0, 1);
         }
         processor.editorPort().setDraft(saved);
         host.tick(2);
@@ -1921,6 +2755,32 @@ PROBE(plugin, chat)
             const int at = turn("and now?", 2);
             P.eq("sound.no_compile", has(resultText(at + 1), "It did not compile, so nothing was drawn") ? 1 : 0, 1);
             sp.editorPort().setDraft(good);
+            // With a window: the picture shades it, and its words say what is over it.
+            juce::var windowed = pg::product::kIsInstrument ? input({ { "notes", juce::Array<juce::var>{ 57 } } }) : input({ { "input", "sine" } });
+            windowed.getDynamicObject()->setProperty("window", input({ { "from", 0.4 }, { "to", 0.9 } }));
+            ss->add(fake::Response::ok(fake::Sse().start().tool("toolu_s3", "view_sound", windowed).end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("The middle is steady.").end()));
+            const int w = turn("show me the middle", 2);
+            std::string wdata, wabout;
+            const juce::Array<juce::var> wresults = arr(lastUser(w + 1).getProperty("content", {}));
+            for (const juce::var& b : arr(wresults.isEmpty() ? juce::var() : wresults[0].getProperty("content", {})))
+            {
+                if (str(b, "type") == "image" && str(b.getProperty("source", {}), "media_type") == "image/png")
+                    wdata = str(b.getProperty("source", {}), "data");
+                if (str(b, "type") == "text")
+                    wabout = str(b, "text");
+            }
+            std::printf("view_sound with a window: %s\n", wabout.c_str());
+            P.eq("sound.window_about", has(wabout, "The cyan lines (shaded on the waveform) are the window, 0.40 to 0.90 s: the "
+                                                   "average spectrum and the RMS are over it.")
+                                           && has(wabout, "Bottom left: the average spectrum in the window") ? 1 : 0, 1);
+            {
+                juce::MemoryOutputStream png;
+                if (juce::Base64::convertFromBase64(png, juce::String(wdata)))
+                    juce::File(juce::String(probe::outPath("plugin.chat.view_sound.window.png"))).replaceWithData(png.getData(), png.getDataSize());
+                const juce::Image img = juce::ImageFileFormat::loadFrom(png.getData(), png.getDataSize());
+                P.eq("sound.window_png", img.getWidth() == 1120 && img.getHeight() == 800 ? 1 : 0, 1);
+            }
         }
 
         // ---- CHECKS --------------------------------------------------------------------------------------------------------
@@ -2032,6 +2892,21 @@ PROBE(plugin, chat)
             ss->add(fake::Response::ok(fake::Sse().start().text("The level is set by the first dial.").end()));
             const int bq = turn("what does the first dial do?", 1);
             P.eq("checks.talk_no_nudge", ss->postCount() - bq, 1);
+            // Nor is one that only lists them (set_checks without checks), though one fails.
+            ss->add(fake::Response::ok(fake::Sse().start().tool("toolu_c6", "set_checks", input({})).end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("That is the one check.").end()));
+            const int bl = turn("which checks are set?", 2);
+            P.eq("checks.list_no_nudge", ss->postCount() - bl == 2 && has(resultText(bl + 1), "1 check is set") ? 1 : 0, 1);
+            // Nor is one that only sweeps a dial (tune_dials' sweep sets nothing), though one fails.
+            juce::var sweepIn = input({ { "tune", juce::Array<juce::var>{ juce::var(fixDial) } },
+                                        { "sweep", pg::product::kIsInstrument ? juce::Array<juce::var>{ 0.1, 0.3 } : juce::Array<juce::var>{ -8.0, -4.0 } },
+                                        { "goals", juce::Array<juce::var>{ input({ { "metric", pg::product::kIsInstrument ? "rms_db" : "sine_gain_db" } }) } } });
+            if constexpr (pg::product::kIsInstrument)
+                sweepIn.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+            ss->add(fake::Response::ok(fake::Sse().start().tool("toolu_c7", "tune_dials", sweepIn).end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("The level follows it.").end()));
+            const int bw = turn("how does that dial change the level?", 2);
+            P.eq("checks.sweep_no_nudge", ss->postCount() - bw == 2 && has(resultText(bw + 1), "No dial was set") ? 1 : 0, 1);
 
             // The session keeps the checks; Clear forgets them.
             const std::string saved = sa.saveState();
@@ -2097,6 +2972,22 @@ PROBE(plugin, chat)
             P.eq("checkdials.defaults", has(defaults, "the dials they do not name at their defaults") && has(defaults, "Checks: 1 of 1 pass.") ? 1 : 0, 1);
             const pg::ChatAgent::McpResult bad = sa.mcpCall("set_checks", input({ { "checks", juce::var(list) }, { "dials_from", "sometimes" } }));
             P.eq("checkdials.bad_refused", bad.isError && has(allText(bad), "dials_from is current, snapshot or defaults") ? 1 : 0, 1);
+            // A check at the defaults that fails, the user's dial turned up: its line says the dials as they are do not
+            // affect it, and names no dial as moved.
+            {
+                juce::var never = input({ { "label", "Never this loud" }, { "metric", pg::product::kIsInstrument ? "rms_db" : "sine_gain_db" },
+                                          { "min", 30.0 } });
+                if constexpr (pg::product::kIsInstrument)
+                    never.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+                setDial(up);
+                const std::string fails = allText(sa.mcpCall("set_checks", input({ { "checks", juce::Array<juce::var>{ never } },
+                                                                                    { "dials_from", "defaults" } })));
+                std::printf("set_checks at the defaults, failing, %s turned up:\n%s\n", levelDial, fails.c_str());
+                P.eq("checkdials.defaults_fail_words", has(fails, "- FAIL Never this loud (") && has(fails, "; dials at defaults): ")
+                                                           && has(fails, "; the dials as they are now do not affect it\n")
+                                                           && !has(fails, "moved now") && !has(fails, std::string(levelDial) + " ") ? 1 : 0, 1);
+                setDial(k.def);
+            }
             // A failing check that takes the dials at their defaults: the turn goes on with words that do not say it
             // was measured on the dials as they are now.
             juce::Array<juce::var> loud;
@@ -2113,7 +3004,410 @@ PROBE(plugin, chat)
             P.eq("checkdials.nudge_words", says(nudge, "(From the plugin: your checks, measured on the files as they are now, each with the dials it takes.\n")
                                                && says(nudge, "dials at defaults") ? 1 : 0, 1);
             sa.clearChecks();
+
+            // The one-shot renders' dials_from: measure_output, view_sound and trace take the dials they do not name as
+            // the user has them (the default), or at the program's defaults, the user's move aside and the first line
+            // saying so; a word they do not take (a check's snapshot) refused.
+            setDial(up);
+            const std::string upDials = pg::product::kIsInstrument ? "Dials: level 0, " : "Dials: gain 12.\n";   // the release as set before
+            const std::string defDials = pg::product::kIsInstrument ? "level -20, release 0.5" : "gain 0";
+            const std::string said = "The dials not named are at their defaults.\n";
+            juce::var short_ = input({ { "hold_seconds", 0.3 }, { "tail_seconds", 0.2 } });
+            if constexpr (pg::product::kIsInstrument)
+                short_.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+            const std::string asNow = toolText(sa.mcpCall("measure_output", short_));
+            short_.getDynamicObject()->setProperty("dials_from", "defaults");
+            const std::string atDefaults = toolText(sa.mcpCall("measure_output", short_));
+            const pg::ChatAgent::McpResult seen = sa.mcpCall("view_sound", short_);
+            const std::string looked = toolText(seen);
+            const std::string traced = toolText(sa.mcpCall("trace", short_));
+            short_.getDynamicObject()->setProperty("dials_from", "snapshot");
+            const pg::ChatAgent::McpResult wrong = sa.mcpCall("measure_output", short_);
+            std::printf("measure_output, the user's dials, then dials_from defaults:\n%s\n%s\nview_sound: %s\ntrace: %s\n", asNow.c_str(),
+                        atDefaults.c_str(), looked.c_str(), traced.c_str());
+            P.eq("renderdials.current", has(asNow, upDials) && !has(asNow, said) ? 1 : 0, 1);
+            P.eq("renderdials.defaults", atDefaults.rfind(said, 0) == 0 && has(atDefaults, "Dials: " + defDials + ".\n") ? 1 : 0, 1);
+            P.eq("renderdials.view_sound", has(looked, said) && has(looked, "Dials: " + defDials + ".") ? 1 : 0, 1);
+            P.eq("renderdials.trace", traced.rfind(said, 0) == 0 && has(traced, "; dials " + defDials + ";") ? 1 : 0, 1);
+            P.eq("renderdials.bad_refused", wrong.isError && has(allText(wrong), "dials_from is current") ? 1 : 0, 1);
+            // compare's own dials: own (the default) lays B's level over the user's dials, the same as A's; defaults puts
+            // the dials no side sets at the program's defaults (A, the editor's files, at the default level against B's
+            // own), the first line saying so; a word it does not take refused.
+            const juce::var givenUp = input({ { "dials", input({ { levelDial, static_cast<double>(up) } }) } });
+            const std::string cmpOwn = toolText(sa.mcpCall("compare", input({ { "a", "editor" }, { "b", givenUp } })));
+            const std::string cmpDefaults = toolText(sa.mcpCall("compare", input({ { "a", "editor" }, { "b", givenUp }, { "dials", "defaults" } })));
+            const pg::ChatAgent::McpResult cmpWrong = sa.mcpCall("compare", input({ { "a", "editor" }, { "b", "editor" }, { "dials", "snapshot" } }));
+            std::printf("compare, own dials:\n%s\ncompare, dials defaults:\n%s\n", cmpOwn.c_str(), cmpDefaults.c_str());
+            P.eq("renderdials.compare_own", has(cmpOwn, "; the same dials.") && !has(cmpOwn, said) ? 1 : 0, 1);
+            P.eq("renderdials.compare_defaults", cmpDefaults.rfind(said, 0) == 0 && has(cmpDefaults, "; dials " + std::string(levelDial) + " ")
+                                                     && !has(cmpDefaults, "Identical bits") ? 1 : 0, 1);
+            P.eq("renderdials.compare_bad_refused", cmpWrong.isError && has(allText(cmpWrong), "dials is own") ? 1 : 0, 1);
+            // view_sound's picture through MCP, made to fit a tool's result from a JPEG's own bytes: most of its width
+            // (sized from the PNG's bytes, it was 391 px of 1120).
+            {
+                int width = 0, height = 0;
+                std::string type;
+                for (const juce::var& b : arr(seen.content))
+                    if (str(b, "type") == "image")
+                    {
+                        juce::MemoryOutputStream bytes;
+                        juce::Base64::convertFromBase64(bytes, juce::String(str(b, "data")));
+                        const juce::Image img = juce::ImageFileFormat::loadFrom(bytes.getData(), bytes.getDataSize());
+                        width = img.getWidth();
+                        height = img.getHeight();
+                        type = str(b, "mimeType");
+                        juce::File(juce::String(probe::outPath("plugin.chat.view_sound.mcp.jpg"))).replaceWithData(bytes.getData(), bytes.getDataSize());
+                    }
+                std::printf("view_sound through MCP: %s of %d x %d\n", type.c_str(), width, height);
+                P.ge("renderdials.mcp_picture_width", static_cast<double>(width), 800.0);
+            }
+
+            // ---- WINDOW ----------------------------------------------------------------------------------------------------
+            {
+                const auto withWindow = [&](const juce::var& window) {
+                    juce::var in = input({ { "hold_seconds", 0.3 }, { "tail_seconds", 0.2 }, { "window", window } });
+                    if constexpr (pg::product::kIsInstrument)
+                        in.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+                    return in;
+                };
+                const juce::var window = input({ { "from", 0.1 }, { "to", 0.25 } });
+                const std::string over = toolText(sa.mcpCall("measure_output", withWindow(window)));
+                std::printf("measure_output with a window:\n%s\n", over.c_str());
+                P.eq("window.measure", has(over, "Window: 0.10 to 0.25 s of ")
+                                           && has(over, pg::product::kIsInstrument ? "In the window: peak " : "for 0.30 s, in the window: out peak ")
+                                           ? 1 : 0, 1);
+                int refused = 0;
+                const juce::var unfit[] = { input({ { "from", 0.3 }, { "to", 0.2 } }), input({ { "from", -1.0 }, { "to", 1.0 } }),
+                                          input({ { "from", 0.0 }, { "to", 30.0 } }), input({ { "to", 1.0 } }),
+                                          input({ { "from", 0.0 }, { "to", 1.0 }, { "at", 2.0 } }), juce::var("all"),
+                                          input({ { "from", 0.5 }, { "to", 0.505 } }) };
+                for (const juce::var& b : unfit)
+                {
+                    const pg::ChatAgent::McpResult r = sa.mcpCall("measure_output", withWindow(b));
+                    refused += r.isError && has(allText(r), "window: {from, to}, seconds of the render, 0 <= from < to <= 20, at "
+                                                            "least 0.01 s long") ? 1 : 0;
+                }
+                P.eq("window.bad_refused", refused, static_cast<int64_t>(std::size(unfit)));
+                // The least window, 0.03 - 0.02 rounding under 0.01, is taken.
+                P.eq("window.least_taken", !sa.mcpCall("measure_output", withWindow(input({ { "from", 0.02 }, { "to", 0.03 } }))).isError
+                                               ? 1 : 0, 1);
+                // trace and compare take none: they say so (trace's render would go on to the window's end).
+                const pg::ChatAgent::McpResult windowTrace = sa.mcpCall("trace", input({ { "window", window } }));
+                const pg::ChatAgent::McpResult windowCompare =
+                    sa.mcpCall("compare", input({ { "a", "editor" }, { "b", "editor" }, { "window", window } }));
+                P.eq("window.trace_compare_refuse", windowTrace.isError && has(allText(windowTrace), "trace takes no window")
+                                                        && windowCompare.isError && has(allText(windowCompare), "compare takes no window")
+                                                        ? 1 : 0, 1);
+                // A check keeps its window: its line and the card name it, the session saves it and loads it back.
+                juce::var check = withWindow(window);
+                check.getDynamicObject()->setProperty("label", "Level over the window");
+                check.getDynamicObject()->setProperty("metric", pg::product::kIsInstrument ? "rms_db" : "sine_gain_db");
+                check.getDynamicObject()->setProperty("max", -100.0);
+                const std::string failing = allText(sa.mcpCall("set_checks", input({ { "checks", juce::Array<juce::var>{ check } } })));
+                std::printf("set_checks with a window:\n%s\n", failing.c_str());
+                P.eq("window.check_line", has(failing, std::string("- FAIL Level over the window (")
+                                                           + (pg::product::kIsInstrument ? "rms_db" : "sine_gain_db") + "; 0.10 to 0.25 s): ")
+                                              ? 1 : 0, 1);
+                check.getDynamicObject()->setProperty("max", 100.0);
+                const std::string passing = allText(sa.mcpCall("set_checks", input({ { "checks", juce::Array<juce::var>{ check } } })));
+                std::string card;
+                for (const pg::ChatEntry& e : sa.chatState().entries)
+                    if (e.kind == pg::ChatEntry::Kind::checks && !e.checks.empty())
+                        card = e.checks[0].detail;
+                const std::string keptState = sa.saveState();
+                const juce::var windowCheck = arr(claude::parseJson(keptState).getProperty("checks", {}))[0];
+                P.eq("window.check_saved", has(passing, "Checks: 1 of 1 pass.") && has(card, "0.10 to 0.25 s")
+                                               && std::fabs(static_cast<double>(windowCheck["window"]["from"]) - 0.1) < 1e-9
+                                               && std::fabs(static_cast<double>(windowCheck["window"]["to"]) - 0.25) < 1e-9 ? 1 : 0, 1);
+                sa.loadState(keptState);
+                P.eq("window.check_loads", sa.saveState() == keptState && has(allText(sa.mcpCall("run_program", input({}))), "Checks: 1 of 1 pass.")
+                                               ? 1 : 0, 1);
+                sa.clearChecks();
+                // tune_dials measures its goals over the window too (it takes the render settings).
+                juce::var tune = withWindow(window);
+                tune.getDynamicObject()->setProperty("tune", juce::Array<juce::var>{ juce::var(levelDial) });
+                tune.getDynamicObject()->setProperty(
+                    "goals", juce::Array<juce::var>{ input({ { "metric", pg::product::kIsInstrument ? "rms_db" : "sine_gain_db" },
+                                                             { "max", 100.0 } }) });
+                tune.getDynamicObject()->setProperty("apply", false);
+                const pg::ChatAgent::McpResult tuned = sa.mcpCall("tune_dials", tune);
+                P.eq("window.tune_takes_it", !tuned.isError && has(allText(tuned), "Every goal is met already") ? 1 : 0, 1);
+            }
+
+            // ---- SPECTRUM ----------------------------------------------------------------------------------------------
+            {
+                const auto withBands = [&](const juce::var& kind) {
+                    juce::var in = input({ { "hold_seconds", 0.5 }, { "tail_seconds", 0.2 }, { "spectrum", kind } });
+                    if constexpr (pg::product::kIsInstrument)
+                        in.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+                    return in;
+                };
+                const std::string thirds = toolText(sa.mcpCall("measure_output", withBands("third")));
+                const std::string notes = toolText(sa.mcpCall("measure_output", withBands("semitone")));
+                const std::string octaves = toolText(sa.mcpCall("measure_output", withBands("octave")));
+                std::printf("measure_output with spectrum third:\n%s\n", thirds.c_str());
+                const std::string of = pg::product::kIsInstrument ? " while held (Hz: dBFS; " : " of the noise, out against in (Hz: gain dB; ";
+                // Each line names its frames (the semitones' as long as the held part, 0.45 s) and the band below which a
+                // tone spreads over the bands beside it.
+                P.eq("spectrum.third", has(thirds, "Third-octave bands" + of + "0.4 s Hann frames; below 25 Hz a tone spreads over the "
+                                                   "bands beside it): 20: ") && has(thirds, ", 20k: ") ? 1 : 0, 1);
+                P.eq("spectrum.octave", has(octaves, "Octave bands" + of + "0.4 s Hann frames): 31.5: ") && has(octaves, ", 16k: ") ? 1 : 0, 1);
+                P.eq("spectrum.semitone", has(notes, "Semitone bands") && has(notes, "a point a MIDI note, an octave a group after its first note")
+                                              && has(notes, std::string(pg::product::kIsInstrument ? "(dBFS; " : "(gain dB; ")
+                                                                + "0.45 s Hann frames, as long as the part, up to 2 s; below F2 a tone "
+                                                                  "spreads over the bands beside it): E0 20.6: ")
+                                              && has(notes, "; C4 262: ") ? 1 : 0, 1);
+                int widthsRefused = 0;
+                for (const juce::var& askedWidth : { juce::var("fifth"), juce::var(3), juce::var("Third") })
+                {
+                    const pg::ChatAgent::McpResult r = sa.mcpCall("measure_output", withBands(askedWidth));
+                    widthsRefused += r.isError && has(allText(r), "spectrum is octave, third or semitone") ? 1 : 0;
+                }
+                P.eq("spectrum.bad_refused", widthsRefused, 3);
+                // Every report ends with the metrics measured, name=value; one without a spectrum has no bands line (the
+                // wobble line names bands of its own).
+                const std::string plain = toolText(sa.mcpCall("measure_output", input({ { "hold_seconds", 0.5 }, { "tail_seconds", 0.2 } })));
+                const std::size_t line = plain.rfind("\nMetrics: ");
+                P.eq("spectrum.metrics_line", line != std::string::npos && plain.find('\n', line + 1) == plain.size() - 1
+                                                  && has(plain.substr(line), pg::product::kIsInstrument ? " rms_db=" : " sine_gain_db=")
+                                                  && !has(plain, "Octave bands") && !has(plain, "Third-octave bands")
+                                                  && !has(plain, "Semitone bands") ? 1 : 0, 1);
+            }
+
+            // ---- BASE ------------------------------------------------------------------------------------------------------
+            if constexpr (pg::product::kIsInstrument)
+            {
+                const auto withBase = [&](const juce::var& base) {
+                    juce::var in = input({ { "hold_seconds", 0.5 }, { "tail_seconds", 0.2 }, { "base_hz", base } });
+                    in.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+                    return in;
+                };
+                const std::string based = toolText(sa.mcpCall("measure_output", withBase(110.0)));
+                std::printf("measure_output with base_hz 110:\n%s\n", based.c_str());
+                P.eq("base.measure", has(based, "Off the orders of 110.00 Hz (base_hz) while held, more than ")
+                                         && has(based, " off_order_db=") ? 1 : 0, 1);
+                int refused = 0;
+                for (const juce::var& b : { juce::var(0.5), juce::var(30000.0), juce::var("low") })
+                {
+                    const pg::ChatAgent::McpResult r = sa.mcpCall("measure_output", withBase(b));
+                    refused += r.isError && has(allText(r), "base_hz: the orders' base, 1 to 20000 Hz") ? 1 : 0;
+                }
+                P.eq("base.bad_refused", refused, 3);
+                // A check keeps its base: its line names it, the session saves it and loads it back.
+                juce::var check = withBase(110.0);
+                check.getDynamicObject()->setProperty("label", "Nothing off the orders");
+                check.getDynamicObject()->setProperty("metric", "off_order_db");
+                check.getDynamicObject()->setProperty("max", -300.0);
+                const std::string failing = allText(sa.mcpCall("set_checks", input({ { "checks", juce::Array<juce::var>{ check } } })));
+                P.eq("base.check_line", has(failing, "- FAIL Nothing off the orders (off_order_db; base_hz 110): ") ? 1 : 0, 1);
+                check.getDynamicObject()->setProperty("max", 100.0);
+                const std::string passing = allText(sa.mcpCall("set_checks", input({ { "checks", juce::Array<juce::var>{ check } } })));
+                const std::string keptState = sa.saveState();
+                const juce::var baseCheck = arr(claude::parseJson(keptState).getProperty("checks", {}))[0];
+                P.eq("base.check_saved", has(passing, "Checks: 1 of 1 pass.") && std::fabs(static_cast<double>(baseCheck["base_hz"]) - 110.0) < 1e-9
+                                             ? 1 : 0, 1);
+                sa.loadState(keptState);
+                P.eq("base.check_loads", sa.saveState() == keptState ? 1 : 0, 1);
+                sa.clearChecks();
+            }
             setDial(was);
+        }
+
+        // ---- CHECKEDIT: the checks read back, changed one at a time, and a dial they name gone ---------------------------------
+        {
+            const pg::Control k = sp.control(dialSlot);
+            const float was = pg::plainOf(k, sp.getParameters()[dialSlot]->getValue());
+            sp.getParameters()[dialSlot]->setValueNotifyingHost(pg::normOf(k, k.def));
+            sp.poll();
+            const char* metric = pg::product::kIsInstrument ? "rms_db" : "sine_gain_db";
+            const double most = pg::product::kIsInstrument ? -10.0 : 3.0;
+            const auto check = [&](const char* label, double max) {
+                juce::var c = input({ { "label", label }, { "metric", metric }, { "max", max } });
+                if constexpr (pg::product::kIsInstrument)
+                    c.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+                return c;
+            };
+            const auto call = [&](juce::var in) { return sa.mcpCall("set_checks", in); };
+            // A listing's numbered line `n` ("2. {...}"), parsed.
+            const auto listed = [](const std::string& text, int n) {
+                const std::string head = "\n" + std::to_string(n) + ". ";
+                const std::size_t at = text.find(head);
+                if (at == std::string::npos)
+                    return juce::var();
+                const std::size_t from = at + head.size();
+                return claude::parseJson(text.substr(from, text.find('\n', from) - from));
+            };
+            sa.clearChecks();
+            const pg::ChatAgent::McpResult none = call(input({}));
+            P.eq("checkedit.list_none", !none.isError && toolText(none) == "No checks are set." ? 1 : 0, 1);
+
+            // Two checks: one with a dial of its own, one with a scenario that moves it.
+            juce::var held = check("Level held", most);
+            held.getDynamicObject()->setProperty("dials", input({ { levelDial, static_cast<double>(k.def) } }));
+            juce::var moved = check("Level moved", most);
+            moved.getDynamicObject()->setProperty(
+                "scenario", input({ { "automate", juce::Array<juce::var>{ input({ { "dial", levelDial }, { "at", 0.2 },
+                                                                                   { "to", static_cast<double>(k.def) } }) } } }));
+            const std::string set = allText(call(input({ { "checks", juce::Array<juce::var>{ held, moved } } })));
+            P.eq("checkedit.set", has(set, "Set 2 checks.") && has(set, "Checks: 2 of 2 pass.") ? 1 : 0, 1);
+            const std::string list = allText(call(input({})));
+            std::printf("set_checks, listed:\n%s\n", list.c_str());
+            const juce::var first = listed(list, 1), second = listed(list, 2);
+            P.eq("checkedit.list", has(list, "2 checks are set, each as set_checks takes it, numbered as merge and remove take index:\n1. {")
+                                       && str(first, "label") == "Level held" && str(first, "metric") == metric
+                                       && std::fabs(static_cast<double>(first["max"]) - most) < 1e-9
+                                       && std::fabs(static_cast<double>(first["dials"][levelDial]) - k.def) < 1e-6
+                                       && str(first, "dials_from") == "current" && first.hasProperty("hold_seconds")
+                                       && first.hasProperty("velocity") == pg::product::kIsInstrument
+                                       && (!pg::product::kIsInstrument || static_cast<int>(first["notes"][0]) == 57)
+                                       && str(second, "label") == "Level moved"
+                                       && str(second["scenario"]["automate"][0], "dial") == levelDial ? 1 : 0, 1);
+            P.eq("checkedit.list_numbers_tidy", !has(list, "0000000") && !has(list, "9999999")
+                                                    && (!pg::product::kIsInstrument || has(list, "\"velocity\":0.8,")) ? 1 : 0, 1);
+            // A listed check given back (merge) is the same check: the list reads the same after.
+            const std::string again = allText(call(input({ { "checks", juce::Array<juce::var>{ first } }, { "mode", "merge" } })));
+            P.eq("checkedit.round_trip", has(again, "Merged: check 1 (\"Level held\") replaced. 2 checks are set;")
+                                             && allText(call(input({}))) == list ? 1 : 0, 1);
+
+            // merge: by label (a new bound), a new label added, by index (renamed); dials_from snapshot on the merged.
+            const std::string byLabel = allText(call(input({ { "checks", juce::Array<juce::var>{ check("level held", most - 1.0) } },
+                                                             { "mode", "merge" } })));
+            const std::string after = allText(call(input({})));
+            P.eq("checkedit.merge_by_label", has(byLabel, "Merged: check 1 (\"level held\") replaced. 2 checks are set;")
+                                                 && std::fabs(static_cast<double>(listed(after, 1)["max"]) - (most - 1.0)) < 1e-9
+                                                 && !listed(after, 1).hasProperty("dials")
+                                                 && str(listed(after, 2), "label") == "Level moved" ? 1 : 0, 1);
+            juce::var renamed = check("Renamed", most);
+            renamed.getDynamicObject()->setProperty("index", 2);
+            const std::string merged = allText(call(input({ { "checks", juce::Array<juce::var>{ check("Brand new", most), renamed } },
+                                                            { "mode", "merge" }, { "dials_from", "snapshot" } })));
+            const std::string three = allText(call(input({})));
+            std::printf("merge, add and rename by index:\n%s\n", merged.c_str());
+            // The check an index replaced under another label is named with both (a stale index shows).
+            P.eq("checkedit.merge_add_index", has(merged, "Merged: check 3 (\"Brand new\") added, check 2 (\"Level moved\" -> \"Renamed\") "
+                                                          "replaced, the dials they do not name as they are now. 3 checks are set;")
+                                                  && has(merged, "Checks: 3 of 3 pass.") && str(listed(three, 2), "label") == "Renamed"
+                                                  && str(listed(three, 3), "label") == "Brand new"
+                                                  && str(listed(three, 2), "dials_from") == "snapshot"
+                                                  && listed(three, 2)["snapshot"].hasProperty(levelDial)
+                                                  && str(listed(three, 1), "dials_from") == "current" ? 1 : 0, 1);
+            // A listed check from a snapshot, given back after the user moved a dial, keeps its own dials_from and
+            // snapshot (not the dials now, not the call's current), and the result says so: the list reads the same.
+            sp.getParameters()[dialSlot]->setValueNotifyingHost(pg::normOf(k, pg::product::kIsInstrument ? -30.0f : 6.0f));
+            sp.poll();
+            const std::string shotBack = allText(call(input({ { "checks", juce::Array<juce::var>{ listed(three, 2) } }, { "mode", "merge" } })));
+            P.eq("checkedit.round_trip_snapshot", has(shotBack, "Merged: check 2 (\"Renamed\") replaced, the dials they do not name as "
+                                                                "their snapshot gives them. 3 checks are set;")
+                                                      && allText(call(input({}))) == three ? 1 : 0, 1);
+            sp.getParameters()[dialSlot]->setValueNotifyingHost(pg::normOf(k, k.def));
+            sp.poll();
+            // An item's own dials_from stands for one the call gives, and the result says how each takes its dials: a
+            // listed snapshot check under dials_from defaults keeps its snapshot; a listed current one beside another's
+            // snapshot, each its own. The list reads the same.
+            const std::string ownShot = allText(call(input({ { "checks", juce::Array<juce::var>{ listed(three, 2) } }, { "mode", "merge" },
+                                                             { "dials_from", "defaults" } })));
+            P.eq("checkedit.own_dials_from", has(ownShot, "Merged: check 2 (\"Renamed\") replaced, the dials they do not name as their "
+                                                          "snapshot gives them (an item's own dials_from stands for the call's). 3 checks are set;")
+                                                 && allText(call(input({}))) == three ? 1 : 0, 1);
+            const std::string ownMixed = allText(call(input({ { "checks", juce::Array<juce::var>{ listed(three, 1), listed(three, 3) } },
+                                                              { "mode", "merge" }, { "dials_from", "defaults" } })));
+            std::printf("merge, each check's own dials_from under the call's defaults:\n%s\n", ownMixed.c_str());
+            P.eq("checkedit.own_dials_from_mixed", has(ownMixed, "Merged: check 1 (\"level held\") replaced, check 3 (\"Brand new\") replaced, "
+                                                                 "the dials they do not name as they are when measured (check 1); as "
+                                                                 "their snapshot gives them (check 3) (an item's own dials_from stands "
+                                                                 "for the call's). 3 checks are set;")
+                                                       && allText(call(input({}))) == three ? 1 : 0, 1);
+            // One check merged twice in a call: the last item stands, and the result gives its way alone.
+            {
+                juce::var atDefaults = claude::parseJson(claude::toJson(listed(three, 2)));
+                atDefaults.getDynamicObject()->setProperty("dials_from", "defaults");
+                const std::string twice = allText(call(input({ { "checks", juce::Array<juce::var>{ atDefaults, listed(three, 2) } },
+                                                               { "mode", "merge" } })));
+                P.eq("checkedit.merge_twice", has(twice, "Merged: check 2 (\"Renamed\") replaced, check 2 (\"Renamed\") replaced, the dials "
+                                                         "they do not name as their snapshot gives them. 3 checks are set;")
+                                                  && !has(twice, "at their defaults") && allText(call(input({}))) == three ? 1 : 0, 1);
+            }
+            // Refused, nothing changed: an index past the list, a mode it does not take, merge without checks, a label
+            // none has.
+            const pg::ChatAgent::McpResult past = call(input({ { "checks", juce::Array<juce::var>{ [&] {
+                                                                   juce::var c = check("Far", most);
+                                                                   c.getDynamicObject()->setProperty("index", 9);
+                                                                   return c;
+                                                               }() } },
+                                                               { "mode", "merge" } }));
+            const pg::ChatAgent::McpResult badMode = call(input({ { "checks", juce::Array<juce::var>{ check("X", most) } }, { "mode", "append" } }));
+            const pg::ChatAgent::McpResult emptyMerge = call(input({ { "mode", "merge" } }));
+            const pg::ChatAgent::McpResult noLabel = call(input({ { "checks", juce::Array<juce::var>{ input({ { "label", "Nobody" } }) } },
+                                                                  { "mode", "remove" } }));
+            P.eq("checkedit.refused", past.isError && has(allText(past), "Check 1: there is no check 9 (3 are set). Nothing was changed.")
+                                          && badMode.isError && has(allText(badMode), "mode is replace, merge or remove")
+                                          && emptyMerge.isError && has(allText(emptyMerge), "merge needs checks")
+                                          && noLabel.isError && has(allText(noLabel), "no check is labelled \"Nobody\"")
+                                          && allText(call(input({}))) == three ? 1 : 0, 1);
+
+            // remove: by label, then by index (its label, case aside, that check's); an index whose check has another
+            // label refused, nothing changed (the list moved since it was read); the last one removed clears them.
+            const std::string byName = allText(call(input({ { "checks", juce::Array<juce::var>{ input({ { "label", "brand new" } }) } },
+                                                            { "mode", "remove" } })));
+            P.eq("checkedit.remove_by_label", has(byName, "Removed check 3 (\"Brand new\"). 2 checks left.\nChecks: 2 of 2 pass.")
+                                                  && str(listed(allText(call(input({}))), 2), "label") == "Renamed" ? 1 : 0, 1);
+            const std::string two = allText(call(input({})));
+            const pg::ChatAgent::McpResult stale = call(input({ { "checks", juce::Array<juce::var>{ input({ { "label", "Renamed" }, { "index", 1 } }) } },
+                                                                { "mode", "remove" } }));
+            P.eq("checkedit.remove_stale_index", stale.isError && has(allText(stale), "Check 1: check 1 is \"level held\", not \"Renamed\" "
+                                                                                     "(without checks, set_checks lists them). Nothing was changed.")
+                                                     && allText(call(input({}))) == two ? 1 : 0, 1);
+            const std::string byIndex = allText(call(input({ { "checks", juce::Array<juce::var>{ input({ { "label", "LEVEL HELD" }, { "index", 1 } }) } },
+                                                             { "mode", "remove" } })));
+            P.eq("checkedit.remove_by_index", has(byIndex, "Removed check 1 (\"level held\"). 1 check left.")
+                                                  && has(allText(call(input({}))), "1 check is set") ? 1 : 0, 1);
+            const std::string last = allText(call(input({ { "checks", juce::Array<juce::var>{ input({ { "label", "Renamed" } }) } },
+                                                          { "mode", "remove" } })));
+            P.eq("checkedit.remove_last", has(last, "Removed check 1 (\"Renamed\"). The checks are cleared") && !sa.chatState().checks ? 1 : 0, 1);
+            // Two of one label: merge by it is refused, by index is not.
+            call(input({ { "checks", juce::Array<juce::var>{ check("Twin", most), check("Twin", most) } } }));
+            const pg::ChatAgent::McpResult twin = call(input({ { "checks", juce::Array<juce::var>{ check("Twin", most - 2.0) } }, { "mode", "merge" } }));
+            P.eq("checkedit.twin_refused", twin.isError && has(allText(twin), "2 checks are labelled \"Twin\": give the one meant by its index") ? 1 : 0, 1);
+
+            // A check whose dials name a dial the program has not fails, saying so, whatever its metric gives.
+            juce::var ghost = check("Ghost dial", 100.0);
+            ghost.getDynamicObject()->setProperty("dials", input({ { "nosuch", 1.0 } }));
+            const std::string ghosted = allText(call(input({ { "checks", juce::Array<juce::var>{ ghost } } })));
+            std::printf("a check naming a dial the program has not:\n%s\n", ghosted.c_str());
+            P.eq("checkedit.unknown_dial_fails", has(ghosted, "Checks: 0 of 1 pass.\n- FAIL Ghost dial (" + std::string(metric)
+                                                                  + "): it names a dial 'nosuch' the program does not have: change "
+                                                                    "the check or remove it\n") ? 1 : 0, 1);
+
+            // A run whose declarations rename the dial the checks name: it says which checks it left naming it, and
+            // each fails for that; a check from a snapshot that holds it is named apart (measured without it, the new
+            // name at its default), and does not fail; the program back, they pass again.
+            juce::var shot = check("Level shot", most);
+            shot.getDynamicObject()->setProperty("dials_from", "snapshot");
+            call(input({ { "checks", juce::Array<juce::var>{ held, moved, shot } } }));
+            const pg::Draft before = sp.editorPort().draft();
+            pg::Draft renamedDial = before;
+            const juce::String newName = pg::product::kIsInstrument ? "volume" : "drive";
+            renamedDial.files[0].text = juce::String(renamedDial.files[0].text).replace(levelDial, newName).toStdString();
+            sp.editorPort().setDraft(renamedDial);
+            const std::string orphaned = allText(sa.mcpCall("run_program", input({})));
+            std::printf("run_program, the checks' dial renamed:\n%s\n", orphaned.c_str());
+            P.eq("checkedit.orphan_warned", has(orphaned, "Checks that name a dial the program no longer has (each fails until "
+                                                          "set_checks changes or removes it):\ncheck 1 (\"Level held\"): "
+                                                          + std::string(levelDial) + "\ncheck 2 (\"Level moved\"): " + levelDial + "\n")
+                                                && has(orphaned, "Checks: 1 of 3 pass.\n- FAIL Level held (")
+                                                && has(orphaned, "it names a dial '" + std::string(levelDial) + "' the program does not have") ? 1 : 0, 1);
+            P.eq("checkedit.orphan_snapshot", has(orphaned, "Checks from a snapshot that has a dial the program no longer has (measured "
+                                                            "without it; set_checks gives one a new snapshot):\ncheck 3 (\"Level shot\"): "
+                                                            "its snapshot's " + std::string(levelDial) + " is gone, "
+                                                            + newName.toStdString() + " measures at its default\n")
+                                                  && !has(orphaned, "- FAIL Level shot") ? 1 : 0, 1);
+            sp.editorPort().setDraft(before);
+            const std::string back = allText(sa.mcpCall("run_program", input({})));
+            P.eq("checkedit.orphan_back", has(back, "Checks: 3 of 3 pass.") && !has(back, "Checks that name a dial")
+                                              && !has(back, "Checks from a snapshot") ? 1 : 0, 1);
+            sa.clearChecks();
+            sp.getParameters()[dialSlot]->setValueNotifyingHost(pg::normOf(k, was));
+            sp.poll();
         }
 
         // ---- TUNE ----------------------------------------------------------------------------------------------------------
@@ -2152,6 +3446,38 @@ PROBE(plugin, chat)
             ss->add(fake::Response::ok(fake::Sse().start().text("Hm.").end()));
             const int b2 = turn("tune nothing", 2);
             P.eq("tune.unknown_dial", has(resultText(b2 + 1), "no dial 'nothing'") ? 1 : 0, 1);
+
+            // A sweep: the dial at two values, a bare goal's metric at each, side by side; the dial left where it was. A
+            // sweep that is no list of numbers is refused.
+            const float dialBefore = sp.getParameters()[dialSlot]->getValue();
+            juce::var sweepIn = input({ { "tune", juce::Array<juce::var>{ juce::var(levelDial) } },
+                                        { "sweep", juce::Array<juce::var>{ -12.0, -6.0 } },
+                                        { "goals", juce::Array<juce::var>{ input({ { "metric", metric } }) } } });
+            if constexpr (pg::product::kIsInstrument)
+                sweepIn.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+            ss->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .tool("toolu_t3", "tune_dials", sweepIn)
+                                           .tool("toolu_t4", "tune_dials",
+                                                 input({ { "tune", juce::Array<juce::var>{ juce::var(levelDial) } },
+                                                         { "sweep", "loud" },
+                                                         { "goals", juce::Array<juce::var>{ input({ { "metric", metric } }) } } }))
+                                           .end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("Swept.").end()));
+            const int b3 = turn("how does the level follow the dial?", 2);
+            const std::string swept = resultText(b3 + 1, 0), notList = resultText(b3 + 1, 1);
+            std::printf("tune_dials, a sweep:\n%s\n%s\n", swept.c_str(), notList.c_str());
+            P.eq("tune.sweep_table", has(swept, "Swept " + std::string(levelDial) + " over 2 values (")
+                                         && has(swept, " | " + std::string(metric) + "\n-12 | ")
+                                         && has(swept, "\n-6 | ")
+                                         && has(swept, "No dial was set: a sweep only measures (set_dial sets one).")
+                                         ? 1 : 0, 1);
+            P.eq("tune.sweep_sets_nothing", sp.getParameters()[dialSlot]->getValue() == dialBefore ? 1 : 0, 1);
+            bool sweptEntry = false;
+            for (const pg::ChatEntry& e : sa.chatState().entries)
+                sweptEntry = sweptEntry || (e.kind == pg::ChatEntry::Kind::tool && has(e.text, "swept " + std::string(levelDial) + " over 2 values"));
+            P.eq("tune.sweep_entry", sweptEntry ? 1 : 0, 1);
+            P.eq("tune.sweep_not_list", has(notList, "sweep is a list of 1 to 32 values of the one dial in tune.") ? 1 : 0, 1);
         }
 
         // ---- TRIAL ---------------------------------------------------------------------------------------------------------
@@ -2258,6 +3584,112 @@ PROBE(plugin, chat)
             juce::File(juce::String(probe::outPath("plugin.chat.compare.png"))).replaceWithData(png.getData(), png.getDataSize());
             const juce::Image img = juce::ImageFileFormat::loadFrom(png.getData(), png.getDataSize());
             P.eq("compare.picture", img.getWidth() == 1120 && img.getHeight() == 560 && has(words, "Best fit") ? 1 : 0, 1);
+
+            // b_rate: the editor's files at 48 and 96 kHz, compared by what is the same at every rate (the levels, the
+            // bands, the metrics), not sample by sample, and drawn with no difference line; a rate it does not take, and
+            // an effect's noise (its level per hertz moves with the rate), refused.
+            ss->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .tool("toolu_y5", "compare", input({ { "a", "editor" }, { "b", "editor" }, { "b_rate", 96000 }, { "picture", true } }))
+                                           .tool("toolu_y6", "compare", input({ { "a", "editor" }, { "b", "editor" }, { "b_rate", 1000 } }))
+                                           .tool("toolu_y7", "compare",
+                                                 input({ { "a", "editor" },
+                                                         { "b", "editor" },
+                                                         { "b_rate", 96000 },
+                                                         { "scenario", input({ { "input", "noise" } }) } }))
+                                           .tool("toolu_y8", "compare", input({ { "a", "editor" }, { "b", "editor" }, { "b_rate", 22050 } }))
+                                           .tool("toolu_y9", "compare",
+                                                 pg::product::kIsInstrument
+                                                     ? input({ { "a", "editor" }, { "b", "editor" }, { "b_rate", 48000 } })
+                                                     : input({ { "a", "editor" },
+                                                               { "b", "editor" },
+                                                               { "b_rate", 48000 },
+                                                               { "scenario", input({ { "input", "noise" } }) } }))
+                                           .end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("Compared.").end()));
+            const int rt = turn("does it sound the same at 96 kHz?", 2);
+            const std::string rateLow = resultText(rt + 1, 1), rateNoise = resultText(rt + 1, 2);
+            const std::string rateUnder = resultText(rt + 1, 3), rateSame = resultText(rt + 1, 4);
+            std::string rateWords, rateData;
+            const juce::Array<juce::var> rateResults = arr(lastUser(rt + 1).getProperty("content", {}));
+            for (const juce::var& b : arr(!rateResults.isEmpty() ? rateResults[0].getProperty("content", {}) : juce::var()))
+            {
+                if (str(b, "type") == "image")
+                    rateData = str(b.getProperty("source", {}), "data");
+                if (str(b, "type") == "text")
+                    rateWords = str(b, "text");
+            }
+            std::printf("compare at two rates:\n%s\n%s\n%s\n%s\n", rateWords.c_str(), rateLow.c_str(), rateNoise.c_str(),
+                        rateUnder.c_str());
+            P.eq("compare.rates_lines", has(rateWords, ", A at 48000 Hz and B at 96000 Hz, in blocks of ")
+                                            && has(rateWords, "\nA renders at 48000 Hz and B at 96000 Hz: compared by what is the same "
+                                                              "at every rate (the levels, the octave bands, the metrics), not sample by sample.\n")
+                                            && !has(rateWords, "Best fit") && !has(rateWords, "Identical bits")
+                                            ? 1 : 0, 1);
+            P.eq("compare.rates_agree", has(rateWords, "\nThe metrics agree within their tolerances (") ? 1 : 0, 1);
+            P.eq("compare.rates_picture_words", has(rateWords, "(none at two rates: no sample lines up)") ? 1 : 0, 1);
+            juce::MemoryOutputStream ratePng;
+            juce::Base64::convertFromBase64(ratePng, juce::String(rateData));
+            juce::File(juce::String(probe::outPath("plugin.chat.compare.rates.png"))).replaceWithData(ratePng.getData(), ratePng.getDataSize());
+            const juce::Image rateImg = juce::ImageFileFormat::loadFrom(ratePng.getData(), ratePng.getDataSize());
+            P.eq("compare.rates_picture", rateImg.getWidth() == 1120 && rateImg.getHeight() == 560 ? 1 : 0, 1);
+            P.eq("compare.rates_low_refused", has(rateLow, "b_rate is B's rate in Hz, 8000 to 192000 (40000 or more when it "
+                                                           "differs from A's).") ? 1 : 0, 1);
+            P.eq("compare.rates_noise_refused",
+                 pg::product::kIsInstrument || has(rateNoise, "b_rate takes the sweep (its input at two rates)") ? 1 : 0, 1);
+            // Two rates under 40 kHz refused (a side would lack 20 Hz to 20 kHz); b_rate at A's own rate the ordinary
+            // comparison, the effect's noise with it.
+            P.eq("compare.rates_under_40k_refused",
+                 has(rateUnder, "At two rates both are 40000 Hz or more, so that both hold 20 Hz to 20 kHz: A renders at 48000 Hz "
+                                "and b_rate is 22050.") ? 1 : 0, 1);
+            P.eq("compare.rates_same_rate", has(rateSame, "Identical bits") && !has(rateSame, "A renders at") ? 1 : 0, 1);
+
+            // previous_run: what played before the last run that changed it. A fresh plugin has none; here, the halving
+            // edited and run, previous_run against playing is that halving (before the message thread takes the new
+            // program, and after), and run back, the other way.
+            {
+                pg::Processor fresh;
+                const pg::ChatAgent::McpResult none = fresh.chatAgent().mcpCall("compare", input({ { "a", "previous_run" }, { "b", "editor" } }));
+                P.eq("compare.previous_none", none.isError && has(allText(none), "Nothing played before the last run: no run has changed "
+                                                                                 "the program since the plugin opened") ? 1 : 0, 1);
+            }
+            const juce::var halveFile = input({ { "name", "program.fm" },
+                                                { "old_text", "const float g = expf(0.115129255f * " },
+                                                { "new_text", "const float g = 0.5f * expf(0.115129255f * " } });
+            const juce::var unhalve = input({ { "name", "program.fm" },
+                                              { "old_text", "const float g = 0.5f * expf(0.115129255f * " },
+                                              { "new_text", "const float g = expf(0.115129255f * " } });
+            const juce::var previous = input({ { "a", "previous_run" }, { "b", "playing" } });
+            P.eq("compare.previous_halve_edit", !sa.mcpCall("edit_file", halveFile).isError && !sa.mcpCall("run_program", input({})).isError ? 1 : 0, 1);
+            const std::string halvedRun = toolText(sa.mcpCall("compare", previous));   // the run not yet taken by poll()
+            sp.poll();
+            const std::string halvedPolled = toolText(sa.mcpCall("compare", previous));
+            P.eq("compare.previous_undo_edit", !sa.mcpCall("edit_file", unhalve).isError && !sa.mcpCall("run_program", input({})).isError ? 1 : 0, 1);
+            sp.poll();
+            const std::string doubled = toolText(sa.mcpCall("compare", previous));
+            std::printf("compare previous_run:\n%s\n%s\n", halvedRun.c_str(), doubled.c_str());
+            P.eq("compare.previous_halved", has(halvedRun, "A is what played before the last run; B is the program that plays.")
+                                                && has(halvedRun, "Best fit: B = 0.500 x A (-6.0 dB), no delay")
+                                                && has(halvedRun, "Source, B against A: program.fm +1 -1")
+                                                && halvedPolled == halvedRun
+                                                ? 1 : 0, 1);
+            P.eq("compare.previous_back", has(doubled, "Best fit: B = 2.000 x A (+6.0 dB), no delay") ? 1 : 0, 1);
+            // A state loaded (a host's recall, a project reopened) is no run: nothing played before its program, though a
+            // new processor plays Init until then (this program is not Init).
+            {
+                juce::MemoryBlock state;
+                sp.getStateInformation(state);
+                pg::Processor loaded;
+                loaded.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+                const pg::ChatAgent::McpResult noneLoaded = loaded.chatAgent().mcpCall("compare", previous);
+                const std::string loadedFile = toolText(loaded.chatAgent().mcpCall("read_file", input({ { "name", "program.fm" } })));
+                P.eq("compare.previous_none_loaded",
+                     noneLoaded.isError
+                             && has(allText(noneLoaded), "Nothing played before the last run: no run has changed the program since "
+                                                         "the plugin opened or loaded its session")
+                             && has(loadedFile, "const float g = expf(0.115129255f * ")
+                         ? 1 : 0, 1);
+            }
         }
 
         // ---- TRACE ---------------------------------------------------------------------------------------------------------

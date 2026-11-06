@@ -47,10 +47,7 @@ namespace playground::measure
             {
                 // A four-term Blackman-Harris window: its sidelobes under -92 dB, so a pure tone shows as one line.
                 for (std::size_t i = 0; i < size_; ++i)
-                {
-                    const double t = 2.0 * std::numbers::pi * static_cast<double>(i) / static_cast<double>(size_);
-                    window_[i] = 0.35875 - 0.48829 * std::cos(t) + 0.14128 * std::cos(2.0 * t) - 0.01168 * std::cos(3.0 * t);
-                }
+                    window_[i] = taper(i, size_);
                 for (std::size_t k = 0; k < twiddle_.size(); ++k)     // e^(-2 pi i k / half), the half-size FFT's
                 {
                     const double a = -2.0 * std::numbers::pi * static_cast<double>(k) / static_cast<double>(half_);
@@ -75,13 +72,55 @@ namespace playground::measure
             void power(const std::vector<float>& l, const std::vector<float>& r, long centre, std::vector<double>& p)
             {
                 const long from = centre - static_cast<long>(half_);
-                const auto x = [&](std::size_t i) {
-                    const long at = from + static_cast<long>(i);
-                    return at >= 0 && at < static_cast<long>(l.size())
-                               ? 0.5 * (static_cast<double>(l[static_cast<std::size_t>(at)]) + r[static_cast<std::size_t>(at)])
-                                     * window_[i]
-                               : 0.0;
-                };
+                transform(
+                    [&](std::size_t i) {
+                        const long at = from + static_cast<long>(i);
+                        return at >= 0 && at < static_cast<long>(l.size())
+                                   ? 0.5 * (static_cast<double>(l[static_cast<std::size_t>(at)]) + r[static_cast<std::size_t>(at)])
+                                         * window_[i]
+                                   : 0.0;
+                    },
+                    p);
+            }
+
+            // A span shorter than the frame, [from, to), alone: tapered over its own length (the same window, in as many
+            // points), the rest of the frame 0 (measure::spectrum's way), its power scaled by the whole frame's taper
+            // over this one's, squared, so that a tone reads as it does in a whole frame.
+            void powerOver(const std::vector<float>& l, const std::vector<float>& r, std::size_t from, std::size_t to,
+                           std::vector<double>& p)
+            {
+                const std::size_t end = std::min(to, l.size()), n = end > from ? std::min(end - from, size_) : 0;
+                short_.resize(n);
+                double whole = 0.0, part = 0.0;
+                for (const double w : window_)
+                    whole += w;
+                for (std::size_t i = 0; i < n; ++i)
+                {
+                    short_[i] = taper(i, n);
+                    part += short_[i];
+                }
+                transform(
+                    [&](std::size_t i) {
+                        return i < n ? 0.5 * (static_cast<double>(l[from + i]) + r[from + i]) * short_[i] : 0.0;
+                    },
+                    p);
+                const double gain = part > 0.0 ? (whole / part) * (whole / part) : 0.0;
+                for (double& x : p)
+                    x *= gain;
+            }
+
+        private:
+            // A four-term Blackman-Harris window of n points, at point i.
+            static double taper(std::size_t i, std::size_t n)
+            {
+                const double t = 2.0 * std::numbers::pi * static_cast<double>(i) / static_cast<double>(n);
+                return 0.35875 - 0.48829 * std::cos(t) + 0.14128 * std::cos(2.0 * t) - 0.01168 * std::cos(3.0 * t);
+            }
+
+            // The frame x(0) .. x(size - 1) into `p`: bins 0 to size / 2.
+            template <typename X>
+            void transform(const X& x, std::vector<double>& p)
+            {
                 for (std::size_t m = 0; m < half_; ++m)               // in bit-reversed order, for the FFT in place
                     z_[reverse_[m]] = { x(2 * m), x(2 * m + 1) };
                 for (std::size_t len = 2; len <= half_; len <<= 1)
@@ -105,9 +144,8 @@ namespace playground::measure
                 }
             }
 
-        private:
             std::size_t size_, half_;
-            std::vector<double> window_;
+            std::vector<double> window_, short_;
             std::vector<std::complex<double>> z_, twiddle_, split_;
             std::vector<std::size_t> reverse_;
         };
@@ -219,7 +257,7 @@ namespace playground::measure
         if constexpr (kInstrument)
         {
             Request r = request.render;
-            if (r.phrase.empty() && r.events.empty())
+            if (r.phrase.empty() && r.events.empty() && !r.startKey())
             {
                 std::vector<int> notes;
                 for (const int n : request.render.notes)
@@ -367,6 +405,20 @@ namespace playground::measure
         v.hiHz = std::min(20000.0, 0.5 * rate);
         v.heldUntil = heldUntil;
         const std::size_t holdN = heldUntil > 0.0 ? std::min(total, static_cast<std::size_t>(heldUntil * rate)) : total;
+        // The held part: from 50 ms in to the note-off (with nothing held, the RMS from 50 ms in and the spectrum all
+        // of it, to the end); or the window (Measure.h), both.
+        const std::size_t settle = std::min(holdN / 2, static_cast<std::size_t>(0.05 * rate));
+        std::size_t rmsFrom = settle, spectrumFrom = v.heldUntil > 0.0 ? settle : 0;
+        std::size_t heldTo = v.heldUntil > 0.0 ? holdN : total;
+        const Window& window = request.render.window;
+        if (window.set() && total > 0)
+        {
+            rmsFrom = spectrumFrom = std::min(total - 1, static_cast<std::size_t>(std::llround(window.from * rate)));
+            heldTo = std::clamp(static_cast<std::size_t>(std::llround(std::min(window.to, kMaxWindowSeconds) * rate)), rmsFrom + 1,
+                                total);
+            v.windowFrom = static_cast<double>(rmsFrom) / rate;
+            v.windowTo = static_cast<double>(heldTo) / rate;
+        }
         if (harmonics && cycleHz > 0.0)
             for (int k = 1; k <= 40 && cycleHz * k < v.hiHz; ++k)
                 v.harmonics.push_back(cycleHz * k);
@@ -386,12 +438,10 @@ namespace playground::measure
         }
         v.peakDb = toDb(top);
         {
-            const std::size_t settle = std::min(holdN / 2, static_cast<std::size_t>(0.05 * rate));
-            const std::size_t end = v.heldUntil > 0.0 ? holdN : total;
             double e = 0.0;
-            for (std::size_t i = settle; i < end; ++i)
+            for (std::size_t i = rmsFrom; i < heldTo; ++i)
                 e += 0.5 * (static_cast<double>(L[i]) * L[i] + static_cast<double>(R[i]) * R[i]);
-            v.rmsDb = end > settle ? toDb(std::sqrt(e / static_cast<double>(end - settle))) : -240.0;
+            v.rmsDb = heldTo > rmsFrom ? toDb(std::sqrt(e / static_cast<double>(heldTo - rmsFrom))) : -240.0;
         }
         const std::size_t w10 = static_cast<std::size_t>(0.01 * rate);
         for (int c = 0; c < cols && total > 0; ++c)
@@ -419,15 +469,22 @@ namespace playground::measure
             v.levelDb[k] = static_cast<float>(t > f ? toDb(std::sqrt(e / static_cast<double>(t - f))) : -240.0);
         }
 
-        // The spectrogram: a 4096-point window about each column's middle (85 ms at 48 kHz: a low note's harmonics
+        // The frames are fixed in seconds as nearly as a power of two allows: the 48 kHz sizes scaled by the rate, so a
+        // picture at 96 kHz (compare's at two rates) has the detail of one at 48 (44.1 kHz keeps them).
+        const auto frameFor = [rate](double at48k) {
+            const double n = std::exp2(std::round(std::log2(std::max(1.0, at48k * rate / 48000.0))));
+            return static_cast<std::size_t>(std::clamp(n, 512.0, 65536.0));
+        };
+
+        // The spectrogram: a 4096-point window at 48 kHz about each column's middle (85 ms: a low note's harmonics
         // apart, an envelope's shape still clear).
         v.columns = cols;
         v.rows = std::max(32, request.rows);
         v.cells.assign(static_cast<std::size_t>(v.rows) * static_cast<std::size_t>(cols), static_cast<float>(kFloorDb));
-        constexpr std::size_t kFrame = 4096;
+        const std::size_t frame = frameFor(4096.0);
         {
-            Spectra spectra(kFrame);
-            const Axis axis(rate, kFrame, v.loHz, v.hiHz, v.rows);
+            Spectra spectra(frame);
+            const Axis axis(rate, frame, v.loHz, v.hiHz, v.rows);
             std::vector<double> p;
             std::vector<float> col(static_cast<std::size_t>(v.rows));
             for (int c = 0; c < cols && total > 0; ++c)
@@ -442,28 +499,36 @@ namespace playground::measure
         }
         normalise(v.cells);
 
-        // The average spectrum of the held part (an impulse's or silence's: all of it).
+        // The average spectrum of the held part (an impulse's or silence's: all of it), or of the window: Welch's, or
+        // one frame over it alone when it is shorter than a frame (nothing from outside it).
         {
-            constexpr std::size_t kWelch = 8192;
-            const std::size_t settle = std::min(holdN / 2, static_cast<std::size_t>(0.05 * rate));
-            const std::size_t from = v.heldUntil > 0.0 ? settle : 0, to = v.heldUntil > 0.0 ? holdN : total;
-            std::vector<double> sum(kWelch / 2 + 1, 0.0), p;
-            Spectra spectra(kWelch);
+            const std::size_t welch = frameFor(8192.0);   // 171 ms
+            const std::size_t from = spectrumFrom, to = heldTo;
+            std::vector<double> sum(welch / 2 + 1, 0.0), p;
+            Spectra spectra(welch);
             int frames = 0;
-            for (std::size_t a = from; a + kWelch <= to || frames == 0; a += kWelch / 2)
+            if (to < from + welch)
             {
-                spectra.power(L, R, static_cast<long>(a + kWelch / 2), p);
-                for (std::size_t k = 0; k < sum.size(); ++k)
-                    sum[k] += p[k];
-                ++frames;
-                if (a + kWelch > to)
-                    break;
+                spectra.powerOver(L, R, from, to, p);
+                sum = p;
+                frames = 1;
             }
+            else
+                for (std::size_t a = from; a + welch <= to; a += welch / 2)
+                {
+                    spectra.power(L, R, static_cast<long>(a + welch / 2), p);
+                    for (std::size_t k = 0; k < sum.size(); ++k)
+                        sum[k] += p[k];
+                    ++frames;
+                }
             const int columns = std::max(32, request.spectrumColumns);
             v.spectrum.assign(static_cast<std::size_t>(columns), 0.0f);
-            Axis(rate, kWelch, v.loHz, v.hiHz, columns).place(sum, v.spectrum.data());
+            Axis(rate, welch, v.loHz, v.hiHz, columns).place(sum, v.spectrum.data());
+            // In power of a tone's line (a frame's power grows as its length squared): the 48 kHz frame's scale at
+            // every rate.
+            const double perFrame = 10.0 * std::log10(std::max(frames, 1)) + 20.0 * std::log10(static_cast<double>(welch) / 8192.0);
             for (const float x : v.spectrum)
-                v.spectrumTop = std::max(v.spectrumTop, x - static_cast<float>(10.0 * std::log10(std::max(frames, 1))));
+                v.spectrumTop = std::max(v.spectrumTop, x - static_cast<float>(perFrame));
             normalise(v.spectrum);
         }
 
@@ -482,11 +547,12 @@ namespace playground::measure
                                              ? std::clamp(static_cast<std::size_t>(4.0 * rate / cycleHz),
                                                           static_cast<std::size_t>(0.002 * rate), static_cast<std::size_t>(0.05 * rate))
                                              : static_cast<std::size_t>(0.01 * rate);
-                const std::size_t middle = v.heldUntil > 0.0 ? holdN / 2
+                const std::size_t middle = window.set()     ? (spectrumFrom + heldTo) / 2
+                                         : v.heldUntil > 0.0 ? holdN / 2
                                                              : std::min(total, static_cast<std::size_t>(0.002 * rate) + span / 2);
                 a = middle > span / 2 ? middle - span / 2 : 0;
                 b = std::min(total, a + span);
-                if (fromStart)
+                if (fromStart && !window.set())
                 {
                     a = 0;                                   // the response's start
                     b = std::min(total, static_cast<std::size_t>(0.02 * rate));

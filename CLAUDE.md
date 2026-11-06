@@ -52,7 +52,7 @@ FunkPluginTemplate are carried over by hand (`Source/plugin`, `Source/editor`, t
 | `cmake/Installer.cmake` | the installer (`fp_add_installer`, after every product): its name (the products' names' common start, else the first's; `FP_PROJECT_NAME`, `FP_INSTALLER_NAME`, in the cache for `scripts/package.sh`), the generated `Installer.h`, the payload's `payload.json`, the app (target `Installer`), its payload (`installer_payload`: `cmake/InstallerPayload.cmake` clones every product's bundles and extension into the app, `ditto --clone`, then signs the app again, ad hoc) and its probes (`Installer_probes`: `Tools/probes/installer/`, tests `installer.<name>`, once); on Windows "<Project> Installer.exe" with `payload\` beside it (`InstallerPayload.cmake` copies each product's VST3 bundle, its Standalone's folder and its .mcpb, the build's .pdb, .ilk, .exp and .lib left out), nothing signed, the app and its probes on UTF-8 as their code page (`Source/installer/Utf8.manifest`) | built by every build (the clones cost nothing on APFS); the installer takes the first product's company, version, bundle id (`.installer` after it) and kind's icon |
 | `Source/fsdsp/core/**` | FSynth's DSP core, vendored (`SEED.tsv`) | do not edit casually: `scripts/sync-dsp-core.sh` refuses to overwrite edits |
 | `Source/fminus/**` | `Patch` (a program compiled for the plugin: the contract, the appended calls, the instances and the module Shared's one, the circuits' pots as dials (a main-module field of a netlist's module, unless the program calls its set(): Lang's `circuitDials`, checked against what FMinus compiled; the dials after the params; a nonblocking shim a field, `Patch::setCircuits`; `Recipe::bindings`, `CompileStatus::circuitDials`), the probe table (each main-module field of a netlist's module: its probe fields' offsets, checked, and the netlist's nodes; the audio thread's noexcept arm, disarm, count, ring and stats; `Recipe::probes`, `CompileStatus::probes`), the taps: the fields its displays read (the main module's, or Shared's through its pointer, `shared->x`: PanelSpec's `displayFields`), the field map (`fieldMap`, trace's: every scalar field as a path, never a pointer followed, never a probe field), the Host block: host.fm, built in, `Patch::setHost`; the IR as text when asked: `compile`'s `keepIr`, `freeze`'s `ir`, and `Patch::ir` and `frozenIr`, the IR alone, compiled with the options the code came from); `PanelSpec` (its `#pragma panel` lines, read from the files it compiled: sections, dial styles and options, colours, displays); `GuiSpec` (a `.gui` file, the first of its files: the interface's tree, in place of the pragmas, and the tapers, units and scales it gives the dials; `fminus.gui`); `HostFile.cpp` (host.fm's text, `Patch::hostSource`, apart from Patch.cpp so that `Lang` links without FMinus); `Circuits` (a `.cir` file, a SPICE netlist: the module FMinus's circuit compiler generates from it, generated when an `#include` first reaches it in a compile (`Generator`, one a compile: its errors stop the compile ahead of FMinus's, its warnings and the provisional note are notes, its jobs and keys go to `Patch::Result`), FMinus's messages on a generated module cited at the netlist's lines (`recite`), the self-test's answers, process-wide (`answers()`: 64, the in-flight set, `landed()`; each test's `Outcome`, its own warnings and why it gave no answer, `reported()`: a key given up on is not tested again, its compiles say `gaveUpNote` where the provisional note was; `erase`, an answer a compile found its netlist cannot take, which the Generator then generates without; `keysOf` and `restore`, what a session and a project version keep; `chosenNote`, a refine's note); the recipe keeps the texts (`Recipe::circuits`), so `freeze`, `ir` and `frozenIr` never generate; `fminus.circuit`); `LibraryIncludes.h` (`withLibraryIncludes`: a program's files and the library files it `#include`s, which EXAMPLES, the prompt's examples and the probes take); `Random` (RANDOM: a program for the product's kind from the library's building blocks; `fminus.random` compiles and plays 160 seeds); `Lang` (FMinus's language service, reusable by the chat's tools: its tokens, the program's symbols across its files, host.fm and the library, completion, signature help, hover, definitions, occurrences; `LangFormat.cpp`, the formatter, which checks that it changes no token; `circuitDials`, the dials a program's circuits get and why a field has none, which Patch and the GUI sandbox both take, and `potControl`/`switchControl`, their Controls; `fminus.lang`); `CirTemplates` (Play this circuit: a program.fm of the product's kind that plays a netlist, never calling its set(), in the house style; `fminus.circuit` TEMPLATE); `CirDoc` (a `.cir` netlist as the schematic sees it: its parts and nodes read with FMinus's token order (`read`), the drawing in its `*@` comment lines (`readLayout`, `writeBlock` and `withBlock`, canonical), `reconcile` (text to drawing, pure: lines bound by name, orphans adopted, session pins, the rest placed, every wired net repaired), the edits a gesture or Claude makes as text patches, all or none (`apply`, `parseOp`: edit_circuit's grammar), and the text helpers `stripLayout`, `sameNetlist`, `lineMap`, `sameProgram`; `fminus.schematic`) and `CirLayout` (the part library's symbols and pins in token order, the eight orientations, the full layout, incremental placement and the A* router, integer-only and deterministic, its budgets counted pops and its grid bounded (`kRouteCells`: a drawing that spans more is name tags, an op that would make one is refused), every point it writes one that reads back (`kPartLimit`)); `examples/<key>/*.fm`, a product's EXAMPLES (the first, `0-init.fm`, Init, the default program: the classic init patch; first line `// <Title>: ...`); `library/<n>-<category>/*.fm` and `*.cir`, the LIBRARY, every product's (first line `// <file name>: what it is`, a netlist's `* <file name>: what it is`, then its usage header; `fminus.library` measures each; a netlist pins its configuration, the self-test's, with `fminus <file> --self-test`'s line in its header) | JUCE-free; FMinus only through `fminus/FMinus.h` and its circuit compiler's `fminus/Circuit.h` (C++17, no LLVM; the latter in `Circuits.cpp` and `dsp/SelfTester.cpp` alone), never its internals (`circuit/` included) or LLVM's headers (`lint.layers`); `Lang` stays FMinus-free (the sandbox links it): a `.cir` is read line by line there, `isCircuitFile` is `dsp/Sources.h`'s; `CirDoc` and `CirLayout` are FMinus-free too (every layer may use them), outside `FP_SANDBOX_SHARED`, so `Lang` never includes them |
-| `Source/dsp/**` | `Engine` (programs swapped by crossfade, the dials as glided streams, voices for an instrument, the output guard, the meters the displays read: `Meters` (`Meters.h`, apart so that what only shows them needs nothing of the audio side) and the scope's rings; the schematic's probes: `setProbes`, the probes' rings, `Meters::probes`), `Compiler` (compiles off the audio thread, offers to the Engine, collects; the IR view's texts while someone looks: `setIrWanted`, `ir()`; the refine: the program that plays compiled again once a circuit's self-test answer lands, below), `SelfTester` (the circuits' self-test, one a Compiler, on threads of its own: the jobs of the compile that plays, a test a key, answers into `circuits::answers()`; `fminus.circuit` SELFTEST, REFRESH and DEDUP), `Controls.h` (slot mapping), `Events.h` (the host's `Transport`, the program's `HostBlock`, an instrument's MIDI as events), `Measure` (a program rendered offline in an Engine of its own and measured in words and in named numbers: the chat's measure_output; `Session`, one compile measured many times through `Engine::restart`), `Goals` (goals and checks on those numbers: set_checks), `Tune` (tune_dials' search), `SoundView` (view_sound's render and analysis: `renderSound`, then `analyse`, which a recording takes too), `Compare` (compare's null test, gain and lag, bands, metrics), `Debug` (trace: two renders through `RenderHooks`, the fields read through `Patch::fieldMap`) | JUCE-free C++20 |
+| `Source/dsp/**` | `Engine` (programs swapped by crossfade, the dials as glided streams, voices for an instrument, the output guard, the meters the displays read: `Meters` (`Meters.h`, apart so that what only shows them needs nothing of the audio side) and the scope's rings; the schematic's probes: `setProbes`, the probes' rings, `Meters::probes`), `Compiler` (compiles off the audio thread, offers to the Engine, collects; the IR view's texts while someone looks: `setIrWanted`, `ir()`; the refine: the program that plays compiled again once a circuit's self-test answer lands, below), `SelfTester` (the circuits' self-test, one a Compiler, on threads of its own: the jobs of the compile that plays, a test a key, answers into `circuits::answers()`; `fminus.circuit` SELFTEST, REFRESH and DEDUP), `Controls.h` (slot mapping), `Events.h` (the host's `Transport`, the program's `HostBlock`, an instrument's MIDI as events), `Measure` (a program rendered offline in an Engine of its own and measured in words and in named numbers: the chat's measure_output; `Session`, one compile measured many times through `Engine::restart`), `Goals` (goals and checks on those numbers: set_checks), `Tune` (tune_dials' search, and its sweep), `SoundView` (view_sound's render and analysis: `renderSound`, then `analyse`, which a recording takes too), `Compare` (compare's null test, gain and lag, bands, metrics; at two rates the levels, bands and metrics alone), `Debug` (trace: two renders through `RenderHooks`, the fields read through `Patch::fieldMap`), `TextDiff` (a line diff: get_status's `since`), `Regex` (read_file's patterns: RE2's syntax, the part a search of code needs, compiled to a Thompson NFA and run as Pike's VM without captures, so a search costs at most the text's length times the program's size, whatever the pattern: never std::regex, whose backtracking a pattern such as `(a+)+$` makes exponential; each search counts its steps against the caller's budget; backreferences and lookaround refused) | JUCE-free C++20 |
 | `Source/plugin/**` | the JUCE `AudioProcessor`: P1 to P32 (`ControlParameter`: the program's names and texts), one FunkGui port each, the program's files and the draft in the session, the bypass, the compiler's outcome polled on the message thread; `EditorPort.h`; the chat with Claude: `ChatAgent` (the conversation, the turn on its own thread, Claude's tools through `ChatHost`), `ChatPrompt.cpp` (the system prompt), `ClaudeApi` (the Messages API over HTTPS, to Anthropic), `ChatStore` (the key, encrypted), `ChatImages` (pictures for a message: read with JUCE, Core Image for WebP and HEIC, scaled, thumbnailed; an MCP result's made to fit), `SoundPicture` (view_sound's PNG, drawn with JUCE's software renderer on the agent's worker, and its thumbnail; compare's), `ChatScenario` (the render tools' `scenario` and `try_edits`), `ChatCompare` (compare), `ChatTrace` (trace), `ChatCaptured` (the recording as a render: the capture's seam), `CaptureReplay` (a take replayed, its null test, its analysis), `ChatPort.h`; `McpLink` (the instance's socket for the MCP server: info, tools, guide, call and cancel; a call through `ChatAgent::mcpCall` on its worker, the quick ones on its poll thread); `StandaloneMenu` (the Standalone's menu bar as data: `gui.window`); `DevicePort.h` (the Standalone's audio and MIDI devices as the Settings card sees them, plain data and actions, JUCE-free: EditorPort.h includes it); `WheelMap` (a Logitech G29 racing wheel made MIDI, JUCE-free and IOKit-free: its modes told apart and hid-lg4ff's commands, the one table of its HID elements (`kAxisRows`, `kGears`, `kBits`, the start key), `Map`, its values to channel 1's control changes and the start key's note, sent on change (a pedal's first 1 % released, a change under `kJitter` held back, `resend`); `plugin.wheel`); `WheelDriver` (the Standalone's wheel as decisions over a `wheel::Transport`, JUCE-free and IOKit-free too: the seed rule (no value IOKit holds before a report, its timestamp 0), the compatibility mode switched at most once each time the entry is switched on, the pending switch kept and listed while the wheel re-enumerates, the range before the spring, the spring released on every way out that has a device and its failure on the card, the rate (`kGather`, `kInterval`), `resend`, the card's line; `plugin.wheel` DRIVER drives it with fake devices) | reads parameters once per block, calls the Engine; copes with what a host may do (below); the chat's rules below |
 | `Source/plugin/standalone/**` | the Standalone app, compiled into each product's Standalone target only (`JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP`): `App.cpp` (its `JUCEApplication`, window and content (the editor alone), with `juce::StandalonePluginHolder` for the devices and the state, in JUCE's own settings file and keys: `filterState`, `audioSetup`, `shouldMuteInput`, `windowX`/`windowY`; the menu bar's commands, Settings... asking the editor for its card: `Processor::showSettings`), `Devices` (the `DevicePort` over the holder's `AudioDeviceManager` and its input's mute, as JUCE's dialog had them: its channel limits, pairs and names, `setAudioDeviceSetup`'s error, the lists followed through the manager's and each type's listeners and `juce::MidiDeviceListConnection`; `audioSetup` and `shouldMuteInput` saved on every change, not only at shutdown; an instrument's racing wheel listed after the MIDI inputs, its choice under `racingWheel`, its messages posted into the holder's player's `MidiMessageCollector` as JUCE's MIDI inputs feed it, and sent whole again (`resendWheel`) after each of the device manager's change messages (a restart resets the collector, dropping what waited) and after Reset to Default State; `gui.settings`), `RacingWheel` (a Logitech G29 over IOKit's IOHIDManager, C API, on the main run loop in every mode: `plugin/WheelDriver.h`'s transport (the reports, the values with their timestamps, the input callback, two timers), the driver deciding (a compatibility-mode G29 switched to its own mode once each "on", its range and spring set and the spring stopped when it is off or the app quits, its values through a `wheel::Map` at most 125 times a second, put back at rest when it goes or is switched off); a crash leaves the spring on until the wheel is unplugged; IOKit linked into the Standalone only), `NativeWindow.mm` (Objective-C++, ARC: the window's transparent title bar over full-size content, a view of ours in the title bar that keeps the buttons where the editor wants them, the drag and the double-click, the menu bar) | the AU and the VST3 never include it; the editor learns of the window only through `EditorPort::windowButtons`, `placeWindowButtons`, `dragWindow`, `devices` and `settingsAsked` (`Processor::setWindowHooks`, `showSettings`; none in a host: no card, no notice); nothing in the window is drawn by JUCE but the window itself, the native file choosers and the menus (`showAudioSettingsDialog` is called nowhere); the devices are the message thread's alone; a key the editor uses never becomes a menu shortcut (the editor gets every key first) |
 | `Source/editor/**` | the FunkGui `Panel`, resizable (`layout()` places every item for the size; `kMinWidth` x `kMinHeight`): the top bar (the product's mark and name, the project's pill, the Code / Panel switch, the load (a snowflake left of it while the frozen copy plays, `EditorPort::frozen`; `gui.dump.frozen.png`), the theme; in the Standalone, room at its left for the window's buttons, and its empty parts drag the window: `EditorPort::windowButtons`, `gui.window`), the explorer's card at the left (`Explorer`: the program's files, its LLVM IR (the IR view's rows), the project open's presets, the projects, the library and the examples in sections that fold, its rows doing what the tabs, PROJECTS, LIBRARY and EXAMPLES do through the Panel's hooks; it folds away, its button then at the left of the program's card's header, `EditorPort::explorerOpen`; it is away in the PANEL view and when the program's card would keep less than `kProgramMinW`; `gui.explorer`), the program's card (its status and actions: Examples, Library, Random, Run; the files' tabs, a `funkgui::TextEditor` each made a code editor by `CodeAssist` (FMinus's highlighter, the problems' squiggles and marks from RUN and from the check while typing, completion, signature help, hover cards, Format Document and Format on Run, the find bar, the line commands, go to definition, go to a line (Ctrl-G), the status line; the completion list, the signature and the hover card drawn over everything; `gui.code`), the IR view (`IrView`: a read-only tab apart at the tab bar's right, a TextEditor a view, its text and its LLVM IR highlighter; `gui.ir`), a netlist's Schematic view (`SchematicView`: a .cir tab's drawing, switched with its Netlist view by the pills at the tab bar's right or Cmd-Shift-D, which FilesItem hands draw, input and keys; its gestures made `cir::Op`s and one `TextEditor::applyEdits` each; a knob beside each pot and a chip beside each switch the program that plays drives by dials (`CompileStatus::circuitDials`), writing through the Panel's GestureController on the dial's own port; its live probes (the selected net, up to three pinned lanes, a readout card over the canvas, resolved by name in `CompileStatus::probes`, the Panel's own set through `EditorPort::setProbes`); Play this circuit (`fminus/CirTemplates.h`: program.fm replaced as one undo step of its own, Undo in the info strip); the room it takes (the problems list hidden, the editor at least max(312, 55 %) of the column, the dials folded into a bar when they do not fit); its fields (a part's names and values edited in place, the Label tool's net name), its clipboard of netlist text (`cir::copied`), Show as labels and wires; `SchematicDraw`: its symbols, wires, flags, labels and marks, and `still`, a picture's whole drawing; each file's view, zoom and pan in the session, `EditorPort::fileViews`, written on the user's gestures only; its session pins, `EditorPort::setSchematicPins`; `gui.schematic`), the problems list, the dials (`DialLayout`: plain rows, or the panel's sections; `Looks`: the dial styles and the displays drawn; `DisplayItem`: a display's motion), or a `.gui` file's interface (`GuiView`: its items made, placed, fed and drawn, which the GUI sandbox uses too; `GuiLayout`: its flexbox layout; `GuiItems`: its controls in their looks, pad, envelope, keyboard (an instrument's), tabs and frames; `gui.panel`, `gui.styles`), its pages kept by title (`EditorPort::guiPages`), and the Code / Panel view (the session keeps it: `EditorPort::panelView`)); the chat's card, which folds into a rail (`EditorPort::chatOpen`); the chat's card (`ChatView`: the conversation, laid out and drawn as a chat app does; `ChatItems`: the message box and the chat's buttons; `ChatStyle.h`: the rounded look, its palette mixed from the theme's tokens) and the key dialog; `ProjectBrowser`, the projects' card (the projects, the chosen one's versions and presets, Import and Export); `ExportCard`, EXPORT (a project's info, its two exports); `SettingsCard`, the Standalone's Settings over `EditorPort::devices` (Output, Input for the effect, Audio, MIDI for the synth; the host's menus; modal; it scrolls when the window is short; opened by the app's Settings... (`EditorPort::settingsAsked`, polled each refresh) and by the effect's muted notice at the status bar's right; `gui.settings`); `Picture.cpp`, view_panel's picture (a headless Panel on the message thread, for `ChatHost::chatPicture`, drawn on the GPU: `Picture.h`, below; its view "schematic", `pictureSchematic`, a `SchematicPicture` of its own; `PictureDraw.cpp`, the frame drawn and its PNG, the sandbox's too); `Items.h` (and `Items.cpp`: `asciiText`); `Theme.h` (each product's accent: the effect's FunkGui's orange, the instrument's a blue with orange errors; `signal` is the errors' alone, and `codeSecond` the code's types and notes; the colours are a kind's, `kindTheme`, with no Product.h, so the installer draws each product's mark in its accent; `Theme.cpp` holds `productTheme` and `codeSecond`, the product's); `LogoMark.h` (the top bar's mark, generated by Tools/logo/logo.swift: an `areaStrip` for the wave and one primitive for the caret, drawn as they are under `kLogoTag`, the 1x drawing at a `Canvas::dpi()` of exactly 1 and the 2x one at any other: its hints hold at a zoom of 100% and 200%); `gpu/` the EditorHost factory (the window's size goes to the session) | reaches the processor only through its ports and `EditorPort` (the chat through `EditorPort::chat()`) |
@@ -155,6 +155,21 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - The Engine's handovers are two atomic pointers (`pending_`, `retired_`): offer, take at a block's start once the last
   swap is over, hand back. The audio thread never deletes a Patch. `Engine::setControls` and `process` allocate, lock
   and log nothing; `prepare()` (audio stopped) is the only place that sizes buffers.
+- **The dials' carry** (Controls.h's `DialCarry` and `carryValue`, Compiler.h's and Engine.h's "The dials' carry",
+  `Processor::apply`): the host's values are normalised, so a run whose declarations change (a range, a taper, an int's
+  options) would give an old value another meaning. A dial of the name its slot had keeps its value in its units
+  (clamped; an int or a bool its value's name, `panel.options`), a new one starts at its default, and so from the new
+  program's first block: just before every offer the Compiler asks the processor's carrier (`carryFor`, under
+  `meaningMutex_`) and the carry travels in the Patch (for the audio thread) and the status (for `apply`). The Engine
+  plays a slot's carried value while `setControls`' meaning is the carry's `from` and the slot's value is still
+  `fromNorm`; `apply` writes the carried values (one gesture each; a slot the host or the user moved since left as it
+  is, one that plays its value already not written; only the newest carry writes, and only once), then stores
+  `meaningProgram_` (release; `readParameters` and `chatDialValue` read it before the values): keep that order. A state
+  load carries nothing (`compileNow(files, false)`, `adoptMeaning` after `replaceState`). The carrier never calls the
+  Compiler (a refine asks under its mutex). chatDialValue says the carried value until `apply` has run, so run_program
+  reports what plays. Projects and presets keep a value's name with its number (`projectstore::Dial::label`, an added
+  field; a version saved again unchanged gains the names it lacked). `plugin.state` CARRY and `plugin.projects` LABEL
+  check.
 - Nothing steps: a program swap crossfades (the effect) or fades the old program's voices over 20 ms (the synth: the
   held keys start again on the new one), a steal fades over 2 ms, a real dial glides over 20 ms as a stream, the
   bypass crossfades over 20 ms. The output does not depend on how the host splits its blocks (the examples are checked
@@ -514,17 +529,54 @@ place (its `products/<key>.cmake`, and its names in the docs).
   measures, its span, window, weighting and band, in the words `metricTerms()` defines, and a default tolerance; the
   system prompt's CHECKING YOUR WORK lists them from the table, the terms first, each line's tolerance written by
   `toleranceText` from the same table `Goals` reads (`plugin.chatexample` holds the guide's to `toleranceOf`), so a
-  metric added there is taught at once); a request's `want` runs only the renders and the analysis they need. Every
+  metric added there is taught at once); a request's `want` runs only the renders and the analysis they need. The
+  report ends with the values measured, name=value in the table's order (`metricsLine`: the guide says so), and
+  measure_output's `spectrum` (octave, third or semitone: `Request::spectrum`, analysis only, as `want`) adds band levels
+  as data (`bandsOf`, `bandLevels` over `bandSpectrum`: both channels' power, in `kBandSeconds` Hann frames (a
+  semitone's `kNoteBandSeconds`; a shorter part's frame the part), a band's bins by their share of it; an instrument's
+  in dBFS while held, an effect's noise's gain, out against in; the line names its frames and the band below which a
+  tone spreads, `sharpFrom`: under `kSharpBins` of the frame's bins wide a band no longer holds a tone's main lobe), the
+  octave bands compare and the capture's report read too (`stereoSpectrum` in `kBandSeconds` frames), so that none of
+  them moves with the rate. Every
   metric is over its own span and the same at every rate: the held part (`heldSpans`: each note from 50 ms after its
   note-on, half the note when shorter, to its note-off; an effect's signal from 50 ms in to its end), its spectra
   Welch's average over all of it in frames fixed in seconds (`measure::spectrum`: 0.1 s Hann for the centroid and the
-  partials, 0.4 s Hann for the pitch, 0.4 s Blackman-Harris for inharmonic_db and thd_db), the centroids
-  power-weighted over 20 Hz to 20 kHz, the pitch the strongest partial within 600 cents of the expected note
-  (`pitchOf`, a harmonic sum without one), and one click rule (`measure::clicks`) for the click metric, the step lines and trace (`dsp.metrics`
-  checks each at 48 and 192 kHz). Change a definition and its line together. Its CPU figures are the
-  rendering thread's own time (`CLOCK_THREAD_CPUTIME_ID`, read at a render's few boundaries, never a block's), in an
-  Engine as the audio thread runs it with no editor open: an instrument's `cpu_percent` over the held part, and
-  `cpu16_percent` measured with sixteen notes held (the least of two short renders), not extrapolated; of the
+  partials, 0.4 s Hann for the pitch, 0.4 s Blackman-Harris for inharmonic_db and thd_db; a part shorter than a frame
+  one frame of it), the centroids power-weighted over 20 Hz to 20 kHz, the pitch the strongest partial within 600
+  cents of the expected note (`pitchOf`, a harmonic sum without one), read stretch by stretch (`measure::stretches`:
+  the held part cut where the lowest key held or the pitch wheel changes, by `kSameBendCents` or more; a window's part
+  no key is held over the key sounding there, else the key released last; each against its own expected pitch, so a
+  phrase's notes and a bend through a note are followed; `pitch_cents` the farthest of them, signed, `fundamental_hz`
+  and off_order_db's default base the lowest key's longest stretch's; a stretch whose frame does not part its pitch
+  from 0 Hz and from the key above it, 4 / min(f, gap) seconds, is left out, and with none the pitch is unmeasured,
+  naming the note it takes, or the wheel when it moves too often), inharmonic_db the strongest peak (a local maximum:
+  a level that moves in a frame, a slow attack, widens a harmonic's lobe into a skirt with none) off each stretch's
+  harmonics (unmeasured when its frames' zones leave no room between them: 12 / f0 seconds), one click rule (`measure::clicks`) for the click metric, the step lines and
+  trace, the loudness BS.1770's (`loudness`: K-weighting made for the rate from the analog shelf and high-pass its 48 kHz
+  coefficients come from, 0.4 s blocks every 0.1 s inside each span, the -70 LUFS and -10 LU gates) and IEC 61672's A
+  (`aWeightedPower`, of a stereo spectrum in frames as long as the part, up to 2 s), off_order_db the power farther than
+  `kOrderBins` of Blackman-Harris frames as long as the part (up to `kOrderSeconds`) from every multiple of a fixed base
+  (`orders`: `Request::baseHz`, an instrument's base_hz, else the expected pitch; an effect's 220 Hz; analysis only, but
+  `sameRender` tells bases apart), wobble_db each third's share of the power over the spectrum's frames (`wobble`; an
+  effect's of a steady tone's output, `steadyTone`: partials every 10 Hz repeating every 0.1 s, its frames end to end on
+  that period (`onPeriod`), so that an effect that holds still reads 0 however long its memory, where a ratio of noise
+  out over in would read a delay's memory as motion; the tone renders for wobble_db alone, uncounted in step, alerts and
+  cpu_percent) (`dsp.metrics` checks each at 48 and 192 kHz). The render settings' `window` ({from, to}, `Request::window`, at least
+  `kMinWindowSeconds`) takes the held part's place: seconds of an instrument's render, which then lasts to its end,
+  for the metrics "while held", peak_db and cpu_percent (the calls that render it); attack_s and release_s keep the
+  notes', and the whole render's metrics the length it has without the window (`Timeline::plain`, where a call ends);
+  seconds of the effect's sine's, noise's and steady tone's renders, cut at hold_seconds. One that holds too little of what a metric
+  needs (as a held part under wobble_db's three frames, or a base under twice off_order_db's zone) leaves it out of the values with why (`Result::unmeasured`, a check's NOT MEASURED line; tune_dials leaves
+  such a goal out of its search, and with none left does not search); `sameRender` tells checks apart by it, and the
+  session keeps a check's; trace and compare refuse one. Change a definition and its line together. The report's pitch line is a judgement
+  on top, the metrics untouched: with the whole report asked and the part not silent (a stretch read or none), the
+  lowest note and the note a whole tone up (not an octave: a fixed pitch's second harmonic sits there), each alone
+  (0.6 s, none of the scenario's moves, a single note too), must measure within 50 cents of a whole tone apart, else
+  the line says "Unpitched" with both pitches and the Inharmonic line is left out. Its CPU figures are the rendering thread's own time
+  (`CLOCK_THREAD_CPUTIME_ID`, read at a render's few boundaries, never a block's), in an Engine as the audio thread
+  runs it with no editor open: an instrument's `cpu_percent` over the held part (or the window), and
+  `cpu16_percent` measured with sixteen notes held (the least of two short renders), not extrapolated (in the
+  report's words only when more than one voice sounds there: `Rendered::mostVoices`); of the
   program's own code with its dials held still, every call flat (a dial that moves costs more: the Filter example
   about 2.7x while its cutoff glides; the frozen copy that plays once they have held still a while usually costs
   less), which the metric's line in the guide says (the result's CPU line gives the numbers, and says when a scenario
@@ -534,9 +586,15 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - **view_sound** (`dsp/SoundView.h`, `plugin/SoundPicture.h`): the render (the effect's with an input: a sweep, noise,
   an impulse, a sine or silence; the synth's the notes held, then released) analysed (the waveform's extent and level
   per column, a Blackman-Harris spectrogram on a log axis, the held part's average spectrum, a close-up) and drawn as
-  a 1120 x 800 PNG on the worker thread with JUCE; it goes in the tool's result like view_panel's (the session keeps
-  a line in its place) and its 480 px thumbnail on the tool's entry, which the chat draws under the row (the session
-  keeps the thumbnail).
+  a 1120 x 800 PNG on the worker thread with JUCE (its frames fixed in seconds as nearly as a power of two allows: the
+  48 kHz sizes scaled by the rate, and `View::spectrumTop` on the 48 kHz frame's scale, so a picture at 96 kHz, as
+  compare's at two rates, shows what one at 48 does; with a `window`, seconds of the render it draws for both products,
+  the average spectrum and the RMS over it (a part shorter than a frame: one frame over it alone), the close-up at its
+  middle, its edges marked and the waveform shaded); it goes in the tool's result like view_panel's
+  (the session keeps a line in its place) and its 480 px thumbnail on the tool's entry, which the chat draws under the row (the session
+  keeps the thumbnail). Through MCP a picture over `kMcpPictureBytes` goes as `chatimages::fit` makes it: the largest
+  that fits of a JPEG and a scaled PNG, each sized from its own bytes (a spectrogram's PNG is several times its
+  JPEG's, so sizing a JPEG from it sent a third of the width).
 - **view_panel** (`editor/Picture.h`, `Picture.cpp`, `PictureDraw.cpp`; `Processor::chatPicture`): the turn's worker
   asks and the message thread draws (`Processor::poll`), as bgfx runs there: a headless Panel at the editor's size, its
   frame through FunkGui's `renderGpuPicture` (v0.23.0, `funkgui/gpu/GpuPicture.h`) where the build has bgfx
@@ -547,18 +605,49 @@ place (its `products/<key>.cmake`, and its names in the docs).
   after another) starts bgfx once (here the first 40 to 190 ms, by the load, the next about 25), and a host keeps no
   GPU context for a plugin nobody looks at. Never draw one off the message thread. `gui.shaders` PICTURE (against
   SoftRaster's image of the same frame) and `plugin.chat` VIEW check both paths (the fallback through
-  `picture::forceSoftRasterForTests`).
+  `picture::forceSoftRasterForTests`). A state of Claude's choosing (`PictureState`, EditorPort.h; `values`, `at`):
+  `ChatAgent::panelState` reads it on the worker, `at`'s render too (the program that plays, `chatRunning`, in a
+  Session of its own with view_sound's settings (`dials_from` too, the result's first line saying defaults), offline,
+  its `try_edits`, close-up seconds, `window` and `base_hz` refused: `MomentHooks` reads the meters
+  from the first sample (its reader added in `RenderHooks::started`, before the first call), cuts the last call at
+  its moment and keeps the Session Engine's meters 60 times a second of the render, at most 150, then its scopes and
+  `Engine::dials`), and picturePanel draws it, only on the panel of the files it rendered (`PictureState::sources`,
+  `cir::sameProgram`; else "look again"): the dials it sets through ports of the picture's own (`ShownPort`: the
+  user's dials never move), and `Panel::showState`, the frames in place of the Engine's meters (held at the first
+  until `playShown`, then one a tick, the last kept and its readouts made again), the scopes' samples, a field's taps
+  and the levels over them (a live= mark of a field asked for shows before the audio thread plays the program:
+  `GuiView::tick`'s `liveTaps`).
+  Values name dials (plain, or an option's name), fields (every display, live= mark and shader input of that source
+  or name) and in and out (dBFS); the text then gives what was drawn, what names nothing, and what each display shown
+  reads. `gui.panel` STATE, `plugin.chat` PANELSTATE and `plugin.sandbox` SHADER (a shader's input) check it.
 - **A scenario and trial edits** (`plugin/ChatScenario.h`; `measure::Request`'s scenario, `Timeline`, `RenderHooks`):
   measure_output, view_sound, each check (it keeps its scenario), tune_dials and compare take one `scenario` property
-  (its schema one line, its details in the prompt's CHECKING YOUR WORK): a phrase, dial moves, wheels, host edits, the
-  rate and the block ("host": `ChatHost::chatHostRate`, `chatHostBlock`, filled in before each render; "capture": the
-  user's recording, through `scenario::captured` alone). A render plays host blocks as the processor does (the dials
+  (its schema one line, its details in the prompt's CHECKING YOUR WORK): a phrase, dial moves, wheels (a racing
+  wheel's `buttons` a mask, its 7-bit parts sent in time order where they change, as the wheel sends them, and the
+  start key's note while bit 17 is down: `Request::startKey`, which makes the report and the view take it as a
+  phrase), host edits, the rate and the block ("host": `ChatHost::chatHostRate`, `chatHostBlock`, filled in before
+  each render; "capture": the user's recording, through `scenario::captured` alone). A render plays host blocks as the processor does (the dials
   and the transport once a block, the events at their samples), so a phrase and the wheels give the same bits at any
   block size, and a moving dial, as in a DAW, does not; `dsp.tune` and `plugin.chatexample` check both at 64 and 333.
+  measure_output, view_sound (and view_panel's `at`) and trace also take `dials_from` (current or defaults: `scenario::dialsFrom`; not in a
+  check's render settings, which set_checks' own covers, nor tune_dials'), and compare its own `dials` (own, current or
+  defaults), the result's first line saying defaults.
   `try_edits` apply to a copy of the editor's files with edit_file's rule (in measure_output, view_sound and compare's
   b), and the result's first line says nothing changed: these tools stay out of `kChangingTools`. compare
   (`ChatCompare`, `dsp/Compare.h`) renders two sources in two Sessions with one request; its "playing" is the
-  program's own code, never the frozen copy, and it says so.
+  program's own code, never the frozen copy, and it says so; its "previous_run" is what played before the last run
+  that changed it (`ChatHost::chatPrevious`: the processor's `previous_`, set in `apply` when a run changes the
+  sources, a netlist's drawing aside; before `poll()` takes a run, the `running_` it replaces; in memory only, none
+  until a run has changed the program since the plugin opened or loaded a state: `apply`'s `loaded`, the
+  constructor's Init and `setStateInformation`'s program, clears it). Its `b_rate` renders B at another rate
+  (Comparison::twoRates), both rates at least 40 kHz (`measure::kMinRateAcross`, else refused: 20 Hz to 20 kHz on
+  both sides, so an effect's sweep, its centroids' band and the picture's axis are the same): no sample lines up
+  with another, so it compares the levels, the octave bands, the metrics and the detail's level per part, never the
+  samples, gain or lag; the metrics a rate moves by their definition set aside and named (step; an effect's
+  noise_gain_db, noise_lufs and impulse_peak_db: white noise and a one-sample impulse spread over the rate's whole
+  band), and inharmonic_db under its -90 dB floor on both sides agreeing; an effect's input the sweep, noise and the
+  impulse refused, and never a recording (its events are at its own rate). A `b_rate` equal to A's rate is the
+  ordinary comparison, none of these refused; the picture places each spectrum column by its own view's frequency.
 - **trace** (`dsp/Debug.h`, `plugin/ChatTrace.cpp`): offline only, in a Session's own Engine, never the one that plays
   (`Engine::playingPatch` and `voices` are offline accessors). Its render is measure_output's (`scenario::renderOf`:
   the notes, the velocity, the times, the host's tempo, the wheels, the dials asked for and the scenario; the same
@@ -567,7 +656,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   out, never through a pointer), the alerts a call from `CallInfo` (never `Engine::takeAlerts`); a field runs away
   past 1e6 at a thousand times its size in its instance's first 10 ms of sound (Shared's and an effect's: the
   render's), so a state large from the start is not one, and a click is `measure::clicks`'s (the click metric's rule,
-  so measure_output and trace agree); pass 2 renders again in
+  so measure_output and trace agree; with the effect's test impulse as the input none is looked for, as measure's
+  impulse render marks none: the impulse and its echoes are the response); pass 2 renders again in
   1-sample calls through a window of at most 4096 samples before each problem, and its output must equal pass 1's: when
   it does not, the program keeps state per call, and the result says so. The lines that write a field come from
   `fminus/Lang.h`'s resolution of each assignment (a heuristic). Deterministic but for its time limit (90 s) and a
@@ -587,9 +677,20 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `ChatEntry::Kind::checks` card a turn, brought up to date in place; its Clear calls `ChatPort::clearChecks`. A check
   takes the dials it does not name from the plugin as they are when measured (the default: tune_dials' and set_dial's
   results show in the checks), from its snapshot (set_checks' `dials_from`: the dials when it was set) or the
-  defaults (`measure::DialsFrom`); a FAIL line names the dials it took that are off their defaults (or the snapshot).
-  The session keeps `checks_` in set_checks's own shape (`dials_from` and the snapshot with each check). Never let a check nudge without a cap: each nudge is a billed
-  request.
+  defaults (`measure::DialsFrom`); a FAIL line names the dials it took that are off their defaults (or the snapshot),
+  and one at the defaults says the dials as they are do not affect it. A check whose dials or scenario moves name a
+  dial the program lacks FAILs for that, whatever its metric gives (`measure::Result::unknown` into `Goals::evaluate`),
+  and run_program names each check its new declarations left naming a dial the program before had (`orphanLines`),
+  and apart each from a snapshot that holds one (it does not fail: measured without it, a new dial at its default).
+  The session keeps `checks_` in set_checks's own shape (`checkVar`: `dials_from` and the snapshot with each check),
+  and set_checks without `checks` lists them so, numbered, `dials_from` on every one, current too (an item's own
+  `dials_from` and snapshot stand for the call's, so a listed check given back is the same check; the result says
+  how each check it set takes its dials, from the checks, not the call); `mode` merge (each item replaces the check
+  of its `index`, else of its label, case aside, else is added; one replaced under another label is named with both,
+  so a stale index shows) and remove (by index or label; an index whose check has another label than the item's is
+  refused) change them all or not at all, and a label two checks share needs the index. A listing changes nothing:
+  it never sends a turn on, nor does tune_dials' sweep (it sets nothing). Never let a check nudge without a cap: each
+  nudge is a billed request.
 - **The planner** (`setPlanner`, chat.json "planner"; ChatAgent.h "A planner"): `planTurn` sends a message's
   history to the planning model through `forAnotherModel` (no thinking blocks, which are bound to the builder's model
   and prompt; no compaction or server-tool blocks; citations dropped) with `tool_choice` none and the tools defined
@@ -618,7 +719,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   a tool that has room, or a trim elsewhere pays for it (as these did: `instance` in a few words, described once, how
   to name one in the server's instructions and the guide's start; an instrument's render settings in an instrument's
   tools only; tune_dials' metric a plain string the tool checks, set_checks' the enum; the annotations' defaults left
-  out; the longest descriptions in fewer words: the synth's 20,959 bytes, the effect's 19,565). `plugin.mcp` checks,
+  out; the longest descriptions in fewer words: the synth's 20,959 bytes after those trims, the effect's 19,565;
+  22,012 and 20,638 with the measuring tools' properties added since). `plugin.mcp` checks,
   and prints each product's size and its slack (and tools.json as the link writes it, pretty-printed, for
   comparison: until then the bound was 26,000 bytes on that). Each product has its own server, extension and socket
   folder.
@@ -662,14 +764,23 @@ place (its `products/<key>.cmake`, and its names in the docs).
   and polls `ChatHost::chatLive` about 25 times a second; a cancel that comes before it starts is kept (`mcpStopped_`,
   every one, not only the last). get_status ends with a token of the processor's journal (`plugin/Journal.h`: about 256
   changes, drags merged, under its own mutex; what Claude Desktop does itself is not kept, `ChatAgent::mcpWorking`; each
-  token handed out is a new one), and `since` lists what changed after it, the files as diffs (`dsp/TextDiff.h`) against
-  their texts at that token (`mcpMarks_`, the newest 16 tokens', under `liveMutex_`). One server may serve several
+  token handed out is a new one), and `since` lists what changed after it, in the third person ("the user moved", "the
+  host", "the plugin's own chat": a "you" reads as the Claude reading it), a dial's moves as one line, its net change
+  (first -> last, at its first move's place, with who and how many times) up to a change that sets dials with no line
+  of each (`Journal::dialsNote`: a run that compiled, a version opened, a preset applied, a fresh start, a state
+  loaded; a move after it is a line after it, never merged across it), the files as diffs (`dsp/TextDiff.h`)
+  against their texts at that token (`mcpMarks_`, the newest 16 tokens', under `liveMutex_`). The session keeps those
+  tokens with their files' hashes and lines (`ChatAgent::mcpMarksToKeep`, Live.h's `KeptMark`, the state's `<MCP>`):
+  in the plugin opened again (a new journal, which knows no token from before) they are `mcpKept_`, and `since` with
+  one of them gives the whole state, then which files changed since it (by hash, with read_file's versions; not how).
+  One server may serve several
   conversations and its calls name none: what is kept for Claude Desktop is kept by token, never as one record of what
   "it" saw, which one conversation's look would move for all. The two Claudes keep their own records: an MCP call never
   marks the chat's `seen_` (`markSeen`), so the plugin's chat is sent a file Claude Desktop wrote; a chat turn never
   runs beside a call of Claude Desktop's (New chat and a session load keep `busy_` while one runs). Every other MCP
   result starts with a line when something changed since the last MCP call (`ChatAgent::mcpHint`, one cursor for the
-  instance: the first three changes as the journal says them, their values with them, and how many more; its token is
+  instance: how many changes, "The user changed" only when each is the user's, the first three as the journal says
+  them, their values with them, and how many more; its token is
   handed out, so a drag or typing that goes on after it is a line of its own, never merged into one it named); a read of the server's own (get_status's `peek`, the GUI sandbox's, in no schema) moves neither it nor
   the tokens. The journal learns who: the editor's ports are `GesturePort`s (a dial moved between polls with one of them
   is the user's, else the host's), `setDraft` is the editor's and `chatSetDraft`, `chatRun`, `chatSetDial` the plugin
@@ -679,7 +790,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   unit, its option's name, the number after a scaled one). `plugin.live` checks both tools, `dsp.meters` LISTEN the
   fields, `plugin.chat` SEEN the two records.
 - **MCP results** stay small: a picture is at most `kMcpPictureBytes` (75,000 bytes, 100,000 base64 characters:
-  the PNG when it fits, else scaled down, else a JPEG, `chatimages::fit`), the text after it saying what was sent;
+  the picture as it is when it fits, else the largest that fits of a JPEG and a scaled PNG, each sized from its own
+  bytes, `chatimages::fit`), the text after it saying what was sent;
   view_panel and view_sound take MCP's own `detail: "high"` for the whole picture. The plugin's own chat keeps its
   pictures as they were. The guide is the system prompt as `ChatAgent::guidePrompt` has it: the same text but the
   lines of How you work only the plugin's chat needs (ChatPrompt.cpp's `kWork` marks them: its `<plugin_state>`, the
@@ -694,7 +806,7 @@ place (its `products/<key>.cmake`, and its names in the docs).
   notes of listen, capture, trace and compare, whose uses CHECKING YOUR WORK names), examples, projects, circuits
   (CIRCUITS: .cir NETLISTS, the prompt's last section; a guide.md from before it cuts as it did), all. A heading
   renamed in ChatPrompt.cpp is a part lost: `plugin.mcp` GUIDE fails. Its start is at most 9,200 tokens for the synth
-  and 8,100 for the effect (bytes / 4: 8,100 and 7,000 now; `plugin.mcp` prints them).
+  and 8,100 for the effect (bytes / 4: 8,360 and 7,237 now; `plugin.mcp` prints them).
 - **The GUI sandbox** (`gui_sandbox`, the server's own tool, `mcp/Main.cpp`; its helper `<Name>GuiSandbox`,
   `Source/sandbox/`): Claude Desktop designs a panel.gui and sees it drawn as the plugin's PANEL view draws it, with no
   plugin open and nothing of an open one touched until the user asks to apply it. Its rules:
@@ -712,7 +824,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
     blank panel writes as unit=: as in the plugin, a dial shows a unit from the .gui alone); with no program, the
     fields the displays name are mocked as floats; shaders built with the installed plugin's shaderc (or
     `<prefix>SHADERC`), else a placeholder and a note (and render says so). render's theme is the user's (the
-    product's preferences, read again each time) unless asked.
+    product's preferences, read again each time) unless asked. render's `values` name dials and, as view_panel's do,
+    fields and in and out (`View::setShown`: over the demo meters); the two tools' `values` share their words
+    (`mcp::kPanelValues`), so the server's list gives them once.
   - **The process.** Sandboxes by number: Claude Desktop's conversations share the server, so each open makes one
     (Sandbox #n, in every answer; numbered on from a random start, so a number from before the server started again
     names none) and a call naming its number (`sandbox`) acts on that one, whatever another conversation opened since;
@@ -760,6 +874,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
   most 400 renders) is spent, its time limit passes (`seconds`: 120, at most 170, under the MCP server's deadline)
   or the stop button cancels; deterministic but for the time limit. The best values go on the dials through
   `chatSetDial`, unless Claude Desktop cancelled the call (`mcpCancel`): then the dials stay exactly as they were.
+  Its `sweep` (`TuneRequest::sweep`, at most `kMaxSweep`, 32) searches nothing and sets nothing: the one dial named
+  (of any type; a value outside its range, or an int's or a bool's not whole, refused) at each value in turn, the
+  goals' metrics at each in a table, a row a value; a sweep's goal may be a metric alone (`invalid`'s `bare`,
+  `judged`), and the judged ones mark each cell met or not and name the values that meet them all, or the nearest
+  (the least weighted penalty); a metric a render leaves unmeasured is named with its first reason and how often.
 - **The system prompt** (`ChatPrompt.cpp`) teaches Claude FMinus, the contract, how to build a large program, the
   `.gui` file's language (THE INTERFACE: GuiSpec.h; the `#pragma panel` lines only as the older way), the library
   (every file's header, from Library.h) and the examples, and shows a program built from the library for the
@@ -794,13 +913,20 @@ place (its `products/<key>.cmake`, and its names in the docs).
   the user's (which the view gives the processor at once) is never overwritten; the commands run once more on the new
   text, and a second clash fails ("pedal.cir changed while drawing: try again"). Its result: what each command did,
   the netlist's lines changed (its `*@` lines aside), `circuits::Generator`'s errors and warnings on the new text, the
-  whole text when at most 4,000 bytes (then seen). `plugin.chat` CIRCUIT plants the gesture through `ChatAgent::setCircuitWriteHookForTests`.
+  whole text when at most 4,000 bytes (then seen); a longer one is seen when the result lists every line changed (60 at
+  most) and the chat's Claude had seen the text it edited (`carrySeen`, as edit_file). `plugin.chat` CIRCUIT plants the
+  gesture through `ChatAgent::setCircuitWriteHookForTests`.
   view_panel's view "schematic" is `pictureSchematic` (`editor/Picture.cpp`: a `SchematicPicture`, a Panel of its own
   that holds no editor Panel, so it owns no probe and reads or writes no file view; the drawing at 100 %, labels
   always). write_file of a `.cir` whose text has no `*@` line keeps the old ones and says so.
 - **read_file and edit_file** (`plugin/ChatFiles.cpp`): every read and write says the file's line count and version
   (its text's hash; the newest 16 versions' texts kept, `fileVersions_`). read_file gives a file whole, or a range
   (`from`, `lines`) or the lines holding a text (`find`, two around each), numbered, and a part read marks nothing seen;
+  `find` with `regex` is a pattern (`dsp/Regex.h`; refused in words when it is none it takes) and with no name searches
+  every file, in the tabs' order (each file's line count, version (kept, for `expected`) and lines, at most 40 shown in
+  all), in find's own case first, then in any; a pattern's steps are at most 20 million a call (`kSearchSteps`, about
+  0.1 s: the link runs its calls on one worker), past which the search stops and says where and what it did not search,
+  and its compile is bounded too (`Regex::compile`: a count of what writes nothing writes nothing; too large refused);
   an edit marks the file seen only when the chat's Claude had seen the text it edited (`carrySeen`), so a file read in
   part, or changed by the user since, goes whole with the next state.
   edit_file replaces one passage or a list (`edits`), in order, each occurring once in what the ones before it left,
@@ -808,8 +934,28 @@ place (its `products/<key>.cmake`, and its names in the docs).
   what differs (a line of old_text that may be part of a file's line, its first or last, scores by how much of it that
   line holds). It writes through `chatSetDraftIf` (the text it read, the others left as they are now: what the user
   typed meanwhile is never overwritten; the edits run once more on the new text), and with `expected` (a version) only
-  while the file is still that version, else nothing, saying the user changed it and showing the lines changed since
-  (the version is compared, not kept, before that lookup, so the oldest kept is still found).
+  while the file is still that version, else nothing, saying whose change it was and showing the lines changed since
+  (the version is compared, not kept, before that lookup, so the oldest kept is still found): Claude's own only when a
+  read or write of Claude's gave the text now after it gave that version (`FileVersion::given`), so the user's undo
+  back to a text Claude saw before is the user's, and what a refusal alone showed counts as no call that gave it. Its `files` does that for
+  several files at once (a property, not a tool: the tool budget), in place of `name`: a list of `{name, edits or
+  old_text and new_text, expected}` (one sent as a JSON string is read as the list), or a unified diff (its
+  `---`/`+++` headers name the files, git's a/ and b/ off; a hunk is an edit whose old lines, context and `-`, are found
+  where a line starts, the occurrence nearest its `@@` line as the hunks before it moved it, its header's counts
+  unread, a blank line in it a blank context line, at most 256 hunks a file; nothing that could be part of the change
+  is passed over: a context, `-` or `+` line outside a hunk is refused, naming the line that ended the hunk (a context
+  line that lost its space, or indented with a tab), so is an `@@` line that is no hunk's header, and a diff that
+  creates, deletes, renames or copies a file, its git header-only blocks included, is refused, naming the tool that
+  does it); all or none across the files (one bad edit, one `expected` that no longer holds: nothing written to any),
+  in one `chatSetDraftIf` of every file it read (one change of the draft, so one merge, and a journal entry a file).
+  The editor makes a merge that changed several tabs' texts one undo step across them, a session loaded over open
+  tabs included (`FilesItem`'s undo groups, newest last, at most 32: each member a tab's serial and its place in the
+  tab's undo history, which FilesItem counts: a step a merge or Play this circuit makes, each undo and redo of the
+  keys, the Schematic view's buttons and menu (`SchematicView::Hooks::step`) and Play's Undo). Cmd-Z in a tab at a
+  group's step undoes it in each of the group's tabs at it, and Cmd-Shift-Z or Cmd-Y in one with it undone redoes it
+  so, however far the tab went back and came again, so each such change is one step, one after another; a change of a
+  tab's text it did not count (typing, a gesture, Format) takes the tab out of every group, and a new step where it
+  could redo out of the groups whose steps those were; a fresh start or a load ends them all.
 - **add_library_file** puts a library file in the editor as a tab (never over a file of that name) and returns its
   whole text, so Claude has seen it (`seen_`); the program's `#include` is Claude's to write.
 

@@ -1252,15 +1252,17 @@ namespace playground::ui
         return ok;
     }
 
+    // The keys', the buttons' and the menu's: the files' tabs' undo (Hooks::step: a step across tabs that one merge made,
+    // as the text's Cmd-Z), else the editor's own.
     void SchematicView::undo()
     {
-        if (ed_ != nullptr && ed_->undo())
+        if (ed_ != nullptr && (hooks_.step ? hooks_.step(false) : ed_->undo()))
             ensure();
     }
 
     void SchematicView::redo()
     {
-        if (ed_ != nullptr && ed_->redo())
+        if (ed_ != nullptr && (hooks_.step ? hooks_.step(true) : ed_->redo()))
             ensure();
     }
 

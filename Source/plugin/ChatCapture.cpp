@@ -100,11 +100,11 @@ namespace playground
             std::string bands;
             for (std::size_t b = 0; b < s.bandsDb.size(); ++b)
             {
-                const double c = measure::Comparison::kBands[b];
+                const double c = measure::kOctaveBands[b];
                 if (c / std::sqrt(2.0) >= 0.5 * rate)
                     break;
-                const std::string hz = c >= 1000.0 ? fmt("%.0fk", c / 1000.0) : fmt("%.0f", c);
-                bands += (bands.empty() ? "" : ", ") + hz + (s.bandsDb[b] <= -120.0 ? std::string(": <-120") : fmt(": %.0f", s.bandsDb[b]));
+                bands += (bands.empty() ? "" : ", ") + measure::bandName(c)
+                       + (s.bandsDb[b] <= -120.0 ? std::string(": <-120") : fmt(": %.0f", s.bandsDb[b]));
             }
             return std::string(what) + ": octave bands (Hz: dBFS) " + bands + fmt("; centroid %.0f Hz", s.centroidHz)
                  + fmt("; left/right correlation %.2f.\n", s.correlation);

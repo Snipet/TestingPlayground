@@ -31,7 +31,12 @@
 //             sending only MSBs reads 7 bits; an effect's Host block stays at rest
 //   SCENARIO  (an instrument) a render's scenario moving the steering, the pedals and the gear (ChatScenario's wheels:
 //             a gear past 7 and an unknown name refused, the names written back): a voice playing the fields as DC
-//             reads them at their times (the steering's -1 exactly), and the marks name each move
+//             reads them at their times (the steering's -1 exactly), and the marks name each move; the buttons, a
+//             mask (listed out of order: played in time order), each part's control change sent only when its 7 bits
+//             change, as the wheel sends them, read as host->buttons at their times, the same bits in blocks of 333,
+//             a mark a move naming the buttons down; a fraction and a 25th bit refused, "buttons" written back; bit 17
+//             the start key, as the wheel plays it: note 36 at velocity 100 after its press's control changes, its
+//             note-off after its release's, a second voice meanwhile, measure_output's report then a phrase's
 //   DRIVER    plugin/WheelDriver.h's decisions over a fake transport whose devices record what they are sent:
 //     READ      on, a G29 in its own mode: 900 degrees, then the spring, then read; the first flush takes only values
 //               a report carried (the seed rule: IOKit's zeros before any report, a pedal pressed, the steering left and
@@ -190,6 +195,14 @@ namespace
         in->setProperty("scenario", juce::var(sc));
         return juce::var(in);
     }
+
+    // A voice that plays a racing wheel's buttons' mask as DC, 1e-7 a unit (bit 20 about 0.105).
+    constexpr const char* kButtonsVoice =
+        "#include \"host.fm\"\nmodule Voice\n{\n    Host* host;\n    bool held;\n"
+        "    void start(float note, float velocity) { held = velocity > 0 || note > 0; }\n    void stop() { held = false; }\n"
+        "    bool process(float* restrict left, float* restrict right, int n)\n    {\n        for (int i = 0; i < n; ++i)\n        {\n"
+        "            left[i] += 1e-7f * host->buttons;\n            right[i] += 1e-7f * host->buttons;\n"
+        "        }\n        return held;\n    }\n};\n";
 
     // A voice that plays a racing wheel's fields as DC: the steering on the left, the pedals and the gear on the right.
     constexpr const char* kFieldsVoice =
@@ -459,7 +472,7 @@ PROBE(plugin, wheel)
         P.eq("scenario.gear_range", !pg::scenario::read(wheelsScenario({ move("gear", 0.1, 9.0) }), bad, &gearWhy)
                                         && gearWhy.find("wheels[0]") != std::string::npos ? 1 : 0, 1);
         P.eq("scenario.unknown", !pg::scenario::read(wheelsScenario({ move("horn", 0.1, 1.0) }), bad, &nameWhy)
-                                     && nameWhy.find("steering, throttle, brake, clutch or gear") != std::string::npos ? 1 : 0, 1);
+                                     && nameWhy.find("steering, throttle, brake, clutch, gear or buttons") != std::string::npos ? 1 : 0, 1);
         P.eq("scenario.written_back", pg::scenario::toVar(req)["wheels"][4]["wheel"].toString() == "gear" ? 1 : 0, 1);
         pg::measure::Session session(pg::singleFile(kFieldsVoice));
         P.eq("scenario.compiles", session.compiled() ? 1 : 0, 1);
@@ -482,6 +495,94 @@ PROBE(plugin, wheel)
                     marks += (marks.empty() ? "" : "; ") + mk.what;
             same(P, "scenario.marks", marks, "steering to +0.50; the throttle to 0.80; the brake to 1.00; the clutch to 0.25; "
                                              "the gear to reverse; steering to -1.00");
+        }
+
+        // The buttons: a mask, listed out of order and played in time order, each part sent as the wheel sends it.
+        pg::measure::Request pressed;
+        pressed.notes = { 60 };
+        pressed.holdSeconds = 0.6f;
+        pressed.tailSeconds = 0.1f;
+        const double bits45 = (1 << 4) | (1 << 5), bit20 = 1 << 20, bit17 = 1 << 17;
+        const bool readButtons = pg::scenario::read(wheelsScenario({ move("buttons", 0.3, bit17), move("buttons", 0.1, bits45),
+                                                                     move("buttons", 0.2, bits45 + bit20) }),
+                                                    pressed, &why);
+        P.eq("scenario.buttons_read", readButtons && pressed.wheels.size() == 3 && pressed.wheels[0].wheel == pg::measure::Wheel::buttons ? 1 : 0, 1);
+        std::string fractionWhy, highWhy;
+        P.eq("scenario.buttons_fraction_refused", !pg::scenario::read(wheelsScenario({ move("buttons", 0.1, 1.5) }), bad, &fractionWhy)
+                                             && fractionWhy.find("whole number") != std::string::npos ? 1 : 0, 1);
+        P.eq("scenario.buttons_bit_24_refused", !pg::scenario::read(wheelsScenario({ move("buttons", 0.1, 16777216.0) }), bad, &highWhy)
+                                           && highWhy.find("wheels[0]") != std::string::npos ? 1 : 0, 1);
+        P.eq("scenario.buttons_written_back", pg::scenario::toVar(pressed)["wheels"][0]["wheel"].toString() == "buttons"
+                                         && static_cast<double>(pg::scenario::toVar(pressed)["wheels"][0]["value"]) == bit17 ? 1 : 0, 1);
+        pg::measure::Session buttons(pg::singleFile(kButtonsVoice));
+        P.eq("scenario.buttons_compiles", buttons.compiled() ? 1 : 0, 1);
+        if (buttons.compiled())
+        {
+            const pg::measure::Session::Render out = buttons.render(pressed, nullptr, nullptr, buttons.lengthOf(pressed));
+            const auto at = [&](double t) {
+                const auto i = static_cast<std::size_t>(t * 48000.0);
+                return i < out.l.size() ? static_cast<double>(out.l[i]) : 1e9;
+            };
+            P.near("scenario.buttons_at_rest", at(0.05), 0.0, 1e-12);
+            P.near("scenario.buttons_four_five", at(0.15), 1e-7 * bits45, 1e-9);
+            P.near("scenario.buttons_and_twenty", at(0.25), 1e-7 * (bits45 + bit20), 1e-8);
+            P.near("scenario.buttons_seventeen", at(0.35), 2e-7 * bit17, 1e-8);   // two voices: note 60's and the start key's
+            // As the wheel sends them: 21 at 0.1 s, 23 at 0.2 s, 21 and 23 at 0.3 s (22 and 24 never change), none at the
+            // start (none down is the Engine's rest).
+            std::string sent;
+            const pg::measure::Timeline tl = buttons.timeline(pressed);
+            for (const auto& [sample, e] : tl.events)
+                if (e.kind == pg::EventKind::controller && e.note >= pg::wheelcc::kButtons && e.note < pg::wheelcc::kButtons + pg::wheelcc::kButtonCcs)
+                    sent += (sent.empty() ? "" : " ") + std::to_string(sample) + ":" + std::to_string(e.note) + "="
+                          + std::to_string(static_cast<int>(e.velocity * 127.0f + 0.5f));
+            same(P, "scenario.buttons_sent", sent, "4800:21=48 9600:23=64 14400:21=0 14400:23=8");
+            std::string marks;
+            for (const pg::measure::Mark& mk : tl.marks)
+                if (mk.note < 0)
+                    marks += (marks.empty() ? "" : "; ") + mk.what;
+            same(P, "scenario.buttons_marks", marks, "buttons 4 and 5 down; buttons 4, 5 and 20 down; button 17 down");
+            pg::measure::Request odd = pressed;
+            odd.block = 333;
+            const pg::measure::Session::Render other = buttons.render(odd, nullptr, nullptr, buttons.lengthOf(odd));
+            P.eq("scenario.buttons_blocks_same_bits", other.l == out.l && other.r == out.r ? 1 : 0, 1);
+
+            // The start key, as the wheel plays it: bit 17 down sends note 36 at velocity 100 after the control changes of
+            // its press, and its note-off after those of its release; no other bit does. A second voice while it is
+            // down, and measure_output's report takes what plays as a phrase (the notes held and the start key's).
+            pg::measure::Request start;
+            start.notes = { 60 };
+            start.holdSeconds = 0.6f;
+            start.tailSeconds = 0.1f;
+            const double bit4 = 1 << 4;
+            const bool readStart = pg::scenario::read(wheelsScenario({ move("buttons", 0.1, bit17 + bit4), move("buttons", 0.2, bit4),
+                                                                       move("buttons", 0.3, 0.0) }),
+                                                      start, &why);
+            pg::measure::Request others;
+            others.wheels.push_back({ pg::measure::Wheel::buttons, 0.1, static_cast<float>(pg::measure::kMaxButtons - bit17) });
+            P.eq("scenario.start_key_read", readStart && start.startKey() && !others.startKey() ? 1 : 0, 1);
+            std::string played;
+            const pg::measure::Timeline startPlan = buttons.timeline(start);
+            for (const auto& [sample, e] : startPlan.events)
+            {
+                const std::string when = std::to_string(sample) + ":";
+                if (e.kind == pg::EventKind::controller && e.note >= pg::wheelcc::kButtons && e.note < pg::wheelcc::kButtons + pg::wheelcc::kButtonCcs)
+                    played += (played.empty() ? "" : " ") + when + std::to_string(e.note) + "=" + std::to_string(static_cast<int>(e.velocity * 127.0f + 0.5f));
+                else if (e.kind == pg::EventKind::noteOn && e.note != 60)
+                    played += (played.empty() ? "" : " ") + when + "on" + std::to_string(e.note) + "@" + std::to_string(static_cast<int>(e.velocity * 127.0f + 0.5f));
+                else if (e.kind == pg::EventKind::noteOff && e.note != 60)
+                    played += (played.empty() ? "" : " ") + when + "off" + std::to_string(e.note);
+            }
+            same(P, "scenario.start_key_sent", played, "4800:21=16 4800:23=8 4800:on36@100 9600:23=0 9600:off36 14400:21=0");
+            const pg::measure::Session::Render started = buttons.render(start, nullptr, nullptr, buttons.lengthOf(start));
+            const auto startAt = [&](double t) {
+                const auto i = static_cast<std::size_t>(t * 48000.0);
+                return i < started.l.size() ? static_cast<double>(started.l[i]) : 1e9;
+            };
+            P.near("scenario.start_key_two_voices", startAt(0.15), 2e-7 * (bit17 + bit4), 1e-8);
+            P.near("scenario.start_key_let_go", startAt(0.25), 1e-7 * bit4, 1e-9);
+            const std::string report = pg::measure::run(pg::singleFile(kButtonsVoice), start);
+            P.eq("scenario.start_key_phrase", report.find("Played: from the first note-on") != std::string::npos
+                                                  && report.find("Note 60 (") == std::string::npos ? 1 : 0, 1);
         }
     }
 

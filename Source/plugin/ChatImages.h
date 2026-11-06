@@ -39,7 +39,8 @@ namespace playground::chatimages
     bool decodeThumb(ChatPicture& picture);
 
     // A picture (PNG or JPEG bytes) made to fit `maxBytes` (an MCP tool result's picture, ChatAgent::mcpCall): as it is
-    // when it fits (or does not decode); else scaled down as a PNG; else a JPEG, smaller until it fits.
+    // when it fits (or does not decode); else the largest that fits of a JPEG (whole, else smaller until it fits) and a
+    // PNG scaled down, each sized from its own bytes.
     struct Fitted
     {
         std::vector<uint8_t> data;

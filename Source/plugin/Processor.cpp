@@ -7,6 +7,7 @@
 #include "Examples.h"
 #include "Product.h"
 
+#include "fminus/CirDoc.h"
 #include "fminus/Circuits.h"
 #include "fsdsp/core/Sanitize.h"
 
@@ -35,6 +36,11 @@ namespace playground
                                kProject{ "project" }, kProjectVersion{ "projectVersion" }, kProjectPreset{ "projectPreset" };
         const juce::Identifier kSource{ "source" }, kDraft{ "draft" };   // the version before files
         const juce::Identifier kChatTag{ "CHAT" }, kJson{ "json" };      // the chat with Claude (ChatAgent::saveState)
+        // MCP's marks (ChatAgent::mcpMarksToKeep, Live.h's KeptMark): <MCP><MARK token><FILE name hash netlist lines/>
+        // </MARK></MCP>, the hashes in hex, so that get_status `since` with a token from before the plugin was opened
+        // again still says which files changed (a state from before them has none).
+        const juce::Identifier kMcpTag{ "MCP" }, kMarkTag{ "MARK" }, kToken{ "token" }, kHash{ "hash" }, kNetlist{ "netlist" },
+                               kLines{ "lines" };
         const juce::Identifier kEditorTag{ "EDITOR" }, kWidth{ "w" }, kHeight{ "h" };   // the editor's size
         const juce::Identifier kView{ "view" };                                          // and its view: "panel"
         const juce::Identifier kChat{ "chat" };                                          // its chat: "closed"
@@ -276,11 +282,12 @@ namespace playground
         draft_.files = singleFile(kExamples[0].source);
         projectFiles_ = draft_.files;                            // nothing to lose yet: no project's open asks first
         compiler_.setShaderTools(shaderTools());
+        compiler_.setDialCarrier([this](const Controls& controls, const PanelSpec& panel) { return carryFor(controls, panel); });
         capture_.setOwnCode([this](bool on) { engine_.setOwnCode(on); });
         const CompileStatus s = compiler_.compileNow(draft_.files);
         jassert(s.ok);
         seen_ = s.revision;
-        apply(s, true);
+        apply(s, true, true, Given{});
         syncDials();                                             // the journal's dials start here
         startTimerHz(20);
         mcp_ = std::make_unique<McpLink>(McpLink::Hooks{ [this] { return mcpInfo(); },
@@ -369,11 +376,13 @@ namespace playground
     // ---- the audio thread --------------------------------------------------------------------------------------------
     void Processor::readParameters() noexcept
     {
-        // A host can write a NaN (JUCE's ranges pass it through): such a value keeps the last good one.
+        // Whose controls the values are in first (apply() stores it after its writes), then the values (Engine.h, "The
+        // dials' carry"). A host can write a NaN (JUCE's ranges pass it through): such a value keeps the last good one.
+        const uint64_t meaning = meaningProgram_.load(std::memory_order_acquire);
         for (std::size_t c = 0; c < raw_.size(); ++c)
             if (const float v = raw_[c]->load(std::memory_order_relaxed); std::isfinite(v))
                 values_[c] = std::clamp(v, 0.0f, 1.0f);
-        engine_.setControls(values_);
+        engine_.setControls(values_, meaning);
     }
 
     void Processor::play(juce::AudioBuffer<float>& buffer, const juce::MidiBuffer& midi, bool bypassed) noexcept
@@ -706,16 +715,17 @@ namespace playground
     bool Processor::meters(Meters& out) const { return engine_.meters(out); }
     void Processor::scope(bool input, float* out, int n) const { engine_.scope(input, out, n); }
 
-    void Processor::apply(const CompileStatus& s, bool reset)
+    void Processor::apply(const CompileStatus& s, bool run, bool loaded, const Given& given)
     {
+        Controls controls;
+        std::array<std::vector<std::string>, kMaxControls> options;
         if (!s.ok)
         {
             // The program that played plays on, unless a refine (Compiler.h, "The self-test") compiled it again since
-            // this compile failed: a new program, the same files and dials.
+            // this compile failed: a new program, the same files and dials (its carry their values as they are).
             if (!s.refined)
                 return;
             Sources files;
-            Controls controls;
             {
                 const std::lock_guard<std::mutex> lock(programMutex_);
                 if (s.program == 0 || s.program == program_)
@@ -723,34 +733,109 @@ namespace playground
                 program_ = s.program;
                 files = running_;
                 controls = controls_;
+                options = panel_.options;
             }
             capture_.noteProgram(s.program, files, controls, s.circuits);
+            if (run)
+                writeCarry(s, controls, options, given);
             return;
         }
         capture_.noteProgram(s.program, s.sources, s.controls, s.circuits);   // a recording's replay compiles these
-        Controls before;
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
-            before = controls_;
             controls_ = s.controls;
             panel_ = s.panel;
             program_ = s.program;
+            // compare's previous_run: what a run replaced. A state's program (a host's recall, a project reopened) is
+            // no run's: nothing played before it, though Init played until then.
+            if (loaded)
+                previous_.clear();
+            else if (!running_.empty() && !cir::sameProgram(running_, s.sources))
+                previous_ = running_;
             running_ = s.sources;
         }
-        if (reset)
-            for (int c = 0; c < kMaxControls; ++c)
-            {
-                const Control& now = s.controls[static_cast<std::size_t>(c)];
-                const Control& was = before[static_cast<std::size_t>(c)];
-                if (!now.used || (was.used && sameName(was, now)))
-                    continue;                                    // the same parameter keeps its dial's value
-                juce::RangedAudioParameter& p = *params_[static_cast<std::size_t>(c)];
-                ownDials_.fetch_or(1u << c);                     // the run's: no move (syncOwnDials)
-                p.beginChangeGesture();
-                p.setValueNotifyingHost(normOf(now, now.def));
-                p.endChangeGesture();
-            }
+        if (run)
+            writeCarry(s, s.controls, s.panel.options, given);
         updateHostDisplay(juce::AudioProcessor::ChangeDetails().withParameterInfoChanged(true));
+    }
+
+    // The dials' carry (Controls.h, "a dial's value across a declaration change"): on the thread that offers the
+    // program, just before (the compiler's, or compileNow's caller's).
+    DialCarry Processor::carryFor(const Controls& controls, const PanelSpec& panel)
+    {
+        const std::lock_guard<std::mutex> lock(meaningMutex_);
+        DialCarry k;
+        k.ticket = ++carryTickets_;
+        k.from = meaningProgram_.load(std::memory_order_relaxed);
+        for (int c = 0; c < kMaxControls; ++c)
+        {
+            const auto i = static_cast<std::size_t>(c);
+            const Control& to = controls[i];
+            const float v = raw_[i]->load();
+            if (!to.used || !std::isfinite(v))
+                continue;                                        // (a host's NaN: the last good value plays on)
+            const float norm = std::clamp(v, 0.0f, 1.0f);        // as readParameters gives it to the Engine
+            const Control& from = meaningControls_[i];
+            k.fromNorm[i] = norm;
+            k.plain[i] = from.used && sameName(from, to)
+                             ? carryValue(from, meaningOptions_[i], to, panel.options[i], plainOf(from, norm))
+                             : to.def;                           // a parameter new to the slot: its default
+            k.slots |= 1u << c;
+        }
+        return k;
+    }
+
+    void Processor::writeCarry(const CompileStatus& s, const Controls& controls,
+                               const std::array<std::vector<std::string>, kMaxControls>& options, const Given& given)
+    {
+        const DialCarry& k = s.carry;
+        const std::lock_guard<std::mutex> lock(meaningMutex_);
+        // A carry made since (a later program on its way, or played already) writes instead: this one's values came
+        // from the same host values, which still mean what they meant.
+        const bool newest = k.ticket != 0 && k.ticket == carryTickets_;
+        // And each carry writes once: its status applied again (a new revision of the same program: the self-test's
+        // notes) leaves a value moved back since (an undo, the host's automation) where it is.
+        const bool carrying = newest && k.ticket != carryWritten_;
+        for (int c = 0; c < kMaxControls; ++c)
+        {
+            const auto i = static_cast<std::size_t>(c);
+            const Control& to = controls[i];
+            const float v = raw_[i]->load();
+            if (!to.used || !std::isfinite(v))
+                continue;
+            const float norm = std::clamp(v, 0.0f, 1.0f);
+            float plain = 0.0f;
+            if (((given.slots >> c) & 1u) != 0)
+                plain = given.plain[i];
+            else if (carrying && ((k.slots >> c) & 1u) != 0 && norm == k.fromNorm[i])
+                plain = k.plain[i];
+            else
+                continue;                                        // moved since (the host's, the user's): theirs stands
+            if (plainOf(to, norm) == plain)
+                continue;                                        // the host's value plays it already: no gesture
+            juce::RangedAudioParameter& p = *params_[i];
+            ownDials_.fetch_or(1u << c);                         // the run's: no move (syncOwnDials)
+            p.beginChangeGesture();
+            p.setValueNotifyingHost(normOf(to, plain));
+            p.endChangeGesture();
+        }
+        if (!newest)
+            return;
+        carryWritten_ = k.ticket;
+        meaningControls_ = controls;
+        meaningOptions_ = options;
+        meaningProgram_.store(s.program, std::memory_order_release);   // after the writes (readParameters)
+    }
+
+    void Processor::adoptMeaning(const CompileStatus& s)
+    {
+        if (!s.ok)
+            return;
+        const std::lock_guard<std::mutex> lock(meaningMutex_);
+        ++carryTickets_;                                         // a carry made before the load writes nothing now
+        meaningControls_ = s.controls;
+        meaningOptions_ = s.panel.options;
+        meaningProgram_.store(s.program, std::memory_order_release);
     }
 
     // A render's "host" (ChatScenario.h): the Engine's rate, and the host's block as it announced it (the largest it
@@ -770,13 +855,14 @@ namespace playground
         return projectName_;
     }
 
-    PanelPicture Processor::chatPicture(PictureView view, const std::string& name)
+    PanelPicture Processor::chatPicture(PictureView view, const std::string& name, const PictureState& state)
     {
         std::unique_lock<std::mutex> lock(pictureMutex_);
         pictureAsked_ = true;
         pictureReady_ = false;
         pictureView_ = view;
         picturePage_ = name;
+        pictureState_ = state;
         if (!pictureDone_.wait_for(lock, std::chrono::seconds(10), [this] { return pictureReady_; }))
         {
             pictureAsked_ = false;
@@ -797,11 +883,13 @@ namespace playground
                 pictureAsked_ = false;
                 const PictureView view = pictureView_;
                 const std::string page = picturePage_;
+                const PictureState state = std::move(pictureState_);
+                pictureState_ = {};
                 lock.unlock();
                 PanelPicture p = view == PictureView::schematic
                                      ? pictureSchematic(editorPort(), page)
                                      : picturePanel(ports(), editorPort(), editorW_.load(), editorH_.load(),
-                                                    view == PictureView::window, page);
+                                                    view == PictureView::window, page, state);
                 lock.lock();
                 picture_ = std::move(p);
                 pictureReady_ = true;
@@ -814,28 +902,37 @@ namespace playground
         {
             const CompileStatus s = compiler_.status();
             seen_ = s.revision;
-            const uint64_t run = editorRun_.load();
-            apply(s, run != 0 && s.request == run);
+            // A version's program (or a preset's): its dials, by name, once it compiled (an older request's result
+            // waits for its own); a fresh start's (an example's, RANDOM's): every dial at its default, as in a new
+            // instance. Those slots take them in place of the carry, each written once.
+            Given given;
+            if (s.ok && dialsRequest_ != 0 && s.request == dialsRequest_)
+                given = givenByName(s.controls, s.panel.options, projectDials_);
+            else if (s.ok && defaultsRequest_ != 0 && s.request == defaultsRequest_)
+                for (int c = 0; c < kMaxControls; ++c)
+                    if (const Control& k = s.controls[static_cast<std::size_t>(c)]; k.used)
+                    {
+                        given.plain[static_cast<std::size_t>(c)] = k.def;
+                        given.slots |= 1u << c;
+                    }
+            apply(s, true, false, given);
             if (s.request == userRun_.load() && s.request != journaled_)
             {
                 journaled_ = s.request;                          // a refine's status answers it again (Compiler.h)
-                journal_.note(Journal::Who::you, runWords(s));
+                if (s.ok)
+                    journal_.dialsNote(Journal::Who::user, runWords(s));   // a new dial at its default (apply)
+                else
+                    journal_.note(Journal::Who::user, runWords(s));
             }
-            // A version's program (or a preset's): its dials, by name, once it compiled (an older request's result
-            // waits for its own).
             if (dialsRequest_ != 0 && s.request >= dialsRequest_)
             {
-                if (s.ok && s.request == dialsRequest_)
-                    setDialsByName(s.controls, projectDials_);
                 projectDials_.clear();
                 dialsRequest_ = 0;
             }
-            // A fresh start's program (an example's, RANDOM's): every dial at its default once it compiled, as in a
-            // new instance.
             if (defaultsRequest_ != 0 && s.request >= defaultsRequest_)
             {
                 if (s.ok && s.request == defaultsRequest_)
-                    setDialsToDefaults(s.controls);
+                    setDialsToDefaults(s.controls);              // the unused slots' too
                 defaultsRequest_ = 0;
             }
         }
@@ -925,6 +1022,28 @@ namespace playground
         juce::ValueTree chat{ kChatTag };
         chat.setProperty(kJson, juce::String::fromUTF8(chat_.saveState().c_str()), nullptr);
         state.appendChild(chat, nullptr);
+        if (const std::vector<KeptMark> marks = chat_.mcpMarksToKeep(); !marks.empty())
+        {
+            const auto hex = [](uint64_t h) { return juce::String::toHexString(h).paddedLeft('0', 16); };
+            juce::ValueTree mcp{ kMcpTag };
+            for (const KeptMark& m : marks)
+            {
+                juce::ValueTree mark{ kMarkTag };
+                mark.setProperty(kToken, juce::String(m.token), nullptr);
+                for (const KeptMark::File& f : m.files)
+                {
+                    juce::ValueTree file{ kFileTag };
+                    file.setProperty(kName, juce::String::fromUTF8(f.name.c_str()), nullptr);
+                    file.setProperty(kHash, hex(f.hash), nullptr);
+                    if (f.netlist != 0)
+                        file.setProperty(kNetlist, hex(f.netlist), nullptr);
+                    file.setProperty(kLines, f.lines, nullptr);
+                    mark.appendChild(file, nullptr);
+                }
+                mcp.appendChild(mark, nullptr);
+            }
+            state.appendChild(mcp, nullptr);
+        }
         const std::vector<std::string> pages = guiPages();
         const std::vector<FileView> views = fileViews();
         if ((editorW_.load() > 0 && editorH_.load() > 0) || panelView_.load() || !chatOpen_.load() || !explorerOpen_.load()
@@ -1002,6 +1121,27 @@ namespace playground
             chat_.loadState(chat.getProperty(kJson).toString().toStdString());
             state.removeChild(chat, nullptr);
         }
+        {
+            // MCP's marks, now of before the plugin was opened again (none in a state from before them).
+            const juce::ValueTree mcp = state.getChildWithName(kMcpTag);
+            const auto hash = [](const juce::var& v) { return static_cast<uint64_t>(v.toString().getHexValue64()); };
+            std::vector<KeptMark> marks;
+            for (int k = 0; mcp.isValid() && k < mcp.getNumChildren() && k < 64; ++k)
+                if (const juce::ValueTree mark = mcp.getChild(k); mark.hasType(kMarkTag))
+                {
+                    KeptMark m;
+                    m.token = mark.getProperty(kToken).toString().substring(0, 64).toStdString();
+                    for (int j = 0; j < mark.getNumChildren() && j < 256; ++j)
+                        if (const juce::ValueTree file = mark.getChild(j); file.hasType(kFileTag))
+                            m.files.push_back({ file.getProperty(kName).toString().substring(0, 200).toStdString(),
+                                                hash(file.getProperty(kHash)), hash(file.getProperty(kNetlist, "0")),
+                                                std::max(0, static_cast<int>(file.getProperty(kLines, 0))) });
+                    marks.push_back(std::move(m));
+                }
+            chat_.restoreMcpMarks(std::move(marks));
+            if (mcp.isValid())
+                state.removeChild(mcp, nullptr);
+        }
         const juce::ValueTree editor = state.getChildWithName(kEditorTag);
         panelView_.store(editor.isValid() && editor.getProperty(kView).toString() == "panel");
         chatOpen_.store(!(editor.isValid() && editor.getProperty(kChat).toString() == "closed"));
@@ -1063,11 +1203,12 @@ namespace playground
             if (const juce::ValueTree a = kept.getChild(k); a.hasType(kAnswerTag))
                 circuits::restore(a.getProperty(kKey).toString().toStdString(), a.getProperty(kText).toString().toStdString());
         // The session's program, compiled now, its dials as the session has them.
-        const CompileStatus s = compiler_.compileNow(std::move(run));
+        const CompileStatus s = compiler_.compileNow(std::move(run), false);   // its dials come with it: no carry
         seen_ = s.revision;
-        apply(s, false);
+        apply(s, false, true, Given{});
         apvts_.replaceState(state);
-        journal_.note(Journal::Who::host, "loaded a saved state (the program, its files and its dials)");
+        adoptMeaning(s);                                         // the values are the session's program's now
+        journal_.dialsNote(Journal::Who::host, "loaded a saved state (the program, its files and its dials)");
         syncDials();
     }
 
@@ -1091,7 +1232,7 @@ namespace playground
             const std::lock_guard<std::mutex> lock(programMutex_);
             before = std::exchange(draft_, draft);
         }
-        journalDraft(before, draft, Journal::Who::you);
+        journalDraft(before, draft, Journal::Who::user);
     }
 
     bool Processor::setDraftIf(const Draft& draft, uint64_t revision)
@@ -1103,14 +1244,13 @@ namespace playground
                 return false;                            // Claude's write (or a host's load) the editor has not merged
             before = std::exchange(draft_, draft);
         }
-        journalDraft(before, draft, Journal::Who::you);
+        journalDraft(before, draft, Journal::Who::user);
         return true;
     }
 
     void Processor::run(const Sources& files)
     {
         const uint64_t id = compiler_.request(files);
-        editorRun_.store(id);
         userRun_.store(id);
     }
 
@@ -1212,7 +1352,10 @@ namespace playground
             {
                 const auto it = std::find_if(over.begin(), over.end(), [&](const projectstore::Dial& o) { return o.name == d.name; });
                 if (it != over.end())
+                {
                     it->value = d.value;
+                    it->label = d.label;
+                }
                 else
                     over.push_back(d);
             }
@@ -1246,8 +1389,10 @@ namespace playground
         ProjectState st;
         std::vector<projectstore::Dial> base;
         Controls cs;
+        std::array<std::vector<std::string>, kMaxControls> options;
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
+            options = panel_.options;
             st.name = projectName_;
             st.version = projectVersion_;
             st.latest = std::max(projectLatest_, projectVersion_);
@@ -1269,7 +1414,8 @@ namespace playground
                     continue;
                 const float norm = raw_[static_cast<std::size_t>(c)]->load();
                 const float plain = std::isfinite(norm) ? plainOf(k, norm) : k.def;
-                st.dialsEdited = std::fabs(plain - it->value) > 1.0e-4f * std::max(1.0e-6f, std::fabs(k.max - k.min));
+                const float saved = projectstore::valueOf(*it, k, options[static_cast<std::size_t>(c)]);
+                st.dialsEdited = std::fabs(plain - saved) > 1.0e-4f * std::max(1.0e-6f, std::fabs(k.max - k.min));
             }
         return st;
     }
@@ -1295,36 +1441,60 @@ namespace playground
     std::vector<projectstore::Dial> Processor::dialsNow() const
     {
         Controls cs;
+        std::array<std::vector<std::string>, kMaxControls> options;
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
             cs = controls_;
+            options = panel_.options;
         }
         std::vector<projectstore::Dial> out;
         for (int c = 0; c < kMaxControls; ++c)
             if (const Control& k = cs[static_cast<std::size_t>(c)]; k.used)
             {
                 const float norm = raw_[static_cast<std::size_t>(c)]->load();
-                out.push_back({ k.name, std::isfinite(norm) ? plainOf(k, norm) : k.def });
+                const float plain = std::isfinite(norm) ? plainOf(k, norm) : k.def;
+                out.push_back({ k.name, plain, optionAt(k, plain, options[static_cast<std::size_t>(c)]) });
             }
         return out;
     }
 
-    // Host gestures, on the message thread: each dial on the parameter of its name (a name the program lacks: none).
-    void Processor::setDialsByName(const Controls& cs, const std::vector<projectstore::Dial>& dials)
+    Processor::Given Processor::givenByName(const Controls& cs, const std::array<std::vector<std::string>, kMaxControls>& options,
+                                            const std::vector<projectstore::Dial>& dials)
     {
+        Given out;
         for (const projectstore::Dial& d : dials)
             for (int c = 0; c < kMaxControls; ++c)
             {
                 const Control& k = cs[static_cast<std::size_t>(c)];
                 if (!k.used || d.name != k.name)
                     continue;
-                juce::RangedAudioParameter& p = *params_[static_cast<std::size_t>(c)];
-                ownDials_.fetch_or(1u << c);                     // a version's or a preset's: its line says so
-                p.beginChangeGesture();
-                p.setValueNotifyingHost(normOf(k, d.value));
-                p.endChangeGesture();
+                out.plain[static_cast<std::size_t>(c)] = projectstore::valueOf(d, k, options[static_cast<std::size_t>(c)]);
+                out.slots |= 1u << c;
                 break;
             }
+        return out;
+    }
+
+    // Host gestures, on the message thread: each dial on the parameter of its name (a name the program lacks: none),
+    // by its option's name first; a dial already there is not written.
+    void Processor::setDialsByName(const Controls& cs, const std::array<std::vector<std::string>, kMaxControls>& options,
+                                   const std::vector<projectstore::Dial>& dials)
+    {
+        const Given given = givenByName(cs, options, dials);
+        for (int c = 0; c < kMaxControls; ++c)
+        {
+            if (((given.slots >> c) & 1u) == 0)
+                continue;
+            const Control& k = cs[static_cast<std::size_t>(c)];
+            juce::RangedAudioParameter& p = *params_[static_cast<std::size_t>(c)];
+            const float to = normOf(k, given.plain[static_cast<std::size_t>(c)]);
+            if (p.getValue() == to)
+                continue;
+            ownDials_.fetch_or(1u << c);                         // a version's or a preset's: its line says so
+            p.beginChangeGesture();
+            p.setValueNotifyingHost(to);
+            p.endChangeGesture();
+        }
     }
 
     // Every dial at its default: a used slot's the program's fminus::default, an unused one the parameter's own (as a
@@ -1371,7 +1541,6 @@ namespace playground
             circuits::restore(a.key, a.text);
         const uint64_t id = compiler_.request(d.files);
         dialsRequest_ = id;
-        editorRun_.store(id);
         return true;
     }
 
@@ -1388,7 +1557,7 @@ namespace playground
         }
         if (!openVersion(*p, *v, why))
             return false;
-        journal_.note(Journal::Who::you, "opened project \"" + p->name + "\", version " + std::to_string(v->number));
+        journal_.dialsNote(Journal::Who::user, "opened project \"" + p->name + "\", version " + std::to_string(v->number));
         return true;
     }
 
@@ -1417,10 +1586,9 @@ namespace playground
         chat_.clearChecks();
         const uint64_t id = compiler_.request(d.files);
         defaultsRequest_ = id;
-        editorRun_.store(id);
         userRun_.store(id);
-        journal_.note(Journal::Who::you,
-                      "started afresh from " + what + " (its files only, every dial at its default)");
+        journal_.dialsNote(Journal::Who::user,
+                           "started afresh from " + what + " (its files only, every dial at its default)");
     }
 
     bool Processor::saveVersion(const std::string& name, SavedVersion& saved, std::string& why)
@@ -1442,7 +1610,7 @@ namespace playground
             return false;
         saved = { r->number, r->unchanged, r->created };
         if (!r->unchanged)
-            journal_.note(Journal::Who::you, "saved version " + std::to_string(r->number) + " of \"" + projectstore::tidyName(name) + "\"");
+            journal_.note(Journal::Who::user, "saved version " + std::to_string(r->number) + " of \"" + projectstore::tidyName(name) + "\"");
         const std::lock_guard<std::mutex> lock(programMutex_);
         const std::string tidy = projectstore::tidyName(name);
         // The preset applied stays named while the dials are still its.
@@ -1508,7 +1676,7 @@ namespace playground
         const std::vector<projectstore::Dial> dials = dialsNow();
         if (!projectstore::savePreset(project, preset, dials, version, &why))
             return false;
-        journal_.note(Journal::Who::you, "saved preset \"" + projectstore::tidyName(preset) + "\"");
+        journal_.note(Journal::Who::user, "saved preset \"" + projectstore::tidyName(preset) + "\"");
         const std::lock_guard<std::mutex> lock(programMutex_);
         projectPreset_ = projectstore::tidyName(preset);
         baseDials_ = dials;
@@ -1528,10 +1696,12 @@ namespace playground
         }
         bool open = false;
         Controls cs;
+        std::array<std::vector<std::string>, kMaxControls> options;
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
             open = projectstore::sameName(projectName_, p->name);
             cs = controls_;
+            options = panel_.options;
         }
         if (!open)
         {
@@ -1543,9 +1713,9 @@ namespace playground
         else if (dialsRequest_ != 0)
             projectDials_ = overlay(projectDials_, pr->dials);   // a compile on its way: after it
         else
-            setDialsByName(cs, pr->dials);
+            setDialsByName(cs, options, pr->dials);
         syncOwnDials();                                          // the preset's dials: its line says so
-        journal_.note(Journal::Who::you, "applied preset \"" + pr->name + "\" of \"" + p->name + "\"");
+        journal_.dialsNote(Journal::Who::user, "applied preset \"" + pr->name + "\" of \"" + p->name + "\"");
         const std::lock_guard<std::mutex> lock(programMutex_);
         projectPreset_ = pr->name;
         baseDials_ = open ? overlay(baseDials_, pr->dials) : overlay(p->latest().dials, pr->dials);
@@ -1638,22 +1808,25 @@ namespace playground
             journalDraft(before, d, Journal::Who::chat);
     }
 
-    bool Processor::chatSetDraftIf(const Draft& draft, const std::string& file, const std::string& expected)
+    bool Processor::chatSetDraftIf(const Draft& draft, const Sources& read)
     {
-        const auto named = [&](const SourceFile& f) { return f.name == file; };
-        const auto mine = std::find_if(draft.files.begin(), draft.files.end(), named);
-        if (mine == draft.files.end())
+        if (read.empty())
             return false;
+        for (const SourceFile& r : read)
+            if (findFile(draft.files, r.name) == nullptr)
+                return false;
         Draft before, d;
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
-            const auto it = std::find_if(draft_.files.begin(), draft_.files.end(), named);
-            if (it == draft_.files.end() || it->text != expected)
-                return false;                            // a gesture synced meanwhile: never overwritten
-            // Only this file's text is written (and the tab shown): the others stay as they are now, whatever the user
-            // typed in them since the tool read the draft.
+            for (const SourceFile& r : read)
+                if (const SourceFile* now = findFile(draft_.files, r.name); now == nullptr || now->text != r.text)
+                    return false;                        // a gesture or typing synced meanwhile: never overwritten
+            // Only these files' texts are written (and the tab shown), all in one change: the others stay as they are
+            // now, whatever the user typed in them since the tool read the draft.
             d = draft_;
-            d.files[static_cast<std::size_t>(it - draft_.files.begin())].text = mine->text;
+            for (SourceFile& f : d.files)
+                if (findFile(read, f.name) != nullptr)
+                    f.text = findFile(draft.files, f.name)->text;
             const auto shown = draft.active >= 0 && draft.active < static_cast<int>(draft.files.size())
                                    ? std::find_if(d.files.begin(), d.files.end(), [&](const SourceFile& f) {
                                          return f.name == draft.files[static_cast<std::size_t>(draft.active)].name;
@@ -1674,11 +1847,15 @@ namespace playground
     CompileStatus Processor::chatRun(const Sources& files)
     {
         const uint64_t id = compiler_.request(files);
-        editorRun_.store(id);
         compiler_.wait();
         const CompileStatus s = compiler_.status();
         if (!chat_.mcpWorking() && s.request >= id)
-            journal_.note(Journal::Who::chat, runWords(s));
+        {
+            if (s.ok)
+                journal_.dialsNote(Journal::Who::chat, runWords(s));
+            else
+                journal_.note(Journal::Who::chat, runWords(s));
+        }
         return s.request >= id ? s : CompileStatus{};
     }
 
@@ -1691,6 +1868,15 @@ namespace playground
             return s.sources;                                    // poll() may not have taken it yet
         const std::lock_guard<std::mutex> lock(programMutex_);
         return running_;
+    }
+
+    Sources Processor::chatPrevious() const
+    {
+        const CompileStatus s = compiler_.status();
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        if (s.ok && !running_.empty() && !cir::sameProgram(running_, s.sources))
+            return running_;                                     // poll() has not taken the newest yet: it comes after this
+        return previous_;
     }
 
     Controls Processor::chatDials() const
@@ -1706,7 +1892,17 @@ namespace playground
     {
         if (slot < 0 || slot >= kMaxControls)
             return 0.0f;
-        const Control c = chatDials()[static_cast<std::size_t>(slot)];
+        const auto i = static_cast<std::size_t>(slot);
+        // One status for the control and its carry (chatDials' rule: a failed compile's are the program's that plays).
+        const CompileStatus s = compiler_.status();
+        Control c;
+        if (s.ok)
+            c = s.controls[i];
+        else
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            c = controls_[i];
+        }
         {
             // A value Claude set that poll() has not applied yet is the dial's now: a measurement right after set_dial
             // renders it (as the parameter will hold it: through its range and steps).
@@ -1715,8 +1911,18 @@ namespace playground
                 if (it->first == slot)
                     return plainOf(c, normOf(c, it->second));
         }
-        const float norm = raw_[static_cast<std::size_t>(slot)]->load();
-        return std::isfinite(norm) ? plainOf(c, norm) : c.def;
+        // Whose controls the value is in, then the value, as readParameters reads them (apply() stores the meaning after
+        // its writes): under the old meaning the value is the one the carry was made from or the one apply() wrote, and
+        // under the new one it is the written one.
+        const uint64_t meaning = meaningProgram_.load(std::memory_order_acquire);
+        const float norm = raw_[i]->load();
+        if (!std::isfinite(norm))
+            return c.def;
+        // A program compiled whose carry poll() has not written yet: the value it plays (Engine.h, "The dials' carry").
+        if (s.ok && meaning != s.program && meaning == s.carry.from && ((s.carry.slots >> slot) & 1u) != 0
+            && std::clamp(norm, 0.0f, 1.0f) == s.carry.fromNorm[i])
+            return s.carry.plain[i];
+        return plainOf(c, norm);
     }
 
     void Processor::chatSetDial(int slot, float plain)

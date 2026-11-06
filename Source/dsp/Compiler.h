@@ -64,6 +64,13 @@
 //
 // One compile offers at a time: compileNow waits for the compile the thread runs (a RUN's, a refine's), and the thread
 // starts none while compileNow compiles, so the program offered last is the one compiled last.
+//
+// The dials' carry (Controls.h's DialCarry). Just before it offers a program (a RUN's, compileNow's unless told not to,
+// a refine's), the compiler asks the carrier setDialCarrier gave (the processor's) how the dials come across: what each
+// slot's plain value is under the new declarations, kept in its units, and the host's normalised value it was made
+// from. The carry goes into the Patch, so the audio thread plays the carried values from the program's first block,
+// before the processor has written them to the host's parameters, and into the status, for the processor to write.
+// Without a carrier (the probes' own compilers) a Patch carries nothing and the dials read as the host's values say.
 #pragma once
 
 #include "dsp/Controls.h"
@@ -79,6 +86,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -118,6 +126,9 @@ namespace playground
         // netlist's module, its elements' paths and the netlist's nodes (name, line, readable, why, dc), what the
         // schematic's probes resolve a net against by name (a ProbeSet's circuit is the index).
         std::vector<circuits::Probed> probes;
+        // How the dials of `program` came across from the program before it (above, "The dials' carry"), when it
+        // compiled; none (no slots) without a carrier, or for a compileNow told not to.
+        DialCarry   carry;
     };
 
     // The last check's outcome (Compiler::check).
@@ -167,7 +178,13 @@ namespace playground
         void setShaderTools(ShaderTools tools);
 
         uint64_t request(Sources files);
-        CompileStatus compileNow(Sources files);
+        // `carry` false: no carrier asked (a host's state load, whose dials come with it).
+        CompileStatus compileNow(Sources files, bool carry = true);
+
+        // The dials' carry (above): asked for on the thread that offers (the compiler's, compileNow's caller; a refine's
+        // under the compiler's mutex, so the carrier never calls back into it). Set it before the first compile.
+        using DialCarrier = std::function<DialCarry(const Controls& controls, const PanelSpec& panel)>;
+        void setDialCarrier(DialCarrier carrier);
 
         void check(Sources files);
         CheckStatus checkStatus() const;
@@ -220,8 +237,10 @@ namespace playground
         // A compile's status published (its revision the next; a failed one's `program` the one that plays on), and
         // the status as stored.
         CompileStatus finish(CompileStatus s);
-        // A compile the caller ran (compileNow's, a RUN's: its patch offered here when it compiled), published.
-        CompileStatus land(std::unique_ptr<Built> b, uint64_t landed);
+        // A compile the caller ran (compileNow's, a RUN's: its patch offered here when it compiled, with its carry
+        // when `carry`), published.
+        CompileStatus land(std::unique_ptr<Built> b, uint64_t landed, bool carry = true);
+        void carryInto(Built& b, const DialCarrier& carrier);   // the carry asked for and set, before the offer
         // The IR: a program taken (its texts when the compile kept them; else, when someone looks, the IR-only compile
         // due; run() makes it), the frozen copy's. Each takes mutex_ itself and bumps the revision.
         void tookProgram(uint64_t id, const std::string& file, bool kept, const Patch::Ir& ir);
@@ -248,6 +267,7 @@ namespace playground
         Engine& engine_;
         mutable std::mutex mutex_;
         ShaderTools tools_;                    // mutex_
+        DialCarrier carrier_;                  // mutex_
         ShaderCache shaders_;
         std::condition_variable wake_, idle_;
         Sources queued_;

@@ -2,8 +2,9 @@
 // few seconds (the meters, the scopes and the blocks' costs as the audio thread publishes them, Engine.h; the host's
 // bypass and blocks; Live.h's LiveRead). get_status: the state now, and with `since` only what changed after a token
 // (the Processor's journal, Journal.h; the files as diffs against their text at that token). MCP's own record of the
-// files, by token (mcpMarks_: one server may serve several conversations, each with its own tokens), and the line its
-// results start with when something changed since the last MCP call.
+// files, by token (mcpMarks_: one server may serve several conversations, each with its own tokens; kept with the
+// session as each file's hash, mcpKept_ once the plugin is opened again, when a token's files are told apart from the
+// files now, if not diffed), and the line its results start with when something changed since the last MCP call.
 //
 // Both are live from MCP (ChatAgent::mcpLive): they run beside a running call, on the link's threads, and keep
 // CLAUDE.md's contract: ChatHost's lock-free reads and locked getters, mcpMarks_ under liveMutex_, never the program,
@@ -28,6 +29,9 @@
 #include <cmath>
 #include <complex>
 #include <cstdio>
+#include <iterator>
+#include <map>
+#include <string_view>
 #include <thread>
 
 namespace playground
@@ -288,6 +292,109 @@ namespace playground
 
         // A racing wheel's fields (host.fm), as listen names them; each at rest at 0.
         constexpr const char* kRacing[] = { "steering", "throttle", "brake", "clutch", "gear" };
+
+        // A text's 64-bit FNV-1a, and read_file's version of it (ChatFiles.cpp's: the top half, 8 hex digits).
+        uint64_t textHash(std::string_view t)
+        {
+            uint64_t h = 1469598103934665603ull;
+            for (const char c : t)
+            {
+                h ^= static_cast<uint8_t>(c);
+                h *= 1099511628211ull;
+            }
+            return h;
+        }
+
+        std::string versionText(uint64_t h)
+        {
+            char b[16];
+            std::snprintf(b, sizeof b, "%08x", static_cast<unsigned>(h >> 32));
+            return b;
+        }
+
+        std::string linesText(std::size_t n) { return std::to_string(n) + (n == 1 ? " line" : " lines"); }
+
+        KeptMark::File keptFile(const SourceFile& f)
+        {
+            KeptMark::File k;
+            k.name = f.name;
+            k.hash = textHash(f.text);
+            k.netlist = isCircuitFile(f.name) ? textHash(cir::stripLayout(f.text)) : 0;
+            k.lines = static_cast<int>(textdiff::lines(f.text).size());
+            return k;
+        }
+
+        // The files now against a kept mark's (of before the plugin was opened again): which changed, not how.
+        std::string keptFilesText(const KeptMark& kept, const std::vector<SourceFile>& now)
+        {
+            std::map<std::string, const KeptMark::File*> was;
+            for (const KeptMark::File& f : kept.files)
+                was[f.name] = &f;
+            std::string part, same;
+            for (const SourceFile& f : now)
+            {
+                const auto it = was.find(f.name);
+                const std::size_t lines = textdiff::lines(f.text).size();
+                if (it == was.end())
+                {
+                    part += f.name + ": new since then, " + linesText(lines) + ".\n";
+                    continue;
+                }
+                const KeptMark::File& k = *it->second;
+                was.erase(it);
+                const uint64_t h = textHash(f.text);
+                if (h == k.hash)
+                    same += (same.empty() ? "" : ", ") + f.name;
+                else if (k.netlist != 0 && isCircuitFile(f.name) && textHash(cir::stripLayout(f.text)) == k.netlist)
+                    part += f.name + ": only its drawing (its *@ lines) changed.\n";
+                else
+                    part += f.name + " changed: now " + linesText(lines) + ", version " + versionText(h) + " (then "
+                          + linesText(static_cast<std::size_t>(k.lines)) + ", version " + versionText(k.hash) + ").\n";
+            }
+            for (const auto& [name, f] : was)
+                part += name + " is gone (closed or renamed).\n";
+            if (part.empty())
+                return "The files are as they were at that token.\n";
+            return "The files against their text at that token, from before the plugin was opened again (which changed, "
+                   "not how: read_file shows a file):\n"
+                 + part + (same.empty() ? "" : "As they were: " + same + ".\n");
+        }
+    }
+
+    // ---- MCP's marks in the session ------------------------------------------------------------------------------------
+    std::vector<KeptMark> ChatAgent::mcpMarksToKeep()
+    {
+        std::vector<KeptMark> out;
+        std::deque<McpMark> marks;
+        {
+            const std::lock_guard<std::mutex> lock(liveMutex_);
+            out.assign(mcpKept_.begin(), mcpKept_.end());
+            marks = mcpMarks_;                                   // the files shared: hashed outside the lock
+        }
+        const std::vector<SourceFile>* last = nullptr;
+        std::vector<KeptMark::File> files;
+        for (const McpMark& m : marks)
+        {
+            if (m.files.get() != last)                           // marks share their files while they stay the same
+            {
+                files.clear();
+                for (const SourceFile& f : *m.files)
+                    files.push_back(keptFile(f));
+                last = m.files.get();
+            }
+            out.push_back({ m.token, files });
+        }
+        if (out.size() > kMcpMarks)
+            out.erase(out.begin(), out.end() - static_cast<std::ptrdiff_t>(kMcpMarks));
+        return out;
+    }
+
+    void ChatAgent::restoreMcpMarks(std::vector<KeptMark> marks)
+    {
+        if (marks.size() > kMcpMarks)
+            marks.erase(marks.begin(), marks.end() - static_cast<std::ptrdiff_t>(kMcpMarks));
+        const std::lock_guard<std::mutex> lock(liveMutex_);
+        mcpKept_.assign(std::make_move_iterator(marks.begin()), std::make_move_iterator(marks.end()));
     }
 
     // ---- the tools' definitions --------------------------------------------------------------------------------------
@@ -389,9 +496,11 @@ namespace playground
         }
         if (!ch.known || (ch.changes == 0 && ch.alerts == 0))
             return {};
+        // "The user changed" when every change is the user's; the host's automation is not the user at work
         std::string what;
+        const std::string things = std::to_string(ch.changes) + (ch.changes == 1 ? " thing" : " things");
         if (ch.changes > 0)
-            what = "The user changed " + std::to_string(ch.changes) + (ch.changes == 1 ? " thing" : " things");
+            what = ch.byUser == ch.changes ? "The user changed " + things : things + " changed";
         if (ch.alerts > 0)
             what += ch.changes > 0 ? " and the output guard acted" : "The output guard acted";
         std::string named;
@@ -400,7 +509,7 @@ namespace playground
         {
             if (shown == kHintNamed)
                 break;
-            // "14:02:31-33 you moved cutoff 1.20 kHz -> 3.40 kHz": the change without its time
+            // "14:02:31-33 the user moved cutoff 1.20 kHz -> 3.40 kHz": the change without its time
             const std::size_t sp = l.find(' ');
             const bool timed = sp != std::string::npos && sp > 0
                             && std::all_of(l.begin(), l.begin() + static_cast<std::ptrdiff_t>(sp),
@@ -439,6 +548,8 @@ namespace playground
         const Draft d = host_.chatDraft();
         Changes ch;
         std::shared_ptr<const std::vector<SourceFile>> then;     // the files at `since` (MCP's mark of it)
+        const KeptMark* kept = nullptr;                          // or, from before a reopen, what the session kept of them
+        KeptMark keptCopy;
         if (mcp)
         {
             const std::lock_guard<std::mutex> lock(liveMutex_);
@@ -447,6 +558,12 @@ namespace playground
             for (const McpMark& m : mcpMarks_)
                 if (ch.known && m.token == since)
                     then = m.files;
+            for (const KeptMark& k : mcpKept_)
+                if (!ch.known && !since.empty() && k.token == since)
+                {
+                    keptCopy = k;
+                    kept = &keptCopy;
+                }
             std::shared_ptr<const std::vector<SourceFile>> now = !mcpMarks_.empty() && *mcpMarks_.back().files == d.files
                                                                      ? mcpMarks_.back().files
                                                                      : std::make_shared<const std::vector<SourceFile>>(d.files);
@@ -464,7 +581,7 @@ namespace playground
                 out = "Nothing changed since your last look.\n";
             else
             {
-                out = "What changed since your last look, oldest first:\n";
+                out = "What changed since your last look, oldest first (a dial's moves as one line, its net change):\n";
                 for (const std::string& l : ch.lines)
                     out += "- " + l + "\n";
             }
@@ -474,11 +591,16 @@ namespace playground
         }
         else
         {
-            if (!since.empty())
+            if (kept != nullptr)
+                out = "(That token is from before the plugin was opened again: what changed since then is not kept, so here "
+                      "is the whole state, and after it which files changed.)\n";
+            else if (!since.empty())
                 out = "(That token is not this instance's, or is from before the plugin was opened again: here is the whole "
                       "state.)\n";
             out += toolText("get_status", input, isError);
         }
+        if (kept != nullptr && files != "none")
+            out += keptFilesText(*kept, d.files);
 
         // The files' text, as asked.
         if (files == "all")
@@ -515,8 +637,8 @@ namespace playground
                     const auto it = was.find(f.name);
                     if (it == was.end())
                     {
-                        part += f.name + ": new since then, " + std::to_string(textdiff::lines(f.text).size())
-                              + " lines (read_file shows it).\n";
+                        part += f.name + ": new since then, " + linesText(textdiff::lines(f.text).size())
+                              + " (read_file shows it).\n";
                         continue;
                     }
                     // a netlist's drawing (its *@ lines, which Claude leaves alone) is no diff: its netlist's lines are

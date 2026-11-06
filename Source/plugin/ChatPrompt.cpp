@@ -247,16 +247,16 @@ DSP PRACTICE IN THIS PLUGIN
 CHECKING YOUR WORK
 
 You cannot hear the plugin, but these tools check what you build against what was asked, so you need not trust it:
-- view_sound draws the sound: the waveform and the level over time, a spectrogram (frequency against time), the average spectrum and a close-up of a few cycles. Look when the shape matters: an envelope, a sweep, a filter's slope, aliasing (lines folding back down the spectrogram), a click (a spike, a thin vertical line), a wave's shape, a tail, a modulation's motion. The user sees the picture too. About 1,200 input tokens a picture: once for a new sound, and again after a change you need to see.
+- view_sound draws the sound: the waveform and the level over time, a spectrogram (frequency against time), the average spectrum (or a window's) and a close-up of a few cycles. Look when the shape matters: an envelope, a sweep, a filter's slope, aliasing (lines folding back down the spectrogram), a click (a spike, a thin vertical line), a wave's shape, a tail, a modulation's motion. The user sees the picture too. About 1,200 input tokens a picture: once for a new sound, and again after a change you need to see.
 - set_checks states what the work must pass, as numbers the plugin measures: a metric with min, max or a target, each in a render of its own (measure_output's settings: %RENDER%; the defaults when left out). Write them from the request, before you build, for what a number can show: %EXAMPLES%. A few checks that matter beat many. The plugin measures them after every run_program (the results follow its own) and when you end a turn in which you changed something (the files, the dials or the checks); while one fails, that turn goes on with the results (twice at most): fix the program, or change a check that asks for the wrong thing, or say why it cannot pass. The user sees them as a checklist, and can clear them.
-- tune_dials finds dial values for goals by rendering many times (tens to a few hundred renders, for up to its time limit: 120 s unless set), instead of guessing and measuring by hand: once the program does the right thing and only its settings are off (%TUNING%). Name the float dials it may move (up to eight) and the goals; it sets the best values on the dials, and says how close each goal came. It cannot make a program do what it cannot: a goal that stays unmet means the program needs changing, or another dial matters.
+- tune_dials finds dial values for goals by rendering many times (for up to 120 s unless set) instead of guessing: once the program does the right thing and only its settings are off (%TUNING%). It sets the best values on the dials and says how close each goal came; a goal that stays unmet means the program needs changing, or another dial matters. With sweep it measures one dial at a few values instead, side by side, setting nothing: an A/B, or how a metric follows the dial.
 - scenario: how the user plays it, in measure_output, view_sound, a check (which keeps it), tune_dials, compare and trace: {%SCENARIO% rate: Hz or "host", block: 1 to 8192 or "host"}; times up to 10 s, then the tail. A dial moves once a host block, as a host's automation does, so its sound depends on the block size.%SCENARIOUSE%
 - try_edits: [{file, old_text, new_text} or {name, content}] on a copy of the files, in measure_output, view_sound, compare (on b) and trace: nothing in the plugin changes. Edit for real once a trial works.
-- compare: two sources rendered alike: identical bits, or how and where they differ ({a: "version:3", b: "editor"}; a fix: both "editor", try_edits on b).
+- compare: two sources rendered alike: identical bits, or how and where they differ ({a: "version:3", b: "editor"}; a fix: both "editor", try_edits on b; the same at 96 kHz: both "editor", b_rate 96000).
 - trace: where a problem starts, once a tool shows one (an alert, a click, silence) or the user hears one; fields watches the program's fields. Fix it with try_edits and trace again until it finds nothing.
 - the user's recording (capture stop keeps it), as a scenario: %CAPTURE%, its dials, the host and its blocks as they played (from, to: a part of it, in seconds); compare {a: "capture", b: "editor"} holds what played against your code on it. Each says how closely a replay of the program that played matched what played: bit for bit, or from when, and why not.
 
-The metrics, the names checks and goals use (a value that never comes, as a release that does not end within the tail, is infinity, which only "at least" meets). %METRICS%)";
+The metrics, the names checks and goals use (measure_output's last line lists them, name=value; a value that never comes, as a release past the tail, is infinity, which only "at least" meets). %METRICS%)";
 
         const char* const kThreads = R"(
 THREADS: parallel for AND parallel { }
@@ -284,7 +284,8 @@ A full synthesizer or a rich effect is a few hundred lines in several files (six
 - Modulation: compute the sources first (envelopes, LFOs, velocity, the note), then each destination from them in musical units (octaves for a frequency, dB for a level) so amounts add: fc = cutoff[i] * expf(0.693147181f * octaves); the sources in a loop of their own, the destinations' math in the next (Cost, in DSP PRACTICE). Keep the routing small and explicit, a comment a route. An expensive coefficient (a filter's tan) may be computed every 16 samples from the modulated value when per sample costs too much; measure_output reports the cost.
 - 32 dials at most (the main module's first 32 parameters), and a dozen to twenty read best: give a player the controls they reach for (an oscillator's shape and tuning; a cutoff, a resonance, an envelope amount; an LFO's rate and depth; an envelope's attack, decay, sustain and release; a mix; a level), declared in the order the panel shows them, and make the rest named, commented constants in the code, which you change when asked. A 33rd parameter is ignored, with a note. An int parameter with a few values can choose a mode (a waveform, a routing). Then give them an interface (THE INTERFACE).
 - An instrument's main module is one voice: sixteen can sound at once and their sum must not clip, so a voice peaks near 0.2 to 0.3. Reset a voice's state in start only when it was silent, so a note played again while it sounds does not click.
-- Later changes: edit_file for a passage (exactly as it is now), write_file for a rewrite. A file marked unchanged in <plugin_state> is as you last saw it.
+- read_file's find with no name searches every file (with regex, a pattern), the lines numbered: where a name is used, without reading each file whole.
+- Later changes: edit_file for a passage (exactly as it is now), its files for a change across files (one step, all or none), write_file for a rewrite. A file marked unchanged in <plugin_state> is as you last saw it.
 - A long conversation may be summarized to make room: the plugin then sends the current files again, and read_file always shows a file as it is now.
 )";
 
@@ -328,6 +329,7 @@ envelope attack decay sustain release   the shape its four parameters make, draw
 keyboard from=48 keys=25          (an instrument's) keys the user plays with the mouse, as wide as its container; octaves= instead of keys=, height= px (72)
 shader "glow.sc" inputs="cutoff out"   a GPU shader of the program's own, drawn over its cell (it fills its container as a scope does; width=, height=); four at most
 A float's value reads with unit="Hz" (from 1000 Hz up in kHz), decimals= (0 to 4) and scale= (shown times it: scale=100 unit="%" for 0 to 1); taper=log, for a frequency's or a time's range (above 0), gives each octave the same turn of the knob, and the host's automation follows it. An int's or a bool's values take their names from the texts of its switch, buttons or menu.
+A run keeps each dial's value in its units, never its knob's turn: a new range or taper leaves it where it was (clamped into a range that no longer holds it), an int keeps its value's name when options are inserted or reordered, and a dial renamed or moved to another place starts at its default. run_program lists each value a declaration changed. A host's automation records turns, so a lane plays other values after a dial's range or taper changes.
 
 How a knob looks: look=modern (the default) | vintage (a black knob over a printed scale) | flat | minimal (an arc only) | ring (a ring of dots) | led (a ring of lights) | chicken (a pointer knob) | soft (a raised cap) | dot; arc=, track=, cap= (colours, or none), pointer=line|dot|triangle|none, pointercolor=, thickness= (the arc's px), sweep= (the degrees it turns, 60 to 360; 270), ticks= (marks around it, up to 61), tickcolor=, bipolar (its arc from the middle: a pan, a detune), labelpos=top|bottom|none, value=always|hover|never, valuecolor=, labelcolor=, shadow=true|false, and live=field: a mark on its ring where a field of the program puts the parameter now (the cutoff after its envelope and LFO, in the parameter's units), which makes modulation visible. A slider takes arc=, track=, cap=, thickness=, bipolar, labelpos=, value=, live= too.
 
@@ -356,7 +358,7 @@ number count (a readout: an int's or a bool's a whole number; a field's unit=, d
 scope and spectrum take width= and height=. Sixteen displays at most (each live= field counts as one; live= and a shader's inputs take Shared's fields too). An instrument's main-module fields are its newest sounding voice's, 0 while none sounds: a mono engine's state, a held-note count or an LFO that runs on between notes, kept in Shared, shows steadily.
 
 - Cells: a medium knob 60 x 80 px, a small one 52 x 52, a large one 86 x 106 (a knob of size=N about N + 50 tall); a slider 44 x 96; a switch 44 x 80; a vu 112 x 80, a meter 34 x 80; a scope 150 x 80, a spectrum 220 x 80, an envelope 150 x 80, a pad 120 x 136; a keyboard 16 px a white key by 72. A section adds 20 at its top and 10 on its other sides; a bar of pages 42 over them.
-- After it runs, look at it with view_panel (one picture, about 2,000 tokens) and adjust what you see: the layout is what the user judges.
+- After it runs, look at it with view_panel (one picture, about 2,000 tokens) and adjust what you see: the layout is what the user judges. To see it in a state that is not playing now (a light lit, a gear, a needle near its top), view_panel draws one: values sets dials and fields, at the state an offline render reaches.
 - What the plugin cannot use is a note, "panel.gui:12:5: note: ...", which run_program reports with the compile; the rest stands. A parameter no control names comes last, in a section without a title, with a note.
 - Group the controls as a player thinks of the sound, in signal-flow order, left to right: the sources (oscillators, their mix), the filter, the amplifier; then the modulation (an LFO, a modulation envelope), the effects, the output. Two or three rows; past about twenty controls, pages (VOICE, MOD, FX).
 - Short titles ("OSC 1", "FILTER", "AMP ENV") and labels: in a section called LFO, "RATE" and "DEPTH" say more than lforate and lfodepth.
@@ -757,8 +759,9 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
                              + measure::toleranceText(m) + "): " + m.what + "\n";
                 std::string c = replaceAll(kChecking, "%METRICS%", metrics);
                 c = replaceAll(c, "%RENDER%",
-                               instrument ? "notes, velocity, hold_seconds, tail_seconds, dials, the host, the wheels and a scenario"
-                                          : "hold_seconds, tail_seconds, dials, the host and a scenario");
+                               instrument ? "notes, velocity, hold_seconds, tail_seconds, dials, the host, the wheels, a scenario "
+                                            "and a window"
+                                          : "hold_seconds, tail_seconds, dials, the host, a scenario and a window");
                 c = replaceAll(c, "%EXAMPLES%",
                                instrument ? "\"a short pluck\": decay_s at most 1; \"bright\": centroid_hz at least 300 (at C3 "
                                             "a raw saw's about 400, a sine's 131); \"no aliasing\": inharmonic_db at most -70 at "
@@ -773,8 +776,8 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
                                instrument ? "phrase: [{note, at, len, vel}] (up to 256, seconds; len 0.5, vel 0.8 by default; it "
                                             "replaces notes and hold_seconds, held until its last note-off), automate: [{dial, at, "
                                             "to, over}] (up to 32: a float glides to `to` over `over` s, an int or a bool steps), "
-                                            "wheels: [{wheel: mod|bend|pressure|sustain|steering|throttle|brake|clutch|gear, at, value}] (up to "
-                                            "64), host: {bpm, "
+                                            "wheels: [{wheel: mod|bend|pressure|sustain|steering|throttle|brake|clutch|gear|buttons, at, value}] "
+                                            "(up to 64; buttons host->buttons' mask), host: {bpm, "
                                             "stop_at, jump_to_beat, jump_at},"
                                           : "automate: [{dial, at, to, over}] (up to 32, seconds: a float glides to `to` over "
                                             "`over` s, an int or a bool steps), host: {bpm, stop_at, jump_to_beat, jump_at}, input: "

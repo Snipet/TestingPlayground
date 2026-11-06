@@ -93,6 +93,7 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace funkgui
@@ -138,8 +139,36 @@ namespace playground
         std::string why;
         bool gpu = false;                        // drawn by the GPU; false: SoftRaster (`about` says why)
     };
+    // A panel state a picture draws in place of what plays now (view_panel's values and at): plain data, made on the
+    // agent's worker, read on the message thread.
+    struct PictureValue
+    {
+        std::string name;                        // a dial's, a field's (a display's source or name, a live= mark's or
+                                                 // a shader's input: rpm, shared->gear), or in or out
+        float number = 0.0f;                     // a dial's plain value, a field's value, a level's dBFS
+        std::string text;                        // else a dial's option by its name ("TRUCK", "on")
+        bool isText = false;
+    };
+    struct PictureState
+    {
+        std::vector<PictureValue> values;        // drawn in place of what the program gives (over at's state)
+        // at's: an offline render of the program that plays (ChatAgent's view_panel) up to a moment: the meters one a
+        // frame, 60 a second, oldest first, the last at that moment (at most a field scope's 2.5 s); the scopes' last
+        // samples then, oldest first; the dials then (plain, by name); the render in words.
+        static constexpr int kScopeSamples = 2048;   // the scopes' samples a panel reads (DisplayItem::kScopeSamples)
+        std::vector<Meters> frames;
+        std::vector<float> scopeIn, scopeOut;
+        std::vector<std::pair<std::string, float>> dials;
+        Sources sources;                         // the files it rendered: the picture refuses a panel of others
+        std::string about;                       // "1.50 s into an offline render of the program that plays (...)"
+        bool rendered() const noexcept { return !frames.empty(); }
+        bool empty() const noexcept { return values.empty() && frames.empty(); }
+    };
+    // With a `state` (PictureState::empty: none), the picture draws it in place of what plays: the displays (the
+    // fields, the audio's levels and scopes, at's frames played one a frame up to the last, which it shows) and the
+    // dials; `about` then gives what the displays read and the names that are no dial or field of the panel.
     PanelPicture picturePanel(std::span<funkgui::ParamPort* const> ports, EditorPort& port, int width, int height,
-                              bool window, const std::string& page);
+                              bool window, const std::string& page, const PictureState& state = {});
     // What a picture shows (ChatHost::chatPicture): the program's panel, the whole editor, or a netlist's schematic.
     enum class PictureView : uint8_t { panel, window, schematic };
     // A netlist's schematic (view_panel's view "schematic"): the .cir file `file` of the port's draft, reconciled with

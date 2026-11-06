@@ -80,8 +80,8 @@ namespace playground::ui
         // compile's, which say why a shader was not built.
         void registerShaders(const PanelSpec& spec, const Sources& files, const std::string& notes);
         // `shown`: the meters as the displays take them; `live`: they are this interface's program's (else the controls
-        // show no live= mark).
-        void tick(const PanelSpec& spec, const Meters& shown, bool live);
+        // show no live= mark); `liveTaps`: taps whose live= marks show even so (bit t: tap t; a picture's state).
+        void tick(const PanelSpec& spec, const Meters& shown, bool live, uint32_t liveTaps = 0);
 
         // Drawing: the ground, the frames, the labels and the dividers (drawGuiPanel, in the area); the theme the items
         // are drawn in (guiTheme); the scroll bars, in the gutter and under the area (in `th`, the panel's).

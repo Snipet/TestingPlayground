@@ -6,12 +6,19 @@
 //   the waveform   each column's least and greatest sample, left and right (the right drawn too where it differs), and
 //                  the level (RMS over 10 ms, dBFS) at each column
 //   spectrogram    `rows` rows on a log frequency axis from 20 Hz to 20 kHz (or the Nyquist frequency) by `columns`
-//                  columns in time (a 4096-point Blackman-Harris window about each), in dB under the loudest cell,
-//                  down to -120
-//   the spectrum   the held part's average (Welch: 8192-point Blackman-Harris windows, half overlapped), on the same
+//                  columns in time (an 85 ms Blackman-Harris window about each: 4096 points at 48 kHz), in dB under
+//                  the loudest cell, down to -120
+//   the spectrum   the held part's average (Welch: 171 ms Blackman-Harris windows, 8192 points at 48 kHz, half
+//                  overlapped; a part shorter than one, one window over it alone, nothing from outside it), on the same
 //                  axis, in dB under its loudest; with one note, its harmonics' frequencies, to mark
+// The windows are fixed in seconds as nearly as a power of two allows (the 48 kHz sizes scaled by the rate, so 44.1 kHz
+// keeps them): a picture at 96 kHz shows the detail of one at 48 kHz.
 //   a close-up     a few cycles of the held sound (four of the lowest note; an effect's: of its sine, or 10 ms), or the
 //                  stretch from..to that the request asks for
+//
+// A request's window (Request::window, Measure.h: seconds of the render, the tail included, for an effect too, and the
+// render then lasts at least until its end) replaces the held part: the average spectrum and the RMS are over it, the
+// default close-up is at its middle, and the picture shades it (View::windowFrom, windowTo).
 //
 // view() is renderSound() then analyse(): a sound recorded instead of rendered (the capture lane's) is analysed and
 // drawn the same way. A request's scenario (Measure.h) plays as measure_output plays it: an instrument's phrase (the
@@ -52,10 +59,11 @@ namespace playground::measure
         double rate = 48000.0;
         std::size_t length = 0;                   // samples rendered
         double heldUntil = -1.0;                  // seconds: the note-off (an effect's input's end; -1 for none)
+        double windowFrom = -1.0, windowTo = -1.0;   // seconds: the window the spectrum and the RMS are over (-1: none)
         std::string title;                        // what played ("Note 48 (C3) at velocity 0.80, held 1.00 s, ...")
         std::string dials;                        // "cutoff 1200, resonance 0.3"
         uint32_t alerts = 0;
-        double peakDb = -240.0, rmsDb = -240.0;   // the whole render's peak, and the held part's RMS
+        double peakDb = -240.0, rmsDb = -240.0;   // the whole render's peak, and the held part's RMS (the window's)
 
         std::vector<float> minL, maxL, minR, maxR;   // the waveform: per column
         bool stereo = false;                      // left and right differ
@@ -65,9 +73,11 @@ namespace playground::measure
         double loHz = 20.0, hiHz = 20000.0;       // the frequency axis (log)
         std::vector<float> cells;                 // rows x columns, row 0 the lowest: dB under the loudest cell, >= -120
 
-        std::vector<float> spectrum;              // the held part's average, per spectrum column: dB under its loudest
-        float spectrumTop = -300.0f;              // that loudest column, in dB of power (two views' spectra drawn on one
-                                                  // scale: compare's picture)
+        std::vector<float> spectrum;              // the held part's average (the window's), per spectrum column: dB
+                                                  // under its loudest
+        float spectrumTop = -300.0f;              // that loudest column, in dB of power on the 48 kHz frame's scale at
+                                                  // every rate (two views' spectra drawn on one scale: compare's picture,
+                                                  // at two rates too)
         std::vector<double> harmonics;            // one note: its harmonics' Hz below hiHz (at most 40)
 
         std::size_t zoomFrom = 0, zoomTo = 0;     // the close-up's samples

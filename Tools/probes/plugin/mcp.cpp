@@ -6,8 +6,15 @@
 //            ask_planner, each MCP description its first sentence or paragraph (tools.json's size printed, with the
 //            full descriptions for comparison, and compact), a setting's description given once (view_sound's render
 //            settings, set_checks' goals: not again in a check's or tune_dials'); tune_dials' metric a plain string,
-//            set_checks' the metrics' names, and its dials_from (current, snapshot, defaults); read_file's from, lines and
-//            find, edit_file's edits and expected (only its name required), trace's render settings (its dials; the
+//            set_checks' the metrics' names, its dials_from (current, snapshot, defaults), its mode (replace, merge,
+//            remove) and a check's index, nothing required (without checks it lists them); measure_output's,
+//            view_sound's and trace's (current, defaults), described once, in no check's nor tune_dials'; the render
+//            settings' window described on measure_output alone (view_sound, a check, tune_dials), not trace's;
+//            measure_output's spectrum (octave, third, semitone), described, on no other tool; an instrument's base_hz
+//            described on measure_output, undescribed in a check's and tune_dials', on no other tool, none of the effect's;
+//            tune_dials' sweep (numbers, its cap said, its first sentence naming it) and compare's b_rate and
+//            previous_run, each on its own tool alone; read_file's from, lines,
+//            find and regex (nothing required), edit_file's edits, expected and files (a list or a diff; nothing required), trace's render settings (its dials; the
 //            synth's notes); an instrument's notes,
 //            velocity and wheels in the synth's measure_output and
 //            in none of the effect's tools; edit_circuit's description its first sentence, its face "Edit a circuit", its `name`
@@ -549,7 +556,8 @@ PROBE(plugin, mcp)
         const juce::var checkedMetric = setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["metric"];
         P.eq("link.tune_metric_string", tunedMetric["type"].toString() == "string" && !tunedMetric.hasProperty("enum")
                                             && checkedMetric["enum"].size() == static_cast<int>(pg::measure::metrics().size()) ? 1 : 0, 1);
-        // read_file's part (from, lines, find) and edit_file's list and guard (edits, expected; only its name required).
+        // read_file's part (from, lines, find, regex; find with no name searches every file: nothing required) and
+        // edit_file's list, guard and files (edits, expected; files a list or a diff, in place of name: nothing required).
         {
             juce::var readFile, editFile, trace;
             if (const juce::Array<juce::var>* t = tools.getArray())
@@ -567,14 +575,114 @@ PROBE(plugin, mcp)
                                           && trace["properties"].hasProperty("notes") == kInstrument
                                           && !trace["properties"]["dials"].hasProperty("description") ? 1 : 0, 1);
             P.eq("link.file_tools", readFile["properties"].hasProperty("from") && readFile["properties"].hasProperty("lines")
-                                        && readFile["properties"].hasProperty("find") && editFile["properties"].hasProperty("edits")
-                                        && editFile["properties"].hasProperty("expected") && editFile["required"].size() == 1 ? 1 : 0, 1);
+                                        && readFile["properties"].hasProperty("find") && readFile["properties"]["regex"]["type"].toString() == "boolean"
+                                        && !readFile.hasProperty("required") && editFile["properties"].hasProperty("edits")
+                                        && editFile["properties"].hasProperty("expected")
+                                        && editFile["properties"]["files"]["anyOf"].size() == 2 && !editFile.hasProperty("required") ? 1 : 0, 1);
         }
-        // set_checks' dials_from: where a check takes the dials it does not name (its three words, described).
+        // set_checks' dials_from: where a check takes the dials it does not name (its three words, described); its
+        // mode (replace, merge, remove); nothing required (without checks it lists them).
         const juce::var dialsFrom = setChecks["inputSchema"]["properties"]["dials_from"];
+        const juce::var checksMode = setChecks["inputSchema"]["properties"]["mode"];
         P.eq("link.checks_dials_from", dialsFrom["enum"].size() == 3 && dialsFrom["enum"][1].toString() == "snapshot"
                                            && dialsFrom.hasProperty("description")
-                                           && setChecks["inputSchema"]["required"].size() == 1 ? 1 : 0, 1);
+                                           && checksMode["enum"].size() == 3 && checksMode["enum"][1].toString() == "merge"
+                                           && setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"].hasProperty("index")
+                                           && !setChecks["inputSchema"].hasProperty("required") ? 1 : 0, 1);
+        // The one-shot renders' dials_from (current or defaults): described on measure_output alone, in no check's
+        // render settings (set_checks has its own) and not in tune_dials (it tunes from the dials as they are).
+        {
+            juce::var measureOutput, trace;
+            if (const juce::Array<juce::var>* t = tools.getArray())
+                for (const juce::var& tool : *t)
+                {
+                    if (tool["name"].toString() == "measure_output")
+                        measureOutput = tool["inputSchema"]["properties"]["dials_from"];
+                    else if (tool["name"].toString() == "trace")
+                        trace = tool["inputSchema"]["properties"]["dials_from"];
+                }
+            const juce::var seen = viewSound["inputSchema"]["properties"]["dials_from"];
+            const auto twoWords = [](const juce::var& p) {
+                return p["enum"].size() == 2 && p["enum"][0].toString() == "current" && p["enum"][1].toString() == "defaults";
+            };
+            P.eq("link.render_dials_from", twoWords(measureOutput) && twoWords(seen) && twoWords(trace)
+                                               && measureOutput.hasProperty("description") && !seen.hasProperty("description")
+                                               && !trace.hasProperty("description")
+                                               && !setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"].hasProperty("dials_from")
+                                               && !tuneDials["inputSchema"]["properties"].hasProperty("dials_from") ? 1 : 0, 1);
+        }
+        // The render settings' window: described on measure_output, the first that has it, and in view_sound, a check's
+        // settings and tune_dials undescribed (dropRepeated: no number in its words); not trace's.
+        {
+            juce::var measureOutput, trace;
+            if (const juce::Array<juce::var>* t = tools.getArray())
+                for (const juce::var& tool : *t)
+                {
+                    if (tool["name"].toString() == "measure_output")
+                        measureOutput = tool["inputSchema"]["properties"]["window"];
+                    else if (tool["name"].toString() == "trace")
+                        trace = tool["inputSchema"];
+                }
+            const juce::var seen = viewSound["inputSchema"]["properties"]["window"];
+            const juce::var checked = setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["window"];
+            const juce::var tuned = tuneDials["inputSchema"]["properties"]["window"];
+            P.eq("link.render_window", measureOutput["type"].toString() == "object" && measureOutput.hasProperty("description")
+                                           && seen["type"].toString() == "object" && !seen.hasProperty("description")
+                                           && checked["type"].toString() == "object" && !checked.hasProperty("description")
+                                           && tuned["type"].toString() == "object" && !tuned.hasProperty("description")
+                                           && !trace["properties"].hasProperty("window") ? 1 : 0, 1);
+            // measure_output's spectrum (its report's bands): its three widths, described, and on no other tool.
+            juce::var spectrum;
+            int elsewhere = 0;
+            if (const juce::Array<juce::var>* t = tools.getArray())
+                for (const juce::var& tool : *t)
+                {
+                    if (tool["name"].toString() == "measure_output")
+                        spectrum = tool["inputSchema"]["properties"]["spectrum"];
+                    else
+                        elsewhere += tool["inputSchema"]["properties"].hasProperty("spectrum") ? 1 : 0;
+                }
+            const juce::Array<juce::var>* widths = spectrum["enum"].getArray();
+            P.eq("link.spectrum", widths != nullptr && widths->size() == 3 && (*widths)[0].toString() == "octave"
+                                      && (*widths)[1].toString() == "third" && (*widths)[2].toString() == "semitone"
+                                      && spectrum.hasProperty("description") && elsewhere == 0 ? 1 : 0, 1);
+            // An instrument's base_hz (off_order_db's): described on measure_output, undescribed in a check's settings and
+            // tune_dials (dropRepeated), on no other tool; the effect's tools have none (its orders are its sine's).
+            juce::var base;
+            int bases = 0;
+            if (const juce::Array<juce::var>* t = tools.getArray())
+                for (const juce::var& tool : *t)
+                {
+                    if (tool["name"].toString() == "measure_output")
+                        base = tool["inputSchema"]["properties"]["base_hz"];
+                    bases += tool["inputSchema"]["properties"].hasProperty("base_hz") ? 1 : 0;
+                }
+            const juce::var checkedBase = setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["base_hz"];
+            const bool baseOk = kInstrument ? base["type"].toString() == "number" && base.hasProperty("description")
+                                                  && checkedBase["type"].toString() == "number" && !checkedBase.hasProperty("description")
+                                                  && !tuneDials["inputSchema"]["properties"]["base_hz"].hasProperty("description")
+                                                  && !viewSound["inputSchema"]["properties"].hasProperty("base_hz") && bases == 2
+                                            : bases == 0 && !checkedBase.isObject();
+            P.eq("link.base_hz", baseOk ? 1 : 0, 1);
+            // tune_dials' sweep (a list of numbers, its cap in its words; the first sentence names it) and compare's b_rate
+            // (a number) and previous_run (in a's words), each on its own tool alone.
+            juce::var compareProps;
+            int sweeps = 0, rates = 0;
+            if (const juce::Array<juce::var>* t = tools.getArray())
+                for (const juce::var& tool : *t)
+                {
+                    if (tool["name"].toString() == "compare")
+                        compareProps = tool["inputSchema"]["properties"];
+                    sweeps += tool["inputSchema"]["properties"].hasProperty("sweep") ? 1 : 0;
+                    rates += tool["inputSchema"]["properties"].hasProperty("b_rate") ? 1 : 0;
+                }
+            const juce::var sweep = tuneDials["inputSchema"]["properties"]["sweep"];
+            P.eq("link.sweep", sweep["type"].toString() == "array" && sweep["items"]["type"].toString() == "number"
+                                   && sweep["description"].toString().contains("32") && sweeps == 1
+                                   && tuneDials["description"].toString().contains("or sweep one dial over values") ? 1 : 0, 1);
+            P.eq("link.compare_rate", compareProps["b_rate"]["type"].toString() == "number" && rates == 1
+                                          && compareProps["a"]["description"].toString().contains("previous_run") ? 1 : 0, 1);
+        }
         // An instrument's render settings (its notes, velocity and wheels) in an instrument's tools only: measure_output
         // has them in the synth, and no tool of the effect's lists them.
         {
@@ -985,10 +1093,12 @@ PROBE(plugin, mcp)
                 for (const juce::var& tool : *t)
                 {
                     titled = titled && tool["title"].toString().isNotEmpty() && tool["title"].toString() != tool["name"].toString();
-                    // the annotations: no title (the tool's own), a read-only tool no destructiveHint, never openWorld
+                    // the annotations: no title (the tool's own), a read-only tool no destructiveHint, never openWorld,
+                    // a writing tool no readOnlyHint (false is MCP's default)
                     const juce::var hints = tool["annotations"];
                     lean = lean && !hints.hasProperty("title") && hints.hasProperty("openWorldHint") && !static_cast<bool>(hints["openWorldHint"])
-                        && (static_cast<bool>(hints["readOnlyHint"]) ? !hints.hasProperty("destructiveHint") : hints.hasProperty("destructiveHint"));
+                        && (static_cast<bool>(hints["readOnlyHint"]) ? !hints.hasProperty("destructiveHint") : hints.hasProperty("destructiveHint"))
+                        && (static_cast<bool>(hints["readOnlyHint"]) || !hints.hasProperty("readOnlyHint"));
                     if (tool["name"].toString() == "measure_output")
                         measure = tool;
                     if (tool["name"].toString() == "write_file")

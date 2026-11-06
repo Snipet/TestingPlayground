@@ -20,7 +20,10 @@
 //   SHADER   a program's folder opened from disk (the .fm, the .gui, the .sc; its dials declared, a `param enum` an int
 //            dial as FMinus makes it, which a menu of its names takes; its fields listed for the displays but those no
 //            display can show, an enumeration's an int as FMinus makes it, Shared's through its pointer, shared->tone):
-//            the shader drawn by the GPU in its colour, not FunkGui's striped placeholder (gui.sandbox.shader.png)
+//            the shader drawn by the GPU in its colour, not FunkGui's striped placeholder (gui.sandbox.shader.png);
+//            values naming the field the shader reads (an input with no display of its own) changes its colour
+//   VALUES   a render's values naming fields (a main module's, Shared's) draws them in place of the demo's: only the
+//            numbers' cells change (gui.sandbox.values.png); the text says which, and names a name that is none
 //   RESTART  the helper killed between calls: the next call starts it again, says so, with the panel as it was (the
 //            same picture, at the last render's size)
 //   NONE     apply with no instance open gives the .gui's text back, saying how the user can use it, by number (the
@@ -30,9 +33,9 @@
 //            renders, in the user's theme, what view_panel's picture of it shows, pixel for pixel but the displays and
 //            the live= marks (the sandbox's demo values against the processor's silence), within a small bound
 //            (gui.sandbox.example.png, .example.view.png); reading the instance leaves the plugin's record of what
-//            MCP was told alone (the user's change still starts the next result)
-//   APPLY    an edit applied: panel.gui written into the processor's draft, run, its interface the sandbox's; the
-//            user's change since the last MCP call said first
+//            MCP was told alone (the host's change still starts the next result)
+//   APPLY    an edit applied: panel.gui written into the processor's draft, run, its interface the sandbox's; a dial
+//            the host moved since the last MCP call said first
 //   CIRCUIT  a program holding screamer.cir's module (an Effect's Screamer amp[2], a Voice's one), never calling its
 //            set(), with a panel.gui of its dials, playing in a processor: the sandbox opened from that instance lists
 //            the same dials, the circuit's (drive, tone, level) by the compiled program's names and defaults, and
@@ -504,9 +507,10 @@ PROBE(plugin, sandbox)
         const std::filesystem::path folder = std::filesystem::path(dir) / "program";
         std::filesystem::create_directories(folder);
         std::ofstream(folder / pg::kProgramName) << program();
-        std::ofstream(folder / "panel.gui") << "section \"GLOW\" {\n    shader \"glow.sc\" inputs=\"glow\" width=200 height=100\n    knob glow\n    knob level\n"
+        std::ofstream(folder / "panel.gui") << "section \"GLOW\" {\n    shader \"glow.sc\" inputs=\"glow shine\" width=200 height=100\n    knob glow\n    knob level\n"
                                                 "    menu shape \"RISING\" \"FALLING\"\n}\n";
-        std::ofstream(folder / "glow.sc") << "void main()\n{\n    gl_FragColor = vec4(0.9, 0.1, 0.6, 1.0);\n}\n";
+        std::ofstream(folder / "glow.sc") << "void main()\n{\n    gl_FragColor = mix(vec4(0.9, 0.1, 0.6, 1.0), vec4(0.1, 0.8, 0.2, 1.0), "
+                                             "step(100.0, in1));\n}\n";
         const Result r = s.sandbox(object({ { "action", "open" }, { "from", "file" }, { "path", juce::String(folder.string()) } }));
         std::printf("folder:\n%s", r.text.c_str());
         shaderNumber = numberIn(r.text);
@@ -535,6 +539,55 @@ PROBE(plugin, sandbox)
         P.eq("shader.gpu", found && has(pic.text, "drawn by the GPU") && n > 0 ? 1 : 0, 1);
         P.ge("shader.drawn", magenta, n * 9 / 10);
         P.eq("shader.no_placeholder", placeholder, 0);
+        // values reach a shader's input: shine, which no display shows, at 50 (magenta) and at 500 (green).
+        const auto colours = [&](double shine, int& pink, int& green) {
+            const Result v = s.sandbox(object({ { "action", "render" }, { "width", 480 }, { "height", 200 }, { "detail", "high" },
+                                                { "values", object({ { "shine", shine } }) } }));
+            const juce::Image im = decode(v.png);
+            pink = green = 0;
+            if (found && im.isValid())
+                for (int py = static_cast<int>((y + 4) * pg::sandbox::kDpi); py < static_cast<int>((y + h - 4) * pg::sandbox::kDpi); ++py)
+                    for (int px = static_cast<int>((x + 4) * pg::sandbox::kDpi); px < static_cast<int>((x + w - 4) * pg::sandbox::kDpi); ++px)
+                    {
+                        const juce::Colour c = im.getPixelAt(px, py);
+                        pink += c.getRed() > 200 && c.getGreen() < 60 && c.getBlue() > 120 ? 1 : 0;
+                        green += c.getRed() < 60 && c.getGreen() > 160 && c.getBlue() < 90 ? 1 : 0;
+                    }
+            return v.text;
+        };
+        int pinkLow = 0, greenLow = 0, pinkHigh = 0, greenHigh = 0;
+        colours(50.0, pinkLow, greenLow);
+        const std::string highText = colours(500.0, pinkHigh, greenHigh);
+        std::printf("shader cell with shine 50: %d magenta, %d green; with 500: %d magenta, %d green\n", pinkLow, greenLow, pinkHigh,
+                    greenHigh);
+        P.eq("shader.value_said", has(highText, "shine (as asked)") ? 1 : 0, 1);
+        P.ge("shader.value_low", pinkLow, n * 9 / 10);
+        P.ge("shader.value_high", greenHigh, n * 9 / 10);
+
+        // values names fields too (as view_panel's): a main module's and Shared's, drawn in place of the demo's, only
+        // their readouts changing; a name that is no dial or field said; the .gui put back after.
+        const std::string withNumbers = "    knob level\n    number shine label=\"SHINE\"\n    number shared->tone label=\"TONE\"\n";
+        const Result e = s.sandbox(object({ { "action", "edit" },
+                                            { "edits", juce::Array<juce::var>{ object({ { "old_text", "    knob level\n" },
+                                                                                        { "new_text", juce::String(withNumbers) } }) } } }));
+        float sx = 0, sy = 0, sw = 0, sh = 0, tx = 0, ty = 0, tw = 0, th = 0;
+        const bool cells = rectOf(e.text, "number shine", sx, sy, sw, sh) && rectOf(e.text, "number shared->tone", tx, ty, tw, th);
+        const Result demo = s.sandbox(object({ { "action", "render" }, { "width", 480 }, { "height", 200 }, { "detail", "high" } }));
+        const Result asked = s.sandbox(object({ { "action", "render" }, { "width", 480 }, { "height", 200 }, { "detail", "high" },
+                                               { "values", object({ { "shine", 12.5 }, { "shared->tone", -3.0 }, { "zzz", 1 } }) } }));
+        std::printf("fields asked: %s", asked.text.c_str());
+        writeBytes(probe::outPath("gui.sandbox.values.png"), asked.png);
+        const Diff numbers = compare(decode(demo.png), decode(asked.png), { pixels(sx, sy, sw, sh, 2), pixels(tx, ty, tw, th, 2) }, 4);
+        std::printf("fields asked: %d pixels differ in the numbers' cells, %d outside (largest %d)\n", numbers.inside, numbers.outside,
+                    numbers.largestOutside);
+        P.eq("values.fields_said", cells && !asked.error && has(asked.text, "the displays show demo values but shine, shared->tone (as asked).")
+                                       && has(asked.text, "There is no dial or field zzz.") ? 1 : 0, 1);
+        P.ge("values.fields_drawn", numbers.inside, 50);
+        P.eq("values.fields_alone", numbers.outside, 0);
+        const Result back = s.sandbox(object({ { "action", "edit" },
+                                               { "edits", juce::Array<juce::var>{ object({ { "old_text", juce::String(withNumbers) },
+                                                                                           { "new_text", "    knob level\n" } }) } } }));
+        P.eq("values.put_back", !back.error ? 1 : 0, 1);
     }
 
     // ---- RESTART: the helper killed between calls ------------------------------------------------------------------------
@@ -616,7 +669,7 @@ PROBE(plugin, sandbox)
                 for (const juce::var& b : *blocks)
                     hinted += b["text"].toString().toStdString();
             std::printf("the next MCP result after the sandbox's read: %s\n", hinted.substr(0, hinted.find('\n')).c_str());
-            P.eq("peek.cursor_kept", hinted.rfind("(The user changed 1 thing since the last MCP call here", 0) == 0 ? 1 : 0, 1);
+            P.eq("peek.cursor_kept", hinted.rfind("(1 thing changed since the last MCP call here: the host moved ", 0) == 0 ? 1 : 0, 1);
         }
         const int exampleNumber = numberIn(opened2.text);
         const std::string theme = funkgui::UiPreferences::get().theme() == 1 ? "paper" : "graphite";
@@ -684,7 +737,7 @@ PROBE(plugin, sandbox)
             labelled = labelled || (n.kind == pg::GuiKind::label && n.text == "APPLIED HERE");
         P.eq("apply.written", !a.error && has(a.text, "wrote panel.gui into its program") && has(written, "label \"APPLIED HERE\"") ? 1 : 0, 1);
         P.eq("apply.runs", port.status().ok && labelled ? 1 : 0, 1);
-        P.eq("apply.hint", a.text.rfind("(The user changed 1 thing since the last MCP call here", 0) == 0 ? 1 : 0, 1);
+        P.eq("apply.hint", a.text.rfind("(1 thing changed since the last MCP call here: the host moved ", 0) == 0 ? 1 : 0, 1);
         s.sandbox(object({ { "action", "close" }, { "sandbox", exampleNumber } }), &processor);
     }
 

@@ -1,9 +1,12 @@
 // Source/plugin/ChatCompare.cpp: the chat's compare (ChatAgent.h): two of the program's sources rendered offline
-// alike and compared (dsp/Compare.h), read-only. A side is the editor's files, what plays, a saved version of the
-// project open (or another project's), a preset of it or a dial setting over the editor's files, or the user's
-// recording ("capture", ChatScenario.h); each renders with its own dials (a version's, a preset's) unless `dials` is
-// "current" (a preset's and a {dials} side's still apply). Its result is at most twelve lines, and a picture when
-// asked (SoundPicture.h's drawPair).
+// alike and compared (dsp/Compare.h), read-only. A side is the editor's files, what plays, what played before the last
+// run that changed it (previous_run, ChatHost::chatPrevious), a saved version of the project open (or another
+// project's), a preset of it or a dial setting over the editor's files, or the user's recording ("capture",
+// ChatScenario.h); each renders with its own dials (a version's, a preset's) over the plugin's, unless `dials` is
+// "current" (the plugin's; a preset's and a {dials} side's still apply) or "defaults" (its own over the program's
+// defaults, the plugin's aside). `b_rate` renders B at another rate than A (a rate check, both rates 40 kHz or more:
+// Compare.h compares the levels, bands and metrics then, not samples; never a recording, whose events are at its own
+// rate). Its result is at most twelve lines, and a picture when asked (SoundPicture.h's drawPair).
 #include "plugin/ChatAgent.h"
 
 #include "plugin/ChatScenario.h"
@@ -67,7 +70,8 @@ namespace playground
 
         bool sideOf(const juce::var& v, const char* which, ChatHost& host, Side& out, std::string& why)
         {
-            const std::string forms = "editor, playing, version:N, project:Name@N, preset:Name, capture, or {\"dials\": {...}}";
+            const std::string forms = "editor, playing, previous_run, version:N, project:Name@N, preset:Name, capture, or "
+                                      "{\"dials\": {...}}";
             if (const auto* o = v.getDynamicObject(); o != nullptr)
             {
                 const juce::var dials = v.getProperty("dials", juce::var());
@@ -103,6 +107,18 @@ namespace playground
                 if (out.files.empty())
                 {
                     why = "Nothing plays yet (run_program plays the editor's files).";
+                    return false;
+                }
+                return true;
+            }
+            if (s == "previous_run")
+            {
+                out.files = host.chatPrevious();
+                out.words = "what played before the last run";
+                if (out.files.empty())
+                {
+                    why = "Nothing played before the last run: no run has changed the program since the plugin opened or "
+                          "loaded its session (previous_run is the program a run replaced).";
                     return false;
                 }
                 return true;
@@ -215,12 +231,13 @@ namespace playground
     juce::var ChatAgent::compareDefinition()
     {
         juce::var props = claude::object(
-            { { "a", claude::object({ { "description", "editor, playing, version:N, project:Name@N, preset:Name, capture or "
-                                                       "{dials}" } }) },
+            { { "a", claude::object({ { "description", "editor, playing, previous_run, version:N, project:Name@N, "
+                                                       "preset:Name, capture or {dials}" } }) },
               { "b", claude::object({ { "description", "Like a" } }) },
+              { "b_rate", claude::object({ { "type", "number" } }) },
               { "scenario", scenario::schema() },
               { "try_edits", scenario::trialSchema() },
-              { "dials", claude::object({ { "enum", juce::Array<juce::var>{ "own", "current" } } }) },
+              { "dials", claude::object({ { "enum", juce::Array<juce::var>{ "own", "current", "defaults" } } }) },
               { "picture", claude::object({ { "type", "boolean" } }) },
               { "detail", claude::object({ { "type", "boolean" } }) } });
         juce::var schema = claude::object({ { "type", "object" }, { "properties", props } });
@@ -231,11 +248,16 @@ namespace playground
                 "Compare two versions of the sound rendered offline alike: identical bits, or how and where they differ "
                 "in level, delay, bands, metrics and code. It changes nothing.\n\n"
                 "a, b: playing is the running program's own code (not the frozen copy it plays once its dials hold still); "
-                "version:N is the open project's (one not kept lists those kept); project:Name@N, @N left out its newest; "
-                "preset:Name and {dials: {...}} lay dials over the editor's files; capture is the user's recording. dials: "
-                "own (each side's saved values, the default) or current (the plugin's; a preset's and {dials} still "
-                "apply). An effect's input: the scenario's, else noise. try_edits apply to b; detail adds the difference "
-                "over time; picture draws both (about 1,000 tokens)." },
+                "previous_run what played before the last run that changed it ({a: \"previous_run\", b: \"playing\"}: "
+                "what that run changed); version:N is the open project's (one not kept lists those kept); project:Name@N, "
+                "@N left out its newest; preset:Name and {dials: {...}} lay dials over the editor's files; capture is the "
+                "user's recording. dials: own (each side's saved values over the plugin's, the default), current (the "
+                "plugin's; a preset's and {dials} still apply) or defaults (each side's own over the program's defaults). "
+                "An effect's input: the scenario's, else noise. try_edits apply to b; detail adds the difference over "
+                "time; picture draws both (about 1,000 tokens). b_rate renders b at another rate (40000 to 192000 Hz; "
+                "both \"editor\" at 96000: does it sound the same?), compared by the levels, octave bands and metrics "
+                "(those the rate moves by definition aside), not sample by sample; an effect's input then the sweep; "
+                "never with the recording." },
               { "eager_input_streaming", true },
               { "input_schema", schema } });
     }
@@ -260,6 +282,9 @@ namespace playground
             return done(why, true);
         if (a.capture && b.capture)
             return done("a and b are both the recording: compare it with a program (editor, playing, version:N, ...).", true);
+        if (input.hasProperty("window"))
+            return done("compare takes no window: it compares the whole renders (measure_output, view_sound, a check and "
+                        "tune_dials measure one).", true);
         measure::Request req;
         if (!scenario::read(input, req, &why))
             return done(why, true);
@@ -274,14 +299,40 @@ namespace playground
             return done(why, true);
         if (a.capture || b.capture)
             req.tailSeconds = 0.0f;                          // as long as the recording, no more
-        const bool current = input.getProperty("dials", juce::var()).toString() == "current";
+        // B at another rate (a rate check): both rates 40 kHz or more (Compare.h), and never with the recording, whose
+        // events and blocks are at its own rate. b_rate at A's own rate is the ordinary comparison.
+        double rateB = req.rate;
+        if (const juce::var r = input.getProperty("b_rate", juce::var()); !r.isVoid() && !r.isUndefined())
+        {
+            if (!(r.isDouble() || r.isInt() || r.isInt64()) || !(static_cast<double>(r) >= scenario::kMinRate)
+                || !(static_cast<double>(r) <= scenario::kMaxRate))
+                return done("b_rate is B's rate in Hz, 8000 to 192000 (40000 or more when it differs from A's).", true);
+            rateB = static_cast<double>(r);
+        }
+        if (rateB != req.rate)
+        {
+            if (std::min(rateB, req.rate) < measure::kMinRateAcross)
+                return done("At two rates both are 40000 Hz or more, so that both hold 20 Hz to 20 kHz: A renders at "
+                            + number(req.rate) + " Hz and b_rate is " + number(rateB) + ".", true);
+            if (a.capture || b.capture || req.fromCapture)
+                return done("b_rate takes no recording: what played, and its events, are at its own rate (compare two "
+                            "programs, or the same one twice, at two rates).", true);
+            if (req.signal == static_cast<int>(measure::ViewInput::noise) || req.signal == static_cast<int>(measure::ViewInput::impulse))
+                return done("b_rate takes the sweep (its input at two rates), a sine or silence: white noise's and an "
+                            "impulse's level per hertz change with the rate, so every band would differ.", true);
+        }
+        const juce::String which = input.getProperty("dials", juce::var()).toString();
+        if (which.isNotEmpty() && which != "own" && which != "current" && which != "defaults")
+            return done("dials is own (each side's saved values over the plugin's), current (the plugin's) or defaults (each "
+                        "side's own over the program's defaults).", true);
+        const bool current = which == "current", defaults = which == "defaults";
         measure::CompareSide A, B;
-        const std::map<std::string, float> now = currentDials();
+        const std::map<std::string, float> now = defaults ? std::map<std::string, float>{} : currentDials();
         for (const auto& [side, from] : { std::pair<measure::CompareSide*, Side*>{ &A, &a }, { &B, &b } })
         {
             side->files = from->files;
             side->request = req;
-            side->request.current = now;
+            side->request.current = now;                 // none: the dials no side sets at the program's defaults
             if (!current || from->given)                 // over the scenario's (a recording's, at its start)
                 for (const auto& [name, x] : from->dials)
                     side->request.dials[name] = x;
@@ -291,6 +342,7 @@ namespace playground
                 side->recordedR = &recording.r;
             }
         }
+        B.request.rate = rateB;
         int trials = 0;
         if (input.hasProperty("try_edits") && b.capture)
             return done("try_edits apply to b, which is the recording: put the program in b.", true);
@@ -303,10 +355,11 @@ namespace playground
             return done(scenario::trialLine(trials) + c.error, true);
 
         const measure::Sound& rendered = a.capture ? c.b : c.a;
-        std::string out = scenario::trialLine(trials);
+        std::string out = scenario::trialLine(trials) + scenario::dialsLine(defaults && !req.fromCapture);
         out += "Compared offline (nothing that plays changed): A is " + a.words + "; B is " + b.words + (trials > 0 ? " with the trial edits" : "")
-             + ". Both: " + rendered.title + ", at " + number(c.rate) + " Hz in blocks of "
-             + (req.blocks.empty() ? std::to_string(req.block) : std::string("the recording's sizes")) + ".\n";
+             + ". Both: " + rendered.title + ", "
+             + (c.twoRates() ? "A at " + number(c.rate) + " Hz and B at " + number(c.rateB) + " Hz," : "at " + number(c.rate) + " Hz")
+             + " in blocks of " + (req.blocks.empty() ? std::to_string(req.block) : std::string("the recording's sizes")) + ".\n";
         if (a.playing || b.playing)
             out += "(\"playing\" is the running program's own code; once its dials hold still the plugin plays a frozen copy "
                    "whose last bits differ, which this does not render.)\n";
@@ -347,13 +400,14 @@ namespace playground
         setActivity("Drawing the comparison");
         const measure::ViewRequest shape = soundpicture::request();
         const measure::View va = measure::analyse(c.a.l, c.a.r, c.rate, c.a.heldUntil, shape, c.a.cycleHz, false, c.a.fromStart);
-        const measure::View vb = measure::analyse(c.b.l, c.b.r, c.rate, c.b.heldUntil, shape, c.b.cycleHz, false, c.b.fromStart);
+        const measure::View vb = measure::analyse(c.b.l, c.b.r, c.rateB, c.b.heldUntil, shape, c.b.cycleHz, false, c.b.fromStart);
         const std::vector<double> bands(c.bandsDb.begin(), c.bandsDb.end());
         const soundpicture::Drawn d = soundpicture::drawPair(
-            va, vb, differenceLevel(c.a, c.b, shape.columns), bands, "A: " + a.words + "   B: " + b.words,
-            "The picture: the levels over time (RMS over 10 ms, dBFS, A blue, B orange) and their difference's level in pink "
-            "(no line where they are the same), then both average spectra on one scale (dB under the louder), and the octave "
-            "bands' differences along its foot.");
+            va, vb, c.twoRates() ? std::vector<float>(static_cast<std::size_t>(shape.columns), -240.0f) : differenceLevel(c.a, c.b, shape.columns),
+            bands, "A: " + a.words + "   B: " + b.words,
+            std::string("The picture: the levels over time (RMS over 10 ms, dBFS, A blue, B orange) and their difference's level in pink ")
+                + (c.twoRates() ? "(none at two rates: no sample lines up)" : "(no line where they are the same)")
+                + ", then both average spectra on one scale (dB under the louder), and the octave bands' differences along its foot.");
         juce::Array<juce::var> content;
         content.add(claude::object({ { "type", "image" },
                                      { "source", claude::object({ { "type", "base64" },

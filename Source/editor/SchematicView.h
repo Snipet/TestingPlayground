@@ -11,7 +11,8 @@
 // at all; the session's file views (EditorPort::fileViews) are the Panel's to keep.
 //
 //   toolbar      Select, Ground (G), Label (N); R C L D P X S, each its symbol; More (A: E, Shift-G, O, V, I, Shift-P,
-//                Input, Output); at the right Undo, Redo (the tab's own), Tidy, -, the zoom (a click fits), +
+//                Input, Output); at the right Undo, Redo (as the Netlist view's Cmd-Z: Hooks::step), Tidy, -, the zoom (a
+//                click fits), +
 //   canvas       the drawing (SchematicDraw.h) on a grid of one pin pitch, 10 px at 100 % (25 % to 400 %): parts, wires,
 //                flags, names and values, the problems' badges, the structural marks, the ghost of a part carried,
 //                the wire being drawn, the parts being moved with their wires rubber-banded, the marquee, the field
@@ -166,6 +167,7 @@ namespace playground::ui
             std::function<std::vector<Diagnostic>()> problems;     // the tab's messages, where its decorations are now
             std::function<bool()> played;                          // a file of the program #includes this one
             std::function<void()> persist;                         // the user changed the view, its zoom or its pan
+            std::function<bool(bool redo)> step;                   // undo (redo) as the files' tabs do; else the editor's
         };
 
         explicit SchematicView(Hooks hooks);

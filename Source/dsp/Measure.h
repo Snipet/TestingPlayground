@@ -9,25 +9,60 @@
 // measures as often as asked, each render from the program as new (Engine::restart: the same as a fresh compile's).
 //
 //   an instrument  the notes (default one, C3) held for holdSeconds at `velocity`, released, then tailSeconds more:
-//                  the held level (peak, RMS, DC, the stereo correlation and balance), the spectrum's strongest
-//                  partials and its centroid, the pitch (the strongest partial near the expected note), the largest
-//                  step between two samples and the clicks (clicks(), trace's rule), the envelope (when it reaches its
-//                  loudest, and when it falls 60 dB from there), when the sound falls 60 dB below its held level
-//                  after the release and when the last voice ended (process returned false), the output guard's
-//                  alerts, and the CPU time (the notes while held, and sixteen voices at once: a render of sixteen
-//                  notes held, the least of two). With one note, the strongest component that is no harmonic of it
+//                  the held level (peak, RMS, DC, the stereo correlation and balance), its loudness (BS.1770's
+//                  integrated, and the RMS A-weighted), the spectrum's strongest partials and its centroid, what is off
+//                  the orders of a fixed base (base_hz, else the expected pitch: the share of the power, the strongest
+//                  lines off them, the half- and third-orders), how the spectrum's shape moves from frame to frame
+//                  (wobble), the pitch (the strongest partial near the expected note, stretch by stretch: stretches(),
+//                  each against the lowest key held there, bent by the pitch wheel then; the report names
+//                  the sound unpitched instead when the lowest note and a whole tone up, each alone for 0.6 s with none
+//                  of the scenario's moves, do not measure a whole tone apart, and then gives no Inharmonic words), the
+//                  largest step between two samples and the clicks (clicks(), trace's rule), the
+//                  envelope (when it reaches its loudest, and when it falls 60 dB from there), when the sound falls
+//                  60 dB below its held level after the release and when the last voice ended (process returned
+//                  false), the output guard's alerts, and the CPU time (the notes while held, and sixteen voices at
+//                  once: a render of sixteen notes held, the least of two; in words only when more than one voice
+//                  sounds there). With one note, the strongest component (a peak) that is no harmonic of it
 //                  (aliasing, or the sound's own: detuning, FM, noise), and a chord (the note, a third, a fifth and an
 //                  octave above) is rendered too, for the summed level.
 //   an effect      a sine of 220 Hz at -12 dBFS and noise at -18 dBFS RMS, each for holdSeconds, an impulse followed
 //                  by tailSeconds of silence, and silence alone: the output's level and the gain for each, the sine's
-//                  partials (what the effect adds) and its THD+N, the noise's spectral centroid in and out, the impulse
-//                  response's peak, delay and decay (60 dB), what comes out of silence, the alerts and the CPU time.
+//                  partials (what the effect adds), its THD+N and what is off its orders (220 Hz's multiples), the
+//                  noise's spectral centroid in and out and its loudness out and in, the impulse response's peak, delay
+//                  and decay (60 dB), what comes out of silence, the alerts and the CPU time. For wobble_db alone (its
+//                  steps, alerts and CPU time are not counted), a steady tone (steadyTone: partials every 10 Hz, as flat
+//                  as the noise, repeating every 0.1 s) at -18 dBFS RMS for holdSeconds: how its output's shape moves.
 //
 // Every metric is measured over a span the metric's words (MetricInfo::what) name, and the same at every sample rate.
 // The held part (heldSpans) is an instrument's notes from kSettleSeconds after each note-on (half the note when it is
 // shorter) to its note-off, a phrase's notes joined where they overlap; an effect's test signal from kSettleSeconds
 // after it starts to its end. Its levels are over all of it, and its spectra Welch's average over all of it (Spectrum:
-// frames fixed in seconds, so a frame holds the same stretch of sound at 48 and at 192 kHz).
+// frames fixed in seconds, so a frame holds the same stretch of sound at 48 and at 192 kHz; a span shorter than a frame
+// is one frame of it, so a note held under kSettleSeconds + kPitchSeconds reads its pitch in a shorter frame, and one
+// whose frame cannot part what a metric reads leaves it unmeasured, saying how long a note it takes: the pitch, and
+// inharmonic_db).
+//
+// A request's window (Window: the render settings' `window`, from and to in seconds) replaces the held part, for a
+// part of the sound that no note holds (a key that is a control, a sound that goes on after its note-off, the stretch
+// after a dial moves); at least kMinWindowSeconds long (the tools refuse a shorter one). An instrument's is in seconds
+// of its render, which then lasts at least until the window's end: every metric "while held" and peak_db measure it
+// (the CPU's too: the calls that render it), and the others keep their own spans as they are without it (attack_s from
+// the first note-on over the notes, release_s from the last note-off under the notes' held RMS, the whole render's
+// over the length it has without the window (Timeline::plain), the chord's and the sixteen voices' own renders). An
+// effect's is in seconds of the sine's, the noise's and the steady tone's renders (each from the program as new, the
+// signal from 0), cut at their end (hold_seconds): their metrics measure it, sine_peak_db too; the impulse's,
+// silence's and the whole renders' keep theirs. A window that holds too little of what a metric needs (an effect's
+// that starts after hold_seconds, or less than kMinWindowSeconds before it) leaves it unmeasured, saying why
+// (Result::unmeasured), as a held part (or a window) leaves wobble_db with fewer than three of its frames, and
+// off_order_db with no frame or a base under twice an order's zone.
+// view_sound's average spectrum and RMS are over it (SoundView.h).
+//
+// The report ends with the values measured, name=value in the metrics' order ("Metrics: peak_db=-9.5 rms_db=-17.2 ..."),
+// in the names checks use. A request's `spectrum` adds band levels as data (bandsOf: an octave's ten, a third's
+// thirty-one or a semitone's 120, the averaged spectrum's points), of both channels' power over the held part (or the
+// window) in Hann frames (bandSpectrum: kBandSeconds, a semitone's kNoteBandSeconds, each at most the part's length):
+// an instrument's levels (dBFS), an effect's noise's (and its own input's) gain in each, out against in. The line names
+// its frames and the band below which a tone spreads over the bands beside it (sharpFrom).
 //
 // Off the audio thread only (it compiles and allocates). Deterministic: the same files and request give the same
 // report and numbers but for the CPU times, which are the rendering thread's own time (not the wall clock's) in the
@@ -54,7 +89,9 @@
 #include <cstdint>
 #include <utility>
 
+#include <array>
 #include <complex>
+#include <limits>
 #include <map>
 #include <memory>
 #include <set>
@@ -104,8 +141,12 @@ namespace playground::measure
         brake,
         clutch,
         gear,                                     // -1 reverse, 0 neutral, 1..7 (rounded)
+        buttons,                                  // its buttons (host->buttons): the mask, a bit a button, 0..kMaxButtons,
+                                                  // sent as the wheel sends it (wheelcc 21 to 24: a part's control change
+                                                  // when its 7 bits change; the start key's note while bit 17 is down)
     };
-    inline constexpr int kWheelKinds = static_cast<int>(Wheel::gear) + 1;
+    inline constexpr int kWheelKinds = static_cast<int>(Wheel::buttons) + 1;
+    inline constexpr int kMaxButtons = (1 << 24) - 1;     // bits 0 to 23, each mask a float holds exactly
 
     struct WheelMove
     {
@@ -129,6 +170,22 @@ namespace playground::measure
     {
         std::vector<float> l, r;
     };
+
+    // Band levels as data in the report (Request::spectrum; bandsOf, below): an octave's, a third's, a semitone's.
+    enum class Bands : uint8_t { none, octave, third, semitone };
+
+    // The seconds a request's metrics measure, from the render's start (above): none while `to` is not after `from`.
+    inline constexpr double kMaxWindowSeconds = 2.0 * kMaxPlaySeconds;   // the moves' end and the longest tail
+    inline constexpr double kMinWindowSeconds = 0.01;                    // the least a window holds (16 samples or more
+                                                                         // at any rate: a spectrum's least frame)
+    struct Window
+    {
+        double from = 0.0, to = 0.0;
+        bool set() const { return to > from; }
+        bool operator==(const Window&) const = default;
+    };
+    // "1.50 to 2.50 s".
+    std::string windowText(const Window& window);
 
     struct Request
     {
@@ -157,6 +214,13 @@ namespace playground::measure
         std::shared_ptr<const Input> input;       // an effect's input in place of the test signals (none: those)
         int signal = -1;                          // an effect's input for view_sound and compare, numbered as SoundView's
                                                   // ViewInput (-1: the tool's own); measure() plays its test signals
+        Window window;                            // the metrics' seconds in place of the held part (above)
+        // off_order_db's base in Hz (analysis only, as `want`): an instrument's orders are its multiples (0: the expected
+        // pitch); an effect's are the sine's, 220 Hz, always.
+        double baseHz = 0.0;
+        // The report's band levels (analysis only, as `want`): an instrument's while held (bandLevels of bandSpectrum),
+        // an effect's noise's (and its own input's) out against in, a band's gain; none: no such line.
+        Bands spectrum = Bands::none;
         // A recording replayed (the capture lane's: plugin/ChatScenario.h), merged with the above: the MIDI at absolute
         // samples, the transport the host sent at a block's start, the host's blocks as they came (their sizes in
         // order; after the last, `block` each).
@@ -181,11 +245,14 @@ namespace playground::measure
         bool hostRate = false, hostBlock = false, fromCapture = false;
         double captureFrom = 0.0, captureTo = -1.0;
 
-        // The same render (the notes, the levels, the times, the dials asked for, the host and the scenario), `want`
-        // aside.
+        // The same render (the notes, the levels, the times, the dials asked for, the host and the scenario) measured
+        // over the same window with the same base, `want` and `spectrum` aside.
         bool sameRender(const Request& o) const;
         // Anything of a scenario beyond the notes held together: a phrase, moves, wheels, host edits, a recording.
         bool scenario() const;
+        // The wheels press the start key (the buttons' bit wheelcc::kStartBit): the wheel's note plays beside the notes,
+        // so a report or a view takes what plays as a phrase.
+        bool startKey() const;
     };
 
     // What a request plays, by absolute sample (Session::timeline): the plan a render follows, and what the click
@@ -202,6 +269,8 @@ namespace playground::measure
     struct Timeline
     {
         std::size_t length = 0;                   // samples rendered
+        std::size_t plain = 0;                    // the samples it renders without the request's window, when the window
+                                                  // makes it longer (0: length); a call ends there (render())
         std::size_t heldUntil = 0;                // the last note-off (an effect: its input's end)
         std::size_t firstNote = 0;                // the first note-on
         std::vector<std::pair<std::size_t, Event>> events;          // the MIDI, by sample (Event::offset unused)
@@ -238,8 +307,9 @@ namespace playground::measure
     Timeline timeline(const Request& request, const Controls& controls, double rate, std::size_t length = 0);
 
     // A render's calls into the Engine, for a tool that watches the program as it plays (the trace lane's). render()
-    // asks callLength before each call and calls afterCall after it; without hooks a host block is one call. Offline
-    // only: `engine` is the Session's own, never the one that plays.
+    // calls started once the Engine is restarted, before its first call, then asks callLength before each call and
+    // calls afterCall after it; without hooks a host block is one call. Offline only: `engine` is the Session's own,
+    // never the one that plays.
     struct CallInfo
     {
         std::size_t at = 0;                       // the call's first sample (absolute)
@@ -257,6 +327,8 @@ namespace playground::measure
     {
     public:
         virtual ~RenderHooks() = default;
+        // Before the first call, the Engine restarted (a meter reader added here measures from the first sample).
+        virtual void started(Engine& /*engine*/) {}
         // The next call's length at absolute sample `at`, 1 or more (render() cuts it at its host block's end); 0: the
         // rest of the host block.
         virtual int callLength(std::size_t /*at*/) { return 0; }
@@ -273,7 +345,7 @@ namespace playground::measure
     struct MetricInfo
     {
         const char* name;                         // "release_s"
-        const char* unit;                         // "dB", "dBFS", "Hz", "s", "ms", "cents", "%", "" (a ratio or a flag)
+        const char* unit;                         // "dB", "dBFS", "LUFS", "Hz", "s", "ms", "cents", "%", "" (a ratio or a flag)
         const char* what;                         // exactly what it measures (its span, window, weighting and band, in
                                                   // the words metricTerms() defines), for Claude's instructions
         double tolerance;                         // how near counts as met: in the unit, or a share of the target when
@@ -298,6 +370,9 @@ namespace playground::measure
         bool compiled = false;
         std::string report;                       // the words (what run() returns)
         Metrics values;                           // the numbers measured (those `want` asked for, or all)
+        std::map<std::string, std::string> unmeasured;   // a metric the part (or the window) holds too little for, and
+                                                         // why ("the window starts after the sine and the noise end, at
+                                                         // 1.00 s"): no value in `values`
         std::string dials;                        // the dials rendered with, "cutoff 1200, resonance 0.3"
         std::vector<std::string> unknown;         // dials asked for by a name the program has not
     };
@@ -338,7 +413,7 @@ namespace playground::measure
         // What `request` plays over `length` samples (0: lengthOf), by absolute sample.
         Timeline timeline(const Request& request, std::size_t length = 0) const;
         // The samples a render of `request` takes: an instrument's held part (its phrase's, else holdSeconds) and the
-        // tail; an effect's holdSeconds and the tail, or its own input's length.
+        // tail; an effect's holdSeconds and the tail, or its own input's length; at least until its window's end.
         std::size_t lengthOf(const Request& request) const;
 
     private:
@@ -365,13 +440,39 @@ namespace playground::measure
     inline constexpr double kSpectrumSeconds = 0.1;          // the Hann frames: the centroid, the partials
     inline constexpr double kPitchSeconds = 0.4;             // the Hann frames of the pitch (low close notes part)
     inline constexpr double kPuritySeconds = 0.4;            // the Blackman-Harris frames: inharmonic_db, thd_db
+    inline constexpr double kBandSeconds = 0.4;              // the Hann frames of the band levels (bandLevels): a
+                                                             // main lobe of 5 Hz each side, under a third-octave band
+                                                             // from 25 Hz up (kSharpBins)
+    inline constexpr double kNoteBandSeconds = 2.0;          // a semitone's in the report (bandSpectrum): its band is
+                                                             // 2.4 Hz wide at E1, 1.2 Hz at the lowest note, 16 (E0)
+    inline constexpr double kSharpBins = 2.25;               // a band at least this many of its frame's bins wide (5.6 Hz
+                                                             // for 0.4 s, 2.25 Hz for 1 s) holds a tone at its centre
+                                                             // within 0.3 dB, the bands beside it 13 dB under; a narrower
+                                                             // one holds less and the tone spreads over those beside it
     inline constexpr double kBandLowHz = 20.0, kBandHighHz = 20000.0;   // the band (the Nyquist frequency when lower)
     inline constexpr double kPitchCents = 600.0;             // how far from the expected note the pitch looks
+    inline constexpr double kSameBendCents = 1.0;            // pitch wheel moves within this of each other: one stretch
 
     // The held part of a timeline's notes (an instrument's): from kSettleSeconds after each note-on (half the note when
     // it is shorter) to its note-off (a key pressed again while held ends it there and starts the next; a key still down
     // ends at `heldEnd`), the spans joined where they overlap, by sample. Notes held together give one span.
     std::vector<Span> heldSpans(const Timeline& timeline, std::size_t heldEnd, double rate);
+
+    // The expected pitch's stretches: `held` (the held part, or a window) cut where the expected pitch changes: the lowest
+    // key held there (from its held span's start, as heldSpans; where none is, in a window, the lowest sounding, from its
+    // note-on to its note-off; where none sounds, the lowest of those released last; before any note-on, `key`) bent by
+    // the pitch wheel at 2 semitones (host.fm's), as the timeline's events set them; the wheel's moves within
+    // kSameBendCents of each other make one stretch, bent by their mean over it. `next`: the nearest key above it held
+    // (or sounding, as `key`) anywhere in the stretch (-1: none). The metrics read the pitch of each stretch alone
+    // (Session::measure).
+    struct Stretch
+    {
+        Span span;
+        int key = 48, next = -1;
+        float bend = 0.0f;                        // the pitch wheel, -1..1
+        double hz() const;                        // its expected pitch
+    };
+    std::vector<Stretch> stretches(const Timeline& timeline, const std::vector<Span>& held, std::size_t heldEnd, double rate, int key);
 
     enum class Taper : uint8_t
     {
@@ -389,6 +490,7 @@ namespace playground::measure
         double rate = 0.0;
         double hzPerBin = 0.0;                    // rate over the FFT's size
         double resolutionHz = 0.0;                // 1 / the shortest frame's length in seconds (a bin of the frame's own)
+        double frameSeconds = 0.0;                // the longest frame's length: `seconds`, or the longest span's
         std::vector<double> power;                // bins 0 to the Nyquist frequency's
         std::size_t frames = 0;                   // 0: no span long enough (16 samples)
 
@@ -400,9 +502,44 @@ namespace playground::measure
         // The strongest bin's power (0: silent), and a bin's place and log power refined by that parabola.
         double strongest() const;
         void refine(std::size_t bin, double& hz, double& logPower) const;
+        // The mean square in [lo, hi), cut at the Nyquist frequency: each bin's power by the share of its width there (DC
+        // none), so that noise reads its power in the band whatever the frame, and a sine of amplitude a at the band's
+        // centre a^2 / 2 when the band holds the frame's main lobe (within 0.3 dB from kSharpBins of the frame's bins
+        // wide). NaN when lo is at or above the Nyquist frequency.
+        double bandPower(double lo, double hi) const;
     };
     Spectrum spectrum(const std::vector<float>& x, double rate, const std::vector<Span>& spans, Taper taper = Taper::hann,
                       double seconds = kSpectrumSeconds);
+    // The same of both channels: the mean of the left's and the right's power (as rms_db's RMS of both), in one FFT a
+    // frame (the channels its real and imaginary parts); in kBandSeconds frames unless asked.
+    Spectrum stereoSpectrum(const std::vector<float>& l, const std::vector<float>& r, double rate, const std::vector<Span>& spans,
+                            Taper taper = Taper::hann, double seconds = kBandSeconds);
+
+    // Fractional-octave bands, each from its centre over 2^(1/2b) to its centre times it (b bands an octave): an
+    // octave's ten and a third's thirty-one, IEC 61260's base-2 bands (1 kHz x 2^(k/b)) from 31.5 Hz to 16 kHz and from
+    // 20 Hz to 20 kHz, each named by its nominal centre; a semitone's 120, centred on the MIDI notes 16 to 135 (A 440:
+    // 20.6 Hz to 19.9 kHz), the averaged spectrum's points.
+    struct Band
+    {
+        double hz = 0.0;                          // its centre: a nominal one for an octave's and a third's (31.5, 63, 125)
+        double lo = 0.0, hi = 0.0;                // its edges
+        int note = -1;                            // a semitone's MIDI note
+    };
+    inline constexpr std::array<double, 10> kOctaveBands{ 31.5, 63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0 };
+    std::vector<Band> bandsOf(Bands kind);
+    // Each band's level in a spectrum (Spectrum::bandPower), in dBFS (-240: none there; NaN: above the Nyquist frequency):
+    // an instrument's from bandSpectrum over the held part, compare's and the capture's from stereoSpectrum over what
+    // they analyse.
+    std::vector<double> bandLevels(const Spectrum& spectrum, Bands kind);
+    // The spectrum a report's bands line reads (Request::spectrum): stereoSpectrum over `spans` in Hann frames of
+    // kBandSeconds (a semitone's kNoteBandSeconds; a shorter span's frame is the span).
+    Spectrum bandSpectrum(Bands kind, const std::vector<float>& l, const std::vector<float>& r, double rate,
+                          const std::vector<Span>& spans);
+    // The first of bandsOf(kind) from which each band is at least kSharpBins of the spectrum's shortest frame's bins
+    // wide (a band's width grows with its centre): 0 every band; bandsOf(kind).size() none.
+    std::size_t sharpFrom(Bands kind, const Spectrum& spectrum);
+    // A band's centre in the bands' lines: "31.5", "250", "1k", "1.25k", "16k".
+    std::string bandName(double hz);
 
     // The pitch near `expectedHz`, in (loHz, hiHz): the strongest partial there (a local maximum within 60 dB of the
     // spectrum's strongest and 10 dB above the median of the range); without one, the f0 there (in steps of a cent)
@@ -418,8 +555,12 @@ namespace playground::measure
 
     // The strongest component of a spectrum between 20 Hz and maxHz (and the Nyquist frequency) that is no harmonic of
     // f0 (farther than six of its resolution bins from every multiple of it: 15 Hz with kPuritySeconds frames): an
-    // alias, or the sound's own. db relative to the strongest component, -200 when nothing is found. The second form
-    // reads all of `x` through kPuritySeconds Blackman-Harris frames.
+    // alias, or the sound's own. A component is a peak (a local maximum over two bins each side): a slow attack widens
+    // each harmonic's lobe past the six bins within a frame, and that skirt, falling away from its harmonic, has none. A
+    // decay through the held part can still make peaks of its own (frames whose level falls across them: 60 dB in 0.1 s
+    // reads about -29 dB, in 1 s about -87), so a decaying sound's aliasing is judged on a held, steady note. db relative
+    // to the strongest component, -200 when nothing is found. The second form reads all of `x` through kPuritySeconds
+    // Blackman-Harris frames.
     Peak inharmonic(const Spectrum& spectrum, double f0, double maxHz);
     Peak inharmonic(const std::vector<float>& x, double rate, double f0, double maxHz);
     // The energy in the band farther than six resolution bins from `hz`, against all of it in the band, in dB: a sine's
@@ -428,6 +569,76 @@ namespace playground::measure
     // The strongest partials of all of `x` (kSpectrumSeconds Hann frames; Spectrum::peaks), at most `count`, by
     // frequency; and its centroid (Spectrum::centroid).
     std::vector<Peak> spectrumPeaks(const std::vector<float>& x, double rate, int count, double* centroidHz = nullptr);
+
+    // ---- loudness and time variation: lufs (noise_lufs), rms_a_db, off_order_db, wobble_db -----------------------------
+    inline constexpr double kLoudnessBlockSeconds = 0.4;     // BS.1770's gating blocks, one every kLoudnessStepSeconds
+    inline constexpr double kLoudnessStepSeconds = 0.1;
+    inline constexpr double kOrderSeconds = 2.0;             // off_order_db's Blackman-Harris frames: as long as the part,
+                                                             // up to this (an order's zone 3 Hz at 2 s, 6.3 Hz at 0.95 s)
+    inline constexpr double kOrderBins = 6.0;                // an order's zone: within this many of the shortest frame's
+                                                             // bins of a multiple of the base (its main lobe: 4)
+    inline constexpr double kWobbleRangeDb = 30.0;           // wobble_db's bands: within this of the loudest
+    inline constexpr double kWobbleFloorDb = 60.0;           // a band's share in a frame: at least this far under the whole
+    inline constexpr double kSteadyToneDb = -18.0;           // an effect's steady tone (wobble_db's): its RMS, as the noise's
+    inline constexpr double kSteadyFadeSeconds = 0.01;       // and its fade-in
+
+    // BS.1770-4's integrated loudness of both channels over `spans`, in LUFS: each channel K-weighted (its two filters made
+    // for `rate` from the analog shelf and high-pass its 48 kHz coefficients come from: the same at 48 kHz, within 0.03 dB
+    // at 192 kHz), the channels' mean squares summed over blocks of kLoudnessBlockSeconds every kLoudnessStepSeconds inside
+    // each span (a span shorter than a block: one block of it; under 16 samples: none), gated at -70 LUFS, then 10 LU under
+    // the mean of the blocks left; -240 when no block is over -70.
+    double loudness(const std::vector<float>& l, const std::vector<float>& r, double rate, const std::vector<Span>& spans);
+
+    // IEC 61672's A-weighting of a frequency as a power ratio, 1 at 1 kHz; and a spectrum's power A-weighted in the band
+    // (kBandLowHz to kBandHighHz, cut at the Nyquist frequency), its mean square (rms_a_db's, of bandSpectrum's semitone
+    // frames: a tone's lobe narrow enough that the weight across it holds from 20 Hz).
+    double aWeight(double hz);
+    double aWeightedPower(const Spectrum& spectrum);
+
+    // The orders of a base (its multiples, from the base up) in a spectrum: off_order_db, the power in the band farther
+    // than kOrderBins of the spectrum's shortest frame's bins from every multiple (an order's zone), against all of it in
+    // the band; -240 when none is off them (or the band is silent). With kOrderSeconds Blackman-Harris frames: a pure
+    // harmonic sound's lobes stay inside the zones. With no frame, or a base under twice the zone (every frequency near
+    // a multiple), off_order_db is not measured (Result::unmeasured, saying why).
+    struct Orders
+    {
+        double offDb = -240.0;
+        double zoneHz = 0.0;                      // how far from a multiple counts as on it
+        // The power near the half-orders (the odd multiples of half the base) and the third-orders (the multiples of a
+        // third of it that are not the base's), off the orders, against all of it: a period of two or three of the base's
+        // cycles. NaN where those zones would overlap (half or a third of the base under two zones).
+        double halfDb = std::numeric_limits<double>::quiet_NaN();
+        double thirdDb = std::numeric_limits<double>::quiet_NaN();
+        std::vector<Peak> lines;                  // the strongest local maxima off the orders (within 60 dB of the
+                                                  // strongest component), at most 3, strongest first, db under the strongest
+    };
+    Orders orders(const Spectrum& spectrum, double baseHz);
+
+    // How the spectrum's shape moves (wobble_db): over `spans` in kSpectrumSeconds Hann frames (wobbleFrame's samples;
+    // a span shorter than a frame has none), each third-octave band's share of the frame's power in the thirds, in dB (at
+    // least -kWobbleFloorDb), and its standard deviation over the frames; the mean of those, weighted by each band's
+    // power, over the bands within kWobbleRangeDb of the loudest. An instrument's frames are spread evenly over each span,
+    // at most half a frame apart (a span over 1.5 frames has three). With `onPeriod` (an effect's, of steadyTone's
+    // output) they lie end to end, each from a multiple of a frame from the render's start: on the tone's period, so that
+    // an effect that holds still gives every frame the same samples once its memory has settled (a delay, an echo, an
+    // allpass or a filter 0, a reverb whose tail is still building a little), and only what moves reads. A silent frame
+    // has no shape and is left out; NaN with fewer than three frames that sound.
+    struct Wobble
+    {
+        double db = std::numeric_limits<double>::quiet_NaN();
+        double bandHz = 0.0;                      // the band of those weighed that moves most (its nominal centre)
+        double bandDb = 0.0;                      // its standard deviation
+        int frames = 0;                           // the frames that sound
+        int silent = 0;                           // and those left out as silent
+    };
+    Wobble wobble(const std::vector<float>& l, const std::vector<float>& r, double rate, const std::vector<Span>& spans,
+                  bool onPeriod = false);
+    // wobble_db's frame in samples at `rate` (kSpectrumSeconds, at least 16); and an effect's steady tone for it, `n`
+    // samples: a partial every rate / wobbleFrame(rate) (10 Hz) in the band (kBandLowHz to kBandHighHz, under the Nyquist
+    // frequency), each of the same amplitude (a flat spectrum, as the test noise's) and a fixed random phase, kSteadyToneDb
+    // RMS, repeating every wobbleFrame(rate) samples exactly, faded in over kSteadyFadeSeconds.
+    std::size_t wobbleFrame(double rate);
+    std::vector<float> steadyTone(std::size_t n, double rate);
 
     // The click rule, the metrics' and trace's (Debug.h): in 10 ms windows from the first sample, each window's largest
     // step between two neighbouring samples (of either channel); a window's step is a click when it is over 0.05, over
