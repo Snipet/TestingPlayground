@@ -5429,8 +5429,14 @@ namespace playground::ui
                 std::copy(s.end() - have, s.end(), out + (n - have));
             };
             updateDisplays(items_, itemOfDisplay_, shown, scope, scopeIn_, scopeOut_, dt);
-            // The controls' live= marks (none until the audio thread plays this program) and the shaders' inputs.
-            guiView_->tick(panelSpec_, shown, meters_.program == panelProgram_);
+            // The controls' live= marks (none until the audio thread plays this program, but a state's taps: drawn as
+            // asked) and the shaders' inputs.
+            uint32_t stateTaps = 0;
+            if (showing_)
+                for (const auto& tv : shown_.taps)
+                    if (tv.first >= 0 && tv.first < kMaxDisplays)
+                        stateTaps |= 1u << tv.first;
+            guiView_->tick(panelSpec_, shown, meters_.program == panelProgram_, stateTaps);
         }
         const int hovered = hasPointer_ && pressed_ < 0 ? itemAt(pointer_) : pressed_;
         const funkgui::Point far{ -1.0e4f, -1.0e4f };

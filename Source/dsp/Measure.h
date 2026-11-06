@@ -238,8 +238,9 @@ namespace playground::measure
     Timeline timeline(const Request& request, const Controls& controls, double rate, std::size_t length = 0);
 
     // A render's calls into the Engine, for a tool that watches the program as it plays (the trace lane's). render()
-    // asks callLength before each call and calls afterCall after it; without hooks a host block is one call. Offline
-    // only: `engine` is the Session's own, never the one that plays.
+    // calls started once the Engine is restarted, before its first call, then asks callLength before each call and
+    // calls afterCall after it; without hooks a host block is one call. Offline only: `engine` is the Session's own,
+    // never the one that plays.
     struct CallInfo
     {
         std::size_t at = 0;                       // the call's first sample (absolute)
@@ -257,6 +258,8 @@ namespace playground::measure
     {
     public:
         virtual ~RenderHooks() = default;
+        // Before the first call, the Engine restarted (a meter reader added here measures from the first sample).
+        virtual void started(Engine& /*engine*/) {}
         // The next call's length at absolute sample `at`, 1 or more (render() cuts it at its host block's end); 0: the
         // rest of the host block.
         virtual int callLength(std::size_t /*at*/) { return 0; }

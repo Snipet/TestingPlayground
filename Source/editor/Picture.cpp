@@ -26,10 +26,12 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <thread>
 
@@ -240,6 +242,13 @@ namespace playground
         // refresh takes it), its dials through ports of their own.
         const bool stated = !state.empty();
         const CompileStatus status = port.status();
+        // at's render is of the files that played when it began: drawn on another program's panel, its taps (by
+        // place) and dials (by name) would land on displays and dials that are not theirs.
+        if (state.rendered() && !cir::sameProgram(state.sources, status.ok ? status.sources : port.running()))
+        {
+            out.why = "the program that plays changed while at rendered it; look again";
+            return out;
+        }
         const Controls cs = status.ok ? status.controls : port.controls();
         const PanelSpec spec = status.ok ? status.panel : port.panel();
         Resolved asked = stated ? resolve(state, cs, spec) : Resolved{};

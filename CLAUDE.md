@@ -549,15 +549,18 @@ place (its `products/<key>.cmake`, and its names in the docs).
   SoftRaster's image of the same frame) and `plugin.chat` VIEW check both paths (the fallback through
   `picture::forceSoftRasterForTests`). A state of Claude's choosing (`PictureState`, EditorPort.h; `values`, `at`):
   `ChatAgent::panelState` reads it on the worker, `at`'s render too (the program that plays, `chatRunning`, in a
-  Session of its own with view_sound's settings, offline: `MomentHooks` cuts the call at its moment and keeps the
-  Session Engine's meters 60 times a second of the render, at most 150, then its scopes and `Engine::dials`), and
-  picturePanel draws it: the dials it sets through ports of the picture's own (`ShownPort`: the user's dials never
-  move), and `Panel::showState`, the frames in place of the Engine's meters (held at the first until `playShown`,
-  then one a tick, the last kept and its readouts made again), the scopes' samples, a field's taps and the levels
-  over them.
+  Session of its own with view_sound's settings, offline, its `try_edits` refused: `MomentHooks` reads the meters
+  from the first sample (its reader added in `RenderHooks::started`, before the first call), cuts the last call at
+  its moment and keeps the Session Engine's meters 60 times a second of the render, at most 150, then its scopes and
+  `Engine::dials`), and picturePanel draws it, only on the panel of the files it rendered (`PictureState::sources`,
+  `cir::sameProgram`; else "look again"): the dials it sets through ports of the picture's own (`ShownPort`: the
+  user's dials never move), and `Panel::showState`, the frames in place of the Engine's meters (held at the first
+  until `playShown`, then one a tick, the last kept and its readouts made again), the scopes' samples, a field's taps
+  and the levels over them (a live= mark of a field asked for shows before the audio thread plays the program:
+  `GuiView::tick`'s `liveTaps`).
   Values name dials (plain, or an option's name), fields (every display, live= mark and shader input of that source
   or name) and in and out (dBFS); the text then gives what was drawn, what names nothing, and what each display shown
-  reads. `gui.panel` STATE and `plugin.chat` PANELSTATE check it.
+  reads. `gui.panel` STATE, `plugin.chat` PANELSTATE and `plugin.sandbox` SHADER (a shader's input) check it.
 - **A scenario and trial edits** (`plugin/ChatScenario.h`; `measure::Request`'s scenario, `Timeline`, `RenderHooks`):
   measure_output, view_sound, each check (it keeps its scenario), tune_dials and compare take one `scenario` property
   (its schema one line, its details in the prompt's CHECKING YOUR WORK): a phrase, dial moves, wheels, host edits, the

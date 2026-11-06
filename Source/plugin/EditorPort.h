@@ -159,6 +159,7 @@ namespace playground
         std::vector<Meters> frames;
         std::vector<float> scopeIn, scopeOut;
         std::vector<std::pair<std::string, float>> dials;
+        Sources sources;                         // the files it rendered: the picture refuses a panel of others
         std::string about;                       // "1.50 s into an offline render of the program that plays (...)"
         bool rendered() const noexcept { return !frames.empty(); }
         bool empty() const noexcept { return values.empty() && frames.empty(); }

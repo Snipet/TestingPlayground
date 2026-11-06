@@ -455,8 +455,9 @@ namespace playground
 
         // view_panel's at: a render watched up to its moment `end` (a sample), offline, in the Session's own Engine:
         // the meters after the call at or after each of the last frames' times (60 a second, the last at `end`, at
-        // most a field scope's 2.5 s), numbered afresh; at `end`, the scopes and the dials. The Engine measures the
-        // levels and the scopes from its second call on (a reader from the first call's end).
+        // most a field scope's 2.5 s), numbered afresh; at `end`, the scopes and the dials. Its reader comes before the
+        // first call, so the levels and the scopes are measured from the first sample (an impulse's at 0 too), and the
+        // calls are view_sound's but the last, cut at `end`.
         class MomentHooks final : public measure::RenderHooks
         {
         public:
@@ -468,6 +469,13 @@ namespace playground
                 count_ = std::min<std::size_t>(kFrames, 1 + static_cast<std::size_t>(static_cast<double>(end) / every_));
             }
 
+            void started(Engine& engine) override
+            {
+                if (!reading_)
+                    engine.addReader();
+                reading_ = true;
+            }
+
             int callLength(std::size_t at) override
             {
                 return at < end_ ? static_cast<int>(std::min<std::size_t>(end_ - at, 1u << 20)) : 0;
@@ -475,11 +483,6 @@ namespace playground
 
             bool afterCall(const measure::CallInfo& call) override
             {
-                if (!reading_)
-                {
-                    call.engine.addReader();
-                    reading_ = true;
-                }
                 const std::size_t done = call.at + static_cast<std::size_t>(call.length);
                 while (frames.size() < count_ && markOf(frames.size()) <= done)
                 {
@@ -3494,6 +3497,12 @@ namespace playground
             return {};
         if (!at.isObject())
             return "at is an object: {seconds, and view_sound's settings}.";
+        // What plays, as it plays: a trial change is view_sound's alone (the panel drawn is the running program's), and
+        // seconds is the one moment.
+        if (at.hasProperty("try_edits"))
+            return "at renders the program that plays: try a change with view_sound, or run it first.";
+        if (at.hasProperty("from_seconds") || at.hasProperty("to_seconds"))
+            return "at takes no from_seconds or to_seconds: seconds is the moment it draws.";
         // at: the program that plays, rendered offline with view_sound's settings to its moment.
         constexpr double kMaxAt = 20.0;
         const juce::var sec = at.getProperty("seconds", juce::var());
@@ -3526,6 +3535,7 @@ namespace playground
             return "stopped.";
         if (!hooks.reached || hooks.frames.empty())
             return "the render ended before its moment.";
+        state.sources = files;                    // the picture draws it only if this is still what plays
         state.frames = std::move(hooks.frames);
         state.scopeIn = std::move(hooks.scopeIn);
         state.scopeOut = std::move(hooks.scopeOut);

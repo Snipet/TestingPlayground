@@ -34,11 +34,13 @@
 //             (1250 rpm, as a knob reads), and a meter of shared->level at three quarters, all whether a voice sounds
 //             or not; the main module's int field a whole number too; a readout with a unit (-1200.0 cents) and one of
 //             twelve digits each drawn whole inside its box
-//   STATE     a picture's state (Panel::showState, view_panel's values and at): frames shown at the first until they
-//             play, then one a frame to the last (a number's readout, a field scope's points one a frame), a tap and
+//   STATE     a picture's state (Panel::showState, view_panel's values and at): a value for a knob's live= field drawn
+//             as its mark before the audio thread plays the program (none without it); frames shown at the first until
+//             they play, then one a frame to the last (a number's readout, a field scope's points one a frame), a tap and
 //             the output's level over each; picturePanel with values: Shared's field, a dial and the output's level drawn
 //             as asked (the text says so, and what the displays read), a name that is none listed with the fields, the
-//             dial moving the picture and not the user's dial (gui.panel.state.png, gui.panel.state.picture.png)
+//             dial moving the picture and not the user's dial; at's dials drawn as the render left them, and its state
+//             refused once the program that plays is another (gui.panel.state.png, gui.panel.state.picture.png)
 #include "Probe.h"
 
 #include "editor/DisplayItem.h"
@@ -618,7 +620,7 @@ PROBE(gui, panel)
                                        "    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
         const std::string stateGui = "row gap=10 {\n"
                                      "    section \"STATE\" {\n"
-                                     "        knob gain\n"
+                                     "        knob gain live=shared->level\n"
                                      "        number shared->level label=\"LEVEL\"\n"
                                      "        number shared->notes label=\"NOTES\"\n"
                                      "        scope shared->level label=\"TRACE\"\n"
@@ -627,20 +629,15 @@ PROBE(gui, panel)
                                      "}\n";
         load(processor, { { pg::kProgramName, shared + main }, { "panel.gui", stateGui } });
         settleRun(processor, host);
-        juce::AudioBuffer<float> buffer(2, 256);
-        for (int k = 0; k < 8; ++k)                      // its fields published (Shared's init set them)
-        {
-            buffer.clear();
-            juce::MidiBuffer midi;
-            processor.processBlock(buffer, midi);
-        }
         const pg::PanelSpec spec = port.status().panel;
-        int levelTap = -1, traceTap = -1, notesTap = -1, levelD = -1, notesD = -1, traceD = -1, outD = -1;
+        int levelTap = -1, traceTap = -1, notesTap = -1, liveTap = -1, levelD = -1, notesD = -1, traceD = -1, outD = -1;
         for (std::size_t d = 0; d < spec.displays.size(); ++d)
         {
             const pg::PanelDisplay& x = spec.displays[d];
             const int i = static_cast<int>(d);
-            if (x.source == "shared->level" && x.kind == pg::DisplayKind::number)
+            if (x.hidden)
+                liveTap = x.source == "shared->level" ? x.tap : liveTap;   // the knob's live= mark's
+            else if (x.source == "shared->level" && x.kind == pg::DisplayKind::number)
                 levelTap = x.tap, levelD = i;
             else if (x.source == "shared->level" && x.kind == pg::DisplayKind::scope)
                 traceTap = x.tap, traceD = i;
@@ -648,6 +645,34 @@ PROBE(gui, panel)
                 notesTap = x.tap, notesD = i;
             else if (x.source == "out")
                 outD = i;
+        }
+        // values alone (view_panel's), before the audio thread has played this program: a live= mark shows no value of
+        // its own then, but the one asked for.
+        {
+            const auto liveMark = [&](const pg::ui::Panel::ShownState* st) {
+                pg::ui::Panel early(processor.ports(), port, true);
+                if (st != nullptr)
+                    early.showState(*st);
+                funkgui::HeadlessHost h(early, 0, 1.5f);
+                h.settle(120);
+                early.setPanelView(true);
+                h.settle(120);
+                return early.hasGui() ? early.guiControl(0).live01() : -2.0f;
+            };
+            pg::ui::Panel::ShownState asked;
+            asked.taps.emplace_back(liveTap, 0.6f);
+            const float none = liveMark(nullptr), drawn = liveMark(&asked);
+            std::printf("state, a live= mark before the program plays: %.3f, asked 0.6: %.3f\n", static_cast<double>(none),
+                        static_cast<double>(drawn));
+            P.eq("state.live_mark_unplayed", liveTap >= 0 && none < 0.0f ? 1 : 0, 1);
+            P.eq("state.live_mark_asked", std::fabs(drawn - 0.6f) < 1.0e-4f ? 1 : 0, 1);
+        }
+        juce::AudioBuffer<float> buffer(2, 256);
+        for (int k = 0; k < 8; ++k)                      // its fields published (Shared's init set them)
+        {
+            buffer.clear();
+            juce::MidiBuffer midi;
+            processor.processBlock(buffer, midi);
         }
         P.eq("state.displays", port.status().ok && levelTap >= 0 && notesTap >= 0 && traceD >= 0 && outD >= 0 ? 1 : 0, 1);
         // A picture's Panel (Panel::showState, view_panel's at): 40 frames, the field rising; held at the first until it
@@ -707,6 +732,24 @@ PROBE(gui, panel)
         P.eq("state.picture_unknown", in(a.about, "No dial or field of the panel is named zzz (its fields: shared->level, shared->notes).") ? 1 : 0, 1);
         P.eq("state.picture_dial_drawn", !a.png.empty() && !b.png.empty() && a.png != b.png ? 1 : 0, 1);
         P.eq("state.picture_user_dial", processor.getParameters()[0]->getValue() == 0.5f ? 1 : 0, 1);
+        // at's state: the dials as the render left them (PictureState::dials) drawn, the user's unmoved; and refused
+        // when the program that plays is no longer the one rendered.
+        pg::PictureState at;
+        at.frames.resize(1);
+        at.sources = port.status().sources;
+        at.about = "0.50 s into a render";
+        at.dials = { { "gain", 0.9f } };
+        const pg::PanelPicture high = pg::picturePanel(processor.ports(), port, 0, 0, false, "", at);
+        at.dials = { { "gain", 0.1f } };
+        const pg::PanelPicture low = pg::picturePanel(processor.ports(), port, 0, 0, false, "", at);
+        P.eq("state.at_dials_drawn", !high.png.empty() && !low.png.empty() && high.png != low.png
+                                         && high.about.find("the displays and the dials show the state 0.50 s into a render") != std::string::npos
+                                         ? 1 : 0, 1);
+        P.eq("state.at_user_dial", processor.getParameters()[0]->getValue() == 0.5f ? 1 : 0, 1);
+        if (!at.sources.empty())
+            at.sources.front().text += "\n// changed\n";
+        const pg::PanelPicture other = pg::picturePanel(processor.ports(), port, 0, 0, false, "", at);
+        P.eq("state.at_other_program", other.png.empty() && other.why.find("changed while at rendered") != std::string::npos ? 1 : 0, 1);
         if (!a.png.empty())
             if (std::FILE* f = std::fopen(probe::outPath("gui.panel.state.picture.png").c_str(), "wb"))
             {

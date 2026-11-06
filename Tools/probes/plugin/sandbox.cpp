@@ -20,7 +20,8 @@
 //   SHADER   a program's folder opened from disk (the .fm, the .gui, the .sc; its dials declared, a `param enum` an int
 //            dial as FMinus makes it, which a menu of its names takes; its fields listed for the displays but those no
 //            display can show, an enumeration's an int as FMinus makes it, Shared's through its pointer, shared->tone):
-//            the shader drawn by the GPU in its colour, not FunkGui's striped placeholder (gui.sandbox.shader.png)
+//            the shader drawn by the GPU in its colour, not FunkGui's striped placeholder (gui.sandbox.shader.png);
+//            values naming the field the shader reads (an input with no display of its own) changes its colour
 //   VALUES   a render's values naming fields (a main module's, Shared's) draws them in place of the demo's: only the
 //            numbers' cells change (gui.sandbox.values.png); the text says which, and names a name that is none
 //   RESTART  the helper killed between calls: the next call starts it again, says so, with the panel as it was (the
@@ -506,9 +507,10 @@ PROBE(plugin, sandbox)
         const std::filesystem::path folder = std::filesystem::path(dir) / "program";
         std::filesystem::create_directories(folder);
         std::ofstream(folder / pg::kProgramName) << program();
-        std::ofstream(folder / "panel.gui") << "section \"GLOW\" {\n    shader \"glow.sc\" inputs=\"glow\" width=200 height=100\n    knob glow\n    knob level\n"
+        std::ofstream(folder / "panel.gui") << "section \"GLOW\" {\n    shader \"glow.sc\" inputs=\"glow shine\" width=200 height=100\n    knob glow\n    knob level\n"
                                                 "    menu shape \"RISING\" \"FALLING\"\n}\n";
-        std::ofstream(folder / "glow.sc") << "void main()\n{\n    gl_FragColor = vec4(0.9, 0.1, 0.6, 1.0);\n}\n";
+        std::ofstream(folder / "glow.sc") << "void main()\n{\n    gl_FragColor = mix(vec4(0.9, 0.1, 0.6, 1.0), vec4(0.1, 0.8, 0.2, 1.0), "
+                                             "step(100.0, in1));\n}\n";
         const Result r = s.sandbox(object({ { "action", "open" }, { "from", "file" }, { "path", juce::String(folder.string()) } }));
         std::printf("folder:\n%s", r.text.c_str());
         shaderNumber = numberIn(r.text);
@@ -537,6 +539,30 @@ PROBE(plugin, sandbox)
         P.eq("shader.gpu", found && has(pic.text, "drawn by the GPU") && n > 0 ? 1 : 0, 1);
         P.ge("shader.drawn", magenta, n * 9 / 10);
         P.eq("shader.no_placeholder", placeholder, 0);
+        // values reach a shader's input: shine, which no display shows, at 50 (magenta) and at 500 (green).
+        const auto colours = [&](double shine, int& pink, int& green) {
+            const Result v = s.sandbox(object({ { "action", "render" }, { "width", 480 }, { "height", 200 }, { "detail", "high" },
+                                                { "values", object({ { "shine", shine } }) } }));
+            const juce::Image im = decode(v.png);
+            pink = green = 0;
+            if (found && im.isValid())
+                for (int py = static_cast<int>((y + 4) * pg::sandbox::kDpi); py < static_cast<int>((y + h - 4) * pg::sandbox::kDpi); ++py)
+                    for (int px = static_cast<int>((x + 4) * pg::sandbox::kDpi); px < static_cast<int>((x + w - 4) * pg::sandbox::kDpi); ++px)
+                    {
+                        const juce::Colour c = im.getPixelAt(px, py);
+                        pink += c.getRed() > 200 && c.getGreen() < 60 && c.getBlue() > 120 ? 1 : 0;
+                        green += c.getRed() < 60 && c.getGreen() > 160 && c.getBlue() < 90 ? 1 : 0;
+                    }
+            return v.text;
+        };
+        int pinkLow = 0, greenLow = 0, pinkHigh = 0, greenHigh = 0;
+        colours(50.0, pinkLow, greenLow);
+        const std::string highText = colours(500.0, pinkHigh, greenHigh);
+        std::printf("shader cell with shine 50: %d magenta, %d green; with 500: %d magenta, %d green\n", pinkLow, greenLow, pinkHigh,
+                    greenHigh);
+        P.eq("shader.value_said", has(highText, "shine (as asked)") ? 1 : 0, 1);
+        P.ge("shader.value_low", pinkLow, n * 9 / 10);
+        P.ge("shader.value_high", greenHigh, n * 9 / 10);
 
         // values names fields too (as view_panel's): a main module's and Shared's, drawn in place of the demo's, only
         // their readouts changing; a name that is no dial or field said; the .gui put back after.

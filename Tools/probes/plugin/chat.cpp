@@ -61,7 +61,8 @@
 //            the displays read), names the one that is no dial or field with the panel's fields, refuses a dial's word
 //            it has not, and moves nothing that plays; at renders the program offline to 0.5 s, a scenario's move of
 //            the gain on the way, and draws its fields (the seconds 0.500 in the instance and in Shared, the gain 0.80);
-//            values over at; a moment past the render's end; at without seconds, past 20 s and values not an object
+//            values over at; a moment past the render's end; a moment in the first host block metered from the first
+//            sample (the effect's impulse at 0); at without seconds, past 20 s, with try_edits and values not an object
 //            refused with no picture (plugin.chat.view_panel.at.png)
 //   CIRCUIT  edit_circuit through the agent, on the Tube Screamer's netlist (screamer.cir, as pedal.cir) shown in an
 //            editor's Schematic view: each command (add with and without at, place, connect, disconnect, set, rename, delete,
@@ -1330,6 +1331,15 @@ PROBE(plugin, chat)
         // A moment past the render's end: it goes on, silent, to it.
         const std::string later = look(input({ { "at", input({ { "seconds", 4 } }) } }), png, error);
         P.eq("panelstate.at_past_the_end", !error && has(later, "4.00 s into") && has(later, "T 4.000") ? 1 : 0, 1);
+        // A moment in the first host block, metered from the first sample: the effect's impulse at 0 (0.5 at the gain's
+        // 0.5), the synth's note.
+        juce::var soon = input({ { "seconds", 0.004 } });
+        if constexpr (!pg::product::kIsInstrument)
+            soon.getDynamicObject()->setProperty("input", "impulse");
+        const std::string first = look(input({ { "at", soon } }), png, error);
+        std::printf("view_panel, at 4 ms: %s\n", first.c_str());
+        P.eq("panelstate.at_first_block_metered", !error && has(first, "0.00 s into") && has(first, "OUT -") && !has(first, "OUT -INF")
+                                                      && (pg::product::kIsInstrument || has(first, "OUT -12.0")) ? 1 : 0, 1);
         // Refused, with no picture: no seconds, too late a moment, values not an object.
         const std::string noSeconds = look(input({ { "at", input({ { "notes", juce::Array<juce::var>{ 60 } } }) } }), png, error);
         P.eq("panelstate.at_needs_seconds", error && png.empty() && has(noSeconds, "at needs seconds") ? 1 : 0, 1);
@@ -1337,6 +1347,10 @@ PROBE(plugin, chat)
         P.eq("panelstate.at_at_most_20", error && png.empty() ? 1 : 0, 1);
         const std::string notObject = look(input({ { "values", 3 } }), png, error);
         P.eq("panelstate.values_an_object", error && has(notObject, "values is an object") ? 1 : 0, 1);
+        juce::var edits = juce::Array<juce::var>{ input({ { "name", pg::kProgramName }, { "old_text", "t += n * inv;" },
+                                                          { "new_text", "t += 2 * n * inv;" } }) };
+        const std::string trial = look(input({ { "at", input({ { "seconds", 0.5 }, { "try_edits", edits } }) } }), png, error);
+        P.eq("panelstate.at_no_trial_edits", error && png.empty() && has(trial, "try a change with view_sound") ? 1 : 0, 1);
     }
 
     // ---- CIRCUIT ---------------------------------------------------------------------------------------------------------
