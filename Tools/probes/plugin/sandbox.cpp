@@ -21,6 +21,8 @@
 //            dial as FMinus makes it, which a menu of its names takes; its fields listed for the displays but those no
 //            display can show, an enumeration's an int as FMinus makes it, Shared's through its pointer, shared->tone):
 //            the shader drawn by the GPU in its colour, not FunkGui's striped placeholder (gui.sandbox.shader.png)
+//   VALUES   a render's values naming fields (a main module's, Shared's) draws them in place of the demo's: only the
+//            numbers' cells change (gui.sandbox.values.png); the text says which, and names a name that is none
 //   RESTART  the helper killed between calls: the next call starts it again, says so, with the panel as it was (the
 //            same picture, at the last render's size)
 //   NONE     apply with no instance open gives the .gui's text back, saying how the user can use it, by number (the
@@ -535,6 +537,31 @@ PROBE(plugin, sandbox)
         P.eq("shader.gpu", found && has(pic.text, "drawn by the GPU") && n > 0 ? 1 : 0, 1);
         P.ge("shader.drawn", magenta, n * 9 / 10);
         P.eq("shader.no_placeholder", placeholder, 0);
+
+        // values names fields too (as view_panel's): a main module's and Shared's, drawn in place of the demo's, only
+        // their readouts changing; a name that is no dial or field said; the .gui put back after.
+        const std::string withNumbers = "    knob level\n    number shine label=\"SHINE\"\n    number shared->tone label=\"TONE\"\n";
+        const Result e = s.sandbox(object({ { "action", "edit" },
+                                            { "edits", juce::Array<juce::var>{ object({ { "old_text", "    knob level\n" },
+                                                                                        { "new_text", juce::String(withNumbers) } }) } } }));
+        float sx = 0, sy = 0, sw = 0, sh = 0, tx = 0, ty = 0, tw = 0, th = 0;
+        const bool cells = rectOf(e.text, "number shine", sx, sy, sw, sh) && rectOf(e.text, "number shared->tone", tx, ty, tw, th);
+        const Result demo = s.sandbox(object({ { "action", "render" }, { "width", 480 }, { "height", 200 }, { "detail", "high" } }));
+        const Result asked = s.sandbox(object({ { "action", "render" }, { "width", 480 }, { "height", 200 }, { "detail", "high" },
+                                               { "values", object({ { "shine", 12.5 }, { "shared->tone", -3.0 }, { "zzz", 1 } }) } }));
+        std::printf("fields asked: %s", asked.text.c_str());
+        writeBytes(probe::outPath("gui.sandbox.values.png"), asked.png);
+        const Diff numbers = compare(decode(demo.png), decode(asked.png), { pixels(sx, sy, sw, sh, 2), pixels(tx, ty, tw, th, 2) }, 4);
+        std::printf("fields asked: %d pixels differ in the numbers' cells, %d outside (largest %d)\n", numbers.inside, numbers.outside,
+                    numbers.largestOutside);
+        P.eq("values.fields_said", cells && !asked.error && has(asked.text, "the displays show demo values but shine, shared->tone (as asked).")
+                                       && has(asked.text, "There is no dial or field zzz.") ? 1 : 0, 1);
+        P.ge("values.fields_drawn", numbers.inside, 50);
+        P.eq("values.fields_alone", numbers.outside, 0);
+        const Result back = s.sandbox(object({ { "action", "edit" },
+                                               { "edits", juce::Array<juce::var>{ object({ { "old_text", juce::String(withNumbers) },
+                                                                                           { "new_text", "    knob level\n" } }) } } }));
+        P.eq("values.put_back", !back.error ? 1 : 0, 1);
     }
 
     // ---- RESTART: the helper killed between calls ------------------------------------------------------------------------

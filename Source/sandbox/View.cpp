@@ -158,6 +158,25 @@ namespace playground::sandbox
             const float v = ports_[static_cast<std::size_t>(n.slot)]->value01();
             meters_.taps[tap] = plainOf(c, std::clamp(v - 0.14f + 0.04f * std::sin(0.5f * phase), 0.0f, 1.0f));
         }
+        // What the render's values ask for, over the demo's.
+        for (const auto& [tap, v] : shownTaps_)
+            if (tap >= 0 && tap < kMaxDisplays)
+                meters_.taps[tap] = v;
+        for (int c = 0; c < 2; ++c)
+        {
+            if (shownIn_ >= 0.0f && !instrument_)
+                meters_.inPeak[c] = meters_.inRms[c] = shownIn_;
+            if (shownOut_ >= 0.0f)
+                meters_.outPeak[c] = meters_.outRms[c] = shownOut_;
+        }
+    }
+
+    void View::setShown(std::vector<std::pair<int, float>> taps, float inLevel, float outLevel)
+    {
+        shownTaps_ = std::move(taps);
+        shownIn_ = inLevel;
+        shownOut_ = outLevel;
+        demoMeters();
     }
 
     void View::tick(float dt)
