@@ -75,7 +75,7 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - Windows: `cmake --workflow --preset windows-verify` (or `windows-effect-verify`, `windows-synth-verify`; the release
   build `windows-release-build`), in `build-windows-<preset>`, from an x64 Native Tools prompt ("Windows" above).
 - `cmake --workflow --preset dev-verify`: configure, build (both products' Standalone, AU, VST3, MCP server and probes,
-  and the installer) and run every test in `build-dev`: each of the 41 probes once for each product
+  and the installer) and run every test in `build-dev`: each of the 42 probes once for each product
   (`effect:fminus.examples`, `synth:fminus.examples`, ...), and the lints and the installer's probes once
   (`installer.engine`, `installer.gui`: `build-dev/probe-out/installer/gui.installer*.png`, look at them after any
   change to its window). Done means it exits 0 with no warning from our sources (they build with `-Werror`). While
@@ -289,6 +289,18 @@ place (its `products/<key>.cmake`, and its names in the docs).
   compiler thread's (`checkStops`: the status, `stopped`, and `previous_`, the last program of other files that
   played, compiled again with its pins and played). A program that stopped is never gone back to, refined or frozen.
   `dsp.budget` checks it all.
+- **The bounds checks** (Patch.h's "Bounds checks"): every compile that plays as the program is written (compile()'s
+  second pass: RUN's, a refine's, every tool's render; and ir()) has FMinus's `Options::boundsCheck`; the frozen copy
+  (freeze(), frozenIr()) never has (`frozenOptions`: the build that plays at full speed, a compile the freezer makes
+  anyway). After each call Patch reads FMinus's record (`within`, `outOfBounds`: a relaxed load, nothing allocated) and
+  a failed check stops the Patch as a loop past its budget does, the check copied into `Patch::bounds()` (plain data,
+  its texts cut to fixed arrays) and published with the stop (`Engine::Stopped::bounds`), so the Compiler, Measure,
+  trace and view_sound word it at the access (`stopMessage`, `stopWhy`; `CompileStatus::bounds`, the editor's status
+  line); reset() empties the record (`clearBoundsViolation`) before any init, since a call while it holds a check
+  returns partway. A pointer the program keeps (a heap block, a host's buffer) is never checked: an example or a
+  library file whose buffer fits a fixed array keeps it in one (the Echo's and the Pluck's, sized for 192 kHz; the
+  library's delay, reverb and wavetable stay on the heap, the guide's BUILDING A LARGE PROGRAM says so). `dsp.bounds`
+  checks it all, and that a moved buffer plays the same bits.
 - The processor copes with what a host may do: the bypass crossfades between the Engine's output and the input (the
   effect) or silence (the synth), and the Engine keeps running (the synth's on the note-offs only, so a note let go
   during the bypass releases); a block before any `prepareToPlay` passes the input through, sanitised; a host's NaN
