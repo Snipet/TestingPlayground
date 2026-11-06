@@ -12,7 +12,8 @@
 //   layout()            the interface `spec` in `area` (its root never smaller than its natural size: it scrolls past
 //                       the area, which then keeps kScrollGutter at its right for the bar), the tabs' pages and the
 //                       scroll kept (clamped), then every item placed (place())
-//   clear()             no interface: every item hidden
+//   clear()             no interface, or one hidden (the editor's panel under the code): every item hidden, its pages
+//                       and scroll kept for the next layout()
 //   setControls()       each slot's dial (its Control, label and options' names) for the controls
 //   registerShaders()   the spec's shaders' programs given to FunkGui's registry (once built: Shaders.h), or why not
 //   tick()              a frame: the controls' live= marks and the shaders' inputs, from the meters

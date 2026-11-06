@@ -684,6 +684,7 @@ namespace playground::ui
         constexpr float kPillIconW = 28.0f;
         constexpr float kPillTrack = 3.0f;               // the track around the pair
         constexpr uint32_t kPillsA11y = 40;              // FilesItem's ids: the group, then Netlist and Schematic
+        constexpr uint32_t kPanelSwitchA11y = 44;        // ... the status line's Panel switch
     }
 
     // Not in the unnamed namespace: Panel.h names it.
@@ -1657,6 +1658,19 @@ namespace playground::ui
                     out.push_back(std::move(pill));
                 }
             }
+            // The status line's Panel switch: the panel under the code, for the tab shown.
+            if (assist_.hasPanelSwitch())
+            {
+                funkgui::A11yItem sw;
+                sw.id = id_ + kPanelSwitchA11y;
+                sw.role = funkgui::A11yRole::toggleButton;
+                sw.bounds = assist_.panelSwitchRect();
+                sw.title = "Panel under the code";
+                sw.checkable = true;
+                sw.checked = assist_.panelSwitchOn();
+                sw.help = "the program's dials or interface under the editor (Command J)";
+                out.push_back(std::move(sw));
+            }
             if (schematicShown())
             {
                 schematic_.accessibility(out);
@@ -1678,6 +1692,11 @@ namespace playground::ui
             }
             if (id == id_ + kPillsA11y)
                 return true;
+            if (id == id_ + kPanelSwitchA11y && assist_.hasPanelSwitch())
+            {
+                assist_.togglePanelSwitch();
+                return true;
+            }
             if (schematicShown() && schematic_.a11yAction(id, a))
                 return true;
             if (id >= id_ + 2 && id < id_ + 2 + files)
@@ -2671,6 +2690,8 @@ namespace playground::ui
                                [] { return TB::Look::outlined; }, [this] { openProjects(); }, "Projects",
                                "PROJECTS   SAVE THE PROGRAM ON THIS MAC, A VERSION EACH SAVE (CMD-S); OPEN AN OLDER ONE; ITS PRESETS");
         panelView_ = port_.panelView();
+        codePanel_[0] = port_.codePanel(false);
+        codePanel_[1] = port_.codePanel(true);
         chatOpen_ = port_.chatOpen();
         explorerOpen_ = port_.explorerOpen();
         seenExplorerWidth_ = port_.explorerWidth();
@@ -2697,6 +2718,8 @@ namespace playground::ui
                 library.push_back({ l.name, l.source });
             f.assist().setLibrary(library);
             f.assist().setInstrument(product::kIsInstrument);
+            // The status line's Panel switch: the panel under the code, for the tab shown.
+            f.assist().setPanelSwitch([this] { return codePanelShown(); }, [this] { toggleCodePanel(); });
             f.setCircuitHooks([this]() -> const std::vector<lang::CircuitBinding>& { return circuitDials_; },
                               [this](int slot) -> funkgui::ParamPort* {
                                   const int i = slot >= 0 && slot < kMaxControls ? itemOfSlot_[static_cast<std::size_t>(slot)] : -1;
@@ -2938,7 +2961,7 @@ namespace playground::ui
 
         // The processor's files and status, and the chat; the netlists' views the session kept.
         files().setViewHooks([this] { persistFileViews(); }, [this] {
-            if (!panelView_ && files().schematicShown() != layoutSchematic_)
+            if (layoutStale())
                 layout();
             dirty_ = true;
         });
@@ -3001,6 +3024,8 @@ namespace playground::ui
         syncedFiles_ = files().revision();
         running_ = port_.running();
         refresh(0.0);
+        if (layoutStale())
+            layout();                                    // the tab the session shows: its room (a netlist's, the panel)
         focus_ = editorItem_;
         setFocus(editorItem_);
     }
@@ -3081,6 +3106,10 @@ namespace playground::ui
         const float inBottom = bottom - kInset;          // the program's card's inside
         const bool schematic = !panelView_ && files().schematicShown();
         layoutSchematic_ = schematic;
+        // The panel under the code hidden (the CODE view, the choice for the tab shown): no dials, no displays, no
+        // interface and no fold's bar; the editor (or the drawing) has the column.
+        const bool hidden = !panelView_ && !codePanelShown();
+        panelHidden_ = hidden;
         const float columnH = inBottom - kEditorY;
         const float eMin = std::max(312.0f, std::round(0.55f * columnH));
         const float roomForDials = schematic ? columnH - eMin - 8.0f : inBottom - kEditorY - 120.0f - 8.0f - problemsH - 16.0f;
@@ -3112,7 +3141,21 @@ namespace playground::ui
         dialsBar_ = false;
         dialsFolded_ = false;
         float hideAbove = -1.0e9f;                       // the dials shown from the fold: rows over the editor's room hidden
-        if (gui)
+        if (hidden)
+        {
+            guiView_->clear(panelSpec_);                 // its pages and scroll kept for when it shows again
+            dials_ = DialsLayout{};
+            dials_.top = inBottom;
+            panelTop = schematic ? inBottom + 8.0f : inBottom;
+            for (int d = 0; d < kMaxDisplays; ++d)
+            {
+                auto& item = static_cast<DisplayItem&>(*items_[static_cast<std::size_t>(itemOfDisplay_[static_cast<std::size_t>(d)])]);
+                item.setDisplay(nullptr);
+                item.setCell({});
+                item.setArea({});
+            }
+        }
+        else if (gui)
         {
             const GuiMeasure gm = [](const std::string& text, const funkgui::TextStyle& st) {
                 return funkgui::text::width(funkgui::FontService::get().atlas(), text.c_str(), st);
@@ -3191,7 +3234,7 @@ namespace playground::ui
                 auto& dial = static_cast<DialItem&>(*items_[static_cast<std::size_t>(i)]);
                 dial.setLook(panelSpec_.styles[static_cast<std::size_t>(c)], panelSpec_.colors[static_cast<std::size_t>(c)],
                              dials_.dials[static_cast<std::size_t>(c)]);
-                dial.setHidden(gui || dialsFolded_ || dials_.dials[static_cast<std::size_t>(c)].top < hideAbove);
+                dial.setHidden(gui || hidden || dialsFolded_ || dials_.dials[static_cast<std::size_t>(c)].top < hideAbove);
             }
 
         // The chat's card.
@@ -4245,6 +4288,7 @@ namespace playground::ui
     void Panel::refresh(double nowSec)
     {
         syncColumnWidths();
+        syncCodePanel();
         keepStepDefaults(nowSec, false);
         // The draft, when a host loaded a session while the editor was open, or Claude changed the files.
         bool textChanged = std::exchange(pushedFiles_, false);   // a gesture's files, given at once
@@ -5376,6 +5420,54 @@ namespace playground::ui
         layout();
     }
 
+    bool Panel::interfaceShown() const
+    {
+        const FilesItem& f = files();
+        return !f.irShown() && f.active() >= 0 && f.active() < f.count() && isInterfaceFile(f.name(f.active()));
+    }
+
+    bool Panel::codePanelShown() const { return codePanel_[interfaceShown() ? 1 : 0]; }
+
+    void Panel::setCodePanel(bool shown)
+    {
+        const bool gui = interfaceShown();
+        if (codePanel_[gui ? 1 : 0] == shown)
+            return;
+        codePanel_[gui ? 1 : 0] = shown;
+        port_.setCodePanel(gui, shown);
+        layout();
+        // A control of the panel that had the focus hides with it: the focus goes (layout() has hidden it).
+        if (focus_ >= 0 && !items_[static_cast<std::size_t>(focus_)]->shown())
+            setFocus(-1);
+    }
+
+    void Panel::syncCodePanel()
+    {
+        const bool code = port_.codePanel(false), gui = port_.codePanel(true);
+        if (code == codePanel_[0] && gui == codePanel_[1])
+            return;
+        codePanel_[0] = code;
+        codePanel_[1] = gui;
+        if (!layoutStale())
+            return;
+        layout();
+        if (focus_ >= 0 && !items_[static_cast<std::size_t>(focus_)]->shown())
+            setFocus(-1);
+    }
+
+    bool Panel::layoutStale() const
+    {
+        return !panelView_ && (files().schematicShown() != layoutSchematic_ || codePanelShown() == panelHidden_);
+    }
+
+    funkgui::Point Panel::centreOfPanelSwitch() const
+    {
+        const funkgui::Rect r = files().assist().panelSwitchRect();
+        return { r.centreX(), r.centreY() };
+    }
+
+    bool Panel::panelSwitchLabelled() const { return files().assist().panelSwitchLabelled(); }
+
     const GuiControlItem& Panel::guiControl(int slot) const
     {
         return static_cast<const GuiControlItem&>(*items_[static_cast<std::size_t>(guiView_->controlItem(std::clamp(slot, 0, kMaxControls - 1)))]);
@@ -5489,8 +5581,8 @@ namespace playground::ui
     void Panel::tick(float dt)
     {
         refresh(host_ != nullptr ? host_->nowSeconds() : 0.0);
-        if (!panelView_ && files().schematicShown() != layoutSchematic_)
-            layout();                                    // a netlist's view came or went: its room
+        if (layoutStale())
+            layout();                                    // a netlist's view came or went, or the panel under the code
         syncWindowButtons();
         syncExplorer();
         // The message box follows its text, one row to eight: the conversation gives it the room.
@@ -6081,6 +6173,15 @@ namespace playground::ui
         if (e.key == funkgui::Key::character && e.mods.cmd && (e.ch == 's' || e.ch == 'S'))
         {
             saveVersion();
+            return true;
+        }
+        // Cmd-J: the panel under the code shown or hidden (the status line's Panel switch), in the CODE view.
+        if (e.key == funkgui::Key::character && e.mods.cmd && !e.mods.shift && !e.mods.alt && !e.mods.ctrl
+            && (e.ch == 'j' || e.ch == 'J'))
+        {
+            if (panelView_)
+                return false;
+            toggleCodePanel();
             return true;
         }
         // Cmd-Shift-D: a netlist's Netlist / Schematic view, in either view; nothing while the IR tab shows.

@@ -31,6 +31,9 @@
 //                     line of their own, set with setSchematicPins() whenever the view reconciles; in memory only
 //   panelView()       the editor shows the PANEL view (the interface across the left column) rather than the CODE view;
 //                     kept in the session, set with setPanelView()
+//   codePanel()       the CODE view shows the program's panel under the editor (its dials, or its .gui file's
+//                     interface), one choice while the program's code shows and one while a file of its interface does;
+//                     kept in the session, set with setCodePanel()
 //   explorerWidth()   the explorer's and the chat's widths as the user set them (editor/Columns.h), kept in the session;
 //   chatWidth()       0: none set
 //   program()         the compile it came from (CompileStatus::request): the meters' taps are its fields once
@@ -372,6 +375,12 @@ namespace playground
 
         virtual bool panelView() const = 0;
         virtual void setPanelView(bool on) = 0;
+        // Whether the CODE view shows the program's panel (its dials, or its .gui file's interface) under the editor:
+        // `gui` the choice while a file of the interface shows (a .gui file, a shader's .sc: editor/Items.h's
+        // isInterfaceFile), else the one while the program's code shows (its FMinus files, a netlist, the IR). Both
+        // shown at first; kept in the session (the editor's status line's Panel switch and Cmd-J set them).
+        virtual bool codePanel(bool gui) const = 0;
+        virtual void setCodePanel(bool gui, bool shown) = 0;
 
         // Whether the chat's column is open (else folded into a rail at the right), kept in the session.
         virtual bool chatOpen() const = 0;

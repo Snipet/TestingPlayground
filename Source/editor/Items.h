@@ -109,6 +109,16 @@ namespace playground::ui
         return isCircuitFile(name) ? FileKind::Circuit : FileKind::FMinus;
     }
 
+    // A file of the program's interface: its .gui file, or a shader one names (a .sc file, fminus/Shaders.h). While one
+    // shows, the CODE view's panel under the editor follows a choice of its own (Panel.h: the panel under the code).
+    inline bool isInterfaceFile(std::string_view name)
+    {
+        const auto ends = [name](std::string_view tail) {
+            return name.size() > tail.size() && name.substr(name.size() - tail.size()) == tail;
+        };
+        return ends(".gui") || ends(".sc");
+    }
+
     // A netlist's words, for a highlighter of keyword rules (a tab's is CodeAssist's CircuitHighlighter, over
     // lang::lexCirLine): its devices and the directives' words as types, ; comments.
     inline funkgui::text::KeywordRules circuitRules()

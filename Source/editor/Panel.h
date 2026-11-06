@@ -46,7 +46,9 @@
 //             the height that more rows take. A program with a .gui file (fminus/GuiSpec.h) has its interface instead:
 //             its containers, controls, displays and text placed by GuiLayout.h and made of GuiItems.h, as tall as it
 //             is under the editor (up to the room the editor leaves), and scrolled by the wheel where it is taller or
-//             wider than its area
+//             wider than its area. In the CODE view the editor's status line's Panel switch (Cmd-J) hides it (the
+//             dials or the interface, and a netlist's fold bar): the editor then has the column. The session keeps one
+//             choice for the program's code and one for its interface's files (.gui, .sc), both shown at first
 //   view      the toolbar's CODE and PANEL cells: PANEL gives the interface the whole left column (the tabs, the editor
 //             and the problems go), CODE brings the editor back; the session keeps the choice (EditorPort::panelView)
 //   chat      at the right, a rounded card set apart from the square panel (ChatStyle.h): its header (the title, a new
@@ -204,6 +206,18 @@ namespace playground::ui
         bool hasGui() const noexcept { return !panelSpec_.gui.empty(); }
         bool panelView() const noexcept { return panelView_; }
         void setPanelView(bool on);
+        // The panel under the code (the editor's status line's Panel switch, Cmd-J): whether the CODE view shows the
+        // program's panel (its dials, or its .gui file's interface) under the editor. One choice while the program's
+        // code shows (its FMinus files, a netlist, the IR), one while a file of its interface does (a .gui file, a
+        // shader's .sc: Items.h's isInterfaceFile), both shown at first; the session keeps them (EditorPort::codePanel)
+        // and the tab shown picks the one that applies. Hidden, the editor (or a netlist's drawing) has the column; the
+        // PANEL view always shows the panel, and so do view_panel's pictures of it.
+        bool codePanelShown() const;                     // the choice for the tab shown
+        bool codePanelHidden() const noexcept { return panelHidden_; }   // hidden as layout() placed it (CODE view)
+        void setCodePanel(bool shown);                   // the choice for the tab shown, kept in the session
+        void toggleCodePanel() { setCodePanel(!codePanelShown()); }
+        funkgui::Point centreOfPanelSwitch() const;      // the status line's switch
+        bool panelSwitchLabelled() const;                // its word beside its icon (else the icon alone)
         const GuiLayout& guiLayout() const noexcept;
         const funkgui::Rect& programCard() const noexcept { return programCard_; }   // the program's card
         const PanelSpec& panelSpec() const noexcept { return panelSpec_; }      // the program's that the panel shows
@@ -436,6 +450,13 @@ namespace playground::ui
         const FilesItem& files() const;
         void layout();                                   // every item's place, for width_ x height_
         bool layoutSchematic_ = false;                   // layout() gave the Schematic view its room
+        bool layoutStale() const;                        // the tab shown wants another room than layout() gave
+        // The panel under the code: the choices ([0] the code's, [1] the interface's files'), as the port last had
+        // them (refresh() takes another Panel's or a session's); hidden by layout().
+        bool codePanel_[2] = { true, true };
+        bool panelHidden_ = false;
+        bool interfaceShown() const;                     // the tab shown is a file of the interface
+        void syncCodePanel();
         bool dialsOpen_ = false;                         // the fold's bar shows the dials (per Panel; folded at first)
         bool dialsFolded_ = false;                       // the dials folded into the bar
         bool dialsBar_ = false;                          // the bar shown

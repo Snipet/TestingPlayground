@@ -33,7 +33,9 @@
 //                  methods, without the code, the instances or a swap of what plays), and its messages replace them
 //                  (RUN's again when the files are what RUN compiled: they say more; RUN itself cancels a check due)
 //   the status     under the editor: the problems' count (a click jumps to the next), Checking..., the caret's line and
-//   line           column, the indent, the language and the Format on Run switch (a machine-wide preference)
+//   line           column, the indent, the language, the Format on Run switch (a machine-wide preference) and, at its
+//                  right end, the Panel switch: the program's panel under the code shown or hidden (the Panel's,
+//                  setPanelSwitch; its icon alone where its word would crowd the problems' count)
 //
 // The completion list, the signature and the hover card are drawn over everything (drawOverlays, after the Panel's
 // items); the find bar and the status line with the editor. Message thread only.
@@ -228,6 +230,25 @@ namespace playground::ui
         // While those words show, a click on the status line's problems calls this (true: Shift, the one before)
         // instead of moving the text's caret.
         void setStatusProblems(std::function<void(bool back)> step) { statusProblems_ = std::move(step); }
+        // The Panel switch at the status line's right end (Panel.h, "the panel under the code"): whether the CODE view
+        // shows the program's panel under the editor for the tab shown, and what a click on it does. Unset: no switch.
+        void setPanelSwitch(std::function<bool()> shown, std::function<void()> toggle)
+        {
+            panelShown_ = std::move(shown);
+            panelToggle_ = std::move(toggle);
+        }
+        bool hasPanelSwitch() const noexcept
+        {
+            return static_cast<bool>(panelShown_) && static_cast<bool>(panelToggle_);
+        }
+        bool panelSwitchOn() const { return hasPanelSwitch() && panelShown_(); }
+        void togglePanelSwitch() const
+        {
+            if (hasPanelSwitch())
+                panelToggle_();
+        }
+        funkgui::Rect panelSwitchRect() const;           // where it is (empty without one)
+        bool panelSwitchLabelled() const;                // its word beside its icon (else the icon alone: a narrow line)
 
         // ---- commands ---------------------------------------------------------------------------------------------
         bool formatFile();                               // the tab shown (an FMinus file); false with a notice when not
@@ -319,13 +340,15 @@ namespace playground::ui
         FindParts findParts() const;
         struct StatusParts
         {
-            funkgui::Rect problems, position, indent, language, formatOnRun;
+            funkgui::Rect problems, position, indent, language, formatOnRun, panel;
         };
         StatusParts statusParts() const;
 
         Tabs tabs_;
         std::function<std::string()> statusWords_;
         std::function<void(bool back)> statusProblems_;
+        std::function<bool()> panelShown_;               // the Panel switch (setPanelSwitch)
+        std::function<void()> panelToggle_;
         lang::Service service_;
         uint64_t synced_ = ~uint64_t{ 0 };
         std::shared_ptr<TypeNames> types_ = std::make_shared<TypeNames>();

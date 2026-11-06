@@ -43,6 +43,8 @@ namespace playground
                                kLines{ "lines" };
         const juce::Identifier kEditorTag{ "EDITOR" }, kWidth{ "w" }, kHeight{ "h" };   // the editor's size
         const juce::Identifier kView{ "view" };                                          // and its view: "panel"
+        // its CODE view's panel under the code and under the interface's files: "hidden"
+        const juce::Identifier kCodePanel{ "codePanel" }, kGuiPanel{ "guiPanel" };
         const juce::Identifier kChat{ "chat" };                                          // its chat: "closed"
         const juce::Identifier kExplorer{ "explorer" };                                  // its explorer: "closed"
         const juce::Identifier kExplorerW{ "explorerW" }, kChatW{ "chatW" };             // the widths its user set
@@ -1047,8 +1049,9 @@ namespace playground
         }
         const std::vector<std::string> pages = guiPages();
         const std::vector<FileView> views = fileViews();
-        if ((editorW_.load() > 0 && editorH_.load() > 0) || panelView_.load() || !chatOpen_.load() || !explorerOpen_.load()
-            || explorerW_.load() > 0 || chatW_.load() > 0 || !pages.empty() || !views.empty())
+        if ((editorW_.load() > 0 && editorH_.load() > 0) || panelView_.load() || codePanelHidden_.load()
+            || guiPanelHidden_.load() || !chatOpen_.load() || !explorerOpen_.load() || explorerW_.load() > 0
+            || chatW_.load() > 0 || !pages.empty() || !views.empty())
         {
             juce::ValueTree editor{ kEditorTag };
             if (editorW_.load() > 0 && editorH_.load() > 0)
@@ -1058,6 +1061,10 @@ namespace playground
             }
             if (panelView_.load())
                 editor.setProperty(kView, "panel", nullptr);
+            if (codePanelHidden_.load())
+                editor.setProperty(kCodePanel, "hidden", nullptr);
+            if (guiPanelHidden_.load())
+                editor.setProperty(kGuiPanel, "hidden", nullptr);
             if (!chatOpen_.load())
                 editor.setProperty(kChat, "closed", nullptr);
             if (!explorerOpen_.load())
@@ -1149,6 +1156,9 @@ namespace playground
         }
         const juce::ValueTree editor = state.getChildWithName(kEditorTag);
         panelView_.store(editor.isValid() && editor.getProperty(kView).toString() == "panel");
+        // The CODE view's panel (a state from before the choice has it shown under every file).
+        codePanelHidden_.store(editor.isValid() && editor.getProperty(kCodePanel).toString() == "hidden");
+        guiPanelHidden_.store(editor.isValid() && editor.getProperty(kGuiPanel).toString() == "hidden");
         chatOpen_.store(!(editor.isValid() && editor.getProperty(kChat).toString() == "closed"));
         explorerOpen_.store(!(editor.isValid() && editor.getProperty(kExplorer).toString() == "closed"));
         // The widths its user set (a state from before them has none: the editor's default).

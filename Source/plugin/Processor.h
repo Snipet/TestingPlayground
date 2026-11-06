@@ -246,6 +246,8 @@ namespace playground
         ChatPort& chat() override { return chat_; }
         bool panelView() const override { return panelView_.load(); }
         void setPanelView(bool on) override { panelView_.store(on); }
+        bool codePanel(bool gui) const override { return !(gui ? guiPanelHidden_ : codePanelHidden_).load(); }
+        void setCodePanel(bool gui, bool shown) override { (gui ? guiPanelHidden_ : codePanelHidden_).store(!shown); }
         bool chatOpen() const override { return chatOpen_.load(); }
         void setChatOpen(bool open) override { chatOpen_.store(open); }
         bool explorerOpen() const override { return explorerOpen_.load(); }
@@ -363,6 +365,8 @@ namespace playground
         std::atomic<uint32_t> alerts_{ 0 };
         std::atomic<int> editorW_{ 0 }, editorH_{ 0 };
         std::atomic<bool> panelView_{ false };                       // the editor's PANEL view, in the session
+        std::atomic<bool> codePanelHidden_{ false };                 // its CODE view's panel hidden under the code,
+        std::atomic<bool> guiPanelHidden_{ false };                  // ... under the interface's files, in the session
         std::atomic<bool> chatOpen_{ true };                         // its chat's column open, in the session
         std::atomic<bool> explorerOpen_{ true };                     // its explorer open, in the session
         std::atomic<int> explorerW_{ 0 }, chatW_{ 0 };               // the widths its user set (0: none), in the session
