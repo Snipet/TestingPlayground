@@ -662,14 +662,21 @@ place (its `products/<key>.cmake`, and its names in the docs).
   and polls `ChatHost::chatLive` about 25 times a second; a cancel that comes before it starts is kept (`mcpStopped_`,
   every one, not only the last). get_status ends with a token of the processor's journal (`plugin/Journal.h`: about 256
   changes, drags merged, under its own mutex; what Claude Desktop does itself is not kept, `ChatAgent::mcpWorking`; each
-  token handed out is a new one), and `since` lists what changed after it, the files as diffs (`dsp/TextDiff.h`) against
-  their texts at that token (`mcpMarks_`, the newest 16 tokens', under `liveMutex_`). One server may serve several
+  token handed out is a new one), and `since` lists what changed after it, in the third person ("the user moved", "the
+  host", "the plugin's own chat": a "you" reads as the Claude reading it), a dial's moves as one line, its net change
+  (first -> last, at its first move's place, with who and how many times), the files as diffs (`dsp/TextDiff.h`)
+  against their texts at that token (`mcpMarks_`, the newest 16 tokens', under `liveMutex_`). The session keeps those
+  tokens with their files' hashes and lines (`ChatAgent::mcpMarksToKeep`, Live.h's `KeptMark`, the state's `<MCP>`):
+  in the plugin opened again (a new journal, which knows no token from before) they are `mcpKept_`, and `since` with
+  one of them gives the whole state, then which files changed since it (by hash, with read_file's versions; not how).
+  One server may serve several
   conversations and its calls name none: what is kept for Claude Desktop is kept by token, never as one record of what
   "it" saw, which one conversation's look would move for all. The two Claudes keep their own records: an MCP call never
   marks the chat's `seen_` (`markSeen`), so the plugin's chat is sent a file Claude Desktop wrote; a chat turn never
   runs beside a call of Claude Desktop's (New chat and a session load keep `busy_` while one runs). Every other MCP
   result starts with a line when something changed since the last MCP call (`ChatAgent::mcpHint`, one cursor for the
-  instance: the first three changes as the journal says them, their values with them, and how many more; its token is
+  instance: how many changes, "The user changed" only when each is the user's, the first three as the journal says
+  them, their values with them, and how many more; its token is
   handed out, so a drag or typing that goes on after it is a line of its own, never merged into one it named); a read of the server's own (get_status's `peek`, the GUI sandbox's, in no schema) moves neither it nor
   the tokens. The journal learns who: the editor's ports are `GesturePort`s (a dial moved between polls with one of them
   is the user's, else the host's), `setDraft` is the editor's and `chatSetDraft`, `chatRun`, `chatSetDial` the plugin
